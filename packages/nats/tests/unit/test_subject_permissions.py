@@ -227,7 +227,10 @@ class TestBootCompleteness:
                     f"{_NS}.hub.secrets.request",
                 ],
             ),
-            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks"]),
+            # hub.object.resolve is boot-critical for the Path-2 consume path: a
+            # consuming tool that cannot publish it fails closed at the bus and
+            # the whole resolve->stream capability goes silently inert.
+            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks", f"{_NS}.hub.object.resolve"]),
             (
                 # the router forward grant is ``tools.internal.>`` (not ``.*``) so it spans BOTH
                 # single-token tool pods and two-token agent in-process pods.
@@ -248,6 +251,18 @@ class TestBootCompleteness:
         # without this the tool pod registers but never RECEIVES a proxied call.
         perm = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
         assert f"{_NS}.tools.internal.pod-X" in perm.subscribe
+
+    def test_engagement_scope_resolve_grant_is_pod_publish_hub_subscribe(self) -> None:
+        # engagement scope (consumer A of the §2 keystone): the consuming tool pod
+        # PUBLISHES the resolve (forwarding the invoking agent's identity token);
+        # the hub SUBSCRIBES to answer. mirrors the hub_object_resolve split.
+        pod = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
+        assert f"{_NS}.hub.engagement.scope" in pod.publish
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.engagement.scope" in hub.subscribe
+        # it is read-only for the pod: no agent-side commit twin exists (unlike
+        # objects), and the pod never subscribes the scope subject.
+        assert f"{_NS}.hub.engagement.scope" not in pod.subscribe
 
     def test_agent_can_reach_l3_and_gateway(self) -> None:
         perm = _build(Principal.AGENT_POD)

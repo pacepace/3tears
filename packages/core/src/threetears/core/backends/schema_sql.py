@@ -62,6 +62,7 @@ _DATETIMETZ_TYPE = "datetimetz"
 _JSONB_TYPE = "jsonb"
 _BYTES_TYPE = "bytes"
 _INT_TYPE = "int"
+_BIGINT_TYPE = "bigint"
 _BOOL_TYPE = "bool"
 _NUMERIC_TYPE = "numeric"
 _VECTOR_TYPE = "vector"
@@ -306,7 +307,7 @@ def decode_l2_value(column: Column, value: Any) -> Any:
         result = base64.b64decode(value.encode("ascii"))
     elif column.column_type == _BOOL_TYPE and isinstance(value, (bool, int)):
         result = bool(value)
-    elif column.column_type == _INT_TYPE and isinstance(value, (int, float)):
+    elif column.column_type in (_INT_TYPE, _BIGINT_TYPE) and isinstance(value, (int, float)):
         result = int(value)
     elif column.column_type == _NUMERIC_TYPE and isinstance(value, (str, int, float)):
         # NUMERIC round-trips as the exact decimal string json_default emits;

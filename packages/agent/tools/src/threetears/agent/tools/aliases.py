@@ -57,6 +57,7 @@ __all__ = [
 STANDARD_TOOLS: frozenset[str] = frozenset(
     {
         "threetears.calculator",
+        "threetears.context_recall",
         "threetears.current_date",
         "threetears.dictionary",
         "threetears.unit_converter",

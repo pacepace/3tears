@@ -50,6 +50,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator
 
+from threetears.media.contracts import ObjectStore
+
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
@@ -62,6 +64,8 @@ __all__ = [
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
+    from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
+    from threetears.agent.tools.object_resolver import ObjectResolver
 
 
 @dataclass(frozen=True)
@@ -82,10 +86,37 @@ class ToolCallScope:
         ``None`` when the server has no factory wired or when the
         envelope did not carry conversation/user identifiers
     :ptype context_manager: ToolContextManager | None
+    :param object_store: the pod's streaming object store, installed by
+        the tool server from its single pod-level instance so producing
+        tools reach it through :func:`current_scope` -- the same way they
+        reach :attr:`context_manager` -- without per-tool constructor
+        plumbing. ``None`` when the pod was not wired with an object store
+        (no S3 configured); a producing tool that needs it fails closed at
+        first use rather than running with no place to put bytes
+    :ptype object_store: ObjectStore | None
+    :param object_resolver: the pod's object-id resolver, installed by the tool
+        server from its single self-provisioned instance so consuming tools
+        reach it through :func:`current_scope` -- the same way they reach
+        :attr:`object_store` -- to turn an object id into its stored key
+        tenant-safely. ``None`` when the server was not wired with one (no NATS
+        client, as in unit tests); a consuming tool that needs it fails closed
+        at first use rather than resolving nothing
+    :ptype object_resolver: ObjectResolver | None
+    :param engagement_resolver: the pod's engagement-scope resolver, installed by
+        the tool server from its single self-provisioned instance so tools reach
+        it through :func:`current_scope` -- the same way they reach
+        :attr:`object_resolver` -- to turn the call's ``engagement_id`` into its
+        authorized target set tenant-safely. ``None`` when the server was not
+        wired with one (no NATS client, as in unit tests); a tool that needs it
+        fails closed at first use rather than authorizing against nothing
+    :ptype engagement_resolver: EngagementScopeResolver | None
     """
 
     context: CallContext = field(default_factory=CallContext)
     context_manager: "ToolContextManager | None" = None
+    object_store: ObjectStore | None = None
+    object_resolver: "ObjectResolver | None" = None
+    engagement_resolver: "EngagementScopeResolver | None" = None
 
 
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(

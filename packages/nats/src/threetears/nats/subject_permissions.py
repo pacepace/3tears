@@ -166,6 +166,8 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
         str(Subjects.agent_heartbeat(a, p)),  # own authed agent + own pod only
         str(Subjects.hub_handshake()),
         str(Subjects.hub_secrets_request()),
+        str(Subjects.hub_object_commit()),  # Path-2: catalogs a produced object under its own tenant
+        str(Subjects.hub_object_resolve()),  # Path-2: resolves an object id it owns to its stored key
         str(Subjects.hub_jwks()),
         str(Subjects.gateway_completion()),
         str(Subjects.gateway_embedding()),
@@ -245,6 +247,14 @@ def _tool_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) 
         str(Subjects.tools_discover()),  # polls discovery during wait_until_ready
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
+        # Path-2 consume: a consuming tool resolves an object id -> its stored
+        # key (forwarding the invoking agent's identity token; the hub verifies
+        # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
+        str(Subjects.hub_object_resolve()),
+        # engagement scope (consumer A of the §2 keystone): a scan tool resolves
+        # its call's engagement_id -> the authorized target set (same forwarded
+        # identity-token auth; the hub verifies + tenant-scopes). read-only.
+        str(Subjects.hub_engagement_scope()),
     )
     subscribe = (
         f"{inbox}.>",
@@ -320,6 +330,9 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         str(Subjects.hub_jwks()),  # serves the JWKS
         str(Subjects.hub_secrets_request()),
         str(Subjects.hub_user_resolve()),
+        str(Subjects.hub_object_commit()),  # Path-2: responds to object catalog commits
+        str(Subjects.hub_object_resolve()),  # Path-2: responds to object id -> key resolves
+        str(Subjects.hub_engagement_scope()),  # engagement scope: responds to engagement_id -> targets resolves
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),

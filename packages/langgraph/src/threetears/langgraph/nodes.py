@@ -40,6 +40,12 @@ from threetears.langgraph.hooks import (
     compose_agent_node_hooks,
     compose_tool_node_hooks,
 )
+from threetears.langgraph.offload import (
+    DEFAULT_OFFLOAD_THRESHOLD_CHARS,
+    format_offload_handle,
+    is_never_offload_tool,
+)
+from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 from threetears.observe import get_logger
 
 __all__ = [
@@ -289,10 +295,35 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
 
         success = True
         tool = tool_map.get(tool_call["name"])
+        tool_message: ToolMessage | None = None
         try:
             if tool is not None:
                 try:
-                    tool_result = await tool.ainvoke(tool_call["args"], config=config)
+                    # invoke ToolCall-style (NOT plain args) so a tool declaring
+                    # ``response_format="content_and_artifact"`` returns a
+                    # ToolMessage carrying both content AND its structured
+                    # artifact -- LangChain drops the artifact on a plain-args
+                    # ``ainvoke`` (2b). aligns this hand-rolled node with
+                    # LangGraph's own ToolNode dispatch; a content-format tool
+                    # (the default) returns a ToolMessage with ``artifact=None``.
+                    invoked = await tool.ainvoke(
+                        {
+                            "type": "tool_call",
+                            "id": tool_call["id"],
+                            "name": tool_call["name"],
+                            "args": tool_call["args"],
+                        },
+                        config=config,
+                    )
+                    if isinstance(invoked, ToolMessage):
+                        tool_message = invoked
+                        tool_result = invoked.content
+                        if invoked.status == "error":
+                            success = False
+                    else:
+                        # defensive: a tool that bypassed ToolMessage wrapping
+                        # and returned raw content -- treat it as the content.
+                        tool_result = invoked
                 except GraphBubbleUp:
                     # GraphInterrupt (and the GraphBubbleUp family generally) is the
                     # control-flow signal LangGraph uses to pause the graph at an
@@ -346,12 +377,238 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             config,
             state_view,
         )
+        # lift the tool's structured artifact + its authored summary (2b)
+        # from the ToolMessage the dispatch produced. the artifact is the
+        # programmatic channel the graph can persist findings through; a
+        # content-format tool has ``artifact=None`` -> no summary, unchanged.
+        tool_artifact = tool_message.artifact if tool_message is not None else None
+        tool_summary: str | None = None
+        if isinstance(tool_artifact, dict):
+            raw_summary = tool_artifact.get("summary")
+            if isinstance(raw_summary, str) and raw_summary:
+                tool_summary = raw_summary
+        # large-result offload seam: when an offloader is injected and the
+        # serialized content exceeds the configured threshold, store the
+        # full content out-of-band and show the model a summary + recall
+        # handle instead of the raw dump. no offloader / under threshold /
+        # not a success / offloader declines (None) -> byte-for-byte the
+        # previous ``str(tool_result)`` content (backward compatible). the
+        # structured artifact is preserved on the ToolMessage even when the
+        # content is offloaded.
+        message_content = await _maybe_offload_result(
+            configurable,
+            tool_call["name"],
+            str(tool_result),
+            success,
+            tool_summary,
+        )
+        # Path-2 catalog seam: when the tool streamed a large artifact to the
+        # object store and returned an ObjectHandle in its metadata, persist a
+        # catalog record for it. independent of offload (offload handles large
+        # TEXT; this handles the out-of-band binary). soft-fails so a catalog
+        # error never breaks the tool result -- an uncataloged object is reconciled.
+        await _maybe_catalog_object(
+            configurable,
+            tool_call["name"],
+            tool_artifact,
+            success,
+        )
         tool_messages.append(
-            ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]),
+            ToolMessage(
+                content=message_content,
+                tool_call_id=tool_call["id"],
+                artifact=tool_artifact,
+            ),
         )
 
     result = {"messages": tool_messages}
     return result
+
+
+async def _maybe_offload_result(
+    configurable: dict[str, Any],
+    tool_name: str,
+    content: str,
+    success: bool,
+    tool_summary: str | None = None,
+) -> str:
+    """offload an oversized tool result, returning the model-visible text.
+
+    reads the optional :class:`~threetears.langgraph.offload.ToolResultOffloader`
+    and the size threshold off ``configurable`` (mirroring how
+    ``context_manager`` is read in :func:`agent_node`). offload fires only
+    when ALL hold: the tool succeeded, an offloader is present, a
+    ``conversation_id`` is known, and ``len(content)`` exceeds the
+    threshold. on a returned :class:`~threetears.langgraph.offload.OffloadResult`
+    the model sees ``"<summary>\\n\\n[ctx:<handle>]"``; otherwise (no
+    offloader, under threshold, not success, declined, or a soft-failed
+    offload) the original ``content`` is returned unchanged.
+
+    SOFT-FAIL: an exception from ``offload(...)`` is logged with context
+    and the full ``content`` is returned -- a big message beats a dropped
+    tool result. ``GraphBubbleUp`` is not a concern here: this runs after
+    the tool dispatch completed, and the offloader only touches the
+    context store.
+
+    :param configurable: the ``config["configurable"]`` dict for this run.
+    :ptype configurable: dict[str, Any]
+    :param tool_name: name of the tool whose result may be offloaded.
+    :ptype tool_name: str
+    :param content: serialized tool-result content (already ``str()``-ed).
+    :ptype content: str
+    :param success: whether the tool invocation succeeded; failures are
+        never offloaded so the error text stays inline for the model.
+    :ptype success: bool
+    :param tool_summary: a tool-authored summary (2b) lifted from the
+        result's ``ToolMessage.artifact``, or ``None``; forwarded to the
+        offloader (which prefers it), unless it meets the offload threshold
+        or carries a ``[ctx:`` token -- then it is dropped for the
+        structural summary.
+    :ptype tool_summary: str | None
+    :return: the content to place in the ``ToolMessage`` -- either the
+        ``summary + [ctx:<handle>]`` form or the original ``content``.
+    :rtype: str
+    """
+    offloader = configurable.get("tool_result_offloader")
+    threshold = int(
+        configurable.get("offload_threshold_chars", DEFAULT_OFFLOAD_THRESHOLD_CHARS),
+    )
+    conversation_id = configurable.get("conversation_id")
+    user_id = configurable.get("user_id")
+    # 2b: only honor a tool-authored summary that is actually a SUMMARY -- one
+    # at/above the threshold saves no context (reintroducing the very bloat
+    # offload removes), and one carrying the "[ctx:" handle token could
+    # surface a spurious recall handle to the model. fall back to structural.
+    if tool_summary is not None and (len(tool_summary) >= threshold or "[ctx:" in tool_summary):
+        tool_summary = None
+    # never offload a tool whose result IS recalled content (the recall
+    # tool itself): re-offloading it loops -- the model asked for the
+    # bytes and would get a fresh handle instead.
+    should_offload = (
+        success
+        and offloader is not None
+        and conversation_id is not None
+        and not is_never_offload_tool(tool_name)
+        and len(content) > threshold
+    )
+    message_content = content
+    if should_offload:
+        offload_result = None
+        try:
+            offload_result = await offloader.offload(
+                tool_name=tool_name,
+                content=content,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                tool_summary=tool_summary,
+            )
+        except GraphBubbleUp:
+            # control-flow signal (interrupt / subgraph bubble) -- never a
+            # storage error; it MUST propagate exactly as the tool-dispatch
+            # path re-raises it, so the broad soft-fail below cannot swallow
+            # it. theoretical here (the offloader only touches the context
+            # store) but mirrored for consistency and future-proofing.
+            raise
+        except Exception as exc:
+            log.warning(
+                "tool-result offload failed; falling back to full content",
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "content_chars": len(content),
+                        "error": str(exc),
+                    },
+                },
+                exc_info=True,
+            )
+        if offload_result is not None:
+            message_content = f"{offload_result.summary}\n\n{format_offload_handle(offload_result.handle)}"
+    return message_content
+
+
+async def _maybe_catalog_object(
+    configurable: dict[str, Any],
+    tool_name: str,
+    tool_artifact: Any,
+    success: bool,
+) -> None:
+    """catalog a produced object (an ObjectHandle in the tool artifact) via the cataloger.
+
+    Fires only when ALL hold: the tool succeeded, a
+    :class:`~threetears.langgraph.catalog.ObjectCataloger` is injected on
+    ``configurable``, the artifact carries an ``OBJECT_HANDLE_METADATA_KEY``
+    descriptor, and the VERIFIED conversation + customer identity are known
+    (read from ``call_context`` / the offload-seam keys, mirroring
+    :func:`_maybe_offload_result`).
+
+    SOFT-FAIL: a malformed handle or a catalog error is logged and swallowed --
+    the object is already in the store but uncataloged, so it becomes an orphan
+    the hub-side reconciler garbage-collects past its grace window. A failed
+    catalog must never break the tool result. ``GraphBubbleUp`` propagates (it is
+    a control-flow signal, not a catalog error), mirroring the dispatch + offload
+    paths.
+
+    :param configurable: the ``config["configurable"]`` dict for this run.
+    :ptype configurable: dict[str, Any]
+    :param tool_name: name of the tool whose result is being processed.
+    :ptype tool_name: str
+    :param tool_artifact: the tool's structured artifact (``ToolMessage.artifact``);
+        the handle descriptor rides under ``OBJECT_HANDLE_METADATA_KEY`` when present.
+    :ptype tool_artifact: Any
+    :param success: whether the tool invocation succeeded; a failed tool is
+        never cataloged (it produced no object).
+    :ptype success: bool
+    :return: nothing
+    :rtype: None
+    """
+    cataloger = configurable.get("object_cataloger")
+    handle_data = tool_artifact.get(OBJECT_HANDLE_METADATA_KEY) if isinstance(tool_artifact, dict) else None
+    if not (success and cataloger is not None and isinstance(handle_data, dict)):
+        return
+    call_context = configurable.get("call_context")
+    conversation_id = configurable.get("conversation_id")
+    if conversation_id is None and call_context is not None:
+        conversation_id = call_context.conversation_id
+    user_id = configurable.get("user_id")
+    if user_id is None and call_context is not None:
+        user_id = call_context.user_id
+    customer_id = call_context.customer_id if call_context is not None else None
+    if conversation_id is None or customer_id is None:
+        log.warning(
+            "produced object not cataloged: missing verified conversation/customer identity",
+            extra={
+                "extra_data": {
+                    "tool_name": tool_name,
+                    "has_conversation": conversation_id is not None,
+                    "has_customer": customer_id is not None,
+                },
+            },
+        )
+        return
+    try:
+        handle = ObjectHandle.from_metadata(handle_data)
+    except (KeyError, ValueError, TypeError) as exc:
+        log.warning(
+            "produced object handle malformed; not cataloged",
+            extra={"extra_data": {"tool_name": tool_name, "error": str(exc)}},
+        )
+        return
+    try:
+        await cataloger.catalog(
+            handle,
+            conversation_id=conversation_id,
+            customer_id=customer_id,
+            user_id=user_id,
+        )
+    except GraphBubbleUp:
+        raise
+    except Exception as exc:
+        object_id_log = str(handle.object_id)  # convert at border: catalog-failed log extra_data field
+        log.warning(
+            "produced object catalog failed; object will be reconciled if it stays uncataloged",
+            extra={"extra_data": {"tool_name": tool_name, "object_id": object_id_log, "error": str(exc)}},
+            exc_info=True,
+        )
 
 
 async def _heartbeat_loop(
