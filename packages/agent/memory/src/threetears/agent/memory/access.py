@@ -89,7 +89,7 @@ class MemoryAccessService:
         :param namespace_collection: three-tier ``NamespaceCollection``
             exposing :meth:`find_by_type_and_customer`. typed ``Any``
             because the Collection lives in
-            :mod:`aibots.hub.broker.namespaces` (a higher layer than
+            :mod:`3tears.hub.broker.namespaces` (a higher layer than
             ``agent-memory``); production wiring constructs the bundle
             with the concrete instance, this module only uses the
             documented method surface

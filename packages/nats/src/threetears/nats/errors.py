@@ -11,6 +11,7 @@ from __future__ import annotations
 
 __all__ = [
     "KvError",
+    "NamespaceNotConfiguredError",
     "NatsClientError",
     "OpLogError",
     "OpLogSequenceConflict",
@@ -25,6 +26,19 @@ class NatsClientError(Exception):
 
     callers wanting a single ``except`` clause that catches every
     wrapper-raised condition should catch this base.
+    """
+
+
+class NamespaceNotConfiguredError(NatsClientError):
+    """raised when a subject namespace is required but none is configured.
+
+    the subject namespace prefix has no default. configure it explicitly
+    by calling :func:`threetears.nats.set_default_namespace`, by
+    connecting a :class:`threetears.nats.NatsClient` (which binds its
+    configured ``nats_subject_namespace``), or by setting the
+    ``THREETEARS_NATS_SUBJECT_NAMESPACE`` environment variable. requiring
+    an explicit value prevents two unconfigured deployments from silently
+    colliding on the same subjects when they share a NATS cluster.
     """
 
 

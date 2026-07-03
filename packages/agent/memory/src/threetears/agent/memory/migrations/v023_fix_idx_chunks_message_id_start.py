@@ -74,8 +74,6 @@ async def fix_idx_chunks_message_id_start(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    log.info(
-        "v023: re-shaping idx_chunks_message_id_start to (agent_id, message_id_start) to match schema + prod metallm"
-    )
+    log.info("v023: re-shaping idx_chunks_message_id_start to (agent_id, message_id_start) to match schema + prod")
     await store.execute(_DROP_OLD_SHAPE_SQL)
     await store.execute(_CREATE_CORRECT_SHAPE_SQL)

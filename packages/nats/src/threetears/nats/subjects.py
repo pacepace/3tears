@@ -15,11 +15,11 @@ design properties
   this means a function expecting ``Subject`` cannot accidentally be
   passed a bare interpolated string.
 - :class:`Subjects` factory has one classmethod per subject family in
-  the canonical aibots topology
+  the canonical 3tears topology
   (``docs/done/design-01-nats-topology.md``). adding a new family is
   one method; reformatting an existing family is one method.
-- the namespace prefix (``aibots`` by default, env-driven by
-  ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``) is bound at
+- the namespace prefix (``3tears`` by default, env-driven by
+  ``THREETEARS_NATS_SUBJECT_NAMESPACE``) is bound at
   :class:`NatsClient` connect time. :class:`Subjects` reads it from a
   ``ContextVar`` that the client populates; tests and library code can
   set it explicitly via :func:`set_default_namespace`.
@@ -40,13 +40,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Literal
 from uuid import UUID
 
+from threetears.nats.errors import NamespaceNotConfiguredError
+
 __all__ = [
-    "DEFAULT_NAMESPACE",
     "Subject",
     "SubjectKind",
     "Subjects",
@@ -55,18 +55,11 @@ __all__ = [
 ]
 
 
-#: default subject namespace when neither
-#: :data:`FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE` env var nor an explicit
-#: :func:`set_default_namespace` call has set one. matches the platform
-#: documented default.
-DEFAULT_NAMESPACE: Final[str] = "aibots"
-
-
 SubjectKind = Literal["point", "pattern", "reply"]
 """subject category.
 
 - ``point``: concrete fully-qualified subject (e.g.
-  ``aibots.tools.heartbeat.pod-abc``). usable for both publish and
+  ``3tears.tools.heartbeat.pod-abc``). usable for both publish and
   subscribe.
 - ``pattern``: contains nats wildcards (``*`` or ``>``); subscribe-only.
 - ``reply``: opaque inbox returned by nats-py for request/reply paths;
@@ -74,18 +67,26 @@ SubjectKind = Literal["point", "pattern", "reply"]
 """
 
 
-_namespace_var: ContextVar[str | None] = ContextVar(
-    "threetears_nats_default_namespace",
-    default=None,
-)
+# Process-wide default namespace prefix used by :class:`Subjects` when a caller
+# builds a subject without threading a namespace explicitly. A plain module
+# global -- deliberately NOT a ``ContextVar``: the namespace is a single
+# process-wide deployment constant, and a ContextVar set at connect/startup time
+# is invisible to the SIBLING task trees that serve later work (e.g. a web
+# server's per-request handlers spawned by uvicorn). That invisibility silently
+# broke subject resolution on those paths -- ``get_default_namespace()`` saw the
+# var unset and raised even though the process had connected with a namespace.
+# A module global is visible in every task/context in the process, which is what
+# "process-wide" has always meant here.
+_default_namespace: str | None = None
 
 
 def set_default_namespace(namespace: str) -> None:
-    """set process-wide default namespace prefix used by :class:`Subjects`.
+    """set the process-wide default namespace prefix used by :class:`Subjects`.
 
     :class:`NatsClient.connect` calls this with its configured
-    ``nats_subject_namespace`` so every subject built afterwards picks
-    up the correct prefix without callers having to thread it through.
+    ``nats_subject_namespace`` so every subject built afterwards -- in ANY task
+    or async context in the process -- picks up the correct prefix without
+    callers having to thread it through.
 
     :param namespace: subject namespace prefix; must be non-empty
     :ptype namespace: str
@@ -95,30 +96,54 @@ def set_default_namespace(namespace: str) -> None:
     """
     if not namespace:
         raise ValueError("namespace must be non-empty")
-    _namespace_var.set(namespace)
+    global _default_namespace
+    _default_namespace = namespace
+
+
+def _reset_default_namespace() -> None:
+    """clear the process-wide default namespace back to unconfigured.
+
+    test-isolation helper. the module global carries process-wide, so -- unlike
+    the retired ContextVar, which reset itself as each test's task context went
+    out of scope -- it does NOT clear between tests on its own. autouse fixtures
+    call this to restore the unconfigured state so one test cannot leak a
+    namespace into the next.
+
+    :return: nothing
+    :rtype: None
+    """
+    global _default_namespace
+    _default_namespace = None
 
 
 def get_default_namespace() -> str:
-    """resolve current default namespace prefix.
+    """resolve current subject namespace prefix.
+
+    the namespace has no default. it must be configured explicitly so two
+    unconfigured deployments cannot silently collide on the same subjects
+    when sharing a NATS cluster.
 
     resolution order:
 
-    1. value previously set via :func:`set_default_namespace`
-    2. env var ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE`` (read at call
+    1. value previously set via :func:`set_default_namespace` (process-wide,
+       visible in every task/context)
+    2. env var ``THREETEARS_NATS_SUBJECT_NAMESPACE`` (read at call
        time, not import time, so changes during process lifetime are
        observed)
-    3. :data:`DEFAULT_NAMESPACE`
 
     :return: resolved namespace prefix
     :rtype: str
+    :raises NamespaceNotConfiguredError: if neither source is set
     """
-    explicit = _namespace_var.get()
-    result: str
-    if explicit is not None:
-        result = explicit
-    else:
-        result = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", DEFAULT_NAMESPACE)
-    return result
+    if _default_namespace is not None:
+        return _default_namespace
+    env = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
+    if env:
+        return env
+    raise NamespaceNotConfiguredError(
+        "no NATS subject namespace configured; call set_default_namespace(), "
+        "connect a NatsClient, or set THREETEARS_NATS_SUBJECT_NAMESPACE"
+    )
 
 
 def _sanitize(segment: str | UUID) -> str:
@@ -216,7 +241,7 @@ def _ns() -> str:
 
 
 class Subjects:
-    """factory for every canonical 3tears / aibots NATS subject family.
+    """factory for every canonical 3tears / 3tears NATS subject family.
 
     classmethods are organized by area:
 
@@ -232,7 +257,7 @@ class Subjects:
     - **datasource**: datasource query routing
     - **cache**: cross-pod cache invalidation
     - **config epochs**: per-domain generation-stamped reload signals
-      (metallm capabilities, gateway catalog, MCP RBAC)
+      (capabilities, catalog, MCP RBAC)
     - **deadletter**: catch-all for failed callbacks
     """
 
@@ -808,7 +833,7 @@ class Subjects:
             raise ValueError("event_type must be non-empty")
         # NOTE: event_type intentionally NOT sanitized — its dots are
         # the namespace separators audit consumers subscribe against
-        # (e.g. wildcard `aibots.audit.workspace.>` for workspace events).
+        # (e.g. wildcard `3tears.audit.workspace.>` for workspace events).
         return Subject(path=f"{_ns()}.audit.{event_type}", kind="point")
 
     @classmethod
@@ -838,7 +863,7 @@ class Subjects:
         every successful agent-side ``threetears.workspace.create``
         publishes one event on this subject after the workspace + file
         rows commit in the per-agent schema. the hub-side
-        :class:`aibots.hub.workspace.namespace_emitter
+        :class:`3tears.hub.workspace.namespace_emitter
         .WorkspaceNamespaceEmitter` subscribes (no queue group, every
         replica observes) and upserts the paired ``platform.namespaces``
         row of type ``workspace``.
@@ -1090,7 +1115,7 @@ class Subjects:
         the cache invalidation subject is NOT namespace-prefixed: it is
         a cross-platform constant (``threetears.cache.invalidate``) so
         that every 3tears collection in every consumer process listens
-        on the same subject regardless of the env-specific aibots
+        on the same subject regardless of the env-specific 3tears
         prefix.
 
         :return: subject ``threetears.cache.invalidate``
@@ -1108,57 +1133,56 @@ class Subjects:
     # multi-env deployments on a shared NATS cluster get partitioned by
     # the prefix.
     #
-    # the path shape is asymmetric between metallm and aibots-family
-    # builders BY DESIGN: metallm uses its own namespace
-    # (``metallm``) and is single-product per namespace, so its
-    # subjects have nothing after the namespace to disambiguate
-    # against (``metallm.capabilities.epoch``). the aibots namespace
-    # multiplexes hub / gateway / agents / tools / channels / MCP
-    # under one prefix, so aibots subjects always include a product
-    # segment as the second token (``aibots.gateway.catalog.epoch``).
-    # the asymmetry mirrors the underlying namespace shape; do not
-    # "normalize" it. consumed by :class:`threetears.epoch.client.
-    # EpochClient` and :class:`threetears.epoch.listener.EpochListener`.
+    # the path shape is asymmetric between single-product builders and
+    # 3tears-family builders BY DESIGN: a single-product namespace has
+    # only one product per namespace, so its subjects have nothing after
+    # the namespace to disambiguate against (``<ns>.capabilities.epoch``).
+    # the 3tears namespace multiplexes the broker / catalog / agents /
+    # tools / channels / MCP under one prefix, so 3tears subjects always
+    # include a product segment as the second token
+    # (``3tears.gateway.catalog.epoch``). the asymmetry mirrors the
+    # underlying namespace shape; do not "normalize" it. consumed by
+    # :class:`threetears.epoch.client.EpochClient` and
+    # :class:`threetears.epoch.listener.EpochListener`.
 
     @classmethod
-    def metallm_capabilities_epoch(cls) -> Subject:
-        """publish + subscribe subject for metallm capabilities-registry epoch.
+    def capabilities_epoch(cls) -> Subject:
+        """publish + subscribe subject for the capabilities-registry epoch.
 
-        bumped by metallm admin POST/PATCH on the ``models`` table
+        bumped by an admin POST/PATCH on the ``models`` table
         after the in-process ``register_model_capabilities_bulk(...)``
-        call. metallm sibling pods subscribe to reload their local
+        call. sibling pods subscribe to reload their local
         :class:`threetears.models.tracking.ModelCapabilities` registry
-        from the row in the next read. intended call site: metallm
-        process bound to namespace ``metallm``.
+        from the row in the next read. intended call site: a
+        process bound to a single-product namespace.
 
         constraint (single-product-per-namespace): the path has no
-        product segment after ``{ns}`` because the metallm namespace
-        is single-product. if a second product ever joins the
-        metallm namespace, this subject must be renamed to
-        ``{ns}.metallm.capabilities.epoch`` and every subscriber
-        must roll forward together — a coordinated wire-protocol
+        product segment after ``{ns}`` because the namespace is
+        single-product. if a second product ever joins the namespace,
+        this subject must be renamed to add a product segment
+        (``{ns}.<product>.capabilities.epoch``) and every subscriber
+        must roll forward together -- a coordinated wire-protocol
         break, not a hot-deploy change. the constraint is documented
         here at the call site (not just in the section header) so
         the implication is visible from the builder's own docstring.
 
-        :return: subject ``{ns}.capabilities.epoch`` (metallm-bound:
-            ``metallm.capabilities.epoch``)
+        :return: subject ``{ns}.capabilities.epoch``
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.capabilities.epoch", kind="point")
 
     @classmethod
     def gateway_catalog_epoch(cls) -> Subject:
-        """publish + subscribe subject for aibots-gateway catalog epoch.
+        """publish + subscribe subject for 3tears-gateway catalog epoch.
 
         bumped by hub admin endpoints that mutate ``gateway_models``,
         ``gateway_providers``, or ``gateway_credit_rates``. gateway
         sibling pods subscribe to re-run ``_load_catalog`` immediately
         rather than waiting for the next ``cache_ttl_seconds`` tick.
-        intended call site: aibots-bound process (hub or gateway).
+        intended call site: 3tears-bound process (hub or gateway).
 
-        :return: subject ``{ns}.gateway.catalog.epoch`` (aibots-bound:
-            ``aibots.gateway.catalog.epoch``)
+        :return: subject ``{ns}.gateway.catalog.epoch`` (3tears-bound:
+            ``3tears.gateway.catalog.epoch``)
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.gateway.catalog.epoch", kind="point")
@@ -1171,10 +1195,10 @@ class Subjects:
         access. MCP-host sibling pods subscribe to reload their RBAC
         view from the row before the next tool-call authorization
         check, so a revoked grant cannot ride a stale cache forward.
-        intended call site: aibots-bound MCP-host process.
+        intended call site: 3tears-bound MCP-host process.
 
-        :return: subject ``{ns}.mcp.rbac.epoch`` (aibots-bound:
-            ``aibots.mcp.rbac.epoch``)
+        :return: subject ``{ns}.mcp.rbac.epoch`` (3tears-bound:
+            ``3tears.mcp.rbac.epoch``)
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.mcp.rbac.epoch", kind="point")

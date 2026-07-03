@@ -20,7 +20,6 @@ in :mod:`threetears.models.tool_name_translation`.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from pydantic import PrivateAttr
@@ -114,11 +113,11 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             the consumer's ``async for`` loop but
             ``on_chat_model_stream`` callbacks never fire. See the
             OpenRouter wrapper module for the full incident write-up
-            (metallm 2026-05-13). Today's gateway path drives
+            (2026-05-13). Today's path drives
             ``astream`` not ``astream_events``, so this isn't currently
             biting -- this fix lands the same parity contract so the
             next consumer to drive the v2 event tap through the
-            OpenAI-compat wrapper (e.g. metallm switching its OpenAI
+            OpenAI-compat wrapper (e.g. a consumer switching its OpenAI
             provider to ``create_openai_chat``) doesn't repeat the
             saga.
 
@@ -138,7 +137,7 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             # contextvar's AsyncCallbackManager) survives
             # BaseChatModel.astream's ensure_config replace-by-key step.
             # See the OpenRouter wrapper for the full incident write-up
-            # (metallm 2026-05-13, conv ``019e2243-de0c``).
+            # (2026-05-13).
             from langchain_core.runnables.config import ensure_config, merge_configs
 
             merged_config = merge_configs(ensure_config(None), config)
@@ -295,9 +294,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
-        cost_per_input_token=Decimal("0.0000025"),
-        cost_per_output_token=Decimal("0.00001"),
-        cost_per_cache_read_token=Decimal("0.00000125"),
     ),
     "gpt-4o-mini": ModelCapabilities(
         model_name="gpt-4o-mini",
@@ -315,9 +311,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
-        cost_per_input_token=Decimal("0.00000015"),
-        cost_per_output_token=Decimal("0.0000006"),
-        cost_per_cache_read_token=Decimal("0.000000075"),
     ),
     "text-embedding-3-small": ModelCapabilities(
         model_name="text-embedding-3-small",
@@ -328,7 +321,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=1536,
         max_embedding_tokens=8_191,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000002"),
     ),
     "text-embedding-3-large": ModelCapabilities(
         model_name="text-embedding-3-large",
@@ -339,7 +331,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=3072,
         max_embedding_tokens=8_191,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000013"),
     ),
 }
 

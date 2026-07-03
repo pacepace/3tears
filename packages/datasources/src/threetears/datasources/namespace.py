@@ -1,8 +1,8 @@
 """datasource namespace helpers: deterministic uuid5 ids + canonical names.
 
 both helpers are runtime primitives consumed by Hub-side datasource
-authorize wiring (``aibots/hub/datasources/authorize.py``) and the
-agent-side datasource tool pod (``aibots/hub/datasources/tool_pod.py``).
+authorize wiring (``3tears/hub/datasources/authorize.py``) and the
+agent-side datasource tool pod (``3tears/hub/datasources/tool_pod.py``).
 the shapes they produce match the namespace-task-01 contract: every
 datasource row materializes a ``datasource``-type namespace whose name
 matches :func:`datasource_namespace_name` and whose UUID matches

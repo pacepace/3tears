@@ -4,7 +4,7 @@ These mirror the CHECK constraints on the L3 tables: changing the
 allowed values here requires a matching migration.
 
 Why ``Literal`` and not ``Enum``: callers (the rest of 3tears, plus
-metallm consumers) pass these values through tool input schemas + JSON
+consumers) pass these values through tool input schemas + JSON
 boundaries where strings round-trip cleanly. ``Literal`` keeps the
 runtime payload a plain ``str`` so JSON encoding doesn't need a custom
 serializer and mypy still pins valid value sets at every call site.
@@ -268,7 +268,7 @@ class HandlerCallbackResult:
     row regardless of what :attr:`status` the handler reports. The
     handler is responsible for stripping the prefix from its persisted
     message + setting whatever its UI uses to render hidden (e.g.
-    metallm's ``messages.display='hidden'`` column).
+    a ``messages.display='hidden'`` column).
     """
 
     status: FireStatus
@@ -288,10 +288,10 @@ class HandlerCallback(Protocol):
     owns "how does my product turn that into an assistant message"
     -- prompt assembly, LLM invocation, message persistence.
 
-    metallm's implementation builds the system prompt around the
+    A typical implementation builds the system prompt around the
     attached skill's body, injects the wake notice + context blocks
     into the conversation, calls the personality node, and persists
-    the assistant response. A future aibots implementation might
+    the assistant response. A future 3tears implementation might
     bypass LangGraph entirely. Same Protocol shape, different body.
 
     Implementations MUST be async. They SHOULD return a

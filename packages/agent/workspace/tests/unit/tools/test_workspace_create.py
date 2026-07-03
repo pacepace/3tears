@@ -264,7 +264,7 @@ def _build_tool(
     agent_id: UUID | None = None,
     db_pool: Any = None,
     nats_client: Any = None,
-    namespace: str = "aibots",
+    namespace: str = "3tears",
     customer_id: UUID | None = None,
 ) -> WorkspaceCreateTool:
     """assemble a tool with sensible default fakes for every dep."""

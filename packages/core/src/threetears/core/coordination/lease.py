@@ -1,7 +1,7 @@
 """KVLease — TTL-bounded distributed mutex over NATS JetStream KV.
 
 generalizes the ownership-token + expiry-in-value pattern in
-``aibots/hub/security/auth_strategies.py:LoginLockout`` into a reusable
+``3tears/hub/security/auth_strategies.py:LoginLockout`` into a reusable
 primitive for cross-pod coordination (workspace bind locks, leader
 election, fencing tokens).
 
@@ -258,7 +258,7 @@ class KVLease:
         """configure factory; defer bucket creation until first acquire.
 
         default ``bucket_name`` is
-        ``f"{FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE}_leases"`` when the env
+        ``f"{THREETEARS_NATS_SUBJECT_NAMESPACE}_leases"`` when the env
         var is set, or ``"leases"`` as unscoped fallback. default
         ``pod_id`` is ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and
         unique per factory instance.
@@ -302,13 +302,13 @@ class KVLease:
     def _default_bucket_name() -> str:
         """derive default bucket name from platform namespace env var.
 
-        reads ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE`` at call time (not
+        reads ``THREETEARS_NATS_SUBJECT_NAMESPACE`` at call time (not
         import time) so tests can monkeypatch it.
 
         :return: ``"{ns}_leases"`` when env set, else ``"leases"``
         :rtype: str
         """
-        ns = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE")
+        ns = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
         result = f"{ns}_leases" if ns else "leases"
         return result
 

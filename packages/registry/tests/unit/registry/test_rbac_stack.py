@@ -136,7 +136,7 @@ class TestBuildRegistryRbacStack:
         l1 = create_registry_l1_backend()
         stack = build_registry_rbac_stack(
             nats_client=_make_nats_client(),
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=l1,
         )
         assert isinstance(stack.namespace_collection, NamespaceCollection)
@@ -149,7 +149,7 @@ class TestBuildRegistryRbacStack:
         l1 = create_registry_l1_backend()
         stack = build_registry_rbac_stack(
             nats_client=_make_nats_client(),
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=l1,
         )
         assert isinstance(stack.group_collection, GroupCollection)
@@ -167,7 +167,7 @@ class TestBuildRegistryRbacStack:
         l1 = create_registry_l1_backend()
         stack = build_registry_rbac_stack(
             nats_client=_make_nats_client(),
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=l1,
         )
         assert isinstance(stack.acl_cache, AclCache)
@@ -182,7 +182,7 @@ class TestBuildRegistryRbacStack:
         l1 = create_registry_l1_backend()
         stack = build_registry_rbac_stack(
             nats_client=_make_nats_client(),
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=l1,
         )
         # the rbac pool is wired onto the registry as the default L3.
@@ -206,7 +206,7 @@ class TestBuildRegistryRbacStack:
         l1 = create_registry_l1_backend()
         stack = build_registry_rbac_stack(
             nats_client=_make_nats_client(),
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=l1,
         )
         pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
@@ -225,7 +225,7 @@ class TestSubscribeInvalidations:
         nc = _make_nats_client()
         stack = build_registry_rbac_stack(
             nats_client=nc,
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
         )
 
@@ -272,6 +272,7 @@ class TestRegistryServerRbacFactoryConstructor:
         rbac_authorizer = AllowAllAuthorizer()
         factory = AsyncMock(return_value=rbac_authorizer)
         server = RegistryServer(
+            namespace="testns",
             authorizer=DenyAllAuthorizer(),
             rbac_authorizer_factory=factory,
         )
@@ -289,7 +290,7 @@ class TestRegistryServerRbacFactoryConstructor:
         when no factory was registered, rather than reading
         ``_rbac_authorizer_factory`` directly.
         """
-        server = RegistryServer(authorizer=AllowAllAuthorizer())
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
         result = await server.apply_rbac_factory(AsyncMock())
         assert result is None
 
@@ -307,6 +308,7 @@ class TestRegistryServerRbacFactoryConstructor:
         factory = AsyncMock(return_value=rbac_authorizer)
 
         server = RegistryServer(
+            namespace="testns",
             authorizer=DenyAllAuthorizer(),
             rbac_authorizer_factory=factory,
         )
@@ -333,7 +335,7 @@ class TestRegistryRbacStackClose:
         nc = _make_nats_client()
         stack = build_registry_rbac_stack(
             nats_client=nc,
-            subject_namespace="aibots",
+            subject_namespace="3tears",
             l1_backend=create_registry_l1_backend(),
         )
         await stack.subscribe_invalidations()

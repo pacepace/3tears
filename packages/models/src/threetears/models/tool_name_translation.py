@@ -1,7 +1,7 @@
 """provider-agnostic tool-name translation for chat-model wire boundaries.
 
 The canonical 3tears tool name is a dotted form (``threetears.calculator``,
-``aibots.admin.agent_management``). Several upstream model APIs validate
+``3tears.admin.agent_management``). Several upstream model APIs validate
 tool names against ``^[a-zA-Z0-9_-]{1,128}$`` and reject the dot:
 
 - Anthropic Messages API (``claude-*-direct``): ``invalid_request_error``
@@ -281,7 +281,7 @@ def reverse_translate_message(
     - ``tool_calls`` -- the merged, well-formed tool calls
       consumers iterate.
     - ``invalid_tool_calls`` -- the recovery target for malformed
-      streaming; consumers (metallm, aibots-agents) attempt to
+      streaming; consumers attempt to
       re-parse them.
 
     No-op when the message has no tool-call fields or when the

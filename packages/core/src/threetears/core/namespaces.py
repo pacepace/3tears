@@ -24,8 +24,8 @@ names.
 
 this module lives in :mod:`threetears.core` so every downstream
 package (``agent-memory``, ``agent-tools``, ``agent-workspace`` on the
-3tears side; ``aibots.hub.datasources`` / ``aibots.hub.channels`` /
-``aibots.hub.agents`` / ``aibots.hub.gateway`` on the platform side)
+3tears side; ``3tears.hub.datasources`` / ``3tears.hub.channels`` /
+``3tears.hub.agents`` / ``3tears.hub.gateway`` on the platform side)
 imports the one builder. bespoke string interpolation against the
 old colon-separated shape is banned — every per-domain helper
 delegates to :func:`build_namespace_name`.
@@ -99,7 +99,7 @@ PLURAL_PREFIX_WORKSPACE = "workspaces"
 #: mapping from singular ``namespace_type`` column value to the
 #: plural prefix that leads the canonical name. the full closed set
 #: is pinned by the CHECK constraint on
-#: ``platform.namespaces.namespace_type``; in the aibots hub repo that
+#: ``platform.namespaces.namespace_type``; in the 3tears hub repo that
 #: constraint lives in the squashed init at
 #: ``v001_initial_schema.sql`` (widened to admit ``knowledge`` by
 #: ``v011_knowledge_substrate``).

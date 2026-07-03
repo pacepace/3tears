@@ -23,7 +23,7 @@ server-side eviction window. asyncpg's own default for
 ``max_inactive_connection_lifetime`` is 300 seconds, which is safely
 below every Yugabyte server-side timeout observed in practice. this
 module makes that default explicit at every call site and exposes an
-operator override via ``FOURTEENAIBOTS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS``.
+operator override via ``THREETEARS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS``.
 
 Usage at a call site
 --------------------
@@ -101,7 +101,7 @@ DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 #: env var operators use to tune ``max_inactive_connection_lifetime``
 #: without a code change. verbose on purpose -- it is an operator tuning
 #: knob, not a dev convenience.
-ENV_MAX_INACTIVE_LIFETIME: str = "FOURTEENAIBOTS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS"
+ENV_MAX_INACTIVE_LIFETIME: str = "THREETEARS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS"
 
 
 def get_pg_pool_kwargs() -> dict[str, Any]:
@@ -265,7 +265,7 @@ class PoolStartupTimeoutError(Exception):
     carries structured context (``pool_name``, ``db_identity``,
     ``startup_timeout_seconds``, ``elapsed_seconds``) so callers can
     translate to their own structured-error type (Hub maps to
-    :class:`aibots.hub.common.errors.ConfigurationError`; other consumers
+    :class:`3tears.hub.common.errors.ConfigurationError`; other consumers
     map to whatever their stack uses).
 
     keeping this exception type in 3tears -- not in Hub -- breaks the

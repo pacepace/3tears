@@ -475,18 +475,19 @@ class TestEnsureGroupRoleAssignment:
 
     @pytest.mark.asyncio
     async def test_returns_existing_id(self) -> None:
-        """existing matching row wins; no INSERT."""
+        """existing matching row wins; no INSERT; created=False."""
         existing_id = uuid7()
         pool = AsyncMock()
         pool.fetchrow.return_value = {"assignment_id": existing_id}
         coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
-        result = await coll.ensure_group_role_assignment(
+        assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
             role_id=uuid7(),
             scope_type="namespace",
             scope_id=uuid7(),
         )
-        assert result == existing_id
+        assert assignment_id == existing_id
+        assert created is False
         pool.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -496,13 +497,14 @@ class TestEnsureGroupRoleAssignment:
         pool.fetchrow.return_value = None
         pool.execute.return_value = "INSERT 0 1"
         coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
-        result = await coll.ensure_group_role_assignment(
+        assignment_id, created = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
             role_id=uuid7(),
             scope_type="namespace",
             scope_id=uuid7(),
         )
-        assert isinstance(result, UUID)
+        assert isinstance(assignment_id, UUID)
+        assert created is True
         pool.execute.assert_awaited_once()
 
     @pytest.mark.asyncio

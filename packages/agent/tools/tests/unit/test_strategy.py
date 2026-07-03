@@ -83,7 +83,7 @@ class TestBootstrapContextIsFrozen:
         context = BootstrapContext(
             nats_client=MagicMock(),
             agent_id=uuid4(),
-            namespace="aibots",
+            namespace="3tears",
         )
         with pytest.raises(FrozenInstanceError):
             context.namespace = "changed"  # type: ignore[misc]
@@ -93,7 +93,7 @@ class TestBootstrapContextIsFrozen:
         context = BootstrapContext(
             nats_client=MagicMock(),
             agent_id=uuid4(),
-            namespace="aibots",
+            namespace="3tears",
         )
         assert context.workspace_runtime is None
         assert context.registry_client is None
@@ -106,7 +106,7 @@ class TestBootstrapContextIsFrozen:
         context = BootstrapContext(
             nats_client=MagicMock(),
             agent_id=uuid4(),
-            namespace="aibots",
+            namespace="3tears",
             bootstrap_token="token-abc",
             workspace_runtime=workspace_runtime,
             registry_client=registry_client,
@@ -151,7 +151,7 @@ class TestFakeStrategyRecordsInvocations:
         context = BootstrapContext(
             nats_client=MagicMock(),
             agent_id=uuid4(),
-            namespace="aibots",
+            namespace="3tears",
         )
         await fake.provision(context)
         assert len(fake.provisioned) == 1

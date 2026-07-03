@@ -22,7 +22,7 @@ attachment is set via ``wake_schedule_create(..., skill_id=...)`` and
 ``wake_schedule_update(..., skill_id=...)``.
 
 Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
-+ ``metallm/docs/long_running/PLACEMENT.md`` §1.1 / §1.3 / §1.5 / §1.6 /
++ ``docs/long_running/PLACEMENT.md`` §1.1 / §1.3 / §1.5 / §1.6 /
 §1.9 / §8.5.1.
 """
 
@@ -433,7 +433,7 @@ def load_wake_schedule_create_tool(
     """Build a ``wake_schedule_create`` tool bound to the actor triple.
 
     Per Requirement TOOL-09 + PLACEMENT §1.18 the consumer decides when
-    to include this tool in the loaded set (e.g. metallm suppresses it
+    to include this tool in the loaded set (e.g. a consumer suppresses it
     on wake-driven turns to prevent recursive cron creation).
 
     :param conversation_id: caller's conversation UUID (partition key)
@@ -1240,7 +1240,7 @@ def load_wake_yield_tool(
 
     Per PLACEMENT §8.5.1 the tool MUST NOT load on user-driven turns;
     the factory enforces this by checking ``is_wake_turn()`` at
-    construction time. The consumer (metallm personality node) wires
+    construction time. The consumer (its personality node) wires
     the probe to read its ``_active_wake_fire_id`` state. When the
     probe returns ``False``, the factory raises so the loaded tool set
     omits the tool entirely -- the LLM never sees an unusable tool.

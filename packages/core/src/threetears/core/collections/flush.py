@@ -53,7 +53,7 @@ _MAX_FLUSH_RETRIES = 10
 # was too tight: a single dropped parent message permanently
 # orphaned every descendant in the conversation, producing the
 # cascading "messages dropped, half conversation missing"
-# fingerprint in production (metallm conv ``019e2372-fcdd``,
+# fingerprint in production (conv ``019e2372-fcdd``,
 # 2026-05-13 incident). 100 retries at the same interval = ~50min,
 # enough headroom for any realistic transient. Beyond that the
 # parent genuinely failed and the child is unreachable -- drop

@@ -492,7 +492,7 @@ async def test_workspace_create_publishes_audit(
     result = await tool.execute(name="new_ws")
     assert result.success is True, result.error
     # workspace_create publishes TWO events on success:
-    # 1. WorkspaceCreateEvent on aibots.workspaces.create (consumed by
+    # 1. WorkspaceCreateEvent on 3tears.workspaces.create (consumed by
     #    the hub-side ``WorkspaceNamespaceEmitter`` to upsert the
     #    paired ``platform.namespaces`` row of type ``workspace``)
     # 2. AuditEvent on ns.audit.workspace.create (this test's subject)
@@ -509,7 +509,7 @@ async def test_workspace_create_publishes_audit(
 
     # workspace.create event published exactly once with the matching
     # owner_agent_id, namespace_name shape, and schema_name
-    workspace_publishes = [(subj, payload) for subj, payload in nats.published if subj == "aibots.workspaces.create"]
+    workspace_publishes = [(subj, payload) for subj, payload in nats.published if subj == "3tears.workspaces.create"]
     assert len(workspace_publishes) == 1, nats.published
     workspace_event = json.loads(workspace_publishes[0][1].decode("utf-8"))
     assert workspace_event["owner_agent_id"] == str(agent_id)

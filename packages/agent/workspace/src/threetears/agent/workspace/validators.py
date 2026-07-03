@@ -28,7 +28,7 @@ design:
   unchanged and wraps anything else (``pydantic.ValidationError``,
   ``ValueError``, ``yaml.YAMLError``, etc.) into a fresh
   ``WorkspaceValidationError`` carrying ``pattern``, ``validator_path``,
-  and ``reason=str(e)``. this lets aibots-side validators raise stock
+  and ``reason=str(e)``. this lets 3tears-side validators raise stock
   pydantic exceptions without importing anything from this package.
 - **fail-fast**: multiple matching validators run in ``agent.yaml`` list
   order; the first failure aborts. subsequent validators do not run.
@@ -73,7 +73,7 @@ class WorkspaceValidationError(ValueError):
         triggered this failure (e.g. ``"*/audience_settings.yaml"``)
     :ivar validator_path: dotted import path of the validator callable
         that rejected the content (e.g.
-        ``"aibots.agents.audience_builder.schemas.audience_settings.validate_audience_settings"``)
+        ``"3tears.agents.audience_builder.schemas.audience_settings.validate_audience_settings"``)
     :ivar reason: human-readable rejection reason suitable for surfacing
         to the LLM verbatim
     """

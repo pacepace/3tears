@@ -53,7 +53,7 @@ def _bind_namespace(request: pytest.FixtureRequest) -> None:
     by calling :func:`set_default_namespace` directly to control the
     subject that :class:`Subjects.audit_event` produces.
     """
-    set_default_namespace("aibots")
+    set_default_namespace("3tears")
 
 
 def _build_event(event_type: str = "workspace.fs_write") -> AuditEvent:

@@ -283,7 +283,7 @@ class TestAlignContextItemsShapeMigration:
     """tests for v003: align ``context_items`` shape with prod parity.
 
     v003 drops the v001 legacy indexes, creates the four v0.8.0
-    indexes (matching prod metallm), promotes ``long_desc`` to NOT
+    indexes (matching prod), promotes ``long_desc`` to NOT
     NULL DEFAULT '', and adds the FK on ``conversation_id`` -
     everything required for the v0.8.0 parity gate to stay clean.
     """

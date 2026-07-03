@@ -25,7 +25,7 @@ from threetears.agent.tools.report import ReportTool, _strip_emoji
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _CONVERSATION = UUID("019f1900-0000-7000-8000-0000000000cc")
 
-_PRESIGN_URL = "https://minio.example/aibots-objects/key?sig=abc"
+_PRESIGN_URL = "https://minio.example/3tears-objects/key?sig=abc"
 
 
 # parity-with: threetears.media.contracts.ObjectStore

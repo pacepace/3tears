@@ -59,7 +59,7 @@ class TestOverrides:
 
     def test_custom_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/hub/common/config.py": ("platform bootstrap; stdlib logging used pre-observe init"),
+            "src/3tears/hub/common/config.py": ("platform bootstrap; stdlib logging used pre-observe init"),
         }
         config = NoStdlibLoggingConfig(
             repo_root=tmp_path,

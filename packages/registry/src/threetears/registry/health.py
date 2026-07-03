@@ -73,7 +73,7 @@ class HeartbeatSubscriber:
         self,
         catalog: ToolCatalog,
         collection: HeartbeatCollection,
-        namespace: str = "aibots",
+        namespace: str = "3tears",
         check_interval: float | None = None,
         timeout: float | None = None,
     ) -> None:

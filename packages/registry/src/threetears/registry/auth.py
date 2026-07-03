@@ -121,7 +121,7 @@ class AllowAllAuthorizer:
 
     intended for development and testing environments where tool
     access control is not needed. enabled via the
-    FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true environment variable.
+    THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true environment variable.
     """
 
     async def is_authorized(

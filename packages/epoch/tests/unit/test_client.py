@@ -18,7 +18,7 @@ from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject
 
 
-def _subject(path: str = "metallm.capabilities.epoch") -> Subject:
+def _subject(path: str = "app.capabilities.epoch") -> Subject:
     """build a point Subject for tests."""
     return Subject(path=path, kind="point")
 
@@ -56,7 +56,7 @@ class TestEpochClientCurrent:
         sql, *args = pool.fetchval.await_args.args
         assert "SELECT epoch FROM config_epochs" in sql
         assert "WHERE subject_path" in sql
-        assert args == ["metallm.capabilities.epoch"]
+        assert args == ["app.capabilities.epoch"]
 
     @pytest.mark.asyncio
     async def test_current_returns_int_for_existing_row(self) -> None:
@@ -90,7 +90,7 @@ class TestEpochClientBump:
         pool = _pool_with_bump(returning_epoch=7)
         nats = _nats_mock()
         client = EpochClient(pool, nats)
-        subject = _subject("aibots.gateway.catalog.epoch")
+        subject = _subject("3tears.gateway.catalog.epoch")
 
         await client.bump(subject, payload={"action": "create"})
 
@@ -99,7 +99,7 @@ class TestEpochClientBump:
         assert call.kwargs["subject"] is subject
         message = call.kwargs["message"]
         assert isinstance(message, EpochBumpMessage)
-        assert message.subject_path == "aibots.gateway.catalog.epoch"
+        assert message.subject_path == "3tears.gateway.catalog.epoch"
         assert message.epoch == 7
         assert message.payload == {"action": "create"}
 
@@ -108,7 +108,7 @@ class TestEpochClientBump:
         """upsert SQL is parameterized with the subject path as the PK column."""
         pool = _pool_with_bump(returning_epoch=1)
         client = EpochClient(pool, _nats_mock())
-        subject = _subject("aibots.mcp.rbac.epoch")
+        subject = _subject("3tears.mcp.rbac.epoch")
 
         await client.bump(subject, payload=None)
 
@@ -118,7 +118,7 @@ class TestEpochClientBump:
         assert "ON CONFLICT (subject_path)" in sql
         assert "epoch = config_epochs.epoch + 1" in sql
         assert "RETURNING epoch" in sql
-        assert args[0] == "aibots.mcp.rbac.epoch"
+        assert args[0] == "3tears.mcp.rbac.epoch"
         assert args[1] is None
 
     @pytest.mark.asyncio

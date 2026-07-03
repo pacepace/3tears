@@ -1,7 +1,7 @@
 """Pydantic request/response models for the wake REST API.
 
 Per PLACEMENT §3.2 (2026-05-19 locked) the API contract lives platform-
-side; each consumer (metallm in v1) imports these models into its
+side; each consumer imports these models into its
 FastAPI router. One source of truth for the shape across products.
 
 The models are import-safe -- they do NOT pull in ``asyncpg`` or

@@ -6,7 +6,7 @@ level (not Hub-specific): future 3tears products consume the same
 model so the developer-facing config shape stays consistent.
 
 Hub admin DTOs (``DataSourceCreateRequest``, ``DataSourceResponse``,
-etc.) explicitly STAY in Hub (``aibots/hub/datasources/hub_api.py``)
+etc.) explicitly STAY in Hub (``3tears/hub/datasources/hub_api.py``)
 because they're API contracts, not framework primitives. only the
 agent-yaml shape lives here.
 
@@ -552,7 +552,7 @@ class DatasourceConfig(BaseModel):
 
     one model serves two surfaces post-``datasource-task-05``:
 
-    1. **definition shape** (``aibots datasource apply -f <file>``
+    1. **definition shape** (``3tears datasource apply -f <file>``
        and the legacy / deprecated inline-in-``agent.yaml``
        pattern). carries the full connection identity:
 
@@ -572,7 +572,7 @@ class DatasourceConfig(BaseModel):
     2. **reference shape** (canonical in ``agent.yaml``
        post-``datasource-task-05``). identity-only; the connection
        config lives in a sibling ``datasources/<name>.yaml`` applied
-       via ``aibots datasource apply``:
+       via ``3tears datasource apply``:
 
        .. code-block:: yaml
 
@@ -584,7 +584,7 @@ class DatasourceConfig(BaseModel):
     schemas the warehouse account can see").
 
     the post-shard-01 deprecation predicate (
-    :func:`aibots_agents.devx.datasource_provision._has_inline_connection_config`
+    :func:`3tears_agents.devx.datasource_provision._has_inline_connection_config`
     ) keys off ``connection_config is not None`` -- a populated
     inline block in ``agent.yaml`` triggers a one-shot
     ``DeprecationWarning`` pointing at the new CLI; the reference

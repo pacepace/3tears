@@ -1,11 +1,11 @@
 """TTL-based distributed NATS lock primitive.
 
-Lifted from metallm's ``api/src/services/scheduler.py:scheduler_lock``
+Extracted from a production ``scheduler_lock`` implementation
 (which has run the production backup job for months) so any 3tears app
 needing single-active-holder semantics across pods can pick it up
 without re-implementing the heartbeat lifecycle. The agent-wake tick
 engine (``threetears.agent.wake.tick``) is the second canonical
-consumer; metallm's existing ``scheduler_lock`` becomes a one-line
+consumer; the existing ``scheduler_lock`` becomes a one-line
 re-export of this primitive.
 
 design notes
@@ -37,7 +37,7 @@ design notes
   so a heartbeat death does not mask the body's own exception.
 - **Graceful single-pod fallback.** ``client=None`` yields
   immediately without acquiring anything -- matches the existing
-  metallm behaviour for dev environments that do not run NATS.
+  behaviour for dev environments that do not run NATS.
 - **Bucket name namespacing.** The default bucket ``"scheduler-locks"``
   rides through :meth:`NatsClient.kv_bucket` and picks up the
   client's ``nats_subject_namespace`` prefix automatically (the
@@ -111,13 +111,13 @@ async def nats_distributed_lock(
     :param client: connected NATS client, or ``None`` to no-op
     :ptype client: NatsClient | None
     :param key: lock key (per-resource identifier, e.g. ``"backup"``
-        for the metallm backup job or ``"agent_wake_tick"`` for the
+        for a backup job or ``"agent_wake_tick"`` for the
         wake tick engine)
     :ptype key: str
     :param bucket_name: KV bucket suffix; the connected client's
         namespace is prefixed automatically. Defaults to
-        ``"scheduler-locks"`` so existing metallm prod state continues
-        to bind to the same bucket post-lift.
+        ``"scheduler-locks"`` so existing prod state continues
+        to bind to the same bucket post-extraction.
     :ptype bucket_name: str
     :param ttl: KV entry TTL; bounds the orphan-lock window after a
         holder dies between heartbeats. **Bucket-level: the first

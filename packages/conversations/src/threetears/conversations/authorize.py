@@ -193,7 +193,7 @@ class ConversationAuthorizerDependencies:
     :class:`NamespaceCollection`, :class:`GroupCollection`,
     :class:`GroupMemberCollection`, :class:`RoleCollection`, and
     :class:`RoleAssignmentCollection` live in
-    :mod:`aibots.hub.*` — a higher layer than ``conversations``.
+    :mod:`3tears.hub.*` — a higher layer than ``conversations``.
     wiring code constructs the bundle with concrete Collection
     instances; this module only uses their documented method surface.
 

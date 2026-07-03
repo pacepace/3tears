@@ -32,7 +32,7 @@ THE REAL-VS-FAKE TRADE-OFF IS CALLED OUT EXPLICITLY in every integration
 test file's module docstring so readers know which layer is being
 exercised for real and which is being simulated.
 
-deferred to the aibots-repo integration suite
+deferred to the 3tears-repo integration suite
 --------------------------------------------
 
 - REAL NATS JetStream (testcontainers): the lease contract is already
@@ -46,7 +46,7 @@ deferred to the aibots-repo integration suite
   ``platform_audit.audit_events`` table (audit-task-01 Phase 3 retired
   the per-domain ``WorkspaceAuditConsumer``; the unified consumer owns
   the whole ``{ns}.audit.>`` subtree). that consumer lives in the
-  aibots repo; here we assert the agent side publishes the canonical
+  3tears repo; here we assert the agent side publishes the canonical
   envelope and an in-process stub consumer lands it into a stub
   :class:`AuditEventCollection`.
 """

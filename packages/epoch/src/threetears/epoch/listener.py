@@ -240,7 +240,7 @@ class EpochListener:
         consumer-side helper for the per-message echo discipline.
         when a response carries an ``epochs`` map (e.g. gateway
         completion responses echo their view of
-        ``catalog.aibot-gateway`` and ``mcp.rbac``), forward each
+        ``catalog.tool-gateway`` and ``mcp.rbac``), forward each
         ``(subject, echoed_epoch)`` pair through this method. if
         echoed > last-seen, schedule a fetch (here: pull current
         from L3 to confirm, then advance last-seen + invoke

@@ -2,7 +2,7 @@
 
 These mixins are optional conveniences — consuming apps can use plain
 SQLAlchemy models without them. They encode the conventions used in
-MetaLLM and recommended for new services.
+upstream services and recommended for new services.
 
 Usage::
 
@@ -70,7 +70,7 @@ class TimestampMixin:
     updated on every UPDATE via ``onupdate``.
 
     Both use timezone-aware ``DateTime(timezone=True)`` matching the
-    MetaLLM convention of ``TIMESTAMPTZ``.
+    convention of ``TIMESTAMPTZ``.
     """
 
     date_created: Mapped[object] = mapped_column(

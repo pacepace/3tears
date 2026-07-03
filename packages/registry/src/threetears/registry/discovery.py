@@ -123,7 +123,7 @@ class DiscoveryHandler:
     def __init__(
         self,
         catalog: ToolCatalog,
-        namespace: str = "aibots",
+        namespace: str = "3tears",
     ) -> None:
         """initialize discovery handler.
 

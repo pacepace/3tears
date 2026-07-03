@@ -26,6 +26,7 @@ from threetears.nats.forward import (
 )
 from threetears.nats.errors import (
     KvError,
+    NamespaceNotConfiguredError,
     NatsClientError,
     OpLogError,
     OpLogSequenceConflict,
@@ -40,6 +41,16 @@ from threetears.nats.auth_callout import (
     decode_auth_request,
     mint_auth_response,
 )
+from threetears.nats.auth_callout_responder import (
+    AUTH_CALLOUT_SUBJECT,
+    DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
+    DEFAULT_NATS_USER_JWT_TTL_SECONDS,
+    AuthAccountKeyError,
+    AuthCalloutResponder,
+    GrantPolicy,
+    PrincipalResolver,
+    ResolvedPrincipal,
+)
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     Principal,
@@ -48,7 +59,6 @@ from threetears.nats.subject_permissions import (
     inbox_prefix_for,
 )
 from threetears.nats.subjects import (
-    DEFAULT_NAMESPACE,
     Subject,
     SubjectKind,
     Subjects,
@@ -75,7 +85,6 @@ __all__ = [
     "NatsClient",
     "Subscription",
     # subjects
-    "DEFAULT_NAMESPACE",
     "Subject",
     "SubjectKind",
     "Subjects",
@@ -95,6 +104,15 @@ __all__ = [
     "AuthCalloutRequest",
     "decode_auth_request",
     "mint_auth_response",
+    # NATS auth-callout responder (generalized: PrincipalResolver + GrantPolicy seams)
+    "AUTH_CALLOUT_SUBJECT",
+    "DEFAULT_AUTH_CALLOUT_QUEUE_GROUP",
+    "DEFAULT_NATS_USER_JWT_TTL_SECONDS",
+    "AuthAccountKeyError",
+    "AuthCalloutResponder",
+    "GrantPolicy",
+    "PrincipalResolver",
+    "ResolvedPrincipal",
     # KV
     "NatsKvBucket",
     # op-log (durable write-path WAL)
@@ -119,6 +137,7 @@ __all__ = [
     "StreamTransport",
     # errors
     "KvError",
+    "NamespaceNotConfiguredError",
     "NatsClientError",
     "OpLogError",
     "OpLogSequenceConflict",

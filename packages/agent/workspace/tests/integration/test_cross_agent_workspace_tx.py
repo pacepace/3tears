@@ -6,7 +6,7 @@ real request-reply) and wires:
 
 - a real :class:`NatsProxyL3Backend` on the agent side
 - a minimal in-process ``l3.tx.*`` handler on the broker side that
-  mirrors what :class:`aibots.hub.broker.proxy.QueryProxy` does for
+  mirrors what :class:`3tears.hub.broker.proxy.QueryProxy` does for
   tx.begin / tx.execute / tx.fetchrow / tx.fetch / tx.commit:
   resolves the request namespace, sets search_path to the namespace's
   schema, pins a real asyncpg connection for the tx session, runs

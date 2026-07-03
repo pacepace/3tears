@@ -377,7 +377,7 @@ class _SqlGrantLoader:
     queries ``platform.role_assignments``, ``platform.roles``, and
     ``platform.groups`` and wraps rows as shared dataclasses the
     evaluator consumes. mirrors the production
-    :class:`aibots.hub.broker.acl.HubGrantLoader` without the TTL
+    :class:`3tears.hub.broker.acl.HubGrantLoader` without the TTL
     cache.
 
     :param pool: asyncpg pool bound to the test database

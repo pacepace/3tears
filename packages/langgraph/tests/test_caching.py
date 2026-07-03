@@ -248,7 +248,7 @@ class TestDetectCapabilities:
         assert caps.cache_ttl_seconds > 0
 
     def test_openrouter_anthropic_subclass_supports_cache_control(self) -> None:
-        """the metallm-side ``_NameTranslatingChatOpenRouter`` subclass is recognized.
+        """the consumer-side ``_NameTranslatingChatOpenRouter`` subclass is recognized.
 
         production traffic flows through the tool-name-translating
         subclass returned by

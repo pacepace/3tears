@@ -166,7 +166,7 @@ def get_proxy_assertion_signing_key_ref() -> str:
     """read the secret reference to the proxy's assertion-signing key.
 
     env var: ``THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF`` (a ``scheme://locator``
-    secret reference); defaults to ``env://FOURTEENAIBOTS_PROXY_ASSERTION_SIGNING_KEY`` -- the
+    secret reference); defaults to ``env://THREETEARS_PROXY_ASSERTION_SIGNING_KEY`` -- the
     SAME key the Hub publishes in its JWKS. When the reference does not resolve, the proxy mints
     no assertion (the binding is inert until the key is provisioned).
 
@@ -175,7 +175,7 @@ def get_proxy_assertion_signing_key_ref() -> str:
     """
     return os.environ.get(
         "THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF",
-        "env://FOURTEENAIBOTS_PROXY_ASSERTION_SIGNING_KEY",
+        "env://THREETEARS_PROXY_ASSERTION_SIGNING_KEY",
     )
 
 

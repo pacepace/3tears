@@ -231,7 +231,7 @@ class TestNameTranslatingChatOpenRouter:
 
     def test_reverse_translate_message_rewrites_invalid_tool_calls(self) -> None:
         """Malformed streamed tool calls land in ``invalid_tool_calls``
-        and metallm / aibots-agents both inspect them when ``tool_calls``
+        and the consumer / 3tears-agents both inspect them when ``tool_calls``
         is empty. Translate those names too so the recovery code sees
         canonical form.
         """
@@ -256,7 +256,7 @@ class TestNameTranslatingChatOpenRouter:
         """``ainvoke`` un-translates tool-call names even when it aggregates
         internally from the protected ``_astream``.
 
-        Regression for the metallm converged-loop tool-dispatch failure
+        Regression for the converged-loop tool-dispatch failure
         (2026-06-22): the 3tears ``agent_node`` calls ``model.ainvoke`` while
         an outer ``astream_events`` tap is active, so a v1 streaming handler
         is attached and ``BaseChatModel.ainvoke`` routes through
@@ -353,12 +353,12 @@ class TestNameTranslatingChatOpenRouter:
         """``astream`` drops ``invalid_tool_calls`` entries whose names
         fail the canonical regex.
 
-        Regression test for metallm prod incident on 2026-05-19 (conv
+        Regression test for prod incident on 2026-05-19 (conv
         ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``): the model emitted a
         tool call whose ``function.name`` carried an embedded
         XML-attribute fragment (``memory_recall" name="memory_recall``).
         That value landed in ``invalid_tool_calls``, passed through
-        the wrapper unfiltered, and reached metallm's dispatch layer
+        the wrapper unfiltered, and reached the consumer's dispatch layer
         where it was persisted as an unrecoverable invocation. The
         wrapper now drops those entries before yielding the chunk.
         """
@@ -425,7 +425,7 @@ class TestNameTranslatingChatOpenRouter:
     async def test_astream_keeps_nameless_streaming_continuation(self) -> None:
         """``astream`` keeps ``name=None`` invalid_tool_calls — they are not junk.
 
-        Regression for metallm conv ``019ecdfd-0b17-7b40-b27b-6c4508f4ec3b``
+        Regression for prod conv ``019ecdfd-0b17-7b40-b27b-6c4508f4ec3b``
         (2026-06-16): every DeepSeek tool turn logged dozens of
         ``dropped invalid_tool_calls entry with junk name: None`` WARNINGs.
         Those entries are normal streaming continuation fragments (only the
@@ -610,7 +610,7 @@ class TestNameTranslatingChatOpenRouter:
         ``astream_events(version="v2")`` event tap -- 190 chunks would
         reach the consumer's ``async for`` loop but zero
         ``on_chat_model_stream`` callbacks would fire -- observed in
-        metallm conv ``019e1f3d`` on 2026-05-13. Fixed by moving the
+        prod conv ``019e1f3d`` on 2026-05-13. Fixed by moving the
         translation off ``_astream`` and onto ``astream`` (the public
         Runnable method), so ``BaseChatModel.astream``'s callback wiring
         runs unchanged against the parent's untouched ``_astream``
@@ -689,7 +689,7 @@ class TestNameTranslatingChatOpenRouter:
         ``on_chat_model_stream`` events for every chunk the wrapper
         passes through.
 
-        Regression test for metallm conv ``019e1f3d``: the previous
+        Regression test for prod conv ``019e1f3d``: the previous
         ``_astream`` override silently dropped callback events even
         when the chunk iteration itself worked, leaving event-driven
         UIs (WS streaming) with the saved DB content but a blank live
@@ -743,7 +743,7 @@ class TestNameTranslatingChatOpenRouter:
             f" chunk plus the framework's final empty chunk); got"
             f" {stream_event_count}. The wrapper is breaking the"
             f" callback chain that drives astream_events(v2) — exactly"
-            f" the metallm 2026-05-13 fingerprint (chunks delivered to"
+            f" the 2026-05-13 production fingerprint (chunks delivered to"
             f" consumer, zero stream events emitted)."
         )
         assert collected_text == "hello world!", (
@@ -755,7 +755,7 @@ class TestNameTranslatingChatOpenRouter:
     async def test_astream_events_survives_with_config_callbacks(self) -> None:
         """``with_config(callbacks=[...])`` must not strip the event_streamer.
 
-        Production failure mode from 2026-05-13 (metallm conv
+        Production failure mode from 2026-05-13 (prod conv
         ``019e2243-de0c``): the previous ``astream`` override took its
         ``config`` argument and forwarded it verbatim to
         ``super().astream(...)``. When the wrapper instance was wrapped
@@ -772,7 +772,7 @@ class TestNameTranslatingChatOpenRouter:
         duration of the model run, no ``on_chat_model_*`` events fired,
         and the live UI stream stayed blank while the saved DB message
         was complete -- the exact ``saved_content_length > 0`` /
-        ``tokens_dispatched_count == 0`` fingerprint metallm hit.
+        ``tokens_dispatched_count == 0`` fingerprint production hit.
 
         The previous regression test (above) only exercises the bare
         wrapper instance, so it passed CI while production was broken.
@@ -846,7 +846,7 @@ class TestNameTranslatingChatOpenRouter:
             " event_streamer manager — `on_chat_model_stream` events"
             f" never reached astream_events. Got {stream_event_count}"
             " events (need >=3 from three fake chunks plus framework's"
-            " trailing empty chunk). This is the metallm 2026-05-13"
+            " trailing empty chunk). This is the 2026-05-13"
             " production fingerprint — fix the wrapper's `astream`"
             " override (do not forward `config` verbatim; pre-merge it"
             " with the contextvar via merge_configs)."

@@ -2,7 +2,7 @@
 
 Marked ``integration`` so the default unit run excludes them. Defaults
 target the dev MinIO from the compose stack (localhost:9000, minioadmin,
-bucket ``aibots-objects``); override via ``OBJECT_STORE_*`` env vars.
+bucket ``3tears-objects``); override via ``OBJECT_STORE_*`` env vars.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 _ENDPOINT = os.environ.get("OBJECT_STORE_ENDPOINT", "http://localhost:9000")
 _ACCESS = os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin")
 _SECRET = os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin")
-_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "aibots-objects")
+_BUCKET = os.environ.get("OBJECT_STORE_BUCKET", "3tears-objects")
 
 
 def _store(part_size_bytes: int = 8 * 1024 * 1024) -> S3ObjectStore:

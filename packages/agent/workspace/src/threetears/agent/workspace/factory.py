@@ -122,7 +122,7 @@ def build_workspace_tools(
     :ptype acl_cache: AclCache
     :param namespace_collection: three-tier
         :class:`NamespaceCollection` (typed ``Any`` at this boundary
-        because the concrete class lives in :mod:`aibots.hub.broker.namespaces`,
+        because the concrete class lives in :mod:`3tears.hub.broker.namespaces`,
         which sits outside the agent-workspace package's dep graph).
         :class:`WorkspaceCreateTool` emits the paired
         ``platform.namespaces`` row through

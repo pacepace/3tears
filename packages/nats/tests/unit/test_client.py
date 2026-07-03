@@ -18,7 +18,6 @@ import pytest
 from pydantic import BaseModel
 
 from threetears.nats import (
-    DEFAULT_NAMESPACE,
     IncomingMessage,
     NatsClient,
     PublishError,
@@ -61,7 +60,7 @@ class _FakeSubscription:
 class _FakeMsg:
     """tiny stand-in for nats.aio.msg.Msg with .data, .reply, and .subject."""
 
-    def __init__(self, *, data: bytes, reply: str = "", subject: str = "aibots.tools.call") -> None:
+    def __init__(self, *, data: bytes, reply: str = "", subject: str = "3tears.tools.call") -> None:
         self.data = data
         self.reply = reply
         self.subject = subject
@@ -128,13 +127,13 @@ class _Reply(BaseModel):
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
     """ensure each test starts from a known namespace."""
-    set_default_namespace(DEFAULT_NAMESPACE)
+    set_default_namespace("3tears")
 
 
 def _make_client() -> tuple[NatsClient, _FakeNatsPyClient]:
     """construct a NatsClient backed by a fake nats-py client."""
     fake = _FakeNatsPyClient()
-    client = NatsClient(raw=fake, namespace="aibots", client_name="test")  # type: ignore[arg-type]
+    client = NatsClient(raw=fake, namespace="3tears", client_name="test")  # type: ignore[arg-type]
     return client, fake
 
 
@@ -147,7 +146,7 @@ async def test_publish_serializes_pydantic() -> None:
     await client.publish(subject=subject, message=msg)
     assert len(fake.published) == 1
     sub_path, payload, reply_to = fake.published[0]
-    assert sub_path == "aibots.tools.call"
+    assert sub_path == "3tears.tools.call"
     assert json.loads(payload) == {"greeting": "hi", "count": 3}
     assert reply_to is None
 
@@ -159,9 +158,9 @@ async def test_publish_with_reply_to() -> None:
     await client.publish(
         subject=Subjects.tools_call(),
         message=_Hello(greeting="x", count=1),
-        reply_to=Subject.raw("aibots.reply.inbox"),
+        reply_to=Subject.raw("3tears.reply.inbox"),
     )
-    assert fake.published[0][2] == "aibots.reply.inbox"
+    assert fake.published[0][2] == "3tears.reply.inbox"
 
 
 @pytest.mark.asyncio
@@ -189,7 +188,7 @@ async def test_publish_wraps_underlying_error() -> None:
             raise RuntimeError("transport down")
 
     fake = _Boom()
-    client = NatsClient(raw=fake, namespace="aibots", client_name="test")  # type: ignore[arg-type]
+    client = NatsClient(raw=fake, namespace="3tears", client_name="test")  # type: ignore[arg-type]
     with pytest.raises(PublishError):
         await client.publish_raw(subject=Subjects.l3_query(), payload=b"x")
 
@@ -248,11 +247,11 @@ async def test_subscribe_typed_validation_failure_deadletters() -> None:
     await fake_sub.queue.put(_FakeMsg(data=bad))
     await asyncio.sleep(0.05)
     # validate that the bad message landed on deadletter subject
-    dl_publishes = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    dl_publishes = [p for p in fake.published if p[0].startswith("3tears.deadletter.")]
     assert len(dl_publishes) == 1
-    assert dl_publishes[0][0] == "aibots.deadletter.aibots.tools.call"
+    assert dl_publishes[0][0] == "3tears.deadletter.3tears.tools.call"
     envelope = json.loads(dl_publishes[0][1])
-    assert envelope["original_subject"] == "aibots.tools.call"
+    assert envelope["original_subject"] == "3tears.tools.call"
     assert envelope["error_type"] == "ValidationError"
     await client.unsubscribe(sub)
 
@@ -274,7 +273,7 @@ async def test_subscribe_callback_exception_deadletters() -> None:
     payload = _Hello(greeting="x", count=1).model_dump_json().encode("utf-8")
     await fake_sub.queue.put(_FakeMsg(data=payload))
     await asyncio.sleep(0.05)
-    dl = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    dl = [p for p in fake.published if p[0].startswith("3tears.deadletter.")]
     assert len(dl) == 1
     envelope = json.loads(dl[0][1])
     assert envelope["error_type"] == "RuntimeError"
@@ -300,7 +299,7 @@ async def test_subscribe_callback_exception_no_deadletter_when_disabled() -> Non
     payload = _Hello(greeting="x", count=1).model_dump_json().encode("utf-8")
     await fake_sub.queue.put(_FakeMsg(data=payload))
     await asyncio.sleep(0.05)
-    dl = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    dl = [p for p in fake.published if p[0].startswith("3tears.deadletter.")]
     assert len(dl) == 0
     await client.unsubscribe(sub)
 
@@ -375,7 +374,7 @@ async def test_request_timeout_maps_to_request_error() -> None:
             raise NatsTimeout()
 
     fake = _TimeoutClient()
-    client = NatsClient(raw=fake, namespace="aibots", client_name="t")  # type: ignore[arg-type]
+    client = NatsClient(raw=fake, namespace="3tears", client_name="t")  # type: ignore[arg-type]
     with pytest.raises(RequestError) as exc_info:
         await client.request_raw(
             subject=Subjects.tools_call(),
@@ -428,11 +427,11 @@ async def test_subscribe_callback_receives_incoming_message_envelope() -> None:
 
     sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
     fake_sub = fake.subscribed[0][2]
-    await fake_sub.queue.put(_FakeMsg(data=b"payload-bytes", reply="aibots._INBOX.42"))
+    await fake_sub.queue.put(_FakeMsg(data=b"payload-bytes", reply="3tears._INBOX.42"))
     await asyncio.sleep(0.05)
     assert len(received) == 1
     assert received[0].data == b"payload-bytes"
-    assert received[0].reply_subject == "aibots._INBOX.42"
+    assert received[0].reply_subject == "3tears._INBOX.42"
     await client.unsubscribe(sub)
 
 
@@ -451,7 +450,7 @@ async def test_subscribe_callback_reply_subject_none_for_pubsub() -> None:
     await fake_sub.queue.put(_FakeMsg(data=b"pubsub"))
     await asyncio.sleep(0.05)
     assert received == [
-        IncomingMessage(data=b"pubsub", reply_subject=None, subject="aibots.tools.call"),
+        IncomingMessage(data=b"pubsub", reply_subject=None, subject="3tears.tools.call"),
     ]
     await client.unsubscribe(sub)
 
@@ -462,7 +461,7 @@ async def test_connect_validates_url() -> None:
     from threetears.nats import NatsClientError
 
     with pytest.raises(NatsClientError):
-        await NatsClient.connect(nats_url="", client_name="x")
+        await NatsClient.connect(nats_url="", client_name="x", nats_subject_namespace="3tears")
 
 
 @pytest.mark.asyncio
@@ -471,7 +470,7 @@ async def test_connect_validates_client_name() -> None:
     from threetears.nats import NatsClientError
 
     with pytest.raises(NatsClientError):
-        await NatsClient.connect(nats_url="nats://x", client_name="")
+        await NatsClient.connect(nats_url="nats://x", client_name="", nats_subject_namespace="3tears")
 
 
 @pytest.mark.asyncio
@@ -504,7 +503,7 @@ async def test_connect_passes_credentials_and_scoped_inbox(
 
     await NatsClient.connect(
         nats_url="nats://localhost:4222",
-        nats_subject_namespace="aibots",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         auth_token="bootstrap-tok",
         user_credentials="/run/secrets/agent.creds",
@@ -535,7 +534,7 @@ async def test_connect_passes_user_and_password(
 
     await NatsClient.connect(
         nats_url="nats://localhost:4222",
-        nats_subject_namespace="aibots",
+        nats_subject_namespace="3tears",
         client_name="gateway-svc",
         user="gateway",
         password="s3cret",
@@ -878,16 +877,16 @@ async def test_ensure_jetstream_stream_creates_and_returns_full_name() -> None:
     client, js = _client_with_js()
     full = await client.ensure_jetstream_stream(
         name="channels-deliver",
-        subjects=["aibots.channels.deliver.*"],
+        subjects=["3tears.channels.deliver.*"],
         storage="file",
     )
 
-    assert full == "aibots-channels-deliver"
+    assert full == "3tears-channels-deliver"
     js.add_stream.assert_awaited_once()
     js.update_stream.assert_not_awaited()
     config = js.add_stream.await_args.args[0]
-    assert config.name == "aibots-channels-deliver"
-    assert config.subjects == ["aibots.channels.deliver.*"]
+    assert config.name == "3tears-channels-deliver"
+    assert config.subjects == ["3tears.channels.deliver.*"]
     assert config.storage == StorageType.FILE
 
 
@@ -899,7 +898,7 @@ async def test_ensure_jetstream_stream_memory_storage() -> None:
     client, js = _client_with_js()
     await client.ensure_jetstream_stream(
         name="ephemeral",
-        subjects=["aibots.x.*"],
+        subjects=["3tears.x.*"],
         storage="memory",
     )
     config = js.add_stream.await_args.args[0]
@@ -912,7 +911,7 @@ async def test_ensure_jetstream_stream_defaults_to_memory() -> None:
     from nats.js.api import StorageType
 
     client, js = _client_with_js()
-    await client.ensure_jetstream_stream(name="default", subjects=["aibots.x.*"])
+    await client.ensure_jetstream_stream(name="default", subjects=["3tears.x.*"])
     config = js.add_stream.await_args.args[0]
     assert config.storage == StorageType.MEMORY
 
@@ -925,16 +924,16 @@ async def test_ensure_jetstream_stream_reconciles_existing() -> None:
 
     full = await client.ensure_jetstream_stream(
         name="channels-deliver",
-        subjects=["aibots.channels.deliver.*", "aibots.channels.deliver.slack"],
+        subjects=["3tears.channels.deliver.*", "3tears.channels.deliver.slack"],
         storage="file",
     )
 
-    assert full == "aibots-channels-deliver"
+    assert full == "3tears-channels-deliver"
     js.update_stream.assert_awaited_once()
     config = js.update_stream.await_args.args[0]
     assert config.subjects == [
-        "aibots.channels.deliver.*",
-        "aibots.channels.deliver.slack",
+        "3tears.channels.deliver.*",
+        "3tears.channels.deliver.slack",
     ]
 
 
@@ -948,7 +947,7 @@ async def test_ensure_jetstream_stream_propagates_when_both_fail() -> None:
     with pytest.raises(ValueError, match="malformed config"):
         await client.ensure_jetstream_stream(
             name="bad",
-            subjects=["aibots.x.*"],
+            subjects=["3tears.x.*"],
             storage="file",
         )
 
@@ -987,7 +986,7 @@ async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() ->
         cb=cb,
         max_deliver=5,
         dead_letter_subject=Subjects.channels_deliver("deadletter"),
-        stream="aibots-channels-deliver",
+        stream="3tears-channels-deliver",
     )
 
     assert handle == "sub-handle"
@@ -995,7 +994,7 @@ async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() ->
     assert js.subscribe.await_args.args[0] == subject.path
     assert kwargs["durable"] == "slack-delivery"
     assert kwargs["manual_ack"] is True
-    assert kwargs["stream"] == "aibots-channels-deliver"
+    assert kwargs["stream"] == "3tears-channels-deliver"
     # the consumer config carries the bounded redelivery policy.
     assert kwargs["config"].max_deliver == 5
     assert kwargs["config"].durable_name == "slack-delivery"

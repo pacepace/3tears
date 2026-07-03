@@ -56,11 +56,11 @@ packages/langgraph/tests/test_agent_node_caching.py:187:_FakeUnknownChatModel
 
 # nats unit tests
 # rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
-packages/nats/tests/unit/test_client.py:39:_FakeSubscription
+packages/nats/tests/unit/test_client.py:38:_FakeSubscription
 # rationale: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
-packages/nats/tests/unit/test_client.py:61:_FakeMsg
+packages/nats/tests/unit/test_client.py:60:_FakeMsg
 # rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
-packages/nats/tests/unit/test_client.py:70:_FakeNatsPyClient
+packages/nats/tests/unit/test_client.py:69:_FakeNatsPyClient
 # rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
 packages/nats/tests/unit/test_kv.py:20:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
@@ -174,17 +174,17 @@ packages/core/tests/unit/data/test_collection_factory.py:67:FakeAsyncpgPool
 # --- never declared. external-library fakes and intentional-subset stand-ins.
 
 # rationale: fakes the external nats.js.api.PubAck ack object (seq + duplicate fields only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:42:_FakePubAck
+packages/nats/tests/unit/test_oplog.py:41:_FakePubAck
 # rationale: fakes the external nats JetStreamContext (add_stream/publish subset with scripted acks); external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:48:_FakeJetStream
+packages/nats/tests/unit/test_oplog.py:47:_FakeJetStream
 # rationale: fakes the external nats Client wrapper handing back the fake jetstream; external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:73:_FakeClient
+packages/nats/tests/unit/test_oplog.py:72:_FakeClient
 # rationale: fakes the external nats.js.api.StreamState (last_seq field only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:218:_FakeStreamState
+packages/nats/tests/unit/test_oplog.py:217:_FakeStreamState
 # rationale: fakes the external nats.js.api.StreamInfo (last_seq field only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:223:_FakeStreamInfo
+packages/nats/tests/unit/test_oplog.py:222:_FakeStreamInfo
 # rationale: fakes the external nats pull subscription raising a scripted fetch error; external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:228:_FakePullSub
+packages/nats/tests/unit/test_oplog.py:227:_FakePullSub
 # rationale: live-socket transport stand-in capturing send_text frames; the production socket handle is a dunder/transport surface with no public parity to assert in a fanout unit test
 packages/channels/tests/unit/channels/presence/test_fanout.py:33:_FakeSocket
 # rationale: records unsubscribe teardown only; intentional subset of the subscription surface the fanout path exercises

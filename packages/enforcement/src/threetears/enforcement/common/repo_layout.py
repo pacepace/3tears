@@ -43,7 +43,7 @@ def find_local_src_roots(repo_root: Path) -> tuple[Path, ...]:
     recognises two layouts:
 
     - **single-package**: a top-level ``src/`` directory under the repo
-      root (the metallm / aibots layout).
+      root (the standard single-package layout).
     - **monorepo / uv workspace**: ``packages/*/src/`` directories (the
       3tears layout).
 

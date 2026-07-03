@@ -61,7 +61,7 @@ class TestOverrides:
 
     def test_custom_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/hub/agents/entities.py": ("pure pydantic model module, no runtime behaviour"),
+            "src/3tears/hub/agents/entities.py": ("pure pydantic model module, no runtime behaviour"),
         }
         config = LoggerCoverageConfig(
             repo_root=tmp_path,

@@ -8,8 +8,8 @@ full history in its checkpointer / store), they are merely excluded from the
 window fed to the model.
 
 This is domain-agnostic: it takes a list of LangChain messages and a chat
-model, and returns summary text. Lifted from MetaLLM's
-``graph/nodes/summarize.py`` into 3tears so both MetaLLM and Scriob consume
+model, and returns summary text. Lifted from a product's
+``graph/nodes/summarize.py`` into 3tears so multiple products consume
 one implementation (shared-infra directive). The caller decides *when* to
 summarize (the token-threshold trigger) and *what* to do with the result
 (persist a rolling summary, advance a cursor); this module owns only the
@@ -25,6 +25,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
+from langchain_core.runnables import RunnableConfig
 
 from threetears.observe import get_logger
 
@@ -113,6 +114,7 @@ async def summarize_older_messages(
     older_messages: list[BaseMessage],
     chat_model: BaseChatModel,
     custom_prompt: str | None = None,
+    config: RunnableConfig | None = None,
 ) -> str:
     """Summarize a list of older messages into a concise narrative.
 
@@ -126,6 +128,10 @@ async def summarize_older_messages(
         of the active context).
     :param chat_model: the LangChain chat model used to generate the summary.
     :param custom_prompt: an optional override for :data:`DEFAULT_SUMMARIZATION_PROMPT`.
+    :param config: an optional LangChain ``RunnableConfig`` forwarded to the
+        model call. Callers streaming a response tag this with the framework's
+        no-stream marker (``{"tags": [NOSTREAM_TAG]}``) so the internal summary
+        call's tokens never leak into the user-facing token stream.
     :return: the summary text (capped at :data:`_MAX_SUMMARY_LENGTH` characters).
     """
     prompt = custom_prompt or DEFAULT_SUMMARIZATION_PROMPT
@@ -136,7 +142,8 @@ async def summarize_older_messages(
             [
                 SystemMessage(content=prompt),
                 HumanMessage(content=transcript),
-            ]
+            ],
+            config=config,
         )
         summary = _message_text(result).strip()
     except Exception:  # prawduct:allow prawduct/broad-except -- provider/LLM errors fall back to the heuristic summary

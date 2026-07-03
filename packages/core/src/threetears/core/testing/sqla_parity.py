@@ -78,7 +78,7 @@ def column_signature(
     regression that wrote ``vector_dim=768`` instead of ``1024`` on
     ``memories.embedding``, or dropped an enum value, or changed
     numeric scale, would pass the parity test silently and only
-    surface at metallm Alembic auto-gen (too late).
+    surface at Alembic auto-gen (too late).
 
     :param col: column to summarise
     :ptype col: sqlalchemy.Column
@@ -211,7 +211,7 @@ def fk_constraint_signature(
     :class:`NoReferencedTableError` when the target table is not
     registered on the same MetaData -- which is normal in parity
     tests because the v0.8.0 schemas declare FKs to ``users`` /
-    ``messages`` / etc. tables that the metallm app registers
+    ``messages`` / etc. tables that the consuming app registers
     separately and 3tears tests never load.
 
     :param constraint: SA ``ForeignKeyConstraint``

@@ -476,7 +476,7 @@ class TestTransitiveCollectionDetection:
         assert violations == []
 
     def test_three_hop_chain_resolves(self, tmp_path: Path) -> None:
-        # the metallm production chain: MemoriesCollection ->
+        # a representative production chain: MemoriesCollection ->
         # SchemaBackedCollection -> BaseCollection. proves the
         # transitive walk handles arbitrary depth.
         repo = _make_repo(tmp_path / "repo")

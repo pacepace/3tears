@@ -28,7 +28,7 @@ version history:
   Column<->migration alignment enforcement test stays green.
 - v005 -- v0.7.0 framework promotion: add ``search_vector`` tsvector +
   trigger + GIN index for postgres FTS on conversation display titles.
-  lifted from metallm migration 057 (conversation-side only -- the
+  ported from upstream migration 057 (conversation-side only -- the
   messages-side FTS in that migration stays product-side because
   3tears has no canonical messages table).
 - v006 -- v0.7.0 review item #7: add per-row ``language`` column +
@@ -43,7 +43,7 @@ version history:
   + every dependent FK automatically; the rename is guarded by an
   ``information_schema`` DO block so replays are idempotent.
 - v008 -- create the app-agnostic ``folders`` table (the Folder
-  primitive lifted from metallm: a mutable, per-owner named container
+  primitive: a mutable, per-owner named container
   grouping conversations) plus the UNIQUE(agent_id, user_id, name)
   constraint and its lookup index, and add the mutable
   ``conversations.folder_id`` FK column. every statement is natively

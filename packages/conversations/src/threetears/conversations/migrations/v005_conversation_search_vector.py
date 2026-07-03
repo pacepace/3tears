@@ -3,7 +3,7 @@ conversations v005: add ``search_vector`` tsvector + trigger to
 ``conversations`` for postgres full-text search on conversation
 display titles.
 
-framework-promoted from metallm alembic migration 057 (conversation-side
+framework-promoted from upstream alembic migration 057 (conversation-side
 only -- the messages-side FTS in that migration stays product-side,
 since 3tears has no canonical ``messages`` table and each product owns
 its own message storage shape).

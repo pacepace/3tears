@@ -7,7 +7,7 @@ recovery is safe.
 shape:
 
 - ``subject_path TEXT PRIMARY KEY`` -- the namespaced NATS subject
-  string (e.g. ``"metallm.capabilities.epoch"``); also the broadcast
+  string (e.g. ``"app.capabilities.epoch"``); also the broadcast
   subject so wire identity matches row identity exactly
 - ``epoch BIGINT NOT NULL DEFAULT 0`` -- strictly-monotonic counter,
   bumped via ``ON CONFLICT DO UPDATE SET epoch = epoch + 1``

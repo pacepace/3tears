@@ -18,8 +18,8 @@ class TestEpochBumpMessageShape:
 
     def test_required_fields_only(self) -> None:
         """subject_path + epoch construct cleanly; payload defaults to None."""
-        msg = EpochBumpMessage(subject_path="metallm.capabilities.epoch", epoch=7)
-        assert msg.subject_path == "metallm.capabilities.epoch"
+        msg = EpochBumpMessage(subject_path="app.capabilities.epoch", epoch=7)
+        assert msg.subject_path == "app.capabilities.epoch"
         assert msg.epoch == 7
         assert msg.payload is None
 
@@ -27,7 +27,7 @@ class TestEpochBumpMessageShape:
         """payload is dict[str, Any] | None and accepts mixed primitives."""
         payload = {"model_id": "abc", "tags": [1, 2], "meta": {"nested": True}}
         msg = EpochBumpMessage(
-            subject_path="metallm.capabilities.epoch",
+            subject_path="app.capabilities.epoch",
             epoch=42,
             payload=payload,
         )
@@ -77,7 +77,7 @@ class TestEpochBumpMessageWireRoundTrip:
     def test_round_trip_with_payload(self) -> None:
         """typed envelope survives the publish/subscribe wire path byte-for-byte."""
         original = EpochBumpMessage(
-            subject_path="aibots.gateway.catalog.epoch",
+            subject_path="3tears.gateway.catalog.epoch",
             epoch=99,
             payload={"action": "create", "model_id": "deepseek-v3.2"},
         )

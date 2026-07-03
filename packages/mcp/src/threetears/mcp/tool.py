@@ -7,7 +7,7 @@ records the tool into a per-process registry the server consumes at
 :meth:`McpServer.serve` time.
 
 each tool MUST declare a ``required_permission`` string (e.g.
-``"metallm.conversations.read"``). a tool with ``required_permission``
+``"myapp.conversations.read"``). a tool with ``required_permission``
 set runs only when :meth:`Authorizer.allows(identity, permission)`
 returns True; the framework defaults to default-deny. an AST
 enforcement test forbids ``required_permission=None`` in production
@@ -159,7 +159,7 @@ def register_tool(
             name="list_conversations",
             description="list recent conversations",
             input_schema={"type": "object", "properties": {...}},
-            required_permission="metallm.conversations.read",
+            required_permission="myapp.conversations.read",
             registry=registry,
         )
         async def handle_list_conversations(**kwargs) -> str:

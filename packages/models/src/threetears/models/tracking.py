@@ -109,27 +109,27 @@ class UsageRecord:
     :ptype cost_usd: Decimal | None
     :param date_created: timestamp when usage was recorded
     :ptype date_created: datetime
-    :param agent_id: optional agent UUID (14-eng-ai-bot tenant context)
+    :param agent_id: optional agent UUID (consumer tenant context)
     :ptype agent_id: UUID | None
-    :param customer_id: optional customer UUID (14-eng-ai-bot tenant context)
+    :param customer_id: optional customer UUID (consumer tenant context)
     :ptype customer_id: UUID | None
-    :param user_id: optional user UUID (metallm + 14-eng-ai-bot tenant context)
+    :param user_id: optional user UUID (consumer tenant context)
     :ptype user_id: UUID | None
-    :param conversation_id: optional conversation UUID (metallm tenant context)
+    :param conversation_id: optional conversation UUID (consumer tenant context)
     :ptype conversation_id: UUID | None
     :param invocation_ref: optional free-form reference to the underlying
-        invocation (metallm passes its tool-LLM invocation id rendered as a
-        string; 14-eng-ai-bot typically passes ``None``)
+        invocation (a consumer may pass its tool-LLM invocation id rendered as a
+        string; others typically pass ``None``)
     :ptype invocation_ref: str | None
-    :param category: optional consumer-defined usage category (metallm:
+    :param category: optional consumer-defined usage category (for example:
         ``chat`` / ``sycophancy`` / ``tool`` / ``embedding`` /
         ``image_generation`` / ``naming`` / ``reasoning`` /
         ``tool_llm_dispatch``)
     :ptype category: str | None
-    :param model_id: optional consumer-side model UUID. metallm
-        populates this from its ``models`` table primary key so
-        :class:`MetaLLMTokenAuditSink` can write the FK column;
-        14-eng-ai-bot leaves it ``None``.
+    :param model_id: optional consumer-side model UUID. A consumer may
+        populate this from its ``models`` table primary key so
+        :class:`TokenAuditSink` can write the FK column;
+        other consumers leave it ``None``.
     :ptype model_id: UUID | None
     """
 
@@ -170,7 +170,7 @@ class UsageAuditSink(Protocol):
 
     An audit sink writes one row per LLM invocation to a durable store
     suitable for cost reconciliation and per-conversation cost
-    attribution. metallm's :class:`MetaLLMTokenAuditSink` (writes the
+    attribution. The :class:`TokenAuditSink` (writes the
     ``token_usage_logs`` table) is the canonical implementation.
 
     Implementations MUST be coroutine-safe and MUST NOT raise into the
@@ -468,10 +468,10 @@ class UsageTracker:
     and never re-raises.
 
     :param audit_sink: optional sink that persists per-invocation rows
-        (e.g. metallm's ``MetaLLMTokenAuditSink``)
+        (e.g. a consumer's ``TokenAuditSink``)
     :ptype audit_sink: UsageAuditSink | None
     :param counter_sink: optional sink that increments rolling-window
-        counters (e.g. 14-eng-ai-bot's ``AggregateUsageCounterSink``)
+        counters (e.g. a consumer's ``AggregateUsageCounterSink``)
     :ptype counter_sink: UsageCounterSink | None
     :param prom_registry: optional Prometheus ``CollectorRegistry`` to
         register the locked ``threetears_llm_*`` instruments against.

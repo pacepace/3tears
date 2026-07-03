@@ -25,7 +25,7 @@ from threetears.nats.subject_permissions import (
 )
 from threetears.nats.subjects import set_default_namespace
 
-_NS = "aibots"
+_NS = "3tears"
 
 #: representative ids so every principal resolves to a concrete allow-list.
 _IDS: dict[Principal, dict[str, str]] = {

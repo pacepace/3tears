@@ -7,7 +7,7 @@ the ``3tears-agent-wake`` foundation depends on
 in the platform-managed ``roles`` table and is named
 :data:`PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME` so the deploying app
 can bind it to its canonical "every user belongs here" group
-(``platform-users`` in the metallm hub) via the normal
+(e.g. a ``platform-users`` group) via the normal
 ``role_assignments`` machinery.
 
 The role definition is intentionally minimal: it grants
@@ -19,7 +19,7 @@ are created by the deploying app at tool-registration time -- the
 target namespace ids are only known once the tool's
 ``platform.namespaces`` row exists, and that row is materialized
 hub-side (see
-:class:`aibots.hub.tools.namespace_emitter.ToolNamespaceEmitter`).
+:class:`3tears.hub.tools.namespace_emitter.ToolNamespaceEmitter`).
 
 This module exposes:
 

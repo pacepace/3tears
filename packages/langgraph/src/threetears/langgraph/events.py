@@ -175,7 +175,7 @@ class ResponseCompletedEvent(FrameworkEvent):
     drift.
 
     the event is graph-node-agnostic -- emitted by whichever node assembles
-    the final assistant message (in metallm this is the personality node;
+    the final assistant message (in one product this is the personality node;
     other 3tears products may emit from a different node).
 
     :ivar response_content: final accumulated assistant message text

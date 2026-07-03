@@ -1,6 +1,6 @@
 """3tears-mcp: shared Model Context Protocol framework.
 
-per-product MCP servers (metallm, hub, agent-admin) compose this
+per-product MCP servers compose this
 framework instead of reimplementing stdio transport, JWT auth, error
 mapping, and per-tool RBAC.
 

@@ -4,7 +4,7 @@ These mirror the CHECK constraints on the L3 tables: changing the
 allowed values here requires a matching migration.
 
 Why ``Literal`` and not ``Enum``: callers (the rest of 3tears, plus
-metallm consumers) pass these values through tool input schemas + JSON
+external consumers) pass these values through tool input schemas + JSON
 boundaries where strings round-trip cleanly. ``Literal`` keeps the
 runtime payload a plain ``str`` so JSON encoding doesn't need a custom
 serializer and mypy still pins valid value sets at every call site.

@@ -66,9 +66,8 @@ log = get_logger(__name__)
 # Default header the platform expects to carry the HMAC signature. The
 # ``X-3Tears-Webhook-Signature`` name keeps the platform brand-neutral
 # (a consumer product can override via the constructor for
-# backwards-compatibility with its existing webhook senders -- e.g.
-# metallm passes ``X-MetaLLM-Signature`` to preserve its legacy
-# senders' headers).
+# backwards-compatibility with its existing webhook senders, passing a
+# branded header name to preserve its legacy senders' headers).
 DEFAULT_SIGNATURE_HEADER: Final[str] = "X-3Tears-Webhook-Signature"
 
 
@@ -147,7 +146,7 @@ class WebhookReceiver:
         per-conv + per-user caps the dispatcher enforces at fire time
     :ivar _signature_header: header carrying the HMAC signature
         (default ``'X-3Tears-Webhook-Signature'``; consumers with an
-        existing brand can override -- e.g. ``'X-MetaLLM-Signature'``)
+        existing brand can override with their own header name)
     :ivar _max_payload_bytes: short-circuit cap on request body size;
         anything larger returns 413 without invoking the wake adapter
     :ivar _verifiers: scheme name -> :class:`Verifier` registry; the

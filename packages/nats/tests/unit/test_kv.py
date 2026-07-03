@@ -80,7 +80,7 @@ def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
     kv = _FakeKv()
     bucket = NatsKvBucket(
         client=None,  # type: ignore[arg-type]
-        full_name="aibots-tests",
+        full_name="3tears-tests",
         kv=kv,  # type: ignore[arg-type]
         ttl=timedelta(seconds=60),
     )
@@ -114,7 +114,7 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     """A bucket whose initial handle is ``broken_kv`` and whose re-open yields ``healed_kv``."""
     return NatsKvBucket(
         client=_FakeClient(healed_kv),  # type: ignore[arg-type]
-        full_name="aibots-tests",
+        full_name="3tears-tests",
         kv=broken_kv,  # type: ignore[arg-type]
         ttl=timedelta(seconds=60),
     )
@@ -161,7 +161,7 @@ async def test_open_memory_storage_maps_to_memory() -> None:
     js = _CapturingJetStream()
     await NatsKvBucket.open(
         client=_CapturingClient(js),  # type: ignore[arg-type]
-        full_name="aibots-tests",
+        full_name="3tears-tests",
         ttl=None,
         storage="memory",
         create_if_missing=True,
@@ -178,7 +178,7 @@ async def test_open_file_storage_is_explicit_opt_in() -> None:
     js = _CapturingJetStream()
     await NatsKvBucket.open(
         client=_CapturingClient(js),  # type: ignore[arg-type]
-        full_name="aibots-tests",
+        full_name="3tears-tests",
         ttl=None,
         storage="file",
         create_if_missing=True,
@@ -343,7 +343,7 @@ async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
 @pytest.mark.asyncio
 async def test_bucket_name_property() -> None:
     bucket, _ = _make_bucket()
-    assert bucket.name == "aibots-tests"
+    assert bucket.name == "3tears-tests"
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@ agent-memory v021: align 3tears memory + media schemas with prod parity.
 
 shard 03 (v0.8.0) brings every memory-package ``TableSchema`` to full
 prod parity. Several columns the v0.7.5 factories declare exist on
-metallm prod (via metallm Alembic) but the 3tears migrations never
+prod (via upstream Alembic) but the 3tears migrations never
 added them. This migration closes the gap so 3tears integration
 tests (which use the 3tears migration runner to set up the test DB)
 carry the same shape the v0.8.0 schemas now declare.
@@ -32,7 +32,7 @@ Columns added:
   ``'none'`` / ``'pending'`` / ``'complete'`` / ``'failed'``.
 - ``media_content.search_vector`` already exists via v006; v021 also
   re-asserts ``media_content`` columns from the v0.7.5 factory that
-  metallm Alembic landed but 3tears migrations omitted: ``model_id``,
+  upstream Alembic landed but 3tears migrations omitted: ``model_id``,
   ``provider_id``, ``model_name``, ``provider_name``,
   ``token_count_prompt``, ``token_count_completion``, ``cost``,
   ``metadata_json``.
@@ -40,7 +40,7 @@ Columns added:
 Columns promoted to NOT NULL + DEFAULT to match prod parity:
 
 - ``media.metadata_json``: v006 declared this as ``JSONB NULL``; prod
-  metallm has it ``JSONB NOT NULL DEFAULT '{}'::jsonb``. v021 closes
+  has it ``JSONB NOT NULL DEFAULT '{}'::jsonb``. v021 closes
   the gap: backfill NULL → ``'{}'::jsonb`` first, then set the
   default + NOT NULL. (``media.media_category`` and
   ``media.extraction_status`` already carry the right shape: v006
@@ -68,7 +68,7 @@ on ``media.metadata_json`` are guarded by a DO block that inspects
 ``ALTER COLUMN ... SET NOT NULL IF NOT NULL``). v0.7.5 factory parity
 is the target shape; subsequent test runs should observe zero
 phantom migrations between the 3tears migration output and the prod
-metallm Alembic output for these tables.
+upstream Alembic output for these tables.
 """
 
 from __future__ import annotations
@@ -133,8 +133,8 @@ _ADD_MEDIA_EXTRACTION_STATUS_SQL = (
 #   4. CREATE OR REPLACE the trigger function (idempotent).
 #   5. DROP TRIGGER IF EXISTS + CREATE TRIGGER (idempotent guard).
 #
-# Metallm prod does NOT (yet) have the column; the parallel Alembic
-# migration in shard 05 adds it + the trigger on the metallm side so
+# Upstream prod does NOT (yet) have the column; the parallel Alembic
+# migration in shard 05 adds it + the trigger on the upstream side so
 # both consumers converge on the richer shape.
 _ADD_MEDIA_DATE_UPDATED_SQL = "ALTER TABLE media ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ DEFAULT now()"
 
@@ -200,7 +200,7 @@ _ADD_MC_METADATA_JSON_SQL = "ALTER TABLE media_content ADD COLUMN IF NOT EXISTS 
 
 
 # media.metadata_json: v006 declared this as ``JSONB NULL`` (no default).
-# Prod metallm has ``JSONB NOT NULL DEFAULT '{}'::jsonb``. Backfill +
+# Prod has ``JSONB NOT NULL DEFAULT '{}'::jsonb``. Backfill +
 # promote so v0.8.0 SchemaBackedCollection writes that omit
 # metadata_json land cleanly on the server-side default. Backfill must
 # come first because the SET NOT NULL fails on existing NULL rows.

@@ -1,11 +1,11 @@
 """
 conversations v007: rename ``conversations.id`` column to
 ``conversations.conversation_id`` to standardize entity tables on
-``<entity>_id`` PK naming (matches metallm prod + JSON API contract).
+``<entity>_id`` PK naming (matches the JSON API contract).
 
 Background. The 3tears agent-schema ``conversations`` table shipped
 with a bare-``id`` PK column. Every other entity table across the
-3tears + metallm stack -- ``memories.memory_id``,
+3tears stack -- ``memories.memory_id``,
 ``media.media_id``, ``memory_chunks.chunk_id``,
 ``media_content.content_id``, ``context_items.context_id``,
 ``mcp_tool_grants.grant_id``, etc. -- already uses the
@@ -42,7 +42,7 @@ After this migration:
 - All app-side SQL referencing the column reads
   ``conversations.conversation_id``.
 - The agent-tools ``context_items.conversation_id`` FK target column
-  matches (was the metallm-shaped single-column FK; the rename
+  matches (was the legacy single-column FK; the rename
   closes the 3tears-side mismatch the agent-tools v003 migration
   surfaced).
 

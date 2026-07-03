@@ -10,10 +10,11 @@ cd "$REPO_ROOT"
 # we follow the CI workflow's invocation: addressing the modules by
 # ``-p threetears.<x>`` resolves them through MYPYPATH + the
 # installed-editable layout.
-MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/media-contracts/src:packages/object-store/src \
+MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/langgraph/src:packages/media-contracts/src:packages/object-store/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
+        -p threetears.agent.knowledge \
         -p threetears.agent.memory \
         -p threetears.agent.skills \
         -p threetears.agent.tools \

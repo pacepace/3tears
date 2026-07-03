@@ -81,7 +81,7 @@ class TestEnvVarIdentityProvider:
     async def test_env_var_provides_principal_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """env var carrying a UUID populates principal_id."""
         target = uuid4()
-        monkeypatch.setenv("METALLM_ADMIN_USER_ID", str(target))
+        monkeypatch.setenv("MCP_ADMIN_USER_ID", str(target))
         provider = EnvVarIdentityProvider()
         identity = await provider.identify()
         assert identity.principal_id == target
@@ -89,15 +89,15 @@ class TestEnvVarIdentityProvider:
     @pytest.mark.asyncio
     async def test_missing_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """no env var + no explicit principal_id raises a clear error."""
-        monkeypatch.delenv("METALLM_ADMIN_USER_ID", raising=False)
+        monkeypatch.delenv("MCP_ADMIN_USER_ID", raising=False)
         provider = EnvVarIdentityProvider()
-        with pytest.raises(RuntimeError, match="METALLM_ADMIN_USER_ID"):
+        with pytest.raises(RuntimeError, match="MCP_ADMIN_USER_ID"):
             await provider.identify()
 
     @pytest.mark.asyncio
     async def test_invalid_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """malformed env var value raises a UUID-parse error."""
-        monkeypatch.setenv("METALLM_ADMIN_USER_ID", "not-a-uuid")
+        monkeypatch.setenv("MCP_ADMIN_USER_ID", "not-a-uuid")
         provider = EnvVarIdentityProvider()
         with pytest.raises(RuntimeError, match="valid UUID"):
             await provider.identify()
@@ -137,7 +137,7 @@ class TestLocalGrantAuthorizer:
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=uuid4())
-            assert await authz.allows(identity, "metallm.conv.read") is False
+            assert await authz.allows(identity, "product.conv.read") is False
         finally:
             await authz.stop()
 
@@ -147,14 +147,14 @@ class TestLocalGrantAuthorizer:
         principal_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": principal_id, "permission": "metallm.conv.read"},
+                {"principal_id": principal_id, "permission": "product.conv.read"},
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
-            assert await authz.allows(identity, "metallm.conv.read") is True
-            assert await authz.allows(identity, "metallm.conv.write") is False
+            assert await authz.allows(identity, "product.conv.read") is True
+            assert await authz.allows(identity, "product.conv.write") is False
         finally:
             await authz.stop()
 
@@ -164,7 +164,7 @@ class TestLocalGrantAuthorizer:
         group_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": group_id, "permission": "hub.audit.read"},
+                {"principal_id": group_id, "permission": "audit.records.read"},
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
@@ -174,7 +174,7 @@ class TestLocalGrantAuthorizer:
                 principal_id=uuid4(),
                 groups=frozenset({group_id}),
             )
-            assert await authz.allows(identity, "hub.audit.read") is True
+            assert await authz.allows(identity, "audit.records.read") is True
         finally:
             await authz.stop()
 
@@ -184,7 +184,7 @@ class TestLocalGrantAuthorizer:
         role_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": role_id, "permission": "hub.audit.read"},
+                {"principal_id": role_id, "permission": "audit.records.read"},
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
@@ -194,7 +194,7 @@ class TestLocalGrantAuthorizer:
                 principal_id=uuid4(),
                 roles=frozenset({role_id}),
             )
-            assert await authz.allows(identity, "hub.audit.read") is True
+            assert await authz.allows(identity, "audit.records.read") is True
         finally:
             await authz.stop()
 
@@ -264,15 +264,15 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(
             side_effect=[
                 [],
-                [{"principal_id": principal_id, "permission": "metallm.conv.read"}],
+                [{"principal_id": principal_id, "permission": "product.conv.read"}],
             ]
         )
         authz, captured = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
-            assert await authz.allows(identity, "metallm.conv.read") is False
+            assert await authz.allows(identity, "product.conv.read") is False
             await captured[0](7, {"hint": "added grant"})
-            assert await authz.allows(identity, "metallm.conv.read") is True
+            assert await authz.allows(identity, "product.conv.read") is True
         finally:
             await authz.stop()
 
@@ -282,16 +282,16 @@ class TestLocalGrantAuthorizer:
         principal_id = uuid4()
         loader = AsyncMock(
             side_effect=[
-                [{"principal_id": principal_id, "permission": "hub.audit.read"}],
+                [{"principal_id": principal_id, "permission": "audit.records.read"}],
                 RuntimeError("L3 down"),
             ]
         )
         authz, captured = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
-            assert await authz.allows(identity, "hub.audit.read") is True
+            assert await authz.allows(identity, "audit.records.read") is True
             await captured[0](2, None)
-            assert await authz.allows(identity, "hub.audit.read") is True
+            assert await authz.allows(identity, "audit.records.read") is True
         finally:
             await authz.stop()
 
@@ -301,13 +301,13 @@ class TestLocalGrantAuthorizer:
         principal_id = uuid4()
         loader = AsyncMock(
             return_value=[
-                {"principal_id": str(principal_id), "permission": "metallm.conv.read"},
+                {"principal_id": str(principal_id), "permission": "product.conv.read"},
             ]
         )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
-            assert await authz.allows(identity, "metallm.conv.read") is True
+            assert await authz.allows(identity, "product.conv.read") is True
         finally:
             await authz.stop()
 

@@ -53,7 +53,7 @@ class WorkspaceFileLease:
         bucket name resolution precedence:
 
         1. ``f"{namespace}_workspace_locks"`` when ``namespace`` is given
-        2. ``f"{env}_workspace_locks"`` when ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE`` is set
+        2. ``f"{env}_workspace_locks"`` when ``THREETEARS_NATS_SUBJECT_NAMESPACE`` is set
         3. ``"workspace_locks"`` as unscoped fallback
 
         this mirrors :meth:`KVLease._default_bucket_name` behaviour —
@@ -72,7 +72,7 @@ class WorkspaceFileLease:
         :rtype: None
         """
         effective_namespace = (
-            namespace if namespace is not None else os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE")
+            namespace if namespace is not None else os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
         )
         bucket_name = f"{effective_namespace}_workspace_locks" if effective_namespace else "workspace_locks"
         self._kvlease = KVLease(nats_client, bucket_name=bucket_name, pod_id=pod_id)

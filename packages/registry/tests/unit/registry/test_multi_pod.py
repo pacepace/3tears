@@ -103,7 +103,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.register")
+    return IncomingMessage(data=data, reply_subject=reply, subject="3tears.tools.register")
 
 
 _DEFAULT_CORRELATION_ID = UUID("01948a00-6666-7000-8000-0000abcdef01")

@@ -25,7 +25,7 @@ version history:
   DATETIME_TYPE -> DATETIMETZ_TYPE Column-declaration flip in
   ``collections.py`` so the alignment enforcement test stays green.
 - v003 (v0.8.0 shard 03) aligns the ``context_items`` shape with
-  prod metallm: drops the v001 legacy indexes
+  prod: drops the v001 legacy indexes
   (``idx_ctx_conversation`` / ``idx_ctx_conversation_type``),
   creates the four v0.8.0 indexes (``ix_context_items_conv``,
   ``ix_context_items_type``, ``ix_context_items_lru``,

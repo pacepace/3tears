@@ -9,7 +9,7 @@ the caller's ``(user_id, agent_id)`` pair.
 
 three-tier-task-01 phase D retired the bespoke callable aliases
 and the parallel value object that previously mirrored
-:class:`aibots.hub.broker.namespaces.NamespaceEntity`. the authorizer
+:class:`3tears.hub.broker.namespaces.NamespaceEntity`. the authorizer
 now takes a :class:`MemoryAuthorizerDependencies` bundle carrying
 the Collections directly — every lookup call is a Collection
 method call, every assignment-ensure call is a Collection method
@@ -174,7 +174,7 @@ class MemoryAuthorizerDependencies:
     :class:`NamespaceCollection`, :class:`GroupCollection`,
     :class:`GroupMemberCollection`, :class:`RoleCollection`, and
     :class:`RoleAssignmentCollection` live in
-    :mod:`aibots.hub.*` — a higher layer than ``agent-memory``.
+    :mod:`3tears.hub.*` — a higher layer than ``agent-memory``.
     wiring code constructs the bundle with concrete Collection
     instances; this module only uses their documented method surface.
 

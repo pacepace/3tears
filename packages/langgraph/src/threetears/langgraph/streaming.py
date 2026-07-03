@@ -1,20 +1,20 @@
 """canonical streaming wire types and :class:`StreamingResponse` runtime.
 
 before this module landed, the platform carried three near-identical
-copies of the streaming wire vocabulary -- one in the aibots SDK
-publisher, one as a hand-mirror in the hub consumer, and one as the
-hub's bridge projection. every change had to land three times and
+copies of the streaming wire vocabulary -- one in the 3tears SDK
+publisher, one as a hand-mirror in the consumer, and one as the
+consumer's bridge projection. every change had to land three times and
 the wire shape silently drifted. this module is the single source of
 truth for the wire envelopes any 3tears app sends or receives on a
 streaming token channel.
 
 the wire vocabulary is transport-agnostic: the same envelopes flow
-over NATS today (aibots) and could ride a websocket tomorrow
-(metallm) with no envelope changes. the integration seam is the
+over NATS today (3tears) and could ride a websocket tomorrow
+with no envelope changes. the integration seam is the
 :class:`StreamTransport` Protocol -- a one-method
 ``async def publish(self, payload: bytes) -> None`` interface that
 any concrete transport adapter satisfies (see the
-:class:`NatsStreamTransport` adapter in ``aibots_agents.runtime``
+:class:`NatsStreamTransport` adapter in ``3tears_agents.runtime``
 for the reference implementation).
 
 :class:`StreamingResponse` is the lifecycle-aware emitter that owns
@@ -156,7 +156,7 @@ class StreamEndEvent(BaseModel):
     constructed (for an ack-early dispatch flow, the consumer enriches
     the terminal from the separate request-reply once the graph
     finishes). it is transport-agnostic and free-form; a consumer with
-    no terminal metadata leaves it empty. aibots rides response
+    no terminal metadata leaves it empty. 3tears rides response
     metadata here (tool-call names, ``pending_grants``, ``status`` for
     the human-in-the-loop grant flow) so a streaming caller sees the
     same turn metadata a non-streaming reply carries.

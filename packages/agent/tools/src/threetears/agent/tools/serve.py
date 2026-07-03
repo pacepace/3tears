@@ -83,7 +83,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
             extra={"extra_data": {"tool": "threetears.web_fetch"}},
         )
 
-    searxng_url = os.environ.get("FOURTEENAIBOTS_SEARXNG_URL")
+    searxng_url = os.environ.get("THREETEARS_SEARXNG_URL")
     if searxng_url:
         try:
             from threetears.agent.tools.builtin.web_search import WebSearchTool
@@ -199,7 +199,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
 
     standalone platform-only pod (no host-application HubClient
     lifecycle). reads NATS connection details from
-    ``FOURTEENAIBOTS_NATS_URL`` and ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``
+    ``THREETEARS_NATS_URL`` and ``THREETEARS_NATS_SUBJECT_NAMESPACE``
     environment variables. ``namespace_collection`` is suppressed because
     this entrypoint serves calculator / dictionary / current-date / etc.
     from a standalone process and does not participate in the agent-side
@@ -209,13 +209,13 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
 
     async def build_server(self) -> ToolServer:
         """build standalone ``ToolServer`` from environment variables."""
-        nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
-        namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
+        nats_url = os.environ.get("THREETEARS_NATS_URL", "nats://localhost:4222")
+        namespace = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
         # enforce-only connection auth (v0.13.9): this standalone pod presents its OWN static NATS
         # user/password (the enforcing bus has no ``no_auth_user``). unset -> anonymous, for a
         # non-enforcing bus; the compose / Procfile sets these on the enforcing dev/prod bus.
-        nats_user = os.environ.get("FOURTEENAIBOTS_NATS_USER") or None
-        nats_password = os.environ.get("FOURTEENAIBOTS_NATS_PASSWORD") or None
+        nats_user = os.environ.get("THREETEARS_NATS_USER") or None
+        nats_password = os.environ.get("THREETEARS_NATS_PASSWORD") or None
         return ToolServer(
             nats_url=nats_url,
             namespace=namespace,
@@ -232,7 +232,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
 def main() -> None:
     """run built-in tool server.
 
-    reads NATS connection URL from ``FOURTEENAIBOTS_NATS_URL`` env var
+    reads NATS connection URL from ``THREETEARS_NATS_URL`` env var
     (defaults to ``nats://localhost:4222``). registers all available
     built-in tools and serves them until interrupted. the lifecycle
     plumbing (logging configuration, signal handlers, serve loop) is

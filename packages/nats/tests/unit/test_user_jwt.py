@@ -61,8 +61,8 @@ def _user_pub() -> str:
 
 def _perms(*, allow_responses: bool = True) -> PrincipalPermissions:
     return PrincipalPermissions(
-        publish=("aibots.tools.call", "aibots.hub.handshake"),
-        subscribe=("_INBOX_agent_pod_p1.>", "aibots.agents.internal.a1.p1"),
+        publish=("3tears.tools.call", "3tears.hub.handshake"),
+        subscribe=("_INBOX_agent_pod_p1.>", "3tears.agents.internal.a1.p1"),
         allow_responses=allow_responses,
         inbox_prefix="_INBOX_agent_pod_p1",
     )
@@ -112,12 +112,12 @@ class TestJetStreamGrants:
 
     def _kv_perms(self) -> PrincipalPermissions:
         return PrincipalPermissions(
-            publish=("aibots.tools.call",),
+            publish=("3tears.tools.call",),
             subscribe=("_INBOX_agent_pod_p1.>",),
             allow_responses=True,
             inbox_prefix="_INBOX_agent_pod_p1",
-            kv_buckets=("aibots_agent_config", "checkpoints"),
-            streams=("aibots_channels_deliver",),
+            kv_buckets=("3tears_agent_config", "checkpoints"),
+            streams=("3tears_channels_deliver",),
         )
 
     def _js_pub(self) -> list[str]:
@@ -128,10 +128,10 @@ class TestJetStreamGrants:
         nats = _payload(_mint(permissions=self._kv_perms()))["nats"]
         pub, sub = nats["pub"]["allow"], nats["sub"]["allow"]
         # per-bucket KV DATA subtree on BOTH pub and sub (unchanged; the hole was control-plane only)
-        for bucket in ("aibots_agent_config", "checkpoints"):
+        for bucket in ("3tears_agent_config", "checkpoints"):
             assert f"$KV.{bucket}.>" in pub and f"$KV.{bucket}.>" in sub
         # the app allow-list is preserved, not replaced
-        assert "aibots.tools.call" in pub
+        assert "3tears.tools.call" in pub
 
     def test_no_bare_js_api_wildcard(self) -> None:
         # the fail-closed-isolation fix: never the whole JetStream control plane.
@@ -144,7 +144,7 @@ class TestJetStreamGrants:
         # documented stream-LESS account subjects (the INFO connect probe + STREAM.NAMES, which
         # nats-py needs to resolve a KV bucket's stream for a kv.watch()/hot-reload). nothing else is
         # account-wide.
-        declared = {"KV_aibots_agent_config", "KV_checkpoints", "aibots_channels_deliver"}
+        declared = {"KV_3tears_agent_config", "KV_checkpoints", "3tears_channels_deliver"}
         account_level = {"$JS.API.INFO", "$JS.API.STREAM.NAMES"}
         for grant in self._js_pub():
             if grant in account_level:
@@ -163,7 +163,7 @@ class TestJetStreamGrants:
         # the EXACT $JS.API subjects nats-py constructs for the KV + stream paths must each be
         # admitted by some granted pattern -- otherwise the op silently times out under enforce.
         js = self._js_pub()
-        for stream in ("KV_aibots_agent_config", "KV_checkpoints", "aibots_channels_deliver"):
+        for stream in ("KV_3tears_agent_config", "KV_checkpoints", "3tears_channels_deliver"):
             real_ops = [
                 f"$JS.API.STREAM.INFO.{stream}",
                 f"$JS.API.STREAM.CREATE.{stream}",
@@ -173,11 +173,11 @@ class TestJetStreamGrants:
                 f"$JS.API.STREAM.MSG.GET.{stream}",
                 f"$JS.API.STREAM.MSG.DELETE.{stream}",
                 f"$JS.API.DIRECT.GET.{stream}",
-                f"$JS.API.DIRECT.GET.{stream}.$KV.aibots_agent_config.somekey",
+                f"$JS.API.DIRECT.GET.{stream}.$KV.3tears_agent_config.somekey",
                 f"$JS.API.CONSUMER.CREATE.{stream}",
                 f"$JS.API.CONSUMER.LIST.{stream}",
                 f"$JS.API.CONSUMER.CREATE.{stream}.eph-consumer",
-                f"$JS.API.CONSUMER.CREATE.{stream}.eph-consumer.aibots.channels.deliver.x",
+                f"$JS.API.CONSUMER.CREATE.{stream}.eph-consumer.3tears.channels.deliver.x",
                 f"$JS.API.CONSUMER.INFO.{stream}.dur1",
                 f"$JS.API.CONSUMER.DELETE.{stream}.dur1",
                 f"$JS.API.CONSUMER.DURABLE.CREATE.{stream}.dur1",
@@ -200,7 +200,7 @@ class TestJetStreamGrants:
             "$JS.API.CONSUMER.CREATE.KV_other",
             "$JS.API.CONSUMER.DURABLE.CREATE.KV_other.spy",
             "$JS.API.CONSUMER.MSG.NEXT.KV_other.spy",
-            "$JS.API.STREAM.MSG.GET.aibots_other_stream",
+            "$JS.API.STREAM.MSG.GET.3tears_other_stream",
             # NB: $JS.API.STREAM.NAMES IS granted (account-level) -- nats-py needs it to resolve a KV
             # bucket's stream for kv.watch(); it enumerates only platform-constant stream names, no
             # stream DATA. STREAM.LIST (full per-stream config) is NOT needed by any client path.

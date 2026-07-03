@@ -4,7 +4,7 @@ v0.8.1 added to the canonical TableSchemas.
 
 v0.8.1 enriched the four memory-package schemas (memories, media,
 media_content, memory_chunks) with 17 indexes / unique constraints
-that match the per-table shape that metallm prod maintains via its
+that match the per-table shape that upstream prod maintains via its
 own Alembic migrations:
 
 - ``memories`` (5): ``idx_memories_agent_user`` composite btree,
@@ -19,7 +19,7 @@ own Alembic migrations:
 - ``media_content`` (4): ``idx_media_content_agent_user`` composite
   btree, ``idx_media_content_search_vector`` GIN FTS,
   ``ix_media_content_embedding`` HNSW vector (no WITH parameters --
-  prod was created before metallm started parametrising HNSW),
+  prod was created before upstream started parametrising HNSW),
   ``uq_media_content_content_id`` UNIQUE constraint.
 - ``memory_chunks`` (5): ``idx_chunks_message_id_start`` partial
   composite btree on ``(agent_id, message_id_start)`` (fixed in
@@ -30,7 +30,7 @@ own Alembic migrations:
   ``ix_memory_chunks_embedding`` HNSW vector (no WITH parameters),
   ``uq_memory_chunks_chunk_id`` UNIQUE constraint.
 
-Without this migration, aibots agent pods (which run the 3tears
+Without this migration, 3tears agent pods (which run the 3tears
 agent-memory migration runner against per-agent schema DBs) never
 get these indexes -- hybrid search falls back to sequential scan and
 the unique-on-id constraints are absent, so cross-agent leaks of the
@@ -109,7 +109,7 @@ _IX_MEDIA_CONTENT_EMBEDDING_SQL = "CREATE INDEX IF NOT EXISTS ix_media_content_e
 
 # v0.8.2: column shape corrected to ``(agent_id, message_id_start)``
 # to match the schema declaration in ``MemoryChunkCollection.schema``
-# and the prod metallm shape (verified against
+# and the prod shape (verified against
 # ``pg_indexes`` on the dev DB). v0.8.1 shipped this migration with
 # ``(message_id_start, chunk_index)`` which mismatched both the
 # schema and prod -- the parity test passed because it compares
@@ -232,7 +232,7 @@ async def add_hnsw_gin_indexes(store: DataStore) -> None:
     await store.execute(_IX_MEMORY_CHUNKS_EMBEDDING_SQL)
     # unique constraints (DO-block guarded; the 4 ``uq_<table>_<id>``
     # constraints mirror the prod ``ALTER TABLE ... ADD CONSTRAINT
-    # UNIQUE`` shape that metallm alembic 064 produced, so Alembic
+    # UNIQUE`` shape that upstream alembic 064 produced, so Alembic
     # auto-gen reads them out of ``information_schema.table_constraints``
     # rather than ``pg_indexes``).
     await store.execute(_ADD_UQ_MEMORIES_MEMORY_ID_SQL)
