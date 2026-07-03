@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         MemoryRefsCollection,
         conversation_memory_refs_table,
     )
+    from threetears.agent.memory.embedding_utils import embedding_attribution_scope
     from threetears.agent.memory.entities import (
         MediaContentEntity,
         MediaEntity,
@@ -64,7 +65,14 @@ if TYPE_CHECKING:
         default_memory_created_dispatcher,
     )
     from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
+    from threetears.agent.memory.integration import (
+        MemoryIntegration,
+        NatsEmbeddingAdapter,
+        extract_memories,
+        retrieve_memories,
+    )
     from threetears.agent.memory.merge import MemoryRepointResult, repoint_user
+    from threetears.agent.memory.middleware import MemoryInjectionMiddleware
     from threetears.agent.memory.prompts import ExtractionPrompts
     from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
     from threetears.agent.memory.tools import (
@@ -108,6 +116,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryCreatedEvent": ("threetears.agent.memory.events", "MemoryCreatedEvent"),
     "MemoryEntity": ("threetears.agent.memory.entities", "MemoryEntity"),
     "MemoryExtractor": ("threetears.agent.memory.extraction", "MemoryExtractor"),
+    "MemoryInjectionMiddleware": ("threetears.agent.memory.middleware", "MemoryInjectionMiddleware"),
+    "MemoryIntegration": ("threetears.agent.memory.integration", "MemoryIntegration"),
     "MemoryRecallInput": ("threetears.agent.memory.tools", "MemoryRecallInput"),
     "MemoryRefEntity": ("threetears.agent.memory.entities", "MemoryRefEntity"),
     "MemoryRefsCollection": ("threetears.agent.memory.collections", "MemoryRefsCollection"),
@@ -116,11 +126,14 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryRetriever": ("threetears.agent.memory.retrieval", "MemoryRetriever"),
     "MemorySearchInput": ("threetears.agent.memory.tools", "MemorySearchInput"),
     "MemoryType": ("threetears.agent.memory.types", "MemoryType"),
+    "NatsEmbeddingAdapter": ("threetears.agent.memory.integration", "NatsEmbeddingAdapter"),
     "RetrievalResult": ("threetears.agent.memory.retrieval", "RetrievalResult"),
     "authorize_memory_access": ("threetears.agent.memory.authorize", "authorize_memory_access"),
     "conversation_memory_refs_table": ("threetears.agent.memory.collections", "conversation_memory_refs_table"),
     "default_memory_created_dispatcher": ("threetears.agent.memory.events", "default_memory_created_dispatcher"),
+    "embedding_attribution_scope": ("threetears.agent.memory.embedding_utils", "embedding_attribution_scope"),
     "ensure_memory_owner_assignment": ("threetears.agent.memory.authorize", "ensure_memory_owner_assignment"),
+    "extract_memories": ("threetears.agent.memory.integration", "extract_memories"),
     "load_chunk_recall_tool": ("threetears.agent.memory.tools", "load_chunk_recall_tool"),
     "load_chunk_search_tool": ("threetears.agent.memory.tools", "load_chunk_search_tool"),
     "load_memory_add_tool": ("threetears.agent.memory.tools", "load_memory_add_tool"),
@@ -128,6 +141,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "load_memory_search_tool": ("threetears.agent.memory.tools", "load_memory_search_tool"),
     "memory_namespace_name": ("threetears.agent.memory.authorize", "memory_namespace_name"),
     "repoint_user": ("threetears.agent.memory.merge", "repoint_user"),
+    "retrieve_memories": ("threetears.agent.memory.integration", "retrieve_memories"),
 }
 
 __all__ = [
@@ -156,6 +170,8 @@ __all__ = [
     "MemoryCreatedEvent",
     "MemoryEntity",
     "MemoryExtractor",
+    "MemoryInjectionMiddleware",
+    "MemoryIntegration",
     "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
@@ -164,11 +180,14 @@ __all__ = [
     "MemoryRetriever",
     "MemorySearchInput",
     "MemoryType",
+    "NatsEmbeddingAdapter",
     "RetrievalResult",
     "authorize_memory_access",
     "conversation_memory_refs_table",
     "default_memory_created_dispatcher",
+    "embedding_attribution_scope",
     "ensure_memory_owner_assignment",
+    "extract_memories",
     "load_chunk_recall_tool",
     "load_chunk_search_tool",
     "load_memory_add_tool",
@@ -176,6 +195,7 @@ __all__ = [
     "load_memory_search_tool",
     "memory_namespace_name",
     "repoint_user",
+    "retrieve_memories",
 ]
 
 

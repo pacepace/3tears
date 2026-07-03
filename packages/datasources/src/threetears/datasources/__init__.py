@@ -83,6 +83,7 @@ from threetears.datasources.namespace import (
     datasource_namespace_id,
     datasource_namespace_name,
 )
+from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 __all__ = [
     "DATASOURCE_NAMESPACE_TYPE",
@@ -106,6 +107,7 @@ __all__ = [
     "IntrospectionDiff",
     "PostgresConnectionConfig",
     "RedshiftConnectionConfig",
+    "SchemaPrimingIntegration",
     "SnowflakeConnectionConfig",
     "TableTemplateCollection",
     "TableTemplateEntity",

@@ -48,7 +48,13 @@ from threetears.langgraph.events import (
 )
 from threetears.langgraph.middleware import PromptCachingMiddleware
 from threetears.langgraph.middleware_catalog import ObjectCatalogMiddleware
+from threetears.langgraph.middleware_context import (
+    ContextMergeMiddleware,
+    ConversationContextProvider,
+)
 from threetears.langgraph.middleware_offload import ToolResultOffloadMiddleware
+from threetears.langgraph.middleware_schema import SchemaPrimingMiddleware
+from threetears.langgraph.middleware_summarize import SummarizationMiddleware
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
     NEVER_OFFLOAD_TOOLS,
@@ -66,6 +72,7 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
+from threetears.langgraph.state import merge_metadata
 from threetears.langgraph.streaming import (
     NOSTREAM_TAG,
     StreamEndEvent,
@@ -96,6 +103,8 @@ __all__ = [
     "ChatModelCapabilities",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
+    "ContextMergeMiddleware",
+    "ConversationContextProvider",
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
@@ -109,6 +118,7 @@ __all__ = [
     "ReasoningStreamedEvent",
     "ResponseCompletedEvent",
     "ResponseFailedEvent",
+    "SchemaPrimingMiddleware",
     "StreamEndEvent",
     "StreamErrorEvent",
     "StreamEvent",
@@ -117,6 +127,7 @@ __all__ = [
     "StreamTransport",
     "StreamingResponse",
     "StreamingResponseError",
+    "SummarizationMiddleware",
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
@@ -139,6 +150,7 @@ __all__ = [
     "format_offload_handle",
     "has_offload_handle",
     "is_never_offload_tool",
+    "merge_metadata",
     "parse_stream_event",
     "should_bind_tools_fresh",
     "summarize_args",

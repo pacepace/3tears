@@ -25,6 +25,7 @@ from langchain_core.messages import (
     HumanMessage,
     SystemMessage,
 )
+from langchain_core.runnables import RunnableConfig
 
 from threetears.observe import get_logger
 
@@ -113,6 +114,7 @@ async def summarize_older_messages(
     older_messages: list[BaseMessage],
     chat_model: BaseChatModel,
     custom_prompt: str | None = None,
+    config: RunnableConfig | None = None,
 ) -> str:
     """Summarize a list of older messages into a concise narrative.
 
@@ -126,6 +128,10 @@ async def summarize_older_messages(
         of the active context).
     :param chat_model: the LangChain chat model used to generate the summary.
     :param custom_prompt: an optional override for :data:`DEFAULT_SUMMARIZATION_PROMPT`.
+    :param config: an optional LangChain ``RunnableConfig`` forwarded to the
+        model call. Callers streaming a response tag this with the framework's
+        no-stream marker (``{"tags": [NOSTREAM_TAG]}``) so the internal summary
+        call's tokens never leak into the user-facing token stream.
     :return: the summary text (capped at :data:`_MAX_SUMMARY_LENGTH` characters).
     """
     prompt = custom_prompt or DEFAULT_SUMMARIZATION_PROMPT
@@ -136,7 +142,8 @@ async def summarize_older_messages(
             [
                 SystemMessage(content=prompt),
                 HumanMessage(content=transcript),
-            ]
+            ],
+            config=config,
         )
         summary = _message_text(result).strip()
     except Exception:  # prawduct:allow prawduct/broad-except -- provider/LLM errors fall back to the heuristic summary

@@ -34,34 +34,37 @@ __all__ = ["PromptCachingMiddleware"]
 log = get_logger(__name__)
 
 
-def _annotate_messages_for_cache(messages: list[Any], chat_model: Any) -> list[Any]:
-    """Return ``messages`` with a leading SystemMessage cache_control-annotated.
+def _annotate_system_message_for_cache(
+    system_message: SystemMessage | None,
+    chat_model: Any,
+) -> SystemMessage | None:
+    """Return a cache_control-annotated copy of the system message, or ``None``.
 
-    Mirrors the old ``PromptCachingHook._rewrite_system_prompt_for_cache``: when the
-    model supports Anthropic ``cache_control`` and ``messages[0]`` is a bare-string
-    :class:`SystemMessage`, replace it with the structured-content form carrying
-    ``cache_control={"type": "ephemeral"}``. Idempotent (already-structured content is
-    left alone); a no-op for non-caching models.
+    ``create_agent`` carries the system prompt on ``ModelRequest.system_message``,
+    NOT as ``messages[0]`` — the reduced ``messages`` list excludes it (it is
+    prepended only at the innermost model call). When the model supports Anthropic
+    ``cache_control`` and the system message is bare-string content, this returns
+    its structured-content form carrying ``cache_control={"type": "ephemeral"}``.
+    Returns ``None`` (meaning "leave the request unchanged") when there is no system
+    message, the model does not support caching, or the content is already
+    structured (idempotent).
 
-    :param messages: the request message list (system prefix at index 0 when present)
-    :ptype messages: list[Any]
+    :param system_message: the request's system message, or ``None``
+    :ptype system_message: SystemMessage | None
     :param chat_model: the chat model the request will hit (capability source)
     :ptype chat_model: Any
-    :return: the message list, index 0 optionally rewritten
-    :rtype: list[Any]
+    :return: the annotated system message, or ``None`` when no change applies
+    :rtype: SystemMessage | None
     """
-    if not messages or not isinstance(messages[0], SystemMessage):
-        return messages
+    if system_message is None:
+        return None
     caps = detect_capabilities(chat_model)
     if not caps.supports_anthropic_cache_control:
-        return messages
-    head = messages[0]
-    if isinstance(head.content, list):
-        return messages  # already structured (caller or a prior pass annotated it)
-    prompt_text = head.content if isinstance(head.content, str) else str(head.content)
-    result = list(messages)
-    result[0] = annotate_system_prompt(prompt_text, caps)
-    return result
+        return None
+    if isinstance(system_message.content, list):
+        return None  # already structured (a prior pass annotated it)
+    prompt_text = system_message.content if isinstance(system_message.content, str) else str(system_message.content)
+    return annotate_system_prompt(prompt_text, caps)
 
 
 def _stamp_cache_usage(response: ModelResponse) -> None:
@@ -99,9 +102,12 @@ class PromptCachingMiddleware(AgentMiddleware):
     """Annotate the system prompt for Anthropic prompt caching + normalize usage.
 
     The ``create_agent`` successor to ``PromptCachingHook`` (an ``AgentNodeHook``).
-    On every model call it rewrites a leading bare-string ``SystemMessage`` to the
-    ``cache_control`` structured form when the model supports it, then normalizes the
-    response's cache-hit/creation counters onto ``usage_metadata["cache_usage"]``.
+    On every model call it rewrites the request's bare-string ``system_message`` to
+    the ``cache_control`` structured form when the model supports it, then normalizes
+    the response's cache-hit/creation counters onto ``usage_metadata["cache_usage"]``.
+    The system prompt is annotated on ``request.system_message`` (where
+    ``create_agent`` carries it) — NOT ``messages[0]``, which excludes the system
+    message.
 
     Deliberately NOT ported: the old hook's per-round ``bind_tools`` memoization
     (the ``_BOUND_MODEL_CACHE`` WeakKeyDictionary). That optimization existed because
@@ -127,9 +133,9 @@ class PromptCachingMiddleware(AgentMiddleware):
         :return: the model response with ``cache_usage`` normalized
         :rtype: ModelResponse
         """
-        annotated = _annotate_messages_for_cache(request.messages, request.model)
-        if annotated is not request.messages:
-            request = request.override(messages=annotated)
+        annotated = _annotate_system_message_for_cache(request.system_message, request.model)
+        if annotated is not None:
+            request = request.override(system_message=annotated)
         response = await handler(request)
         _stamp_cache_usage(response)
         return response
@@ -148,9 +154,9 @@ class PromptCachingMiddleware(AgentMiddleware):
         :return: the model response with ``cache_usage`` normalized
         :rtype: ModelResponse
         """
-        annotated = _annotate_messages_for_cache(request.messages, request.model)
-        if annotated is not request.messages:
-            request = request.override(messages=annotated)
+        annotated = _annotate_system_message_for_cache(request.system_message, request.model)
+        if annotated is not None:
+            request = request.override(system_message=annotated)
         response = handler(request)
         _stamp_cache_usage(response)
         return response

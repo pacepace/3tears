@@ -132,3 +132,7 @@ packages/agent/tools/tests/test_lazy_init.py:52:_LAZY
 packages/agent/memory/tests/test_lazy_init.py:47:_LAZY
 # rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 47
 packages/agent/memory/tests/test_lazy_init.py:51:_LAZY
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+packages/agent/knowledge/tests/test_lazy_init.py:47:_LAZY
+# rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 47
+packages/agent/knowledge/tests/test_lazy_init.py:51:_LAZY
