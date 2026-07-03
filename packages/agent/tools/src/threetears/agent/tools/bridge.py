@@ -32,8 +32,8 @@ def tears_tool_to_langchain(tool: TearsTool) -> BaseTool:
     # extracted ``short_name = schema.name.split(".")[-1]`` so a
     # canonical ``threetears.calculator`` surfaced as ``calculator``;
     # that short form was incompatible with consumers that match by
-    # the canonical name (metallm's ``_execute_service_tool``,
-    # 14-eng-ai-bot's ``compute_expected_tools`` glob matchers,
+    # the canonical name (a consumer's ``_execute_service_tool``,
+    # ``compute_expected_tools`` glob matchers,
     # registry catalog full_name -> tool entry lookups). Provider-side
     # wire constraints (e.g. Bedrock's tool-name validator that
     # rejects dots) are handled at the chat-model boundary by the

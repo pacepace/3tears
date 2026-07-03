@@ -15,13 +15,13 @@ groups / group_members / roles / role_assignments) so the
 can warm an in-process L1 view of the rbac surface. column shapes
 match :mod:`threetears.agent.acl` collection schemas one-for-one --
 the agent SDK's
-:data:`aibots_agents.runtime.l1_cache.AGENT_L1_METADATA` is the
+:data:`3tears_agents.runtime.l1_cache.AGENT_L1_METADATA` is the
 sibling definition. duplicating the column lists here keeps the
-3tears registry package free of an aibots_agents dependency (the
-registry must stay below the aibots stack in the import graph).
+3tears registry package free of an 3tears_agents dependency (the
+registry must stay below the 3tears stack in the import graph).
 
-mirrors the hub (``aibots.hub.common.l1_cache``) and agent pod
-(``aibots_agents.runtime.l1_cache``) patterns: one metadata object per
+mirrors the hub (``3tears.hub.common.l1_cache``) and agent pod
+(``3tears_agents.runtime.l1_cache``) patterns: one metadata object per
 process, one factory that constructs + initializes a shared
 :class:`SQLiteBackend`, one table per Collection-backed surface.
 """
@@ -92,8 +92,8 @@ pod_heartbeats_table = Table(
 
 # ---------------------------------------------------------------------------
 # rbac mirror tables (column shapes copied verbatim from
-# aibots_agents.runtime.l1_cache; duplicated to keep the 3tears
-# registry package free of any aibots_agents dependency)
+# 3tears_agents.runtime.l1_cache; duplicated to keep the 3tears
+# registry package free of any 3tears_agents dependency)
 # ---------------------------------------------------------------------------
 #
 # the registry's :class:`RbacEvaluatorAuthorizer` evaluates two-sided

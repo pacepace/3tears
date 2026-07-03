@@ -16,7 +16,6 @@ import pytest
 from nats.js.api import Header, StorageType
 
 from threetears.nats import (
-    DEFAULT_NAMESPACE,
     AppendResult,
     OpLog,
     OpLogError,
@@ -30,8 +29,8 @@ from threetears.nats import (
 @pytest.fixture(autouse=True)
 def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     """each test starts on the documented default namespace."""
-    monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
-    set_default_namespace(DEFAULT_NAMESPACE)
+    monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
+    set_default_namespace("3tears")
 
 
 # ----------------------------------------------------------------------
@@ -91,14 +90,14 @@ def _make_oplog(js: _FakeJetStream, *, repo: str = "story-alpha", branch: str = 
 
 def test_oplog_subject_is_namespace_prefixed() -> None:
     sub = Subjects.oplog("story-alpha", "main")
-    assert str(sub) == "aibots.oplog.story-alpha.main"
+    assert str(sub) == "3tears.oplog.story-alpha.main"
     assert sub.kind == "point"
 
 
 def test_oplog_subject_sanitizes_dotted_segments() -> None:
     """dots in repo/branch are replaced so they don't overload the separator."""
     sub = Subjects.oplog("my.org/repo", "feature.x")
-    assert str(sub) == "aibots.oplog.my-org/repo.feature-x"
+    assert str(sub) == "3tears.oplog.my-org/repo.feature-x"
 
 
 @pytest.mark.parametrize(("repo", "branch"), [("", "main"), ("repo", "")])
@@ -112,8 +111,8 @@ async def test_open_builds_dot_free_stream_name_and_memory_r3_config() -> None:
     js = _FakeJetStream()
     oplog = await OpLog.open(client=_FakeClient(js), repo="story.alpha", branch="release.1")  # type: ignore[arg-type]
 
-    assert oplog.subject == "aibots.oplog.story-alpha.release-1"
-    assert oplog.stream == "aibots-oplog-story-alpha-release-1"
+    assert oplog.subject == "3tears.oplog.story-alpha.release-1"
+    assert oplog.stream == "3tears-oplog-story-alpha-release-1"
     assert "." not in oplog.stream
 
     cfg = js.add_stream_config

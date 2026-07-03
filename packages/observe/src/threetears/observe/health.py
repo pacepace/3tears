@@ -1,8 +1,8 @@
 """``HealthServer`` -- minimal asyncio HTTP server for /healthz endpoints.
 
-every long-running service in the 3tears + aibots stack exposes a
+every long-running service in the 3tears + 3tears stack exposes a
 ``HealthServer``. NATS-only services (3tears registry, 3tears
-agent-tools serve, aibots agent-router, datasource tool pods, agent
+agent-tools serve, 3tears agent-router, datasource tool pods, agent
 pods, admin tool server) need an HTTP liveness endpoint that
 container orchestrators (docker compose, kubernetes) can probe; HTTP
 services (hub, gateway) get the same surface so operators have one
@@ -152,7 +152,7 @@ class HealthServer:
     liveness probes need plus the JSON shape operators want for
     drill-in.
 
-    :param port: TCP port to bind on. matches the aibots-hub
+    :param port: TCP port to bind on. matches the 3tears-hub
         Dockerfile's HEALTHCHECK port (8000) so the inherited
         check works without compose overrides
     :ptype port: int

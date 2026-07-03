@@ -189,7 +189,7 @@ class CallProxy:
         catalog: ToolCatalog,
         authorizer: AgentToolAuthorizer,
         pop_replay_guard: "ReplayGuard",
-        namespace: str = "aibots",
+        namespace: str = "3tears",
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,

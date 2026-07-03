@@ -85,7 +85,7 @@ class TestParseChunkListContent:
     def test_unknown_block_type_silently_skipped(self) -> None:
         """unknown block types are ignored without raising.
 
-        consistent with production behavior in metallm's personality
+        consistent with production behavior in the consumer's personality
         node: a future provider that ships a ``type=="tool_use"`` or
         ``type=="image"`` block must not crash the chunk parser.
         Visibility for unknown types belongs at the call site, not in

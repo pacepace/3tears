@@ -31,9 +31,9 @@ Platform-built-in tools land with `owner_agent_id=NULL, customer_id=NULL`. There
 
 ## Dev-mode authorizers
 
-`AllowAllAuthorizer` permits every dispatch unconditionally, enabled by `FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true`. Use only in local dev containers when an explicit RBAC bypass is needed.
+`AllowAllAuthorizer` permits every dispatch unconditionally, enabled by `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true`. Use only in local dev containers when an explicit RBAC bypass is needed.
 
-`DenyAllAuthorizer` refuses every dispatch. Available as a panic-button kill switch via `FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true`. It is also the millisecond-window placeholder the server holds *before* the rbac stack is wired against the live NATS client during `serve()`.
+`DenyAllAuthorizer` refuses every dispatch. Available as a panic-button kill switch via `THREETEARS_REGISTRY_FORCE_DENY_ALL=true`. It is also the millisecond-window placeholder the server holds *before* the rbac stack is wired against the live NATS client during `serve()`.
 
 ## Standalone entry point
 
@@ -41,12 +41,12 @@ Platform-built-in tools land with `owner_agent_id=NULL, customer_id=NULL`. There
 python -m threetears.registry
 ```
 
-Reads `THREETEARS_NATS_URL` (defaults to `nats://localhost:4222`) and `FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE` (the NATS subject namespace).
+Reads `THREETEARS_NATS_URL` (defaults to `nats://localhost:4222`) and `THREETEARS_NATS_SUBJECT_NAMESPACE` (the NATS subject namespace).
 
 By default the entry point wires `RbacEvaluatorAuthorizer` against a self-contained `RegistryRbacStack` (NATS-proxy `NamespaceCollection` + four rbac metadata Collections + `AclCache` + invalidation subscribers). The proxy collections read through the platform broker's `system.platform.rbac` carve-out, so no direct DB credentials are needed. The registry is self-sufficient in any deployment with a reachable platform broker. Optional knobs:
 
-- `FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true` -- bypass the rbac stack entirely (dev only).
-- `FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true` -- kill switch for misconfigured deployments.
+- `THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true` -- bypass the rbac stack entirely (dev only).
+- `THREETEARS_REGISTRY_FORCE_DENY_ALL=true` -- kill switch for misconfigured deployments.
 - `THREETEARS_REGISTRY_ACL_TTL_SECONDS` -- override the AclCache TTL (default 60s).
 
 Dispatch flow:

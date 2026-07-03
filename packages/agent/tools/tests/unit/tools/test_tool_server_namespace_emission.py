@@ -10,7 +10,7 @@ schema, which has no ``namespaces`` table -- the write reliably
 failed with ``relation "namespaces" does not exist`` whenever an
 agent's tool pod tried to register.
 
-The hub-side :class:`aibots.hub.tools.namespace_emitter
+The hub-side :class:`3tears.hub.tools.namespace_emitter
 .ToolNamespaceEmitter` (subscribed to ``{ns}.tools.register``) is now
 the SOLE writer of ``tool``-type namespace rows on the platform.
 
@@ -110,7 +110,7 @@ class TestAgentSideEmissionRetired:
     """regression guard: register / deregister never write through
     ``namespace_collection`` from the agent side. all tool-type
     namespace mutations are owned by the hub-side
-    :class:`aibots.hub.tools.namespace_emitter.ToolNamespaceEmitter`
+    :class:`3tears.hub.tools.namespace_emitter.ToolNamespaceEmitter`
     going forward.
     """
 

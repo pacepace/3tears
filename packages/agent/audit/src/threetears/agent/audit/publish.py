@@ -54,7 +54,7 @@ async def publish_audit(
         :class:`threetears.nats.NatsClient` wrapper; ``None`` is a no-op
     :ptype nats_client: NatsClient | None
     :param namespace: NATS subject namespace (environment-scoped
-        prefix from ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``)
+        prefix from ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
     :return: nothing
     :rtype: None

@@ -138,7 +138,7 @@ class TestResolveK8s:
             _SECRET_VALUE,
             encoding="utf-8",
         )
-        monkeypatch.setenv("AIBOTS_DATASOURCE_SECRETS_DIR", str(secret_dir))
+        monkeypatch.setenv("THREETEARS_DATASOURCE_SECRETS_DIR", str(secret_dir))
         secret = resolve_secret("k8s://central-reporting/password")
         assert isinstance(secret, SecretStr)
         assert secret.get_secret_value() == _SECRET_VALUE
@@ -148,7 +148,7 @@ class TestResolveK8s:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("AIBOTS_DATASOURCE_SECRETS_DIR", str(tmp_path))
+        monkeypatch.setenv("THREETEARS_DATASOURCE_SECRETS_DIR", str(tmp_path))
         with pytest.raises(SecretResolutionError, match="not found"):
             resolve_secret("k8s://nope/password")
 
@@ -157,7 +157,7 @@ class TestResolveK8s:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("AIBOTS_DATASOURCE_SECRETS_DIR", str(tmp_path))
+        monkeypatch.setenv("THREETEARS_DATASOURCE_SECRETS_DIR", str(tmp_path))
         with pytest.raises(SecretResolutionError, match="traversal"):
             resolve_secret("k8s://../../etc/passwd")
 

@@ -307,10 +307,10 @@ class TestStaleLease:
 
 
 class TestBucketDefaults:
-    """default bucket name derives from FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE."""
+    """default bucket name derives from THREETEARS_NATS_SUBJECT_NAMESPACE."""
 
     async def test_default_bucket_uses_namespace_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "prod14")
+        monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
         await lease.acquire("lock/a", ttl_seconds=30)
@@ -322,7 +322,7 @@ class TestBucketDefaults:
         assert envelope["holder"] == "pod-alpha"
 
     async def test_default_bucket_fallback_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
+        monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
         await lease.acquire("lock/a", ttl_seconds=30)

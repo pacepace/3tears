@@ -13,6 +13,25 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bind a subject namespace for every workspace test.
+
+    the production subject namespace has no default and must be
+    configured explicitly (see
+    :func:`threetears.nats.get_default_namespace`). workspace tools build
+    subjects (e.g. ``Subjects.workspaces_create``) deep in their execute
+    path, so bind a value via the environment variable here. this mirrors
+    the root conftest fixture and additionally covers isolated per-package
+    runs (``pytest packages/agent/workspace/tests/``), which do not load
+    the workspace-root conftest.
+    """
+    monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
+
+
 _CORE_COORDINATION_TESTS = (
     Path(__file__).resolve().parent.parent.parent.parent / "core" / "tests" / "unit" / "coordination"
 )

@@ -1,6 +1,6 @@
 """three-tier collections for datasource registry, schema metadata, and table templates.
 
-merged from Hub's ``aibots/hub/datasources/collections.py``,
+merged from Hub's ``3tears/hub/datasources/collections.py``,
 ``schema_collections.py``, and ``template_collections.py`` per
 ``datasource-task-07``. class definitions are byte-identical to the Hub
 originals -- this shard is pure relocation, not refactor.

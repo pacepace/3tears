@@ -48,7 +48,7 @@ async def test_resolved_creds_and_config_reach_the_client(monkeypatch: pytest.Mo
     session = _CapturingSession()
     store = build_s3_object_store(
         endpoint_url="http://minio:9000",
-        bucket="aibots-objects",
+        bucket="3tears-objects",
         access_key_ref="env://TEST_S3_ACCESS_KEY",
         secret_key_ref="env://TEST_S3_SECRET_KEY",
         region="eu-west-1",

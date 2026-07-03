@@ -93,7 +93,7 @@ class TestDefaultMemoryCreatedDispatcher:
     """Pins the contract for :func:`default_memory_created_dispatcher`.
 
     the helper is the canonical "opt-in default" wired by consumers
-    (the aibots-agents SDK, metallm, etc.) as the
+    (the 3tears-agents SDK, downstream services, etc.) as the
     :attr:`MemoryExtractor.on_memory_created` callback. these tests pin
     the build-and-dispatch path, the content_preview truncation, the
     str-cast of identifying fields, and the graceful no-op when no run

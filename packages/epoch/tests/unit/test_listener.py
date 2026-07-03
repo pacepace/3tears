@@ -18,7 +18,7 @@ from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.subjects import Subject
 
 
-def _subject(path: str = "metallm.capabilities.epoch") -> Subject:
+def _subject(path: str = "app.capabilities.epoch") -> Subject:
     """build a point Subject for tests."""
     return Subject(path=path, kind="point")
 
@@ -182,8 +182,8 @@ class TestEpochListenerDispatch:
         nats, callbacks = _capture_subscribe_typed()
         client = EpochClient(pool, nats)
         listener = EpochListener(nats, client)
-        subject_a = _subject("metallm.capabilities.epoch")
-        subject_b = _subject("aibots.gateway.catalog.epoch")
+        subject_a = _subject("app.capabilities.epoch")
+        subject_b = _subject("3tears.gateway.catalog.epoch")
         cb_a = AsyncMock()
         cb_b = AsyncMock()
 

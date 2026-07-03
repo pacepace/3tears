@@ -730,7 +730,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         - the underlying wiring gap (Hub's datasource collections
           constructed without ``nats_client``) is FIXED in
-          ``aibots.hub.app.lifespan``; the WARNING is the
+          ``3tears.hub.app.lifespan``; the WARNING is the
           regression net, not the primary fix.
         - several legitimate test scaffolds construct collections
           without a NATS client (SQLite-only L1 tests in

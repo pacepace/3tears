@@ -79,7 +79,7 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
         ),
         SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
         # message_id_source FK is table-level (below) with
-        # ON DELETE SET NULL to match prod metallm.
+        # ON DELETE SET NULL to match prod.
         SAColumn("message_id_source", PgUUID(as_uuid=True), nullable=True),
         SAColumn(
             "type_memory",
@@ -119,7 +119,7 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             unique=True,
             postgresql_where=sa_text("alias IS NOT NULL"),
         ),
-        # v0.8.1 enrichments mirror prod metallm alembic.
+        # v0.8.1 enrichments mirror prod alembic.
         SAIndex("idx_memories_agent_user", "agent_id", "user_id"),
         SAIndex(
             "idx_memories_agent_customer_user",
@@ -219,7 +219,7 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             "cloud_file_id",
             unique=True,
         ),
-        # v0.8.1 enrichments mirror prod metallm alembic.
+        # v0.8.1 enrichments mirror prod alembic.
         SAIndex("idx_media_agent_user", "agent_id", "user_id"),
         SAIndex(
             "ix_media_extraction_pending",
@@ -286,7 +286,7 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
         ),
         SAIndex("ix_media_content_media_type", "media_id", "content_type"),
         SAIndex("ix_media_content_user", "user_id"),
-        # v0.8.1 enrichments mirror prod metallm alembic.
+        # v0.8.1 enrichments mirror prod alembic.
         SAIndex(
             "idx_media_content_agent_user",
             "agent_id",
@@ -351,7 +351,7 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
         ),
         SAIndex("ix_memory_chunks_memory", "memory_id", "chunk_index"),
         SAIndex("ix_memory_chunks_user", "user_id"),
-        # v0.8.1 enrichments mirror prod metallm alembic.
+        # v0.8.1 enrichments mirror prod alembic.
         SAIndex(
             "idx_chunks_message_id_start",
             "agent_id",

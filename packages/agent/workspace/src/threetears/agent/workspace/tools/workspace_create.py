@@ -28,7 +28,7 @@ from pydantic import BaseModel
 # paired ``platform.namespaces`` write for every workspace-create now
 # rides a NATS event published on
 # :meth:`threetears.nats.Subjects.workspaces_create`. the hub-side
-# :class:`aibots.hub.workspace.namespace_emitter
+# :class:`3tears.hub.workspace.namespace_emitter
 # .WorkspaceNamespaceEmitter` subscribes (no queue group, every
 # replica observes) and upserts the row via
 # :class:`HubNamespaceCollection`. the agent-side L3 proxy routes
@@ -75,7 +75,7 @@ class WorkspaceCreateEvent(BaseModel):
     successful agent-side workspace insert.
 
     carries the minimum identity + naming shape the hub-side
-    :class:`aibots.hub.workspace.namespace_emitter
+    :class:`3tears.hub.workspace.namespace_emitter
     .WorkspaceNamespaceEmitter` needs to upsert one ``workspace``-type
     row in ``platform.namespaces``. the field set mirrors the entity
     payload the agent used to assemble locally; the emitter stamps
@@ -217,7 +217,7 @@ class WorkspaceCreateTool(TearsTool):
             on ``{ns}.audit.workspace.>``, and (b) the
             :class:`WorkspaceCreateEvent` on ``{ns}.workspaces.create``
             consumed by the hub's
-            :class:`aibots.hub.workspace.namespace_emitter
+            :class:`3tears.hub.workspace.namespace_emitter
             .WorkspaceNamespaceEmitter` to upsert the paired
             ``platform.namespaces`` row of type ``workspace``. the tool
             will not degrade silently when it is omitted -- a

@@ -10,7 +10,7 @@ of two narrow protocols:
   ``role_id -> Role`` lookup that turns each assignment into the
   action set it would contribute.
 
-the broker (in ``aibots.hub.broker``) implements these protocols
+the broker (in ``3tears.hub.broker``) implements these protocols
 against its postgres pool. each agent pod implements them against
 its NATS-proxied L3 client. both implementations land in the
 respective callers; this package owns only the shape.

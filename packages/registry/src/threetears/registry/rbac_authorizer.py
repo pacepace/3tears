@@ -14,8 +14,8 @@ authorizer now takes a ``NamespaceCollection`` handle directly and
 calls :meth:`NamespaceCollection.get_by_name`; the returned entity
 surfaces the four fields the evaluator reads through normal
 attribute access. the Collection parameter is typed ``Any`` because
-the concrete class lives in :mod:`aibots.hub.broker.namespaces` and
-this package sits a layer below aibots in the dependency graph; the
+the concrete class lives in :mod:`3tears.hub.broker.namespaces` and
+this package sits a layer below 3tears in the dependency graph; the
 three-tier-task-01 shard documents the import path as the callers'
 responsibility rather than a registry-side layering edit.
 
@@ -91,7 +91,7 @@ class RbacEvaluatorAuthorizer:
         whose ``get_by_name(name)`` method resolves tool namespaces
         by canonical name (``tool:<mcp_name>:<version>``). typed
         ``Any`` because concrete Collection class lives in
-        :mod:`aibots.hub.broker.namespaces`, a layer above this
+        :mod:`3tears.hub.broker.namespaces`, a layer above this
         package in dependency graph; caller's wiring code
         passes real Collection instance
     :ptype namespace_collection: Any

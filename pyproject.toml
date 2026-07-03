@@ -20,7 +20,7 @@ dev-dependencies = [
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2.3",
     "mypy>=1.8",
-    "ruff>=0.3",
+    "ruff>=0.15.18",
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp>=1.28",
@@ -124,6 +124,7 @@ select = ["SLF"]
 "packages/core/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
 # (callbacks, validation); calling delegate.arun/run would double-fire
@@ -203,6 +204,7 @@ mypy_path = [
     "packages/core/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
+    "packages/agent/knowledge/src",
     "packages/agent/memory/src",
     "packages/agent/skills/src",
     "packages/agent/tools/src",
@@ -226,6 +228,7 @@ files = [
     "packages/core/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
+    "packages/agent/knowledge/src",
     "packages/agent/memory/src",
     "packages/agent/skills/src",
     "packages/agent/tools/src",

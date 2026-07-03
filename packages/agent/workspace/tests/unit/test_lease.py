@@ -74,15 +74,15 @@ class TestBucketName:
         assert lease.bucket_name == "acme_workspace_locks"
 
     def test_env_namespace_forms_workspace_locks_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE=prod14 -> 'prod14_workspace_locks'."""
-        monkeypatch.setenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "prod14")
+        """THREETEARS_NATS_SUBJECT_NAMESPACE=prod14 -> 'prod14_workspace_locks'."""
+        monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake)
         assert lease.bucket_name == "prod14_workspace_locks"
 
     def test_env_unset_falls_back_to_workspace_locks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """env unset + no arg -> unscoped 'workspace_locks' (no KeyError)."""
-        monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
+        monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake)
         assert lease.bucket_name == "workspace_locks"

@@ -99,7 +99,7 @@ def detect_silent_prefix(content: str) -> bool:
     the fire row when this returns ``True``; the consumer's handler
     is responsible for stripping the marker from the persisted message
     + setting whatever UI column it uses for hidden rows (e.g.
-    metallm's ``messages.display='hidden'``).
+    a ``messages.display='hidden'`` column).
 
     :param content: candidate assistant-message text
     :ptype content: str

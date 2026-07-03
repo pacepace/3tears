@@ -74,9 +74,9 @@ _FIXTURE_BAKE = (
       }
     }
 
-    target "aibots-base" {
+    target "example-base" {
       contexts = {
-        aibots-base = "docker-image://ghcr.io/pacepace/aibots-base:v0.1.0"
+        example-base = "docker-image://ghcr.io/pacepace/example-base:v0.1.0"
       }
     }
     """
@@ -199,7 +199,7 @@ class TestBumpVersionScript:
         bake_after = (tmp_path / "docker-bake.hcl").read_text()
         assert '"v0.2.0"' in bake_after
         assert "threetears-base:v0.2.0" in bake_after
-        assert "aibots-base:v0.2.0" in bake_after
+        assert "example-base:v0.2.0" in bake_after
         # and the verify pass should agree
         verify = _run(tmp_path, "--verify", "0.2.0")
         assert verify.returncode == 0, f"{verify.stdout}{verify.stderr}"

@@ -69,7 +69,7 @@ class Workspace(BaseEntity):
     platform namespace naming contract (CLAUDE.md "Namespace Names")
     so every consumer (agent-side authorize cache lookup, L3 proxy
     routing, hub-side
-    :class:`aibots.hub.workspace.namespace_emitter
+    :class:`3tears.hub.workspace.namespace_emitter
     .WorkspaceNamespaceEmitter`) computes the same key without a
     network round trip. :attr:`customer_id` is the one field that must
     be loaded from :class:`platform.namespaces` at resolve-time; the
@@ -320,7 +320,7 @@ class Workspace(BaseEntity):
         ``{plural_prefix}.<segment1>...``). every consumer
         (authorize cache lookup, L3 proxy routing, discovery
         queries, hub-side
-        :class:`aibots.hub.workspace.namespace_emitter
+        :class:`3tears.hub.workspace.namespace_emitter
         .WorkspaceNamespaceEmitter` upsert) computes the same key
         without a network round trip.
 

@@ -103,7 +103,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # for now). Standard btree indexes are declared here.
     # v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     # ``conversation_id`` to standardize on ``<entity>_id`` across all
-    # entity tables (matches metallm prod + JSON API contract).
+    # entity tables (matches the JSON API contract).
     primary_key_column: str | tuple[str, ...] = ("agent_id", "conversation_id")
     schema = TableSchema(
         name="conversations",
@@ -117,7 +117,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("conversation_ref", STRING_TYPE, nullable=True, immutable=True),
             Column("name", STRING_TYPE, nullable=True),
             # v008: mutable FK into the app-agnostic ``folders`` table
-            # (Folder primitive lifted from metallm). conversations are
+            # (a generic Folder primitive). conversations are
             # filed / moved / unfiled over their lifetime, so unlike
             # ``conversation_ref`` this column is NOT immutable.
             Column("folder_id", UUID_TYPE, nullable=True),

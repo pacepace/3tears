@@ -21,7 +21,7 @@ FK constraints in the same transaction; the constraints themselves
 keep their auto-generated names.
 
 v0.8.0 shard 04.6 rationale. Every other entity table in the 3tears
-+ metallm stack uses the ``<entity>_id`` shape
+stack uses the ``<entity>_id`` shape
 (``memories.memory_id``, ``media.media_id``,
 ``context_items.context_id``, ``conversations.conversation_id`` (after
 v007), etc.). The workspace tables shipped with bare-``id`` PK

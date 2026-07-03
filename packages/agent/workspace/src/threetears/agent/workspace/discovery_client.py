@@ -1,7 +1,7 @@
 """namespace discovery NATS request/reply client.
 
 thin helper around the ``{ns}.namespace.discover`` subject the broker
-subscribes to (see ``aibots.hub.broker.namespace_discovery``). used by
+subscribes to (see ``3tears.hub.broker.namespace_discovery``). used by
 :class:`~threetears.agent.workspace.tools.workspace_list.WorkspaceListTool`
 and :class:`~threetears.agent.workspace.tools.workspace_current.WorkspaceCurrentTool`
 to retrieve namespace-type rows a caller can see -- owned plus granted
@@ -15,8 +15,8 @@ specific ``{ns}.workspace.discover`` to the resource-type-parameterized
 see regardless of type. callers that historically asked only for
 workspaces now pass ``namespace_type="workspace"`` explicitly; there
 is no back-compat alias for the old subject or the old request shape
--- per aibots CLAUDE.md's NO BACKWARDS-COMPATIBILITY SHIMS rule the
-rename is a one-commit coordinated change across 3tears + aibots.
+-- per 3tears CLAUDE.md's NO BACKWARDS-COMPATIBILITY SHIMS rule the
+rename is a one-commit coordinated change across 3tears + 3tears.
 
 the client serializes a :class:`NamespaceDiscoveryRequest`, publishes
 to ``{namespace}.namespace.discover``, and parses the reply back into
@@ -49,7 +49,7 @@ log = get_logger(__name__)
 
 
 #: closed set of namespace_type values callers may filter on. matches
-#: the :class:`aibots.hub.broker.namespaces.NamespaceType` enum shipped
+#: the :class:`3tears.hub.broker.namespaces.NamespaceType` enum shipped
 #: alongside this module. carried as a ``Literal`` on the request model
 #: so an accidental new type fails parse at the producer site rather
 #: than silently returning an empty set.
@@ -71,7 +71,7 @@ class NamespaceDiscoveryRequest(BaseModel):
     """local wire request mirroring the broker handler's shape.
 
     agent-workspace carries its own copy of the request/response models
-    instead of importing from aibots.hub so the package boundary stays
+    instead of importing from 3tears.hub so the package boundary stays
     clean -- the broker owns its handler models and this module owns the
     client models; both sides agree on the JSON shape.
 
@@ -175,7 +175,7 @@ class NamespaceDiscoveryClient:
     :param nats_client: connected NATS client exposing :meth:`request`
     :ptype nats_client: Any
     :param namespace: broker subject namespace prefix (from
-        ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``)
+        ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
     :param timeout_seconds: per-call request timeout in seconds;
         defaults to 5.0 to match other broker request/reply helpers

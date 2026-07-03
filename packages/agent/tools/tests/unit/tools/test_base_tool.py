@@ -185,7 +185,7 @@ class TestNoPlatformImports:
         banned_prefixes = (
             "nats",
             "langchain",
-            "aibots",
+            "3tears",
             "fastapi",
             "uvicorn",
             "sqlalchemy",

@@ -76,7 +76,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.call")
+    return IncomingMessage(data=data, reply_subject=reply, subject="3tears.tools.call")
 
 
 # the enforce-only auth scaffolding (a JWKS-wired proxy + authenticated token+pop requests) is

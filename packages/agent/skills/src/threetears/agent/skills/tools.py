@@ -3,8 +3,8 @@
 Provides seven loader factories that mint :class:`langchain_core.tools.BaseTool`
 instances bound to a specific ``(agent_id, user_id)`` actor pair and the
 agent-skills Collections (``AgentSkillCollection`` /
-``AgentSkillInvocationCollection``). The consumer (metallm's personality
-graph) wires these into the per-conversation tool surface.
+``AgentSkillInvocationCollection``). The consumer's personality
+graph wires these into the per-conversation tool surface.
 
 Factories:
 
@@ -24,7 +24,7 @@ enforced by a consumer-supplied state probe / setter so the package
 stays decoupled from any specific LangGraph state shape.
 
 Spec ref: ``docs/agent-skills/shard-02-agent-tools.md`` (requirements
-SK-09 .. SK-17) + ``metallm/docs/skills/PLACEMENT.md`` sections 1.5 /
+SK-09 .. SK-17) + the skills placement spec sections 1.5 /
 1.7 / 1.8 / 1.10.
 """
 

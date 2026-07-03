@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-langgraph"
-version = "0.13.11"
+version = "0.14.0"
 description = "Three-tier LangGraph checkpoint saver: L1 SQLite -> L2 NATS KV -> L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,8 +25,9 @@ dependencies = [
     "3tears",
     "3tears-media-contracts",
     "3tears-observe",
+    "langchain>=1.0",
     "langchain-core>=1.0",
-    "langgraph>=0.4",
+    "langgraph>=1.0",
     "langgraph-checkpoint>=4.0",
     "asyncpg",
     "uuid-utils",

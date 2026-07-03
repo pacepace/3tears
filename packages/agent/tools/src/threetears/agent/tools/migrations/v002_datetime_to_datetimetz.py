@@ -2,7 +2,7 @@
 agent-tools v002: TIMESTAMP -> TIMESTAMPTZ for every datetime column
 in the ``context_items`` table.
 
-collections-task-05: eliminate DATETIME_TYPE across 3tears + 14-eng-ai-bot.
+collections-task-05: eliminate DATETIME_TYPE across consuming packages.
 This migration flips the agent-tools ``context_items`` table from naive
 TIMESTAMP to aware TIMESTAMPTZ. The corresponding ``Column(...)``
 declarations in ``collections.py`` flip from DATETIME_TYPE to

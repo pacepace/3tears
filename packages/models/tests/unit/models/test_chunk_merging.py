@@ -162,7 +162,7 @@ class TestMergeChunks:
     def test_invalid_tool_calls_preserved(self) -> None:
         """``invalid_tool_calls`` survives the chunk -> message finalization.
 
-        Consumers (metallm's tool router, aibots-agents' dispatch)
+        Consumers (the consumer-side tool router, 3tears-agents' dispatch)
         inspect ``invalid_tool_calls`` to attempt JSON-repair on
         malformed streaming tool calls. The merge must keep that
         field so the recovery code can run.

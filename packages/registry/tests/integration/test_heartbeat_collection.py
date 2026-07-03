@@ -311,6 +311,9 @@ class TestHeartbeatSubscriberFlow:
     @pytest.mark.asyncio
     async def test_heartbeat_saves_entity_through_collection(self) -> None:
         """an incoming heartbeat message persists via the Collection."""
+        from threetears.nats import set_default_namespace
+
+        set_default_namespace("test")
         nats = InMemoryNatsBus()
         collection, _ = _make_pod(nats)
         catalog = ToolCatalog()

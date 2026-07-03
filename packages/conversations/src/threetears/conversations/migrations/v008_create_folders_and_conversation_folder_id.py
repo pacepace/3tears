@@ -3,8 +3,8 @@ conversations v008: create the ``folders`` table and add the mutable
 ``conversations.folder_id`` column.
 
 a folder is an app-agnostic, mutable, per-owner named container that
-groups conversations -- lifted from metallm's product-side folder
-feature so any 3tears consumer that organises conversations under
+groups conversations -- a product-side folder
+primitive so any 3tears consumer that organises conversations under
 named containers reuses one canonical entity instead of re-inventing a
 per-product table. the canonical shape carries only scope + name +
 timestamps; app-specific presentation (color, sort order, icon) lives

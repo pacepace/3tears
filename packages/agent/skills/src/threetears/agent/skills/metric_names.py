@@ -1,8 +1,8 @@
 """Canonical Prometheus + Loki event-name constants for skills observability.
 
-Consumers (the metallm shard that wires these tools into the personality
+Consumers (the host that wires these tools into the personality
 graph) register Prometheus instruments using these names with whatever
-product-specific prefix they need (``metallm_skill_load_total`` etc.).
+product-specific prefix they need (``myproduct_skill_load_total`` etc.).
 Keeping the bare names here means one canonical source for the
 instrumentation contract across every product that consumes the
 ``3tears-agent-skills`` package.

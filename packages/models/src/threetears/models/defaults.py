@@ -2,7 +2,7 @@
 
 every place the platform needs "the current chat / fast / large / embedding
 model" reads a constant from HERE instead of hardcoding a model-id string.
-source defaults (hub bootstrap, agent config defaults, the ``aibots init``
+source defaults (hub bootstrap, agent config defaults, the ``3tears init``
 scaffold), and tests, all import these. a model rev is therefore exactly two
 edits in this package: bump the constant below, and add/replace the matching
 :class:`~threetears.models.capabilities.ModelCapabilities` entry in the

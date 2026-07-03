@@ -86,7 +86,7 @@ class Conversation(BaseEntity):
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     ``conversation_id`` to standardize on ``<entity>_id`` across all
-    entity tables (matches metallm prod + JSON API contract).
+    entity tables (matches the JSON API contract).
 
     :ivar primary_key_field: name of the first pk column on the table
     :ptype primary_key_field: str

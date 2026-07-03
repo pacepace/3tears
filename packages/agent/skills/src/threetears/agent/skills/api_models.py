@@ -2,7 +2,7 @@
 
 Per the locked PLACEMENT decision (§3.1) the REST request/response
 shapes for the consumer's ``/api/v1/skills`` router are platform-defined
-and live here, NOT in the consumer. metallm's router imports these and
+and live here, NOT in the consumer. The consumer's router imports these and
 wires them to FastAPI; this module stays FastAPI-free so the package's
 dependency surface doesn't grow a web framework. Pure pydantic only.
 

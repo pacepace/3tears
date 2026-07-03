@@ -2,7 +2,7 @@
 
 shape one row per ``(principal, tool, permission)`` triple. principals
 are users / groups / roles; permissions are platform-format strings
-(``"metallm.conversations.read"``, ``"hub.audit.read"``, etc.). default-
+(``"myapp.conversations.read"``, ``"myapp.audit.read"``, etc.). default-
 deny: a tool's :attr:`McpTool.required_permission` runs only when an
 active grant matches the calling identity.
 
@@ -101,7 +101,7 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
     # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``
     # to match prod and the v001 migration's ``TIMESTAMPTZ NOT NULL
     # DEFAULT now()`` declaration. The two lookup indexes mirror v001
-    # so the parity gate stays clean against metallm's registered
+    # so the parity gate stays clean against the registered
     # ``mcp_tool_grants_table``.
     schema = TableSchema(
         name="mcp_tool_grants",

@@ -119,7 +119,7 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 # introduced to close at the cross-package boundary.
 #
 # Public factory signatures are unchanged so host applications
-# (metallm, future consumers) keep calling ``memories_table(metadata)``
+# (current and future consumers) keep calling ``memories_table(metadata)``
 # etc. without modification.
 # ---------------------------------------------------------------------------
 
@@ -129,7 +129,7 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 # here to bump everywhere if an embedding provider with a different
 # native dim is ever adopted. The 1024 value matches Voyage AI's
 # voyage-4 default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
-# the metallm declarations.
+# the upstream declarations.
 _MEMORY_VECTOR_DIM = 1024
 
 
@@ -445,7 +445,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     # v0.8.0 enrichment: TableSchema is now the single source of truth
     # for the SQLAlchemy registration. Mirrors the v0.7.5
     # ``memories_table`` factory output plus the ``ix_memories_user_alias``
-    # partial unique index relocated from metallm alembic 088 (the
+    # partial unique index relocated from upstream alembic 088 (the
     # per-user uniqueness on ``alias`` is intrinsic to the column
     # contract, not a deployment choice). The ``summary`` and
     # ``search_vector`` columns mirror prod -- ``search_vector`` is
@@ -467,7 +467,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             ),
             Column("conversation_id", UUID_TYPE, immutable=True),
             # message_id_source FK lives at table level with
-            # on_delete="SET NULL" to match prod metallm. The inline
+            # on_delete="SET NULL" to match prod. The inline
             # ``foreign_key=`` 2-tuple form emits NO ACTION which
             # diverges from prod and would surface as a parity-gate
             # phantom. Per v0.8.0 locked decision: inline form for
@@ -506,7 +506,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 immutable=True,
             ),
             # v0.7.5: optional named anchor for direct lookup. Per-user
-            # unique on the metallm DB side via alembic 088 (partial
+            # unique on the upstream DB side via alembic 088 (partial
             # unique index ``ix_memories_user_alias ON
             # memories(agent_id, user_id, alias) WHERE alias IS NOT
             # NULL``); relocated into 3tears in v0.8.0 (see indexes
@@ -518,7 +518,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         cas_column="date_updated",
         foreign_keys=(
             # message_id_source -> messages(message_id) ON DELETE
-            # SET NULL: matches prod metallm. Table-level because the
+            # SET NULL: matches prod. Table-level because the
             # inline 2-tuple form cannot express on_delete. v0.8.0
             # locked decision: inline for NO ACTION, table-level for
             # everything else.
@@ -539,7 +539,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 unique=True,
                 where="alias IS NOT NULL",
             ),
-            # v0.8.1: parity-gate enrichments relocated from metallm
+            # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composites used by the
             # cross-tenant access guards.
             SchemaIndex("idx_memories_agent_user", "agent_id", "user_id"),
@@ -558,7 +558,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             ),
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass; ``m`` / ``ef_construction``
-            # parameters mirror prod (metallm alembic). these are
+            # parameters mirror prod (upstream alembic). these are
             # strings to match the textual ``WITH (key = value)`` DDL
             # syntax pgvector emits.
             SchemaIndex(
@@ -572,7 +572,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # v0.8.1: global uniqueness on ``memory_id`` (stronger than the
         # composite ``(agent_id, memory_id)`` PK so cross-agent leaks of
         # the same UUID surface as a write-time conflict). Modelled as a
-        # UNIQUE CONSTRAINT (not a unique index) because prod metallm
+        # UNIQUE CONSTRAINT (not a unique index) because prod
         # alembic 064 declares it via ``ALTER TABLE ... ADD CONSTRAINT
         # uq_memories_memory_id UNIQUE``; Alembic auto-gen distinguishes
         # the two via ``information_schema.table_constraints``.
@@ -957,7 +957,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     ) -> dict[str, Any] | None:
         """Look up a memory by its named alias (v0.7.5).
 
-        Per-user unique on the metallm DB side (alembic 088 adds a
+        Per-user unique on the upstream DB side (alembic 088 adds a
         partial unique index on ``(agent_id, user_id, alias) WHERE
         alias IS NOT NULL``), so the lookup returns at most one row.
         """
@@ -1548,7 +1548,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     # ``date_updated`` column. The composite FK ``(agent_id, memory_id)
     # → memories(agent_id, memory_id) ON DELETE CASCADE`` is the
     # unified-model parent FK (3tears migration v017) and is required
-    # by the parity gate even though prod's metallm Alembic side only
+    # by the parity gate even though prod's upstream Alembic side only
     # carries the single-column ``memory_id → memories.memory_id``
     # variant; declared as a composite to encode the partition-aware
     # relationship in 3tears.
@@ -1628,7 +1628,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 "cloud_file_id",
                 unique=True,
             ),
-            # v0.8.1: parity-gate enrichments relocated from metallm
+            # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
             SchemaIndex("idx_media_agent_user", "agent_id", "user_id"),
             # v0.8.1: partial btree over rows still awaiting extraction;
@@ -1643,7 +1643,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
         # composite ``(agent_id, media_id)`` PK). Modelled as a UNIQUE
         # CONSTRAINT (not a unique index) -- prod creates it via
         # ``ALTER TABLE ... ADD CONSTRAINT uq_media_media_id UNIQUE`` in
-        # metallm alembic 064.
+        # upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_media_media_id", "media_id"),),
     )
 
@@ -1760,7 +1760,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 "content_type",
             ),
             SchemaIndex("ix_media_content_user", "user_id"),
-            # v0.8.1: parity-gate enrichments relocated from metallm
+            # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composite.
             SchemaIndex(
                 "idx_media_content_agent_user",
@@ -1777,7 +1777,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             # v0.8.1: HNSW vector-similarity index with the
             # ``vector_cosine_ops`` opclass. Prod does NOT carry a
             # ``WITH`` clause here (the index was built before the
-            # metallm migration started parametrising hnsw), so this
+            # upstream migration started parametrising hnsw), so this
             # declaration has no ``pg_with=``.
             SchemaIndex(
                 "ix_media_content_embedding",
@@ -1789,7 +1789,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         # v0.8.1: global uniqueness on ``content_id``. Modelled as a
         # UNIQUE CONSTRAINT (not a unique index) -- prod creates it via
         # ``ALTER TABLE ... ADD CONSTRAINT uq_media_content_content_id
-        # UNIQUE`` in metallm alembic 064.
+        # UNIQUE`` in upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_media_content_content_id", "content_id"),),
     )
 
@@ -2297,7 +2297,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 "chunk_index",
             ),
             SchemaIndex("ix_memory_chunks_user", "user_id"),
-            # v0.8.1: parity-gate enrichments relocated from metallm
+            # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. partial composite covering the agent-scoped
             # conversation-replay lookup that follows
             # ``message_id_start`` chains.
@@ -2333,7 +2333,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # v0.8.1: global uniqueness on ``chunk_id``. Modelled as a
         # UNIQUE CONSTRAINT (not a unique index) -- prod creates it via
         # ``ALTER TABLE ... ADD CONSTRAINT uq_memory_chunks_chunk_id
-        # UNIQUE`` in metallm alembic 064.
+        # UNIQUE`` in upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_memory_chunks_chunk_id", "chunk_id"),),
     )
 

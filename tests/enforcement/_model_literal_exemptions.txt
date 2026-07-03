@@ -30,3 +30,12 @@ packages/langgraph/tests/test_caching.py::legacy/family anthropic cache-detectio
 # synthetic anthropic-shape placeholder id ("claude-test") exercising the
 # tri-state cache fields; it is not a real model id and has no constant.
 packages/models/tests/unit/models/test_capabilities.py::synthetic claude-test cache-shape placeholder id, not a real model id
+
+# price-lookup source fixtures: OpenRouter catalogue ids (dotted slugs + dated
+# vendor ids) exercising the normalisation / never-a-near-price contract
+# (claude-sonnet-4-20250514 is the deliberate negative — must NOT match the 4.5
+# slug), plus the Voyage SCRAPER fixtures (voyage-4 / voyage-4-large / rerank-2.5
+# etc.) asserting the per-1M values pulled from the live-page fixture. These are
+# scraped/catalogue id variants matched at runtime, not registry pins — the
+# whole point of the lookup is that 3tears bakes no vendor prices.
+packages/models/tests/unit/models/test_price_lookup.py::price-source fixtures (OpenRouter catalogue ids + scraped Voyage ids) exercising the matcher/scraper, not current-model pins

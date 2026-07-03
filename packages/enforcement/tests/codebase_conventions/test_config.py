@@ -75,7 +75,7 @@ class TestOverrides:
 
     def test_custom_print_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/cli.py": ("command-line entry point intentionally writes to stdout"),
+            "src/3tears/cli.py": ("command-line entry point intentionally writes to stdout"),
         }
         config = CodebaseConventionsConfig(
             repo_root=tmp_path,
@@ -85,7 +85,7 @@ class TestOverrides:
 
     def test_custom_getlogger_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/config.py": ("platform bootstrap; stdlib logging used pre-observe init"),
+            "src/3tears/config.py": ("platform bootstrap; stdlib logging used pre-observe init"),
         }
         config = CodebaseConventionsConfig(
             repo_root=tmp_path,
@@ -105,7 +105,7 @@ class TestOverrides:
         tmp_path: Path,
     ) -> None:
         exempt = {
-            "src/aibots/types_only.py": ("stub module; only TYPE_CHECKING-guarded imports"),
+            "src/3tears/types_only.py": ("stub module; only TYPE_CHECKING-guarded imports"),
         }
         config = CodebaseConventionsConfig(
             repo_root=tmp_path,
@@ -115,7 +115,7 @@ class TestOverrides:
 
     def test_custom_return_type_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/legacy.py": ("legacy module pending migration to typed signatures"),
+            "src/3tears/legacy.py": ("legacy module pending migration to typed signatures"),
         }
         config = CodebaseConventionsConfig(
             repo_root=tmp_path,

@@ -306,7 +306,7 @@ class TestDatetimeToDatetimetzMigration:
 
 class TestAddConversationSearchVectorMigration:
     """tests for v005: search_vector tsvector + trigger + GIN index for
-    postgres FTS on conversation display titles. mirrors the metallm
+    postgres FTS on conversation display titles. mirrors the upstream
     alembic-057 conversation-side DDL shape, lifted to 3tears so other
     consumers don't reinvent the column + trigger pair locally.
     """
@@ -443,7 +443,7 @@ class TestCreateFoldersAndConversationFolderIdMigration:
     the mutable ``conversations.folder_id`` FK column.
 
     a folder is a per-owner named container grouping conversations,
-    lifted from metallm so multiple apps reuse one canonical entity.
+    designed so multiple apps reuse one canonical entity.
     app-specific presentation lives in ``metadata`` so the canonical
     shape stays column-stable.
     """

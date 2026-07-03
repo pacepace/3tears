@@ -4,8 +4,8 @@ conversations v003: add ``name`` column to ``conversations`` table.
 display-label support for human-facing agent UIs: every consumer
 exposing conversations to end users (chat clients, admin consoles)
 needs a renameable title independent of the rolling ``summary``.
-metallm carried this column locally pre-migration; promoted to the
-canonical entity here so 14-eng-ai-bot and other consumers do not
+some consumers carried this column locally pre-migration; promoted to the
+canonical entity here so downstream consumers do not
 re-invent it in their own schemas.
 
 nullable -- conversations get titled lazily (often by an LLM after the

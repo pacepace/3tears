@@ -25,7 +25,7 @@ design contract
   body DDL the operator wants to review.
 
 callers consume the captured stream via :meth:`captured_statements`
-and render it for human review (see ``aibots.hub.migrations.__main__``
+and render it for human review (see ``3tears.hub.migrations.__main__``
 ``upgrade --sql``).
 """
 

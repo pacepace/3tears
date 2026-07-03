@@ -1,6 +1,6 @@
 """Pin the canonical Prometheus + Loki event-name constants.
 
-These names form the observability contract consumers (e.g. metallm)
+These names form the observability contract that consumer products
 register their prefixed instruments against. A rename here is a
 cross-product break, so the test freezes the bare values.
 """

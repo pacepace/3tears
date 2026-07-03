@@ -10,14 +10,14 @@ REALISM / SCOPING LIMIT
   consumer handler synchronously within :meth:`publish`, so publish
   latency is zero and there is no timing slack to manage.
 - **stub :class:`AuditEventCollection`**: records ``save_entity``
-  calls; the real implementation in the aibots repo writes to
+  calls; the real implementation in the 3tears repo writes to
   ``platform_audit.audit_events``. the shard explicitly permits this
-  scoping trade-off ("If UnifiedAuditConsumer lives in aibots, [...]
+  scoping trade-off ("If UnifiedAuditConsumer lives in 3tears, [...]
   verify the fake NATS bus captured the published envelope with
   correct subject + shape"). we go one step further: wire an in-
   process stub consumer that mirrors the real consumer's persist
   contract, so the end-to-end envelope handling is validated here
-  even though the real DB row insert belongs to the aibots integration
+  even though the real DB row insert belongs to the 3tears integration
   suite.
 
 see ``README.md`` for graduation notes.
@@ -43,7 +43,7 @@ class _StubAuditEventCollection:
     """minimal stand-in for the Hub-side ``AuditEventCollection``.
 
     records every ``save_entity`` call verbatim. the shape mirrors the
-    aibots-side collection well enough for the consumer protocol test.
+    3tears-side collection well enough for the consumer protocol test.
     """
 
     def __init__(self) -> None:

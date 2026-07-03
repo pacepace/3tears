@@ -97,7 +97,7 @@ class RegistrationHandler:
     def __init__(
         self,
         catalog: ToolCatalog,
-        namespace: str = "aibots",
+        namespace: str = "3tears",
         authenticator: ToolPodAuthenticator | None = None,
         probe_timeout: float | None = None,
     ) -> None:

@@ -33,7 +33,7 @@ defaults:
   :data:`MODE_STRICT
   <threetears.enforcement.common.modes.MODE_STRICT>` per repo.
 - :attr:`migration_dirs` is explicit and per-repo — the canonical
-  hard-coded ``src/aibots/hub/migrations/``; consumers in other repos
+  hard-coded ``src/3tears/hub/migrations/``; consumers in other repos
   point to their own migration trees here.
 """
 
@@ -57,7 +57,7 @@ class MigrationYugabyteConfig:
         the walker uses to compute exemption-match keys.
     :ivar migration_dirs: absolute paths to migration directories the
         walker should scan (e.g.
-        ``(repo_root / "src" / "aibots" / "hub" / "migrations",)``).
+        ``(repo_root / "src" / "3tears" / "hub" / "migrations",)``).
         directories that do not exist on disk are silently skipped at
         runtime — preserving the canonical ``_existing_dirs()``
         behaviour so a repo that ships no migrations today can declare

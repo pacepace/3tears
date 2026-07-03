@@ -19,7 +19,6 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
-from threetears.langgraph.builders import build_chat_agent, build_tool_agent
 from threetears.langgraph.caching import (
     ChatModelCapabilities,
     annotate_system_prompt,
@@ -28,6 +27,7 @@ from threetears.langgraph.caching import (
     extract_cache_usage,
     should_bind_tools_fresh,
 )
+from threetears.langgraph.catalog import ObjectCataloger
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.events import (
     FrameworkEvent,
@@ -46,15 +46,15 @@ from threetears.langgraph.events import (
     default_registry,
     dispatch_event,
 )
-from threetears.langgraph.hooks import (
-    AgentNodeHook,
-    PromptCachingHook,
-    ToolNodeHook,
-    compose_agent_node_hooks,
-    compose_tool_node_hooks,
-    summarize_args,
+from threetears.langgraph.middleware import PromptCachingMiddleware
+from threetears.langgraph.middleware_catalog import ObjectCatalogMiddleware
+from threetears.langgraph.middleware_context import (
+    ContextMergeMiddleware,
+    ConversationContextProvider,
 )
-from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
+from threetears.langgraph.middleware_offload import ToolResultOffloadMiddleware
+from threetears.langgraph.middleware_schema import SchemaPrimingMiddleware
+from threetears.langgraph.middleware_summarize import SummarizationMiddleware
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
     NEVER_OFFLOAD_TOOLS,
@@ -72,6 +72,7 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
+from threetears.langgraph.state import merge_metadata
 from threetears.langgraph.streaming import (
     NOSTREAM_TAG,
     StreamEndEvent,
@@ -91,28 +92,33 @@ from threetears.langgraph.summarize import (
     DEFAULT_SUMMARIZATION_PROMPT,
     summarize_older_messages,
 )
+from threetears.langgraph.util import summarize_args
 
 __all__ = [
     "DEFAULT_OFFLOAD_THRESHOLD_CHARS",
     "DEFAULT_SUMMARIZATION_PROMPT",
     "NOSTREAM_TAG",
-    "AgentNodeHook",
     "AsyncQueryExecutor",
     "AsyncpgPoolAdapter",
     "ChatModelCapabilities",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
+    "ContextMergeMiddleware",
+    "ConversationContextProvider",
     "FlushCallback",
     "FrameworkEvent",
     "FrameworkEventRegistry",
     "ImageGeneratedEvent",
     "NEVER_OFFLOAD_TOOLS",
+    "ObjectCataloger",
+    "ObjectCatalogMiddleware",
     "OffloadResult",
     "PromptBuiltEvent",
-    "PromptCachingHook",
+    "PromptCachingMiddleware",
     "ReasoningStreamedEvent",
     "ResponseCompletedEvent",
     "ResponseFailedEvent",
+    "SchemaPrimingMiddleware",
     "StreamEndEvent",
     "StreamErrorEvent",
     "StreamEvent",
@@ -121,25 +127,21 @@ __all__ = [
     "StreamTransport",
     "StreamingResponse",
     "StreamingResponseError",
+    "SummarizationMiddleware",
     "ThreeTierCheckpointSaver",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
     "ToolCallStartEvent",
     "ToolCompletedEvent",
     "ToolDispatchedEvent",
-    "ToolNodeHook",
+    "ToolResultOffloadMiddleware",
     "ToolResultOffloader",
     "ToolStartedEvent",
     "UUIDSafeSerializer",
     "WorkflowCompletedEvent",
     "WorkflowStartedEvent",
     "WorkflowStepCompletedEvent",
-    "agent_node",
     "annotate_system_prompt",
-    "build_chat_agent",
-    "build_tool_agent",
-    "compose_agent_node_hooks",
-    "compose_tool_node_hooks",
     "compute_tool_key",
     "default_registry",
     "detect_capabilities",
@@ -147,11 +149,10 @@ __all__ = [
     "extract_cache_usage",
     "format_offload_handle",
     "has_offload_handle",
-    "has_tool_calls",
     "is_never_offload_tool",
+    "merge_metadata",
     "parse_stream_event",
     "should_bind_tools_fresh",
     "summarize_args",
     "summarize_older_messages",
-    "tool_node",
 ]

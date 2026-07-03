@@ -118,6 +118,7 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_analyzers",
         "constructor-injected config mapping, not cached state",
     ),
+    # -- agent-tools: HubObjectResolver immutable object-id→handle memo --
     (
         "agent-tools/object_resolver.py",
         "HubObjectResolver",

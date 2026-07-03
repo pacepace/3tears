@@ -10,8 +10,8 @@ shipped backends:
 
 - ``env://NAME``      -- read process env var ``NAME``. the dev backend.
 - ``k8s://rel/path``  -- read the file at ``<secrets-dir>/rel/path``, where
-  ``<secrets-dir>`` defaults to ``/var/run/secrets/aibots`` and is overridable via
-  ``AIBOTS_DATASOURCE_SECRETS_DIR``. the prod shape: a k8s ``Secret`` projected as a
+  ``<secrets-dir>`` defaults to ``/var/run/secrets/3tears`` and is overridable via
+  ``THREETEARS_DATASOURCE_SECRETS_DIR``. the prod shape: a k8s ``Secret`` projected as a
   volume (projected secrets update in-place, so a new credential needs no redeploy).
 
 registered-but-unimplemented (raise a clear error until a deployment needs them, so the
@@ -59,8 +59,8 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # default mount point for the k8s Secret-as-volume backend. override
 # via env so a deployment can relocate the projected-secret mount.
-_K8S_SECRETS_DIR_ENV = "AIBOTS_DATASOURCE_SECRETS_DIR"
-_K8S_SECRETS_DIR_DEFAULT = "/var/run/secrets/aibots"
+_K8S_SECRETS_DIR_ENV = "THREETEARS_DATASOURCE_SECRETS_DIR"
+_K8S_SECRETS_DIR_DEFAULT = "/var/run/secrets/3tears"
 
 
 class SecretResolutionError(ValueError):
@@ -111,7 +111,7 @@ def _resolve_k8s(locator: str) -> SecretStr:
     """``k8s://rel/path`` backend -- read a projected-Secret file.
 
     reads ``<secrets-dir>/rel/path`` where ``<secrets-dir>`` is
-    ``AIBOTS_DATASOURCE_SECRETS_DIR`` or ``/var/run/secrets/aibots``. the file content
+    ``THREETEARS_DATASOURCE_SECRETS_DIR`` or ``/var/run/secrets/3tears``. the file content
     is the exact secret (no newline stripping -- k8s Secret volumes store exact bytes).
 
     :raises SecretResolutionError: on path traversal, missing file, or read error

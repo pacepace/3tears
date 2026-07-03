@@ -175,7 +175,7 @@ class TestAnthropicWrapperStreaming:
     ``tool_call_chunks`` names back to canonical form. That override --
     even as a pass-through -- broke LangGraph's
     ``astream_events(version="v2")`` event tap, leaving event-driven
-    UIs (metallm's WS handler, debug-inject endpoint) with the saved DB
+    UIs (the consumer's WS handler, debug-inject endpoint) with the saved DB
     content but a blank live stream. Same bug class as the OpenRouter
     wrapper (see ``test_provider_openrouter.py`` for the full story).
 
@@ -297,7 +297,7 @@ class TestAnthropicWrapperStreaming:
 
         Anthropic shares the failure mode with OpenRouter / OpenAI
         because all three wrappers use the same override shape. The
-        OpenRouter case is the one metallm reproduced in production
+        OpenRouter case is the one reproduced in production
         (2026-05-13 conv ``019e2243-de0c``); this test pins the same
         contract on the Anthropic wrapper so any future divergence in
         wrapper behavior fails CI on this provider too.
@@ -373,7 +373,7 @@ class TestAnthropicWrapperToolNameValidation:
     Mirrors the OpenRouter wrapper's validation hook. Both wrappers
     drop ``invalid_tool_calls`` entries whose names fail the canonical
     3tears tool-name regex before yielding the chunk / returning the
-    result. This blocks the metallm 2026-05-19 prod incident
+    result. This blocks the 2026-05-19 prod incident
     (conv ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``) from recurring
     on either provider.
     """
@@ -496,7 +496,7 @@ class TestAnthropicWrapperToolNameValidation:
         """``ainvoke`` un-translates tool-call names even when it aggregates
         internally from the protected ``_astream``.
 
-        Regression for the metallm converged-loop tool-dispatch failure
+        Regression for the converged-loop tool-dispatch failure
         (2026-06-22): with a streaming callback active (the converged
         ``agent_node`` runs ``model.ainvoke`` under an ``astream_events``
         tap), ``BaseChatModel.ainvoke`` routes through

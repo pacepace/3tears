@@ -315,7 +315,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             str(agent_id),
             str(user_id),
-            "aibots.calc",
+            "3tears.calc",
             "1.0",
         )
         assert result is True
@@ -387,7 +387,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             str(agent_id),
             str(user_id),
-            "aibots.calc",
+            "3tears.calc",
             "1.0",
         )
         assert result is False  # cross-customer wall denies despite a valid same-customer grant
@@ -415,7 +415,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             str(agent_id),
             str(user_id),
-            "aibots.calc",
+            "3tears.calc",
             "1.0",
         )
         assert result is False
@@ -442,7 +442,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             str(agent_id),
             None,
-            "aibots.calc",
+            "3tears.calc",
             "1.0",
         )
         assert result is False
@@ -461,7 +461,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             str(agent_id),
             str(user_id),
-            "aibots.unknown",
+            "3tears.unknown",
             "1.0",
         )
         assert result is False
@@ -516,7 +516,7 @@ class TestRbacEvaluatorAuthorizer:
         result = await authorizer.is_authorized(
             "not-a-uuid",
             str(user_id),
-            "aibots.calc",
+            "3tears.calc",
             "1.0",
         )
         assert result is False
@@ -526,9 +526,9 @@ class TestRbacEvaluatorAuthorizer:
         """authorizer constructs canonical name from (mcp_name, mcp_version).
 
         the dispatch carries the natural ``mcp_name`` /
-        ``mcp_version`` shape (e.g. ``aibots.admin.customer_management`` /
+        ``mcp_version`` shape (e.g. ``3tears.admin.customer_management`` /
         ``1.0``); the namespace ``name`` column carries the sanitized
-        plural-prefix form (``tools.aibots-admin-customer_management.1-0``).
+        plural-prefix form (``tools.3tears-admin-customer_management.1-0``).
         without this canonicalization step the lookup never resolves
         the row and every dispatch denies even when a valid grant
         exists.
@@ -550,12 +550,12 @@ class TestRbacEvaluatorAuthorizer:
         await authorizer.is_authorized(
             str(agent_id),
             str(user_id),
-            "aibots.admin.customer_management",
+            "3tears.admin.customer_management",
             "1.0",
         )
 
         assert ns_coll.last_get_by_name == build_namespace_name(
             PLURAL_PREFIX_TOOL,
-            "aibots.admin.customer_management",
+            "3tears.admin.customer_management",
             "1.0",
         )

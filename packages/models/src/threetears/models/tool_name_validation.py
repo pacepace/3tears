@@ -1,10 +1,10 @@
 """validate tool-call names emitted by chat models against a strict regex.
 
-Production incident, metallm conv ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``
-(2026-05-19): a misbehaving provider response surfaced a tool-call name
-that carried embedded XML-attribute fragments left over from a model
-formatting error (``memory_recall" name="memory_recall``). The junk
-name propagated through metallm's reverse-translation layer, reached
+Production incident (2026-05-19): a misbehaving provider response
+surfaced a tool-call name that carried embedded XML-attribute
+fragments left over from a model formatting error
+(``memory_recall" name="memory_recall``). The junk
+name propagated through the reverse-translation layer, reached
 the tool-dispatch layer, and was persisted to the database as an
 unrecoverable invocation record before the dispatcher's own error
 handling could trip.
@@ -170,7 +170,7 @@ def filter_invalid_tool_calls(
             # call downstream (the merge re-derives from
             # ``tool_call_chunks``, so keeping it is harmless to args).
             # Treating it as junk was a false positive that logged +
-            # dropped a WARNING per streamed chunk (metallm conv 019ecdfd,
+            # dropped a WARNING per streamed chunk (production incident,
             # 2026-06-16). Keep it, never log it.
             kept.append(call)
         elif isinstance(name, str) and is_valid_tool_name(name):
