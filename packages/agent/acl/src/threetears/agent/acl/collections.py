@@ -1027,12 +1027,16 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         scope_type: str,
         scope_id: UUID | None,
         managed_by: str = "manual",
-    ) -> UUID:
+    ) -> tuple[UUID, bool]:
         """idempotent insert of ``(group, role, scope)`` assignment row.
 
-        returns the assignment's UUID — either an existing row's id
-        when the tuple already exists, or a freshly minted ``uuid7``
-        for a newly inserted row.
+        returns ``(assignment_id, created)``: the assignment's UUID — an
+        existing row's id when the tuple already exists, or a freshly minted
+        ``uuid7`` for a newly inserted row — paired with ``created``, ``True``
+        only when a new row was inserted. Callers that re-run this on a periodic
+        self-heal net use ``created`` to stay quiet (skip logging / side effects)
+        when the grant was already present, instead of treating every re-check as
+        a fresh materialization.
 
         the underlying ``role_assignments`` table does NOT carry a
         unique constraint over the lookup tuple (only ``id`` is PK)
@@ -1068,8 +1072,9 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         :param managed_by: provenance marker (``"manual"`` |
             ``"auto:agent-yaml"``); applied only on insert
         :ptype managed_by: str
-        :return: assignment UUID (existing or newly inserted)
-        :rtype: UUID
+        :return: ``(assignment_id, created)`` -- the assignment UUID (existing or
+            newly inserted) and whether a NEW row was inserted this call
+        :rtype: tuple[UUID, bool]
         :raises ValueError: if ``scope_type`` is unsupported or
             ``scope_id`` shape mismatches the scope
         :raises RuntimeError: if no L3 pool is bound
@@ -1110,8 +1115,10 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             scope_id,
         )
         result: UUID
+        created: bool
         if existing_row is not None:
             result = existing_row["assignment_id"]
+            created = False
         else:
             new_id = uuid7()
             now = datetime.now(UTC)
@@ -1136,7 +1143,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
                 managed_by,
             )
             result = new_id
-        return result
+            created = True
+        return result, created
 
     async def delete_by_group_and_scope(
         self,
