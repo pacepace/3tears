@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
@@ -68,18 +67,26 @@ SubjectKind = Literal["point", "pattern", "reply"]
 """
 
 
-_namespace_var: ContextVar[str | None] = ContextVar(
-    "threetears_nats_default_namespace",
-    default=None,
-)
+# Process-wide default namespace prefix used by :class:`Subjects` when a caller
+# builds a subject without threading a namespace explicitly. A plain module
+# global -- deliberately NOT a ``ContextVar``: the namespace is a single
+# process-wide deployment constant, and a ContextVar set at connect/startup time
+# is invisible to the SIBLING task trees that serve later work (e.g. a web
+# server's per-request handlers spawned by uvicorn). That invisibility silently
+# broke subject resolution on those paths -- ``get_default_namespace()`` saw the
+# var unset and raised even though the process had connected with a namespace.
+# A module global is visible in every task/context in the process, which is what
+# "process-wide" has always meant here.
+_default_namespace: str | None = None
 
 
 def set_default_namespace(namespace: str) -> None:
-    """set process-wide default namespace prefix used by :class:`Subjects`.
+    """set the process-wide default namespace prefix used by :class:`Subjects`.
 
     :class:`NatsClient.connect` calls this with its configured
-    ``nats_subject_namespace`` so every subject built afterwards picks
-    up the correct prefix without callers having to thread it through.
+    ``nats_subject_namespace`` so every subject built afterwards -- in ANY task
+    or async context in the process -- picks up the correct prefix without
+    callers having to thread it through.
 
     :param namespace: subject namespace prefix; must be non-empty
     :ptype namespace: str
@@ -89,7 +96,24 @@ def set_default_namespace(namespace: str) -> None:
     """
     if not namespace:
         raise ValueError("namespace must be non-empty")
-    _namespace_var.set(namespace)
+    global _default_namespace
+    _default_namespace = namespace
+
+
+def _reset_default_namespace() -> None:
+    """clear the process-wide default namespace back to unconfigured.
+
+    test-isolation helper. the module global carries process-wide, so -- unlike
+    the retired ContextVar, which reset itself as each test's task context went
+    out of scope -- it does NOT clear between tests on its own. autouse fixtures
+    call this to restore the unconfigured state so one test cannot leak a
+    namespace into the next.
+
+    :return: nothing
+    :rtype: None
+    """
+    global _default_namespace
+    _default_namespace = None
 
 
 def get_default_namespace() -> str:
@@ -101,7 +125,8 @@ def get_default_namespace() -> str:
 
     resolution order:
 
-    1. value previously set via :func:`set_default_namespace`
+    1. value previously set via :func:`set_default_namespace` (process-wide,
+       visible in every task/context)
     2. env var ``THREETEARS_NATS_SUBJECT_NAMESPACE`` (read at call
        time, not import time, so changes during process lifetime are
        observed)
@@ -110,9 +135,8 @@ def get_default_namespace() -> str:
     :rtype: str
     :raises NamespaceNotConfiguredError: if neither source is set
     """
-    explicit = _namespace_var.get()
-    if explicit is not None:
-        return explicit
+    if _default_namespace is not None:
+        return _default_namespace
     env = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
     if env:
         return env

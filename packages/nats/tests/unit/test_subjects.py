@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from uuid import UUID
 
 import pytest
@@ -18,18 +19,27 @@ _TEST_NAMESPACE = "3tears"
 
 
 @pytest.fixture(autouse=True)
-def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ensure each test starts with the default namespace."""
+def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """ensure each test starts with the default namespace and leaks none after.
+
+    the default namespace is a process-wide module global (no longer a
+    ContextVar that reset itself per test), so this fixture clears it after each
+    test to keep tests isolated from one another.
+    """
+    from threetears.nats.subjects import _reset_default_namespace
+
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
     set_default_namespace(_TEST_NAMESPACE)
+    yield
+    _reset_default_namespace()
 
 
 def test_get_default_namespace_raises_when_unconfigured(monkeypatch: pytest.MonkeyPatch) -> None:
     """with no env var and no explicit set, resolution raises."""
-    from threetears.nats.subjects import _namespace_var
+    from threetears.nats.subjects import _reset_default_namespace
 
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
-    _namespace_var.set(None)
+    _reset_default_namespace()
     with pytest.raises(NamespaceNotConfiguredError):
         get_default_namespace()
 
@@ -38,11 +48,10 @@ def test_namespace_overridable_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """env var observable at call time, not import time."""
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
     # set_default_namespace was called in fixture so env wins only after we reset
-    # explicit set takes priority in this implementation; verify the fallback
-    # path by clearing the contextvar
-    from threetears.nats.subjects import _namespace_var
+    # the explicit process-wide value; verify the fallback path by clearing it.
+    from threetears.nats.subjects import _reset_default_namespace
 
-    _namespace_var.set(None)
+    _reset_default_namespace()
     assert get_default_namespace() == "prod14"
 
 

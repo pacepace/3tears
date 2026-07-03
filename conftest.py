@@ -27,6 +27,7 @@ when langchain-core flips the default in a future release.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterator
 
 import pytest
 
@@ -57,18 +58,28 @@ pytest_plugins = ["threetears.core.testing.fixtures"]
 
 
 @pytest.fixture(autouse=True)
-def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """bind a subject namespace for every test.
+def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """bind a subject namespace for every test, isolated from its neighbours.
 
-    the production subject namespace has no default and must be
-    configured explicitly (see
-    :func:`threetears.nats.get_default_namespace`). tests get a
-    convenience value here so subject-building code paths resolve
-    without each test wiring it up. set via the environment variable
-    rather than :func:`set_default_namespace` so the value is visible
-    across event-loop tasks and threads (a ContextVar would not
-    propagate into coroutines pytest-asyncio runs in a fresh context).
-    tests that assert the unconfigured behavior clear both the env var
-    and the ContextVar locally within the test body.
+    the production subject namespace has no default and must be configured
+    explicitly (see :func:`threetears.nats.get_default_namespace`). tests get a
+    convenience value here so subject-building code paths resolve without each
+    test wiring it up. it is provided via the environment variable so it is
+    visible across every event-loop task and thread.
+
+    :func:`threetears.nats.set_default_namespace` now writes a process-wide
+    module global (it used to write a ContextVar that did not propagate into the
+    sibling tasks pytest-asyncio and uvicorn spawn -- the same defect that broke
+    the hub's chat path in production). that global takes precedence over the env
+    var and does NOT reset itself between tests, so a test (or a NatsClient it
+    connects) that sets it would otherwise shadow this env value for every later
+    test. clear it before and after each test so isolation holds. tests that
+    assert the unconfigured behavior clear the env var + call
+    ``_reset_default_namespace()`` locally within the test body.
     """
+    from threetears.nats.subjects import _reset_default_namespace
+
+    _reset_default_namespace()
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "aibots")
+    yield
+    _reset_default_namespace()
