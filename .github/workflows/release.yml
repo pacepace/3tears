@@ -5,8 +5,9 @@ on:
     tags:
       - "v*"
 
+# Least privilege by default; each job requests only what it needs.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -37,7 +38,7 @@ jobs:
       - name: Test (unit + enforcement; integration excluded - no docker on the runner)
         run: uv run pytest packages/ tests/ -m "not integration" -v
 
-  release:
+  build:
     needs: check
     runs-on: ubuntu-latest
     steps:
@@ -62,14 +63,65 @@ jobs:
           # this workflow step automatically inherits.
           ./scripts/bump-version.sh --verify "$TAG"
 
-      - name: Build packages
-        run: |
-          pip install build
-          for PKG_TOML in $(find packages -maxdepth 4 -name pyproject.toml | sort); do
-            PKG_PATH="$(dirname "$PKG_TOML")"
-            echo "Building $PKG_PATH..."
-            python -m build "$PKG_PATH" --outdir dist/
-          done
+      - name: Build all workspace packages
+        # Builds every workspace member's sdist + wheel into a single dist/.
+        # [tool.uv.sources] workspace pins are dev-only metadata that hatchling
+        # strips at build time, so each wheel ships real PyPI Requires-Dist
+        # (e.g. 3tears -> 3tears-observe, 3tears-nats), not workspace paths.
+        run: uv build --all-packages --out-dir dist/
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The `pypi` environment is the manual-approval gate: the run pauses here
+    # until an approver releases it, so an irreversible 23-package upload never
+    # happens on an accidental tag push. Its name must match the environment
+    # configured on every project's PyPI trusted-publisher entry.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/3tears/
+    permissions:
+      # OIDC token for trusted publishing -- the ONLY permission this job holds.
+      # Keeping the (arbitrary-code-executing) build out of this job is why
+      # build/publish are split: fewer steps can ever see the minted token.
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        # Single upload of the combined dist/: PyPI mints one short-lived token
+        # scoped to every project whose trusted publisher matches this
+        # (repo, workflow, environment), so all 23 packages route in one shot.
+        # skip-existing makes a re-run after a partial failure idempotent.
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  github-release:
+    needs: pypi-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Create GitHub Release
         env:
