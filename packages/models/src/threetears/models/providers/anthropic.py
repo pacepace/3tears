@@ -31,6 +31,7 @@ from threetears.models.capabilities import ModelCapabilities, register_capabilit
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.tool_name_translation import (
     build_name_translation,
+    forward_translate_input,
     reverse_translate_message,
 )
 from threetears.models.tool_name_validation import filter_invalid_tool_calls
@@ -218,8 +219,14 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             from langchain_core.runnables.config import ensure_config, merge_configs
 
             merged_config = merge_configs(ensure_config(None), config)
+            # Forward-translate: mangle any dotted tool-call name in the
+            # OUTBOUND history (a prior round's AIMessage, or a dotted
+            # hallucination / MCP tool) to wire form before it reaches the
+            # Anthropic ``^[a-zA-Z0-9_-]{1,128}$`` validator. Non-mutating (a
+            # copy), symmetric with ``reverse_translate_message`` below.
+            wire_input = forward_translate_input(input)
             async for chunk in super().astream(
-                input,
+                wire_input,
                 config=merged_config,
                 stop=stop,
                 **kwargs,
@@ -257,8 +264,10 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             :return: chat result with un-translated tool-call names
             :rtype: ChatResult
             """
+            # Forward-translate outbound dotted tool-call names (see the
+            # ``astream`` override) before the provider validates them.
             result = await super()._agenerate(
-                messages,
+                forward_translate_input(messages),
                 stop=stop,
                 run_manager=run_manager,
                 **kwargs,
@@ -311,8 +320,10 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             # ``BaseChatModel.ainvoke``'s ``ensure_config``. ``merge_configs``
             # folds the list into the manager instead, preserving the tap.
             merged_config = merge_configs(ensure_config(None), config)
+            # Forward-translate outbound dotted tool-call names (see the
+            # ``astream`` override).
             result = await super().ainvoke(
-                input,
+                forward_translate_input(input),
                 config=merged_config,
                 stop=stop,
                 **kwargs,
@@ -351,8 +362,10 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             # Pre-merge to preserve a callback-manager ``callbacks`` (see the
             # ``ainvoke`` override above for the rationale).
             merged_config = merge_configs(ensure_config(None), config)
+            # Forward-translate outbound dotted tool-call names (see the
+            # ``astream`` override).
             result = super().invoke(
-                input,
+                forward_translate_input(input),
                 config=merged_config,
                 stop=stop,
                 **kwargs,

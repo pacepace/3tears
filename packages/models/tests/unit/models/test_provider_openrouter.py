@@ -6,7 +6,13 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import BaseTool
 
 from threetears.models import DEFAULT_CHAT_MODEL
@@ -19,6 +25,8 @@ from threetears.models.providers.openrouter import (
 from threetears.models.tool_name_translation import (
     NameMangledToolProxy,
     build_name_translation,
+    forward_translate_input,
+    forward_translate_message,
     mangle_tool_name,
     reverse_translate_message,
 )
@@ -929,3 +937,208 @@ class TestVanillaChatAnthropicBaseline:
             f" suspecting the OpenRouter wrapper."
         )
         assert collected_text == "anthropic direct streams"
+
+
+# -- forward (outbound) name translation -------------------------------------
+
+
+class TestForwardTranslateMessage:
+    """``forward_translate_message`` mangles dotted tool-call names on an
+    outbound message, non-mutatingly.
+
+    Forward mirror of ``reverse_translate_message``: the reverse pass
+    un-translates a provider RESPONSE in place, this pass mangles the
+    conversation history that is about to be SENT and must NOT corrupt
+    the caller's message objects (they stay canonical for dispatch /
+    logging / persistence), so it returns a shallow copy.
+    """
+
+    def test_mangles_dotted_tool_calls_name(self) -> None:
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+        )
+        out = forward_translate_message(msg)
+        assert out.tool_calls[0]["name"] == "threetears_web_search"
+
+    def test_does_not_mutate_caller_message(self) -> None:
+        """The returned message is a copy; the caller's AIMessage keeps the
+        canonical dotted name so dispatch / logging still match the registry.
+        """
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+        )
+        out = forward_translate_message(msg)
+        assert out is not msg
+        assert msg.tool_calls[0]["name"] == "threetears.web_search"
+
+    def test_dotless_name_returns_same_object(self) -> None:
+        """No dotted name means no rename, so the original object is returned
+        (no needless copy).
+        """
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "plain_tool", "args": {}, "id": "c1"}],
+        )
+        assert forward_translate_message(msg) is msg
+
+    def test_mangles_invalid_tool_calls_name(self) -> None:
+        """A dotted hallucination that landed in ``invalid_tool_calls`` (e.g.
+        ``functions.web_search``) is mangled too — it would 400 the turn
+        unchanged.
+        """
+        msg = AIMessage(
+            content="",
+            invalid_tool_calls=[
+                {"name": "functions.web_search", "args": "{bad", "id": "c1", "error": "x"},
+            ],
+        )
+        out = forward_translate_message(msg)
+        assert out.invalid_tool_calls[0]["name"] == "functions_web_search"
+
+    def test_mangles_tool_call_chunks_name(self) -> None:
+        chunk = AIMessageChunk(
+            content="",
+            tool_call_chunks=[
+                {"name": "threetears.calculator", "args": "", "id": "c1", "index": 0},
+            ],
+        )
+        out = forward_translate_message(chunk)
+        assert out.tool_call_chunks[0]["name"] == "threetears_calculator"
+
+    def test_round_trips_with_reverse(self) -> None:
+        """A forward-mangled bound-tool name un-maps via the per-bind reverse
+        map — the outbound and inbound translations are symmetric.
+        """
+        _, reverse_map = build_name_translation([_DottedTool()])
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "threetears.calculator", "args": {}, "id": "c1"}],
+        )
+        wire = forward_translate_message(msg)
+        assert wire.tool_calls[0]["name"] == "threetears_calculator"
+        reverse_translate_message(wire, reverse_map)
+        assert wire.tool_calls[0]["name"] == "threetears.calculator"
+
+
+class TestForwardTranslateInput:
+    """``forward_translate_input`` applies the forward mangle across a
+    message-sequence input and leaves non-list inputs alone."""
+
+    def test_non_list_passes_through(self) -> None:
+        assert forward_translate_input("hi") == "hi"
+
+    def test_translates_list_of_messages(self) -> None:
+        original = [
+            SystemMessage(content="sys"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {}, "id": "c1"}],
+            ),
+        ]
+        out = forward_translate_input(original)
+        assert out is not original
+        assert out[1].tool_calls[0]["name"] == "threetears_web_search"
+        # caller's list + messages untouched
+        assert original[1].tool_calls[0]["name"] == "threetears.web_search"
+
+    def test_returns_same_list_when_no_translation(self) -> None:
+        original = [SystemMessage(content="sys"), HumanMessage(content="hi")]
+        assert forward_translate_input(original) is original
+
+
+class TestOpenRouterForwardTranslation:
+    """The wrapper forward-translates dotted tool-call names on the OUTBOUND
+    ``messages`` before the provider call.
+
+    Root cause (chunk 03): a prior round's ``AIMessage`` carrying
+    ``tool_calls`` with the canonical dotted name is re-sent on the next
+    round. OpenRouter routes to backends (Bedrock / OpenAI-compat) whose
+    ``^[a-zA-Z0-9_-]`` validator rejects the dot, 400-ing the turn. The
+    reverse pass un-translates responses but nothing mangled the dotted
+    name back to wire form on the way OUT. These tests pin the forward
+    direction on both the streaming and non-streaming code paths.
+    """
+
+    @pytest.mark.asyncio
+    async def test_astream_forward_translates_outbound_dotted_names(self) -> None:
+        """``astream`` sends the wire (underscored) name; the caller's message
+        keeps the canonical dotted name."""
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        outbound = [
+            SystemMessage(content="sys"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+            ToolMessage(content="hit", tool_call_id="c1"),
+        ]
+
+        original_astream = ChatOpenRouter._astream
+        try:
+            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
+            async for _ in model.astream(outbound):
+                pass
+        finally:
+            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
+        assert ai.tool_calls[0]["name"] == "threetears_web_search"
+        # The caller's original AIMessage keeps the canonical dotted name.
+        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
+
+    @pytest.mark.asyncio
+    async def test_agenerate_forward_translates_outbound_dotted_names(self) -> None:
+        """``_agenerate`` (the non-streaming path) mangles the outbound names too."""
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openrouter import ChatOpenRouter
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_agenerate(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        outbound = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+        ]
+
+        original = ChatOpenRouter._agenerate
+        try:
+            ChatOpenRouter._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            await model._agenerate(outbound)
+        finally:
+            ChatOpenRouter._agenerate = original  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"

@@ -28,8 +28,11 @@ from threetears.models.capabilities import ModelCapabilities, register_capabilit
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.tool_name_translation import (
     build_name_translation,
+    forward_translate_input,
     reverse_translate_message,
 )
+from threetears.models.tool_name_validation import filter_invalid_tool_calls
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -48,6 +51,39 @@ __all__ = [
 
 
 OPENAI_PROVIDER_NAME = "openai"
+
+_logger = get_logger(__name__)
+
+
+def _drop_junk_invalid_tool_calls(message: Any) -> None:
+    """drop ``invalid_tool_calls`` entries whose ``name`` fails validation.
+
+    Parity with the OpenRouter / Anthropic wrappers. Mutates
+    ``message.invalid_tool_calls`` in place, keeping only entries whose
+    names match the canonical 3tears tool-name regex. Each rejected
+    entry is logged once at WARNING (name truncated to 80 characters).
+    See :mod:`threetears.models.providers.openrouter` for the prod
+    incident write-up (2026-05-19).
+
+    :param message: chat-model response (``AIMessage`` or
+        ``AIMessageChunk``); duck-typed via attribute access
+    :ptype message: Any
+    """
+    raw = getattr(message, "invalid_tool_calls", None) or []
+    if not raw:
+        return
+    kept, rejected = filter_invalid_tool_calls(raw)
+    if not rejected:
+        return
+    for entry in rejected:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        truncated = name[:80] if isinstance(name, str) else repr(name)[:80]
+        _logger.warning(
+            "openai wrapper dropped invalid_tool_calls entry with junk name: %s",
+            truncated,
+        )
+    raw.clear()
+    raw.extend(kept)
 
 
 def _build_translating_chat_class() -> type[ChatOpenAI]:
@@ -141,13 +177,23 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             from langchain_core.runnables.config import ensure_config, merge_configs
 
             merged_config = merge_configs(ensure_config(None), config)
+            # Forward-translate: mangle any dotted tool-call name in the
+            # OUTBOUND history (a prior round's AIMessage, or a dotted
+            # hallucination / MCP tool) to wire form before it reaches
+            # OpenAI's ``^[a-zA-Z0-9_-]{1,64}$`` validator. Non-mutating (a
+            # copy), symmetric with ``reverse_translate_message`` below.
+            wire_input = forward_translate_input(input)
             async for chunk in super().astream(
-                input,
+                wire_input,
                 config=merged_config,
                 stop=stop,
                 **kwargs,
             ):
                 reverse_translate_message(chunk, self._name_reverse_map)
+                # Drop junk-name ``invalid_tool_calls`` entries before they
+                # reach downstream dispatch / persistence (parity with the
+                # OpenRouter / Anthropic wrappers).
+                _drop_junk_invalid_tool_calls(chunk)
                 yield chunk
 
         async def _agenerate(
@@ -170,14 +216,19 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             :return: chat result with un-translated tool-call names
             :rtype: ChatResult
             """
+            # Forward-translate outbound dotted tool-call names (see the
+            # ``astream`` override) before the provider validates them.
             result = await super()._agenerate(
-                messages,
+                forward_translate_input(messages),
                 stop=stop,
                 run_manager=run_manager,
                 **kwargs,
             )
             for generation in result.generations:
                 reverse_translate_message(generation.message, self._name_reverse_map)
+                # Drop junk-name ``invalid_tool_calls`` entries (parity with
+                # the OpenRouter / Anthropic wrappers).
+                _drop_junk_invalid_tool_calls(generation.message)
             return result
 
     return _NameTranslatingChatOpenAI
