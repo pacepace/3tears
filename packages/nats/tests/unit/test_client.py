@@ -490,7 +490,7 @@ async def test_connect_validates_namespace() -> None:
 async def test_connect_passes_credentials_and_scoped_inbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """auth_token, user_credentials, and a scoped inbox_prefix reach the nats-py connect options."""
+    """the auth_token provider, user_credentials, and a scoped inbox_prefix reach the connect options."""
     import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
@@ -505,16 +505,55 @@ async def test_connect_passes_credentials_and_scoped_inbox(
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
-        auth_token="bootstrap-tok",
+        auth_token=lambda: "bootstrap-tok",
         user_credentials="/run/secrets/agent.creds",
         inbox_prefix="_INBOX_agent_pod_pod-1",
         verify_jetstream=False,
     )
 
     options = captured["options"]
-    assert options["token"] == "bootstrap-tok"  # presented to the auth-callout responder
+    assert options["token"]() == "bootstrap-tok"  # a provider callable; nats-py invokes it per connect
     assert options["user_credentials"] == "/run/secrets/agent.creds"
     assert options["inbox_prefix"] == b"_INBOX_agent_pod_pod-1"  # bytes, scoped per-principal
+
+
+@pytest.mark.asyncio
+async def test_connect_auth_token_provider_is_reinvoked_per_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the auth_token provider is passed through UNWRAPPED so nats-py re-invokes it on every
+    (re)connect — each reconnect presents a freshly-minted token, never a cached (expired) snapshot."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    minted: list[str] = []
+
+    def _mint() -> str:
+        token = f"tok-{len(minted)}"
+        minted.append(token)
+        return token
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="agent-x",
+        auth_token=_mint,
+        verify_jetstream=False,
+    )
+
+    provider = captured["options"]["token"]
+    # stored as the callable itself (not a snapshotted string): successive calls yield successive
+    # fresh tokens, which is exactly what nats-py's per-(re)connect invocation relies on.
+    assert callable(provider)
+    assert provider() == "tok-0"
+    assert provider() == "tok-1"
 
 
 @pytest.mark.asyncio

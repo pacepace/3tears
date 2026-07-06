@@ -108,6 +108,14 @@ _T = TypeVar("_T", bound=BaseModel)
 #: session the broker may have dropped during the outage).
 ReconnectCallback = Callable[[], Awaitable[None]]
 
+#: a sync, argument-less PROVIDER returning the current connect auth token. nats-py invokes it fresh
+#: on every (re)connect (``Client._connect_command``), so a pod that presents a short-lived identity
+#: token hands the provider here and each reconnect re-presents a freshly-valid credential instead of
+#: a cached one that has since expired — the connection rides on indefinitely. Sync because nats-py
+#: calls it un-awaited; back a network-fetched token with a holder a background task refreshes and
+#: return ``holder.get()``.
+TokenCallback = Callable[[], str]
+
 
 # ---------------------------------------------------------------------------
 # tunables
@@ -293,7 +301,7 @@ class NatsClient:
         nats_subject_namespace: str = "3tears",
         client_name: str,
         cluster_urls: list[str] | None = None,
-        auth_token: str | None = None,
+        auth_token: TokenCallback | None = None,
         user_credentials: str | None = None,
         user: str | None = None,
         password: str | None = None,
@@ -317,11 +325,13 @@ class NatsClient:
         :ptype client_name: str
         :param cluster_urls: optional additional cluster member URLs
         :ptype cluster_urls: list[str] | None
-        :param auth_token: optional NATS auth token. under decentralized auth (platform-auth A)
-            this carries the pod's injected bootstrap token: the NATS server forwards it to the
-            Hub auth-callout responder, which validates it and mints the connection's user JWT +
-            subject permissions. anonymous (``None``) on the legacy shared bus.
-        :ptype auth_token: str | None
+        :param auth_token: optional NATS auth-token PROVIDER — a sync, zero-arg callable returning the
+            current token. under decentralized auth (platform-auth A) it returns the pod's short-lived
+            identity token; nats-py invokes it on every (re)connect, so each reconnect re-presents a
+            freshly-valid credential rather than a cached one that has since expired. the NATS server
+            forwards the returned token to the auth-callout responder, which verifies it and mints the
+            connection's user JWT + subject permissions. ``None`` leaves token auth off.
+        :ptype auth_token: TokenCallback | None
         :param user_credentials: optional path to a NATS ``.creds`` file (decentralized-auth static
             credentials). used for principals provisioned with standing creds rather than the
             auth-callout path; ``None`` leaves credential auth off.
@@ -385,6 +395,8 @@ class NatsClient:
             "error_cb": _on_error,
         }
         if auth_token:
+            # store the provider UNWRAPPED: nats-py's _connect_command invokes it on every
+            # (re)connect, so each reconnect presents a freshly-minted token, never a cached one.
             options["token"] = auth_token
         if user_credentials:
             options["user_credentials"] = user_credentials
