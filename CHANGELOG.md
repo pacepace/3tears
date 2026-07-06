@@ -4,6 +4,30 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.14.1 -- 2026-07-06
+
+**Refreshing NATS connect credentials + per-key tool-pod identity.** A connection's auth
+credential is no longer a single string captured at connect and re-presented (stale) on
+every reconnect — it is a PROVIDER re-invoked each (re)connect, so a short-lived self-minted
+identity token is re-minted fresh and the connection never wedges when the credential
+expires mid-session.
+
+- **`NatsClient.connect(auth_token=...)` is now a token PROVIDER** (`Callable[[], str]`,
+  invoked by nats-py on every (re)connect) rather than a static `str`. Static-credential
+  services wrap their token in `static_token_provider`; self-minting principals pass a
+  provider backed by `IdentityMinter`.
+- **`IdentityMinter`** (`threetears.core.security`) — holds a custody Ed25519 key and
+  self-mints short-lived EdDSA identity JWTs (the stateful counterpart to the pure
+  `sign_identity_token`), for a pod/agent/tool-pod to present as its connect credential.
+- **`NatsClient.is_healthy`** reports `False` when a connection is stuck in a persistent
+  Authorization-Violation reconnect loop (a rejected credential the forever-reconnect rides
+  forever without closing), so a `/healthz` keyed on it lets k8s restart the pod.
+- **Tool-pod per-key identity, both auth layers.** `ToolServer` accepts an `auth_token`
+  provider so a tool pod self-mints its connect JWT for the NATS auth-callout, and carries
+  the same JWT on its registration manifest. The registry `ToolPodAuthenticator.verify_pod`
+  now takes the RAW JWT (was a token hash); `RegistrationHandler` verifies token-bearing
+  manifests and admits tokenless (agent-owned in-process) pods.
+
 ## v0.13.11 -- 2026-07-02
 
 The **scope-and-objects** framework family: the huge-object offload backend and
