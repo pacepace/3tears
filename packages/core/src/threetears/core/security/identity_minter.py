@@ -114,7 +114,11 @@ class IdentityMinter:
         raw = pem.encode("utf-8") if isinstance(pem, str) else pem
         try:
             key = load_pem_private_key(raw, password=None)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
+            # ValueError: malformed / unparseable PEM. TypeError: an *encrypted* key ("Password was not
+            # given but private key is encrypted") — an operator handed us a password-protected key we
+            # cannot open here. Both are a bad-key deploy error: map to IdentityTokenError so the caller's
+            # `except IdentityTokenError` yields a clean config error, never a raw traceback (the contract).
             raise IdentityTokenError(f"invalid identity signing key ({type(exc).__name__})") from None
         if not isinstance(key, Ed25519PrivateKey):
             raise IdentityTokenError("identity signing key must be an Ed25519 private key")

@@ -60,6 +60,7 @@ import nats
 from nats.aio.client import Client as _NatsPyClient
 from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsConsumerConfig
 from nats.errors import (
+    AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
     StaleConnectionError as _NatsStaleConnectionError,
@@ -403,9 +404,13 @@ class NatsClient:
 
         async def _dispatch_error(exc: Exception) -> None:
             """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
-            await _on_error(exc)
+            # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
+            # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
+            # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
+            # run of failures; the next successful reconnect always resets it to 0.
             if _is_authorization_violation(exc):
                 health_state["auth_violations"] += 1
+            await _on_error(exc)
 
         options: dict[str, object] = {
             "name": client_name,
@@ -1677,17 +1682,27 @@ async def _on_disconnected() -> None:
 
 
 def _is_authorization_violation(exc: Exception) -> bool:
-    """whether ``exc`` is the server's Authorization-Violation rejection (the wedged-auth signal).
+    """whether ``exc`` is an auth rejection from the server (the wedged-auth signal is_healthy tracks).
 
-    Matched on the message (``nats: 'Authorization Violation'``) rather than an exception type so it
-    is robust across nats-py versions -- the server sends the same ``-ERR`` text regardless.
+    Auth rejections reach the error callback in two shapes, so we detect BOTH — matching on semantics,
+    not one string:
+
+    * the reconnect-loop path raises a generic ``errors.Error("nats: 'Authorization Violation'")`` — the
+      ``-ERR`` text the server sends; caught by the ``"authorization violation"`` substring.
+    * nats-py's typed :class:`nats.errors.AuthorizationError` whose ``str`` is ``"nats: authorization
+      failed"`` — NOT covered by the first substring. Matched by type (and its ``"authorization failed"``
+      text) so a future nats-py routing change that surfaces the typed error to ``error_cb`` still trips
+      the counter, rather than silently re-opening the multi-hour auth-wedge this signal exists to catch.
 
     :param exc: the exception nats-py surfaced to the error callback.
     :ptype exc: Exception
-    :return: ``True`` when it is an authorization-violation rejection.
+    :return: ``True`` when it is an authorization rejection.
     :rtype: bool
     """
-    return "authorization violation" in str(exc).lower()
+    if isinstance(exc, _NatsAuthorizationError):
+        return True
+    text = str(exc).lower()
+    return "authorization violation" in text or "authorization failed" in text
 
 
 async def _on_error(exc: Exception) -> None:

@@ -1202,6 +1202,20 @@ def test_is_authorization_violation_detects_the_server_rejection() -> None:
     assert not _is_authorization_violation(OSError("connection reset by peer"))
 
 
+def test_is_authorization_violation_detects_typed_authorization_error() -> None:
+    """nats-py's typed AuthorizationError (str: 'nats: authorization failed') must also trip the signal.
+
+    Its message shares no substring with 'authorization violation', so the reconnect-loop -ERR match
+    alone would miss it — detecting it by type (and its own text) keeps the wedge signal alive if a
+    future nats-py routes the typed error to error_cb instead of the generic -ERR string."""
+    from nats.errors import AuthorizationError
+
+    from threetears.nats.client import _is_authorization_violation
+
+    assert _is_authorization_violation(AuthorizationError())
+    assert _is_authorization_violation(Exception("nats: authorization failed"))
+
+
 @pytest.mark.asyncio
 async def test_is_healthy_trips_on_persistent_auth_violation(
     monkeypatch: pytest.MonkeyPatch,

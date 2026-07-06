@@ -79,6 +79,23 @@ def test_from_pem_rejects_non_ed25519_key() -> None:
         )
 
 
+def test_from_pem_rejects_encrypted_key() -> None:
+    """FAIL CLOSED with the DOCUMENTED error: an *encrypted* Ed25519 PEM (needs a password we do not
+    hold) raises IdentityTokenError, not the raw TypeError cryptography throws — so a caller's
+    ``except IdentityTokenError`` yields a clean config error instead of an unhandled traceback."""
+    encrypted_pem = (
+        Ed25519PrivateKey.generate()
+        .private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.BestAvailableEncryption(b"a-passphrase"),
+        )
+        .decode("utf-8")
+    )
+    with pytest.raises(IdentityTokenError):
+        IdentityMinter.from_pem(encrypted_pem, kid="k1", issuer=_ISSUER)
+
+
 def test_from_pem_rejects_junk() -> None:
     """FAIL CLOSED: a non-PEM string raises rather than yielding a minter on a junk key."""
     with pytest.raises(IdentityTokenError):
