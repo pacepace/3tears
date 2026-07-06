@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.core.security import (
     IdentityMinter,
     IdentityTokenError,
+    static_token_provider,
     verify_identity_token,
 )
 
@@ -118,3 +119,12 @@ def test_expired_token_is_rejected() -> None:
 
     with pytest.raises(IdentityTokenError):
         verify_identity_token(stale, jwks=minter.jwks(), issuer=_ISSUER)
+
+
+def test_static_token_provider_returns_the_token_on_every_call() -> None:
+    """the static provider is a zero-arg callable that yields the SAME token on every (re)connect."""
+    provider = static_token_provider("static-hub-token")
+
+    assert callable(provider)
+    assert provider() == "static-hub-token"
+    assert provider() == "static-hub-token"  # stable across reconnects (no per-call minting)

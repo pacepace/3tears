@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -30,12 +31,31 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 
-__all__ = ["DEFAULT_IDENTITY_TTL_SECONDS", "IdentityMinter"]
+__all__ = ["DEFAULT_IDENTITY_TTL_SECONDS", "IdentityMinter", "static_token_provider"]
 
 #: fallback identity-JWT lifetime. The token is a CONNECT credential re-minted on every reconnect
 #: (the token provider), so a short TTL just means more frequent transparent re-mints, never
 #: downtime — it only has to outlive the re-auth interval. Callers pass their own value.
 DEFAULT_IDENTITY_TTL_SECONDS = 3600
+
+
+def static_token_provider(token: str) -> Callable[[], str]:
+    """wrap a STANDING static connect token in the zero-arg provider ``NatsClient.connect`` requires.
+
+    ``NatsClient.connect``'s ``auth_token`` is a PROVIDER — a zero-arg callable nats-py invokes on
+    every (re)connect — never a bare string. A platform service that authenticates with a fixed,
+    standing credential (the Hub, the model gateway; they bypass the auth-callout) has no per-reconnect
+    minting to do, so it wraps its one token in this constant provider: every call returns the same
+    string. Self-minting principals (agent / tool pods) use :class:`IdentityMinter` instead, whose
+    provider mints a FRESH short-lived token per reconnect. The token is captured by value and never
+    logged.
+
+    :param token: the fixed NATS auth token the provider returns on every invocation.
+    :ptype token: str
+    :return: a zero-arg callable that returns ``token`` unchanged on every call.
+    :rtype: Callable[[], str]
+    """
+    return lambda: token
 
 
 class IdentityMinter:
