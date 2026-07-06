@@ -13,6 +13,7 @@ from threetears.nats.client import (
     DEFAULT_STARTUP_TIMEOUT,
     NatsClient,
     Subscription,
+    TokenCallback,
 )
 from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.nats.forward import (
@@ -84,6 +85,7 @@ __all__ = [
     "DEFAULT_STARTUP_TIMEOUT",
     "NatsClient",
     "Subscription",
+    "TokenCallback",
     # subjects
     "Subject",
     "SubjectKind",

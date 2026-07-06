@@ -32,7 +32,7 @@ from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
-from threetears.registry.auth import AgentToolAuthorizer
+from threetears.registry.auth import AgentToolAuthorizer, ToolPodAuthenticator
 from threetears.registry.config import (
     get_jwks_request_timeout,
     get_proxy_assertion_signing_key_ref,
@@ -119,6 +119,8 @@ class RegistryServer:
         call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
         rbac_authorizer_factory: ("Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None") = None,
+        pod_authenticator: ToolPodAuthenticator | None = None,
+        pod_authenticator_factory: ("Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None") = None,
         health_port: int | None = None,
     ) -> None:
         """initialize registry server.
@@ -159,6 +161,22 @@ class RegistryServer:
             implementation. ``None`` keeps the constructor-supplied
             ``authorizer`` for the whole serve loop.
         :ptype rbac_authorizer_factory: Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None
+        :param pod_authenticator: tool-pod REGISTRATION authenticator, threaded into the
+            :class:`~threetears.registry.registration.RegistrationHandler`. verifies each pod's
+            self-minted identity JWT (carried on the manifest) against the pod's stored key and
+            returns its allowed namespaces. ``None`` (with ``pod_authenticator_factory`` also
+            ``None``) leaves registration in OPEN mode -- every manifest admitted unverified, the
+            pure-3tears / dev default. host applications with a pod identity store (the aibots Hub)
+            pass this or a factory to CLOSE open mode.
+        :ptype pod_authenticator: ToolPodAuthenticator | None
+        :param pod_authenticator_factory: optional async factory taking the connected
+            :class:`NatsClient` and returning the pod authenticator (or ``None`` to keep open mode).
+            invoked from :meth:`serve` after NATS connects + before the handlers register, mirroring
+            ``rbac_authorizer_factory``, so a factory whose authenticator needs a live connection (a
+            NATS-proxy-backed tool_pods read) can build against it. takes precedence over
+            ``pod_authenticator`` when both are set. ``None`` keeps the constructor-supplied
+            ``pod_authenticator`` for the whole serve loop.
+        :ptype pod_authenticator_factory: Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None
         :param health_port: port the readiness HealthServer binds to;
             defaults to THREETEARS_REGISTRY_HEALTH_PORT env var,
             falling back to 8000. each container in the platform's
@@ -193,6 +211,8 @@ class RegistryServer:
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
         self._rbac_authorizer_factory = rbac_authorizer_factory
+        self._pod_authenticator = pod_authenticator
+        self._pod_authenticator_factory = pod_authenticator_factory
         if health_port is not None:
             self._health_port = health_port
         else:
@@ -245,6 +265,32 @@ class RegistryServer:
             self._authorizer = result
         return result
 
+    async def apply_pod_authenticator_factory(
+        self,
+        nc: "NatsClient",
+    ) -> "ToolPodAuthenticator | None":
+        """build the tool-pod registration authenticator from the factory (if one was set).
+
+        mirrors :meth:`apply_rbac_factory`: the constructor may receive a ``pod_authenticator``
+        directly (fixed authenticator) OR a ``pod_authenticator_factory`` that needs the live NATS
+        connection to back its pod-identity read (e.g. a NATS-proxy-backed tool_pods collection).
+        this resolves the factory once NATS is up and stores the result on ``self`` so
+        :meth:`_start_handlers` threads it into the :class:`RegistrationHandler`. extracted from
+        :meth:`serve` so tests can drive the swap without binding to private state.
+
+        no-op when no factory is set (the constructor-supplied ``pod_authenticator`` -- possibly
+        ``None`` for open mode -- is kept).
+
+        :param nc: connected NATS client the factory needs to back its pod-identity read
+        :ptype nc: NatsClient
+        :return: the resolved authenticator (also stored on self) when a factory was set, else the
+            existing ``pod_authenticator``
+        :rtype: ToolPodAuthenticator | None
+        """
+        if self._pod_authenticator_factory is not None:
+            self._pod_authenticator = await self._pod_authenticator_factory(nc)
+        return self._pod_authenticator
+
     async def serve(self) -> None:
         """start registry server and wait for shutdown signal.
 
@@ -267,6 +313,11 @@ class RegistryServer:
         # extracted to a method so tests can drive the same code path
         # without binding to private state.
         await self.apply_rbac_factory(self._nc)
+
+        # resolve the tool-pod registration authenticator (per-key identity) now that NATS is up,
+        # so a factory whose authenticator reads pod identity over the live connection can build
+        # against it before the registration handler starts. no-op / open mode when unset.
+        await self.apply_pod_authenticator_factory(self._nc)
 
         # the catalog KV bootstrap predates the wrapper's
         # :meth:`NatsClient.kv_bucket` cache; we still go through the
@@ -337,6 +388,7 @@ class RegistryServer:
         registration_handler = RegistrationHandler(
             self._catalog,
             namespace=self._namespace,
+            authenticator=self._pod_authenticator,
         )
         self._registration_handler = registration_handler
         await retry_with_backoff(
@@ -623,5 +675,47 @@ def _run_server() -> None:
     server = RegistryServer(
         authorizer=authorizer,
         rbac_authorizer_factory=rbac_authorizer_factory,
+        pod_authenticator_factory=_resolve_pod_authenticator_factory(),
     )
     asyncio.run(server.serve())
+
+
+def _resolve_pod_authenticator_factory() -> (
+    "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None"
+):
+    """resolve the tool-pod REGISTRATION authenticator factory from a configurable plugin path.
+
+    3tears stays host-agnostic: the standalone registry cannot know how a given deployment stores
+    its tool-pod identities, so the authenticator factory is supplied out-of-band via
+    ``THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY``, a ``module:callable`` dotted path the operator
+    points at a host-provided factory (e.g. the aibots Hub's
+    ``aibots.hub.tools.registry_auth:pod_authenticator_factory``, which verifies each pod's
+    self-minted identity JWT against the pod's stored public key). the referenced object is the async
+    factory itself -- ``Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]]`` -- invoked by
+    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> OPEN registration mode (the
+    pure-3tears / dev default; nothing to verify against without a host identity store).
+
+    :return: the resolved factory, or ``None`` when the env var is unset
+    :rtype: Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None
+    :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
+    :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
+        misconfigured authenticator plugin must crash startup, never silently drop to open mode)
+    """
+    import importlib
+
+    spec = os.environ.get("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "").strip()
+    result: "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None" = None
+    if spec:
+        module_name, sep, attr = spec.partition(":")
+        if not module_name or not sep or not attr:
+            raise ValueError(
+                "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY must be a 'module:callable' dotted "
+                f"path; got {spec!r}"
+            )
+        module = importlib.import_module(module_name)
+        result = getattr(module, attr)
+        _logger.info(
+            "registry tool-pod registration authenticator wired (per-key identity verify enabled)",
+            extra={"extra_data": {"factory": spec}},
+        )
+    return result

@@ -59,6 +59,7 @@ from threetears.nats import (
     NatsClient,
     RequestError,
     Subjects,
+    TokenCallback,
     set_default_namespace,
 )
 from threetears.observe import clear_context, get_logger, traced
@@ -173,6 +174,7 @@ async def nats_connect(
     namespace: str = "3tears",
     user: str | None = None,
     password: str | None = None,
+    auth_token: TokenCallback | None = None,
 ) -> NatsClient:
     """connect to NATS server via the canonical wrapper.
 
@@ -180,30 +182,56 @@ async def nats_connect(
     :class:`NatsClient` from the bootstrap call this helper to open
     their own. tests patch this symbol to swap a fake transport in.
 
-    under enforce-only connection auth (v0.13.9) a standalone tool server presents its OWN static
-    user/password (NATS ``authorization.users``); the enforcing bus has no ``no_auth_user``, so
-    ``user``/``password`` are REQUIRED there. ``None`` leaves credential auth off for tests + a
-    non-enforcing bus. (agent-owned tool pods take the pre-connected ``nats_client`` path instead --
-    that connection is the agent runtime's, authenticated via the callout.)
+    two credential styles are supported, mutually exclusive:
+
+    * ``auth_token`` -- a zero-arg PROVIDER (decentralized / auth-callout auth). when supplied it is
+      presented INSTEAD of ``user``/``password``: nats-py invokes it on every (re)connect, so each
+      reconnect re-presents a freshly-minted, still-valid identity token, and the NATS server
+      forwards it to the auth-callout responder which verifies it and mints the connection's scoped
+      user JWT. this is the per-key-identity path -- the CALLER builds the minter (a tool pod mints
+      a short-lived identity JWT from its own Ed25519 key).
+    * ``user`` / ``password`` -- static config-mode ``authorization.users`` creds. the legacy / dev
+      fallback: under enforce-only connection auth (v0.13.9) a standalone tool server on a
+      non-callout bus presents its OWN static creds (the enforcing bus has no ``no_auth_user``).
+      ``None`` leaves credential auth off for tests + a non-enforcing bus.
+
+    (agent-owned tool pods take the pre-connected ``nats_client`` path instead -- that connection is
+    the agent runtime's, authenticated via the callout.)
 
     :param url: NATS server URL
     :ptype url: str
     :param namespace: NATS subject namespace prefix bound on the wrapper
     :ptype namespace: str
-    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds
+    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds.
+        ignored when ``auth_token`` is supplied.
     :ptype user: str | None
-    :param password: NATS static password paired with ``user``; ``None`` -> no creds
+    :param password: NATS static password paired with ``user``; ``None`` -> no creds. ignored when
+        ``auth_token`` is supplied.
     :ptype password: str | None
+    :param auth_token: NATS auth-token PROVIDER (zero-arg callable returning the current token);
+        presented INSTEAD of ``user``/``password`` when set. ``None`` leaves token auth off.
+    :ptype auth_token: TokenCallback | None
     :return: connected canonical wrapper client
     :rtype: NatsClient
     """
-    return await NatsClient.connect(
-        nats_url=url,
-        nats_subject_namespace=namespace,
-        client_name="tool-server",
-        user=user,
-        password=password,
-    )
+    if auth_token is not None:
+        # per-key-identity path: present the self-minted token provider and NOT the static creds
+        # (the auth-callout mints this connection's scoped user JWT from the verified token).
+        client = await NatsClient.connect(
+            nats_url=url,
+            nats_subject_namespace=namespace,
+            client_name="tool-server",
+            auth_token=auth_token,
+        )
+    else:
+        client = await NatsClient.connect(
+            nats_url=url,
+            nats_subject_namespace=namespace,
+            client_name="tool-server",
+            user=user,
+            password=password,
+        )
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +295,13 @@ class RegistrationManifest(BaseModel):
     :ptype pod_id: str
     :param tools: list of tool definitions served by this pod
     :ptype tools: list[ToolManifestEntry]
-    :param bootstrap_token: optional authentication token for registry verification
+    :param bootstrap_token: the tool pod's registry-verification credential. under per-key identity
+        this is the pod's SELF-MINTED identity JWT (a short-lived EdDSA token signed with the pod's
+        own Ed25519 key, ``kid`` = pod id), re-minted fresh for each manifest by the ToolServer's
+        ``auth_token`` provider; the registry-layer :class:`~threetears.registry.auth.ToolPodAuthenticator`
+        verifies it (raw, not a hash) against the pod's stored public key. named ``bootstrap_token``
+        for wire-compatibility with the NATS auth-callout's connect-token field, which it mirrors.
+        ``None`` in open mode (no registry authenticator wired) or a static dev token.
     :ptype bootstrap_token: str | None
     :param owner_agent_id: owning-agent UUID for agent-spun pods;
         ``None`` for platform-built-in pods
@@ -513,6 +547,7 @@ class ToolServer:
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
+        auth_token: TokenCallback | None = None,
         context_factory: ("Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None") = None,
         nats_client: "NatsClient | None" = None,
         agent_id: UUID | None = None,
@@ -552,8 +587,24 @@ class ToolServer:
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
         :ptype heartbeat_interval: float
-        :param bootstrap_token: authentication token for registry verification
+        :param bootstrap_token: STATIC authentication token carried on the registration manifest for
+            registry-layer verification. under per-key identity this is the dev/legacy fallback: when
+            ``auth_token`` is supplied the manifest instead carries a FRESH self-minted identity JWT
+            re-minted from that provider on every publish, and this static value is unused. left
+            ``None`` on the callout path.
         :ptype bootstrap_token: str | None
+        :param auth_token: NATS auth-token PROVIDER (a zero-arg callable returning the current token)
+            for the standalone (``nats_url``) connect path under per-key identity. when supplied it
+            is presented to NATS INSTEAD of ``nats_user``/``nats_password``: nats-py invokes it on
+            every (re)connect so each reconnect re-presents a freshly-minted identity JWT, and the
+            auth-callout responder verifies it + mints the connection's scoped user JWT. the SAME
+            provider also mints the registration manifest's ``bootstrap_token`` fresh on every
+            :meth:`publish_registration`, so the registry-layer verifier sees a still-valid JWT even
+            on a re-publish long after connect. ``ToolServer`` stays issuer-agnostic -- the CALLER
+            builds the minter (e.g. ``IdentityMinter``) and wraps its ``mint`` in this provider.
+            ignored on the pre-connected ``nats_client`` path (that connection carries its own auth).
+            ``None`` -> fall back to ``nats_user``/``nats_password`` (dev / non-callout bus).
+        :ptype auth_token: TokenCallback | None
         :param context_factory: optional async factory taking
             ``(conversation_id, user_id)`` and returning a
             :class:`ToolContextManager` scoped to that conversation.
@@ -652,6 +703,10 @@ class ToolServer:
         self._pod_id = pod_id or str(uuid7())
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
+        # per-key-identity connect credential provider (self-minted identity JWT). when set it is
+        # presented to NATS on connect INSTEAD of user/password AND re-minted for each registration
+        # manifest so the registry-layer verifier always sees a fresh JWT. None -> static fallback.
+        self._auth_token = auth_token
         self._context_factory = context_factory
         self._agent_id = agent_id
         self._customer_id = customer_id
@@ -903,6 +958,7 @@ class ToolServer:
                 namespace=self._namespace,
                 user=self._nats_user,
                 password=self._nats_password,
+                auth_token=self._auth_token,
             )
             log.info(
                 "connected to NATS",
@@ -1377,10 +1433,16 @@ class ToolServer:
             )
             tools_list.append(entry)
 
+        # per-key identity: mint a FRESH identity JWT for THIS manifest so the registry-layer
+        # verifier sees a still-valid token even on a re-publish long after connect. the same
+        # provider backs the NATS connect credential (one self-minted key, both hops). when no
+        # provider is wired (dev / non-callout bus) fall back to the static bootstrap_token.
+        manifest_token = self._auth_token() if self._auth_token is not None else self._bootstrap_token
+
         manifest = RegistrationManifest(
             pod_id=self._pod_id,
             tools=tools_list,
-            bootstrap_token=self._bootstrap_token,
+            bootstrap_token=manifest_token,
             owner_agent_id=self._agent_id,
             customer_id=self._customer_id,
         )

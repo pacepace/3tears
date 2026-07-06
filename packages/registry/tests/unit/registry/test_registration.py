@@ -10,6 +10,7 @@ import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
 from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.registration import (
     ProbeResponse,
@@ -426,3 +427,131 @@ class TestRegistrationResponse:
         assert data["success"] is False
         assert data["error"] == "conflict detected"
         assert data["registered_tools"] == []
+
+
+# -- per-key-identity authenticator tests (raw-token verify) --
+
+
+class _RecordingAuthenticator:
+    """a ``ToolPodAuthenticator`` double that records the RAW token it was handed.
+
+    admits exactly ``expected_token`` (proving the registry passes the token through UN-hashed --
+    a sha256 digest would never match), returning an auth ctx scoped to ``allowed_namespaces``.
+    """
+
+    def __init__(self, expected_token: str, allowed_namespaces: list[str]) -> None:
+        self._expected = expected_token
+        self._allowed = allowed_namespaces
+        self.seen_tokens: list[str] = []
+
+    async def verify_pod(self, token: str) -> "ToolPodAuth | None":
+        self.seen_tokens.append(token)
+        result: ToolPodAuth | None = None
+        if token == self._expected:
+            result = ToolPodAuth(
+                pod_entity_id="pod-001",
+                name="recording-pod",
+                allowed_namespaces=self._allowed,
+            )
+        return result
+
+
+def _manifest_with_token(token: str | None, tools: list[dict[str, Any]] | None = None) -> RegistrationManifest:
+    """build a manifest carrying ``token`` as its bootstrap_token (the self-minted JWT slot)."""
+    base = _make_manifest(tools=tools)
+    return RegistrationManifest(pod_id=base.pod_id, tools=base.tools, bootstrap_token=token)
+
+
+class TestRegistrationHandlerAuthenticator:
+    """the authenticator receives the RAW manifest token and gates + filters registration."""
+
+    @pytest.mark.asyncio
+    async def test_raw_token_admitted_and_registered(self) -> None:
+        """a token the authenticator accepts registers the tools; the RAW token reaches verify_pod."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        manifest = _manifest_with_token("the-jwt")
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        # verify_pod saw the RAW token, not a hash of it
+        assert auth.seen_tokens == ["the-jwt"]
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert isinstance(reply, RegistrationResponse)
+        assert reply.success is True
+        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_token_denied(self) -> None:
+        """a token the authenticator rejects fails registration with an auth error."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        manifest = _manifest_with_token("a-forged-token")
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        assert auth.seen_tokens == ["a-forged-token"]
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is False
+        assert reply.error == "invalid bootstrap token"
+        assert catalog.get("threetears.calculator@1.0.0") is None
+
+    @pytest.mark.asyncio
+    async def test_tokenless_manifest_admitted(self) -> None:
+        """a tokenless manifest (agent-owned in-process pod, authenticated at the NATS layer) is
+        ADMITTED without reaching the verifier -- the authenticator governs PLATFORM tool pods that
+        present a token, not agent-owned pods."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        manifest = _manifest_with_token(None)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        assert auth.seen_tokens == []  # tokenless -> never reached the verifier
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+
+    @pytest.mark.asyncio
+    async def test_tools_filtered_to_allowed_namespaces(self) -> None:
+        """tools outside the pod's allowed namespaces are dropped; in-namespace tools survive."""
+        catalog = ToolCatalog()
+        auth = _RecordingAuthenticator("the-jwt", allowed_namespaces=["threetears."])
+        handler = RegistrationHandler(catalog, namespace="test", authenticator=auth)
+        nc = _make_registry_nc()
+        await handler.start(nc)
+        tools = [
+            {
+                "name": "threetears.calculator",
+                "version": "1.0.0",
+                "description": "allowed",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "acme.secret",
+                "version": "1.0.0",
+                "description": "outside the allow-list",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+        manifest = _manifest_with_token("the-jwt", tools=tools)
+        msg = _make_nats_msg(manifest.model_dump_json().encode("utf-8"))
+
+        await handler.handle_registration(msg)
+
+        reply = nc.publish_reply.call_args.kwargs["message"]
+        assert reply.success is True
+        assert reply.registered_tools == ["threetears.calculator@1.0.0"]
+        assert catalog.get("acme.secret@1.0.0") is None

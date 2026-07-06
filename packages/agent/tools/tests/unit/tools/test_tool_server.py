@@ -1839,3 +1839,160 @@ class TestToolServerVerificationObservability:
         assert "no JWKS key matches the token kid" in kid_miss_detail
         assert "no identity token" in absent_detail
         assert kid_miss_detail != absent_detail  # the two failure modes are distinguishable
+
+
+class TestToolServerAuthToken:
+    """per-key-identity connect: the self-minted ``auth_token`` provider drives BOTH the NATS
+    connect credential and a FRESH registration-manifest token on every publish."""
+
+    @staticmethod
+    def _mock_nc() -> AsyncMock:
+        """a mock NatsClient wired enough for serve()'s JWKS warm-up + publishes."""
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+        return mock_nc
+
+    @staticmethod
+    async def _run_serve(server: ToolServer, mock_nc: AsyncMock) -> None:
+        """drive serve() to first-publish then shut down."""
+        serve_task = asyncio.create_task(server.serve())
+        await asyncio.sleep(0.05)
+        await server.shutdown()
+        await asyncio.sleep(0.05)
+        serve_task.cancel()
+        try:
+            await serve_task
+        except asyncio.CancelledError:
+            pass
+
+    @staticmethod
+    def _manifest_token(mock_nc: AsyncMock) -> str:
+        """extract the bootstrap_token from the MOST RECENT published registration manifest."""
+        for call in reversed(mock_nc.publish.call_args_list):
+            subj = call.kwargs.get("subject")
+            if subj is not None and "tools.register" in subj.path:
+                payload = json.loads(call.kwargs["message"].model_dump_json())
+                return payload["bootstrap_token"]
+        raise AssertionError("no registration manifest was published")
+
+    @pytest.mark.asyncio
+    async def test_auth_token_provider_passed_to_nats_connect(self) -> None:
+        """the auth_token provider is threaded into nats_connect (presented INSTEAD of creds)."""
+        provider = lambda: "minted-token-abc"  # noqa: E731 -- terse test provider
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="pod-authtoken",
+            auth_token=provider,
+            namespace_collection=None,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        mock_nc = self._mock_nc()
+        with patch(
+            "threetears.agent.tools.server.nats_connect", return_value=mock_nc
+        ) as connect_spy:
+            await self._run_serve(server, mock_nc)
+        connect_spy.assert_called_once()
+        assert connect_spy.call_args.kwargs["auth_token"] is provider
+        # user/password are NOT set on the identity path -> they thread through as None
+        assert connect_spy.call_args.kwargs["user"] is None
+        assert connect_spy.call_args.kwargs["password"] is None
+
+    @pytest.mark.asyncio
+    async def test_manifest_carries_freshly_minted_token(self) -> None:
+        """each publish mints a FRESH manifest token from the same provider (not a cached string)."""
+        counter = {"n": 0}
+
+        def provider() -> str:
+            counter["n"] += 1
+            return f"minted-{counter['n']}"
+
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="pod-fresh",
+            auth_token=provider,
+            namespace_collection=None,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            await self._run_serve(server, mock_nc)
+        token = self._manifest_token(mock_nc)
+        # the manifest carried a provider-minted token (not the None/static fallback)
+        assert token.startswith("minted-")
+        # a subsequent republish re-invokes the provider -> a DIFFERENT fresh token
+        await server.publish_registration()
+        second = self._manifest_token(mock_nc)
+        assert second.startswith("minted-")
+        assert second != token
+
+    @pytest.mark.asyncio
+    async def test_static_bootstrap_token_fallback_when_no_provider(self) -> None:
+        """with no auth_token provider, the manifest carries the static bootstrap_token (dev)."""
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="pod-static",
+            bootstrap_token="static-dev-token",
+            namespace_collection=None,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        mock_nc = self._mock_nc()
+        with patch(
+            "threetears.agent.tools.server.nats_connect", return_value=mock_nc
+        ) as connect_spy:
+            await self._run_serve(server, mock_nc)
+        assert connect_spy.call_args.kwargs["auth_token"] is None
+        assert self._manifest_token(mock_nc) == "static-dev-token"
+
+
+class TestNatsConnectAuthToken:
+    """``nats_connect`` presents the ``auth_token`` provider INSTEAD of static user/password."""
+
+    @pytest.mark.asyncio
+    async def test_auth_token_presented_without_creds(self) -> None:
+        """when auth_token is set, connect is called with it and WITHOUT user/password."""
+        from threetears.agent.tools.server import nats_connect
+
+        provider = lambda: "tok"  # noqa: E731 -- terse test provider
+        sentinel = object()
+        with patch(
+            "threetears.agent.tools.server.NatsClient.connect",
+            new=AsyncMock(return_value=sentinel),
+        ) as connect_mock:
+            result = await nats_connect(
+                "nats://localhost:4222",
+                namespace="ns",
+                user="ignored",
+                password="ignored",
+                auth_token=provider,
+            )
+        assert result is sentinel
+        kwargs = connect_mock.call_args.kwargs
+        assert kwargs["auth_token"] is provider
+        assert "user" not in kwargs
+        assert "password" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_user_password_when_no_token(self) -> None:
+        """with no auth_token, connect is called with the static user/password (legacy/dev)."""
+        from threetears.agent.tools.server import nats_connect
+
+        sentinel = object()
+        with patch(
+            "threetears.agent.tools.server.NatsClient.connect",
+            new=AsyncMock(return_value=sentinel),
+        ) as connect_mock:
+            await nats_connect(
+                "nats://localhost:4222",
+                namespace="ns",
+                user="u",
+                password="p",
+            )
+        kwargs = connect_mock.call_args.kwargs
+        assert kwargs["user"] == "u"
+        assert kwargs["password"] == "p"
+        assert "auth_token" not in kwargs
