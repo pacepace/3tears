@@ -815,8 +815,21 @@ class MemoryExtractor:
         :return: inner content with fence stripped
         :rtype: str
         """
+        content = content.strip()
         if content.startswith("```"):
             lines = content.split("\n")
             if len(lines) > 2:
-                return "\n".join(lines[1:-1])
+                content = "\n".join(lines[1:-1]).strip()
+        # the model sometimes prepends reasoning prose to the JSON (seen on the
+        # worthiness gate); extract the outermost object/array so json.loads
+        # sees only the payload. picks whichever bracket type opens first.
+        obj_start = content.find("{")
+        arr_start = content.find("[")
+        starts = [i for i in (obj_start, arr_start) if i != -1]
+        if starts:
+            start = min(starts)
+            closer = "}" if content[start] == "{" else "]"
+            end = content.rfind(closer)
+            if end > start:
+                content = content[start : end + 1]
         return content
