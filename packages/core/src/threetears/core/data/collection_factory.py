@@ -79,8 +79,12 @@ def _build_upsert_sql(
 
     generates parameterized INSERT with ON CONFLICT DO UPDATE for all
     non-primary-key columns. parameter placeholders use $N style;
-    vector columns get a ``::vector`` cast so their bracketed text
-    form binds without the pgvector asyncpg codec.
+    vector columns get a ``::text::public.vector`` cast: schema-qualified
+    (a Collection reached through the agent L3 proxy runs under a search_path
+    scoped to the per-agent schema, which excludes ``public`` where the
+    pgvector type lives, so bare ``::vector`` fails ``type "vector" does not
+    exist``) and ``::text``-pinned so the bracketed text form binds without
+    the pgvector asyncpg codec.
 
     :param table_name: name of database table
     :ptype table_name: str
@@ -94,7 +98,7 @@ def _build_upsert_sql(
     :rtype: str
     """
     placeholders = ", ".join(
-        f"${i + 1}::vector" if col in vector_columns else f"${i + 1}" for i, col in enumerate(columns)
+        f"${i + 1}::text::public.vector" if col in vector_columns else f"${i + 1}" for i, col in enumerate(columns)
     )
     cols_str = ", ".join(columns)
     update_cols = [c for c in columns if c != pk_column]

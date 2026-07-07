@@ -653,13 +653,13 @@ class TestInsertSqlShape:
 
     @pytest.mark.asyncio
     async def test_vector_column_has_vector_cast(self) -> None:
-        """VECTOR columns render as ``$N::vector`` in INSERT VALUES."""
+        """VECTOR columns render as ``$N::text::public.vector`` in INSERT VALUES."""
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         await coll.save_to_store(_sample_item())
         sql = pool.calls[0][1]
-        assert "::vector" in sql
+        assert "::text::public.vector" in sql
 
     @pytest.mark.asyncio
     async def test_on_conflict_raise_has_no_on_conflict(self) -> None:

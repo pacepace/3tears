@@ -426,7 +426,7 @@ class TestMemoryRetrieverAgainstLiveSchema:
                 "conversation_id, message_id_source, type_memory, content, "
                 "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'preference', $7, NULL, "
-                "$8::vector, $9, $9)",
+                "$8::text::public.vector, $9, $9)",
                 uuid.uuid4(),
                 agent_id,
                 customer_id,
@@ -682,7 +682,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 "conversation_id, message_id_source, type_memory, content, "
                 "embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, "
-                "$8::vector, $9, $9)",
+                "$8::text::public.vector, $9, $9)",
                 mid,
                 agent_id,
                 customer_id,

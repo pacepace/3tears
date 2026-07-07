@@ -352,7 +352,7 @@ class TestUnifiedMemoryParentFks:
                 "conversation_id, message_id_source, type_memory, content, "
                 "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'topical_context', $7, $8, "
-                "$9::vector, $10, $10)",
+                "$9::text::public.vector, $10, $10)",
                 memory_id,
                 agent_id,
                 customer_id,
@@ -369,7 +369,7 @@ class TestUnifiedMemoryParentFks:
                 "INSERT INTO memory_chunks ("
                 "chunk_id, memory_id, agent_id, customer_id, user_id, "
                 "content, summary, embedding, date_created"
-                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)",
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::public.vector, $9)",
                 chunk_id,
                 memory_id,
                 agent_id,
@@ -431,7 +431,7 @@ class TestUnifiedMemoryParentFks:
                 "conversation_id, message_id_source, type_memory, content, "
                 "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'topical_context', $7, $8, "
-                "$9::vector, $10, $10)",
+                "$9::text::public.vector, $10, $10)",
                 memory_id,
                 agent_id,
                 customer_id,
@@ -467,7 +467,7 @@ class TestUnifiedMemoryParentFks:
                 "INSERT INTO media_content ("
                 "content_id, media_id, agent_id, customer_id, user_id, "
                 "content_type, content, summary, embedding, date_created"
-                ") VALUES ($1, $2, $3, $4, $5, 'ocr', $6, NULL, $7::vector, $8)",
+                ") VALUES ($1, $2, $3, $4, $5, 'ocr', $6, NULL, $7::text::public.vector, $8)",
                 content_id,
                 media_id,
                 agent_id,
@@ -528,7 +528,7 @@ class TestUnifiedMemoryParentFks:
                     "INSERT INTO memory_chunks ("
                     "chunk_id, memory_id, agent_id, customer_id, user_id, "
                     "content, summary, embedding, date_created"
-                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)",
+                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::public.vector, $9)",
                     chunk_id,
                     ghost_memory_id,
                     agent_id,
@@ -572,7 +572,7 @@ class TestFtsTriggerPopulatesVector:
                 "conversation_id, message_id_source, type_memory, content, "
                 "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
-                "$9::vector, $10, $10)",
+                "$9::text::public.vector, $10, $10)",
                 mem_id,
                 uuid.uuid4(),
                 uuid.uuid4(),

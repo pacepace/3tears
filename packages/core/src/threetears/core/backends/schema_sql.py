@@ -447,7 +447,7 @@ def build_where_pk(schema: TableSchema, start: int = 1) -> tuple[str, tuple[str,
 
 
 def render_param(column: Column, idx: int) -> str:
-    """render ``$N`` with optional ``::jsonb`` / ``::vector`` cast.
+    """render ``$N`` with optional ``::jsonb`` / ``::text::public.vector`` cast.
 
     :param column: column descriptor
     :ptype column: Column
@@ -459,7 +459,15 @@ def render_param(column: Column, idx: int) -> str:
     if column.column_type == _JSONB_TYPE:
         result = f"${idx}::jsonb"
     elif column.column_type == _VECTOR_TYPE:
-        result = f"${idx}::vector"
+        # schema-qualify ``public.vector`` (not bare ``vector``): a Collection
+        # accessed through the agent L3 proxy runs under a search_path scoped
+        # to the per-agent schema (``agent_<hex>``), which does not include the
+        # ``public`` schema where the pgvector type lives -- bare ``::vector``
+        # fails to parse with ``type "vector" does not exist``. the ``::text``
+        # pin encodes the bracketed-text value as text so a pool without the
+        # pgvector codec registered can bind it and let Postgres cast
+        # text -> vector server-side (the documented YB write pattern).
+        result = f"${idx}::text::public.vector"
     else:
         result = f"${idx}"
     return result
