@@ -411,6 +411,20 @@ def _merge_chunk_search_rows(
     return filtered
 
 
+# explicit column list for raw SELECTs over the ``memories`` table. the
+# ``embedding`` (pgvector) column is cast to ``::text`` so asyncpg can decode
+# it on the no-codec L3 pool -- a bare ``SELECT *`` returns the raw ``vector``
+# type (OID 8078) that asyncpg has no codec for and raises
+# ``UnsupportedClientFeatureError``. the entity deserializer parses the
+# bracketed-text form. mirrors the schema-backed generated SELECT's ::text
+# cast; keep in sync with the memories migration column set.
+_MEMORIES_SELECT_COLUMNS = (
+    "memory_id, agent_id, customer_id, user_id, type_memory, content, "
+    "date_created, date_updated, embedding::text AS embedding, "
+    "conversation_id, message_id_source, summary, search_vector, alias"
+)
+
+
 class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     """Collection for memory entities with three-tier caching.
 
@@ -686,7 +700,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # would not help. method on Collection preserves single
         # entry point.
         rows = await self.l3_pool.fetch(
-            "SELECT * FROM memories "
+            f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
             "WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3 "
             "ORDER BY date_created DESC",
             agent_id,
@@ -769,7 +783,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             param_idx += 1
 
         where_clause = " AND ".join(conditions)
-        query = f"SELECT * FROM memories WHERE {where_clause} ORDER BY date_created DESC"
+        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where_clause} ORDER BY date_created DESC"
 
         # cache-bypass: multi-row scan by agent scope is not primary-
         # key addressable; L1 row cache would not help. method on
@@ -1499,13 +1513,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # AST walker treats agent_id as deliberately fanned-out.
         if customer_id is None:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 ORDER BY date_created DESC",
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 ORDER BY date_created DESC",
                 list(agent_ids),
                 user_id,
             )
         else:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories "
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
                 "WHERE agent_id = ANY($1::uuid[]) AND customer_id = $2 "
                 "AND user_id = $3 "
                 "ORDER BY date_created DESC",
