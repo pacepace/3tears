@@ -40,6 +40,26 @@ log = get_logger(__name__)
 _USER_LOCALE_TTL_SECONDS = 300.0
 
 
+# message subtypes that are not fresh user content: bot echoes and the
+# edit / delete mutation events (``message_changed`` / ``message_deleted``)
+# that replay a prior message's ``ts``. routing them re-answers content the
+# user has since changed or removed.
+_IGNORED_MESSAGE_SUBTYPES = frozenset(
+    {"bot_message", "message_changed", "message_deleted"},
+)
+
+
+# grace window (seconds) applied to the startup-replay guard. a message
+# whose ``ts`` predates this adapter's start by more than the grace is a
+# Slack REDELIVERY of an event that arrived while the adapter was down /
+# restarting (never acked, so Slack retried it minutes later). answering it
+# re-surfaces a stale — possibly since-deleted — question. bolt drops the
+# Socket Mode ``retry_attempt`` marker before the listener, so the age of
+# the message ``ts`` relative to process start is the available signal. the
+# grace absorbs clock skew and messages genuinely in flight at startup.
+_STARTUP_REPLAY_GRACE_SECONDS = 30.0
+
+
 class SlackAdapter:
     """channel adapter bridging slack to platform via socket mode.
 
@@ -79,6 +99,13 @@ class SlackAdapter:
         self.router = router
         self.config: dict[str, Any] = config if config is not None else {}
         self._handler: AsyncSocketModeHandler | None = None
+        # wall-clock time this adapter began listening, set once in
+        # :meth:`start`. events whose ``ts`` predates it (minus the grace)
+        # are Slack replays of messages that arrived while the adapter was
+        # down; :meth:`_is_startup_replay` drops them. ``None`` before start
+        # disables the guard (so unit tests that never call ``start`` route
+        # normally).
+        self._started_at: float | None = None
         # per-user locale cache: maps slack user_id -> (cached_at_monotonic, tz, locale)
         # invalidated when ``cached_at_monotonic`` is older than
         # :data:`_USER_LOCALE_TTL_SECONDS`. populated lazily on first
@@ -139,7 +166,12 @@ class SlackAdapter:
         """start socket mode connection to slack.
 
         creates AsyncSocketModeHandler and initiates websocket connection.
+        records the process-listen baseline used by the startup-replay
+        guard (only on first start, so a routing test that calls start
+        twice does not shift the baseline forward).
         """
+        if self._started_at is None:
+            self._started_at = time.time()
         self._handler = AsyncSocketModeHandler(self._app, self.app_token)
         await self._handler.start_async()
 
@@ -195,6 +227,48 @@ class SlackAdapter:
             kwargs["thread_ts"] = thread_ts
         await self._app.client.chat_postMessage(**kwargs)
 
+    def _is_startup_replay(self, event: dict[str, Any]) -> bool:
+        """whether an inbound event is a Slack replay from before startup.
+
+        Slack redelivers an event that was never acknowledged (the adapter
+        was down or restarting when the message arrived), retrying minutes
+        later once the socket reconnects. answering such a replay
+        re-surfaces a stale — and possibly since-deleted — question. bolt
+        does not expose the Socket Mode ``retry_attempt`` marker to the
+        listener, so the guard compares the message ``ts`` against this
+        adapter's start time: a message posted before the adapter began
+        listening (beyond :data:`_STARTUP_REPLAY_GRACE_SECONDS`) is a
+        replay. an unset start baseline (adapter never started) or an
+        unparseable ``ts`` disables the guard rather than dropping.
+
+        :param event: raw slack event payload
+        :ptype event: dict[str, Any]
+        :return: True when the event is a pre-startup replay to drop
+        :rtype: bool
+        """
+        result = False
+        if self._started_at is not None:
+            raw_ts = event.get("ts")
+            posted_at: float | None = None
+            if isinstance(raw_ts, str):
+                try:
+                    posted_at = float(raw_ts)
+                except ValueError:
+                    posted_at = None
+            if posted_at is not None and posted_at < self._started_at - _STARTUP_REPLAY_GRACE_SECONDS:
+                log.info(
+                    "dropping slack pre-startup replay (message predates adapter start)",
+                    extra={
+                        "extra_data": {
+                            "message_ts": raw_ts,
+                            "channel": event.get("channel"),
+                            "age_seconds": round(self._started_at - posted_at, 1),
+                        },
+                    },
+                )
+                result = True
+        return result
+
     async def handle_message_event(
         self,
         event: dict[str, Any],
@@ -215,7 +289,10 @@ class SlackAdapter:
         :param say: slack-bolt say function for replying
         :ptype say: Any
         """
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        if event.get("bot_id") or event.get("subtype") in _IGNORED_MESSAGE_SUBTYPES:
+            return
+
+        if self._is_startup_replay(event):
             return
 
         thread_ts = event.get("thread_ts")
