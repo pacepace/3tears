@@ -8,40 +8,29 @@ for known OpenAI model ids is registered with the module-level
 import time.
 
 Tool-name translation: the OpenAI tools API validates tool names against
-``^[a-zA-Z0-9_-]{1,64}$`` and rejects the dot. Canonical 3tears tool
-names use the dotted form, so :func:`create_openai_chat` returns a
+``^[a-zA-Z0-9_-]{1,64}$`` and rejects the dot. Canonical 3tears tool names
+use the dotted form, so :func:`create_openai_chat` returns a
 :class:`_NameTranslatingChatOpenAI` subclass that translates
-dot-to-underscore on outgoing tool specs and underscore-to-dot on
-incoming ``tool_calls``. The same wrapper covers OpenRouter accessed
-via ``base_url`` (the gateway's standard OpenAI-compatible route).
-Application code never sees the wire form. Translation primitives live
-in :mod:`threetears.models.tool_name_translation`.
+dot-to-underscore on outgoing tool specs / history and underscore-to-dot on
+incoming ``tool_calls``. The wrapper is a thin binding of the shared
+:class:`~threetears.models.providers._name_translation_mixin.NameTranslatingChatMixin`
+(identical hooks across the OpenAI / OpenRouter / Anthropic wrappers).
+Application code never sees the wire form.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING
 
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
-from threetears.models.tool_name_translation import (
-    build_name_translation,
-    forward_translate_input,
-    reverse_translate_message,
-)
-from threetears.models.tool_name_validation import filter_invalid_tool_calls
-from threetears.observe import get_logger
+from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 
 if TYPE_CHECKING:
-    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
-    from langchain_core.language_models.chat_models import LanguageModelInput
-    from langchain_core.messages import AIMessageChunk, BaseMessage
-    from langchain_core.outputs import ChatResult
-    from langchain_core.runnables import Runnable, RunnableConfig
-    from langchain_core.tools import BaseTool
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
 
 __all__ = [
     "OPENAI_PROVIDER_NAME",
@@ -51,39 +40,6 @@ __all__ = [
 
 
 OPENAI_PROVIDER_NAME = "openai"
-
-_logger = get_logger(__name__)
-
-
-def _drop_junk_invalid_tool_calls(message: Any) -> None:
-    """drop ``invalid_tool_calls`` entries whose ``name`` fails validation.
-
-    Parity with the OpenRouter / Anthropic wrappers. Mutates
-    ``message.invalid_tool_calls`` in place, keeping only entries whose
-    names match the canonical 3tears tool-name regex. Each rejected
-    entry is logged once at WARNING (name truncated to 80 characters).
-    See :mod:`threetears.models.providers.openrouter` for the prod
-    incident write-up (2026-05-19).
-
-    :param message: chat-model response (``AIMessage`` or
-        ``AIMessageChunk``); duck-typed via attribute access
-    :ptype message: Any
-    """
-    raw = getattr(message, "invalid_tool_calls", None) or []
-    if not raw:
-        return
-    kept, rejected = filter_invalid_tool_calls(raw)
-    if not rejected:
-        return
-    for entry in rejected:
-        name = entry.get("name") if isinstance(entry, dict) else None
-        truncated = name[:80] if isinstance(name, str) else repr(name)[:80]
-        _logger.warning(
-            "openai wrapper dropped invalid_tool_calls entry with junk name: %s",
-            truncated,
-        )
-    raw.clear()
-    raw.extend(kept)
 
 
 def _build_translating_chat_class() -> type[ChatOpenAI]:
@@ -98,138 +54,21 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
     """
     from langchain_openai import ChatOpenAI
 
-    class _NameTranslatingChatOpenAI(ChatOpenAI):
-        """``ChatOpenAI`` that translates tool names dot<->underscore at
-        the wire boundary, mirroring the Anthropic/OpenRouter shape.
+    class _NameTranslatingChatOpenAI(NameTranslatingChatMixin, ChatOpenAI):
+        """``ChatOpenAI`` with dot<->underscore tool-name translation at the
+        wire boundary (OpenAI validates names against ``^[a-zA-Z0-9_-]{1,64}$``
+        and rejects the dot).
 
-        :ivar _name_reverse_map: populated at ``bind_tools`` time;
-            maps each tool's underscored wire name back to the
-            canonical dotted form so ``tool_call`` names in
-            streaming responses can be rewritten before they reach
-            application code.
+        All translation hooks live in :class:`NameTranslatingChatMixin`
+        (mixed in ahead of ``ChatOpenAI`` so ``super()`` resolves to it); this
+        subclass only supplies the per-instance reverse-map slot.
+
+        :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
+            populated at ``bind_tools`` time.
         :ptype _name_reverse_map: dict[str, str]
         """
 
         _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
-
-        def bind_tools(
-            self,
-            tools: list[BaseTool],
-            **kwargs: Any,
-        ) -> Runnable[LanguageModelInput, BaseMessage]:
-            """bind tools after dot->underscore name translation for the wire.
-
-            :param tools: application-side tool list (canonical dotted names)
-            :ptype tools: list[BaseTool]
-            :param kwargs: passthrough to ``super().bind_tools``
-            :ptype kwargs: Any
-            :return: runnable bound to wire-side proxy tools
-            :rtype: Runnable[LanguageModelInput, BaseMessage]
-            """
-            wire_tools, reverse_map = build_name_translation(tools)
-            self._name_reverse_map.clear()
-            self._name_reverse_map.update(reverse_map)
-            return super().bind_tools(wire_tools, **kwargs)
-
-        async def astream(
-            self,
-            input: LanguageModelInput,
-            config: RunnableConfig | None = None,
-            *,
-            stop: list[str] | None = None,
-            **kwargs: Any,
-        ) -> AsyncIterator[AIMessageChunk]:
-            """stream AIMessageChunks with tool-call names un-translated.
-
-            Parity fix with the OpenRouter / Anthropic wrappers: we
-            override ``astream`` (the public Runnable method), NOT
-            ``_astream``. Wrapping ``_astream`` in our own async
-            generator -- even as a pass-through -- breaks LangGraph's
-            ``astream_events(version="v2")`` event tap: chunks reach
-            the consumer's ``async for`` loop but
-            ``on_chat_model_stream`` callbacks never fire. See the
-            OpenRouter wrapper module for the full incident write-up
-            (2026-05-13). Today's path drives
-            ``astream`` not ``astream_events``, so this isn't currently
-            biting -- this fix lands the same parity contract so the
-            next consumer to drive the v2 event tap through the
-            OpenAI-compat wrapper (e.g. a consumer switching its OpenAI
-            provider to ``create_openai_chat``) doesn't repeat the
-            saga.
-
-            :param input: chat input (messages or string)
-            :ptype input: LanguageModelInput
-            :param config: optional runnable config
-            :ptype config: RunnableConfig | None
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param kwargs: passthrough to ``super().astream``
-            :ptype kwargs: Any
-            :return: async iterator of un-translated AIMessageChunks
-            :rtype: AsyncIterator[AIMessageChunk]
-            """
-            # Pre-merge with the contextvar config so the
-            # ``astream_events`` event_streamer (carried in the
-            # contextvar's AsyncCallbackManager) survives
-            # BaseChatModel.astream's ensure_config replace-by-key step.
-            # See the OpenRouter wrapper for the full incident write-up
-            # (2026-05-13).
-            from langchain_core.runnables.config import ensure_config, merge_configs
-
-            merged_config = merge_configs(ensure_config(None), config)
-            # Forward-translate: mangle any dotted tool-call name in the
-            # OUTBOUND history (a prior round's AIMessage, or a dotted
-            # hallucination / MCP tool) to wire form before it reaches
-            # OpenAI's ``^[a-zA-Z0-9_-]{1,64}$`` validator. Non-mutating (a
-            # copy), symmetric with ``reverse_translate_message`` below.
-            wire_input = forward_translate_input(input)
-            async for chunk in super().astream(
-                wire_input,
-                config=merged_config,
-                stop=stop,
-                **kwargs,
-            ):
-                reverse_translate_message(chunk, self._name_reverse_map)
-                # Drop junk-name ``invalid_tool_calls`` entries before they
-                # reach downstream dispatch / persistence (parity with the
-                # OpenRouter / Anthropic wrappers).
-                _drop_junk_invalid_tool_calls(chunk)
-                yield chunk
-
-        async def _agenerate(
-            self,
-            messages: list[BaseMessage],
-            stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
-            **kwargs: Any,
-        ) -> ChatResult:
-            """non-streaming generate with tool-call names un-translated.
-
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
-            :param stop: optional stop sequences
-            :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
-            :param kwargs: passthrough
-            :ptype kwargs: Any
-            :return: chat result with un-translated tool-call names
-            :rtype: ChatResult
-            """
-            # Forward-translate outbound dotted tool-call names (see the
-            # ``astream`` override) before the provider validates them.
-            result = await super()._agenerate(
-                forward_translate_input(messages),
-                stop=stop,
-                run_manager=run_manager,
-                **kwargs,
-            )
-            for generation in result.generations:
-                reverse_translate_message(generation.message, self._name_reverse_map)
-                # Drop junk-name ``invalid_tool_calls`` entries (parity with
-                # the OpenRouter / Anthropic wrappers).
-                _drop_junk_invalid_tool_calls(generation.message)
-            return result
 
     return _NameTranslatingChatOpenAI
 

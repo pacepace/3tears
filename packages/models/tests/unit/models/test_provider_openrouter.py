@@ -31,6 +31,8 @@ from threetears.models.tool_name_translation import (
     reverse_translate_message,
 )
 
+from ._translation_helpers import DottedTool as _DottedTool
+
 
 class TestCreateOpenRouterChat:
     """tests for ``create_openrouter_chat`` factory."""
@@ -81,22 +83,6 @@ class TestOpenRouterCapabilityRegistration:
 
 
 # -- name translation --------------------------------------------------------
-
-
-class _DottedTool(BaseTool):
-    """Minimal :class:`BaseTool` whose ``.name`` carries a dot, for tests."""
-
-    name: str = "threetears.calculator"
-    description: str = "test calculator"
-    invoked_with: list[dict[str, Any]] = []
-
-    def _run(self, **kwargs: Any) -> str:
-        self.invoked_with.append(dict(kwargs))
-        return "ok"
-
-    async def _arun(self, **kwargs: Any) -> str:
-        self.invoked_with.append(dict(kwargs))
-        return "ok"
 
 
 class TestMangleToolName:

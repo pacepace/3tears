@@ -29,6 +29,8 @@ from threetears.models.providers.anthropic import (
 )
 from threetears.models.providers._claude_cli import is_subscription_token
 
+from ._translation_helpers import DottedTool
+
 
 class TestSubscriptionRouting:
     """The anthropic provider routes an OAuth subscription token to the CLI backend; an API key
@@ -515,17 +517,6 @@ class TestAnthropicWrapperToolNameValidation:
         ``_astream`` aggregation path. Without the override the returned name
         stays ``threetears_calculator`` and this fails.
         """
-        from langchain_core.tools import BaseTool
-
-        class _DottedTool(BaseTool):
-            name: str = "threetears.calculator"
-            description: str = "test calculator"
-
-            def _run(self, **kwargs: Any) -> str:
-                return "ok"
-
-            async def _arun(self, **kwargs: Any) -> str:
-                return "ok"
 
         async def _fake_super_astream(
             self: Any,
@@ -552,7 +543,7 @@ class TestAnthropicWrapperToolNameValidation:
             )
 
         model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
-        model.bind_tools([_DottedTool()])
+        model.bind_tools([DottedTool()])
 
         original_astream = ChatAnthropic._astream
         try:

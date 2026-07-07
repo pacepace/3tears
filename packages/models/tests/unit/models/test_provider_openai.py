@@ -24,6 +24,8 @@ from threetears.models.providers.openai import (
     create_openai_embedding,
 )
 
+from ._translation_helpers import DottedTool
+
 
 class TestCreateOpenAIChat:
     """tests for ``create_openai_chat`` factory."""
@@ -347,6 +349,92 @@ class TestOpenAIForwardTranslation:
 
         sent = captured["messages"]
         assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+class TestOpenAIInvokeParity:
+    """The OpenAI wrapper overrides the PUBLIC ``ainvoke`` / ``invoke`` too
+    (via the shared ``NameTranslatingChatMixin``).
+
+    Overriding ``astream`` + ``_agenerate`` is not sufficient: with a streaming
+    callback attached (the converged ``agent_node`` path) ``ainvoke`` routes
+    through the protected ``_astream`` aggregate, bypassing both. Regression for
+    the 2026-06-22 converged-loop tool-dispatch failure, now covered uniformly
+    across all three provider wrappers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
+        """``ainvoke`` returns the canonical dotted name even when it aggregates
+        internally from the protected ``_astream`` (the bypass path)."""
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {"name": "threetears_calculator", "args": "{}", "id": "call_1", "index": 0},
+                    ],
+                ),
+            )
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        model.bind_tools([DottedTool()])
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            result = await model.ainvoke("hi", stream=True)
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        assert result.tool_calls, "expected an aggregated tool call"
+        assert result.tool_calls[0]["name"] == "threetears.calculator"
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_forward_translates_outbound_dotted_names(self) -> None:
+        """``ainvoke`` mangles a dotted outbound tool-call name to wire form via
+        its own forward-translation (the bypassed ``astream`` override does not
+        run); the caller's message keeps the dotted name."""
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        outbound = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+        ]
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            await model.ainvoke(outbound, stream=True)
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
+        assert ai.tool_calls[0]["name"] == "threetears_web_search"
         assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
 
 
