@@ -41,6 +41,10 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.agent.tools.config import (
+    get_connect_retry_backoff_cap,
+    get_connect_retry_budget,
+)
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
@@ -57,11 +61,14 @@ from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
+    Principal,
     RequestError,
     Subjects,
     TokenCallback,
+    inbox_prefix_for,
     set_default_namespace,
 )
+from threetears.nats.errors import NatsClientError
 from threetears.observe import clear_context, get_logger, traced
 
 __all__ = [
@@ -175,6 +182,7 @@ async def nats_connect(
     user: str | None = None,
     password: str | None = None,
     auth_token: TokenCallback | None = None,
+    conn_id: str | None = None,
 ) -> NatsClient:
     """connect to NATS server via the canonical wrapper.
 
@@ -216,12 +224,18 @@ async def nats_connect(
     """
     if auth_token is not None:
         # per-key-identity path: present the self-minted token provider and NOT the static creds
-        # (the auth-callout mints this connection's scoped user JWT from the verified token).
+        # (the auth-callout mints this connection's scoped user JWT from the verified token). KEY the
+        # reply inbox on the pod id so it falls under the minted JWT's `_INBOX_tool_pod_{id}.>`
+        # subscribe grant: nats-py's default random `_INBOX.*` is OUTSIDE that scoped grant, so the
+        # first request/reply (the JetStream account probe, the registry handshake) hits a
+        # "permissions violation for subscription" and the connect wedges. the callout scopes the
+        # grant on the VERIFIED pod id, so conn_id MUST be the pod id (not the spoofable connect name).
         client = await NatsClient.connect(
             nats_url=url,
             nats_subject_namespace=namespace,
-            client_name="tool-server",
+            client_name=conn_id or "tool-server",
             auth_token=auth_token,
+            inbox_prefix=(inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id) if conn_id is not None else None),
         )
     else:
         client = await NatsClient.connect(
@@ -936,6 +950,62 @@ class ToolServer:
             )
         return removed
 
+    async def _open_connection_with_retry(self) -> NatsClient:
+        """open the pod's OWN NATS connection, retrying a not-yet-ready platform (k8s unordered startup).
+
+        Pods start in ANY order: the hub -- the auth-callout responder AND this pod's seeded
+        ``tool_pods`` row -- may not be up when a standalone tool pod boots, and the connect is rejected
+        until it is. rather than die on the first failure and lean on an external restart loop, retry the
+        initial connect with capped exponential backoff until the platform admits us. FAIL-VISIBLE: after
+        :func:`get_connect_retry_budget` seconds it re-raises, so a genuine misconfig (wrong key / issuer)
+        surfaces as a crash / CrashLoopBackoff rather than an invisible forever-retry. runtime reconnects
+        AFTER the first success are owned by the :class:`NatsClient` wrapper (this covers only the very
+        first connect). only the self-owned-connection path reaches here; an injected client never does.
+
+        :return: the connected client
+        :rtype: NatsClient
+        :raises NatsClientError: when the platform does not admit the pod within the retry budget
+        """
+        budget = get_connect_retry_budget()
+        backoff_cap = get_connect_retry_backoff_cap()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        delay = 1.0
+        attempt = 0
+        client: NatsClient | None = None
+        while client is None:
+            attempt += 1
+            try:
+                client = await nats_connect(
+                    self._nats_url,
+                    namespace=self._namespace,
+                    user=self._nats_user,
+                    password=self._nats_password,
+                    auth_token=self._auth_token,
+                    conn_id=self._pod_id,
+                )
+            except (NatsClientError, OSError) as exc:
+                if loop.time() >= deadline:
+                    log.error(
+                        "tool pod could not connect to NATS within the retry budget; failing loud",
+                        extra={"extra_data": {"pod_id": self._pod_id, "attempts": attempt, "budget_s": budget}},
+                    )
+                    raise
+                log.warning(
+                    "tool pod NATS connect not ready (platform still starting?); retrying",
+                    extra={
+                        "extra_data": {
+                            "pod_id": self._pod_id,
+                            "attempt": attempt,
+                            "retry_in_s": delay,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, backoff_cap)
+        return client
+
     @traced()
     async def serve(self) -> None:
         """begin serving registered tools on NATS.
@@ -953,13 +1023,7 @@ class ToolServer:
         not yet bound.
         """
         if self._nc is None:
-            self._nc = await nats_connect(
-                self._nats_url,
-                namespace=self._namespace,
-                user=self._nats_user,
-                password=self._nats_password,
-                auth_token=self._auth_token,
-            )
+            self._nc = await self._open_connection_with_retry()
             log.info(
                 "connected to NATS",
                 extra={

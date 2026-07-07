@@ -220,38 +220,31 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
     async def build_server(self) -> ToolServer:
         """build standalone ``ToolServer`` from environment variables.
 
-        two credential modes, selected by whether the pod was provisioned an identity signing key:
+        per-key identity ONLY (v0.14.1): the pod self-mints a short-lived identity JWT from its own
+        Ed25519 key (``kid`` = ``THREETEARS_TOOL_POD_ID``, issuer =
+        ``THREETEARS_TOOL_POD_CONNECT_ISSUER``) and presents it to NATS AND on its registration
+        manifest. this is the auth-callout path -- the CALLER (this entrypoint) builds the minter;
+        ``ToolServer`` stays issuer-agnostic. there is NO static-credential fallback: a pod with no
+        ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY`` FAILS LOUD rather than connect unauthenticated
+        (a deploy without the key is a config error that must crash startup, never register ZERO
+        tools on an anonymous connect).
 
-        * per-key identity (``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY`` set): the pod self-mints a
-          short-lived identity JWT from its own Ed25519 key (``kid`` = ``THREETEARS_TOOL_POD_ID``,
-          issuer = ``THREETEARS_TOOL_POD_CONNECT_ISSUER``) and presents it to NATS AND on its
-          registration manifest. this is the auth-callout path -- the CALLER (this entrypoint)
-          builds the minter; ``ToolServer`` stays issuer-agnostic.
-        * static creds fallback (no signing key): the pod presents its own
-          ``THREETEARS_NATS_USER`` / ``THREETEARS_NATS_PASSWORD`` (enforce-only config-mode bus), or
-          anonymous when unset (a non-enforcing dev bus).
+        :return: configured ToolServer presenting a self-minted identity token
+        :rtype: ToolServer
+        :raises ValueError: when ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY`` (or, downstream, its
+            required companion vars) is missing
         """
+        identity_signing_key = os.environ.get("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY") or None
+        if identity_signing_key is None:
+            raise ValueError(
+                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is required: the built-in tool pod "
+                "self-mints its NATS connect + registration identity from a per-pod Ed25519 key; "
+                "there is no static-credential fallback (v0.14.1 per-key cutover)"
+            )
         nats_url = os.environ.get("THREETEARS_NATS_URL", "nats://localhost:4222")
         namespace = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
         pod_id = os.environ.get("THREETEARS_TOOL_POD_ID") or None
-        identity_signing_key = os.environ.get("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY") or None
-        if identity_signing_key is not None:
-            server = self._build_identity_server(nats_url, namespace, pod_id, identity_signing_key)
-        else:
-            # enforce-only connection auth (v0.13.9): this standalone pod presents its OWN static
-            # NATS user/password (the enforcing bus has no ``no_auth_user``). unset -> anonymous,
-            # for a non-enforcing bus; the compose / Procfile sets these on the enforcing dev bus.
-            nats_user = os.environ.get("THREETEARS_NATS_USER") or None
-            nats_password = os.environ.get("THREETEARS_NATS_PASSWORD") or None
-            server = ToolServer(
-                nats_url=nats_url,
-                namespace=namespace,
-                nats_user=nats_user,
-                nats_password=nats_password,
-                pod_id=pod_id,
-                namespace_collection=None,
-            )
-        return server
+        return self._build_identity_server(nats_url, namespace, pod_id, identity_signing_key)
 
     def _build_identity_server(
         self,

@@ -1,10 +1,11 @@
-"""tests for the built-in tool-pod entrypoint's connect-credential selection.
+"""tests for the built-in tool-pod entrypoint's per-key identity connect path.
 
-covers the two credential modes of ``_BuiltinToolBootstrap.build_server``:
+covers ``_BuiltinToolBootstrap.build_server`` (v0.14.1 per-key ONLY):
 
 * per-key identity: with an identity signing key + pod id + issuer, the pod self-mints a verifiable
   identity JWT and hands ``ToolServer`` an ``auth_token`` provider (no static creds).
-* static fallback: with no signing key, the pod passes its static NATS user/password through.
+* fail loud: with NO signing key the pod crashes startup rather than connect unauthenticated -- the
+  static-credential fallback was deleted in the per-key cutover.
 
 plus the fail-loud guards on a partial identity config.
 """
@@ -66,20 +67,15 @@ async def test_identity_path_hands_toolserver_a_verifiable_token(
 
 
 @pytest.mark.asyncio
-async def test_static_fallback_when_no_signing_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """no signing key -> the pod passes its static user/password and no auth_token provider."""
+async def test_missing_signing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """no signing key -> crash startup (the static-credential fallback was deleted, v0.14.1)."""
     monkeypatch.delenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY", raising=False)
+    # even with a static user/password present, there is NO fallback -- per-key is mandatory.
     monkeypatch.setenv("THREETEARS_NATS_USER", "tooling")
     monkeypatch.setenv("THREETEARS_NATS_PASSWORD", "secret")
 
-    with patch("threetears.agent.tools.serve.ToolServer") as tool_server_cls:
-        tool_server_cls.return_value = MagicMock()
+    with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is required"):
         await _BuiltinToolBootstrap("builtin").build_server()
-
-    kwargs = tool_server_cls.call_args.kwargs
-    assert kwargs["nats_user"] == "tooling"
-    assert kwargs["nats_password"] == "secret"
-    assert kwargs.get("auth_token") is None
 
 
 @pytest.mark.asyncio
