@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -47,6 +47,34 @@ __all__ = [
 log = get_logger(__name__)
 
 _VALID_MEMORY_TYPES = {t.value for t in MemoryType}
+
+
+def _invoke_identity_kwargs(
+    user_id: UUID | None,
+    conversation_id: UUID | None,
+) -> dict[str, Any]:
+    """build the identity kwargs a gateway-routed chat model requires on invoke.
+
+    the ``GatewayChatModel`` resolves the invoking ``user_id`` (required
+    for ``model.invoke`` authorization + usage attribution) and the
+    optional ``conversation_id`` from the ``ainvoke`` kwargs; without a
+    ``user_id`` it raises ``user_id required``. the agent id is baked onto
+    the model instance, so only these per-call dimensions are threaded here.
+    omit ``None`` values so a stubbed/non-gateway model is unaffected.
+
+    :param user_id: invoking user identifier
+    :ptype user_id: UUID | None
+    :param conversation_id: conversation identifier for usage attribution
+    :ptype conversation_id: UUID | None
+    :return: kwargs to splat into ``model.ainvoke``
+    :rtype: dict[str, Any]
+    """
+    kwargs: dict[str, Any] = {}
+    if user_id is not None:
+        kwargs["user_id"] = user_id
+    if conversation_id is not None:
+        kwargs["conversation_id"] = conversation_id
+    return kwargs
 
 
 @runtime_checkable
@@ -203,6 +231,8 @@ class MemoryExtractor:
             worthy, worthiness_reason = await self.check_worthiness(
                 user_message,
                 assistant_response,
+                user_id=user_id,
+                conversation_id=conversation_id,
             )
             if not worthy:
                 log.debug(
@@ -214,6 +244,8 @@ class MemoryExtractor:
             candidates_raw = await self.extract_candidates(
                 user_message,
                 assistant_response,
+                user_id=user_id,
+                conversation_id=conversation_id,
             )
             if not candidates_raw:
                 log.debug("No memories extracted from conversation turn")
@@ -244,7 +276,11 @@ class MemoryExtractor:
             if not candidates:
                 return
 
-            actions = await self.resolve_actions(candidates)
+            actions = await self.resolve_actions(
+                candidates,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
 
             await self._execute_actions(
                 actions,
@@ -315,10 +351,19 @@ class MemoryExtractor:
             return True, 0
         try:
             key = f"memory.last_extract.{conversation_id}"
-            bucket = self._nats_client.bucket_name(self._rate_limit_bucket)
-            was_created = await self._nats_client.create(bucket, key, b"1")
-            if not was_created:
-                return False, self._config.extraction_rate_limit_cooldown_seconds
+            cooldown = self._config.extraction_rate_limit_cooldown_seconds
+            # per-conversation SET-NX with a cooldown TTL: ``create`` returns a
+            # revision only when no unexpired key exists; ``None`` (conflict)
+            # means a recent extraction is still inside the cooldown window.
+            # (the old ``bucket_name`` + client-level ``create`` API is gone;
+            # the KV surface is now a bucket handle from ``kv_bucket``.)
+            bucket = await self._nats_client.kv_bucket(
+                name=self._rate_limit_bucket,
+                ttl=timedelta(seconds=cooldown),
+            )
+            revision = await bucket.create(key=key, value=b"1")
+            if revision is None:
+                return False, cooldown
             return True, 0
         except Exception as exc:
             log.warning("Rate limit check failed, allowing extraction: %s", exc)
@@ -328,6 +373,9 @@ class MemoryExtractor:
         self,
         user_message: str,
         assistant_response: str,
+        *,
+        user_id: UUID | None = None,
+        conversation_id: UUID | None = None,
     ) -> tuple[bool, str]:
         """layer 3 extension point: cheap LLM call gating extraction.
 
@@ -360,7 +408,8 @@ class MemoryExtractor:
                         "memorable user information. Return only valid JSON.",
                     ),
                     HumanMessage(content=prompt),
-                ]
+                ],
+                **_invoke_identity_kwargs(user_id, conversation_id),
             )
             content = self._get_response_content(response)
             result = json.loads(self._strip_code_block(content))
@@ -379,6 +428,9 @@ class MemoryExtractor:
         self,
         user_message: str,
         assistant_response: str,
+        *,
+        user_id: UUID | None = None,
+        conversation_id: UUID | None = None,
     ) -> list[dict[str, str]]:
         """extraction stage extension point: LLM-driven candidate extraction.
 
@@ -410,7 +462,8 @@ class MemoryExtractor:
                         content="You extract structured memories from conversations. Return only valid JSON.",
                     ),
                     HumanMessage(content=prompt),
-                ]
+                ],
+                **_invoke_identity_kwargs(user_id, conversation_id),
             )
             content = self._get_response_content(response)
             memories = json.loads(self._strip_code_block(content))
@@ -478,6 +531,9 @@ class MemoryExtractor:
     async def resolve_actions(
         self,
         candidates: list[dict[str, Any]],
+        *,
+        user_id: UUID | None = None,
+        conversation_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
         """resolution stage extension point: decide ADD/UPDATE/DELETE/NOOP.
 
@@ -510,7 +566,8 @@ class MemoryExtractor:
                         "new memories. Return only valid JSON.",
                     ),
                     HumanMessage(content=prompt),
-                ]
+                ],
+                **_invoke_identity_kwargs(user_id, conversation_id),
             )
             content = self._get_response_content(response)
             actions = json.loads(self._strip_code_block(content))
