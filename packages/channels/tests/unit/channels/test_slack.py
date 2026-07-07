@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import time
 from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -312,6 +313,171 @@ class TestSlackAdapterBotFiltering:
         await adapter.handle_message_event(event=event, say=say)
         assert router.last_message is None
         say.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# mutation-subtype + pre-startup replay guard tests
+# ---------------------------------------------------------------------------
+
+
+class TestSlackAdapterReplayGuard:
+    """tests for dropping edit/delete subtypes and pre-startup replays."""
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_filters_message_deleted_subtype(self, mock_app_cls: MagicMock) -> None:
+        """events with subtype 'message_deleted' are filtered out."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app_cls.return_value = MagicMock()
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=router,
+        )
+
+        event: dict[str, Any] = {
+            "type": "message",
+            "subtype": "message_deleted",
+            "channel": "C123",
+            "ts": "1234567890.123456",
+        }
+        say = AsyncMock()
+        await adapter.handle_message_event(event=event, say=say)
+        assert router.last_message is None
+        say.assert_not_awaited()
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_filters_message_changed_subtype(self, mock_app_cls: MagicMock) -> None:
+        """events with subtype 'message_changed' (edits) are filtered out."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app_cls.return_value = MagicMock()
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=router,
+        )
+
+        event: dict[str, Any] = {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C123",
+            "ts": "1234567890.123456",
+        }
+        say = AsyncMock()
+        await adapter.handle_message_event(event=event, say=say)
+        assert router.last_message is None
+        say.assert_not_awaited()
+
+    @patch("threetears.channels.slack.AsyncSocketModeHandler")
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_drops_event_posted_before_start(
+        self,
+        mock_app_cls: MagicMock,
+        mock_handler_cls: MagicMock,
+    ) -> None:
+        """a message whose ts predates adapter start is a replay, dropped.
+
+        reproduces the ghost-answer case: a question posted while the
+        adapter was down is redelivered by Slack after reconnect; its ts
+        predates this process's start, so it must not be answered.
+        """
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter(response=ChannelResponse(content="reply"))
+        mock_app_cls.return_value = MagicMock()
+        mock_handler = MagicMock()
+        mock_handler.start_async = AsyncMock()
+        mock_handler_cls.return_value = mock_handler
+
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=router,
+        )
+        await adapter.start()
+
+        # posted 10 minutes before the adapter began listening
+        event: dict[str, Any] = {
+            "type": "message",
+            "user": "U12345",
+            "text": "stale ghost question",
+            "channel": "C98765",
+            "ts": f"{time.time() - 600:.6f}",
+            "team": "T00001",
+        }
+        say = AsyncMock()
+        await adapter.handle_message_event(event=event, say=say)
+        assert router.last_message is None
+        say.assert_not_awaited()
+
+    @patch("threetears.channels.slack.AsyncSocketModeHandler")
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_processes_event_posted_after_start(
+        self,
+        mock_app_cls: MagicMock,
+        mock_handler_cls: MagicMock,
+    ) -> None:
+        """a fresh message posted after adapter start routes normally."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter(response=ChannelResponse(content="reply"))
+        mock_app_cls.return_value = MagicMock()
+        mock_handler = MagicMock()
+        mock_handler.start_async = AsyncMock()
+        mock_handler_cls.return_value = mock_handler
+
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=router,
+        )
+        await adapter.start()
+
+        event: dict[str, Any] = {
+            "type": "message",
+            "user": "U12345",
+            "text": "fresh question",
+            "channel": "C98765",
+            "ts": f"{time.time():.6f}",
+            "team": "T00001",
+        }
+        say = AsyncMock()
+        await adapter.handle_message_event(event=event, say=say)
+        assert router.last_message is not None
+        assert router.last_message.content == "fresh question"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_no_replay_guard_before_start(self, mock_app_cls: MagicMock) -> None:
+        """without a start baseline the guard is inactive (old ts still routes).
+
+        an adapter that never called start (unit-test construction) does
+        not drop by age -- the guard only arms once the process baseline
+        is recorded.
+        """
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter(response=ChannelResponse(content="reply"))
+        mock_app_cls.return_value = MagicMock()
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=router,
+        )
+
+        event: dict[str, Any] = {
+            "type": "message",
+            "user": "U12345",
+            "text": "old ts but no baseline",
+            "channel": "C98765",
+            "ts": "1234567890.123456",
+            "team": "T00001",
+        }
+        say = AsyncMock()
+        await adapter.handle_message_event(event=event, say=say)
+        assert router.last_message is not None
 
 
 # ---------------------------------------------------------------------------

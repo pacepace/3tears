@@ -77,40 +77,47 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  pypi-publish:
-    needs: build
-    runs-on: ubuntu-latest
-    # The `pypi` environment is the manual-approval gate: the run pauses here
-    # until an approver releases it, so an irreversible 23-package upload never
-    # happens on an accidental tag push. Its name must match the environment
-    # configured on every project's PyPI trusted-publisher entry.
-    environment:
-      name: pypi
-      url: https://pypi.org/project/3tears/
-    permissions:
-      # OIDC token for trusted publishing -- the ONLY permission this job holds.
-      # Keeping the (arbitrary-code-executing) build out of this job is why
-      # build/publish are split: fewer steps can ever see the minted token.
-      id-token: write
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        # Single upload of the combined dist/: PyPI mints one short-lived token
-        # scoped to every project whose trusted publisher matches this
-        # (repo, workflow, environment), so all 23 packages route in one shot.
-        # skip-existing makes a re-run after a partial failure idempotent.
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist/
-          skip-existing: true
+  # PyPI publish is TEMPORARILY DISABLED for the v0.14.1 cut: the project's PyPI account is in timeout
+  # while v0.14.0 is still being pushed, so we CANNOT upload new distributions yet. The whole
+  # `pypi-publish` job is commented out below (rather than deleted) so it can be restored verbatim once
+  # PyPI is available — uncomment it AND repoint github-release's `needs` back to `pypi-publish`.
+  #
+  # pypi-publish:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   # The `pypi` environment is the manual-approval gate: the run pauses here
+  #   # until an approver releases it, so an irreversible 23-package upload never
+  #   # happens on an accidental tag push. Its name must match the environment
+  #   # configured on every project's PyPI trusted-publisher entry.
+  #   environment:
+  #     name: pypi
+  #     url: https://pypi.org/project/3tears/
+  #   permissions:
+  #     # OIDC token for trusted publishing -- the ONLY permission this job holds.
+  #     # Keeping the (arbitrary-code-executing) build out of this job is why
+  #     # build/publish are split: fewer steps can ever see the minted token.
+  #     id-token: write
+  #   steps:
+  #     - name: Download distributions
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: dist
+  #         path: dist/
+  #
+  #     - name: Publish to PyPI
+  #       # Single upload of the combined dist/: PyPI mints one short-lived token
+  #       # scoped to every project whose trusted publisher matches this
+  #       # (repo, workflow, environment), so all 23 packages route in one shot.
+  #       # skip-existing makes a re-run after a partial failure idempotent.
+  #       uses: pypa/gh-action-pypi-publish@release/v1
+  #       with:
+  #         packages-dir: dist/
+  #         skip-existing: true
 
   github-release:
-    needs: pypi-publish
+    # while pypi-publish is commented out (PyPI timeout) this runs after `build`;
+    # restore to `needs: pypi-publish` when re-enabling the PyPI publish.
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write

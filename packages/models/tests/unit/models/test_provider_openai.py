@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
@@ -18,6 +23,8 @@ from threetears.models.providers.openai import (
     create_openai_chat,
     create_openai_embedding,
 )
+
+from ._translation_helpers import DottedTool
 
 
 class TestCreateOpenAIChat:
@@ -254,3 +261,294 @@ class TestOpenAIWrapperStreaming:
             " times — expected >=4 (one per fake chunk). The fix"
             " silently dropped the list of bound handlers."
         )
+
+
+class TestOpenAIForwardTranslation:
+    """The OpenAI wrapper forward-translates dotted tool-call names on the
+    OUTBOUND ``messages`` before the provider call.
+
+    OpenAI's tools API validates names against ``^[a-zA-Z0-9_-]{1,64}$`` and
+    rejects the dot, so a prior round's ``AIMessage`` carrying a canonical
+    dotted ``tool_calls`` name would 400 the turn when re-sent. Parity with
+    the OpenRouter / Anthropic forward translation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_astream_forward_translates_outbound_dotted_names(self) -> None:
+        """``astream`` sends the wire (underscored) name; the caller's message
+        keeps the canonical dotted name."""
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        outbound = [
+            SystemMessage(content="sys"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+            ToolMessage(content="hit", tool_call_id="c1"),
+        ]
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            async for _ in model.astream(outbound):
+                pass
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
+        assert ai.tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[1].tool_calls[0]["name"] == "threetears.web_search"
+
+    @pytest.mark.asyncio
+    async def test_agenerate_forward_translates_outbound_dotted_names(self) -> None:
+        """The non-streaming path mangles the outbound names too."""
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_agenerate(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        outbound = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+        ]
+
+        original = ChatOpenAI._agenerate
+        try:
+            ChatOpenAI._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            await model._agenerate(outbound)
+        finally:
+            ChatOpenAI._agenerate = original  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        assert sent[0].tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+class TestOpenAIInvokeParity:
+    """The OpenAI wrapper overrides the PUBLIC ``ainvoke`` / ``invoke`` too
+    (via the shared ``NameTranslatingChatMixin``).
+
+    Overriding ``astream`` + ``_agenerate`` is not sufficient: with a streaming
+    callback attached (the converged ``agent_node`` path) ``ainvoke`` routes
+    through the protected ``_astream`` aggregate, bypassing both. Regression for
+    the 2026-06-22 converged-loop tool-dispatch failure, now covered uniformly
+    across all three provider wrappers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
+        """``ainvoke`` returns the canonical dotted name even when it aggregates
+        internally from the protected ``_astream`` (the bypass path)."""
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {"name": "threetears_calculator", "args": "{}", "id": "call_1", "index": 0},
+                    ],
+                ),
+            )
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        model.bind_tools([DottedTool()])
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            result = await model.ainvoke("hi", stream=True)
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        assert result.tool_calls, "expected an aggregated tool call"
+        assert result.tool_calls[0]["name"] == "threetears.calculator"
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_forward_translates_outbound_dotted_names(self) -> None:
+        """``ainvoke`` mangles a dotted outbound tool-call name to wire form via
+        its own forward-translation (the bypassed ``astream`` override does not
+        run); the caller's message keeps the dotted name."""
+
+        captured: dict[str, Any] = {}
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, stop, run_manager, kwargs
+            captured["messages"] = messages
+            yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+        outbound = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "threetears.web_search", "args": {"q": "x"}, "id": "c1"}],
+            ),
+        ]
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            await model.ainvoke(outbound, stream=True)
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        sent = captured["messages"]
+        ai = [m for m in sent if isinstance(m, AIMessage) and m.tool_calls][0]
+        assert ai.tool_calls[0]["name"] == "threetears_web_search"
+        assert outbound[0].tool_calls[0]["name"] == "threetears.web_search"
+
+
+class TestOpenAIWrapperToolNameValidation:
+    """The OpenAI wrapper drops ``invalid_tool_calls`` entries whose names
+    fail the canonical 3tears tool-name regex.
+
+    Parity with the OpenRouter / Anthropic wrappers (chunk 03): the OpenAI
+    wrapper previously lacked the junk-name filter. Both the streaming and
+    non-streaming paths now drop junk names before they reach downstream
+    dispatch / persistence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``astream`` drops ``invalid_tool_calls`` entries whose names fail
+        the canonical regex."""
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "name": junk_name,
+                            "args": "{}",
+                            "id": "call_junk",
+                            "error": "JSONDecodeError",
+                        },
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{partial",
+                            "id": "call_ok",
+                            "error": "JSONDecodeError",
+                        },
+                    ],
+                ),
+            )
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            chunks: list[AIMessageChunk] = []
+            async for chunk in model.astream("hi"):
+                chunks.append(chunk)
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
+        assert len(carrier_chunks) == 1
+        kept = carrier_chunks[0].invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``_agenerate`` mirrors the streaming-path filter for non-streaming calls."""
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_agenerate(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            del self, messages, stop, run_manager, kwargs
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            invalid_tool_calls=[
+                                {
+                                    "name": junk_name,
+                                    "args": "{}",
+                                    "id": "call_junk",
+                                    "error": "JSONDecodeError",
+                                },
+                                {
+                                    "name": "threetears_calculator",
+                                    "args": "{partial",
+                                    "id": "call_ok",
+                                    "error": "JSONDecodeError",
+                                },
+                            ],
+                        ),
+                    ),
+                ],
+            )
+
+        model = create_openai_chat("gpt-4o", "sk-test")
+
+        original_agenerate = ChatOpenAI._agenerate
+        try:
+            ChatOpenAI._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            result = await model._agenerate([AIMessage(content="hi")])
+        finally:
+            ChatOpenAI._agenerate = original_agenerate  # type: ignore[method-assign]
+
+        kept = result.generations[0].message.invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert all(call["name"] != junk_name for call in kept)

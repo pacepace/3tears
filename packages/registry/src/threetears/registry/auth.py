@@ -52,16 +52,21 @@ class ToolPodAuth:
 class ToolPodAuthenticator(Protocol):
     """protocol for verifying tool pod identity during registration.
 
-    host applications implement this to check bootstrap tokens
-    against their persistence layer (e.g., tool_pods table).
+    host applications implement this to VERIFY the pod's self-minted identity JWT (per-key
+    identity) against the pod's stored public key in their persistence layer (e.g. the tool_pods
+    table). the registry passes the RAW token straight through -- verification (signature, issuer,
+    expiry, kid==pod) is the implementer's responsibility, so a bearer-hash comparison is no longer
+    the model (a hashed opaque token could not be cryptographically verified).
     """
 
-    async def verify_pod(self, token_hash: str) -> ToolPodAuth | None:
-        """verify tool pod by bootstrap token hash.
+    async def verify_pod(self, token: str) -> ToolPodAuth | None:
+        """verify a tool pod by its presented registration token.
 
-        :param token_hash: SHA256 hex digest of bootstrap token
-        :ptype token_hash: str
-        :return: auth context with allowed namespaces, or None if invalid
+        :param token: the RAW token the pod carried on its registration manifest
+            (``RegistrationManifest.bootstrap_token``). under per-key identity this is the pod's
+            self-minted identity JWT; the implementer verifies it against the pod's stored key.
+        :ptype token: str
+        :return: auth context with allowed namespaces, or None if verification fails
         :rtype: ToolPodAuth | None
         """
         ...

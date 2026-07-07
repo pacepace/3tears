@@ -156,8 +156,14 @@ class _StubChatModel:
         """
         self._content = content
 
-    async def ainvoke(self, messages: list[Any]) -> Any:
-        """return a MagicMock with ``content`` set to the preconfigured payload."""
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        """return a MagicMock with ``content`` set to the preconfigured payload.
+
+        Accepts and ignores the gateway identity kwargs (``user_id`` /
+        ``conversation_id``) that ``_invoke_identity_kwargs`` threads onto
+        the invoke call -- a real ``GatewayChatModel`` consumes them; the
+        stub just tolerates them.
+        """
         resp = MagicMock()
         resp.content = self._content
         return resp
@@ -426,7 +432,7 @@ class TestMemoryRetrieverAgainstLiveSchema:
                 "conversation_id, message_id_source, type_memory, content, "
                 "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'preference', $7, NULL, "
-                "$8::vector, $9, $9)",
+                "$8::text::public.vector, $9, $9)",
                 uuid.uuid4(),
                 agent_id,
                 customer_id,
@@ -682,7 +688,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 "conversation_id, message_id_source, type_memory, content, "
                 "embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, "
-                "$8::vector, $9, $9)",
+                "$8::text::public.vector, $9, $9)",
                 mid,
                 agent_id,
                 customer_id,

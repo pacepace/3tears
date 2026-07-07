@@ -12,7 +12,6 @@ catalog but its NATS subscription has not yet propagated.
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -253,8 +252,24 @@ class RegistrationHandler:
         """authenticate tool pod and filter tools to allowed namespaces.
 
         if no authenticator is configured, all tools are allowed (open mode).
-        if authenticator is configured, verifies bootstrap token and filters
-        tools to only those within the pod's allowed_namespaces.
+
+        with an authenticator configured, verification is gated on token PRESENCE:
+
+        * a manifest carrying a token -- a PLATFORM tool pod under per-key identity, which self-mints
+          an identity JWT and presents it here -- has that RAW token passed to
+          :meth:`ToolPodAuthenticator.verify_pod`, which VERIFIES it against the pod's stored key;
+          tools are then filtered to the pod's allowed_namespaces. verification failure REJECTS. the
+          token is no longer sha256-hashed -- a hashed opaque token could not be cryptographically
+          verified.
+        * a TOKENLESS manifest is ADMITTED unchanged. This is the AGENT-OWNED in-process tool pod: it
+          registers over the agent's own NATS connection, which the auth-callout already authenticated
+          per-key as an AGENT (issuer ``aibots-agent-pod``), so its identity is enforced at the NATS
+          layer, not here -- and it is not a row in the platform ``tool_pods`` table this authenticator
+          verifies against, so it could never present a tool-pod token anyway. Admitting it preserves
+          the pre-cutover behaviour for agent-owned pods while per-key verification is enforced for the
+          platform tool pods this authenticator governs. (Boundary flagged: the registry cannot see the
+          publisher's NATS identity from the manifest, so token-presence is the discriminator; a future
+          refinement could have agent-owned pods stamp ``owner_agent_id`` as a positive marker.)
 
         :param manifest: registration manifest to authenticate and filter
         :ptype manifest: RegistrationManifest
@@ -265,10 +280,10 @@ class RegistrationHandler:
             return None
 
         if manifest.bootstrap_token is None:
-            return "bootstrap_token required for registration"
+            # agent-owned / tokenless registration: authenticated at the NATS layer, admitted here.
+            return None
 
-        token_hash = hashlib.sha256(manifest.bootstrap_token.encode("utf-8")).hexdigest()
-        pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(token_hash)
+        pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(manifest.bootstrap_token)
 
         if pod_auth is None:
             log.warning(

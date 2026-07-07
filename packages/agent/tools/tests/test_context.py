@@ -58,6 +58,22 @@ def ctx(collection: ContextItemCollection) -> ToolContextManager:
     return ToolContextManager(collection, "00000000-0000-0000-0000-000000000001", "user1")
 
 
+# -- Construction guard --
+
+
+def test_init_rejects_none_collection() -> None:
+    """A ``None`` collection is a wiring bug, not a supported mode.
+
+    ``load_context`` dereferences the collection unconditionally
+    (``collection.find_by_conversation``), so a missing collection would
+    otherwise surface as an opaque ``NoneType`` ``AttributeError`` mid-stream
+    on the first load. Reject it at construction so a caller that fails to
+    thread the context collection fails loudly and locally.
+    """
+    with pytest.raises(TypeError, match="collection"):
+        ToolContextManager(None, "00000000-0000-0000-0000-000000000001", "user1")
+
+
 # -- Variable tests --
 
 

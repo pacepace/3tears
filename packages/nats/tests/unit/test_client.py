@@ -490,7 +490,7 @@ async def test_connect_validates_namespace() -> None:
 async def test_connect_passes_credentials_and_scoped_inbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """auth_token, user_credentials, and a scoped inbox_prefix reach the nats-py connect options."""
+    """the auth_token provider, user_credentials, and a scoped inbox_prefix reach the connect options."""
     import threetears.nats.client as client_module
 
     captured: dict[str, Any] = {}
@@ -505,16 +505,55 @@ async def test_connect_passes_credentials_and_scoped_inbox(
         nats_url="nats://localhost:4222",
         nats_subject_namespace="3tears",
         client_name="agent-x",
-        auth_token="bootstrap-tok",
+        auth_token=lambda: "bootstrap-tok",
         user_credentials="/run/secrets/agent.creds",
         inbox_prefix="_INBOX_agent_pod_pod-1",
         verify_jetstream=False,
     )
 
     options = captured["options"]
-    assert options["token"] == "bootstrap-tok"  # presented to the auth-callout responder
+    assert options["token"]() == "bootstrap-tok"  # a provider callable; nats-py invokes it per connect
     assert options["user_credentials"] == "/run/secrets/agent.creds"
     assert options["inbox_prefix"] == b"_INBOX_agent_pod_pod-1"  # bytes, scoped per-principal
+
+
+@pytest.mark.asyncio
+async def test_connect_auth_token_provider_is_reinvoked_per_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the auth_token provider is passed through UNWRAPPED so nats-py re-invokes it on every
+    (re)connect — each reconnect presents a freshly-minted token, never a cached (expired) snapshot."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    minted: list[str] = []
+
+    def _mint() -> str:
+        token = f"tok-{len(minted)}"
+        minted.append(token)
+        return token
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="agent-x",
+        auth_token=_mint,
+        verify_jetstream=False,
+    )
+
+    provider = captured["options"]["token"]
+    # stored as the callable itself (not a snapshotted string): successive calls yield successive
+    # fresh tokens, which is exactly what nats-py's per-(re)connect invocation relies on.
+    assert callable(provider)
+    assert provider() == "tok-0"
+    assert provider() == "tok-1"
 
 
 @pytest.mark.asyncio
@@ -1152,3 +1191,73 @@ async def test_reconnect_dispatcher_isolates_failing_callback(
 
     boom.assert_awaited_once_with()
     after.assert_awaited_once_with()
+
+
+def test_is_authorization_violation_detects_the_server_rejection() -> None:
+    """the wedged-auth signal is matched on the server's -ERR text, robust across nats-py versions."""
+    from threetears.nats.client import _is_authorization_violation
+
+    assert _is_authorization_violation(Exception("nats: 'Authorization Violation'"))
+    assert _is_authorization_violation(Exception("AUTHORIZATION VIOLATION"))
+    assert not _is_authorization_violation(OSError("connection reset by peer"))
+
+
+def test_is_authorization_violation_detects_typed_authorization_error() -> None:
+    """nats-py's typed AuthorizationError (str: 'nats: authorization failed') must also trip the signal.
+
+    Its message shares no substring with 'authorization violation', so the reconnect-loop -ERR match
+    alone would miss it — detecting it by type (and its own text) keeps the wedge signal alive if a
+    future nats-py routes the typed error to error_cb instead of the generic -ERR string."""
+    from nats.errors import AuthorizationError
+
+    from threetears.nats.client import _is_authorization_violation
+
+    assert _is_authorization_violation(AuthorizationError())
+    assert _is_authorization_violation(Exception("nats: authorization failed"))
+
+
+@pytest.mark.asyncio
+async def test_is_healthy_trips_on_persistent_auth_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a persistent Authorization-Violation reconnect loop flips is_healthy False (so a /healthz keyed
+    on it trips and k8s restarts the pod); a successful reconnect clears it; a network drop never does."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+    error_cb = captured["options"]["error_cb"]
+    reconnected_cb = captured["options"]["reconnected_cb"]
+
+    assert client.is_healthy  # a fresh connection is healthy
+
+    # a network drop (non-auth error) never trips health, no matter how many land.
+    for _ in range(5):
+        await error_cb(OSError("connection reset"))
+    assert client.is_healthy
+
+    auth_violation = Exception("nats: 'Authorization Violation'")
+    # below the threshold (3): still healthy.
+    await error_cb(auth_violation)
+    await error_cb(auth_violation)
+    assert client.is_healthy
+
+    # crossing the threshold: unhealthy -- the connection is stuck being auth-rejected.
+    await error_cb(auth_violation)
+    assert not client.is_healthy
+
+    # a successful reconnect clears the wedged-auth signal.
+    await reconnected_cb()
+    assert client.is_healthy

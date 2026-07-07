@@ -255,7 +255,7 @@ class TestVectorColumns:
         await collection.save_to_store({"id": "e1", "embedding": [0.1, 0.2, 0.3]})
 
         sql, args = pool.executed[-1]
-        assert "::vector" in sql
+        assert "::text::public.vector" in sql
         bound = args[1]
         assert isinstance(bound, str)
         assert bound.startswith("[") and bound.endswith("]")

@@ -411,6 +411,20 @@ def _merge_chunk_search_rows(
     return filtered
 
 
+# explicit column list for raw SELECTs over the ``memories`` table. the
+# ``embedding`` (pgvector) column is cast to ``::text`` so asyncpg can decode
+# it on the no-codec L3 pool -- a bare ``SELECT *`` returns the raw ``vector``
+# type (OID 8078) that asyncpg has no codec for and raises
+# ``UnsupportedClientFeatureError``. the entity deserializer parses the
+# bracketed-text form. mirrors the schema-backed generated SELECT's ::text
+# cast; keep in sync with the memories migration column set.
+_MEMORIES_SELECT_COLUMNS = (
+    "memory_id, agent_id, customer_id, user_id, type_memory, content, "
+    "date_created, date_updated, embedding::text AS embedding, "
+    "conversation_id, message_id_source, summary, search_vector, alias"
+)
+
+
 class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     """Collection for memory entities with three-tier caching.
 
@@ -425,7 +439,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     single-entry-point contract enforcement test walker #3 relies on.
 
     CRUD is generated from :attr:`schema`: embedding is ``VECTOR_TYPE``
-    (pgvector ``::vector`` cast + list[float] decode), ``date_updated``
+    (pgvector ``::text::public.vector`` cast + list[float] decode), ``date_updated``
     is the CAS fence so concurrent writers race correctly, and the
     scope columns (agent/customer/user/conversation/message_id_source/
     type_memory/date_created) are marked immutable so the
@@ -686,7 +700,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # would not help. method on Collection preserves single
         # entry point.
         rows = await self.l3_pool.fetch(
-            "SELECT * FROM memories "
+            f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
             "WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3 "
             "ORDER BY date_created DESC",
             agent_id,
@@ -769,7 +783,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             param_idx += 1
 
         where_clause = " AND ".join(conditions)
-        query = f"SELECT * FROM memories WHERE {where_clause} ORDER BY date_created DESC"
+        query = f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE {where_clause} ORDER BY date_created DESC"
 
         # cache-bypass: multi-row scan by agent scope is not primary-
         # key addressable; L1 row cache would not help. method on
@@ -926,10 +940,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         rows = await self.l3_pool.fetch(
             """
             SELECT memory_id, content, type_memory,
-                   1 - (embedding <=> $1::vector) AS similarity
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
-            ORDER BY embedding <=> $1::vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -1077,12 +1091,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
-                   embedding,
-                   1 - (embedding <=> $1::vector) AS similarity
+                   embedding::text AS embedding,
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             {vec_where}
               AND embedding IS NOT NULL{vec_date_clause}
-            ORDER BY embedding <=> $1::vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -1115,7 +1129,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
-                       embedding,
+                       embedding::text AS embedding,
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
                 {fts_where}
@@ -1304,10 +1318,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # which trips ``float(similarity)`` downstream.
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
-                   1 - (embedding <=> $1::vector) AS similarity
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE {where_clause}
-            ORDER BY embedding <=> $1::vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT ${param_idx}
         """
         params.append(max_results)
@@ -1499,13 +1513,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # AST walker treats agent_id as deliberately fanned-out.
         if customer_id is None:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 ORDER BY date_created DESC",
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 ORDER BY date_created DESC",
                 list(agent_ids),
                 user_id,
             )
         else:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories "
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories "
                 "WHERE agent_id = ANY($1::uuid[]) AND customer_id = $2 "
                 "AND user_id = $3 "
                 "ORDER BY date_created DESC",
@@ -1675,7 +1689,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
     collection because vector/FTS queries are the primary way callers
     probe this table; by-ID pull-through is rare. CRUD is generated
     from :attr:`schema`; the embedding column uses ``VECTOR_TYPE`` so
-    the generator emits ``$N::vector`` on the INSERT path and decodes
+    the generator emits ``$N::text::public.vector`` on the INSERT path and decodes
     the textual response back to ``list[float]`` on read.
     """
 
@@ -1884,15 +1898,15 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                   mc.media_id, mc.date_created, mc.embedding,
+                   mc.media_id, mc.date_created, mc.embedding::text AS embedding,
                    med.media_category, med.metadata_json,
-                   1 - (mc.embedding <=> $1::vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM media_content mc
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
             WHERE {scope_conditions} AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -1915,7 +1929,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                       mc.media_id, mc.date_created, mc.embedding,
+                       mc.media_id, mc.date_created, mc.embedding::text AS embedding,
                        med.media_category, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM media_content mc
@@ -2090,7 +2104,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             SELECT mc.content_id, mc.content, mc.content_type,
                    mc.media_id, med.media_category, med.metadata_json,
                    med.date_created,
-                   1 - (mc.embedding <=> $1::vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM media_content mc
             JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2098,7 +2112,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -2459,8 +2473,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
-                   mc.embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding <=> $1::vector) AS similarity
+                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2468,7 +2482,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             WHERE {scope_conditions}
               AND mc.embedding IS NOT NULL
               {cursor_clause}
-            ORDER BY mc.embedding <=> $1::vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -2500,7 +2514,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                        mc.page_number, mc.memory_id,
                        mc.message_id_start, mc.message_id_end,
-                       mc.embedding, med.metadata_json, med.media_id,
+                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
                 LEFT JOIN media med
@@ -2609,7 +2623,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
                    mc.memory_id, mc.message_id_start, mc.message_id_end,
                    med.metadata_json,
-                   1 - (mc.embedding <=> $1::vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2617,7 +2631,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -2950,15 +2964,15 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
-                   mc.embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding <=> $1::vector) AS similarity
+                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
             WHERE {scope_conditions}
               AND mc.memory_id = {memory_id_param}
-            ORDER BY mc.embedding <=> $1::vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -2985,7 +2999,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                        mc.page_number, mc.memory_id,
                        mc.message_id_start, mc.message_id_end,
-                       mc.embedding, med.metadata_json, med.media_id,
+                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
                 LEFT JOIN media med

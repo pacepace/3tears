@@ -67,6 +67,8 @@ from pydantic import PrivateAttr
 __all__ = [
     "NameMangledToolProxy",
     "build_name_translation",
+    "forward_translate_input",
+    "forward_translate_message",
     "mangle_tool_name",
     "reverse_translate_message",
 ]
@@ -309,3 +311,95 @@ def reverse_translate_message(
         name = tc.get("name")
         if name and name in reverse_map:
             tc["name"] = reverse_map[name]
+
+
+def forward_translate_message(message: Any) -> Any:
+    """return a copy of ``message`` with dotted tool-call names mangled to wire form.
+
+    Forward mirror of :func:`reverse_translate_message` for the
+    OUTBOUND direction. The reverse pass rewrites a provider RESPONSE
+    (wire -> canonical) and may mutate in place -- the response is
+    freshly minted by the provider, so there is no application state to
+    corrupt. The forward pass rewrites messages about to be SENT -- the
+    conversation history, which IS application state -- so mutating in
+    place would leak the wire form back into the caller's message list
+    and break dispatch / logging / persistence that key on the
+    canonical dotted name. This therefore returns a shallow COPY
+    whenever a rename is needed and the original ``message`` otherwise.
+
+    A dotted tool-call name reaches the wire in two ways
+    :func:`build_name_translation` (which mangles only outgoing tool
+    SPECS) does not cover: an ``AIMessage`` carrying a prior round's
+    ``tool_calls`` re-sent on the next round, and a model hallucination
+    or dotted MCP tool that never matched a bound spec. Both fail every
+    provider's ``^[a-zA-Z0-9_-]`` tool-name validator. Every dotted name
+    in ``tool_call_chunks`` / ``tool_calls`` / ``invalid_tool_calls`` is
+    mangled via :func:`mangle_tool_name` -- the same transform
+    :func:`build_name_translation` applies to specs -- so a bound tool's
+    history entry round-trips losslessly through the per-bind reverse
+    map.
+
+    :param message: outbound chat message (``AIMessage`` /
+        ``AIMessageChunk``); duck-typed via attribute access
+    :ptype message: Any
+    :return: a shallow copy with mangled tool-call names when the
+        message carries a dotted name, otherwise ``message`` unchanged
+    :rtype: Any
+    """
+    updates: dict[str, list[Any]] = {}
+    for field in ("tool_call_chunks", "tool_calls", "invalid_tool_calls"):
+        entries = getattr(message, field, None)
+        if not entries:
+            continue
+        new_entries: list[Any] = []
+        field_changed = False
+        for entry in entries:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if isinstance(name, str) and "." in name:
+                new_entries.append({**entry, "name": mangle_tool_name(name)})
+                field_changed = True
+            else:
+                new_entries.append(entry)
+        if field_changed:
+            updates[field] = new_entries
+    if not updates:
+        return message
+    return message.model_copy(update=updates)
+
+
+def forward_translate_input(payload: Any) -> Any:
+    """mangle dotted tool-call names on an outbound chat-model input.
+
+    Applies :func:`forward_translate_message` to every message in a
+    message-sequence ``payload`` (the shape the tool loop and the
+    gateway send to a chat model), returning a NEW list only when at
+    least one message needed a rename so the caller's list is never
+    mutated. A non-``list`` ``payload`` -- a bare prompt string or a
+    ``PromptValue``, which carries no tool-call history -- is returned
+    unchanged.
+
+    Applied at the four public / protected entry points a provider
+    wrapper overrides (``astream`` / ``ainvoke`` / ``invoke`` /
+    ``_agenerate``) before delegating to ``super()``. Idempotent: a
+    second pass over already-mangled (dotless) names is a no-op that
+    returns the same object, so the overlapping internal routings
+    between those entry points cannot double-translate.
+
+    :param payload: chat-model input (``list`` of messages, a string,
+        or a ``PromptValue``)
+    :ptype payload: Any
+    :return: the payload with dotted tool-call names mangled to wire
+        form (a fresh list when a rename occurred), else ``payload``
+        unchanged
+    :rtype: Any
+    """
+    if not isinstance(payload, list):
+        return payload
+    translated: list[Any] = []
+    changed = False
+    for message in payload:
+        new_message = forward_translate_message(message)
+        if new_message is not message:
+            changed = True
+        translated.append(new_message)
+    return translated if changed else payload

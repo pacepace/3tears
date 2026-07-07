@@ -35,7 +35,10 @@ class StubChatModel:
     def __init__(self, content: str) -> None:
         self._content = content
 
-    async def ainvoke(self, messages: list[Any]) -> Any:
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        # tolerate the identity kwargs (user_id / conversation_id) the extractor
+        # now threads through for the gateway-routed model's invoke.
+        _ = kwargs
         resp = MagicMock()
         resp.content = self._content
         return resp
@@ -47,7 +50,8 @@ class ErrorChatModel:
     def __init__(self, exc: Exception | None = None) -> None:
         self._exc = exc or RuntimeError("LLM unavailable")
 
-    async def ainvoke(self, messages: list[Any]) -> Any:
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
+        _ = kwargs
         raise self._exc
 
 
@@ -263,8 +267,9 @@ class TestRateLimit:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
-        nats.bucket_name = MagicMock(return_value="locks")
-        nats.create = AsyncMock(return_value=True)
+        bucket = MagicMock()
+        bucket.create = AsyncMock(return_value=1)  # revision -> key created
+        nats.kv_bucket = AsyncMock(return_value=bucket)
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert passed
@@ -275,8 +280,9 @@ class TestRateLimit:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
-        nats.bucket_name = MagicMock(return_value="locks")
-        nats.create = AsyncMock(return_value=False)
+        bucket = MagicMock()
+        bucket.create = AsyncMock(return_value=None)  # conflict -> within cooldown
+        nats.kv_bucket = AsyncMock(return_value=bucket)
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert not passed
@@ -287,7 +293,7 @@ class TestRateLimit:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = MagicMock()
-        nats.bucket_name = MagicMock(side_effect=RuntimeError("nats down"))
+        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert passed
