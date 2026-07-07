@@ -32,9 +32,116 @@ from threetears.agent.memory.retrieval import (
     _normalize_fts_scores,
     _recency_decay,
 )
+from threetears.agent.memory.integration import retrieve_memories
 from threetears.agent.memory.types import MemoryConfig
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+
+
+# -- retrieve_memories call-site (agent-internal authorizes agent-only) -------
+
+
+class _RecordingRetriever:
+    """records the kwargs ``retrieve_memories`` forwards to ``retrieve``."""
+
+    def __init__(self) -> None:
+        """initialize with an empty call log.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.calls: list[dict[str, Any]] = []
+
+    async def retrieve(
+        self,
+        user_id: uuid.UUID,
+        user_text: str,
+        *,
+        agent_id: uuid.UUID,
+        customer_id: uuid.UUID,
+        surfaced_ids: set[str] | None = None,
+        caller_user_id: uuid.UUID | None = None,
+        caller_agent_id: uuid.UUID | None = None,
+    ) -> str | None:
+        """record the call and return a fixed context string.
+
+        :param user_id: user whose memories to search (row filter)
+        :ptype user_id: uuid.UUID
+        :param user_text: query text
+        :ptype user_text: str
+        :param agent_id: owning agent UUID
+        :ptype agent_id: uuid.UUID
+        :param customer_id: owning customer UUID
+        :ptype customer_id: uuid.UUID
+        :param surfaced_ids: already-surfaced ids (unused)
+        :ptype surfaced_ids: set[str] | None
+        :param caller_user_id: rbac caller user (expected None here)
+        :ptype caller_user_id: uuid.UUID | None
+        :param caller_agent_id: rbac caller agent
+        :ptype caller_agent_id: uuid.UUID | None
+        :return: fixed context
+        :rtype: str | None
+        """
+        _ = user_text, surfaced_ids
+        self.calls.append(
+            {
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "customer_id": customer_id,
+                "caller_user_id": caller_user_id,
+                "caller_agent_id": caller_agent_id,
+            },
+        )
+        return "recalled context"
+
+
+class _RecordingIntegration:
+    """minimal ``MemoryIntegration`` stand-in exposing a ``retriever``."""
+
+    def __init__(self, retriever: _RecordingRetriever) -> None:
+        """store the recording retriever.
+
+        :param retriever: recording retriever stub
+        :ptype retriever: _RecordingRetriever
+        :return: nothing
+        :rtype: None
+        """
+        self.retriever = retriever
+
+
+class TestRetrieveMemoriesCallSite:
+    """agent-internal retrieval must authorize agent-only (caller_user_id None)."""
+
+    async def test_passes_caller_user_id_none_and_scopes_by_user(self) -> None:
+        """caller_user_id is None (owner short-circuit) while user_id row-scopes.
+
+        passing the user as ``caller_user_id`` would force user ∩ agent
+        intersection and deny an ungranted channel user every turn; the
+        agent owns its memory namespace, so agent-internal retrieval
+        authorizes agent-only. ``user_id`` still selects whose memories to
+        search.
+        """
+        retriever = _RecordingRetriever()
+        integration = _RecordingIntegration(retriever)
+        agent_id = uuid.uuid4()
+        customer_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+
+        result = await retrieve_memories(
+            integration,  # type: ignore[arg-type]
+            agent_id,
+            customer_id,
+            user_id,
+            "what did we discuss",
+            5,
+        )
+
+        assert result == ["recalled context"]
+        assert len(retriever.calls) == 1
+        call = retriever.calls[0]
+        assert call["caller_user_id"] is None
+        assert call["caller_agent_id"] == agent_id
+        assert call["user_id"] == user_id
 
 
 # -- _recency_decay -----------------------------------------------------------

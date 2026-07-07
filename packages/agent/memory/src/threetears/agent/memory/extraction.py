@@ -164,11 +164,18 @@ class MemoryExtractor:
         :raises: never (fire-and-forget safe, logs errors internally)
         """
         try:
+            # agent-internal turn extraction: authorize AGENT-ONLY so the
+            # owner short-circuit gates it (the agent owns its memory
+            # namespace by construction). ``caller_user_id`` is left None on
+            # purpose -- passing the user would force user ∩ agent
+            # intersection, which denies until the user holds a memory grant
+            # that only a successful write creates (a bootstrap deadlock).
+            # ``user_id`` still scopes the stored memory rows below.
             await authorize_memory_access(
                 action=ACTION_MEMORY_EXTRACT,
                 agent_id=agent_id,
                 customer_id=customer_id,
-                caller_user_id=user_id,
+                caller_user_id=None,
                 caller_agent_id=agent_id,
                 deps=self._authorizer,
             )
