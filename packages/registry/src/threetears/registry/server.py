@@ -680,9 +680,7 @@ def _run_server() -> None:
     asyncio.run(server.serve())
 
 
-def _resolve_pod_authenticator_factory() -> (
-    "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None"
-):
+def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None":
     """resolve the tool-pod REGISTRATION authenticator factory from a configurable plugin path.
 
     3tears stays host-agnostic: the standalone registry cannot know how a given deployment stores
@@ -709,8 +707,7 @@ def _resolve_pod_authenticator_factory() -> (
         module_name, sep, attr = spec.partition(":")
         if not module_name or not sep or not attr:
             raise ValueError(
-                "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY must be a 'module:callable' dotted "
-                f"path; got {spec!r}"
+                f"THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY must be a 'module:callable' dotted path; got {spec!r}"
             )
         module = importlib.import_module(module_name)
         result = getattr(module, attr)

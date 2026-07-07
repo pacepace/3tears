@@ -118,7 +118,7 @@ class CrossWorkerCanceller:
         async def _on_msg(envelope: TaskCancelEnvelope) -> None:
             try:
                 key = UUID(envelope.key)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self._logger.warning(
                     "cross-worker cancel: bad key",
                     extra={"extra_data": {"key": envelope.key}},
@@ -135,8 +135,7 @@ class CrossWorkerCanceller:
             )
         except Exception as exc:  # noqa: BLE001 — startup fail-open boundary: a cancel-subscription failure of ANY kind must not break worker startup; local cancels still work
             self._logger.warning(
-                "cross-worker cancel subscription failed; this worker "
-                "cannot honour cross-worker cancels",
+                "cross-worker cancel subscription failed; this worker cannot honour cross-worker cancels",
                 extra={"extra_data": {"error": str(exc)}},
             )
 
@@ -157,9 +156,7 @@ class CrossWorkerCanceller:
         await self._on_cancel(key, payload)
         return True
 
-    async def request_cancel(
-        self, key: UUID, payload: dict[str, Any] | None = None
-    ) -> bool:
+    async def request_cancel(self, key: UUID, payload: dict[str, Any] | None = None) -> bool:
         """cancel ``key``'s task on this worker, or route to its owner.
 
         tries the local registry first (the common case — the task usually
@@ -187,8 +184,7 @@ class CrossWorkerCanceller:
             )
         except Exception as exc:  # noqa: BLE001 — best-effort fail-open: a cancel publish failure must not raise into the caller; the consumer's own TTL/backstop covers a missed cross-worker cancel
             self._logger.warning(
-                "cross-worker cancel publish failed; a task on another "
-                "worker cannot be cancelled",
+                "cross-worker cancel publish failed; a task on another worker cannot be cancelled",
                 extra={"extra_data": {"key": str(key), "error": str(exc)}},
             )
         return False

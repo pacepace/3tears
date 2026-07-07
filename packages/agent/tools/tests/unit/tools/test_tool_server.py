@@ -1892,9 +1892,7 @@ class TestToolServerAuthToken:
         )
         server.register(StubTool(name="test.stub", version="1.0"))
         mock_nc = self._mock_nc()
-        with patch(
-            "threetears.agent.tools.server.nats_connect", return_value=mock_nc
-        ) as connect_spy:
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc) as connect_spy:
             await self._run_serve(server, mock_nc)
         connect_spy.assert_called_once()
         assert connect_spy.call_args.kwargs["auth_token"] is provider
@@ -1941,9 +1939,7 @@ class TestToolServerAuthToken:
         )
         server.register(StubTool(name="test.stub", version="1.0"))
         mock_nc = self._mock_nc()
-        with patch(
-            "threetears.agent.tools.server.nats_connect", return_value=mock_nc
-        ) as connect_spy:
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc) as connect_spy:
             await self._run_serve(server, mock_nc)
         assert connect_spy.call_args.kwargs["auth_token"] is None
         assert self._manifest_token(mock_nc) == "static-dev-token"
