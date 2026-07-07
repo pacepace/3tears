@@ -158,7 +158,7 @@ class IdentityMinter:
             iss=self._issuer,
             sub=subject,
             customer_id=customer_id,
-            sid=uuid.uuid4().hex,  # a fresh per-mint session id (the schema requires one)
+            sid=uuid.uuid7().hex,  # a fresh per-mint session id (the schema requires one); uuid7 = time-ordered per the uuidv7 enforcement
             pod_id=pod_id if pod_id is not None else subject,
             iat=issued_at,
             exp=issued_at + self._ttl_seconds,

@@ -15,6 +15,10 @@ from threetears.nats.client import (
     Subscription,
     TokenCallback,
 )
+from threetears.nats.cross_worker_cancel import (
+    CrossWorkerCanceller,
+    TaskCancelEnvelope,
+)
 from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.nats.forward import (
     DEFAULT_FORWARD_TIMEOUT,
@@ -124,6 +128,9 @@ __all__ = [
     # distributed lock
     "LockHeld",
     "nats_distributed_lock",
+    # cross-worker cancel-by-key (keyed task registry + routed cancel)
+    "CrossWorkerCanceller",
+    "TaskCancelEnvelope",
     # owner-routed forward
     "DEFAULT_FORWARD_TIMEOUT",
     "ForwardError",

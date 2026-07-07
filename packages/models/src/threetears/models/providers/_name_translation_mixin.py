@@ -118,7 +118,14 @@ class NameTranslatingChatMixin:
     class, so the mixin MUST precede that class in the bases.
     """
 
-    _name_reverse_map: dict[str, str]
+    if TYPE_CHECKING:
+        # Type-checker-only declaration so this mixin's methods can reference
+        # ``self._name_reverse_map``. At runtime each concrete provider subclass
+        # owns the real ``PrivateAttr`` (pydantic collects private attrs from a
+        # concrete BaseModel, not a plain-object mixin base). Guarding it keeps
+        # the annotation out of the runtime class body, so the REQUIRED subclass
+        # declarations are not flagged as shadowing a base private.
+        _name_reverse_map: dict[str, str]
 
     def bind_tools(
         self,
