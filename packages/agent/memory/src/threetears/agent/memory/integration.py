@@ -289,12 +289,19 @@ async def retrieve_memories(
         return []
 
     try:
+        # agent-internal context enrichment: authorize AGENT-ONLY via the
+        # owner short-circuit. ``caller_user_id`` is None on purpose -- the
+        # retriever enforces the two-sided user ∩ agent check only when a
+        # caller user is supplied (user-initiated memory tools); passing the
+        # user here would deny an ungranted channel user every turn. the
+        # first positional ``user_id`` still row-scopes which memories are
+        # searched.
         context = await integration.retriever.retrieve(
             user_id,
             query,
             agent_id=agent_id,
             customer_id=customer_id,
-            caller_user_id=user_id,
+            caller_user_id=None,
             caller_agent_id=agent_id,
         )
         memories: list[str] = [context] if context else []

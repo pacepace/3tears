@@ -22,6 +22,11 @@ public surface:
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
+from threetears.core.security.identity_minter import (
+    DEFAULT_IDENTITY_TTL_SECONDS,
+    IdentityMinter,
+    static_token_provider,
+)
 from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityKeyNotFoundError,
@@ -74,9 +79,11 @@ __all__ = [
     "open_secret",
     "seal",
     # identity tokens
+    "DEFAULT_IDENTITY_TTL_SECONDS",
     "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityKeyNotFoundError",
+    "IdentityMinter",
     "IdentityTokenError",
     "ProxyAssertionClaims",
     "ProxyAssertionSigner",
@@ -88,6 +95,7 @@ __all__ = [
     "make_pop_proof",
     "mint_proxy_assertion",
     "sign_identity_token",
+    "static_token_provider",
     "verify_identity_token",
     "verify_pop_proof",
     "verify_proxy_assertion",

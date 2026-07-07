@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from threetears.core.namespaces import PLURAL_PREFIX_BY_NAMESPACE_TYPE, build_namespace_name, sanitize_segment
     from threetears.core.pagination import CursorError, Keyset, Page, decode_cursor, encode_cursor
     from threetears.core.security import PathSandbox, Sandbox, SandboxDecision, SandboxDenied
+    from threetears.core.task_registry import KeyedTaskRegistry
     from threetears.core.serialization import (
         FormatHandler,
         UnknownFormatError,
@@ -72,6 +73,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "FormatHandler": ("threetears.core.serialization", "FormatHandler"),
     "IndexDef": ("threetears.core.data.schema", "IndexDef"),
     "KVLease": ("threetears.core.coordination", "KVLease"),
+    "KeyedTaskRegistry": ("threetears.core.task_registry", "KeyedTaskRegistry"),
     "Keyset": ("threetears.core.pagination", "Keyset"),
     "LeaseHandle": ("threetears.core.coordination", "LeaseHandle"),
     "LeaseLost": ("threetears.core.coordination", "LeaseLost"),
@@ -115,6 +117,7 @@ __all__ = [
     "FormatHandler",
     "IndexDef",
     "KVLease",
+    "KeyedTaskRegistry",
     "LeaseHandle",
     "LeaseLost",
     "LeaseTimeout",

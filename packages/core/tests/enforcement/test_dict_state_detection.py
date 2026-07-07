@@ -57,6 +57,14 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "per-collection backend overrides, IS the infrastructure",
     ),
     (
+        "core/task_registry.py",
+        "KeyedTaskRegistry",
+        "_tasks",
+        "live asyncio.Task handles — per-worker + non-serializable; the "
+        "cancel registry IS the ephemeral infrastructure, cannot live in an "
+        "L1/L2/L3 backend",
+    ),
+    (
         "core/data/store.py",
         "DataStore",
         "_collections",

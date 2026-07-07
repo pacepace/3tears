@@ -40,6 +40,7 @@ evaluator can answer subsequent questions from cache.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
@@ -158,6 +159,66 @@ def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
     :rtype: str
     """
     return f"memory__{agent_id.hex[:8]}__{customer_id.hex[:8]}"
+
+
+def _memory_namespace_id(agent_id: UUID, customer_id: UUID) -> UUID:
+    """deterministic namespace id for the (agent, customer) memory pair.
+
+    same-triple -> same :func:`uuid5` so concurrent first-writers converge
+    on one row via ``ON CONFLICT (id) DO UPDATE``, and so the agent-owner
+    path (:func:`_owner_memory_namespace`) and the create path
+    (:func:`_resolve_or_create_memory_namespace`) agree on the id without a
+    shared DB read.
+
+    :param agent_id: owning agent UUID
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :return: deterministic memory namespace UUID
+    :rtype: UUID
+    """
+    return uuid5(
+        NAMESPACE_DNS,
+        f"threetears.namespaces.memory.{agent_id.hex}.{customer_id.hex}",
+    )
+
+
+@dataclass(frozen=True)
+class _OwnerMemoryNamespace:
+    """minimal namespace descriptor for the agent-owner memory path.
+
+    exposes exactly the four fields :func:`authorize_on_entity` reads
+    (``id``, ``customer_id``, ``namespace_type``, ``owner_agent_id``). used
+    when the calling agent owns the memory namespace, so the descriptor is
+    built deterministically in-process WITHOUT reading or creating a
+    ``platform.namespaces`` row -- the agent's sandboxed L3 search_path is
+    its own schema (``agent_<hex>``), which has no ``namespaces`` table, so
+    a Collection access there fails ``relation "namespaces" does not
+    exist``. mirrors the tool-namespace precedent that moved
+    ``platform.namespaces`` writes off the agent onto the hub.
+    """
+
+    id: UUID
+    customer_id: UUID
+    owner_agent_id: UUID
+    namespace_type: str = MEMORY_NAMESPACE_TYPE
+
+
+def _owner_memory_namespace(agent_id: UUID, customer_id: UUID) -> _OwnerMemoryNamespace:
+    """build the deterministic owner-path memory namespace descriptor.
+
+    :param agent_id: owning agent UUID (also the caller on this path)
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :return: deterministic descriptor exposing the four evaluator fields
+    :rtype: _OwnerMemoryNamespace
+    """
+    return _OwnerMemoryNamespace(
+        id=_memory_namespace_id(agent_id, customer_id),
+        customer_id=customer_id,
+        owner_agent_id=agent_id,
+    )
 
 
 class MemoryAuthorizerDependencies:
@@ -290,10 +351,7 @@ async def _resolve_or_create_memory_namespace(
     # matches the group-id + membership-id pattern used by the
     # memory-owner ensure path, keeping all derived ids uniformly
     # deterministic.
-    new_id = uuid5(
-        NAMESPACE_DNS,
-        f"threetears.namespaces.memory.{agent_id.hex}.{customer_id.hex}",
-    )
+    new_id = _memory_namespace_id(agent_id, customer_id)
     now = datetime.now(UTC)
     entity = namespace_collection.entity_class(
         {
@@ -371,11 +429,23 @@ async def authorize_memory_access(
     :raises MemoryAccessDenied: when the evaluator denies or when
         the namespace cannot be resolved / created
     """
-    ns_entity = await _resolve_or_create_memory_namespace(
-        agent_id=agent_id,
-        customer_id=customer_id,
-        namespace_collection=deps.namespace_collection,
-    )
+    if caller_agent_id is not None and caller_agent_id == agent_id:
+        # owner path: the calling agent owns its own memory namespace by
+        # construction (agent-internal retrieval / extraction). resolve it
+        # deterministically WITHOUT touching platform.namespaces -- the
+        # agent's sandboxed L3 search_path is its own schema (agent_<hex>),
+        # which has no namespaces table, so a Collection read/create there
+        # fails ``relation "namespaces" does not exist``. the evaluator's
+        # owner short-circuit allows the action from the descriptor's four
+        # fields alone; no row need exist. non-owner (user-initiated) calls
+        # still resolve/create through the Collection below.
+        ns_entity: Any = _owner_memory_namespace(agent_id, customer_id)
+    else:
+        ns_entity = await _resolve_or_create_memory_namespace(
+            agent_id=agent_id,
+            customer_id=customer_id,
+            namespace_collection=deps.namespace_collection,
+        )
     try:
         await authorize_on_entity(
             ns_entity=ns_entity,

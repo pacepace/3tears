@@ -60,6 +60,7 @@ import nats
 from nats.aio.client import Client as _NatsPyClient
 from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsConsumerConfig
 from nats.errors import (
+    AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
     StaleConnectionError as _NatsStaleConnectionError,
@@ -108,6 +109,14 @@ _T = TypeVar("_T", bound=BaseModel)
 #: session the broker may have dropped during the outage).
 ReconnectCallback = Callable[[], Awaitable[None]]
 
+#: a sync, argument-less PROVIDER returning the current connect auth token. nats-py invokes it fresh
+#: on every (re)connect (``Client._connect_command``), so a pod that presents a short-lived identity
+#: token hands the provider here and each reconnect re-presents a freshly-valid credential instead of
+#: a cached one that has since expired — the connection rides on indefinitely. Sync because nats-py
+#: calls it un-awaited; back a network-fetched token with a holder a background task refreshes and
+#: return ``holder.get()``.
+TokenCallback = Callable[[], str]
+
 
 # ---------------------------------------------------------------------------
 # tunables
@@ -132,6 +141,12 @@ STARTUP_MAX_RECONNECT_ATTEMPTS: Final[int] = 15
 #: brick; the consumer's liveness ``is_closed`` check is the last-resort net for the
 #: residual non-recoverable close paths (e.g. a persistent auth violation).
 RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = -1
+
+#: consecutive Authorization-Violation errors (no intervening successful (re)connect) after which
+#: :attr:`NatsClient.is_healthy` reports unhealthy. At the 2s ``reconnect_time_wait``, 3 is ~6s of
+#: sustained auth rejection -- long enough to distinguish a wedged credential from a one-off, short
+#: enough that a ``/healthz`` keyed on it trips promptly so k8s restarts the pod.
+_AUTH_VIOLATION_UNHEALTHY_THRESHOLD: Final[int] = 3
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -261,6 +276,7 @@ class NatsClient:
         "_buckets",
         "_kv_lock",
         "_reconnect_callbacks",
+        "_health_state",
     )
 
     def __init__(
@@ -280,6 +296,11 @@ class NatsClient:
         # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
         # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
         self._reconnect_callbacks: list[ReconnectCallback] = []
+        # liveness signal for a PERSISTENT auth-violation reconnect loop (see :meth:`is_healthy`).
+        # ``auth_violations`` counts consecutive Authorization-Violation errors since the last
+        # successful (re)connect; :meth:`connect` rebinds this to the dict its error/reconnect
+        # dispatchers close over, so the count reflects the live connection.
+        self._health_state: dict[str, int] = {"auth_violations": 0}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -293,7 +314,7 @@ class NatsClient:
         nats_subject_namespace: str = "3tears",
         client_name: str,
         cluster_urls: list[str] | None = None,
-        auth_token: str | None = None,
+        auth_token: TokenCallback | None = None,
         user_credentials: str | None = None,
         user: str | None = None,
         password: str | None = None,
@@ -317,11 +338,13 @@ class NatsClient:
         :ptype client_name: str
         :param cluster_urls: optional additional cluster member URLs
         :ptype cluster_urls: list[str] | None
-        :param auth_token: optional NATS auth token. under decentralized auth (platform-auth A)
-            this carries the pod's injected bootstrap token: the NATS server forwards it to the
-            Hub auth-callout responder, which validates it and mints the connection's user JWT +
-            subject permissions. anonymous (``None``) on the legacy shared bus.
-        :ptype auth_token: str | None
+        :param auth_token: optional NATS auth-token PROVIDER — a sync, zero-arg callable returning the
+            current token. under decentralized auth (platform-auth A) it returns the pod's short-lived
+            identity token; nats-py invokes it on every (re)connect, so each reconnect re-presents a
+            freshly-valid credential rather than a cached one that has since expired. the NATS server
+            forwards the returned token to the auth-callout responder, which verifies it and mints the
+            connection's user JWT + subject permissions. ``None`` leaves token auth off.
+        :ptype auth_token: TokenCallback | None
         :param user_credentials: optional path to a NATS ``.creds`` file (decentralized-auth static
             credentials). used for principals provisioned with standing creds rather than the
             auth-callout path; ``None`` leaves credential auth off.
@@ -363,9 +386,13 @@ class NatsClient:
         # the dispatcher closes over now and the instance adopts below, so consumer callbacks
         # registered post-connect via :meth:`add_reconnect_callback` are dispatched on every reconnect.
         reconnect_callbacks: list[ReconnectCallback] = []
+        # bridged like reconnect_callbacks: the error/reconnect dispatchers below close over this dict
+        # now; the instance adopts it after construction so :attr:`is_healthy` reads the live count.
+        health_state: dict[str, int] = {"auth_violations": 0}
 
         async def _dispatch_reconnected() -> None:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
+            health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
             await _on_reconnected()
             for callback in list(reconnect_callbacks):
                 try:
@@ -375,6 +402,16 @@ class NatsClient:
                     # it must never break the reconnect callback chain or the nats-py reconnect path.
                     log.warning("reconnect callback failed: %s", exc)
 
+        async def _dispatch_error(exc: Exception) -> None:
+            """log via the rate-limited handler AND track a persistent auth violation for is_healthy."""
+            # count the violation BEFORE the await: _on_error may suspend, and if a _dispatch_reconnected
+            # reset interleaves at that suspension point a post-reset stale += 1 could survive, leaving a
+            # phantom count after a healthy reconnect. Incrementing first keeps the counter honest within a
+            # run of failures; the next successful reconnect always resets it to 0.
+            if _is_authorization_violation(exc):
+                health_state["auth_violations"] += 1
+            await _on_error(exc)
+
         options: dict[str, object] = {
             "name": client_name,
             "allow_reconnect": True,
@@ -382,9 +419,11 @@ class NatsClient:
             "reconnect_time_wait": 2,
             "reconnected_cb": _dispatch_reconnected,
             "disconnected_cb": _on_disconnected,
-            "error_cb": _on_error,
+            "error_cb": _dispatch_error,
         }
         if auth_token:
+            # store the provider UNWRAPPED: nats-py's _connect_command invokes it on every
+            # (re)connect, so each reconnect presents a freshly-minted token, never a cached one.
             options["token"] = auth_token
         if user_credentials:
             options["user_credentials"] = user_credentials
@@ -435,6 +474,9 @@ class NatsClient:
         # adopt the SAME list the dispatcher closes over, so ``add_reconnect_callback`` appends are
         # visible to the already-installed ``reconnected_cb``.
         client._reconnect_callbacks = reconnect_callbacks
+        # adopt the SAME dict the error/reconnect dispatchers close over, so :attr:`is_healthy` reads
+        # the live auth-violation count.
+        client._health_state = health_state
         return client
 
     def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
@@ -489,6 +531,26 @@ class NatsClient:
         :rtype: bool
         """
         return bool(self._raw.is_closed)
+
+    @property
+    def is_healthy(self) -> bool:
+        """whether the connection is NOT stuck in a persistent auth-violation reconnect loop.
+
+        Forever-reconnect (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS`) deliberately rides out network
+        drops of any duration, so it also rides out a **persistent auth violation** -- a server that
+        rejects the credential on every reconnect attempt (an expired/misconfigured/revoked identity
+        token). That never ``close()``s the client, so :attr:`is_closed` stays ``False`` and a
+        liveness probe keyed only on ``is_closed`` never trips -- the pod wedges "alive" forever with
+        a dead data plane (the exact 46h scriob outage). This returns ``False`` once
+        :data:`_AUTH_VIOLATION_UNHEALTHY_THRESHOLD` consecutive Authorization-Violation errors have
+        landed with no intervening successful (re)connect, so a ``/healthz`` keyed on it fails and k8s
+        restarts the pod (a fresh connect re-mints the credential). A network drop -- no auth
+        violation -- does NOT trip this; forever-reconnect still owns that path.
+
+        :return: ``False`` when stuck being auth-rejected; ``True`` otherwise.
+        :rtype: bool
+        """
+        return self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
 
     async def ping(self, *, timeout: float = 2.0) -> bool:
         """force a server round-trip to verify the broker is responsive.
@@ -1617,6 +1679,30 @@ async def _on_disconnected() -> None:
     :rtype: None
     """
     log.warning("NATS disconnected")
+
+
+def _is_authorization_violation(exc: Exception) -> bool:
+    """whether ``exc`` is an auth rejection from the server (the wedged-auth signal is_healthy tracks).
+
+    Auth rejections reach the error callback in two shapes, so we detect BOTH — matching on semantics,
+    not one string:
+
+    * the reconnect-loop path raises a generic ``errors.Error("nats: 'Authorization Violation'")`` — the
+      ``-ERR`` text the server sends; caught by the ``"authorization violation"`` substring.
+    * nats-py's typed :class:`nats.errors.AuthorizationError` whose ``str`` is ``"nats: authorization
+      failed"`` — NOT covered by the first substring. Matched by type (and its ``"authorization failed"``
+      text) so a future nats-py routing change that surfaces the typed error to ``error_cb`` still trips
+      the counter, rather than silently re-opening the multi-hour auth-wedge this signal exists to catch.
+
+    :param exc: the exception nats-py surfaced to the error callback.
+    :ptype exc: Exception
+    :return: ``True`` when it is an authorization rejection.
+    :rtype: bool
+    """
+    if isinstance(exc, _NatsAuthorizationError):
+        return True
+    text = str(exc).lower()
+    return "authorization violation" in text or "authorization failed" in text
 
 
 async def _on_error(exc: Exception) -> None:

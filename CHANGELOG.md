@@ -4,6 +4,56 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.14.1 -- 2026-07-06
+
+**Refreshing NATS connect credentials + per-key tool-pod identity.** A connection's auth
+credential is no longer a single string captured at connect and re-presented (stale) on
+every reconnect — it is a PROVIDER re-invoked each (re)connect, so a short-lived self-minted
+identity token is re-minted fresh and the connection never wedges when the credential
+expires mid-session.
+
+- **`NatsClient.connect(auth_token=...)` is now a token PROVIDER** (`Callable[[], str]`,
+  invoked by nats-py on every (re)connect) rather than a static `str`. Static-credential
+  services wrap their token in `static_token_provider`; self-minting principals pass a
+  provider backed by `IdentityMinter`.
+- **`IdentityMinter`** (`threetears.core.security`) — holds a custody Ed25519 key and
+  self-mints short-lived EdDSA identity JWTs (the stateful counterpart to the pure
+  `sign_identity_token`), for a pod/agent/tool-pod to present as its connect credential.
+- **`NatsClient.is_healthy`** reports `False` when a connection is stuck in a persistent
+  Authorization-Violation reconnect loop (a rejected credential the forever-reconnect rides
+  forever without closing), so a `/healthz` keyed on it lets k8s restart the pod.
+- **Tool-pod per-key identity, both auth layers.** `ToolServer` accepts an `auth_token`
+  provider so a tool pod self-mints its connect JWT for the NATS auth-callout, and carries
+  the same JWT on its registration manifest. The registry `ToolPodAuthenticator.verify_pod`
+  now takes the RAW JWT (was a token hash); `RegistrationHandler` verifies token-bearing
+  manifests and admits tokenless (agent-owned in-process) pods.
+
+**Cross-worker cancellation primitives (additive).** A WS-streaming consumer that runs turns
+as fire-and-forget tasks now has a platform primitive to stop one — locally or on whichever
+worker holds it — instead of hand-rolling a registry + NATS routing. Purely additive; no
+existing signature changed.
+
+- **`threetears.core.KeyedTaskRegistry`** — a per-worker registry of cancellable
+  `asyncio.Task`s keyed by `UUID` (`register`/`pop`/`get`/`discard`, identity-guarded). Keeps
+  a fire-and-forget task's handle reachable so it can be cancelled by key. `pop` is
+  pop-before-cancel (a redelivered cancel is a clean no-op).
+- **`threetears.nats.CrossWorkerCanceller` + `TaskCancelEnvelope`** — wraps a
+  `KeyedTaskRegistry`; `request_cancel(key, payload)` cancels the task locally when this
+  worker owns it, else publishes on a consumer-supplied broadcast `Subject` so the OWNING
+  worker cancels. On cancel it invokes a consumer `on_cancel(key, payload)` callback with an
+  **opaque** payload — the primitive knows nothing about locks/frames/checkpoints; all product
+  semantics stay in the callback and the cancelled coroutine's own `finally`. `registry` is a
+  required constructor arg so `threetears.nats` keeps `threetears.core` a type-only dependency.
+  (Mirrors the `channels` `RoomFanout` publish-one/act-on-receive-per-pod pattern, specialised
+  to cancellation. First consumer: metallm's Stop button.)
+
+**Fixes (enforcement debt on this branch).**
+- `IdentityMinter` per-mint session id now uses `uuid7` (time-ordered), satisfying the
+  uuidv7 enforcement.
+- The provider `NameTranslatingChatMixin`'s `_name_reverse_map` type hint is now
+  `TYPE_CHECKING`-guarded, so the (pydantic-required) per-subclass `PrivateAttr` declarations
+  are no longer flagged as shadowing a base private. No runtime change.
+
 ## v0.13.11 -- 2026-07-02
 
 The **scope-and-objects** framework family: the huge-object offload backend and

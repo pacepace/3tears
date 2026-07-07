@@ -12,7 +12,7 @@ and the real ACL loaders; the bundle's
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 import pytest
 
@@ -173,6 +173,59 @@ class _NamespaceCollectionRaisingFake(_NamespaceCollectionFake):
         """
         _ = entity
         raise RuntimeError("simulated save failure")
+
+
+class _NamespaceCollectionUnavailableFake:
+    """namespace collection that raises on every access.
+
+    simulates the agent's sandboxed L3 backend, whose search_path is the
+    per-agent schema (``agent_<hex>``) with no ``namespaces`` table -- any
+    read or create there fails ``relation "namespaces" does not exist``.
+    the owner path must never touch it.
+    """
+
+    def __init__(self) -> None:
+        """initialize with the stub entity_class + empty save log.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.entity_class = _StubNamespaceEntity
+        self.save_calls: list[Any] = []
+
+    async def get_by_owner_and_customer(
+        self,
+        *,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        customer_id: UUID | None,
+    ) -> _StubNamespaceEntity | None:
+        """raise as the sandboxed agent L3 would on a namespaces read.
+
+        :param namespace_type: namespace type (unused)
+        :ptype namespace_type: str
+        :param owner_agent_id: owning agent UUID (unused)
+        :ptype owner_agent_id: UUID | None
+        :param customer_id: owning customer UUID (unused)
+        :ptype customer_id: UUID | None
+        :return: never returns
+        :rtype: _StubNamespaceEntity | None
+        :raises RuntimeError: always
+        """
+        _ = namespace_type, owner_agent_id, customer_id
+        raise RuntimeError('relation "namespaces" does not exist')
+
+    async def save_entity(self, entity: Any) -> None:
+        """raise as the sandboxed agent L3 would on a namespaces write.
+
+        :param entity: entity passed in (unused)
+        :ptype entity: Any
+        :return: never returns
+        :rtype: None
+        :raises RuntimeError: always
+        """
+        _ = entity
+        raise RuntimeError('relation "namespaces" does not exist')
 
 
 def _stub_ns(
@@ -340,40 +393,48 @@ class TestMemoryNamespaceName:
 
 
 class TestAuthorizeMemoryAccess:
-    async def test_namespace_materialized_on_miss(self) -> None:
-        """missing namespace row is created via ``save_entity`` and then used."""
+    async def test_namespace_materialized_on_miss_user_path(self) -> None:
+        """user (non-owner) path creates the missing namespace before evaluating.
+
+        materialization runs in ``_resolve_or_create_memory_namespace``
+        before ``authorize_on_entity``; with no grant the call then denies,
+        but ``save_entity`` was invoked. the owner path (deterministic, no
+        Collection) is covered by :meth:`test_owner_shortcut_allows_agent_without_grant`.
+        """
         agent_id = uuid4()
         customer_id = uuid4()
-        ns_existing = _stub_ns(agent_id=agent_id, customer_id=customer_id)
+        ns_created = _stub_ns(agent_id=agent_id, customer_id=customer_id)
         # start with no namespace; after save_entity we flip the fake to
         # return the resolved stub so the re-read returns cleanly.
         namespace_collection = _NamespaceCollectionFake(None)
 
         async def _save(entity: Any) -> None:
-            """flip the fake's stored entity after first save.
+            """flip the fake's stored entity after save and record the call.
 
             :param entity: entity being saved
             :ptype entity: Any
             :return: nothing
             :rtype: None
             """
-            _ = entity
-            namespace_collection.resolved_entity = ns_existing
+            namespace_collection.resolved_entity = ns_created
+            namespace_collection.save_calls.append(entity)
 
         namespace_collection.save_entity = _save  # type: ignore[assignment]
 
         deps = _build_deps(namespace_collection=namespace_collection)
 
-        # owner shortcut so the evaluator allows without real grants
-        result = await authorize_memory_access(
-            action=ACTION_MEMORY_WRITE,
-            agent_id=agent_id,
-            customer_id=customer_id,
-            caller_user_id=None,
-            caller_agent_id=agent_id,
-            deps=deps,
-        )
-        assert result is ns_existing
+        # non-owner caller (caller_agent_id None) with no grant: the row is
+        # materialized, then the evaluator denies.
+        with pytest.raises(MemoryAccessDenied, match="evaluator denied"):
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=uuid4(),
+                caller_agent_id=None,
+                deps=deps,
+            )
+        assert len(namespace_collection.save_calls) == 1
 
     async def test_namespace_create_failure_denies(self) -> None:
         """when ``save_entity`` raises, the helper denies cleanly."""
@@ -392,10 +453,17 @@ class TestAuthorizeMemoryAccess:
             )
 
     async def test_owner_shortcut_allows_agent_without_grant(self) -> None:
+        """owner path allows without a grant AND never touches the collection.
+
+        reproduces the agent-internal retrieval/extraction fix: the owning
+        agent resolves its memory namespace deterministically, so a
+        collection whose every access raises ``relation "namespaces" does
+        not exist`` (the sandboxed agent L3) does not break authorization.
+        """
         agent_id = uuid4()
         customer_id = uuid4()
-        ns = _stub_ns(agent_id=agent_id, customer_id=customer_id)
-        deps = _build_deps(namespace_collection=_NamespaceCollectionFake(ns))
+        namespace_collection = _NamespaceCollectionUnavailableFake()
+        deps = _build_deps(namespace_collection=namespace_collection)
 
         result = await authorize_memory_access(
             action=ACTION_MEMORY_WRITE,
@@ -405,7 +473,47 @@ class TestAuthorizeMemoryAccess:
             caller_agent_id=agent_id,
             deps=deps,
         )
-        assert result is ns
+        assert result.owner_agent_id == agent_id
+        assert result.customer_id == customer_id
+        assert result.namespace_type == "memory"
+        assert result.id == uuid5(
+            NAMESPACE_DNS,
+            f"threetears.namespaces.memory.{agent_id.hex}.{customer_id.hex}",
+        )
+        assert namespace_collection.save_calls == []
+
+    async def test_owner_branch_bypasses_collection_even_with_user_present(self) -> None:
+        """retrieval shape (user + owning agent) skips the collection read.
+
+        ``retrieve_memories`` / extraction pass ``caller_user_id=user`` AND
+        ``caller_agent_id=agent`` (the owning agent). the owner BRANCH fires
+        on ``caller_agent_id == agent_id`` regardless of the user, so the
+        deterministic descriptor is used and the sandboxed-L3 collection --
+        which raises ``relation "namespaces" does not exist`` on any access
+        -- is never touched. the call still DENIES here (user ∩ agent
+        intersection: an ungranted user caps the owner-implicit wildcard to
+        empty), surfacing as a clean ``evaluator denied`` rather than the
+        namespaces DB error -- so the guard is that the raised type is
+        :class:`MemoryAccessDenied` from the evaluator, NOT a RuntimeError
+        from a collection read.
+        """
+        agent_id = uuid4()
+        customer_id = uuid4()
+        namespace_collection = _NamespaceCollectionUnavailableFake()
+        deps = _build_deps(namespace_collection=namespace_collection)
+
+        with pytest.raises(MemoryAccessDenied, match="evaluator denied"):
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=uuid4(),
+                caller_agent_id=agent_id,
+                deps=deps,
+            )
+        # the collection was never consulted (no relation error): the owner
+        # branch resolved the namespace deterministically.
+        assert namespace_collection.save_calls == []
 
     async def test_user_without_grant_denied(self) -> None:
         agent_id = uuid4()

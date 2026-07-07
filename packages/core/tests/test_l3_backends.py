@@ -379,7 +379,7 @@ async def test_schema_aware_durable_store_emits_byte_identical_sql() -> None:
     assert n == 1
     sql, _params = pool.calls[-1]
     assert "INSERT INTO items" in sql
-    assert "::jsonb" in sql and "::vector" in sql
+    assert "::jsonb" in sql and "::text::public.vector" in sql
     assert "ON CONFLICT (id) DO UPDATE SET" in sql
     assert "label = EXCLUDED.label" in sql
     assert "date_created = EXCLUDED.date_created" not in sql  # immutable

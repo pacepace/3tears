@@ -341,3 +341,80 @@ class TestRegistryRbacStackClose:
         await stack.subscribe_invalidations()
         await stack.close()
         assert nc.unsubscribe.await_count == 3
+
+
+class TestRegistryServerPodAuthenticatorFactory:
+    """``RegistryServer`` accepts + resolves the tool-pod registration authenticator, mirroring the
+    rbac-authorizer factory. the resolved authenticator is what :meth:`_start_handlers` threads into
+    the :class:`RegistrationHandler` (per-key-identity registration verify)."""
+
+    @pytest.mark.asyncio
+    async def test_factory_resolved_with_nats_client(self) -> None:
+        """the factory runs against the connected client + its result is stored + returned."""
+        nc = AsyncMock()
+        authenticator = MagicMock()
+        factory = AsyncMock(return_value=authenticator)
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            pod_authenticator_factory=factory,
+        )
+        result = await server.apply_pod_authenticator_factory(nc)
+        factory.assert_awaited_once_with(nc)
+        assert result is authenticator
+
+    @pytest.mark.asyncio
+    async def test_fixed_authenticator_kept_when_no_factory(self) -> None:
+        """a directly-supplied ``pod_authenticator`` survives the (no-op) resolve step."""
+        authenticator = MagicMock()
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            pod_authenticator=authenticator,
+        )
+        result = await server.apply_pod_authenticator_factory(AsyncMock())
+        assert result is authenticator
+
+    @pytest.mark.asyncio
+    async def test_open_mode_default_returns_none(self) -> None:
+        """no authenticator and no factory -> open mode (None) preserved."""
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
+        result = await server.apply_pod_authenticator_factory(AsyncMock())
+        assert result is None
+
+
+class TestResolvePodAuthenticatorFactory:
+    """the registry entrypoint resolves its tool-pod authenticator factory from a configurable
+    ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
+    own factory)."""
+
+    @pytest.mark.asyncio
+    async def test_unset_env_is_open_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """no env var -> None -> open registration (pure-3tears / dev default)."""
+        from threetears.registry.server import _resolve_pod_authenticator_factory
+
+        monkeypatch.delenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", raising=False)
+        assert _resolve_pod_authenticator_factory() is None
+
+    @pytest.mark.asyncio
+    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path resolves to that exact object."""
+        from threetears.registry.server import _resolve_pod_authenticator_factory
+
+        # point at a real importable callable to prove resolution (any module attr works).
+        monkeypatch.setenv(
+            "THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY",
+            "threetears.registry.auth:AllowAllAuthorizer",
+        )
+        from threetears.registry.auth import AllowAllAuthorizer
+
+        assert _resolve_pod_authenticator_factory() is AllowAllAuthorizer
+
+    @pytest.mark.asyncio
+    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a path without the ``module:callable`` shape crashes startup (never silent open mode)."""
+        from threetears.registry.server import _resolve_pod_authenticator_factory
+
+        monkeypatch.setenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "no_colon_here")
+        with pytest.raises(ValueError, match="module:callable"):
+            _resolve_pod_authenticator_factory()

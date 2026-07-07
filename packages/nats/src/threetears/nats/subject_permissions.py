@@ -227,6 +227,11 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
             f"{ns}_agent_config",
             f"{ns}-collections",
             "checkpoints",
+            # memory extraction throttle: the agent's MemoryExtractor uses a
+            # per-conversation SET-NX-with-TTL key in this bucket to rate-limit
+            # extraction. without the grant the JS API calls are denied and
+            # time out, so the gate fails open (no throttling).
+            f"{ns}-ratelimits",
             # in-process tool serving: the in-process tool server verifies the proxy's body-bound
             # assertion under enforce and records single-use nonces here (mirrors ``_tool_pod``). used
             # in BOTH devx (``DevInProcessStrategy`` builtins) and production

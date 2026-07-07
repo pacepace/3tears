@@ -15,6 +15,8 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "get_connect_retry_backoff_cap",
+    "get_connect_retry_budget",
     "get_engagement_scope_request_timeout",
     "get_jwks_request_timeout",
     "get_object_resolve_request_timeout",
@@ -31,6 +33,12 @@ _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT = 30.0
 _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_OBJECT_RESOLVE_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT = 5.0
+# a standalone tool pod that opens its OWN connection retries the initial connect for this long before
+# giving up (fail-visible crash -> k8s CrashLoopBackoff). generous by design: k8s starts pods in any
+# order, so the hub (auth-callout + the pod's seeded tool_pods row) may not be up yet -- the pod must
+# wait it out rather than depend on start ordering.
+_PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET = 180.0
+_PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP = 15.0
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -124,4 +132,28 @@ def get_engagement_scope_request_timeout() -> float:
     return _env_float(
         "THREETEARS_TOOLSERVER_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT",
         _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT,
+    )
+
+
+def get_connect_retry_budget() -> float:
+    """return how long a standalone tool pod retries its INITIAL NATS connect before failing loud.
+
+    :return: seconds from THREETEARS_TOOL_POD_CONNECT_RETRY_SECONDS or the platform default
+    :rtype: float
+    """
+    return _env_float(
+        "THREETEARS_TOOL_POD_CONNECT_RETRY_SECONDS",
+        _PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET,
+    )
+
+
+def get_connect_retry_backoff_cap() -> float:
+    """return the max backoff (seconds) between initial-connect retry attempts.
+
+    :return: seconds from THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP or the platform default
+    :rtype: float
+    """
+    return _env_float(
+        "THREETEARS_TOOL_POD_CONNECT_RETRY_BACKOFF_CAP",
+        _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP,
     )

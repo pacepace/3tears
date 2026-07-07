@@ -94,7 +94,20 @@ class ToolContextManager:
         :ptype memory_refs_collection: MemoryRefsCollection | None
         :return: nothing
         :rtype: None
+        :raises TypeError: if ``collection`` is ``None`` -- a wiring omission
+            that would otherwise surface as an opaque ``NoneType`` error
+            mid-stream in :meth:`load_context`.
         """
+        # The context collection is required and dereferenced unconditionally
+        # (``load_context`` -> ``collection.find_by_conversation``). Reject a
+        # ``None`` here so a caller that fails to thread it fails loudly at
+        # construction, not with an opaque ``NoneType`` ``AttributeError`` on
+        # the first load. (``memory_refs_collection`` stays genuinely optional.)
+        if collection is None:
+            raise TypeError(
+                "ToolContextManager requires a non-null ContextItemCollection; "
+                "got None (a caller failed to thread the context collection)."
+            )
         self._collection = collection
         self.conversation_id = conversation_id
         self.user_id = user_id
