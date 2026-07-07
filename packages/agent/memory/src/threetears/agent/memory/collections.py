@@ -1077,7 +1077,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
-                   embedding,
+                   embedding::text AS embedding,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             {vec_where}
@@ -1115,7 +1115,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
-                       embedding,
+                       embedding::text AS embedding,
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
                 {fts_where}
@@ -1884,7 +1884,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                   mc.media_id, mc.date_created, mc.embedding,
+                   mc.media_id, mc.date_created, mc.embedding::text AS embedding,
                    med.media_category, med.metadata_json,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM media_content mc
@@ -1915,7 +1915,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
-                       mc.media_id, mc.date_created, mc.embedding,
+                       mc.media_id, mc.date_created, mc.embedding::text AS embedding,
                        med.media_category, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM media_content mc
@@ -2459,7 +2459,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
-                   mc.embedding, med.metadata_json, med.media_id,
+                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
@@ -2500,7 +2500,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                        mc.page_number, mc.memory_id,
                        mc.message_id_start, mc.message_id_end,
-                       mc.embedding, med.metadata_json, med.media_id,
+                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
                 LEFT JOIN media med
@@ -2950,7 +2950,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
-                   mc.embedding, med.metadata_json, med.media_id,
+                   mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                    1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
@@ -2985,7 +2985,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                        mc.page_number, mc.memory_id,
                        mc.message_id_start, mc.message_id_end,
-                       mc.embedding, med.metadata_json, med.media_id,
+                       mc.embedding::text AS embedding, med.metadata_json, med.media_id,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
                 LEFT JOIN media med
