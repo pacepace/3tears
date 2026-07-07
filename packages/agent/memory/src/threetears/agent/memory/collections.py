@@ -926,10 +926,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         rows = await self.l3_pool.fetch(
             """
             SELECT memory_id, content, type_memory,
-                   1 - (embedding <=> $1::text::public.vector) AS similarity
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
-            ORDER BY embedding <=> $1::text::public.vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -1078,11 +1078,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
                    embedding,
-                   1 - (embedding <=> $1::text::public.vector) AS similarity
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             {vec_where}
               AND embedding IS NOT NULL{vec_date_clause}
-            ORDER BY embedding <=> $1::text::public.vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -1304,10 +1304,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # which trips ``float(similarity)`` downstream.
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
-                   1 - (embedding <=> $1::text::public.vector) AS similarity
+                   1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE {where_clause}
-            ORDER BY embedding <=> $1::text::public.vector
+            ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT ${param_idx}
         """
         params.append(max_results)
@@ -1886,13 +1886,13 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
                    mc.media_id, mc.date_created, mc.embedding,
                    med.media_category, med.metadata_json,
-                   1 - (mc.embedding <=> $1::text::public.vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM media_content mc
             JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.media_id = med.media_id
             WHERE {scope_conditions} AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::text::public.vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -2090,7 +2090,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             SELECT mc.content_id, mc.content, mc.content_type,
                    mc.media_id, med.media_category, med.metadata_json,
                    med.date_created,
-                   1 - (mc.embedding <=> $1::text::public.vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM media_content mc
             JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2098,7 +2098,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::text::public.vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -2460,7 +2460,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
                    mc.embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding <=> $1::text::public.vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2468,7 +2468,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             WHERE {scope_conditions}
               AND mc.embedding IS NOT NULL
               {cursor_clause}
-            ORDER BY mc.embedding <=> $1::text::public.vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
@@ -2609,7 +2609,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
                    mc.memory_id, mc.message_id_start, mc.message_id_end,
                    med.metadata_json,
-                   1 - (mc.embedding <=> $1::text::public.vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
@@ -2617,7 +2617,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
-            ORDER BY mc.embedding <=> $1::text::public.vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
             embedding_str,
@@ -2951,14 +2951,14 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                    mc.page_number, mc.memory_id,
                    mc.message_id_start, mc.message_id_end,
                    mc.embedding, med.metadata_json, med.media_id,
-                   1 - (mc.embedding <=> $1::text::public.vector) AS similarity
+                   1 - (mc.embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
             WHERE {scope_conditions}
               AND mc.memory_id = {memory_id_param}
-            ORDER BY mc.embedding <=> $1::text::public.vector
+            ORDER BY mc.embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
             embedding_str,
