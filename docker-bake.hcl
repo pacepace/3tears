@@ -64,7 +64,7 @@ group "default" {
   # otherwise-unnecessary clone and produces a "context not found" bake
   # error for anyone following the documented prerequisites. opt into
   # building admin via the explicit `admin` target or the `all` group.
-  targets = ["threetears-base", "aibots-base", "hub", "schema"]
+  targets = ["threetears-base", "aibots-base", "hub", "schema", "agent"]
 }
 
 group "base" {
@@ -73,13 +73,13 @@ group "base" {
 
 group "consumers" {
   # every consumer image; requires the admin repo as a sibling
-  targets = ["hub", "admin", "schema"]
+  targets = ["hub", "admin", "schema", "agent"]
 }
 
 group "all" {
   # everything (bases + every consumer); requires the admin repo as a
   # sibling. invoke explicitly when you want admin built locally
-  targets = ["threetears-base", "aibots-base", "hub", "admin", "schema"]
+  targets = ["threetears-base", "aibots-base", "hub", "admin", "schema", "agent"]
 }
 
 # ---------------------------------------------------------------------------
@@ -172,5 +172,23 @@ target "schema" {
   tags = [
     "${REGISTRY}/aibots-schema:${VERSION}",
     "${REGISTRY}/aibots-schema:latest",
+  ]
+}
+
+# generic declarative-agent image: aibots-base + the SDK's generic runner CMD.
+# any config-only agent (e.g. ots) runs on this; no per-agent image needed.
+target "agent" {
+  inherits   = ["common"]
+  context    = "../14-eng-ai-bot-agents"
+  dockerfile = "docker/agent/Dockerfile"
+  contexts = {
+    "ghcr.io/pacepace/aibots-base:v0.14.1" = "target:aibots-base"
+  }
+  args = {
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.14.1"
+  }
+  tags = [
+    "${REGISTRY}/aibots-agent:${VERSION}",
+    "${REGISTRY}/aibots-agent:latest",
   ]
 }
