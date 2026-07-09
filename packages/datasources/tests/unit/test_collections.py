@@ -6,11 +6,11 @@ mirrors the Hub-side coverage that existed pre-relocation:
   collection class
 - ``serialize`` / ``deserialize`` round-trip for the BaseCollection
   subclasses
-- DataSourceCollection's ``find_by_id`` is exercised via integration
-  in Hub's existing suite; this unit file only pins the static
-  surface (the SchemaBackedCollection-flavored datasource collection
-  doesn't expose its own serialize/deserialize -- the schema does
-  that).
+- CapabilitySourceCollection's ``find_by_id`` is exercised via
+  integration in Hub's existing suite; this unit file only pins the
+  static surface (the SchemaBackedCollection-flavored capability-source
+  collection doesn't expose its own serialize/deserialize -- the schema
+  does that).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from uuid import uuid4
 import pytest
 
 from threetears.datasources.collections import (
-    DataSourceCollection,
+    CapabilitySourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
     DataSourceSchemaDigestCollection,
@@ -32,8 +32,8 @@ from threetears.datasources.collections import (
     TableTemplateCollection,
 )
 from threetears.datasources.entities import (
+    CapabilitySourceEntity,
     DataSourceColumnEntity,
-    DataSourceEntity,
     DataSourceRelationEntity,
     DataSourceSchemaDigestEntity,
     DataSourceTableEntity,
@@ -56,27 +56,27 @@ def _make_registry_and_config() -> tuple[MagicMock, MagicMock]:
     return registry, config
 
 
-# -- DataSourceCollection (SchemaBackedCollection) --
+# -- CapabilitySourceCollection (SchemaBackedCollection) --
 
 
-class TestDataSourceCollection:
+class TestCapabilitySourceCollection:
     """the registry collection wires to ``platform.datasources``."""
 
     def test_table_name(self) -> None:
         registry, config = _make_registry_and_config()
-        coll = DataSourceCollection(registry=registry, config=config)
+        coll = CapabilitySourceCollection(registry=registry, config=config)
         assert coll.table_name == "datasources"
 
     def test_entity_class(self) -> None:
         registry, config = _make_registry_and_config()
-        coll = DataSourceCollection(registry=registry, config=config)
-        assert coll.entity_class is DataSourceEntity
+        coll = CapabilitySourceCollection(registry=registry, config=config)
+        assert coll.entity_class is CapabilitySourceEntity
 
     def test_primary_key_column_is_flat_id(self) -> None:
-        # knowledge-task-08: the datasource PK is the flat ``id`` (v016
+        # knowledge-task-08: the source PK is the flat ``id`` (v016
         # rebuilt the composite ``(customer_id, id)`` partition PK on ``id``
-        # alone so a platform-shared datasource can carry customer_id NULL).
-        assert DataSourceCollection.primary_key_column == "id"
+        # alone so a platform-shared source can carry customer_id NULL).
+        assert CapabilitySourceCollection.primary_key_column == "id"
 
     @pytest.mark.asyncio
     async def test_iter_active_ids_filters_status_active(self) -> None:
@@ -94,7 +94,7 @@ class TestDataSourceCollection:
         mock_pool.fetch = AsyncMock(return_value=[])
         registry.get_l3_pool.return_value = mock_pool
 
-        coll = DataSourceCollection(registry=registry, config=config)
+        coll = CapabilitySourceCollection(registry=registry, config=config)
         result = await coll.iter_active_ids()
 
         assert result == []
@@ -117,7 +117,7 @@ class TestDataSourceCollection:
         mock_pool.fetch = AsyncMock(return_value=[{"id": ds_id} for ds_id in ids])
         registry.get_l3_pool.return_value = mock_pool
 
-        coll = DataSourceCollection(registry=registry, config=config)
+        coll = CapabilitySourceCollection(registry=registry, config=config)
         result = await coll.iter_active_ids()
 
         assert result == ids

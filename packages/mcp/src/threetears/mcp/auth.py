@@ -43,11 +43,14 @@ from threetears.observe import get_logger
 
 __all__ = [
     "Authorizer",
+    "BearerTokenIdentityProvider",
+    "BearerTokenResolver",
     "EnvVarIdentityProvider",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
     "PrincipalType",
+    "TokenSource",
 ]
 
 log = get_logger(__name__)
@@ -187,6 +190,102 @@ class EnvVarIdentityProvider:
             principal_id=principal_id,
             is_admin=self._is_admin,
         )
+
+
+BearerTokenResolver = Callable[[str], Awaitable["Identity"]]
+"""signature for the bearer-token -> :class:`Identity` resolver.
+
+injected into :class:`BearerTokenIdentityProvider` so the 3tears mcp
+package never imports hub auth code: the hub wires its own
+``APIKeyAuthStrategy`` / ``JWTAuthStrategy``-backed resolver. the
+resolver validates the token and returns the resolved caller
+:class:`Identity`; it raises when the token cannot be resolved.
+"""
+
+
+TokenSource = Callable[[], "str | None"]
+"""signature for the per-request bearer-token source.
+
+returns the current request's bearer token (or ``None`` when absent).
+in production the transport layer populates a request-scoped
+contextvar and passes its reader here (see
+:func:`threetears.mcp.http_server.current_bearer_token`); tests pass a
+simple mutable holder. keeping this injectable is what lets
+:meth:`BearerTokenIdentityProvider.identify` honour the fixed
+zero-argument Protocol signature while still re-resolving per request.
+"""
+
+
+class BearerTokenIdentityProvider:
+    """v2 HTTP :class:`IdentityProvider` -- one identity per request.
+
+    unlike :class:`EnvVarIdentityProvider` (one fixed identity per
+    server lifetime), this provider re-resolves the caller on every
+    :meth:`identify` call from the request-scoped bearer token. the
+    token is obtained from the injected ``token_source`` (a
+    request-scoped contextvar reader in production) and mapped to an
+    :class:`Identity` by the injected ``resolver``. neither the token
+    nor the resolved identity is cached across requests.
+
+    the 3tears mcp package deliberately does not decode JWTs or read a
+    user table itself: both the token source and the resolver are
+    injected so the hub can supply its own credential-validation
+    backend without this package importing hub code.
+
+    :param resolver: async token -> :class:`Identity` resolver
+    :ptype resolver: BearerTokenResolver
+    :param token_source: callable returning the current request's
+        bearer token (or ``None`` when absent)
+    :ptype token_source: TokenSource
+    """
+
+    def __init__(
+        self,
+        *,
+        resolver: BearerTokenResolver,
+        token_source: TokenSource,
+    ) -> None:
+        """capture the resolver + token source; resolve at :meth:`identify`.
+
+        :param resolver: async token -> :class:`Identity` resolver
+        :ptype resolver: BearerTokenResolver
+        :param token_source: current-request bearer-token reader
+        :ptype token_source: TokenSource
+        :return: nothing
+        :rtype: None
+        """
+        self._resolver = resolver
+        self._token_source = token_source
+
+    async def identify(self) -> Identity:
+        """resolve the calling identity from the current request's bearer token.
+
+        re-resolves per call (v2 semantics): reads the token from the
+        injected source, then maps it via the injected resolver. a
+        resolver exception of any type is surfaced as ``RuntimeError``
+        to honour the :class:`IdentityProvider` Protocol contract;
+        :meth:`McpServer._dispatch` maps that to the existing
+        ``IDENTITY_UNAVAILABLE`` error result.
+
+        :return: resolved caller identity
+        :rtype: Identity
+        :raises RuntimeError: when the bearer token is absent or the
+            resolver cannot resolve it to an identity
+        """
+        token = self._token_source()
+        if not token:
+            raise RuntimeError(
+                "bearer token absent from request context; caller identity cannot be resolved",
+            )
+        try:
+            identity = await self._resolver(token)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"bearer token could not be resolved to an identity: {type(exc).__name__}: {exc}",
+            ) from exc
+        return identity
 
 
 @runtime_checkable

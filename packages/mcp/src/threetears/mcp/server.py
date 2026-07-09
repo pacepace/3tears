@@ -31,7 +31,7 @@ against any module under ``threetears.mcp`` writing to
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mcp.types as mcp_types
 from mcp.server import Server as _SdkServer
@@ -40,6 +40,9 @@ from threetears.observe import get_logger
 
 from threetears.mcp.auth import Authorizer, IdentityProvider
 from threetears.mcp.tool import ToolRegistry
+
+if TYPE_CHECKING:
+    from starlette.applications import Starlette
 
 __all__ = [
     "McpServer",
@@ -358,3 +361,89 @@ class McpServer:
                 write_stream,
                 self._sdk_server.create_initialization_options(),
             )
+
+    def build_http_app(
+        self,
+        *,
+        path: str = "/mcp",
+        stateless: bool = True,
+        json_response: bool = True,
+    ) -> Starlette:
+        """build the v2 Streamable-HTTP ASGI app serving this server.
+
+        thin delegation into :mod:`threetears.mcp.http_server` (the
+        transport bulk lives there so this v1 module stays small). the
+        returned app runs the SAME wired ``self._sdk_server`` over the
+        SDK's Streamable-HTTP transport -- the RBAC gate, identity
+        resolution, and error mapping in :meth:`_dispatch` are reused
+        unchanged. start-gated like :meth:`serve_stdio`: an unprimed
+        authorizer cache would silently default-deny every non-admin
+        call.
+
+        :param path: URL path the MCP endpoint is served at
+        :ptype path: str
+        :param stateless: run the transport statelessly (required for
+            correct per-request bearer identity)
+        :ptype stateless: bool
+        :param json_response: return plain JSON responses instead of
+            SSE streams
+        :ptype json_response: bool
+        :return: Starlette ASGI app serving the Streamable-HTTP transport
+        :rtype: starlette.applications.Starlette
+        :raises RuntimeError: when :meth:`start` has not been called
+        """
+        if not getattr(self, "_started", False):
+            raise RuntimeError(
+                "McpServer.build_http_app called before start; the authorizer "
+                "cache has not been primed. Call McpServer.start() first.",
+            )
+        from threetears.mcp.http_server import build_mcp_http_app
+
+        return build_mcp_http_app(
+            self._sdk_server,
+            path=path,
+            stateless=stateless,
+            json_response=json_response,
+        )
+
+    async def serve_http(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8080,
+        path: str = "/mcp",
+        stateless: bool = True,
+        json_response: bool = True,
+    ) -> None:
+        """serve this server over the v2 Streamable-HTTP transport (uvicorn).
+
+        parallels :meth:`serve_stdio`: same ``_started`` gate, then runs
+        ``self._sdk_server`` over the SDK's Streamable-HTTP transport
+        instead of stdio. delegates to :mod:`threetears.mcp.http_server`.
+        consumers embedding the transport in a larger ASGI app mount
+        :meth:`build_http_app`'s result directly instead of calling this.
+
+        :param host: interface to bind
+        :ptype host: str
+        :param port: TCP port to bind (``0`` selects an ephemeral port)
+        :ptype port: int
+        :param path: URL path the MCP endpoint is served at
+        :ptype path: str
+        :param stateless: run the transport statelessly (required for
+            correct per-request bearer identity)
+        :ptype stateless: bool
+        :param json_response: return plain JSON responses instead of
+            SSE streams
+        :ptype json_response: bool
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when :meth:`start` has not been called
+        """
+        from threetears.mcp.http_server import serve_mcp_http
+
+        app = self.build_http_app(
+            path=path,
+            stateless=stateless,
+            json_response=json_response,
+        )
+        await serve_mcp_http(app, host=host, port=port)

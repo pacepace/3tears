@@ -6,12 +6,19 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "DEFAULT_HTTP_TIMEOUT_SECONDS",
     "CoreConfig",
     "DefaultCoreConfig",
     "VALID_FLUSH_STRATEGIES",
 ]
 
 VALID_FLUSH_STRATEGIES = frozenset({"ALWAYS", "ON_CHECKPOINT", "ON_SCHEDULE", "ON_SHUTDOWN"})
+
+# default per-request timeout (seconds) for the core outbound HTTP transport
+# (:class:`threetears.core.http_client.TracedHttpClient`). the default lives
+# here, the designated core config layer, so the transport signature carries
+# no hardcoded timeout literal.
+DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 
 
 @runtime_checkable

@@ -795,6 +795,20 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.usage.track", kind="point")
 
     @classmethod
+    def hub_endpoint_usage_track(cls) -> Subject:
+        """publish subject for per-tool-call endpoint usage events posted to hub.
+
+        distinct from :meth:`hub_usage_track` (the gateway model-usage stream) so
+        the two usage streams / queue groups never collide: the registry usage
+        emitter (gu-task-16) publishes here and the hub ``EndpointUsageConsumer``
+        subscribes.
+
+        :return: subject ``{ns}.hub.usage.endpoint``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.usage.endpoint", kind="point")
+
+    @classmethod
     def hub_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
         """publish subject for agent -> hub token streaming.
 

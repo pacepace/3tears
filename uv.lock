@@ -77,6 +77,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "asyncpg" },
     { name = "cryptography" },
+    { name = "httpx" },
     { name = "nats-py" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -105,6 +106,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
+    { name = "httpx" },
     { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
@@ -568,6 +570,8 @@ dependencies = [
     { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -579,6 +583,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2" },
+    { name = "starlette", specifier = ">=0.40" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 
 [[package]]

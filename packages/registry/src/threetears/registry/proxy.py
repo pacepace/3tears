@@ -27,7 +27,7 @@ from threetears.core.security.identity_token import (
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
 from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
-from threetears.registry.auth import AgentToolAuthorizer
+from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
@@ -189,12 +189,14 @@ class CallProxy:
         catalog: ToolCatalog,
         authorizer: AgentToolAuthorizer,
         pop_replay_guard: "ReplayGuard",
+        limit_guard: LimitGuard,
         namespace: str = "3tears",
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         proxy_signer: "ProxyAssertionSigner | None" = None,
+        usage_emitter: EndpointUsageEmitter | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -216,6 +218,16 @@ class CallProxy:
             without it a captured pop could be replayed verbatim for the same call body within the
             iat freshness window, so the enforce-only proxy must always carry one
         :ptype pop_replay_guard: ReplayGuard
+        :param limit_guard: pre-call spend gate; REQUIRED. every tool dispatch is
+            gated through the limit guard after the pop check and before catalog
+            routing -- no silent-bypass path, same discipline as ``authorizer``. the
+            money path FAILS OPEN (Fork-2): the proxy denies only on a returned
+            :class:`LimitDecision(allowed=False)`; a guard that RAISES or is
+            unreachable makes the proxy SERVE the call (and log loudly) so a
+            billing-infra outage never bricks tool traffic. dev/test callers pass
+            :class:`AllowAllLimitGuard` / :class:`DenyAllLimitGuard`; production wires
+            the counter-backed ``KvCallLimitGuard`` (gu-task-15a)
+        :ptype limit_guard: LimitGuard
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
         :param timeout: default timeout in seconds for forwarded NATS requests.
@@ -243,6 +255,14 @@ class CallProxy:
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
         :ptype proxy_signer: ProxyAssertionSigner | None
+        :param usage_emitter: post-call usage-emit seam; ``None`` (the safe default)
+            emits nothing. when present, the proxy calls
+            :meth:`EndpointUsageEmitter.emit` fire-and-forget after the tool pod
+            replies (both request args + response content in hand) -- an emit failure
+            is caught and logged and NEVER affects the reply. this is the slot the hub
+            fills with its concrete SDK-typed emitter (gu-task-16); 3tears holds only
+            the protocol + the slot
+        :ptype usage_emitter: EndpointUsageEmitter | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -250,6 +270,8 @@ class CallProxy:
         self._namespace = namespace
         self.timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
+        self._limit_guard = limit_guard
+        self._usage_emitter = usage_emitter
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._jwks_provider = jwks_provider
         self._jwks_refresh = jwks_refresh
@@ -656,8 +678,16 @@ class CallProxy:
 
         kept separate so the ``try``/``finally`` wrapping the
         :func:`bind_log_context` / :func:`clear_context` pair stays
-        shallow; the operational flow (auth, catalog lookup, routing,
-        forward) lives here untouched.
+        shallow; the operational flow lives here untouched. the gate
+        order is verify-identity -> verify-pop -> **limit-guard** ->
+        authorizer -> catalog -> route: the spend gate sits immediately
+        after pop and immediately before the authorizer so a
+        spend-denied call never consumes a catalog lookup, while an
+        unauthorized-for-the-tool call still gets ``TOOL_NOT_AUTHORIZED``
+        rather than a spend error. the limit gate is the ONE fail-OPEN
+        gate (a guard that raises serves the call); every other gate is
+        fail-CLOSED. after a successful forward the post-call
+        usage-emit seam fires fire-and-forget.
 
         :param request: parsed + identity-bound call request
         :ptype request: ProxyCallRequest
@@ -730,6 +760,62 @@ class CallProxy:
         correlation_id_log = _correlation_id_str(request)
         agent_id_log = str(request.context.agent_id)
         user_id_log: str | None = str(request.context.user_id) if request.context.user_id is not None else None
+        customer_id_log: str | None = (
+            str(request.context.customer_id) if request.context.customer_id is not None else None
+        )
+
+        # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
+        # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2): a guard that RAISES
+        # or is unreachable SERVES the call (loud WARNING) -- a billing-infra outage must not brick
+        # tool traffic. this inverts the fail-CLOSED identity/pop/authorizer gates ON PURPOSE. only a
+        # returned LimitDecision(allowed=False) hard-denies.
+        try:
+            limit_decision = await self._limit_guard.check(
+                agent_id_log,
+                user_id_log,
+                customer_id_log,
+                request.tool_name,
+                request.tool_version,
+            )
+        except Exception:  # noqa: BLE001 -- fail-open per Fork-2: a guard outage must never deny
+            log.warning(
+                "limit guard unreachable; serving fail-open",
+                extra={
+                    "extra_data": {
+                        "agent_id": agent_id_log,
+                        "customer_id": customer_id_log,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                    }
+                },
+            )
+        else:
+            if not limit_decision.allowed:
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"tool call denied by spend limit ({limit_decision.error_code})",
+                    error_code=limit_decision.error_code,
+                    context=request.context,
+                )
+                if msg.reply_subject is not None:
+                    await self._nc.publish_reply(
+                        reply_subject=msg.reply_subject,
+                        message=response,
+                    )
+                log.warning(
+                    "tool call denied by limit guard",
+                    extra={
+                        "extra_data": {
+                            "agent_id": agent_id_log,
+                            "customer_id": customer_id_log,
+                            "tool_name": request.tool_name,
+                            "error_code": limit_decision.error_code,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                return
 
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
@@ -866,6 +952,25 @@ class CallProxy:
                 reply_subject=msg.reply_subject,
                 message=response,
             )
+
+        # post-call usage-emit seam (gu-task-16): this is the one place both the inbound request
+        # arguments and the outbound response content are local. the reply is already published, so
+        # a fire-and-forget emit can never delay or break it; an emit failure is caught + logged and
+        # NEVER affects the reply. the hub injects its concrete SDK-typed emitter into this slot.
+        if self._usage_emitter is not None:
+            try:
+                await self._usage_emitter.emit(request, response)
+            except Exception:  # noqa: BLE001 -- fire-and-forget: a usage-emit failure never affects the reply
+                log.warning(
+                    "endpoint usage emit failed",
+                    extra={
+                        "extra_data": {
+                            "agent_id": agent_id_log,
+                            "tool_name": request.tool_name,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
 
     def _resolve_timeout(self, tool_name: str, tool_version: str) -> float:
         """resolve effective timeout for a tool call.

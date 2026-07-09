@@ -32,7 +32,12 @@ from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
-from threetears.registry.auth import AgentToolAuthorizer, ToolPodAuthenticator
+from threetears.registry.auth import (
+    AgentToolAuthorizer,
+    AllowAllLimitGuard,
+    LimitGuard,
+    ToolPodAuthenticator,
+)
 from threetears.registry.config import (
     get_jwks_request_timeout,
     get_proxy_assertion_signing_key_ref,
@@ -122,6 +127,7 @@ class RegistryServer:
         pod_authenticator: ToolPodAuthenticator | None = None,
         pod_authenticator_factory: ("Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None") = None,
         health_port: int | None = None,
+        limit_guard: "LimitGuard | None" = None,
     ) -> None:
         """initialize registry server.
 
@@ -186,6 +192,18 @@ class RegistryServer:
             so honcho callers MUST set THREETEARS_REGISTRY_HEALTH_PORT
             to a distinct port.
         :ptype health_port: int | None
+        :param limit_guard: pre-call spend gate threaded into the
+            :class:`~threetears.registry.proxy.CallProxy`. ``None`` (the
+            pure-3tears / dev default) wires :class:`AllowAllLimitGuard`
+            -- the standalone registry has no counter backend, so it
+            does not enforce spend limits. host applications with a
+            counter store (the aibots Hub) inject the concrete
+            ``KvCallLimitGuard`` (gu-task-15a) here to CLOSE the gate,
+            mirroring how ``pod_authenticator`` closes open registration
+            mode. the proxy itself REQUIRES a guard (no silent bypass);
+            this slot only chooses WHICH guard the standalone server
+            wires.
+        :ptype limit_guard: LimitGuard | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -210,6 +228,7 @@ class RegistryServer:
         self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
+        self._limit_guard: LimitGuard = limit_guard if limit_guard is not None else AllowAllLimitGuard()
         self._rbac_authorizer_factory = rbac_authorizer_factory
         self._pod_authenticator = pod_authenticator
         self._pod_authenticator_factory = pod_authenticator_factory
@@ -463,6 +482,7 @@ class RegistryServer:
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
+            limit_guard=self._limit_guard,
             jwks_provider=jwks_provider,
             # reactive self-heal on a Hub re-key: a kid-not-in-cache miss triggers ONE immediate,
             # debounced + rate-limited refresh + re-verify, so a valid token signed under a freshly-

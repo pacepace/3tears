@@ -1,0 +1,15 @@
+# exemptions for tests/enforcement/test_no_bespoke_reuse.py (gu-task-06, GU-06-07).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:Symbol
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that symbol.
+#
+# the sanctioned reuse targets (the traced-httpx wrapper modules and the
+# ConversationWriteBuffer periodic-flush primitive) are ALLOWLISTED in the walker
+# itself, not here -- they are the components bespoke code is meant to reuse, not
+# exceptions to the rule.
+
+# rationale: WriteBuffer is internal plumbing USED BY BaseCollection itself -- flush_pending() drains its entries and calls persist_to_postgres() on the registered Collection. Converting it to a BaseCollection subclass would be circular (a Collection using a Collection to buffer writes to a Collection). Its SQLiteBackend usage is the primitive's own deferred-write journal, not a bespoke wrapper. Same exemption the cache guard carries.
+packages/core/src/threetears/core/collections/flush.py:91:WriteBuffer
