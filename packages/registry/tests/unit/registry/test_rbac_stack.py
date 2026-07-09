@@ -418,3 +418,98 @@ class TestResolvePodAuthenticatorFactory:
         monkeypatch.setenv("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
             _resolve_pod_authenticator_factory()
+
+
+class TestRegistryServerLimitGuardFactory:
+    """``RegistryServer`` accepts + resolves the pre-call spend-gate factory, mirroring the pod
+    authenticator factory. the resolved guard is stored on ``self._limit_guard`` (updated BEFORE the
+    :class:`CallProxy` is built in :meth:`serve`, so the proxy captures the resolved guard) and the
+    proxy's no-silent-bypass contract is preserved by an ``AllowAllLimitGuard`` fallback."""
+
+    @pytest.mark.asyncio
+    async def test_factory_resolved_updates_limit_guard(self) -> None:
+        """the factory runs against the connected client + its result replaces self._limit_guard."""
+        nc = AsyncMock()
+        guard = MagicMock()
+        factory = AsyncMock(return_value=guard)
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            limit_guard_factory=factory,
+        )
+        result = await server.apply_limit_guard_factory(nc)
+        factory.assert_awaited_once_with(nc)
+        # apply_limit_guard_factory returns the value it stored on the slot the CallProxy reads,
+        # so asserting on the return proves the resolved guard replaced the AllowAll default.
+        assert result is guard
+
+    @pytest.mark.asyncio
+    async def test_fixed_guard_kept_when_no_factory(self) -> None:
+        """a directly-supplied ``limit_guard`` survives the (no-op) resolve step."""
+        guard = MagicMock()
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            limit_guard=guard,
+        )
+        result = await server.apply_limit_guard_factory(AsyncMock())
+        assert result is guard
+
+    @pytest.mark.asyncio
+    async def test_default_is_allow_all(self) -> None:
+        """no guard and no factory -> AllowAllLimitGuard (the proxy always has a non-None guard)."""
+        from threetears.registry.auth import AllowAllLimitGuard
+
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
+        result = await server.apply_limit_guard_factory(AsyncMock())
+        assert isinstance(result, AllowAllLimitGuard)
+
+    @pytest.mark.asyncio
+    async def test_factory_none_result_falls_back_to_allow_all(self) -> None:
+        """a factory returning None -> AllowAllLimitGuard (no silent bypass of the proxy contract)."""
+        from threetears.registry.auth import AllowAllLimitGuard
+
+        factory = AsyncMock(return_value=None)
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            limit_guard_factory=factory,
+        )
+        result = await server.apply_limit_guard_factory(AsyncMock())
+        assert isinstance(result, AllowAllLimitGuard)
+
+
+class TestResolveLimitGuardFactory:
+    """the registry entrypoint resolves its pre-call limit-guard factory from a configurable
+    ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
+    NATS-proxy-backed ``KvCallLimitGuard`` factory)."""
+
+    @pytest.mark.asyncio
+    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """no env var -> None -> constructor default AllowAllLimitGuard (pure-3tears / dev)."""
+        from threetears.registry.server import _resolve_limit_guard_factory
+
+        monkeypatch.delenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", raising=False)
+        assert _resolve_limit_guard_factory() is None
+
+    @pytest.mark.asyncio
+    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path resolves to that exact object."""
+        from threetears.registry.server import _resolve_limit_guard_factory
+
+        monkeypatch.setenv(
+            "THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY",
+            "threetears.registry.auth:AllowAllLimitGuard",
+        )
+        from threetears.registry.auth import AllowAllLimitGuard
+
+        assert _resolve_limit_guard_factory() is AllowAllLimitGuard
+
+    @pytest.mark.asyncio
+    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a path without the ``module:callable`` shape crashes startup (never silent allow-all)."""
+        from threetears.registry.server import _resolve_limit_guard_factory
+
+        monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "no_colon_here")
+        with pytest.raises(ValueError, match="module:callable"):
+            _resolve_limit_guard_factory()

@@ -128,6 +128,7 @@ class RegistryServer:
         pod_authenticator_factory: ("Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None") = None,
         health_port: int | None = None,
         limit_guard: "LimitGuard | None" = None,
+        limit_guard_factory: ("Callable[[NatsClient], Awaitable[LimitGuard | None]] | None") = None,
     ) -> None:
         """initialize registry server.
 
@@ -204,6 +205,15 @@ class RegistryServer:
             this slot only chooses WHICH guard the standalone server
             wires.
         :ptype limit_guard: LimitGuard | None
+        :param limit_guard_factory: optional async factory taking the connected
+            :class:`NatsClient` and returning the pre-call spend gate (or ``None`` to keep the
+            constructor-supplied ``limit_guard``). invoked from :meth:`serve` after NATS connects
+            + before the handlers register (alongside ``pod_authenticator_factory``), so a guard
+            whose counter reads run over the live connection (the aibots Hub's
+            NATS-proxy-backed ``KvCallLimitGuard``) can build against it. takes precedence over
+            ``limit_guard`` when both are set. ``None`` keeps the constructor-supplied
+            ``limit_guard`` (``AllowAllLimitGuard`` by default) for the whole serve loop.
+        :ptype limit_guard_factory: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -232,6 +242,7 @@ class RegistryServer:
         self._rbac_authorizer_factory = rbac_authorizer_factory
         self._pod_authenticator = pod_authenticator
         self._pod_authenticator_factory = pod_authenticator_factory
+        self._limit_guard_factory = limit_guard_factory
         if health_port is not None:
             self._health_port = health_port
         else:
@@ -310,6 +321,33 @@ class RegistryServer:
             self._pod_authenticator = await self._pod_authenticator_factory(nc)
         return self._pod_authenticator
 
+    async def apply_limit_guard_factory(
+        self,
+        nc: "NatsClient",
+    ) -> "LimitGuard":
+        """build the pre-call spend gate from the factory (if one was set).
+
+        mirrors :meth:`apply_pod_authenticator_factory`: the constructor may receive a
+        ``limit_guard`` directly OR a ``limit_guard_factory`` that needs the live NATS connection
+        to back its counter reads (the aibots Hub's NATS-proxy-backed ``KvCallLimitGuard``). this
+        resolves the factory once NATS is up and stores the result on ``self._limit_guard`` so the
+        :class:`~threetears.registry.proxy.CallProxy` built later in :meth:`serve` threads in the
+        resolved guard. a factory returning ``None`` falls back to :class:`AllowAllLimitGuard` so
+        the proxy's no-silent-bypass contract is never violated.
+
+        no-op when no factory is set (the constructor-supplied ``limit_guard`` --
+        ``AllowAllLimitGuard`` by default -- is kept).
+
+        :param nc: connected NATS client the factory needs to back its counter reads
+        :ptype nc: NatsClient
+        :return: the resolved guard (also stored on self) when a factory was set, else the existing
+            ``limit_guard``
+        :rtype: LimitGuard
+        """
+        if self._limit_guard_factory is not None:
+            self._limit_guard = await self._limit_guard_factory(nc) or AllowAllLimitGuard()
+        return self._limit_guard
+
     async def serve(self) -> None:
         """start registry server and wait for shutdown signal.
 
@@ -337,6 +375,12 @@ class RegistryServer:
         # so a factory whose authenticator reads pod identity over the live connection can build
         # against it before the registration handler starts. no-op / open mode when unset.
         await self.apply_pod_authenticator_factory(self._nc)
+
+        # resolve the pre-call spend gate now that NATS is up, so a factory whose counter reads run
+        # over the live connection (the Hub's NATS-proxy-backed KvCallLimitGuard) builds against it
+        # BEFORE the CallProxy is constructed and captures self._limit_guard. no-op / AllowAll when
+        # unset.
+        await self.apply_limit_guard_factory(self._nc)
 
         # the catalog KV bootstrap predates the wrapper's
         # :meth:`NatsClient.kv_bucket` cache; we still go through the
@@ -696,6 +740,7 @@ def _run_server() -> None:
         authorizer=authorizer,
         rbac_authorizer_factory=rbac_authorizer_factory,
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
+        limit_guard_factory=_resolve_limit_guard_factory(),
     )
     asyncio.run(server.serve())
 
@@ -733,6 +778,43 @@ def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[To
         result = getattr(module, attr)
         _logger.info(
             "registry tool-pod registration authenticator wired (per-key identity verify enabled)",
+            extra={"extra_data": {"factory": spec}},
+        )
+    return result
+
+
+def _resolve_limit_guard_factory() -> "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None":
+    """resolve the pre-call spend-gate factory from a configurable plugin path.
+
+    3tears stays host-agnostic: the standalone registry has no counter backend, so the limit-guard
+    factory is supplied out-of-band via ``THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY``, a
+    ``module:callable`` dotted path the operator points at a host-provided factory (the aibots Hub's
+    ``aibots.hub.tools.registry_auth:limit_guard_factory``, which builds a NATS-proxy-backed
+    ``KvCallLimitGuard`` over the usage counters). the referenced object is the async factory itself
+    -- ``Callable[[NatsClient], Awaitable[LimitGuard | None]]`` -- invoked by
+    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> the constructor default
+    ``AllowAllLimitGuard`` (the pure-3tears / dev default; no counter store to enforce against).
+
+    :return: the resolved factory, or ``None`` when the env var is unset
+    :rtype: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
+    :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
+    :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
+        misconfigured limit-guard plugin must crash startup, never silently drop to allow-all)
+    """
+    import importlib
+
+    spec = os.environ.get("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "").strip()
+    result: "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None" = None
+    if spec:
+        module_name, sep, attr = spec.partition(":")
+        if not module_name or not sep or not attr:
+            raise ValueError(
+                f"THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY must be a 'module:callable' dotted path; got {spec!r}"
+            )
+        module = importlib.import_module(module_name)
+        result = getattr(module, attr)
+        _logger.info(
+            "registry pre-call limit guard wired (spend enforcement enabled)",
             extra={"extra_data": {"factory": spec}},
         )
     return result
