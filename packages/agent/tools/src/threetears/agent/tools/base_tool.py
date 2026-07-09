@@ -108,6 +108,23 @@ class TearsTool(ABC):
     at runtime. Per-customer overrides live in the ACL grant layer, not
     in these flags.
 
+    Face flags decouple a capability's *reach* -- the surfaces through
+    which it can be called -- from its declaration. A tool may expose
+    any combination of the three reach faces:
+
+    - ``face_platform_tool`` (default ``True``): reachable over the
+      internal NATS mesh as a native platform tool (the historical
+      one-and-only reach). ON by default so a tool authored before this
+      distinction is a platform mesh tool unless told otherwise.
+    - ``face_api`` (default ``False``): reachable as an external HTTP
+      API operation.
+    - ``face_mcp`` (default ``False``): reachable as an external MCP
+      tool.
+
+    The face flags govern *reach* only -- ACL still governs
+    *authorization*. Like the eligibility flags, subclasses set them as
+    class attributes, not instance attributes.
+
     :cvar tool_eligible: whether this tool appears in the agent's
         default tool surface. Defaults to ``True`` so existing tools
         keep their pre-shard behaviour without opting in.
@@ -116,10 +133,21 @@ class TearsTool(ABC):
         ``list_skill_eligible_tools``). Defaults to ``False`` so no
         existing tool leaks into the skills catalog without explicit
         opt-in.
+    :cvar face_platform_tool: whether this tool is reachable over the
+        internal NATS mesh as a native platform tool. Defaults to
+        ``True`` so existing tools keep their historical reach without
+        opting in.
+    :cvar face_api: whether this tool is reachable as an external HTTP
+        API operation. Defaults to ``False``.
+    :cvar face_mcp: whether this tool is reachable as an external MCP
+        tool. Defaults to ``False``.
     """
 
     tool_eligible: bool = True
     skill_eligible: bool = False
+    face_platform_tool: bool = True
+    face_api: bool = False
+    face_mcp: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """enforce the run/execute contract at subclass-creation time.

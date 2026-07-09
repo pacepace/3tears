@@ -283,6 +283,20 @@ class ToolManifestEntry(BaseModel):
         skills catalog; mirrors :attr:`TearsTool.skill_eligible`.
         Defaults to ``False``.
     :ptype skill_eligible: bool
+    :param face_platform_tool: whether the tool is reachable over the
+        internal NATS mesh as a native platform tool; mirrors
+        :attr:`TearsTool.face_platform_tool`. Defaults to ``True`` so
+        manifests built without an explicit value preserve the tool's
+        historical reach.
+    :ptype face_platform_tool: bool
+    :param face_api: whether the tool is reachable as an external HTTP
+        API operation; mirrors :attr:`TearsTool.face_api`. Defaults to
+        ``False``.
+    :ptype face_api: bool
+    :param face_mcp: whether the tool is reachable as an external MCP
+        tool; mirrors :attr:`TearsTool.face_mcp`. Defaults to
+        ``False``.
+    :ptype face_mcp: bool
     """
 
     name: str
@@ -292,6 +306,9 @@ class ToolManifestEntry(BaseModel):
     timeout_seconds: float | None = None
     tool_eligible: bool = True
     skill_eligible: bool = False
+    face_platform_tool: bool = True
+    face_api: bool = False
+    face_mcp: bool = False
 
 
 class RegistrationManifest(BaseModel):
@@ -1466,6 +1483,9 @@ class ToolServer:
             schema = tool.mcp_schema()
             tool_eligible = bool(getattr(tool, "tool_eligible", True))
             skill_eligible = bool(getattr(tool, "skill_eligible", False))
+            face_platform_tool = bool(getattr(tool, "face_platform_tool", True))
+            face_api = bool(getattr(tool, "face_api", False))
+            face_mcp = bool(getattr(tool, "face_mcp", False))
             if not tool_eligible and not skill_eligible:
                 # registering a tool with both flags off makes it
                 # invisible to every agent surface. almost certainly
@@ -1494,6 +1514,9 @@ class ToolServer:
                 timeout_seconds=schema.timeout_seconds,
                 tool_eligible=tool_eligible,
                 skill_eligible=skill_eligible,
+                face_platform_tool=face_platform_tool,
+                face_api=face_api,
+                face_mcp=face_mcp,
             )
             tools_list.append(entry)
 
