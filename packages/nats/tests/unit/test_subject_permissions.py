@@ -115,6 +115,15 @@ class TestIdentityIsolation:
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         assert f"{_NS}.tools.heartbeat.>" not in a.publish
 
+    def test_agent_pod_may_publish_turn_completion(self) -> None:
+        # resilience-task-07 router-mediated delivery: an agent signals TRUE turn completion by
+        # publishing to ``agents.complete.{correlation_id}`` (the router awaits it to ack the durable
+        # turn / re-route). the subject is keyed by correlation id (no agent segment), so the grant is
+        # the wildcard ``agents.complete.*`` -- without it the completion publish is a NATS permissions
+        # violation and every turn hangs to the caller's finalize timeout.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.agents.complete.*" in a.publish
+
     def test_agent_pod_may_serve_only_its_own_in_process_tools(self) -> None:
         # an agent hosts its in-process tools (devx ``DevInProcessStrategy`` builtins, prod
         # ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``) on its OWN ``AGENT_POD``

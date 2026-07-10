@@ -196,6 +196,7 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
         f"{ns}.channels.deliver.*",  # publishes finished answers (any inbound channel type)
         f"{ns}.hub.stream.{_seg(a)}.*",  # streams tokens for its own (per-request) correlation ids under its own authed agent id
+        f"{ns}.agents.complete.*",  # resilience-task-07: per-turn completion signal the router awaits to ack the durable turn (keyed by correlation id)
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
