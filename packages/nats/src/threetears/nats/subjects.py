@@ -386,6 +386,90 @@ class Subjects:
             kind="point",
         )
 
+    @classmethod
+    def agent_turn(cls, agent_id: str | UUID) -> Subject:
+        """durable JetStream subject for an inbound agent turn (resilience-task-07).
+
+        the caller (hub) JetStream-publishes each inbound user turn here instead
+        of the at-most-once ``agent_route`` request/reply; the agent-router is the
+        durable consumer that forwards it to the sticky pod and acks only after
+        the pod confirms completion. redelivery on pod crash / drain makes inbound
+        delivery at-least-once. backed by the ``{ns}-agents-turn`` JetStream stream
+        over ``{ns}.agents.turn.>`` (plus the sibling dead-letter subject from
+        :meth:`agent_turn_deadletter`).
+
+        :param agent_id: target agent identifier
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.agents.turn.{agent_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn.{_sanitize(agent_id)}", kind="point")
+
+    @classmethod
+    def agent_turn_wildcard(cls) -> Subject:
+        """wildcard consumer filter for every agent's inbound turns.
+
+        the agent-router's durable consumer subscribes on this pattern to drain
+        every agent's inbound turns. deliberately does NOT cover
+        :meth:`agent_turn_deadletter` (a sibling token, not a ``.turn.`` child),
+        so exhausted turns park in the stream WITHOUT being re-consumed
+        (resilience-task-07).
+
+        :return: subject ``{ns}.agents.turn.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn.>", kind="pattern")
+
+    @classmethod
+    def agent_turn_deadletter(cls) -> Subject:
+        """dead-letter subject for turns the router exhausted (resilience-task-07).
+
+        a turn that stays undeliverable after the bounded redelivery budget is
+        republished here. a SIBLING token of ``turn`` (not ``{ns}.agents.turn.*``)
+        so :meth:`agent_turn_wildcard` does NOT match it -- the poisoned turn parks
+        in the ``{ns}-agents-turn`` stream (which is declared over this subject too)
+        with no consumer draining it: inspectable, not lost, not looping.
+
+        :return: subject ``{ns}.agents.turn-deadletter``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn-deadletter", kind="point")
+
+    @classmethod
+    def agent_complete(cls, correlation_id: str | UUID) -> Subject:
+        """per-turn completion-confirmation subject the router awaits (resilience-task-07).
+
+        the pod publishes here once the turn's result is durably produced (the
+        answer is in the request/reply reply, streamed, or handed to the durable
+        channel-delivery subject). the router awaits this before acking the
+        durable turn message; its absence (pod crash / drain refusal / timeout)
+        triggers a re-route. keyed on the per-turn ``correlation_id`` so the
+        signal maps 1:1 to the turn.
+
+        :param correlation_id: per-turn correlation identifier
+        :ptype correlation_id: str | UUID
+        :return: subject ``{ns}.agents.complete.{correlation_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.complete.{_sanitize(correlation_id)}", kind="point")
+
+    @classmethod
+    def agent_reply(cls, correlation_id: str | UUID) -> Subject:
+        """per-turn caller reply inbox for the durable turn path (resilience-task-07).
+
+        the caller subscribes here BEFORE JetStream-publishing the turn and awaits
+        the synchronous answer; the router publishes the pod's reply (full answer
+        for request/reply callers, ack envelope for streaming / channel callers)
+        here once the turn confirms. keyed on the per-turn ``correlation_id`` so
+        it is deterministic and unique per turn (no opaque inbox to thread).
+
+        :param correlation_id: per-turn correlation identifier
+        :ptype correlation_id: str | UUID
+        :return: subject ``{ns}.agents.reply.{correlation_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.reply.{_sanitize(correlation_id)}", kind="point")
+
     # ------------------------------------------------------------------
     # tools (registry / tool pods)
     # ------------------------------------------------------------------
