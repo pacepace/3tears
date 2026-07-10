@@ -136,7 +136,15 @@ class IdentityMinter:
         signing_key, _ = generate_signing_keypair()
         return cls(signing_key, kid=kid, issuer=issuer, ttl_seconds=ttl_seconds)
 
-    def mint(self, subject: str, *, customer_id: str, pod_id: str | None = None, now: int | None = None) -> str:
+    def mint(
+        self,
+        subject: str,
+        *,
+        customer_id: str,
+        pod_id: str | None = None,
+        identity_generation: str | None = None,
+        now: int | None = None,
+    ) -> str:
         """mint a short-lived identity JWT for ``subject`` (the authenticated principal id).
 
         ``sub`` is the principal id (the resolver scopes on it); ``pod_id`` defaults to ``subject``
@@ -146,8 +154,15 @@ class IdentityMinter:
         :ptype subject: str
         :param customer_id: the customer the principal is bound to (``customer_id`` claim).
         :ptype customer_id: str
-        :param pod_id: the pod id, when distinct from ``subject``; defaults to ``subject``.
+        :param pod_id: the pod id, when distinct from ``subject``; defaults to ``subject``. For a
+            connection credential that participates in single-writer fencing, pass the STABLE
+            per-pod-session id so the auth-callout keys the fence on the pod-session (not the agent).
         :ptype pod_id: str | None
+        :param identity_generation: the single-writer fencing generation stamped by the pod's most
+            recent handshake; carried so the auth-callout can DENY a reauth presenting a now-stale
+            generation for the SAME pod-session. ``None`` for a pre-handshake bootstrap connect (no
+            generation yet) and for credentials that do not participate in connection fencing.
+        :ptype identity_generation: str | None
         :param now: unix-seconds issue time (``exp`` = ``now`` + ttl); defaults to the wall clock.
         :ptype now: int | None
         :return: a compact EdDSA JWS identity token.
@@ -162,6 +177,7 @@ class IdentityMinter:
             pod_id=pod_id if pod_id is not None else subject,
             iat=issued_at,
             exp=issued_at + self._ttl_seconds,
+            identity_generation=identity_generation,
         )
         token: str = sign_identity_token(claims, signing_key=self._signing_key, kid=self._kid)
         return token

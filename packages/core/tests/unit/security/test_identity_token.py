@@ -359,6 +359,54 @@ def test_empty_conversation_id_normalizes_to_none(
     assert claims.conversation_id is None
 
 
+def test_identity_generation_round_trips_when_set(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # the single-writer fencing generation survives sign -> verify so the auth-callout can compare
+    # the presented generation against the current stored one for the pod-session.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(identity_generation="gen-42"), signing_key=priv, kid="kid-1")
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.identity_generation == "gen-42"
+
+
+def test_identity_generation_is_optional_and_defaults_none(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # a pre-handshake bootstrap connect carries NO generation; the claim is emitted only when set, so
+    # the token verifies with identity_generation None (the admission rule reads it as bootstrap-grant).
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(), signing_key=priv, kid="kid-1")
+    assert "identity_generation" not in pyjwt.decode(token, options={"verify_signature": False})
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.identity_generation is None
+
+
+def test_empty_identity_generation_normalizes_to_none(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # a present-but-empty generation is not a usable fencing token -> normalized to None so the
+    # admission rule reads it as "no generation presented" (bootstrap grant), never an empty match.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    now = int(time.time())
+    payload = {
+        "sub": "a",
+        "customer_id": "c",
+        "sid": "s",
+        "pod_id": "p",
+        "iss": _ISS,
+        "iat": now,
+        "exp": now + 600,
+        "identity_generation": "",
+    }
+    token = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "kid-1"})
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.identity_generation is None
+
+
 def test_multi_kid_jwks_supports_overlap_window_rotation(
     keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
 ) -> None:
