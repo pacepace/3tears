@@ -346,6 +346,30 @@ class RedshiftConnectionConfig(BaseModel):
         default=300,
         description="redshift statement_timeout; caps individual queries",
     )
+    tcp_keepalive: bool = Field(
+        default=True,
+        description="enable SO_KEEPALIVE on the redshift_connector socket. redshift_connector "
+        "already defaults this ON, but at the system-default keepalive idle (~2h), so on its "
+        "own it does NOT rescue a mid-query half-dead socket in any useful window -- the "
+        "idle/interval/count below make it aggressive.",
+    )
+    tcp_keepalive_idle_seconds: int = Field(
+        default=30,
+        description="seconds an established connection may sit idle (no bytes -- e.g. a worker "
+        "blocked awaiting a query result on a silently-dropped socket) before the OS sends its "
+        "first keepalive probe. tuned low (vs the ~2h system default) so a wedged in-flight "
+        "query surfaces as a socket error rather than blocking a bridge worker forever in a "
+        "native SSL read -- which the async / statement timeouts ABOVE the driver cannot cancel.",
+    )
+    tcp_keepalive_interval_seconds: int = Field(
+        default=10,
+        description="seconds between individual keepalive probes once the idle threshold is crossed.",
+    )
+    tcp_keepalive_count: int = Field(
+        default=3,
+        description="unacknowledged keepalive probes before the OS marks the socket dead and fails "
+        "the blocked read. detection time is ~ idle + count*interval (~60s with the defaults).",
+    )
     allowed_schemas: list[str] = Field(
         default_factory=list,
         description="schemas to set on the connection's ``search_path`` at open "

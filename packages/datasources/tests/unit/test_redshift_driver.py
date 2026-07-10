@@ -299,6 +299,25 @@ class TestConnectionCaching:
             assert connect_mock.call_args.kwargs["sslmode"] == "verify-ca"
 
     @pytest.mark.asyncio
+    async def test_connect_passes_aggressive_tcp_keepalive(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """the config's TCP keepalive tuning reaches connect, so the OS detects a half-dead
+        socket in ~1 min (not the ~2h system default) -- a wedged in-flight query can no longer
+        hang a bridge worker forever in a native SSL read no client-side timeout can cancel.
+        """
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
+            kwargs = connect_mock.call_args.kwargs
+            assert kwargs["tcp_keepalive"] is True
+            assert kwargs["tcp_keepalive_idle"] == 30
+            assert kwargs["tcp_keepalive_interval"] == 10
+            assert kwargs["tcp_keepalive_count"] == 3
+
+    @pytest.mark.asyncio
     async def test_connect_passes_verify_full_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
         """verify-full (for a proxy-fronted cluster) reaches connect unchanged."""
         cfg = redshift_config.model_copy(update={"sslmode": "verify-full"})
