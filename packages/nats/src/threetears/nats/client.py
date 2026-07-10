@@ -102,6 +102,7 @@ __all__ = [
     "DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS",
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
+    "JetStreamPullConsumer",
     "NatsClient",
     "ReconnectCallback",
     "Subscription",
@@ -379,6 +380,114 @@ class Subscription:
         except asyncio.CancelledError, Exception:  # noqa: BLE001
             pass
         self._closed = True
+
+
+class JetStreamPullConsumer:
+    """a bound durable PULL subscription that drains a subject in a fetch loop.
+
+    returned by :meth:`NatsClient.jetstream_pull_subscribe`. N of these across
+    worker replicas bind the SAME durable name and share the backlog one-of-N:
+    JetStream hands each pending message to exactly one fetcher. each instance
+    owns a fetch loop (:meth:`run`) that pulls a batch, dispatches every message
+    to the handler, and routes a handler raise through the bounded-redelivery
+    policy so one poisoned message cannot kill the loop. it holds NO
+    server-pushed delivery subject, so an idle instance keeps no open delivery
+    flow — the property that makes a delivery worker scale-to-zero eligible.
+
+    :param psub: nats-py pull subscription handle
+    :ptype psub: Any
+    :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+    :ptype cb: Callable[[Any], Awaitable[None]]
+    :param redeliver: bound policy applied to a message whose handler raised
+    :ptype redeliver: Callable[[Any, BaseException], Awaitable[None]]
+    :param durable: durable consumer name (diagnostics)
+    :ptype durable: str
+    :param subject: subject being consumed (diagnostics)
+    :ptype subject: Subject
+    :param batch: max messages one fetch pulls
+    :ptype batch: int
+    :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
+    :ptype fetch_timeout_seconds: float
+    """
+
+    def __init__(
+        self,
+        *,
+        psub: Any,
+        cb: Callable[[Any], Awaitable[None]],
+        redeliver: Callable[[Any, BaseException], Awaitable[None]],
+        durable: str,
+        subject: Subject,
+        batch: int,
+        fetch_timeout_seconds: float,
+    ) -> None:
+        """initialize the pull consumer over its subscription + handlers.
+
+        :param psub: nats-py pull subscription handle
+        :ptype psub: Any
+        :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param redeliver: bound bounded-redelivery policy for a raised handler
+        :ptype redeliver: Callable[[Any, BaseException], Awaitable[None]]
+        :param durable: durable consumer name (diagnostics)
+        :ptype durable: str
+        :param subject: subject being consumed (diagnostics)
+        :ptype subject: Subject
+        :param batch: max messages one fetch pulls
+        :ptype batch: int
+        :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
+        :ptype fetch_timeout_seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self._psub = psub
+        self._cb = cb
+        self._redeliver = redeliver
+        self._durable = durable
+        self._subject = subject
+        self._batch = batch
+        self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._stopped = False
+
+    async def fetch_and_process(self) -> int:
+        """pull one batch and dispatch each message; return the count processed.
+
+        a fetch that times out with no message returns ``0`` (the idle case) —
+        the normal scale-to-zero-friendly poll, not an error. a handler raise is
+        routed through the bounded-redelivery policy, never propagated, so one
+        poisoned message cannot kill the loop.
+
+        :return: number of messages fetched this cycle
+        :rtype: int
+        """
+        try:
+            msgs = await self._psub.fetch(self._batch, timeout=self._fetch_timeout_seconds)
+        except _NatsTimeoutError:
+            msgs = []
+        for msg in msgs:
+            try:
+                await self._cb(msg)
+            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+                await self._redeliver(msg, exc)
+        return len(msgs)
+
+    async def run(self) -> None:
+        """loop fetch+dispatch until :meth:`stop` (or task cancellation).
+
+        :return: nothing
+        :rtype: None
+        """
+        while not self._stopped:
+            await self.fetch_and_process()
+
+    async def stop(self) -> None:
+        """halt the fetch loop and unsubscribe the pull consumer.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._stopped = True
+        await self._psub.unsubscribe()
 
 
 class NatsClient:
@@ -1722,31 +1831,14 @@ class NatsClient:
             try:
                 await cb(msg)
             except Exception as exc:  # noqa: BLE001 - bounded redelivery is the whole point; we re-route, never swallow
-                metadata = getattr(msg, "metadata", None)
-                num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
-                if num_delivered >= max_deliver:
-                    if dead_letter_subject is not None:
-                        await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
-                    await msg.ack()
-                    log.error(
-                        "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",
-                        num_delivered,
-                        durable,
-                        subject.path,
-                        dead_letter_subject.path if dead_letter_subject is not None else None,
-                        exc,
-                    )
-                else:
-                    backoff = float(min(num_delivered * 5, 30))
-                    await msg.nak(delay=backoff)
-                    log.warning(
-                        "durable consumer redelivering message (attempt %d/%d, backoff=%.0fs): durable=%s error=%s",
-                        num_delivered,
-                        max_deliver,
-                        backoff,
-                        durable,
-                        exc,
-                    )
+                await self._redeliver_or_deadletter(
+                    msg,
+                    exc,
+                    max_deliver=max_deliver,
+                    dead_letter_subject=dead_letter_subject,
+                    durable=durable,
+                    subject=subject,
+                )
 
         js = self.jetstream_context()
         config = _NatsConsumerConfig(
@@ -1772,6 +1864,186 @@ class NatsClient:
             dead_letter_subject.path if dead_letter_subject is not None else None,
         )
         return sub
+
+    async def _redeliver_or_deadletter(
+        self,
+        msg: Any,
+        exc: BaseException,
+        *,
+        max_deliver: int,
+        dead_letter_subject: Subject | None,
+        durable: str,
+        subject: Subject,
+    ) -> None:
+        """apply the bounded-redelivery policy to a message whose handler raised.
+
+        shared by the push (:meth:`jetstream_subscribe_durable`) and pull
+        (:meth:`jetstream_pull_subscribe`) durable consumers so the
+        nak-with-backoff-then-dead-letter contract is defined ONCE:
+
+        - attempts ``1..max_deliver-1``: ``msg.nak(delay=...)`` with a capped
+          linear backoff so a transient failure recovers without a hot loop;
+        - attempt ``max_deliver``: republish the payload to
+          ``dead_letter_subject`` (when given), ``ack`` the original so it leaves
+          the live consumer, and log ONE error.
+
+        :param msg: raw nats-py JetStream message whose handler raised
+        :ptype msg: Any
+        :param exc: exception the handler raised
+        :ptype exc: BaseException
+        :param max_deliver: maximum delivery attempts before dead-lettering
+        :ptype max_deliver: int
+        :param dead_letter_subject: subject poisoned payload parks on, or None
+        :ptype dead_letter_subject: Subject | None
+        :param durable: durable consumer name (for the log line)
+        :ptype durable: str
+        :param subject: subject being consumed (for the log line)
+        :ptype subject: Subject
+        :return: nothing
+        :rtype: None
+        """
+        metadata = getattr(msg, "metadata", None)
+        num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
+        if num_delivered >= max_deliver:
+            if dead_letter_subject is not None:
+                await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
+            await msg.ack()
+            log.error(
+                "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",
+                num_delivered,
+                durable,
+                subject.path,
+                dead_letter_subject.path if dead_letter_subject is not None else None,
+                exc,
+            )
+        else:
+            backoff = float(min(num_delivered * 5, 30))
+            await msg.nak(delay=backoff)
+            log.warning(
+                "durable consumer redelivering message (attempt %d/%d, backoff=%.0fs): durable=%s error=%s",
+                num_delivered,
+                max_deliver,
+                backoff,
+                durable,
+                exc,
+            )
+
+    async def jetstream_pull_subscribe(
+        self,
+        *,
+        subject: Subject,
+        durable: str,
+        cb: Callable[[Any], Awaitable[None]],
+        max_deliver: int,
+        dead_letter_subject: Subject | None = None,
+        ack_wait_seconds: float = 60.0,
+        stream: str | None = None,
+        batch: int = 8,
+        fetch_timeout_seconds: float = 5.0,
+    ) -> JetStreamPullConsumer:
+        """create a SHARED durable PULL consumer with MANUAL ack + BOUNDED redelivery.
+
+        the pull counterpart to :meth:`jetstream_subscribe_durable`. where the
+        push variant binds ONE subscriber to a durable, a pull consumer is
+        drained by N independent fetchers that all bind the SAME ``durable``
+        name: JetStream hands each pending message to exactly one fetcher, so M
+        messages split one-of-N across the worker replicas (horizontal scale). a
+        replica holding no in-flight fetch keeps NO server-pushed delivery
+        subject open, so the consumer is scale-to-zero friendly (spin replicas up
+        on ``num_pending``, down to zero when the backlog drains).
+
+        the redelivery contract is identical to the push variant and shares its
+        implementation (:meth:`_redeliver_or_deadletter`): the ``cb`` acks on
+        success / terminal-drop and RAISES to retry; attempts
+        ``1..max_deliver-1`` nak-with-backoff, attempt ``max_deliver``
+        dead-letters. ``max_deliver`` bounds attempts at the consumer config too.
+
+        the consumer FILTERS on ``subject`` (an exact subject, never a wildcard)
+        so a sibling dead-letter subject retained on the SAME stream is not
+        re-drained by this consumer.
+
+        :param subject: exact subject to consume (the consumer filter subject)
+        :ptype subject: Subject
+        :param durable: shared durable consumer name (stable; the same name binds
+            every replica so they share the backlog)
+        :ptype durable: str
+        :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param max_deliver: maximum delivery attempts before dead-lettering (>= 1)
+        :ptype max_deliver: int
+        :param dead_letter_subject: subject poisoned payload parks on, or None
+        :ptype dead_letter_subject: Subject | None
+        :param ack_wait_seconds: server-side ack timeout; a fetcher that dies
+            mid-handle redelivers the message to another fetcher after this
+        :ptype ack_wait_seconds: float
+        :param stream: backing stream name to bind the consumer to
+        :ptype stream: str | None
+        :param batch: max messages one fetch pulls
+        :ptype batch: int
+        :param fetch_timeout_seconds: how long one fetch waits for a message
+            before returning empty (the idle poll cadence)
+        :ptype fetch_timeout_seconds: float
+        :return: a pull-consumer handle whose ``run`` loops fetch+dispatch
+        :rtype: JetStreamPullConsumer
+        :raises ValueError: when ``max_deliver`` < 1
+        """
+        if max_deliver < 1:
+            raise ValueError(
+                f"max_deliver must be >= 1: a durable consumer cannot redeliver forever (got {max_deliver})",
+            )
+        js = self.jetstream_context()
+        config = _NatsConsumerConfig(
+            durable_name=durable,
+            ack_policy=_NatsAckPolicy.EXPLICIT,
+            max_deliver=max_deliver,
+            ack_wait=ack_wait_seconds,
+            filter_subject=subject.path,
+        )
+        psub = await js.pull_subscribe(
+            subject.path,
+            durable=durable,
+            stream=stream,
+            config=config,
+        )
+
+        async def _redeliver(msg: Any, exc: BaseException) -> None:
+            """route a raised handler through the shared bounded-redelivery policy.
+
+            :param msg: raw nats-py JetStream message whose handler raised
+            :ptype msg: Any
+            :param exc: exception the handler raised
+            :ptype exc: BaseException
+            :return: nothing
+            :rtype: None
+            """
+            await self._redeliver_or_deadletter(
+                msg,
+                exc,
+                max_deliver=max_deliver,
+                dead_letter_subject=dead_letter_subject,
+                durable=durable,
+                subject=subject,
+            )
+
+        consumer = JetStreamPullConsumer(
+            psub=psub,
+            cb=cb,
+            redeliver=_redeliver,
+            durable=durable,
+            subject=subject,
+            batch=batch,
+            fetch_timeout_seconds=fetch_timeout_seconds,
+        )
+        log.info(
+            "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
+            subject.path,
+            durable,
+            stream,
+            max_deliver,
+            dead_letter_subject.path if dead_letter_subject is not None else None,
+            batch,
+        )
+        return consumer
 
     # ------------------------------------------------------------------
     # internal helpers

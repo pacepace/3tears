@@ -394,6 +394,77 @@ class TestDiscordAdapterLifecycle:
         mock_client.close.assert_awaited_once()
 
 
+class _FakeMessageable:
+    """real class registered as discord.abc.Messageable for the isinstance guard."""
+
+    def __init__(self) -> None:
+        self.send = AsyncMock()
+
+
+def _messageable_target(mock_discord: MagicMock) -> _FakeMessageable:
+    """wire mock_discord so a real messageable target passes the isinstance guard."""
+    mock_discord.abc.Messageable = _FakeMessageable
+    return _FakeMessageable()
+
+
+class TestDiscordAdapterPostMessage:
+    """tests for the out-of-band REST post_message (durable channel delivery)."""
+
+    @patch("threetears.channels.discord.discord")
+    async def test_post_message_logs_in_then_posts_to_channel(self, mock_discord: MagicMock) -> None:
+        """post_message logs in ONCE (REST, no gateway) and sends to the channel."""
+        from threetears.channels.discord import DiscordAdapter
+
+        target = _messageable_target(mock_discord)
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.start = AsyncMock()
+        mock_client.fetch_channel = AsyncMock(return_value=target)
+        mock_discord.Client.return_value = mock_client
+
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+        await adapter.post_message(channel="12345", content="the answer")
+
+        # REST login, NOT gateway start.
+        mock_client.login.assert_awaited_once_with("bot-tok")
+        mock_client.start.assert_not_awaited()
+        mock_client.fetch_channel.assert_awaited_once_with(12345)
+        target.send.assert_awaited_once_with(content="the answer")
+
+    @patch("threetears.channels.discord.discord")
+    async def test_post_message_targets_thread_when_given(self, mock_discord: MagicMock) -> None:
+        """a thread_ref routes the post into the thread, not the parent channel."""
+        from threetears.channels.discord import DiscordAdapter
+
+        target = _messageable_target(mock_discord)
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.fetch_channel = AsyncMock(return_value=target)
+        mock_discord.Client.return_value = mock_client
+
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+        await adapter.post_message(channel="999", content="hi", thread_ref="777")
+
+        mock_client.fetch_channel.assert_awaited_once_with(777)
+
+    @patch("threetears.channels.discord.discord")
+    async def test_post_message_reuses_login_across_posts(self, mock_discord: MagicMock) -> None:
+        """a second post_message reuses the authenticated session (login once)."""
+        from threetears.channels.discord import DiscordAdapter
+
+        target = _messageable_target(mock_discord)
+        mock_client = MagicMock()
+        mock_client.login = AsyncMock()
+        mock_client.fetch_channel = AsyncMock(return_value=target)
+        mock_discord.Client.return_value = mock_client
+
+        adapter = DiscordAdapter(bot_token="bot-tok", router=_MockRouter())
+        await adapter.post_message(channel="1", content="a")
+        await adapter.post_message(channel="1", content="b")
+
+        mock_client.login.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # bot filtering tests
 # ---------------------------------------------------------------------------

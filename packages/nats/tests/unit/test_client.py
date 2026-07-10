@@ -1117,6 +1117,173 @@ async def test_durable_cb_dead_letters_at_budget() -> None:
 
 
 # ---------------------------------------------------------------------------
+# JetStream SHARED PULL consumer (horizontally-scalable delivery worker)
+# ---------------------------------------------------------------------------
+
+
+def _pull_js(*, psub: Any) -> tuple[NatsClient, Any]:
+    """build a client whose JetStream context returns a mock with pull_subscribe."""
+    client, js = _client_with_js()
+    js.pull_subscribe = AsyncMock(return_value=psub)
+    return client, js
+
+
+@pytest.mark.asyncio
+async def test_pull_subscribe_binds_shared_durable_filtered_manual_ack() -> None:
+    """the pull consumer binds the shared durable with a filter subject + bounded max_deliver."""
+    psub = MagicMock()
+    client, js = _pull_js(psub=psub)
+    subject = Subjects.channels_deliver("slack")
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=subject,
+        durable="channel-delivery-slack",
+        cb=AsyncMock(),
+        max_deliver=5,
+        dead_letter_subject=Subjects.channels_deliver("deadletter"),
+        stream="3tears-channels-deliver",
+    )
+
+    kwargs = js.pull_subscribe.await_args.kwargs
+    assert js.pull_subscribe.await_args.args[0] == subject.path
+    assert kwargs["durable"] == "channel-delivery-slack"
+    assert kwargs["stream"] == "3tears-channels-deliver"
+    config = kwargs["config"]
+    assert config.durable_name == "channel-delivery-slack"
+    assert config.max_deliver == 5
+    # FILTER on the exact subject so the sibling deadletter subject on the same
+    # stream is not re-drained by this consumer.
+    assert config.filter_subject == subject.path
+    from threetears.nats import JetStreamPullConsumer
+
+    assert isinstance(consumer, JetStreamPullConsumer)
+
+
+@pytest.mark.asyncio
+async def test_pull_subscribe_requires_positive_max_deliver() -> None:
+    """max_deliver < 1 is rejected: a durable consumer cannot redeliver forever."""
+    psub = MagicMock()
+    client, _js = _pull_js(psub=psub)
+    with pytest.raises(ValueError, match="max_deliver"):
+        await client.jetstream_pull_subscribe(
+            subject=Subjects.channels_deliver("slack"),
+            durable="d",
+            cb=AsyncMock(),
+            max_deliver=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_pull_fetch_dispatches_each_message_success() -> None:
+    """fetch_and_process runs the handler for every fetched message (handler acks)."""
+    m1 = _fake_js_msg(data=b"a")
+    m2 = _fake_js_msg(data=b"b")
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[m1, m2])
+    client, _js = _pull_js(psub=psub)
+    cb = AsyncMock()
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=cb,
+        max_deliver=5,
+    )
+    processed = await consumer.fetch_and_process()
+
+    assert processed == 2
+    assert cb.await_count == 2
+    # the wrapper does not ack on success -- the handler owns the ack.
+    m1.ack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pull_fetch_timeout_is_idle_zero() -> None:
+    """a fetch that times out with no message is the idle case: returns 0, not an error."""
+    from nats.errors import TimeoutError as NatsTimeoutError
+
+    psub = MagicMock()
+    psub.fetch = AsyncMock(side_effect=NatsTimeoutError())
+    client, _js = _pull_js(psub=psub)
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+    processed = await consumer.fetch_and_process()
+
+    assert processed == 0
+
+
+@pytest.mark.asyncio
+async def test_pull_handler_raise_naks_with_backoff_before_budget() -> None:
+    """a handler raise on an early attempt naks-with-backoff (shared policy), never propagates."""
+    msg = _fake_js_msg(num_delivered=1)
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, js = _pull_js(psub=psub)
+    cb = AsyncMock(side_effect=RuntimeError("discord 500"))
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("discord"),
+        durable="d",
+        cb=cb,
+        max_deliver=5,
+        dead_letter_subject=Subjects.channels_deliver("deadletter"),
+    )
+    await consumer.fetch_and_process()
+
+    msg.nak.assert_awaited_once()
+    assert msg.nak.await_args.kwargs.get("delay", 0) > 0
+    msg.ack.assert_not_awaited()
+    js.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pull_handler_raise_dead_letters_at_budget() -> None:
+    """a handler raise on the LAST attempt parks the payload + acks (shared policy)."""
+    msg = _fake_js_msg(data=b"poison", num_delivered=5)
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[msg])
+    client, js = _pull_js(psub=psub)
+    dlq = Subjects.channels_deliver("deadletter")
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("discord"),
+        durable="d",
+        cb=AsyncMock(side_effect=RuntimeError("channel gone")),
+        max_deliver=5,
+        dead_letter_subject=dlq,
+    )
+    await consumer.fetch_and_process()
+
+    js.publish.assert_awaited_once_with(dlq.path, b"poison")
+    msg.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pull_stop_unsubscribes_and_halts_run() -> None:
+    """stop() unsubscribes the pull consumer and ends the run loop."""
+    psub = MagicMock()
+    psub.fetch = AsyncMock(return_value=[])
+    psub.unsubscribe = AsyncMock()
+    client, _js = _pull_js(psub=psub)
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+    await consumer.stop()
+    await consumer.run()  # already stopped -> returns immediately
+
+    psub.unsubscribe.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # reconnect callback fan-out (consumer-registered post-reconnect hooks)
 # ---------------------------------------------------------------------------
 
