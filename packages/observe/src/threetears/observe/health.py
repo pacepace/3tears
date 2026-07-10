@@ -19,6 +19,14 @@ contract:
   ``healthy`` + ``detail``. operators and CLI tooling read this for
   "which subsystem is down" without grepping logs.
 - ``GET /readyz`` -- same as ``/healthz`` (k8s readiness probe alias).
+- ``GET /metrics`` -- prometheus text exposition, served only when a
+  ``metrics_provider`` callable is wired at construction (returns
+  ``(content_type, body)``). NATS-only RPC pods (registry, tool pods)
+  have no HTTP framework of their own, so this route is how their
+  in-flight-requests gauge becomes scrapable by KEDA's prometheus
+  scaler. absent a provider the route returns ``404`` -- the health
+  surface stays exactly as it was for services that expose metrics
+  elsewhere (hub, gateway run their own /metrics).
 - :meth:`HealthServer.get_status` -- in-process accessor returning
   the same :class:`HealthStatus` value the JSON endpoint would
   serialize. consumers wired into the same event loop (e.g. an
@@ -68,6 +76,8 @@ import asyncio
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Callable
+
+MetricsProvider = Callable[[], tuple[str, bytes]]
 
 from threetears.observe.logging import get_logger
 
@@ -145,12 +155,13 @@ class HealthServer:
     """minimal asyncio HTTP server serving ``GET /healthz`` and
     ``GET /readyz`` with both plain-text and JSON response formats.
 
-    intentional limitations: no path routing beyond the two endpoints
-    above, only ``GET``, only the ``format=json`` query argument
-    (also accepts ``Accept: application/json``), no chunked transfer,
-    no keep-alive. the surface is exactly what docker / kubernetes
-    liveness probes need plus the JSON shape operators want for
-    drill-in.
+    intentional limitations: routing is limited to ``/healthz``,
+    ``/readyz`` and (when a ``metrics_provider`` is wired) ``/metrics``,
+    only ``GET``, only the ``format=json`` query argument (also accepts
+    ``Accept: application/json``), no chunked transfer, no keep-alive.
+    the surface is exactly what docker / kubernetes liveness probes need
+    plus the JSON shape operators want for drill-in plus the optional
+    prometheus exposition KEDA's scaler scrapes.
 
     :param port: TCP port to bind on. matches the 3tears-hub
         Dockerfile's HEALTHCHECK port (8000) so the inherited
@@ -169,6 +180,14 @@ class HealthServer:
     :param host: bind interface; default ``0.0.0.0`` so the
         container's external port mapping reaches the listener
     :ptype host: str
+    :param metrics_provider: optional zero-arg callable returning
+        ``(content_type, body)`` for the ``GET /metrics`` route. wired by
+        NATS-only RPC pods (registry, tool pods) to expose their
+        in-flight-requests gauge to KEDA's prometheus scaler through the
+        one HTTP listener they already run for ``/healthz``. ``None``
+        leaves ``/metrics`` returning ``404`` (the default for services
+        that expose prometheus elsewhere)
+    :ptype metrics_provider: Callable[[], tuple[str, bytes]] | None
     """
 
     def __init__(
@@ -178,6 +197,7 @@ class HealthServer:
         service_name: str,
         checks: list[HealthCheck] | None = None,
         host: str = "0.0.0.0",
+        metrics_provider: MetricsProvider | None = None,
     ) -> None:
         """initialize health server with the supplied checks.
 
@@ -190,6 +210,9 @@ class HealthServer:
         :ptype checks: list[HealthCheck] | None
         :param host: bind interface
         :ptype host: str
+        :param metrics_provider: optional ``() -> (content_type, body)``
+            callable served on ``GET /metrics``; ``None`` -> route 404s
+        :ptype metrics_provider: Callable[[], tuple[str, bytes]] | None
         :return: nothing
         :rtype: None
         """
@@ -197,6 +220,7 @@ class HealthServer:
         self._host = host
         self._service_name = service_name
         self._checks: list[HealthCheck] = list(checks) if checks else []
+        self._metrics_provider = metrics_provider
         self._server: asyncio.base_events.Server | None = None
 
     @property
@@ -308,8 +332,9 @@ class HealthServer:
     ) -> None:
         """parse one HTTP/1.1 request line + dispatch to the right path.
 
-        only ``GET /healthz`` and ``GET /readyz`` are recognized;
-        every other request returns ``404``. the connection closes
+        only ``GET /healthz`` and ``GET /readyz`` (and ``GET /metrics``
+        when a ``metrics_provider`` is wired) are recognized; every
+        other request returns ``404``. the connection closes
         after the response (no keep-alive). exceptions during
         probing are caught and surface as ``503`` so a misbehaving
         check cannot bring down the listener.
@@ -342,7 +367,7 @@ class HealthServer:
             parts = request_line.decode("ascii", errors="replace").split()
             status = 400
             content_type = "text/plain; charset=utf-8"
-            body = "bad request\n"
+            body: str | bytes = "bad request\n"
             if len(parts) >= 2 and parts[0] == "GET":
                 raw_path = parts[1]
                 path, _, query = raw_path.partition("?")
@@ -354,6 +379,9 @@ class HealthServer:
                         content_type = "application/json; charset=utf-8"
                     else:
                         status, body = self._evaluate_checks_text()
+                elif path == "/metrics" and self._metrics_provider is not None:
+                    status = 200
+                    content_type, body = self._metrics_provider()
                 else:
                     status, body = (404, "not found\n")
 
@@ -425,7 +453,7 @@ class HealthServer:
     def _write_response(
         writer: asyncio.StreamWriter,
         status: int,
-        body: str,
+        body: str | bytes,
         content_type: str,
     ) -> None:
         """write a minimal HTTP/1.1 response onto the stream writer.
@@ -437,8 +465,9 @@ class HealthServer:
         :ptype writer: asyncio.StreamWriter
         :param status: HTTP status code
         :ptype status: int
-        :param body: response body (will be UTF-8 encoded)
-        :ptype body: str
+        :param body: response body; ``str`` is UTF-8 encoded, ``bytes``
+            (the prometheus exposition path) is written verbatim
+        :ptype body: str | bytes
         :param content_type: the response ``Content-Type`` header
         :ptype content_type: str
         :return: nothing
@@ -451,7 +480,7 @@ class HealthServer:
             500: "Internal Server Error",
             503: "Service Unavailable",
         }.get(status, "OK")
-        body_bytes = body.encode("utf-8")
+        body_bytes = body.encode("utf-8") if isinstance(body, str) else body
         writer.write(
             (
                 f"HTTP/1.1 {status} {reason}\r\n"

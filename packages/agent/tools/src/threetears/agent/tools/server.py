@@ -69,7 +69,7 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError
-from threetears.observe import clear_context, get_logger, traced
+from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
 
 __all__ = [
     "CallRequest",
@@ -770,6 +770,13 @@ class ToolServer:
         # silently skip single-use enforcement). serve() always provisions it over the pod's
         # connection; callers driving handle_call without serve() (tests) inject one here.
         self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
+        # leak-safe in-flight-requests gauge bracketed around every handle_call:
+        # the tool-pod bootstrap serves it on the shared HealthServer's /metrics
+        # route so KEDA's prometheus scaler can autoscale the pod's Deployment on
+        # aggregate in-flight call load (the tools.internal RPC path is a
+        # queue-group request/reply, not JetStream, so there is no stream backlog
+        # for the nats scaler to read).
+        self._inflight_gauge = InflightRequestsGauge("threetears_tools_inflight_requests")
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -801,6 +808,20 @@ class ToolServer:
         :rtype: int
         """
         return len(self._tools)
+
+    def render_metrics(self) -> tuple[str, bytes]:
+        """render the pod's prometheus metrics in text exposition format.
+
+        returns ``(content_type, body)`` for the shared HealthServer's
+        ``/metrics`` route (wired by :class:`ToolServerBootstrap`), so the
+        pod's in-flight-requests gauge is scrapable by KEDA's prometheus
+        scaler through the one HTTP listener the pod already runs for
+        ``/healthz``.
+
+        :return: tuple of prometheus content-type and exposition body
+        :rtype: tuple[str, bytes]
+        """
+        return self._inflight_gauge.render()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -1825,6 +1846,27 @@ class ToolServer:
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
+        """
+        # bracket the whole dispatch in the in-flight gauge: increment on entry,
+        # decrement on exit even when dispatch raises (try/finally inside
+        # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
+        # count and a failed call never strands the counter above baseline.
+        with self._inflight_gauge.track():
+            await self._dispatch_incoming_call(msg)
+
+    async def _dispatch_incoming_call(self, msg: IncomingMessage) -> None:
+        """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
+
+        split out of :meth:`handle_call` so the public NATS callback can
+        bracket the dispatch in the in-flight-requests gauge without
+        re-indenting the whole body. the full handler contract (identity
+        verification, proxy-assertion check, baseline audit) is documented
+        on :meth:`handle_call`.
+
+        :param msg: incoming wrapper envelope carrying the call request
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
         """
         start_monotonic = time.monotonic()
         request: CallRequest | None = None

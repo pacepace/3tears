@@ -401,6 +401,82 @@ class TestHealthServerJsonResponse:
         assert "simulated probe crash" in payload["components"][0]["detail"]
 
 
+class TestHealthServerMetrics:
+    """``GET /metrics`` route -- prometheus exposition for KEDA's scaler."""
+
+    @pytest.mark.asyncio
+    async def test_metrics_served_when_provider_wired(self) -> None:
+        """a wired ``metrics_provider`` -> ``200`` with its body verbatim.
+
+        this is how the NATS-only RPC pods (registry, tool pods) expose
+        their in-flight-requests gauge through the one HTTP listener they
+        already run for ``/healthz``.
+        """
+
+        def _provider() -> tuple[str, bytes]:
+            return ("text/plain; version=0.0.4; charset=utf-8", b"registry_inflight_requests 3.0\n")
+
+        port = _free_port()
+        server = HealthServer(
+            port=port,
+            service_name="registry",
+            host="127.0.0.1",
+            checks=[HealthCheck(name="nats", probe=lambda: True)],
+            metrics_provider=_provider,
+        )
+        await server.start()
+        try:
+            status, body = await _http_get("127.0.0.1", port, "/metrics")
+        finally:
+            await server.stop()
+        assert status == 200
+        assert "registry_inflight_requests 3.0" in body
+
+    @pytest.mark.asyncio
+    async def test_metrics_404_without_provider(self) -> None:
+        """no ``metrics_provider`` -> ``/metrics`` returns ``404``.
+
+        services that expose prometheus elsewhere (hub, gateway) leave
+        the route off; the health surface is otherwise unchanged.
+        """
+        port = _free_port()
+        server = HealthServer(
+            port=port,
+            service_name="test-service",
+            host="127.0.0.1",
+            checks=[HealthCheck(name="nats", probe=lambda: True)],
+        )
+        await server.start()
+        try:
+            status, _body = await _http_get("127.0.0.1", port, "/metrics")
+        finally:
+            await server.stop()
+        assert status == 404
+
+    @pytest.mark.asyncio
+    async def test_healthz_still_works_alongside_metrics(self) -> None:
+        """wiring ``/metrics`` does NOT break the ``/healthz`` contract."""
+
+        def _provider() -> tuple[str, bytes]:
+            return ("text/plain; charset=utf-8", b"# empty\n")
+
+        port = _free_port()
+        server = HealthServer(
+            port=port,
+            service_name="registry",
+            host="127.0.0.1",
+            checks=[HealthCheck(name="nats", probe=lambda: True)],
+            metrics_provider=_provider,
+        )
+        await server.start()
+        try:
+            status, body = await _http_get("127.0.0.1", port, "/healthz")
+        finally:
+            await server.stop()
+        assert status == 200
+        assert "ok" in body
+
+
 class TestHealthServerStatusAccessor:
     """``get_status()`` -- in-process status read."""
 

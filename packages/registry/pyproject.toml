@@ -18,6 +18,7 @@ dependencies = [
     "3tears-nats",
     "3tears-observe",
     "nats-py>=2.0",
+    "prometheus-client>=0.20",
 ]
 
 [project.urls]

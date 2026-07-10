@@ -26,7 +26,7 @@ from threetears.core.security.identity_token import (
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
 from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
-from threetears.observe import clear_context, get_logger
+from threetears.observe import InflightRequestsGauge, clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
@@ -197,6 +197,7 @@ class CallProxy:
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         proxy_signer: "ProxyAssertionSigner | None" = None,
         usage_emitter: EndpointUsageEmitter | None = None,
+        inflight_gauge: InflightRequestsGauge | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -263,6 +264,14 @@ class CallProxy:
             fills with its concrete SDK-typed emitter (gu-task-16); 3tears holds only
             the protocol + the slot
         :ptype usage_emitter: EndpointUsageEmitter | None
+        :param inflight_gauge: leak-safe prometheus in-flight-requests gauge
+            bracketed around every :meth:`_process_call` so KEDA's prometheus
+            scaler can autoscale registry replicas on aggregate in-flight tool-
+            call load. the registry server owns the one gauge (on the registry
+            it serves through the HealthServer's ``/metrics`` route) and passes
+            it here; ``None`` (tests / standalone) self-provisions a private
+            gauge so the bracket is always live
+        :ptype inflight_gauge: InflightRequestsGauge | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -277,6 +286,7 @@ class CallProxy:
         self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
         self._pop_replay_guard = pop_replay_guard
+        self._inflight_gauge = inflight_gauge or InflightRequestsGauge("threetears_registry_inflight_requests")
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -362,27 +372,32 @@ class CallProxy:
         """
         if self._nc is None:
             raise RuntimeError("_process_call invoked before NATS connected")
-        try:
-            request = ProxyCallRequest.model_validate_json(msg.data)
-        except Exception as exc:
-            response = ProxyCallResponse(
-                success=False,
-                content="",
-                error=f"malformed call request: {exc}",
-                error_code="MALFORMED_REQUEST",
-            )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
+        # bracket the whole dispatch in the in-flight gauge: increment on entry,
+        # decrement on exit even when dispatch raises (try/finally inside
+        # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
+        # count and a failed call never strands the counter above baseline.
+        with self._inflight_gauge.track():
+            try:
+                request = ProxyCallRequest.model_validate_json(msg.data)
+            except Exception as exc:
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"malformed call request: {exc}",
+                    error_code="MALFORMED_REQUEST",
                 )
-            return
+                if msg.reply_subject is not None:
+                    await self._nc.publish_reply(
+                        reply_subject=msg.reply_subject,
+                        message=response,
+                    )
+                return
 
-        bind_log_context(request.context)
-        try:
-            await self._dispatch_call(request, msg)
-        finally:
-            clear_context()
+            bind_log_context(request.context)
+            try:
+                await self._dispatch_call(request, msg)
+            finally:
+                clear_context()
 
     def _load_jwks(self) -> dict[str, Any]:
         """fetch the current Hub JWKS via the injected provider, converting ANY provider

@@ -24,7 +24,7 @@ from threetears.core.security import (
     resolve_secret,
 )
 from threetears.nats import NatsClient
-from threetears.observe import HealthCheck, HealthServer, get_logger
+from threetears.observe import HealthCheck, HealthServer, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
@@ -275,6 +275,7 @@ class RegistryServer:
         self._call_proxy: CallProxy | None = None
         self._jwks_provider: CachedHubJwksProvider | None = None
         self._health_server: HealthServer | None = None
+        self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
 
     async def apply_rbac_factory(
@@ -563,6 +564,14 @@ class RegistryServer:
         # for the same call body within the iat freshness window.
         pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
 
+        # one in-flight-requests gauge for this registry replica: the CallProxy
+        # brackets every dispatch through it, and the HealthServer serves it on
+        # ``/metrics`` so KEDA's prometheus scaler can autoscale replicas on
+        # aggregate in-flight tool-call load (the queue-group RPC path is not
+        # JetStream, so there is no stream backlog for the nats scaler to read).
+        inflight_gauge = InflightRequestsGauge("threetears_registry_inflight_requests")
+        self._inflight_gauge = inflight_gauge
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
@@ -570,6 +579,7 @@ class RegistryServer:
             authorizer=self._authorizer,
             limit_guard=self._limit_guard,
             usage_emitter=self._usage_emitter,
+            inflight_gauge=inflight_gauge,
             jwks_provider=jwks_provider,
             # reactive self-heal on a Hub re-key: a kid-not-in-cache miss triggers ONE immediate,
             # debounced + rate-limited refresh + re-verify, so a valid token signed under a freshly-
@@ -592,6 +602,7 @@ class RegistryServer:
         health_server = HealthServer(
             port=self._health_port,
             service_name="registry",
+            metrics_provider=inflight_gauge.render,
             checks=[
                 HealthCheck(
                     name="nats",

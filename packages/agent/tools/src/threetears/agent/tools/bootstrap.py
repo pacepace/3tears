@@ -177,6 +177,11 @@ class ToolServerBootstrap:
         health_server = HealthServer(
             port=self._health_port,
             service_name=self._service_name,
+            # serve the pod's in-flight-requests gauge on /metrics so KEDA's
+            # prometheus scaler can autoscale the tool-pod Deployment on
+            # aggregate in-flight call load through the one HTTP listener the
+            # pod already runs for /healthz.
+            metrics_provider=server.render_metrics,
             checks=[
                 HealthCheck(
                     name="nats",
