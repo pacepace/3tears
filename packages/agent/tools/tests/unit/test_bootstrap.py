@@ -33,6 +33,9 @@ class _FakeToolServer:
         self.shutdown_called = True
         self.serve_event.set()
 
+    def render_metrics(self) -> tuple[str, bytes]:
+        return ("text/plain; version=0.0.4; charset=utf-8", b"")
+
 
 class _ConcreteBootstrap(ToolServerBootstrap):
     """subclass used to drive ``run`` / ``run_async`` paths."""
@@ -115,6 +118,9 @@ class _ReadinessFakeServer:
         self.is_connected = True
         self.tools_count = 1
         self.jwks_warmed = False
+
+    def render_metrics(self) -> tuple[str, bytes]:
+        return ("text/plain; version=0.0.4; charset=utf-8", b"")
 
 
 class TestHealthServerReadinessGate:

@@ -394,6 +394,7 @@ class TestDiscordAdapterLifecycle:
         mock_client.close.assert_awaited_once()
 
 
+# parity-exempt: external discord.py ABC (discord.abc.Messageable) used only as the isinstance-guard sentinel type for post_message; the test exercises just .send(), so mirroring Messageable's full surface would be misleading, not safer
 class _FakeMessageable:
     """real class registered as discord.abc.Messageable for the isinstance guard."""
 
