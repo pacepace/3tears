@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-object-store"
-version = "0.14.1"
+version = "0.15.0"
 description = "Streaming S3-compatible object store for large binary artifacts (Path-2)"
 readme = "README.md"
 requires-python = ">=3.14"
