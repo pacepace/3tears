@@ -263,6 +263,15 @@ class McpServer:
                 message=f"{type(exc).__name__}: {exc}",
             )
 
+        # a handler may return a fully-formed CallToolResult (e.g. an
+        # isError=True envelope carrying a downstream {code,message} --
+        # the hub MCP-export handler does exactly this so a tool-mesh
+        # failure surfaces via the protocol envelope, not a JSON body).
+        # pass it through verbatim; the SDK forwards isError + content
+        # unchanged, mirroring how :meth:`_error_result` already returns.
+        if isinstance(result, mcp_types.CallToolResult):
+            return result
+
         # happy-path normalization: handler may return a str, a
         # single TextContent, a list of TextContent (already wire-
         # ready), or something JSON-serialisable. the SDK wraps
