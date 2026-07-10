@@ -160,6 +160,10 @@ select = ["SLF"]
 # is shared per-registry to lock in the identity-by-registry contract.
 # paired entries live in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/tests/unit/models/test_tracking.py" = ["SLF001"]
+# GU-05-05 span-attribute tests re-init the tracer provider via the same
+# OTel ``_TRACER_PROVIDER_SET_ONCE._done`` escape as test_tracking.py above.
+# paired entry lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_tracking_dimensions.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
