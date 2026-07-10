@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -79,6 +80,7 @@ from threetears.nats.errors import (
 from threetears.nats.subjects import Subject, Subjects, set_default_namespace
 
 if TYPE_CHECKING:
+    from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
     from nats.aio.subscription import Subscription as _NatsSub
 
@@ -95,6 +97,9 @@ __all__ = [
     # resilience-task-03: explicit bounded outbound/pending buffer defaults.
     "DEFAULT_PENDING_SIZE_BYTES",
     "DEFAULT_FLUSHER_QUEUE_SIZE",
+    # resilience-task-06: jittered reconnect backoff defaults (thundering-herd defense).
+    "DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS",
+    "DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS",
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "NatsClient",
@@ -179,6 +184,25 @@ DEFAULT_PENDING_SIZE_BYTES: Final[int] = 4 * 1024 * 1024
 #: healthy load. Set explicitly for the same asserted-and-tunable reason as the pending bound.
 DEFAULT_FLUSHER_QUEUE_SIZE: Final[int] = 2048
 
+#: resilience-task-06: base (seconds) of the per-attempt capped-exponential FULL-JITTER reconnect
+#: backoff wired into nats-py's ``reconnect_to_server_handler``. The un-jittered ceiling for a reconnect
+#: attempt is ``min(cap, base * 2**server.reconnects)`` and the actual delay is
+#: ``uniform(0, ceiling)`` -- full jitter, which de-synchronizes a mass reconnect better than equal
+#: jitter. At ``base = 1.0`` the first-attempt delay is uniform in ``[0, 1]`` s, so a fleet of N pods
+#: reconnecting on a shared trigger (Hub restart, KEDA scale-out) spreads its handshakes across the
+#: window instead of spiking simultaneously. Replaces the fixed 2s ``reconnect_time_wait`` on the
+#: RECONNECT path (``_attempt_reconnect``); ``reconnect_time_wait`` still paces the distinct startup
+#: server-selection loop (``_select_next_server``). Set explicitly -- not left to a library default --
+#: so the bound is asserted in tests and tunable per-consumer.
+DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS: Final[float] = 1.0
+
+#: resilience-task-06: cap (seconds) on the un-jittered reconnect-backoff ceiling. Bounds the growth of
+#: ``base * 2**server.reconnects`` so a single agent that has been reconnecting for a while still
+#: recovers PROMPTLY (its delay never exceeds ``uniform(0, cap)``) -- the anti-pattern the shard calls
+#: out is UNBOUNDED backoff that makes single-agent recovery sluggish. 30s balances herd-spread against
+#: recovery latency.
+DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS: Final[float] = 30.0
+
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
@@ -190,6 +214,79 @@ DEFAULT_DRAIN_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
 #: dedup window for error-callback rate limiting.
 _ERROR_LOG_RATE_LIMIT_SECONDS: Final[float] = 10.0
+
+
+def _full_jitter_backoff(
+    attempt: int,
+    *,
+    base: float,
+    cap: float,
+    rng: random.Random | None = None,
+) -> float:
+    """compute a per-attempt capped-exponential FULL-JITTER backoff delay (resilience-task-06).
+
+    the un-jittered ceiling is ``min(cap, base * 2**attempt)`` and the returned delay is a uniform
+    random draw in ``[0, ceiling]`` -- FULL jitter, which de-synchronizes a fleet reconnecting on a
+    shared trigger (Hub restart, KEDA scale-out) better than equal jitter (equal jitter keeps a
+    fixed floor every pod shares; full jitter spreads the whole window). the exponent grows the
+    ceiling until ``cap`` clamps it, so early attempts retry fast and a persistent outage backs off
+    without ever exceeding ``cap`` -- a single agent still recovers promptly.
+
+    :param attempt: the per-attempt count (nats-py's ``Server.reconnects`` on the socket path, the
+        consecutive-failure count on the identity-refresh path); ``0`` for the first attempt
+    :ptype attempt: int
+    :param base: base backoff (seconds) doubled per attempt before the jitter draw
+    :ptype base: float
+    :param cap: upper bound (seconds) on the un-jittered ceiling so growth stays bounded
+    :ptype cap: float
+    :param rng: optional random source (injected in tests for determinism); ``None`` uses the module
+        ``random`` -- two independent instances therefore draw INDEPENDENT delays, so they do not
+        synchronize
+    :ptype rng: random.Random | None
+    :return: a jittered delay in seconds within ``[0, min(cap, base * 2**attempt)]``
+    :rtype: float
+    """
+    exponent = attempt if attempt >= 0 else 0
+    ceiling = min(cap, base * (2**exponent))
+    draw = rng.uniform(0.0, ceiling) if rng is not None else random.uniform(0.0, ceiling)
+    return draw
+
+
+def _make_reconnect_to_server_handler(
+    *,
+    base: float,
+    cap: float,
+) -> Callable[[list[_NatsServer], dict[str, Any]], tuple[_NatsServer | None, float]]:
+    """build the sync ``reconnect_to_server_handler`` nats-py invokes on each reconnect (resilience-task-06).
+
+    nats-py calls the returned handler on EVERY reconnect attempt (``_attempt_reconnect``), passing a
+    snapshot of the eligible servers (each carrying its own ``reconnects`` count) and the current
+    server info, and expects back ``(selected_server, callback_delay)``; it then sleeps
+    ``callback_delay`` before connecting. the handler selects the first eligible server (the pool is
+    already shuffled by nats-py before the call, so this matches the default round-robin selection) and
+    returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so the
+    per-attempt count drives the backoff and a mass reconnect spreads across the window rather than
+    synchronizing. the handler is sync because nats-py calls it un-awaited.
+
+    :param base: base backoff (seconds) for :func:`_full_jitter_backoff`
+    :ptype base: float
+    :param cap: cap (seconds) on the un-jittered ceiling for :func:`_full_jitter_backoff`
+    :ptype cap: float
+    :return: a sync handler mapping ``(servers, server_info)`` to ``(selected_server, jittered_delay)``
+    :rtype: Callable[[list[_NatsServer], dict[str, Any]], tuple[_NatsServer | None, float]]
+    """
+
+    def _handler(
+        servers: list[_NatsServer],
+        server_info: dict[str, Any],
+    ) -> tuple[_NatsServer | None, float]:
+        """select the next server and return a full-jitter backoff delay keyed on its reconnect count."""
+        selected = servers[0] if servers else None
+        attempt = selected.reconnects if selected is not None else 0
+        delay = _full_jitter_backoff(attempt, base=base, cap=cap)
+        return selected, delay
+
+    return _handler
 
 
 class Subscription:
@@ -356,6 +453,8 @@ class NatsClient:
         verify_jetstream: bool = True,
         pending_size: int = DEFAULT_PENDING_SIZE_BYTES,
         flusher_queue_size: int = DEFAULT_FLUSHER_QUEUE_SIZE,
+        reconnect_backoff_base: float = DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS,
+        reconnect_backoff_cap: float = DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
     ) -> NatsClient:
         """connect to NATS and return a ready :class:`NatsClient`.
 
@@ -411,6 +510,16 @@ class NatsClient:
             ``flusher_queue_size`` option (resilience-task-03). defaults to
             :data:`DEFAULT_FLUSHER_QUEUE_SIZE` (2048).
         :ptype flusher_queue_size: int
+        :param reconnect_backoff_base: base (seconds) of the per-attempt capped-exponential FULL-JITTER
+            reconnect backoff wired into nats-py's ``reconnect_to_server_handler`` (resilience-task-06).
+            defaults to :data:`DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS` (1.0). the per-attempt delay is
+            ``uniform(0, min(reconnect_backoff_cap, base * 2**server.reconnects))`` so a mass reconnect
+            spreads out instead of synchronizing the fleet on a shared trigger.
+        :ptype reconnect_backoff_base: float
+        :param reconnect_backoff_cap: cap (seconds) on the un-jittered reconnect-backoff ceiling
+            (resilience-task-06). defaults to :data:`DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS` (30.0);
+            bounds the exponential growth so a single agent still recovers promptly.
+        :ptype reconnect_backoff_cap: float
         :return: connected and ready NATS client
         :rtype: NatsClient
         :raises NatsClientError: if connection fails, times out, or JetStream verification fails
@@ -471,10 +580,21 @@ class NatsClient:
             "error_cb": _dispatch_error,
             # resilience-task-03: bound the outbound/pending buffer EXPLICITLY (not the untuned
             # nats-py default). overflow raises OutboundBufferLimitError at the publish boundary,
-            # caught below and folded into is_healthy. resilience-task-06 will ALSO extend this dict
-            # (reconnect backoff/jitter) -- keep these two keys grouped + labelled to avoid a merge mess.
+            # caught below and folded into is_healthy.
             "pending_size": pending_size,
             "flusher_queue_size": flusher_queue_size,
+            # resilience-task-06: per-attempt capped-exponential FULL-JITTER reconnect backoff. nats-py
+            # calls this handler on EVERY reconnect attempt (``_attempt_reconnect``), passing a snapshot
+            # of eligible servers (each carrying its ``reconnects`` count) and receiving
+            # ``(selected_server, callback_delay)``; it then sleeps ``callback_delay`` before connecting.
+            # This REPLACES the fixed 2s ``reconnect_time_wait`` on the reconnect path so a mass
+            # reconnect (Hub restart, KEDA scale-out) spreads across the backoff window instead of
+            # thundering-herd-ing the Hub/NATS. ``reconnect_time_wait`` still paces the DISTINCT startup
+            # server-selection loop (``_select_next_server``), so it is left in place above.
+            "reconnect_to_server_handler": _make_reconnect_to_server_handler(
+                base=reconnect_backoff_base,
+                cap=reconnect_backoff_cap,
+            ),
         }
         if auth_token:
             # store the provider UNWRAPPED: nats-py's _connect_command invokes it on every
