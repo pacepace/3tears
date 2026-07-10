@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from threetears.nats.client import (
     DEFAULT_DRAIN_TIMEOUT,
+    DEFAULT_FLUSHER_QUEUE_SIZE,
+    DEFAULT_PENDING_SIZE_BYTES,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_STARTUP_TIMEOUT,
     NatsClient,
@@ -85,6 +87,8 @@ from threetears.nats.transport import (
 __all__ = [
     # client + lifecycle
     "DEFAULT_DRAIN_TIMEOUT",
+    "DEFAULT_FLUSHER_QUEUE_SIZE",
+    "DEFAULT_PENDING_SIZE_BYTES",
     "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_STARTUP_TIMEOUT",
     "NatsClient",

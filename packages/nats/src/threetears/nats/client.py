@@ -63,6 +63,7 @@ from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
+    OutboundBufferLimitError as _NatsOutboundBufferLimitError,
     StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
@@ -91,6 +92,9 @@ __all__ = [
     "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_STARTUP_TIMEOUT",
     "DEFAULT_DRAIN_TIMEOUT",
+    # resilience-task-03: explicit bounded outbound/pending buffer defaults.
+    "DEFAULT_PENDING_SIZE_BYTES",
+    "DEFAULT_FLUSHER_QUEUE_SIZE",
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "NatsClient",
@@ -147,6 +151,33 @@ RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = -1
 #: sustained auth rejection -- long enough to distinguish a wedged credential from a one-off, short
 #: enough that a ``/healthz`` keyed on it trips promptly so k8s restarts the pod.
 _AUTH_VIOLATION_UNHEALTHY_THRESHOLD: Final[int] = 3
+
+#: resilience-task-03: consecutive outbound-buffer overflow events (no intervening successful publish
+#: or (re)connect) after which :attr:`NatsClient.is_healthy` reports unhealthy. Mirrors the
+#: auth-violation threshold: nats-py raises ``OutboundBufferLimitError`` synchronously from
+#: ``publish`` only while the client is disconnected/reconnecting AND the pending buffer is full (the
+#: wedge state). A sustained run of those means the connection is not draining, so a ``/healthz`` keyed
+#: on ``is_healthy`` trips and the supervisor (resilience-task-02) restarts the pod. Kept at 3 to match
+#: the auth path: long enough that a one-off burst during a brief blip self-clears on the next
+#: successful publish, short enough that a real wedge surfaces promptly.
+_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD: Final[int] = 3
+
+#: resilience-task-03: explicit bounded pending (outbound) buffer size in bytes handed to nats-py's
+#: ``pending_size`` connect option. nats-py's untuned default is 2 MiB
+#: (:data:`nats.aio.client.DEFAULT_PENDING_SIZE`); this sets a larger, EXPLICIT 4 MiB bound so a
+#: healthy bursty agent (10s heartbeats + per-turn streaming-token publishes) never trips the limit
+#: while connected, while still BOUNDING what a disconnected/reconnecting client accumulates before
+#: nats-py raises ``OutboundBufferLimitError`` (which the wrapper turns into an ``is_healthy`` signal
+#: rather than an unbounded thrash). Set explicitly -- not left to the library default -- so the bound
+#: is asserted in tests and tunable per-consumer. resilience-task-06 will re-touch the same options
+#: dict to add reconnect backoff/jitter; keep these keys clearly delimited.
+DEFAULT_PENDING_SIZE_BYTES: Final[int] = 4 * 1024 * 1024
+
+#: resilience-task-03: explicit bounded flusher queue depth handed to nats-py's ``flusher_queue_size``
+#: connect option. nats-py's default is 1024 (:data:`nats.aio.client.DEFAULT_MAX_FLUSHER_QUEUE_SIZE`);
+#: this doubles it to 2048 so bursty publish batches queue for the flusher without backpressure under
+#: healthy load. Set explicitly for the same asserted-and-tunable reason as the pending bound.
+DEFAULT_FLUSHER_QUEUE_SIZE: Final[int] = 2048
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -300,7 +331,9 @@ class NatsClient:
         # ``auth_violations`` counts consecutive Authorization-Violation errors since the last
         # successful (re)connect; :meth:`connect` rebinds this to the dict its error/reconnect
         # dispatchers close over, so the count reflects the live connection.
-        self._health_state: dict[str, int] = {"auth_violations": 0}
+        # resilience-task-03: ``overflow_events`` counts consecutive outbound-buffer overflows at the
+        # publish boundary since the last successful publish/(re)connect; folded into :meth:`is_healthy`.
+        self._health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -321,6 +354,8 @@ class NatsClient:
         inbox_prefix: str | None = None,
         startup_timeout: timedelta = DEFAULT_STARTUP_TIMEOUT,
         verify_jetstream: bool = True,
+        pending_size: int = DEFAULT_PENDING_SIZE_BYTES,
+        flusher_queue_size: int = DEFAULT_FLUSHER_QUEUE_SIZE,
     ) -> NatsClient:
         """connect to NATS and return a ready :class:`NatsClient`.
 
@@ -366,6 +401,16 @@ class NatsClient:
         :ptype startup_timeout: timedelta
         :param verify_jetstream: when True (default) verify JetStream is reachable post-connect
         :ptype verify_jetstream: bool
+        :param pending_size: explicit bounded outbound/pending buffer size in bytes handed to nats-py's
+            ``pending_size`` option (resilience-task-03). defaults to :data:`DEFAULT_PENDING_SIZE_BYTES`
+            (4 MiB, deliberately above nats-py's 2 MiB library default). bounds what a
+            disconnected/reconnecting client accumulates before nats-py raises
+            ``OutboundBufferLimitError`` -- which the wrapper turns into an :attr:`is_healthy` signal.
+        :ptype pending_size: int
+        :param flusher_queue_size: explicit bounded flusher queue depth handed to nats-py's
+            ``flusher_queue_size`` option (resilience-task-03). defaults to
+            :data:`DEFAULT_FLUSHER_QUEUE_SIZE` (2048).
+        :ptype flusher_queue_size: int
         :return: connected and ready NATS client
         :rtype: NatsClient
         :raises NatsClientError: if connection fails, times out, or JetStream verification fails
@@ -388,11 +433,15 @@ class NatsClient:
         reconnect_callbacks: list[ReconnectCallback] = []
         # bridged like reconnect_callbacks: the error/reconnect dispatchers below close over this dict
         # now; the instance adopts it after construction so :attr:`is_healthy` reads the live count.
-        health_state: dict[str, int] = {"auth_violations": 0}
+        # resilience-task-03: seed ``overflow_events`` alongside ``auth_violations``.
+        health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
 
         async def _dispatch_reconnected() -> None:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
             health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
+            # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
+            # the transport is healthy again, so any buffered-full streak is stale.
+            health_state["overflow_events"] = 0
             await _on_reconnected()
             for callback in list(reconnect_callbacks):
                 try:
@@ -420,6 +469,12 @@ class NatsClient:
             "reconnected_cb": _dispatch_reconnected,
             "disconnected_cb": _on_disconnected,
             "error_cb": _dispatch_error,
+            # resilience-task-03: bound the outbound/pending buffer EXPLICITLY (not the untuned
+            # nats-py default). overflow raises OutboundBufferLimitError at the publish boundary,
+            # caught below and folded into is_healthy. resilience-task-06 will ALSO extend this dict
+            # (reconnect backoff/jitter) -- keep these two keys grouped + labelled to avoid a merge mess.
+            "pending_size": pending_size,
+            "flusher_queue_size": flusher_queue_size,
         }
         if auth_token:
             # store the provider UNWRAPPED: nats-py's _connect_command invokes it on every
@@ -534,7 +589,7 @@ class NatsClient:
 
     @property
     def is_healthy(self) -> bool:
-        """whether the connection is NOT stuck in a persistent auth-violation reconnect loop.
+        """whether the connection is NOT stuck in a persistent auth-violation or outbound-overflow loop.
 
         Forever-reconnect (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS`) deliberately rides out network
         drops of any duration, so it also rides out a **persistent auth violation** -- a server that
@@ -547,10 +602,20 @@ class NatsClient:
         restarts the pod (a fresh connect re-mints the credential). A network drop -- no auth
         violation -- does NOT trip this; forever-reconnect still owns that path.
 
-        :return: ``False`` when stuck being auth-rejected; ``True`` otherwise.
+        resilience-task-03 folds a SECOND signal in: once
+        :data:`_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD` consecutive outbound-buffer overflows have
+        landed at the publish boundary with no intervening successful publish/(re)connect, the
+        connection is wedged with a full pending buffer (disconnected/reconnecting and not draining) --
+        the ``outbound buffer limit exceeded`` thrash. That flips unhealthy too, so the same
+        supervised-restart path (resilience-task-02) recovers it rather than the pod thrashing forever.
+
+        :return: ``False`` when stuck being auth-rejected OR overflowing the outbound buffer; ``True`` otherwise.
         :rtype: bool
         """
-        return self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
+        return (
+            self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
+            and self._health_state["overflow_events"] < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
+        )
 
     async def ping(self, *, timeout: float = 2.0) -> bool:
         """force a server round-trip to verify the broker is responsive.
@@ -735,6 +800,48 @@ class NatsClient:
         # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float); the
         # wrapper's float timeout is intentional, so the int annotation is over-strict.
         await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
+        # resilience-task-03: a successful flush drained the outbound buffer -- clear the overflow streak.
+        self._health_state["overflow_events"] = 0
+
+    def _note_publish_success(self) -> None:
+        """clear the outbound-overflow streak after a successful publish (resilience-task-03).
+
+        a publish that reaches the wire means the outbound buffer accepted it, so any prior
+        ``OutboundBufferLimitError`` streak is stale -- the connection is draining again. Keeps the
+        overflow signal from tripping :attr:`is_healthy` on a transient burst that self-clears.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._health_state["overflow_events"] = 0
+
+    def _note_if_outbound_overflow(self, exc: Exception) -> None:
+        """count an outbound-buffer overflow raised synchronously at the publish boundary (resilience-task-03).
+
+        nats-py raises :class:`nats.errors.OutboundBufferLimitError` from ``publish``/``request`` ONLY
+        while disconnected/reconnecting with a full pending buffer -- exactly the wedge state. It is
+        NOT delivered to the error callback, so it cannot be counted in ``_dispatch_error`` (the
+        auth-violation path); it must be caught here, at the publish boundary. Incrementing
+        ``overflow_events`` folds into :attr:`is_healthy` so a sustained overflow flips the client
+        unhealthy (feeding resilience-task-02's supervised restart) instead of thrashing unbounded.
+        Non-overflow errors are ignored here -- the caller's generic handler wraps them.
+
+        :param exc: the exception the underlying nats-py ``publish``/``request`` raised.
+        :ptype exc: Exception
+        :return: nothing
+        :rtype: None
+        """
+        if _is_outbound_overflow(exc):
+            self._health_state["overflow_events"] += 1
+            log.warning(
+                "NATS outbound buffer overflow at publish boundary",
+                extra={
+                    "extra_data": {
+                        "client_name": self._client_name,
+                        "overflow_events": self._health_state["overflow_events"],
+                    }
+                },
+            )
 
     async def publish(
         self,
@@ -849,7 +956,9 @@ class NatsClient:
         try:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise PublishError(f"publish_reply failed: subject={reply_subject}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
 
     async def publish_raw_reply(
         self,
@@ -878,7 +987,9 @@ class NatsClient:
         try:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise PublishError(f"publish_raw_reply failed: subject={reply_subject}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
 
     async def _publish_bytes(
         self,
@@ -905,7 +1016,12 @@ class NatsClient:
             else:
                 await self._raw.publish(subject.path, payload, reply=reply_to.path)
         except Exception as exc:
+            # resilience-task-03: an outbound-buffer overflow is counted into is_healthy here (the
+            # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
+            # caller gets the wrapper's contract, not an unhandled nats-py raise crashing the coroutine.
+            self._note_if_outbound_overflow(exc)
             raise PublishError(f"publish failed: subject={subject.path}: {exc}") from exc
+        self._note_publish_success()
 
     # ------------------------------------------------------------------
     # subscribe
@@ -1243,7 +1359,9 @@ class NatsClient:
             except _NatsNoRespondersError as exc:
                 raise RequestError(f"no responders for subject: subject={sub.path}") from exc
             except Exception as exc:
+                self._note_if_outbound_overflow(exc)  # resilience-task-03
                 raise RequestError(f"request failed: subject={sub.path}: {exc}") from exc
+            self._note_publish_success()  # resilience-task-03
             return msg
         if subject is None or message is None or response_type is None:
             raise RequestError(
@@ -1291,7 +1409,9 @@ class NatsClient:
         except _NatsConnectionClosedError as exc:
             raise RequestError(f"NATS connection closed during request: subject={subject.path}") from exc
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise RequestError(f"request failed: subject={subject.path}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
         return bytes(msg.data)
 
     # ------------------------------------------------------------------
@@ -1703,6 +1823,25 @@ def _is_authorization_violation(exc: Exception) -> bool:
         return True
     text = str(exc).lower()
     return "authorization violation" in text or "authorization failed" in text
+
+
+def _is_outbound_overflow(exc: Exception) -> bool:
+    """whether ``exc`` is an outbound/pending-buffer overflow raised at the publish boundary (resilience-task-03).
+
+    nats-py raises :class:`nats.errors.OutboundBufferLimitError` (str: ``"nats: outbound buffer limit
+    exceeded"``) synchronously from ``publish``/``request`` while disconnected/reconnecting with a full
+    pending buffer -- the wedge state this signal exists to catch. Detected BOTH by type and by the
+    ``-ERR`` text (mirroring :func:`_is_authorization_violation`) so a future nats-py that wraps or
+    re-routes the error still trips the counter rather than silently re-opening the unbounded thrash.
+
+    :param exc: the exception the underlying nats-py ``publish``/``request`` raised.
+    :ptype exc: Exception
+    :return: ``True`` when it is an outbound-buffer overflow.
+    :rtype: bool
+    """
+    if isinstance(exc, _NatsOutboundBufferLimitError):
+        return True
+    return "outbound buffer limit exceeded" in str(exc).lower()
 
 
 async def _on_error(exc: Exception) -> None:
