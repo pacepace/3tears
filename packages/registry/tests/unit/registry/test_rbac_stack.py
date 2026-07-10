@@ -513,3 +513,80 @@ class TestResolveLimitGuardFactory:
         monkeypatch.setenv("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "no_colon_here")
         with pytest.raises(ValueError, match="module:callable"):
             _resolve_limit_guard_factory()
+
+
+class TestRegistryServerUsageEmitterFactory:
+    """``RegistryServer`` accepts + resolves the post-call endpoint-usage emitter factory, mirroring
+    the limit-guard factory. the resolved emitter is stored on ``self._usage_emitter`` (updated
+    BEFORE the :class:`CallProxy` is built in :meth:`serve`, so the proxy captures it); ``None``
+    keeps the emit seam disabled (the standalone registry has no metering bus)."""
+
+    @pytest.mark.asyncio
+    async def test_factory_resolved_updates_emitter(self) -> None:
+        """the factory runs against the connected client + its result replaces self._usage_emitter."""
+        nc = AsyncMock()
+        emitter = MagicMock()
+        factory = AsyncMock(return_value=emitter)
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            usage_emitter_factory=factory,
+        )
+        result = await server.apply_usage_emitter_factory(nc)
+        factory.assert_awaited_once_with(nc)
+        assert result is emitter
+
+    @pytest.mark.asyncio
+    async def test_fixed_emitter_kept_when_no_factory(self) -> None:
+        """a directly-supplied ``usage_emitter`` survives the (no-op) resolve step."""
+        emitter = MagicMock()
+        server = RegistryServer(
+            namespace="testns",
+            authorizer=AllowAllAuthorizer(),
+            usage_emitter=emitter,
+        )
+        result = await server.apply_usage_emitter_factory(AsyncMock())
+        assert result is emitter
+
+    @pytest.mark.asyncio
+    async def test_default_disabled_returns_none(self) -> None:
+        """no emitter and no factory -> None -> emit seam disabled."""
+        server = RegistryServer(namespace="testns", authorizer=AllowAllAuthorizer())
+        result = await server.apply_usage_emitter_factory(AsyncMock())
+        assert result is None
+
+
+class TestResolveUsageEmitterFactory:
+    """the registry entrypoint resolves its endpoint-usage emitter factory from a configurable
+    ``module:callable`` plugin path, keeping 3tears host-agnostic (the aibots Hub points it at its
+    metering-publish factory)."""
+
+    @pytest.mark.asyncio
+    async def test_unset_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """no env var -> None -> emit disabled (pure-3tears / dev default)."""
+        from threetears.registry.server import _resolve_usage_emitter_factory
+
+        monkeypatch.delenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", raising=False)
+        assert _resolve_usage_emitter_factory() is None
+
+    @pytest.mark.asyncio
+    async def test_dotted_path_resolves_to_callable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a valid ``module:callable`` path resolves to that exact object."""
+        from threetears.registry.server import _resolve_usage_emitter_factory
+
+        monkeypatch.setenv(
+            "THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY",
+            "threetears.registry.auth:AllowAllLimitGuard",
+        )
+        from threetears.registry.auth import AllowAllLimitGuard
+
+        assert _resolve_usage_emitter_factory() is AllowAllLimitGuard
+
+    @pytest.mark.asyncio
+    async def test_malformed_path_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a path without the ``module:callable`` shape crashes startup (never silent drop)."""
+        from threetears.registry.server import _resolve_usage_emitter_factory
+
+        monkeypatch.setenv("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "no_colon_here")
+        with pytest.raises(ValueError, match="module:callable"):
+            _resolve_usage_emitter_factory()
