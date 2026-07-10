@@ -642,6 +642,16 @@ class RedshiftDriver(Driver):
                 user=cfg.username,
                 password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
                 sslmode=cfg.sslmode,
+                # Aggressive TCP keepalive so the OS detects a half-dead socket (a silently-dropped
+                # Redshift connection while a worker is blocked awaiting a query result) in ~1 min and
+                # surfaces it as a socket error -- instead of the bridge worker hanging forever in a
+                # native SSL read that no client-side async / statement timeout can cancel. NB
+                # redshift_connector defaults keepalive ON but at the ~2h system idle, which never
+                # fires in a useful window; the idle/interval/count from config make it aggressive.
+                tcp_keepalive=cfg.tcp_keepalive,
+                tcp_keepalive_idle=cfg.tcp_keepalive_idle_seconds,
+                tcp_keepalive_interval=cfg.tcp_keepalive_interval_seconds,
+                tcp_keepalive_count=cfg.tcp_keepalive_count,
             )
         except Exception:
             # break the cause chain (``from None``) so the original
