@@ -846,6 +846,21 @@ class NatsClient:
             and self._health_state["overflow_events"] < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
         )
 
+    @property
+    def overflow_events(self) -> int:
+        """current consecutive outbound-buffer overflow count (resilience-task-03).
+
+        number of ``OutboundBufferLimitError`` events raised at the publish boundary with no
+        intervening successful publish / (re)connect -- reset to 0 on either. folds into
+        :attr:`is_healthy` at :data:`_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD`. exposed publicly
+        so a consumer's health/metrics surface (the SDK ``outbound_overflow_events`` gauge) can
+        read it without binding to the private health-state dict.
+
+        :return: consecutive outbound-overflow count since the last successful publish/connect
+        :rtype: int
+        """
+        return self._health_state["overflow_events"]
+
     async def ping(self, *, timeout: float = 2.0) -> bool:
         """force a server round-trip to verify the broker is responsive.
 
