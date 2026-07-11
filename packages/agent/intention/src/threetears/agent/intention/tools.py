@@ -278,7 +278,19 @@ async def load_intention_log_tool(
                 existing.salience = min(1.0, float(existing.salience) + near_dup_bump)
                 existing.last_surfaced_at = None
                 existing.embedding = embedding
-                await intentions_collection.save_entity(existing)
+                try:
+                    await intentions_collection.save_entity(existing)
+                except Exception as exc:
+                    # preserve the tool's soft-fail-to-string contract: a CAS
+                    # conflict (concurrent re-log / a decay pass bumping
+                    # date_updated between the get and the save) or a
+                    # transient L3 error must not raise out of the tool. The
+                    # create + mark_surfaced paths catch the same way.
+                    log.warning(
+                        "intention_log: refresh save failed",
+                        extra={"extra_data": {"intention_id": str(existing_id), "error": str(exc)}},
+                    )
+                    return _tool_error("intention_log", "refresh", str(exc))
                 log.info(
                     "intention_log: refreshed near-duplicate open want",
                     extra={

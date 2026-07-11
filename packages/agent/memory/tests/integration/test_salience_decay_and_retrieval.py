@@ -349,3 +349,103 @@ class TestAmbientGatingVsDirectRecall:
         finally:
             await conn.close()
             await pool.close()
+
+
+class TestCacheCoherence:
+    """v0.15.0 review fix: decay/bump/supersede stay coherent with the caches.
+
+    Two defenses compose (chosen A+B): salience / last_decayed_at /
+    last_accessed / superseded_by are ``immutable`` to the entity-UPDATE
+    generator (A), so a full-entity save never carries a stale value back;
+    and the raw decay/bump/supersede passes invalidate each affected row's
+    L1/L2 entry (B), so a subsequent ``get()`` re-reads fresh from L3.
+    """
+
+    async def test_decayed_salience_survives_stale_entity_save(self, applied_schema: tuple[str, str]) -> None:
+        """A content-only entity save must NOT revert a scheduled decay (defense A).
+
+        Reproduces the reviewed scenario: an entity is fetched (salience
+        0.9), the decay pass then drops L3 salience, and a later
+        full-entity save from that now-stale entity must leave the decayed
+        salience intact while the content change lands.
+        """
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            agent_id, user_id, customer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            coll = _build_collection(pool)
+            mem_id = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                salience=0.9,
+                content="original",
+            )
+            # hold an entity carrying the pre-decay salience 0.9
+            entity = await coll.get((agent_id, mem_id))
+            assert entity is not None
+            assert float(entity.salience) == 0.9
+
+            # decay drops L3 salience (backdate the anchor so it moves)
+            await conn.execute(
+                "UPDATE memories SET last_decayed_at = now() - interval '60 days' WHERE memory_id = $1",
+                mem_id,
+            )
+            await coll.decay_salience(half_life_days=60.0, floor=0.1)
+            decayed = await _salience(conn, mem_id)
+            assert decayed < 0.9  # ~0.45
+
+            # a full-entity save from the stale entity (content update)
+            entity.content = "changed"
+            await coll.save_entity(entity)
+
+            after = await _salience(conn, mem_id)
+            assert abs(after - decayed) < 1e-6, f"salience reverted by entity save: {after} vs {decayed}"
+            content = await conn.fetchval("SELECT content FROM memories WHERE memory_id = $1", mem_id)
+            assert content == "changed"  # the content update still landed
+        finally:
+            await conn.close()
+            await pool.close()
+
+    async def test_decay_bump_supersede_invalidate_cache(self, applied_schema: tuple[str, str]) -> None:
+        """decay / bump / mark_superseded each invalidate the affected pks (defense B)."""
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            agent_id, user_id, customer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            coll = _build_collection(pool)
+            m1 = await _insert_memory(conn, agent_id=agent_id, user_id=user_id, customer_id=customer_id)
+            m2 = await _insert_memory(conn, agent_id=agent_id, user_id=user_id, customer_id=customer_id)
+            for mid in (m1, m2):
+                await conn.execute(
+                    "UPDATE memories SET last_decayed_at = now() - interval '60 days' WHERE memory_id = $1",
+                    mid,
+                )
+
+            calls: list[Any] = []
+            original = coll.invalidate_cache
+
+            async def _spy(entity_id: Any) -> None:
+                calls.append(entity_id)
+                await original(entity_id)
+
+            coll.invalidate_cache = _spy  # type: ignore[method-assign]
+
+            await coll.decay_salience(half_life_days=60.0, floor=0.1)
+            assert (agent_id, m1) in calls and (agent_id, m2) in calls
+
+            calls.clear()
+            await coll.bump_salience([m1], agent_id=agent_id, access_bump=0.05)
+            assert (agent_id, m1) in calls
+
+            calls.clear()
+            await coll.mark_superseded(agent_id=agent_id, source_memory_ids=[m2], gist_id=uuid.uuid4())
+            assert (agent_id, m2) in calls
+        finally:
+            await conn.close()
+            await pool.close()

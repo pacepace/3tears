@@ -382,6 +382,12 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         ``evergreen`` pin column -- a standing want has no "never decays"
         concept (design §6.5), so the pass ages every want.
 
+        Cache coherence: the raw L3 decay leaves L1/L2 holding the
+        pre-decay salience, so each decayed pk is invalidated (via
+        :meth:`invalidate_cache`) -- otherwise ``intention_log``'s
+        dedup-refresh, which reads the want via ``get()`` before bumping
+        it, could re-persist a stale salience and undo the decay.
+
         Abandoned wants sink out of the salience-ranked deliberation list
         without being deleted -- a re-log refreshes them.
 
@@ -399,10 +405,15 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         # pool holds. The SQL literal lives in the shared helper (which
         # carries no ``intentions`` literal), so the partition-enforcement
         # walker is satisfied and this method holds no raw table SQL.
-        return await apply_salience_decay(
+        result = await apply_salience_decay(
             self.l3_pool,
             table="intentions",
             half_life_seconds=half_life_days * 86400.0,
             floor=floor,
             skip_evergreen=False,
+            returning_columns=self.primary_key_columns,
         )
+        decayed_pks = result if isinstance(result, list) else []
+        for pk in decayed_pks:
+            await self.invalidate_cache(pk)
+        return len(decayed_pks)

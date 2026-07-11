@@ -583,8 +583,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
             # v024 (presence/aliveness): stored salience substrate.
             # NUMERIC(5,4) with a server default so existing INSERTs that
-            # omit it apply 0.5 (metadata-only add, no table rewrite);
-            # mutable so the reinforcement bump + decay pass can update it.
+            # omit it apply 0.5 (metadata-only add, no table rewrite).
+            # ``immutable=True`` excludes it from the entity-save UPDATE
+            # generator: salience is written ONLY by the raw decay / bump
+            # SQL (decay_salience / bump_salience), never by a full-entity
+            # save. Without this, an unrelated content UPDATE would carry a
+            # stale cached salience and revert a scheduled decay (design §2
+            # "the UPDATE narrows to content + embedding + date_updated").
+            # Insert still applies the value / server default.
             Column(
                 "salience",
                 NUMERIC_TYPE,
@@ -592,13 +598,18 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 scale=4,
                 nullable=False,
                 server_default="0.5",
+                immutable=True,
             ),
             # decay anchor: age is measured from the last decay run, not
             # last access, so total decay over a period is cadence-safe.
-            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True),
-            # reinforcement telemetry: stamped on ambient retrieval.
-            Column("last_accessed", DATETIMETZ_TYPE, nullable=True),
+            # ``immutable=True`` for the same reason as salience -- written
+            # only by the raw decay pass, excluded from the entity UPDATE.
+            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True, immutable=True),
+            # reinforcement telemetry: stamped on ambient retrieval by the
+            # raw bump pass; excluded from the entity UPDATE (immutable).
+            Column("last_accessed", DATETIMETZ_TYPE, nullable=True, immutable=True),
             # pin for core identity facts: excluded from decay AND bump.
+            # Mutable via the entity path (an admin pin/unpin toggles it).
             Column(
                 "evergreen",
                 BOOL_TYPE,
@@ -606,8 +617,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 server_default="false",
             ),
             # soft ref (no FK) to a consolidation gist; ambient retrieval
-            # excludes non-null, direct recall still finds it.
-            Column("superseded_by", UUID_TYPE, nullable=True),
+            # excludes non-null, direct recall still finds it. Written only
+            # by the raw mark_superseded pass -> ``immutable=True`` so an
+            # entity save can't revert it.
+            Column("superseded_by", UUID_TYPE, nullable=True, immutable=True),
             # v025 (presence/aliveness): nullable JSONB label set (a JSON
             # array of strings). Mutable; GIN-indexed below for
             # containment / existence queries.
@@ -1675,6 +1688,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         gone): a decayed memory drops out of ambient retrieval but is
         still reachable by direct id / alias recall.
 
+        Cache coherence: the raw L3 decay leaves L1/L2 holding the
+        pre-decay salience, so each decayed pk is invalidated (via
+        :meth:`invalidate_cache`) — otherwise a later full-entity save
+        from the stale cache could write the old salience back. The
+        ``salience``/``last_decayed_at`` columns are also ``immutable`` to
+        the entity-UPDATE generator, so the two defenses compose: the
+        generator never emits salience, and the cache is refreshed anyway.
+
         :param half_life_days: decay half-life in days
         :ptype half_life_days: float
         :param floor: salience asymptote; never decays below this
@@ -1689,12 +1710,22 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # pool holds. The SQL literal lives in the shared helper (which
         # carries no ``memories`` literal), so the partition-enforcement
         # walker is satisfied and this method holds no raw table SQL.
-        return await apply_salience_decay(
+        result = await apply_salience_decay(
             self.l3_pool,
             table="memories",
             half_life_seconds=half_life_days * 86400.0,
             floor=floor,
+            returning_columns=self.primary_key_columns,
         )
+        decayed_pks = result if isinstance(result, list) else []
+        # invalidate each decayed row's L1/L2 entry so a subsequent get()
+        # re-reads fresh salience from L3. A bulk sweep issues one
+        # invalidation per decayed row; acceptable for a maintenance pass
+        # (revisit with a coarser generation-bump if a huge corpus makes
+        # the per-row publish a bottleneck).
+        for pk in decayed_pks:
+            await self.invalidate_cache(pk)
+        return len(decayed_pks)
 
     async def bump_salience(
         self,
@@ -1727,11 +1758,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         """
         if self.l3_pool is None or not memory_ids:
             return None
-        # cache-bypass: bulk reinforcement UPDATE keyed by a memory_id
-        # set is not primary-key-addressable one row at a time; the L1
-        # row cache holds a stale salience until the row is next read
-        # from L3, which is fine -- salience is an ambient ranking hint,
-        # eventually consistent by design.
+        # bulk reinforcement UPDATE keyed by a memory_id set; salience /
+        # last_accessed are immutable to the entity-UPDATE generator, so
+        # this raw pass is the only writer.
         await self.l3_pool.execute(
             "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
             "last_accessed = now() "
@@ -1740,6 +1769,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             agent_id,
             memory_ids,
         )
+        # cache coherence: invalidate each bumped row so a subsequent get()
+        # re-reads the fresh salience from L3 rather than serving a stale
+        # cached row (a bounded set — the ids surfaced this retrieval).
+        for memory_id in memory_ids:
+            await self.invalidate_cache((agent_id, memory_id))
         return None
 
     async def find_active_for_consolidation(
@@ -1859,11 +1893,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         """
         if self.l3_pool is None or not source_memory_ids:
             return None
-        # cache-bypass: bulk supersession UPDATE keyed by a memory_id set is
-        # not one-row primary-key-addressable; the L1 row cache holds a
-        # stale superseded_by until the row is next read from L3, which is
-        # fine — supersession gates ambient ranking and is eventually
-        # consistent by design (mirrors bump_salience).
+        # bulk supersession UPDATE keyed by a memory_id set; superseded_by
+        # is immutable to the entity-UPDATE generator, so this raw pass is
+        # the only writer (an entity save can't revert it).
         await self.l3_pool.execute(
             "UPDATE memories SET superseded_by = $1, date_updated = now() "
             "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
@@ -1871,6 +1903,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             agent_id,
             source_memory_ids,
         )
+        # cache coherence: invalidate each superseded source so a
+        # subsequent get() re-reads the fresh superseded_by + date_updated
+        # from L3 (the ambient-retrieval filter reads L3 directly, but a
+        # later entity save must see the advanced CAS fence).
+        for source_memory_id in source_memory_ids:
+            await self.invalidate_cache((agent_id, source_memory_id))
         return None
 
 

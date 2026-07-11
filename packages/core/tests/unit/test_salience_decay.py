@@ -19,13 +19,18 @@ from threetears.core.collections.salience import apply_salience_decay
 class _RecordingPool:
     """Minimal L3Backend stand-in capturing the executed SQL + params."""
 
-    def __init__(self, status: str = "UPDATE 0") -> None:
+    def __init__(self, status: str = "UPDATE 0", fetch_rows: list[dict[str, Any]] | None = None) -> None:
         self.status = status
+        self.fetch_rows = fetch_rows if fetch_rows is not None else []
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
     async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
         self.calls.append((query, params))
         return self.status
+
+    async def fetch(self, query: str, *params: Any, namespace: str | None = None) -> list[dict[str, Any]]:
+        self.calls.append((query, params))
+        return self.fetch_rows
 
 
 class TestApplySalienceDecaySql:
@@ -67,6 +72,32 @@ class TestApplySalienceDecaySql:
 
         sql, _ = pool.calls[0]
         assert sql.startswith("UPDATE intentions ")
+
+    async def test_returning_columns_emits_returning_and_yields_pks(self) -> None:
+        """with returning_columns, the UPDATE has RETURNING and yields pk tuples."""
+        import uuid
+
+        a1, m1 = uuid.uuid4(), uuid.uuid4()
+        a2, m2 = uuid.uuid4(), uuid.uuid4()
+        pool = _RecordingPool(
+            fetch_rows=[
+                {"agent_id": a1, "memory_id": m1},
+                {"agent_id": a2, "memory_id": m2},
+            ]
+        )
+
+        result = await apply_salience_decay(
+            pool,  # type: ignore[arg-type]
+            table="memories",
+            half_life_seconds=100.0,
+            floor=0.1,
+            returning_columns=("agent_id", "memory_id"),
+        )
+
+        assert result == [(a1, m1), (a2, m2)]  # pk tuples in declared column order
+        sql, params = pool.calls[0]
+        assert "RETURNING agent_id, memory_id" in sql
+        assert params == (0.1, 100.0)
 
     async def test_skip_evergreen_false_omits_where_clause(self) -> None:
         """tables without an ``evergreen`` column (intentions) drop the guard."""

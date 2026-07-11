@@ -180,6 +180,35 @@ class TestIntentionLog:
         finally:
             await pool.close()
 
+    async def test_log_refresh_save_failure_soft_fails(self, pg_schema: tuple[str, str]) -> None:
+        """a save failure on the dedup-refresh path returns the soft-fail string, not a raise."""
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            (log_tool,) = await load_intention_log_tool(
+                user_id,
+                _OneHotEmbedder(),
+                agent_id,
+                customer_id,
+                _authorizer(),
+                coll,  # type: ignore[arg-type]
+            )
+            await log_tool.ainvoke({"content": "same want, will re-log"})
+
+            # force the refresh save to fail (simulates a CAS conflict / L3 error)
+            async def _boom(entity: Any) -> None:
+                raise RuntimeError("simulated CAS conflict")
+
+            coll.save_entity = _boom  # type: ignore[method-assign]
+            out = await log_tool.ainvoke({"content": "same want, will re-log"})
+            assert "[TOOL ERROR] intention_log: refresh failed" in out
+            assert "simulated CAS conflict" in out
+        finally:
+            await pool.close()
+
     async def test_log_stamps_source_conversation_from_resolver(self, pg_schema: tuple[str, str]) -> None:
         """a context_resolver's conversation_id lands on source_conversation_id."""
         url, schema = pg_schema
