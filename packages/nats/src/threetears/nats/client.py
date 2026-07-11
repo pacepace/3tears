@@ -72,12 +72,20 @@ from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger
 
 from threetears.nats.errors import (
+    NamespaceNotConfiguredError,
     NatsClientError,
     PublishError,
     RequestError,
+    StreamSubjectsOverlapError,
     SubscribeError,
 )
 from threetears.nats.subjects import Subject, Subjects, set_default_namespace
+
+# JetStream API error code for "subjects overlap with an existing stream": a
+# subject belongs to exactly one stream. distinct from "stream name already in
+# use" -- the two are conflated by a naive create-or-update. see
+# ensure_jetstream_stream.
+_JS_ERR_SUBJECTS_OVERLAP = 10065
 
 if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
@@ -550,7 +558,7 @@ class NatsClient:
         cls,
         *,
         nats_url: str,
-        nats_subject_namespace: str = "3tears",
+        nats_subject_namespace: str,
         client_name: str,
         cluster_urls: list[str] | None = None,
         auth_token: TokenCallback | None = None,
@@ -638,7 +646,12 @@ class NatsClient:
         if not client_name:
             raise NatsClientError("client_name must be non-empty")
         if not nats_subject_namespace:
-            raise NatsClientError("nats_subject_namespace must be non-empty")
+            raise NamespaceNotConfiguredError(
+                "nats_subject_namespace must be non-empty: every client passes its "
+                "own subject namespace explicitly. there is no default -- sharing a "
+                "default subject space is what lets two services collide on a shared "
+                "NATS cluster."
+            )
 
         servers = [nats_url]
         if cluster_urls:
@@ -1738,6 +1751,7 @@ class NatsClient:
         :ptype storage: str
         :return: full namespace-prefixed stream name
         :rtype: str
+        :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
         :raises RuntimeError: if stream creation and update both fail
         """
         from nats.js.api import StorageType, StreamConfig  # noqa: PLC0415
@@ -1748,10 +1762,26 @@ class NatsClient:
         js = self.jetstream_context()
         try:
             await js.add_stream(config)
-        except Exception:  # noqa: BLE001 -- stream may already exist; reconcile below
-            # rationale: nats-py raises a generic error when the stream name is
-            # already in use; the recovery (update to reconcile subjects) is the
-            # create-or-bind path, mirroring NatsKvBucket.open.
+        except Exception as exc:  # noqa: BLE001 -- classified below, not swallowed
+            # add_stream fails for DISTINCT conditions that must not be conflated:
+            #   - "subjects overlap with an existing stream" (JetStream err_code
+            #     10065): a DIFFERENT stream already owns these subjects. full_name
+            #     was never created, so update_stream would raise NotFoundError and
+            #     mask this actionable error. surface it -- the real problem is a
+            #     conflicting stream (usually a client on the wrong namespace).
+            #   - anything else (chiefly "stream name already in use"): a stream of
+            #     THIS name exists; reconcile its subject set via update. if that
+            #     also fails, it propagates -- never silently swallowed.
+            err_code = getattr(exc, "err_code", None)
+            if err_code == _JS_ERR_SUBJECTS_OVERLAP or "subjects overlap" in str(exc).lower():
+                raise StreamSubjectsOverlapError(
+                    f"cannot create JetStream stream {full_name!r} over subjects "
+                    f"{subjects}: they overlap subjects already claimed by a different "
+                    f"stream on this NATS account (a subject belongs to exactly one "
+                    f"stream). the usual cause is another connection using the wrong "
+                    f"subject namespace; resolve the conflicting stream or correct the "
+                    f"namespace."
+                ) from exc
             await js.update_stream(config)
         log.info(
             "jetstream stream ensured: stream=%s subjects=%s storage=%s",

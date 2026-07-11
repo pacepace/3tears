@@ -602,6 +602,7 @@ async def test_connect_omits_credential_options_when_absent(
 
     await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
@@ -641,6 +642,7 @@ async def test_connect_uses_forever_reconnect(
 
     await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
@@ -729,6 +731,7 @@ async def test_reconnect_callbacks_fan_out_on_reconnect(
 
     client = await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
@@ -772,6 +775,7 @@ async def test_reconnect_callback_failure_is_isolated(
 
     client = await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
@@ -989,6 +993,55 @@ async def test_ensure_jetstream_stream_propagates_when_both_fail() -> None:
             subjects=["3tears.x.*"],
             storage="file",
         )
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_raises_on_subjects_overlap_err_code() -> None:
+    """subjects claimed by a DIFFERENT stream (JetStream err_code 10065) raise, not reconcile.
+
+    the buggy path called update_stream on a name that was never created, 404ing
+    and masking the real 'subjects overlap' error. it must surface instead.
+    """
+    from threetears.nats.errors import StreamSubjectsOverlapError
+
+    client, js = _client_with_js()
+
+    class _OverlapError(Exception):
+        err_code = 10065
+
+    js.add_stream.side_effect = _OverlapError("stream creation rejected")
+
+    with pytest.raises(StreamSubjectsOverlapError, match="overlap"):
+        await client.ensure_jetstream_stream(
+            name="events",
+            subjects=["faidh.signals.arbitrary"],
+            storage="file",
+        )
+    js.update_stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_raises_on_subjects_overlap_message() -> None:
+    """overlap detected via the JetStream message when no err_code is present."""
+    from threetears.nats.errors import StreamSubjectsOverlapError
+
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("subjects overlap with an existing stream")
+
+    with pytest.raises(StreamSubjectsOverlapError):
+        await client.ensure_jetstream_stream(
+            name="events",
+            subjects=["faidh.signals.arbitrary"],
+            storage="file",
+        )
+    js.update_stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connect_requires_explicit_namespace() -> None:
+    """there is no default namespace: omitting it fails loud (no silent shared subject space)."""
+    with pytest.raises(TypeError):
+        await NatsClient.connect(nats_url="nats://x", client_name="c")  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
@@ -1312,6 +1365,7 @@ async def test_add_reconnect_callback_runs_on_reconnect(
 
     client = await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
@@ -1343,6 +1397,7 @@ async def test_reconnect_dispatcher_isolates_failing_callback(
 
     client = await NatsClient.connect(
         nats_url="nats://localhost:4222",
+        nats_subject_namespace="3tears",
         client_name="agent-x",
         verify_jetstream=False,
     )
