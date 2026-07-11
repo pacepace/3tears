@@ -34,8 +34,9 @@ async def apply_salience_decay(
     table: str,
     half_life_seconds: float,
     floor: float,
+    skip_evergreen: bool = True,
 ) -> int:
-    """Decay stored salience for every non-evergreen row in ``table``.
+    """Decay stored salience for every eligible row in ``table``.
 
     Applies ``salience := clamp(floor, salience * 0.5^(age / half_life), 1.0)``
     where ``age = now - COALESCE(last_decayed_at, date_created)``, and stamps
@@ -45,6 +46,13 @@ async def apply_salience_decay(
     Collection (never user input); it is interpolated as an SQL identifier
     while the tunable floor + half-life ride bound parameters.
 
+    ``skip_evergreen`` controls the ``WHERE NOT evergreen`` guard: tables
+    that carry the memory salience substrate's ``evergreen`` pin column
+    (``memories``) leave it ``True`` so pinned rows never decay; tables
+    without that column (``intentions`` -- a standing want has no pin
+    concept, design §6.5) pass ``False`` so the pass touches every row.
+    ``skip_evergreen`` is a code-controlled boolean, never user input.
+
     :param pool: L3 durable-store backend for the table's schema
     :ptype pool: L3Backend
     :param table: target table name (e.g. ``"memories"`` / ``"intentions"``)
@@ -53,6 +61,9 @@ async def apply_salience_decay(
     :ptype half_life_seconds: float
     :param floor: salience asymptote; salience never decays below this
     :ptype floor: float
+    :param skip_evergreen: when ``True`` (default), exclude rows flagged
+        ``evergreen``; set ``False`` for tables without that column
+    :ptype skip_evergreen: bool
     :return: number of rows decayed
     :rtype: int
     """
@@ -60,13 +71,14 @@ async def apply_salience_decay(
     # sweep with no partition to scope to (it ages every row the pool holds).
     # the table name is a fixed literal from the Collection, so no partition
     # column predicate applies; the tunable floor + half-life ride params.
+    where_clause = " WHERE NOT evergreen" if skip_evergreen else ""
     sql = (
         f"UPDATE {table} "
         "SET salience = LEAST(1.0, GREATEST($1, salience * power("
         "0.5::double precision, "
         "EXTRACT(EPOCH FROM (now() - COALESCE(last_decayed_at, date_created))) / $2))), "
-        "    last_decayed_at = now() "
-        "WHERE NOT evergreen"
+        "    last_decayed_at = now()"
+        f"{where_clause}"
     )
     status = await pool.execute(sql, floor, half_life_seconds)
     # framework-owned parser for the L3Backend command-tag border

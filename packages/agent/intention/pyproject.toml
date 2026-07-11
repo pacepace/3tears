@@ -23,12 +23,14 @@ classifiers = [
 ]
 # In-repo (3tears*) deps are declared only when a module imports them:
 # the dependency-alignment enforcement gate flags a declared 3tears*
-# dep that nothing imports. B1 (schema + collection) imports core +
-# observe only; 3tears-agent-acl (owner RBAC) and 3tears-langgraph
-# (FrameworkEvents) land with the code that imports them in B2. The
-# external forward-declarations below are the package's B2 tool surface.
+# dep that nothing imports. B1 (schema + collection) imported core +
+# observe only; B2 adds the tool surface that imports 3tears-agent-acl
+# (owner RBAC in authorize.py) and 3tears-langgraph (FrameworkEvents in
+# events.py), so both are declared here alongside the code that uses them.
 dependencies = [
     "3tears",
+    "3tears-agent-acl",
+    "3tears-langgraph",
     "3tears-observe",
     "pgvector",
     "langchain-core",
@@ -44,4 +46,6 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-langgraph = { workspace = true }
 3tears-observe = { workspace = true }

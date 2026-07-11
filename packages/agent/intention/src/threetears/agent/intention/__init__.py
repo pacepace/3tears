@@ -28,11 +28,32 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 # package's lazy-surface consistency test. mirrors agent/memory's
 # hand-rolled PEP 562 (zero added runtime deps, no stub drift).
 if TYPE_CHECKING:
+    from threetears.agent.intention.authorize import (
+        ACTION_INTENTION_READ,
+        ACTION_INTENTION_WRITE,
+        INTENTION_NAMESPACE_TYPE,
+        IntentionAccessDenied,
+        IntentionAuthorizerDependencies,
+        authorize_intention_access,
+        intention_namespace_name,
+    )
     from threetears.agent.intention.collections import (
         IntentionsCollection,
         intentions_table,
     )
     from threetears.agent.intention.entities import IntentionEntity
+    from threetears.agent.intention.events import (
+        IntentionResolvedEvent,
+        IntentionSurfacedEvent,
+    )
+    from threetears.agent.intention.tools import (
+        IntentionListInput,
+        IntentionLogInput,
+        IntentionMarkSurfacedInput,
+        load_intention_list_tool,
+        load_intention_log_tool,
+        load_intention_mark_surfaced_tool,
+    )
     from threetears.agent.intention.types import (
         INTENTION_STATUS_VALUES,
         IntentionStatus,
@@ -40,19 +61,58 @@ if TYPE_CHECKING:
 
 # public attribute -> (defining module, attribute name in that module)
 _LAZY: dict[str, tuple[str, str]] = {
+    "ACTION_INTENTION_READ": ("threetears.agent.intention.authorize", "ACTION_INTENTION_READ"),
+    "ACTION_INTENTION_WRITE": ("threetears.agent.intention.authorize", "ACTION_INTENTION_WRITE"),
+    "INTENTION_NAMESPACE_TYPE": ("threetears.agent.intention.authorize", "INTENTION_NAMESPACE_TYPE"),
     "INTENTION_STATUS_VALUES": ("threetears.agent.intention.types", "INTENTION_STATUS_VALUES"),
+    "IntentionAccessDenied": ("threetears.agent.intention.authorize", "IntentionAccessDenied"),
+    "IntentionAuthorizerDependencies": (
+        "threetears.agent.intention.authorize",
+        "IntentionAuthorizerDependencies",
+    ),
     "IntentionEntity": ("threetears.agent.intention.entities", "IntentionEntity"),
+    "IntentionListInput": ("threetears.agent.intention.tools", "IntentionListInput"),
+    "IntentionLogInput": ("threetears.agent.intention.tools", "IntentionLogInput"),
+    "IntentionMarkSurfacedInput": ("threetears.agent.intention.tools", "IntentionMarkSurfacedInput"),
+    "IntentionResolvedEvent": ("threetears.agent.intention.events", "IntentionResolvedEvent"),
     "IntentionStatus": ("threetears.agent.intention.types", "IntentionStatus"),
+    "IntentionSurfacedEvent": ("threetears.agent.intention.events", "IntentionSurfacedEvent"),
     "IntentionsCollection": ("threetears.agent.intention.collections", "IntentionsCollection"),
+    "authorize_intention_access": (
+        "threetears.agent.intention.authorize",
+        "authorize_intention_access",
+    ),
+    "intention_namespace_name": ("threetears.agent.intention.authorize", "intention_namespace_name"),
     "intentions_table": ("threetears.agent.intention.collections", "intentions_table"),
+    "load_intention_list_tool": ("threetears.agent.intention.tools", "load_intention_list_tool"),
+    "load_intention_log_tool": ("threetears.agent.intention.tools", "load_intention_log_tool"),
+    "load_intention_mark_surfaced_tool": (
+        "threetears.agent.intention.tools",
+        "load_intention_mark_surfaced_tool",
+    ),
 }
 
 __all__ = [
+    "ACTION_INTENTION_READ",
+    "ACTION_INTENTION_WRITE",
+    "INTENTION_NAMESPACE_TYPE",
     "INTENTION_STATUS_VALUES",
+    "IntentionAccessDenied",
+    "IntentionAuthorizerDependencies",
     "IntentionEntity",
+    "IntentionListInput",
+    "IntentionLogInput",
+    "IntentionMarkSurfacedInput",
+    "IntentionResolvedEvent",
     "IntentionStatus",
+    "IntentionSurfacedEvent",
     "IntentionsCollection",
+    "authorize_intention_access",
+    "intention_namespace_name",
     "intentions_table",
+    "load_intention_list_tool",
+    "load_intention_log_tool",
+    "load_intention_mark_surfaced_tool",
 ]
 
 

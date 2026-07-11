@@ -16,11 +16,14 @@ wants. The user-facing read :meth:`find_by_user` therefore takes
 
 from __future__ import annotations
 
-from typing import cast
+import json
+from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
 
+from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     ENUM_TYPE,
@@ -32,6 +35,7 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
+    spans_partitions,
 )
 from threetears.observe import get_logger
 
@@ -243,3 +247,162 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             entity.original_date_updated = data.get("date_updated")
             entities.append(entity)
         return entities
+
+    async def find_open_for_deliberation(
+        self,
+        user_id: UUID,
+        *,
+        agent_id: UUID,
+        cooldown_cutoff: datetime,
+    ) -> list[IntentionEntity]:
+        """fetch the user's deliberation candidate set (the ``intention_list`` substrate).
+
+        Restraint brakes #1 (cooldown) and #2 (decay-sink) are enforced
+        in the query, not by convention: the WHERE clause keeps only
+        ``open`` wants that have not been surfaced within the cooldown
+        window (``last_surfaced_at`` is null OR older than
+        ``cooldown_cutoff``), and the ``salience DESC`` ordering sinks
+        abandoned (decayed) wants to the bottom. ``user_id`` is the
+        **required** isolation boundary (every metallm user shares one
+        ``agent_id``); ``agent_id`` is the partition column.
+
+        :param user_id: owning user whose open wants to rank (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on intentions; required
+        :ptype agent_id: UUID
+        :param cooldown_cutoff: exclude wants surfaced at/after this
+            instant (``now - intention_cooldown_days``)
+        :ptype cooldown_cutoff: datetime
+        :return: open, outside-cooldown wants, salience-ranked
+        :rtype: list[IntentionEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: the ranked multi-row scan is not primary-key
+        # addressable, so it stays on the Collection (single entry point).
+        rows = await self.l3_pool.fetch(
+            f"SELECT {_INTENTIONS_SELECT_COLUMNS} FROM intentions "
+            "WHERE agent_id = $1 AND user_id = $2 "
+            f"AND status = '{IntentionStatus.OPEN.value}' "
+            "AND (last_surfaced_at IS NULL OR last_surfaced_at < $3) "
+            "ORDER BY salience DESC, date_created DESC",
+            agent_id,
+            user_id,
+            cooldown_cutoff,
+        )
+        entities: list[IntentionEntity] = []
+        for row in rows:
+            data = dict(row)
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            entities.append(entity)
+        return entities
+
+    async def find_similar_for_dedup(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        embedding: list[float],
+        top_k: int,
+        threshold: float,
+    ) -> list[dict[str, Any]]:
+        """vector search for near-duplicate OPEN wants by embedding.
+
+        Used by ``intention_log`` to refresh a near-duplicate open want
+        instead of creating a second row for the same standing want.
+        Only ``open`` wants are candidates -- a granted / dropped want
+        must not suppress a fresh log of the same intent. Mirrors
+        :meth:`MemoriesCollection.find_similar_for_dedup`; ``agent_id``
+        is the partition column and ``user_id`` the isolation boundary,
+        both required.
+
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :param agent_id: partition column on intentions; required
+        :ptype agent_id: UUID
+        :param embedding: query embedding vector
+        :ptype embedding: list[float]
+        :param top_k: maximum candidates to consider
+        :ptype top_k: int
+        :param threshold: minimum cosine similarity to surface
+        :ptype threshold: float
+        :return: list of ``{intention_id, content, salience, similarity}``
+        :rtype: list[dict[str, Any]]
+        """
+        if self.l3_pool is None:
+            return []
+        embedding_str = json.dumps(embedding)
+        # cache-bypass: vector-distance search is not primary-key
+        # addressable; the L1 row cache cannot serve it. ``embedding IS
+        # NOT NULL`` guards the ``float(similarity)`` cast (``NULL <=>
+        # vector`` is NULL). Only OPEN wants are dedup candidates.
+        rows = await self.l3_pool.fetch(
+            "SELECT intention_id, content, salience, "
+            "1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity "
+            "FROM intentions "
+            "WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL "
+            f"AND status = '{IntentionStatus.OPEN.value}' "
+            "ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector "
+            "LIMIT $4",
+            embedding_str,
+            agent_id,
+            user_id,
+            top_k,
+        )
+        return [
+            {
+                "intention_id": row["intention_id"],
+                "content": row["content"],
+                "salience": float(row["salience"]),
+                "similarity": float(row["similarity"]),
+            }
+            for row in rows
+            if float(row["similarity"]) >= threshold
+        ]
+
+    @spans_partitions(marker_only=True)
+    async def decay_salience(
+        self,
+        *,
+        half_life_days: float,
+        floor: float,
+    ) -> int:
+        """decay stored salience for every want (restraint brake #2).
+
+        The scheduled maintenance pass: ``salience`` sinks toward
+        ``floor`` on a ``half_life_days`` half-life, anchored on
+        ``last_decayed_at`` so total decay over a period is
+        cadence-independent. Delegates to the shared
+        :func:`apply_salience_decay` (factored in A2) so ``agent/memory``
+        and ``agent/intention`` run identical decay; this method stays
+        the single entry point for the ``intentions`` table's SQL.
+
+        ``skip_evergreen=False`` because ``intentions`` carries no
+        ``evergreen`` pin column -- a standing want has no "never decays"
+        concept (design §6.5), so the pass ages every want.
+
+        Abandoned wants sink out of the salience-ranked deliberation list
+        without being deleted -- a re-log refreshes them.
+
+        :param half_life_days: decay half-life in days
+        :ptype half_life_days: float
+        :param floor: salience asymptote; never decays below this
+        :ptype floor: float
+        :return: number of wants decayed
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        # __SPANS_PARTITIONS__: salience decay is a global maintenance
+        # sweep with no partition to scope to -- it ages every row the
+        # pool holds. The SQL literal lives in the shared helper (which
+        # carries no ``intentions`` literal), so the partition-enforcement
+        # walker is satisfied and this method holds no raw table SQL.
+        return await apply_salience_decay(
+            self.l3_pool,
+            table="intentions",
+            half_life_seconds=half_life_days * 86400.0,
+            floor=floor,
+            skip_evergreen=False,
+        )

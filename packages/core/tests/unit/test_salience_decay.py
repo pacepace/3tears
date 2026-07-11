@@ -68,6 +68,28 @@ class TestApplySalienceDecaySql:
         sql, _ = pool.calls[0]
         assert sql.startswith("UPDATE intentions ")
 
+    async def test_skip_evergreen_false_omits_where_clause(self) -> None:
+        """tables without an ``evergreen`` column (intentions) drop the guard."""
+        pool = _RecordingPool("UPDATE 3")
+
+        count = await apply_salience_decay(
+            pool,  # type: ignore[arg-type]
+            table="intentions",
+            half_life_seconds=100.0,
+            floor=0.1,
+            skip_evergreen=False,
+        )
+
+        assert count == 3
+        sql, params = pool.calls[0]
+        # no evergreen predicate -- every row is aged
+        assert "evergreen" not in sql
+        assert "WHERE" not in sql
+        # the decay math + anchor are unchanged
+        assert "last_decayed_at = now()" in sql
+        assert "COALESCE(last_decayed_at, date_created)" in sql
+        assert params == (0.1, 100.0)
+
 
 class TestRowCountParsing:
     @pytest.mark.parametrize(

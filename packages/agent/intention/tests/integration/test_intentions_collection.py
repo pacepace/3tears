@@ -21,190 +21,20 @@ from typing import Any
 
 import asyncpg
 import pytest
-from sqlalchemy import (
-    Column,
-    DateTime,
-    Float,
-    MetaData,
-    String,
-    Table,
-    Text,
-)
 
-from threetears.agent.intention.collections import IntentionsCollection
-from threetears.agent.intention.migrations import register as register_intention
 from threetears.agent.intention.types import INTENTION_STATUS_VALUES
-from threetears.conversations.migrations import register as register_conversations
-from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
 
-from .conftest import AsyncpgStore
+from .conftest import (
+    AsyncpgStore,
+    apply_migrations,
+    build_collection,
+    make_pool,
+    runner_apply,
+)
+from .conftest import InMemoryNatsBus as _InMemoryNatsBus
 
 
 pytestmark = pytest.mark.integration
-
-
-def _build_runner() -> MigrationRunner:
-    """register conversations + agent-intention migrations on a runner.
-
-    agent-intention declares ``depends_on=("conversations",)`` so the
-    conversations package has to be registered too.
-
-    :return: runner with both packages registered
-    :rtype: MigrationRunner
-    """
-    runner = MigrationRunner()
-    register_conversations(runner)
-    register_intention(runner)
-    return runner
-
-
-async def _apply(url: str, schema: str) -> None:
-    """apply the migration chain into ``schema``."""
-    conn = await asyncpg.connect(url)
-    try:
-        await conn.execute(f'SET search_path TO "{schema}", public')
-        store = AsyncpgStore(conn)
-        await runner_apply(conn, store)
-    finally:
-        await conn.close()
-
-
-async def runner_apply(conn: asyncpg.Connection, store: AsyncpgStore) -> int:
-    """apply the chain via a fresh runner; return migrations applied.
-
-    :param conn: connection (search_path already set)
-    :ptype conn: asyncpg.Connection
-    :param store: DataStore wrapper over ``conn``
-    :ptype store: AsyncpgStore
-    :return: number of migrations applied
-    :rtype: int
-    """
-    runner = _build_runner()
-    count: int = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
-    return count
-
-
-def _l1_metadata() -> MetaData:
-    """build an L1 mirror of the ``intentions`` table.
-
-    Mirrors the composite-pk shape (``agent_id``, ``intention_id``) so
-    SQLite addresses rows the same way L3 does. pgvector / enum columns
-    map to text-ish L1 types (the L1 cache is a key-addressed row store,
-    not a query engine); ``salience`` is a float.
-    """
-    meta = MetaData()
-    Table(
-        "intentions",
-        meta,
-        Column("agent_id", String(255), primary_key=True),
-        Column("intention_id", String(255), primary_key=True),
-        Column("customer_id", String(255)),
-        Column("user_id", String(255)),
-        Column("status", String(50)),
-        Column("content", Text),
-        Column("embedding", Text),
-        Column("salience", Float),
-        Column("last_decayed_at", DateTime),
-        Column("last_surfaced_at", DateTime),
-        Column("source_memory_id", String(255)),
-        Column("source_conversation_id", String(255)),
-        Column("date_created", DateTime),
-        Column("date_updated", DateTime),
-    )
-    return meta
-
-
-async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
-    """asyncpg pool with search_path pre-bound to the test schema."""
-    from threetears.core.collections import init_connection
-
-    pool: asyncpg.Pool = await asyncpg.create_pool(
-        dsn=url,
-        min_size=1,
-        max_size=4,
-        server_settings={"search_path": f"{schema}, public"},
-        init=init_connection,
-    )
-    return pool
-
-
-class _InMemoryKvBucket:
-    """typed-wrapper KV bucket stand-in matching ``NatsKvBucket``."""
-
-    def __init__(self) -> None:
-        self.kv: dict[str, bytes] = {}
-
-    async def get(self, *, key: str) -> bytes | None:
-        return self.kv.get(key)
-
-    async def put(self, *, key: str, value: bytes) -> int:
-        self.kv[key] = value
-        return len(self.kv)
-
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
-        existed = key in self.kv
-        self.kv.pop(key, None)
-        return existed or revision is None
-
-
-class _InMemoryNatsBus:
-    """typed-wrapper NATS stand-in with KV bucket + typed pub/sub."""
-
-    def __init__(self) -> None:
-        self._bucket = _InMemoryKvBucket()
-        self._subs: dict[str, list[tuple[Any, Any]]] = {}
-
-    @property
-    def kv(self) -> dict[str, bytes]:
-        return self._bucket.kv
-
-    async def kv_bucket(
-        self,
-        *,
-        name: str,  # noqa: ARG002
-        ttl: Any = None,  # noqa: ARG002
-        storage: str = "file",  # noqa: ARG002
-        create_if_missing: bool = True,  # noqa: ARG002
-        history: int = 1,  # noqa: ARG002
-    ) -> _InMemoryKvBucket:
-        return self._bucket
-
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
-        subject_str = str(subject)
-        for cb, message_type in self._subs.get(subject_str, []):
-            payload = message.model_dump_json()
-            decoded = message_type.model_validate_json(payload)
-            await cb(decoded)
-
-    async def subscribe_typed(
-        self,
-        *,
-        subject: Any,
-        cb: Any,
-        message_type: Any,
-        queue: Any = None,  # noqa: ARG002
-        max_in_flight: Any = None,  # noqa: ARG002
-        deadletter_on_failure: bool = True,  # noqa: ARG002
-    ) -> None:
-        subject_str = str(subject)
-        self._subs.setdefault(subject_str, []).append((cb, message_type))
-
-
-def _build_collection(
-    pool: asyncpg.Pool,
-    nats: _InMemoryNatsBus,
-) -> tuple[IntentionsCollection, SQLiteBackend]:
-    """construct an (L1, L2, L3) intention collection stack."""
-    l1 = SQLiteBackend(db_name=f"intentions_{uuid.uuid4().hex[:8]}")
-    l1.initialize(_l1_metadata())
-    reg = CollectionRegistry()
-    reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool)
-    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    coll = IntentionsCollection(registry=reg, config=cfg, nats_client=nats)
-    return coll, l1
 
 
 def _make_row(agent_id: uuid.UUID, user_id: uuid.UUID, *, salience: float, content: str) -> dict[str, Any]:
@@ -353,11 +183,11 @@ class TestIntentionsCollectionThreeTier:
 
     async def test_save_and_get_round_trip(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
-        await _apply(url, schema)
-        pool = await _make_pool(url, schema)
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
         try:
             nats = _InMemoryNatsBus()
-            coll, _l1 = _build_collection(pool, nats)
+            coll, _l1 = build_collection(pool, nats)
 
             agent_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -389,11 +219,11 @@ class TestIntentionsCollectionThreeTier:
     async def test_find_by_user_isolates_and_ranks(self, pg_schema: tuple[str, str]) -> None:
         """find_by_user returns only the caller's wants, salience-ranked."""
         url, schema = pg_schema
-        await _apply(url, schema)
-        pool = await _make_pool(url, schema)
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
         try:
             nats = _InMemoryNatsBus()
-            coll, _l1 = _build_collection(pool, nats)
+            coll, _l1 = build_collection(pool, nats)
 
             agent_id = uuid.uuid4()  # shared across users (metallm reality)
             user_a = uuid.uuid4()
