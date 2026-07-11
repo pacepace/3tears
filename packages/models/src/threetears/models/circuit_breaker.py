@@ -84,6 +84,13 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self.failure_count = 0
         self.last_failure_time: float = 0.0
+        # HALF_OPEN admits exactly ONE probe at a time: the request that trips
+        # OPEN -> HALF_OPEN (or the first to arrive while HALF_OPEN) sets this;
+        # every other concurrent request is fast-failed until the probe resolves
+        # (record_success -> CLOSED / record_failure -> OPEN). without it,
+        # HALF_OPEN admits unbounded concurrent probes -> a thundering herd onto
+        # a provider that may still be dead.
+        self._probe_in_flight = False
         self._lock = threading.Lock()
 
     @property
@@ -109,11 +116,18 @@ class CircuitBreaker:
                 return
 
             if self._state == CircuitState.HALF_OPEN:
+                # a probe is already testing the provider: fast-fail the rest so
+                # recovery is a single request, not a thundering herd.
+                if self._probe_in_flight:
+                    raise CircuitOpenError(self._provider_name, 0.0)
+                self._probe_in_flight = True
                 return
 
             elapsed = time.monotonic() - self.last_failure_time
             if elapsed >= self._recovery_timeout_seconds:
+                # this request becomes the single recovery probe.
                 self._state = CircuitState.HALF_OPEN
+                self._probe_in_flight = True
                 logger.warning(
                     "circuit breaker transitioning to HALF_OPEN for %s",
                     self._provider_name,
@@ -133,6 +147,7 @@ class CircuitBreaker:
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.CLOSED
                 self.failure_count = 0
+                self._probe_in_flight = False
                 logger.warning(
                     "circuit breaker transitioning to CLOSED for %s",
                     self._provider_name,
@@ -156,6 +171,7 @@ class CircuitBreaker:
 
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
+                self._probe_in_flight = False
                 logger.warning(
                     "circuit breaker re-opening for %s after probe failure",
                     self._provider_name,
@@ -179,6 +195,7 @@ class CircuitBreaker:
         with self._lock:
             self._state = CircuitState.CLOSED
             self.failure_count = 0
+            self._probe_in_flight = False
             logger.info(
                 "circuit breaker manually reset for %s",
                 self._provider_name,
@@ -204,7 +221,17 @@ class CircuitBreakerCallback(BaseCallbackHandler):
     the breaker is open. on success records via
     :meth:`CircuitBreaker.record_success`; on error via
     :meth:`CircuitBreaker.record_failure`.
+
+    ``raise_error = True`` is REQUIRED: langchain's callback manager
+    (``langchain_core.callbacks.manager.handle_event``) catches every callback
+    exception and only re-raises when the handler opts in via ``raise_error``.
+    without it a raised :class:`CircuitOpenError` is logged and SWALLOWED and the
+    request proceeds to the known-dead provider -- the breaker delivers zero
+    fault isolation. with it, the open-circuit fast-fail actually propagates and
+    aborts the request.
     """
+
+    raise_error: bool = True
 
     def __init__(self, breaker: CircuitBreaker) -> None:
         """initialises the callback with the breaker it should drive.
