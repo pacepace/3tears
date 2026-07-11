@@ -426,7 +426,11 @@ _MEMORIES_SELECT_COLUMNS = (
     "conversation_id, message_id_source, summary, search_vector, alias, "
     # v024 salience substrate — keep in sync with the memories migration
     # column set so raw-SQL read paths hydrate the full entity.
-    "salience, last_decayed_at, last_accessed, evergreen, superseded_by"
+    "salience, last_decayed_at, last_accessed, evergreen, superseded_by, "
+    # v025 tags JSONB label set. No codec is registered on the raw fetch
+    # pool, so asyncpg yields this column as a JSON string here; the
+    # entity accessor decodes it (schema-generated reads decode it too).
+    "tags"
 )
 
 
@@ -566,6 +570,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             # soft ref (no FK) to a consolidation gist; ambient retrieval
             # excludes non-null, direct recall still finds it.
             Column("superseded_by", UUID_TYPE, nullable=True),
+            # v025 (presence/aliveness): nullable JSONB label set (a JSON
+            # array of strings). Mutable; GIN-indexed below for
+            # containment / existence queries.
+            Column("tags", JSONB_TYPE, nullable=True),
         ],
         cas_column="date_updated",
         foreign_keys=(
@@ -619,6 +627,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
                 pg_with={"m": "16", "ef_construction": "64"},
+            ),
+            # v025 (presence/aliveness): GIN over the ``tags`` JSONB label
+            # set serves containment (``tags @> '["identity"]'``) and
+            # existence (``tags ? 'identity'``) queries.
+            SchemaIndex(
+                "idx_memories_tags",
+                "tags",
+                using="gin",
             ),
         ),
         # v0.8.1: global uniqueness on ``memory_id`` (stronger than the

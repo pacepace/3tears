@@ -300,3 +300,36 @@ class TestMemoryEntitySalienceSubstrate:
         changes = entity.get_changes()
         assert changes["salience"] == 0.9
         assert changes["evergreen"] is True
+
+
+class TestMemoryEntityTags:
+    """v025 tags JSONB accessor: default / list round-trip / raw-string
+    decode / setter tracking."""
+
+    def test_tags_default_none_when_absent(self) -> None:
+        # _sample_data() omits tags; the column is nullable so the getter
+        # mirrors the NULL rather than raising.
+        assert MemoryEntity(_sample_data()).tags is None
+
+    def test_tags_list_round_trips(self) -> None:
+        # the schema-generated read path decodes JSONB to a list before
+        # hydration; the accessor passes it through unchanged.
+        data = _sample_data()
+        data["tags"] = ["persona", "identity"]
+        assert MemoryEntity(data).tags == ["persona", "identity"]
+
+    def test_tags_decodes_raw_json_string(self) -> None:
+        # the raw _MEMORIES_SELECT_COLUMNS fetch path has no JSONB codec,
+        # so asyncpg yields a JSON string; the accessor decodes it.
+        data = _sample_data()
+        data["tags"] = '["identity"]'
+        assert MemoryEntity(data).tags == ["identity"]
+
+    def test_tags_setter_tracks_change(self, mock_collection: tuple) -> None:
+        coll, _ = mock_collection
+        entity = MemoryEntity(_sample_data(), is_new=False, collection=coll)
+
+        entity.tags = ["persona"]
+
+        assert entity.tags == ["persona"]
+        assert entity.get_changes()["tags"] == ["persona"]

@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.schema_sql import decode_jsonb
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
@@ -279,6 +280,24 @@ class MemoryEntity(BaseEntity):
     def superseded_by(self, value: UUID | None) -> None:
         """Set the supersession soft ref."""
         BaseEntity.__setattr__(self, "superseded_by", value)
+
+    @property
+    def tags(self) -> list[str] | None:
+        """JSON array of label strings (v025), or ``None``.
+
+        JSONB in the DB. The schema-generated read path decodes it to a
+        list; the raw ``_MEMORIES_SELECT_COLUMNS`` fetch path (no codec
+        registered) yields a JSON string. :func:`decode_jsonb` normalises
+        both to a Python list.
+        """
+        raw = self._get_raw("tags")
+        decoded: list[str] | None = decode_jsonb(raw)
+        return decoded
+
+    @tags.setter
+    def tags(self, value: list[str] | None) -> None:
+        """Set the JSONB label set."""
+        BaseEntity.__setattr__(self, "tags", value)
 
 
 class MediaEntity(BaseEntity):

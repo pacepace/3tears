@@ -211,6 +211,9 @@ class TestFullChainApplies:
             assert "last_accessed" in memory_cols
             assert "evergreen" in memory_cols
             assert "superseded_by" in memory_cols
+            # v025 tags JSONB column + GIN index present.
+            assert "tags" in memory_cols
+            assert await _index_exists(conn, schema, "idx_memories_tags")
 
             # v024 relaxed customer_id / user_id to nullable (scope grains).
             nullable = await _column_nullability(conn, schema, "memories")
@@ -688,6 +691,104 @@ class TestScopeRelaxationAndSalience:
             assert entity.salience == 0.9
             assert entity.evergreen is True
             assert entity.superseded_by == gist_id
+        finally:
+            await conn.close()
+
+
+class TestMemoryTags:
+    """v025: tags JSONB persists, hydrates, and is GIN-queryable."""
+
+    async def test_tags_round_trip_and_containment_query(self, pg_schema: tuple[str, str]) -> None:
+        """A tags array persists, hydrates via the entity accessor, and is
+        reachable by both containment (``@>``) and existence (``?``) queries.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import json
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC)
+            agent_id = uuid.uuid4()
+            tagged_id = uuid.uuid4()
+            untagged_id = uuid.uuid4()
+
+            # tagged row (JSONB array) + an untagged (NULL tags) control.
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, type_memory, content, tags, "
+                "date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, 'fact', $6, $7::jsonb, $8, $8)",
+                tagged_id,
+                agent_id,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "a tagged memory",
+                json.dumps(["persona", "identity"]),
+                now,
+            )
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, type_memory, content, "
+                "date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, 'fact', $6, $7, $7)",
+                untagged_id,
+                agent_id,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "an untagged memory",
+                now,
+            )
+
+            # hydrate via the entity accessor (raw fetch path yields a
+            # JSON string; the accessor decodes it to a list).
+            row = await conn.fetchrow(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
+                tagged_id,
+            )
+            assert row is not None
+            entity = MemoryEntity(dict(row), is_new=False)
+            assert entity.tags == ["persona", "identity"]
+
+            untagged_row = await conn.fetchrow(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
+                untagged_id,
+            )
+            assert untagged_row is not None
+            assert MemoryEntity(dict(untagged_row), is_new=False).tags is None
+
+            # containment: tags @> '["identity"]' matches only the tagged row.
+            containment = await conn.fetch(
+                "SELECT memory_id FROM memories WHERE tags @> $1::jsonb",
+                json.dumps(["identity"]),
+            )
+            assert [r["memory_id"] for r in containment] == [tagged_id]
+
+            # existence: tags ? 'persona' matches only the tagged row.
+            existence = await conn.fetch(
+                "SELECT memory_id FROM memories WHERE tags ? 'persona'",
+            )
+            assert [r["memory_id"] for r in existence] == [tagged_id]
+
+            # a tag not present matches nothing.
+            absent = await conn.fetch(
+                "SELECT memory_id FROM memories WHERE tags @> $1::jsonb",
+                json.dumps(["nonexistent"]),
+            )
+            assert absent == []
         finally:
             await conn.close()
 

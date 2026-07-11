@@ -125,6 +125,8 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             server_default="false",
         ),
         SAColumn("superseded_by", PgUUID(as_uuid=True), nullable=True),
+        # v025 tags JSONB label set (nullable, mutable).
+        SAColumn("tags", JSONB(), nullable=True),
         SAForeignKeyConstraint(
             ["message_id_source"],
             ["messages.message_id"],
@@ -158,6 +160,12 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_with={"m": "16", "ef_construction": "64"},
+        ),
+        # v025 GIN over the tags JSONB label set.
+        SAIndex(
+            "idx_memories_tags",
+            "tags",
+            postgresql_using="gin",
         ),
         SAUniqueConstraint("memory_id", name="uq_memories_memory_id"),
     )
