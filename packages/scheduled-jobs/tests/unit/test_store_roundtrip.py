@@ -20,7 +20,7 @@ This asserts:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -28,6 +28,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.scheduled_jobs.collections import (
+    REAPED_DISPATCH_ERROR,
     JobFireCollection,
     ScheduledJobCollection,
 )
@@ -218,6 +219,27 @@ class TestFireStoreWrites:
         sql, args = pool.calls[-1]
         assert "status = 'failed'" in sql
         assert args[0] == "boom"
+
+    async def test_reap_stale_dispatching_updates_old_dispatching_rows(self) -> None:
+        # two reclaimed rows come back from RETURNING -> count == 2
+        pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()} for _ in range(2)])
+        coll = _make_fire_collection(pool)
+        now = _now()
+        reaped = await coll.reap_stale_dispatching(now, older_than=timedelta(seconds=900))
+        assert reaped == 2
+        sql, args = pool.calls[-1]
+        assert "UPDATE job_fires SET status = 'failed'" in sql
+        assert "status = 'dispatching'" in sql
+        assert "actual_fired_at < $2" in sql
+        # the reaper marker error + the computed cutoff are bound
+        assert args[0] == REAPED_DISPATCH_ERROR
+        assert args[1] == now - timedelta(seconds=900)
+
+    async def test_reap_stale_dispatching_none_returns_zero(self) -> None:
+        pool = _RecordingPool(fetch_rows=[])
+        coll = _make_fire_collection(pool)
+        reaped = await coll.reap_stale_dispatching(_now(), older_than=timedelta(seconds=900))
+        assert reaped == 0
 
 
 class TestListDueForTick:

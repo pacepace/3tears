@@ -21,17 +21,21 @@ class FakeDataStore:
     :ivar fail_on: sql substring that, when present, triggers RuntimeError
     """
 
-    def __init__(self, fail_on: str | None = None) -> None:
+    def __init__(self, fail_on: str | None = None, schema: str = "public") -> None:
         """
         initialize empty execution log and migration tracker.
 
         :param fail_on: SQL substring that triggers RuntimeError on match
         :ptype fail_on: str | None
+        :param schema: schema name returned by ``current_schema()`` so the
+            runner's advisory-lock keying can be exercised per-schema
+        :ptype schema: str
         """
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
         self.migrations_rows: list[dict[str, Any]] = []
         self.migrations_table_created = False
         self._fail_on = fail_on
+        self._schema = schema
         self._tables: set[str] = set()
         # monotonically increasing counter stamped as date_applied so
         # history ordering is deterministic in tests.
@@ -97,6 +101,9 @@ class FakeDataStore:
         """
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
+        if "CURRENT_SCHEMA()" in normalized:
+            result = [{"schema_name": self._schema}]
+            return result
         if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
             result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
             return result

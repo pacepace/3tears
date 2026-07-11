@@ -31,6 +31,7 @@ from threetears.nats import LockHeld
 from threetears.nats.errors import KvError
 
 from threetears.scheduled_jobs import tick as tick_mod
+from threetears.scheduled_jobs.config import DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
@@ -158,10 +159,12 @@ class _FakeFireStore(FireStore):
     # parity-with: threetears.scheduled_jobs.protocols.FireStore
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, reap_count: int = 0) -> None:
         self.created: list[dict[str, Any]] = []
         self.succeeded: list[dict[str, Any]] = []
         self.failed: list[dict[str, Any]] = []
+        self.reap_calls: list[dict[str, Any]] = []
+        self._reap_count = reap_count
 
     async def create_dispatching(
         self,
@@ -194,6 +197,15 @@ class _FakeFireStore(FireStore):
         latency_ms: int | None = None,
     ) -> None:
         self.failed.append({"fire_id": fire_id, "error": error, "latency_ms": latency_ms})
+
+    async def reap_stale_dispatching(
+        self,
+        now: datetime,
+        *,
+        older_than: timedelta,
+    ) -> int:
+        self.reap_calls.append({"now": now, "older_than": older_than})
+        return self._reap_count
 
 
 class _CtxRaisingOnEnter:
@@ -391,6 +403,53 @@ class TestPerRowFailureIsolation:
         assert len(fires.failed) == 1
         assert fires.failed[0]["error"] == "downstream rejected"
         assert fires.succeeded == []
+
+
+class TestReapStaleDispatching:
+    """Every tick sweeps abandoned 'dispatching' fire rows to failed."""
+
+    async def test_tick_invokes_reaper_with_configured_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([])
+        fires = _FakeFireStore(reap_count=0)
+        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        # the reaper ran once with the default age threshold
+        assert len(fires.reap_calls) == 1
+        assert fires.reap_calls[0]["older_than"] == timedelta(seconds=DEFAULT_DISPATCH_REAP_AFTER_SECONDS)
+
+    async def test_reaped_rows_count_as_failures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_lock(monkeypatch, _CtxHealthy())
+        failures: list[str] = []
+
+        class _RecordingEmitter:
+            def observe_tick_duration(self, _s: float) -> None: ...
+            def observe_drift(self, _s: float) -> None: ...
+            def inc_fire(self, **_kw: Any) -> None: ...
+            def inc_failure(self, *, reason: str) -> None:
+                failures.append(reason)
+
+        monkeypatch.setattr(tick_mod, "get_scheduled_jobs_emitter", lambda *a, **k: _RecordingEmitter())
+        store = _FakeScheduleStore([])
+        fires = _FakeFireStore(reap_count=3)
+        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        # three zombies reaped -> three failure increments tagged 'reaped'
+        assert failures == ["reaped", "reaped", "reaped"]
+
+    async def test_reaper_failure_does_not_block_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reaper that raises is isolated -- the tick still dispatches due rows."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+
+        class _BoomOnReap(_FakeFireStore):
+            async def reap_stale_dispatching(self, now: datetime, *, older_than: timedelta) -> int:
+                raise RuntimeError("reaper db hiccup")
+
+        sched = _FakeDueSchedule()
+        store = _FakeScheduleStore([sched])
+        fires = _BoomOnReap()
+        # must NOT raise; the due row still fires + finalizes
+        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        assert len(fires.created) == 1
+        assert len(fires.succeeded) == 1
 
 
 class TestDriftRecorded:

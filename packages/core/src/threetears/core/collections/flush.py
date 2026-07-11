@@ -94,6 +94,18 @@ class WriteBuffer:
     when l1_backend is provided, pending writes are persisted to
     SQLite so they survive process crashes. dict is retained as
     fast dedup index and fallback when l1_backend is None.
+
+    the buffer follows a claim/ack lifecycle so the write-through
+    guarantee holds across a crash: :meth:`drain` *claims* pending
+    writes (marks them in-flight) but does NOT delete their durable
+    rows; the row is reclaimed only once :meth:`ack` confirms the L3
+    write landed, or re-armed for retry by :meth:`re_enqueue`. a crash
+    between claim and ack therefore leaves the durable row intact, so
+    the next process replays it instead of losing the write from both
+    tiers. the in-flight claim doubles as a version guard: any newer
+    write that coalesces in via :meth:`add` during the flush window
+    clears the claim, so a stale :meth:`ack` / :meth:`re_enqueue` can
+    never clobber that newer value (lost-update protection).
     """
 
     def __init__(self, l1_backend: SQLiteBackend | None = None) -> None:
@@ -102,45 +114,103 @@ class WriteBuffer:
         :param l1_backend: optional SQLiteBackend for crash-safe buffering
         :ptype l1_backend: SQLiteBackend | None
         """
-        self._buf: dict[tuple[str, Any], PendingWrite] = {}
+        self._buf: dict[tuple[str, str], PendingWrite] = {}
+        # keys claimed by an in-progress flush (via ``drain``) and not yet
+        # acked/re-enqueued. membership is the version guard: a coalescing
+        # ``add`` discards the claim, so ``ack``/``re_enqueue`` no-op on a
+        # superseded key.
+        self._in_flight: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
         self._l1 = l1_backend
         if self._l1 is not None and not self._l1.is_initialized():
             self._l1.initialize(_WRITE_BUFFER_METADATA)
 
+    @staticmethod
+    def _key(table_name: str, entity_id: Any) -> tuple[str, str]:
+        """normalize a (table, entity) pair to a stable string-keyed tuple.
+
+        the durable SQLite row stores the entity id in its string form while
+        in-memory callers pass the original typed id (e.g. ``UUID``). normalizing
+        both to text keeps the in-memory dedup index, the in-flight claim set,
+        and the durable row addressed by ONE key, so the version guard lines up
+        across the L1 and non-L1 paths.
+
+        :param table_name: destination table name
+        :ptype table_name: str
+        :param entity_id: entity primary-key value in any form
+        :ptype entity_id: Any
+        :return: normalized ``(table_name, <entity-id-as-text>)`` key
+        :rtype: tuple[str, str]
+        """
+        return (table_name, str(entity_id))  # convert at border: keyspace aligns with the persisted write_buffer String PK
+
+    def _add_locked(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int) -> None:
+        """insert-or-replace a pending write; caller MUST hold ``self._lock``.
+
+        :param table_name: destination table name
+        :ptype table_name: str
+        :param entity_id: entity primary-key value
+        :ptype entity_id: Any
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param retries: failed-flush attempts recorded so far
+        :ptype retries: int
+        :return: nothing
+        :rtype: None
+        """
+        key = self._key(table_name, entity_id)
+        self._buf[key] = PendingWrite(table_name, entity_id, data, retries)
+        # a fresh (re)write supersedes any in-flight claim for this key: the
+        # flush that claimed the old value must NOT evict or re-enqueue over
+        # this newer one when it completes.
+        self._in_flight.discard(key)
+        if self._l1 is not None:
+            from datetime import UTC, datetime
+
+            l1_key = f"{table_name}:{entity_id}"
+            self._l1.upsert(
+                "write_buffer",
+                {
+                    "key": l1_key,
+                    "table_name": table_name,
+                    "entity_id": str(entity_id),
+                    "data": json.dumps(data, default=str),
+                    "retries": retries,
+                    "date_updated": datetime.now(UTC).isoformat(),
+                },
+                primary_key="key",
+            )
+
     async def add(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int = 0) -> None:
         """Add or replace a pending write for the given entity."""
         async with self._lock:
-            key = (table_name, entity_id)
-            pw = PendingWrite(table_name, entity_id, data, retries)
-            self._buf[key] = pw
-            if self._l1 is not None:
-                from datetime import UTC, datetime
-
-                l1_key = f"{table_name}:{entity_id}"
-                self._l1.upsert(
-                    "write_buffer",
-                    {
-                        "key": l1_key,
-                        "table_name": table_name,
-                        "entity_id": str(entity_id),
-                        "data": json.dumps(data, default=str),
-                        "retries": retries,
-                        "date_updated": datetime.now(UTC).isoformat(),
-                    },
-                    primary_key="key",
-                )
+            self._add_locked(table_name, entity_id, data, retries)
 
     async def drain(self) -> list[PendingWrite]:
-        """Drain all pending writes, returning them and clearing the buffer."""
+        """Claim all un-claimed pending writes for flushing.
+
+        marks the returned writes in-flight so a concurrent drain cannot
+        re-claim them, but does NOT delete their durable rows: the buffer entry
+        is reclaimed only once :meth:`ack` confirms the L3 write landed (or
+        :meth:`re_enqueue` re-arms it for retry). this is the write-through
+        ordering — persist to L3 first, evict from L1 only after the durable
+        write is acked — so a crash mid-flush replays the write instead of
+        losing it from both tiers.
+
+        :return: pending writes newly claimed by this call
+        :rtype: list[PendingWrite]
+        """
         async with self._lock:
+            claimed: list[PendingWrite] = []
             if self._l1 is not None:
                 rows = self._l1.execute_query("SELECT * FROM write_buffer")
-                items: list[PendingWrite] = []
                 for row in rows:
+                    key = self._key(row["table_name"], row["entity_id"])
+                    if key in self._in_flight:
+                        continue
                     raw_data = row["data"]
                     parsed_data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
-                    items.append(
+                    claimed.append(
                         PendingWrite(
                             table_name=row["table_name"],
                             entity_id=row["entity_id"],
@@ -148,18 +218,74 @@ class WriteBuffer:
                             retries=row["retries"],
                         )
                     )
-                conn = self._l1.get_connection()
-                conn.execute("DELETE FROM write_buffer")
-                self._buf.clear()
-                return items
-            items = list(self._buf.values())
-            self._buf.clear()
-            return items
+            else:
+                for key, pw in self._buf.items():
+                    if key in self._in_flight:
+                        continue
+                    claimed.append(pw)
+            for pw in claimed:
+                self._in_flight.add(self._key(pw.table_name, pw.entity_id))
+            return claimed
+
+    async def ack(self, table_name: str, entity_id: Any) -> None:
+        """Evict a durably-persisted write once its L3 write is acked.
+
+        version guard: the eviction is applied ONLY while the write is still the
+        in-flight one this flush claimed. if a newer write for the same key
+        coalesced in via :meth:`add` during the flush window (which clears the
+        in-flight claim), the eviction is skipped so the newer value survives to
+        be flushed on the next cycle.
+
+        :param table_name: destination table name
+        :ptype table_name: str
+        :param entity_id: entity primary-key value
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        async with self._lock:
+            key = self._key(table_name, entity_id)
+            if key not in self._in_flight:
+                return
+            self._in_flight.discard(key)
+            self._buf.pop(key, None)
+            if self._l1 is not None:
+                l1_key = f"{table_name}:{entity_id}"
+                self._l1.delete_by_id("write_buffer", l1_key, primary_key="key")
+
+    async def re_enqueue(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int) -> bool:
+        """Return a failed write to the buffer for a later retry, version-guarded.
+
+        re-enqueues ONLY while the write is still the in-flight one this flush
+        claimed. a stale failed write can therefore never overwrite a newer value
+        that coalesced in during the flush window — the newer :meth:`add` cleared
+        the in-flight claim, so this re-enqueue is dropped and the newer value is
+        kept (lost-update protection).
+
+        :param table_name: destination table name
+        :ptype table_name: str
+        :param entity_id: entity primary-key value
+        :ptype entity_id: Any
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param retries: updated failed-flush attempt count
+        :ptype retries: int
+        :return: True when re-enqueued, False when dropped as superseded
+        :rtype: bool
+        """
+        async with self._lock:
+            key = self._key(table_name, entity_id)
+            if key not in self._in_flight:
+                return False
+            self._add_locked(table_name, entity_id, data, retries)
+            return True
 
     async def remove(self, table_name: str, entity_id: Any) -> bool:
         """Remove a pending write. Returns True if it existed."""
         async with self._lock:
-            existed = self._buf.pop((table_name, entity_id), None) is not None
+            key = self._key(table_name, entity_id)
+            existed = self._buf.pop(key, None) is not None
+            self._in_flight.discard(key)
             if self._l1 is not None:
                 l1_key = f"{table_name}:{entity_id}"
                 self._l1.delete_by_id("write_buffer", l1_key, primary_key="key")
@@ -320,10 +446,15 @@ async def _flush_per_entity(
                 "No collection registered for table, skipping flush",
                 extra={"extra_data": {"table": pw.table_name, "entity_id": str(pw.entity_id)}},
             )
+            # unrecoverable (no collection can ever persist it): release the
+            # in-flight claim so the poison write does not stay claimed forever.
+            await write_buffer.ack(pw.table_name, pw.entity_id)
             continue
         try:
             await collection.persist_to_store(pw.data)
             flushed += 1
+            # durable write acked -> now safe to evict from the buffer.
+            await write_buffer.ack(pw.table_name, pw.entity_id)
         except Exception as exc:
             # FK violations are "my parent hasn't landed yet" -- treat
             # them as deferral, not failure: re-enqueue with the
@@ -353,6 +484,9 @@ async def _flush_per_entity(
                         }
                     },
                 )
+                # permanent drop: release the in-flight claim and evict the
+                # durable row (version-guarded — a newer coalesced write is kept).
+                await write_buffer.ack(pw.table_name, pw.entity_id)
             else:
                 log.warning(
                     "Flush write deferred (FK parent pending), re-adding to buffer"
@@ -369,7 +503,7 @@ async def _flush_per_entity(
                         }
                     },
                 )
-                await write_buffer.add(pw.table_name, pw.entity_id, pw.data, retries=next_retry)
+                await write_buffer.re_enqueue(pw.table_name, pw.entity_id, pw.data, retries=next_retry)
     log.debug("Flush complete", extra={"extra_data": {"flushed": flushed, "total": len(sorted_pending)}})
     return flushed
 
@@ -437,6 +571,11 @@ async def flush_pending(
                     extra={"extra_data": {"flushed": batch_flushed, "total": len(fresh)}},
                 )
                 flushed += batch_flushed
+                # transaction committed -> now safe to evict the whole batch.
+                # ack is version-guarded, so any write that coalesced in during
+                # the commit window is preserved for the next cycle.
+                for pw in fresh:
+                    await write_buffer.ack(pw.table_name, pw.entity_id)
             except Exception as exc:
                 # Graceful degrade: the whole transaction rolled back, so NOTHING
                 # in the fresh set was committed -- replay it through the per-entity

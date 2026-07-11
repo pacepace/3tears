@@ -1133,6 +1133,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
                 {fts_where}
+                  AND embedding IS NOT NULL
                   AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
@@ -2521,6 +2522,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
+                  AND mc.embedding IS NOT NULL
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                   {fts_cursor_clause}
                 ORDER BY fts_rank DESC

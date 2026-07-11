@@ -90,6 +90,13 @@ select = ["SLF"]
 # the public sys.settrace alternative has different semantics. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
+# lifecycle test asserts fire_and_forget holds a strong reference to a task
+# scheduled on a caller's running loop until it completes (asyncio keeps only a
+# weak reference, so an unheld task can be GC'd mid-flight). _pending_tasks is
+# the internal strong-reference anchor with no public accessor; exposing one
+# would add API surface only this test needs. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_bridge.py" = ["SLF001"]
 # test monkeypatches module-level _otel_available cache sentinel to exercise
 # both the "otel installed" and "otel missing" branches; the sentinel is an
 # import-time implementation anchor with no public accessor (would become a

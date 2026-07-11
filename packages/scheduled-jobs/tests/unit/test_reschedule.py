@@ -65,14 +65,22 @@ class TestDailyAt:
         assert (result - last_fire_utc) == timedelta(hours=25)
         assert result.astimezone(tz) == datetime(2026, 11, 1, 9, 0, tzinfo=tz)
 
-    def test_catch_up_advances_one_day_from_last_fire(self) -> None:
-        """``catch_up`` advances exactly one day from the last fire, ignoring backlog."""
+    def test_catch_up_advances_one_day_from_current_fire(self) -> None:
+        """``catch_up`` advances exactly one day from the occurrence being fired.
+
+        It must anchor on ``current_fire_at`` (5th positional here), NOT
+        ``last_fired_at`` and NOT ``now``: the store stamps
+        ``last_fired_at = now`` on every claim, so anchoring there would
+        collapse ``catch_up`` into ``coalesce``. A deliberately far-ahead
+        ``last_fired_at`` proves it is ignored.
+        """
         result = compute_next_fire_at(
             "daily_at",
             {"hour": 9, "minute": 0, "tz": "UTC"},
             "catch_up",
-            _utc(2026, 5, 20, 9, 0),
-            _utc(2026, 5, 23, 12, 0),
+            _utc(2026, 5, 23, 12, 0),  # last_fired_at stamped to now -- must be ignored
+            _utc(2026, 5, 23, 12, 0),  # now
+            _utc(2026, 5, 20, 9, 0),  # current_fire_at (the occurrence being fired)
         )
         assert result == _utc(2026, 5, 21, 9, 0)
 
@@ -89,11 +97,52 @@ class TestEveryNHours:
         result = compute_next_fire_at("every_n_hours", {"n": 3}, "coalesce", None, _utc(2026, 5, 22, 10, 0))
         assert result == _utc(2026, 5, 22, 13, 0)
 
-    def test_catch_up_anchors_on_last_fire(self) -> None:
+    def test_catch_up_anchors_on_current_fire(self) -> None:
+        """``catch_up`` steps one interval past the occurrence being fired,
+        ignoring the (now-stamped) ``last_fired_at`` and ``now``."""
         result = compute_next_fire_at(
-            "every_n_hours", {"n": 3}, "catch_up", _utc(2026, 5, 22, 4, 0), _utc(2026, 5, 22, 15, 0)
+            "every_n_hours",
+            {"n": 3},
+            "catch_up",
+            _utc(2026, 5, 22, 15, 0),  # last_fired_at = now -- must be ignored
+            _utc(2026, 5, 22, 15, 0),  # now
+            _utc(2026, 5, 22, 4, 0),  # current_fire_at
         )
         assert result == _utc(2026, 5, 22, 7, 0)
+
+    def test_catch_up_drains_backlog_one_interval_per_tick(self) -> None:
+        """A three-hour outage of a 30-minute schedule fires each missed
+        occurrence, not once. Simulate successive ticks: each tick fires
+        the occurrence at ``next_fire_at`` and advances by exactly one
+        interval, with ``last_fired_at`` stamped to wall-clock ``now`` (as
+        the store does). Under the old ``last_fired_at`` anchor this
+        collapsed to two fires; the current-fire anchor drains all six."""
+        step_config = {"n": 1}  # 1-hour interval expressed via every_n_hours
+        # occurrence backlog: fired at 10:00, then down until 13:00.
+        next_fire = _utc(2026, 5, 22, 11, 0)
+        now = _utc(2026, 5, 22, 13, 0)
+        fired: list[datetime] = []
+        # bound the loop so a regression cannot spin forever
+        for _ in range(20):
+            if next_fire > now:
+                break
+            fired.append(next_fire)
+            computed = compute_next_fire_at(
+                "every_n_hours",
+                step_config,
+                "catch_up",
+                now,  # last_fired_at stamped to now on claim
+                now,
+                next_fire,  # current_fire_at = the occurrence being fired
+            )
+            assert computed is not None
+            next_fire = computed
+        # occurrences at 11:00, 12:00, 13:00 all fire (3 missed intervals).
+        assert fired == [
+            _utc(2026, 5, 22, 11, 0),
+            _utc(2026, 5, 22, 12, 0),
+            _utc(2026, 5, 22, 13, 0),
+        ]
 
     def test_zero_n_rejected(self) -> None:
         with pytest.raises(ValueError, match="positive"):
@@ -153,6 +202,74 @@ class TestRandomWithinWindow:
         assert result is not None
         assert _utc(2026, 5, 22, 3, 0) <= result < _utc(2026, 5, 22, 6, 0)
 
+    def test_after_fire_advances_to_next_day_not_same_day(self) -> None:
+        """With the default ``fires_per_day=1``, a reschedule AFTER a fire
+        rolls to tomorrow's window -- it must NOT pick another time later
+        the same day (the runaway-over-firing bug). ``last_fired_at`` set
+        marks 'already fired today'."""
+        random.seed(42)
+        result = compute_next_fire_at(
+            "random_within_window",
+            {"start_hour": 9, "end_hour": 21, "tz": "UTC"},
+            "coalesce",
+            _utc(2026, 5, 22, 14, 30),  # last_fired_at -- fired earlier today
+            _utc(2026, 5, 22, 14, 30),  # now
+        )
+        assert result is not None
+        assert _utc(2026, 5, 23, 9, 0) <= result < _utc(2026, 5, 23, 21, 0)
+
+    def test_fires_per_day_partitions_window_into_slots(self) -> None:
+        """``fires_per_day=3`` over a 9->21 window yields three slots
+        (9-13, 13-17, 17-21). After firing in slot 0 the next fire lands
+        in slot 1; after slot 2 it rolls to tomorrow's slot 0."""
+        cfg = {"start_hour": 9, "end_hour": 21, "tz": "UTC", "fires_per_day": 3}
+
+        random.seed(1)
+        after_slot0 = compute_next_fire_at(
+            "random_within_window", cfg, "coalesce", _utc(2026, 5, 22, 10, 0), _utc(2026, 5, 22, 10, 0)
+        )
+        assert after_slot0 is not None
+        assert _utc(2026, 5, 22, 13, 0) <= after_slot0 < _utc(2026, 5, 22, 17, 0)
+
+        random.seed(1)
+        after_slot1 = compute_next_fire_at(
+            "random_within_window", cfg, "coalesce", _utc(2026, 5, 22, 14, 0), _utc(2026, 5, 22, 14, 0)
+        )
+        assert after_slot1 is not None
+        assert _utc(2026, 5, 22, 17, 0) <= after_slot1 < _utc(2026, 5, 22, 21, 0)
+
+        random.seed(1)
+        after_slot2 = compute_next_fire_at(
+            "random_within_window", cfg, "coalesce", _utc(2026, 5, 22, 18, 0), _utc(2026, 5, 22, 18, 0)
+        )
+        assert after_slot2 is not None
+        assert _utc(2026, 5, 23, 9, 0) <= after_slot2 < _utc(2026, 5, 23, 13, 0)
+
+    def test_never_fired_can_fire_in_current_slot_today(self) -> None:
+        """A never-fired schedule (``last_fired_at=None``) fires in the
+        slot ``now`` currently occupies, not tomorrow."""
+        random.seed(7)
+        result = compute_next_fire_at(
+            "random_within_window",
+            {"start_hour": 9, "end_hour": 21, "tz": "UTC", "fires_per_day": 3},
+            "coalesce",
+            None,
+            _utc(2026, 5, 22, 14, 0),
+        )
+        assert result is not None
+        # now sits in slot 1 (13-17); a first fire may land from now to slot end
+        assert _utc(2026, 5, 22, 14, 0) <= result < _utc(2026, 5, 22, 17, 0)
+
+    def test_zero_fires_per_day_rejected(self) -> None:
+        with pytest.raises(ValueError, match="positive fires_per_day"):
+            compute_next_fire_at(
+                "random_within_window",
+                {"start_hour": 9, "end_hour": 21, "tz": "UTC", "fires_per_day": 0},
+                "coalesce",
+                None,
+                _utc(2026, 5, 22, 10, 0),
+            )
+
     def test_start_equals_end_rejected(self) -> None:
         with pytest.raises(ValueError, match="start_hour != end_hour"):
             compute_next_fire_at(
@@ -204,9 +321,14 @@ class TestCron:
         result = compute_next_fire_at("cron", {"expr": "0 */3 * * *"}, "coalesce", None, _utc(2026, 5, 22, 1, 30))
         assert result == _utc(2026, 5, 22, 3, 0)
 
-    def test_catch_up_anchors_on_last_fire(self) -> None:
+    def test_catch_up_anchors_on_current_fire(self) -> None:
         result = compute_next_fire_at(
-            "cron", {"expr": "0 */3 * * *"}, "catch_up", _utc(2026, 5, 22, 9, 0), _utc(2026, 5, 22, 20, 0)
+            "cron",
+            {"expr": "0 */3 * * *"},
+            "catch_up",
+            _utc(2026, 5, 22, 20, 0),  # last_fired_at = now -- must be ignored
+            _utc(2026, 5, 22, 20, 0),  # now
+            _utc(2026, 5, 22, 9, 0),  # current_fire_at
         )
         assert result == _utc(2026, 5, 22, 12, 0)
 
@@ -248,9 +370,14 @@ class TestInterval:
         result = compute_next_fire_at("interval", {"seconds": 1800}, "coalesce", None, _utc(2026, 5, 22, 10, 0))
         assert result == _utc(2026, 5, 22, 10, 30)
 
-    def test_catch_up_anchors_on_last_fire(self) -> None:
+    def test_catch_up_anchors_on_current_fire(self) -> None:
         result = compute_next_fire_at(
-            "interval", {"seconds": 1800}, "catch_up", _utc(2026, 5, 22, 9, 0), _utc(2026, 5, 22, 15, 0)
+            "interval",
+            {"seconds": 1800},
+            "catch_up",
+            _utc(2026, 5, 22, 15, 0),  # last_fired_at = now -- must be ignored
+            _utc(2026, 5, 22, 15, 0),  # now
+            _utc(2026, 5, 22, 9, 0),  # current_fire_at
         )
         assert result == _utc(2026, 5, 22, 9, 30)
 

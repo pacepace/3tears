@@ -123,10 +123,14 @@ class EnvVarIdentityProvider:
     will resolve per request from the MCP-client-supplied bearer
     token using the same :class:`Identity` shape.
 
-    the admin flag is True by default -- the env-var creds in v1 are
-    admin-equivalent (same as the existing prototype's behaviour).
-    consumers wiring a non-admin identity should pass ``is_admin=False``
-    explicitly.
+    the admin flag is default-deny: ``is_admin`` defaults to False so a
+    wiring that forgets the flag yields an ordinary (non-admin) identity
+    subject to the same grant checks as any other principal. admin
+    authority is a privilege that must be granted explicitly -- a
+    consumer wiring the admin-equivalent env-var creds passes
+    ``is_admin=True`` at construction (the two stdio launchers do). the
+    previous True-by-default admitted every tool for any caller whose
+    wirer omitted the flag, a total RBAC bypass.
 
     :param principal_id: user UUID; if ``None`` reads from
         ``user_id_env_var``
@@ -134,8 +138,8 @@ class EnvVarIdentityProvider:
     :param user_id_env_var: env var name that holds the admin user
         UUID when ``principal_id`` is unset
     :ptype user_id_env_var: str
-    :param is_admin: whether this identity has admin role; v1 default
-        True matches the prototype's env-var-admin behaviour
+    :param is_admin: whether this identity has admin role; default-deny
+        False, admin granted only when passed explicitly
     :ptype is_admin: bool
     """
 
@@ -144,7 +148,7 @@ class EnvVarIdentityProvider:
         *,
         principal_id: UUID | None = None,
         user_id_env_var: str = "MCP_ADMIN_USER_ID",
-        is_admin: bool = True,
+        is_admin: bool = False,
     ) -> None:
         """capture identity source; resolve at :meth:`identify` call.
 
@@ -153,7 +157,8 @@ class EnvVarIdentityProvider:
         :param user_id_env_var: env var consulted when ``principal_id``
             is ``None``
         :ptype user_id_env_var: str
-        :param is_admin: admin flag; default True for v1 env-var creds
+        :param is_admin: admin flag; default-deny False, granted only
+            when the wirer passes True explicitly
         :ptype is_admin: bool
         :return: nothing
         :rtype: None

@@ -38,6 +38,7 @@ from threetears.agent.skills.types import (
     OutcomeSource,
     SkillOutcome,
 )
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.serialization import (
     deserialize_from_json,
@@ -167,10 +168,20 @@ def _build_upsert_sql(
     insert_cols: Sequence[str],
     update_cols: Sequence[str],
     pk_cols: Sequence[str],
+    *,
+    cas_column: str | None = None,
 ) -> str:
     """Build a parameterised INSERT ... ON CONFLICT DO UPDATE statement.
 
     Positional parameters bind to ``insert_cols`` in declared order.
+    When ``cas_column`` is set the ON CONFLICT DO UPDATE carries an
+    optimistic-lock fence ``WHERE {table}.{cas_column} = $N`` (with
+    ``N = len(insert_cols) + 1``); the fence value binds as the single
+    trailing positional parameter after the insert columns. A conflict
+    whose stored ``cas_column`` no longer matches the fence updates zero
+    rows, so the framework's :meth:`BaseCollection.save_entity` path
+    raises :class:`ConcurrentModificationError` instead of clobbering a
+    concurrent writer (the skills lost-update guard).
 
     :param table: table name
     :ptype table: str
@@ -181,6 +192,9 @@ def _build_upsert_sql(
     :ptype update_cols: Sequence[str]
     :param pk_cols: conflict target columns
     :ptype pk_cols: Sequence[str]
+    :param cas_column: optional optimistic-lock fence column; ``None``
+        emits an unconditional DO UPDATE (insert / no-fence path)
+    :ptype cas_column: str | None
     :return: SQL string ready for ``execute()``
     :rtype: str
     """
@@ -188,10 +202,13 @@ def _build_upsert_sql(
     column_list = ", ".join(insert_cols)
     pk_list = ", ".join(pk_cols)
     set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-    return (
+    sql = (
         f"INSERT INTO {table} ({column_list}) VALUES ({placeholders}) "
         f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
     )
+    if cas_column is not None:
+        sql = f"{sql} WHERE {table}.{cas_column} = ${len(insert_cols) + 1}"
+    return sql
 
 
 _AGENT_SKILLS_UPSERT_SQL = _build_upsert_sql(
@@ -199,6 +216,23 @@ _AGENT_SKILLS_UPSERT_SQL = _build_upsert_sql(
     _SKILL_INSERT_COLUMNS,
     _SKILL_UPDATE_COLUMNS,
     ("agent_id", "skill_id"),
+)
+
+
+# CAS-fenced variant of the skills upsert. Selected by
+# ``save_to_store`` when the caller supplies an ``original_timestamp``
+# (an edit of an already-persisted skill); binds the fence value as the
+# single trailing parameter after the insert columns. Guards the
+# ``skill_update`` lost-update: an edit computed against a stale read
+# updates zero rows once a concurrent edit / counter bump has moved
+# ``date_updated``, surfacing a ``ConcurrentModificationError`` rather
+# than silently overwriting the concurrent write.
+_AGENT_SKILLS_UPSERT_CAS_SQL = _build_upsert_sql(
+    "agent_skills",
+    _SKILL_INSERT_COLUMNS,
+    _SKILL_UPDATE_COLUMNS,
+    ("agent_id", "skill_id"),
+    cas_column="date_updated",
 )
 
 
@@ -293,28 +327,42 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         *,
         conn: Any = None,
     ) -> int:
-        """Upsert a row.
+        """Upsert a row, optionally under an optimistic-lock fence.
+
+        When ``original_timestamp`` is supplied (the ``skill_update``
+        edit path -- :meth:`BaseCollection.save_entity` threads the
+        entity's ``original_date_updated`` through) the write goes
+        through :data:`_AGENT_SKILLS_UPSERT_CAS_SQL`, whose ON CONFLICT
+        DO UPDATE fences on ``date_updated = original_timestamp``. A
+        conflict whose stored ``date_updated`` has since moved (a racing
+        edit, or a ``bump_use_count`` / ``increment_outcome_counts``
+        counter bump between the caller's read and this write) updates
+        zero rows, so ``save_entity`` raises
+        :class:`ConcurrentModificationError` rather than clobbering the
+        concurrent writer. When ``original_timestamp`` is ``None`` (a
+        fresh insert, e.g. ``skill_create``) the unfenced upsert runs.
 
         :param data: row dict keyed by column name; must carry both pk
             columns and every non-nullable column
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored (this collection has no CAS
-            fence -- skills updates are idempotent enough that a CAS
-            fence would just complicate retries)
+        :param original_timestamp: pre-mutation ``date_updated`` fence
+            value for optimistic locking; ``None`` for inserts
         :ptype original_timestamp: Any
         :param conn: optional asyncpg-compatible connection (forwarded
             so the caller can include the write in their own transaction)
         :ptype conn: Any
-        :return: rows affected (1 on success)
+        :return: rows affected (1 on success, 0 on CAS-fence mismatch)
         :rtype: int
         """
-        del original_timestamp
         params = _skill_insert_params(data)
         target = conn if conn is not None else self.l3_pool
         if target is None:
             return 0
-        await target.execute(_AGENT_SKILLS_UPSERT_SQL, *params)
-        return 1
+        if original_timestamp is not None:
+            status = await target.execute(_AGENT_SKILLS_UPSERT_CAS_SQL, *params, original_timestamp)
+        else:
+            status = await target.execute(_AGENT_SKILLS_UPSERT_SQL, *params)
+        return parse_rowcount(status)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a row by composite pk.
@@ -554,10 +602,15 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         """
         if self.l3_pool is None or not skill_ids:
             return None
-        # cache-bypass: bulk UPDATE by skill_id IN (...) is not
-        # primary-key addressable for the L1 row cache. method on the
-        # Collection preserves the single SQL entry point + lets
-        # subsequent reads observe the bump.
+        # The counter bump is a bulk UPDATE by skill_id IN (...) -- not
+        # primary-key addressable, so it cannot flow through the L1 row
+        # cache write path. But every bumped skill IS pk-addressable and
+        # is very likely cached (the wake / invoke load path just read
+        # it), so a raw UPDATE alone would leave stale ``use_count`` /
+        # ``last_used_at`` in this pod's L1 and in L2 (and in every peer
+        # pod's L1). Invalidate each bumped pk so the cross-tier drop +
+        # cross-pod invalidation fire and the next read fetches through
+        # to observe the bump.
         await self.l3_pool.execute(
             "UPDATE agent_skills "
             "SET use_count = use_count + 1, last_used_at = now(), date_updated = now() "
@@ -565,6 +618,8 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             agent_id,
             list(skill_ids),
         )
+        for skill_id in skill_ids:
+            await self.invalidate_cache((agent_id, skill_id))
         return None
 
     async def increment_outcome_counts(
@@ -610,11 +665,14 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             )
         if self.l3_pool is None:
             return None
-        # cache-bypass: targeted single-row UPDATE not flowed through
-        # the L1 row cache because the update touches counter columns
-        # not in the typical read path; subsequent reads naturally
-        # fetch-through.
+        # Targeted single-row counter UPDATE. The row is pk-addressable
+        # and likely cached, so a raw UPDATE alone would leave stale
+        # ``success_count`` / ``failure_count`` / ``last_failure_at`` in
+        # this pod's L1, in L2, and in every peer pod's L1. Invalidate
+        # the pk after the write so the cross-tier drop + cross-pod
+        # invalidation fire and the next read fetches through.
         await self.l3_pool.execute(sql, agent_id, skill_id)
+        await self.invalidate_cache((agent_id, skill_id))
         return None
 
 

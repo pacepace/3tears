@@ -19,6 +19,7 @@ __all__ = [
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
+    "EVENT_FIRE_REAPED",
     "EVENT_FIRE_SKIPPED_BUSY",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
@@ -40,3 +41,7 @@ EVENT_FIRE_SKIPPED_BUSY: str = "3tears.scheduled_jobs.fire.skipped_busy"
 # Drift -- emitted when the actual fire instant differs from the
 # scheduled instant by more than a tolerance threshold.
 EVENT_FIRE_DRIFT: str = "3tears.scheduled_jobs.fire.drift"
+
+# Reaper -- emitted (with a count) when the tick sweep reclaims fire rows
+# stuck in ``'dispatching'`` (a pod died mid-dispatch) to ``'failed'``.
+EVENT_FIRE_REAPED: str = "3tears.scheduled_jobs.fire.reaped"

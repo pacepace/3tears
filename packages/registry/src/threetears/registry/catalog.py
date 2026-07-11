@@ -500,6 +500,33 @@ class ToolCatalog:
         result = marked
         return result
 
+    def mark_pod_endpoints_unavailable(self, pod_id: str) -> list[str]:
+        """mark all endpoints for specified pod as unavailable.
+
+        scans entire catalog for endpoints belonging to pod_id and sets
+        their status to unavailable WITHOUT removing them. used to
+        quarantine a pod whose heartbeats have lapsed but whose
+        consecutive-miss count has not yet reached the eviction
+        threshold: routing stops selecting the pod (only 'available'
+        endpoints are routable) while the endpoints stay in the catalog
+        so a returning heartbeat can revive them via
+        :meth:`mark_pod_endpoints_available` -- no full re-registration.
+
+        :param pod_id: identifier of pod whose endpoints to mark
+        :ptype pod_id: str
+        :return: list of full_name values that were marked unavailable
+        :rtype: list[str]
+        """
+        marked: list[str] = []
+        for full_name, entry in self._entries.items():
+            endpoint = entry.get_endpoint(pod_id)
+            if endpoint is None:
+                continue
+            endpoint.status = "unavailable"
+            marked.append(full_name)
+        result = marked
+        return result
+
     async def mark_ready(self, pod_id: str) -> list[str]:
         """transition pending endpoints for pod to available and persist.
 

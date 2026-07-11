@@ -136,3 +136,7 @@ packages/agent/memory/tests/test_lazy_init.py:51:_LAZY
 packages/agent/knowledge/tests/test_lazy_init.py:47:_LAZY
 # rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 47
 packages/agent/knowledge/tests/test_lazy_init.py:51:_LAZY
+# rationale: lifecycle test asserts fire_and_forget holds a strong reference to a task scheduled on a caller's running loop until it completes; _pending_tasks is the internal strong-reference anchor with no public accessor and exposing one would add API surface only this test needs
+packages/core/tests/test_bridge.py:32:_pending_tasks
+# rationale: lifecycle test asserts the done-callback releases the strong reference once the task completes so tasks are not leaked; same internal anchor as line 32
+packages/core/tests/test_bridge.py:42:_pending_tasks

@@ -18,8 +18,10 @@ hard-codes schema names; that stays the caller's responsibility.
 
 from __future__ import annotations
 
+import hashlib
+from contextlib import asynccontextmanager
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping
 
 from threetears.core.data.migrations.errors import (
     MigrationError,
@@ -62,6 +64,50 @@ _SELECT_MAX_VERSION_SQL = "SELECT COALESCE(MAX(version), 0) AS max_version FROM 
 _INSERT_VERSION_SQL = "INSERT INTO _schema_migrations (version, package, description) VALUES ($1, $2, $3)"
 
 _DELETE_VERSION_SQL = "DELETE FROM _schema_migrations WHERE version = $1 AND package = $2"
+
+# advisory-lock statements gating a migration run. the two-int overload
+# ``pg_advisory_lock(int4, int4)`` keys on a (namespace, schema_key) pair
+# so concurrent pods applying migrations to the SAME schema serialise,
+# while runs against DIFFERENT schemas (platform vs each agent schema)
+# proceed in parallel. the lock is SESSION-scoped: acquired before the
+# apply sequence and released in a finally, it is held across every DDL +
+# ``_schema_migrations`` INSERT the run issues on the same connection. this
+# is the ONLY correct serialisation mechanism on YugabyteDB, where DDL
+# auto-commits and therefore cannot be wrapped with its bookkeeping INSERT
+# in a single atomic transaction (see project rule "YugabyteDB DDL/DML
+# must be separate transactions"); the lock replaces the transaction.
+_ACQUIRE_LOCK_SQL = "SELECT pg_advisory_lock($1, $2)"
+
+_RELEASE_LOCK_SQL = "SELECT pg_advisory_unlock($1, $2)"
+
+_CURRENT_SCHEMA_SQL = "SELECT current_schema() AS schema_name"
+
+# namespace partitioning the migration lock space from any other advisory
+# lock the platform adopts. fits signed int4 so asyncpg binds it to the
+# int4 overload of ``pg_advisory_lock`` without coercion surprises.
+_MIGRATION_LOCK_NAMESPACE = 0x3EA5_10C
+
+
+def _schema_lock_key(schema: str) -> int:
+    """
+    derive a stable signed-int4 advisory-lock key for a schema name.
+
+    hashes the schema name with SHA-256 (a process- and host-stable
+    digest, unlike Python's salted ``hash()``) and folds the first four
+    bytes into the signed int4 range so concurrent pods computing the key
+    for the same schema agree on the same lock. collision risk across
+    distinct schemas is ~1-in-2^31; the worst case of a collision is a
+    spurious serialisation between two unrelated schemas, never a
+    correctness break, because the guarded section is idempotent.
+
+    :param schema: target schema name (from ``current_schema()``)
+    :ptype schema: str
+    :return: signed int4 lock key
+    :rtype: int
+    """
+    digest = hashlib.sha256(schema.encode("utf-8")).digest()
+    key = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+    return key
 
 
 class MigrationRunner:
@@ -143,7 +189,8 @@ class MigrationRunner:
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         :raises MigrationFailedError: wrapping original migration exception
         """
-        result = await self._apply_scope(store, MigrationScope.PLATFORM, target)
+        async with self._migration_lock(store):
+            result = await self._apply_scope(store, MigrationScope.PLATFORM, target)
         return result
 
     @traced
@@ -166,7 +213,8 @@ class MigrationRunner:
         :raises MissingDependencyError: on unresolved/cyclic depends_on
         :raises MigrationFailedError: wrapping original migration exception
         """
-        result = await self._apply_scope(store, MigrationScope.AGENT, target)
+        async with self._migration_lock(store):
+            result = await self._apply_scope(store, MigrationScope.AGENT, target)
         return result
 
     @traced
@@ -251,34 +299,36 @@ class MigrationRunner:
         if steps <= 0:
             msg = f"downgrade steps must be >= 1, got {steps}"
             raise MigrationError(msg)
-        await self._ensure_migrations_table(store)
-        history = await self._get_history(store)
-        in_scope = {p.name for p in self._packages.values() if p.scope == scope}
-        scope_history = [row for row in history if row["package"] in in_scope]
-        if not scope_history:
-            return 0
-        # roll back from most-recent backwards
-        targets = list(reversed(scope_history))[:steps]
-        # validate every target has a registered downgrade before
-        # running any. partial rollbacks produce ambiguous DB state.
-        for row in targets:
-            pkg_name = row["package"]
-            version_num = row["version"]
-            pkg = self._packages[pkg_name]
-            if version_num not in pkg.downgrades:
-                msg = (
-                    f"no downgrade registered for {pkg_name}:{version_num}; "
-                    "cannot roll back. add a @pkg.downgrade(N) callable "
-                    "or use 'stamp --force' to reset bookkeeping manually."
-                )
-                raise MigrationError(msg)
-        count = 0
-        for row in targets:
-            pkg_name = row["package"]
-            version_num = row["version"]
-            pkg = self._packages[pkg_name]
-            down = pkg.downgrades[version_num]
-            count += await self._run_downgrade(store, pkg_name, version_num, down)
+        async with self._migration_lock(store):
+            await self._ensure_migrations_table(store)
+            history = await self._get_history(store)
+            in_scope = {p.name for p in self._packages.values() if p.scope == scope}
+            scope_history = [row for row in history if row["package"] in in_scope]
+            if not scope_history:
+                count = 0
+            else:
+                # roll back from most-recent backwards
+                targets = list(reversed(scope_history))[:steps]
+                # validate every target has a registered downgrade before
+                # running any. partial rollbacks produce ambiguous DB state.
+                for row in targets:
+                    pkg_name = row["package"]
+                    version_num = row["version"]
+                    pkg = self._packages[pkg_name]
+                    if version_num not in pkg.downgrades:
+                        msg = (
+                            f"no downgrade registered for {pkg_name}:{version_num}; "
+                            "cannot roll back. add a @pkg.downgrade(N) callable "
+                            "or use 'stamp --force' to reset bookkeeping manually."
+                        )
+                        raise MigrationError(msg)
+                count = 0
+                for row in targets:
+                    pkg_name = row["package"]
+                    version_num = row["version"]
+                    pkg = self._packages[pkg_name]
+                    down = pkg.downgrades[version_num]
+                    count += await self._run_downgrade(store, pkg_name, version_num, down)
         return count
 
     @traced
@@ -379,9 +429,10 @@ class MigrationRunner:
             msg = f"package {package_name!r} not registered"
             raise KeyError(msg)
         package = self._packages[package_name]
-        await self._ensure_migrations_table(store)
-        applied = await self._get_applied_versions(store)
-        count = await self._apply_package_pending(store, package, applied)
+        async with self._migration_lock(store):
+            await self._ensure_migrations_table(store)
+            applied = await self._get_applied_versions(store)
+            count = await self._apply_package_pending(store, package, applied)
         return count
 
     def pending_sequence(self, scope: MigrationScope) -> list[tuple[str, int]]:
@@ -409,6 +460,60 @@ class MigrationRunner:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    @asynccontextmanager
+    async def _migration_lock(self, store: DataStore) -> AsyncIterator[None]:
+        """
+        hold a per-schema advisory lock across a migration critical section.
+
+        acquires ``pg_advisory_lock(namespace, schema_key)`` before
+        yielding and releases it in a ``finally`` so a raising migration
+        body still frees the lock. the key is derived from the store's
+        current schema (``current_schema()``), so concurrent pods
+        applying migrations to the SAME schema serialise while runs
+        against different schemas proceed in parallel. this closes the
+        double-apply race where two pods both read an empty applied-set
+        and both run the DDL + ``_schema_migrations`` INSERT.
+
+        the lock is SESSION-scoped and MUST be held on the same
+        connection that runs the guarded statements; every production
+        caller passes a store bound to one dedicated connection, so the
+        lock spans the whole run. on a database that does not implement
+        advisory locks (a test double), the key derivation still resolves
+        (``current_schema()`` yields no rows, keyed as the empty string)
+        and the lock statements are harmless no-ops.
+
+        :param store: DataStore bound to the target schema
+        :ptype store: DataStore
+        :return: async context manager holding the advisory lock
+        :rtype: AsyncIterator[None]
+        """
+        schema = await self._current_schema(store)
+        lock_key = _schema_lock_key(schema)
+        await store.execute(_ACQUIRE_LOCK_SQL, _MIGRATION_LOCK_NAMESPACE, lock_key)
+        try:
+            yield
+        finally:
+            await store.execute(_RELEASE_LOCK_SQL, _MIGRATION_LOCK_NAMESPACE, lock_key)
+
+    async def _current_schema(self, store: DataStore) -> str:
+        """
+        read the store's current schema name for advisory-lock keying.
+
+        returns the first entry of the connection's search_path via
+        ``current_schema()``. falls back to the empty string when the
+        store yields no rows (a test double that does not model the
+        function); an empty-string key is still deterministic, which is
+        all the lock keying requires.
+
+        :param store: DataStore bound to the target schema
+        :ptype store: DataStore
+        :return: current schema name, or empty string if unavailable
+        :rtype: str
+        """
+        rows = await store.query(_CURRENT_SCHEMA_SQL)
+        schema = str(rows[0]["schema_name"]) if rows else ""
+        return schema
 
     async def _apply_scope(
         self,

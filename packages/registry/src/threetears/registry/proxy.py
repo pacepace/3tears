@@ -951,17 +951,54 @@ class CallProxy:
             )
             return
 
+        # failover loop: forward to the selected endpoint, and on a
+        # DEAD-POD transport failure (TOOL_UNAVAILABLE -- the wrapper saw
+        # "no responders" / "connection closed", so the call never reached
+        # a pod) retry against another available endpoint the routing
+        # strategy has not yet handed us. this survives the window between a
+        # pod dying and the heartbeat sweep evicting its catalog endpoints:
+        # a single call to a not-yet-evicted dead pod no longer fails the
+        # whole request when a healthy sibling pod serves the same tool.
+        #
+        # only TOOL_UNAVAILABLE is retried. a TOOL_TIMEOUT may have reached
+        # the pod and be executing, so retrying it would risk double-execution
+        # of a non-idempotent tool; a tool-level error (success=False from the
+        # pod) or a success is the pod's authoritative answer. all three
+        # short-circuit the loop.
+        #
         # in_flight is read by routing strategies during endpoint selection
         # and incremented/decremented here. the +=/-= pair is safe under
         # asyncio (no preemption between the read and the store within a
         # single bytecode op) but would race under threaded execution. if
         # this proxy is ever moved off a single event loop, wrap these
         # ops in an asyncio.Lock or swap to a threadsafe counter.
-        endpoint.in_flight += 1
-        try:
-            response = await self._forward_call(request, endpoint.pod_id)
-        finally:
-            endpoint.in_flight -= 1
+        attempted_pod_ids: set[str] = set()
+        while True:
+            attempted_pod_ids.add(endpoint.pod_id)
+            endpoint.in_flight += 1
+            try:
+                response = await self._forward_call(request, endpoint.pod_id)
+            finally:
+                endpoint.in_flight -= 1
+            if response.error_code != "TOOL_UNAVAILABLE":
+                break
+            remaining = [ep for ep in entry.endpoints if ep.pod_id not in attempted_pod_ids]
+            next_endpoint = self._routing_strategy.select(remaining)
+            if next_endpoint is None:
+                break
+            log.warning(
+                "tool endpoint unreachable; failing over to another pod",
+                extra={
+                    "extra_data": {
+                        "full_name": full_name,
+                        "failed_pod_id": endpoint.pod_id,
+                        "failover_pod_id": next_endpoint.pod_id,
+                        "agent_id": agent_id_log,
+                        "correlation_id": correlation_id_log,
+                    }
+                },
+            )
+            endpoint = next_endpoint
         if msg.reply_subject is not None:
             await self._nc.publish_reply(
                 reply_subject=msg.reply_subject,

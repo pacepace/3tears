@@ -46,12 +46,13 @@ design notes
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
 from threetears.observe import get_logger
 from threetears.scheduled_jobs import (
+    DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
     DEFAULT_TICK_DUE_LIMIT,
     DueSchedule,
     FireStore,
@@ -136,6 +137,11 @@ class _WakeJobConfig:
     def tick_due_limit(self) -> int:
         """Return the platform-default per-tick due-row scan cap."""
         return DEFAULT_TICK_DUE_LIMIT
+
+    @property
+    def dispatch_reap_after_seconds(self) -> int:
+        """Return the platform-default stale-``'dispatching'`` reap age."""
+        return DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 
 
 _WAKE_JOB_CONFIG: JobConfig = _WakeJobConfig()
@@ -359,6 +365,15 @@ class _WakeFireStore:
             error=error,
             latency_ms=latency_ms,
         )
+
+    async def reap_stale_dispatching(
+        self,
+        now: datetime,
+        *,
+        older_than: timedelta,
+    ) -> int:
+        """Delegate the abandoned-``'dispatching'`` sweep to the wake collection."""
+        return await self._collection.reap_stale_dispatching(now, older_than=older_than)
 
 
 def _rebuild_wake_trigger(job_trigger: JobTrigger) -> WakeTrigger:

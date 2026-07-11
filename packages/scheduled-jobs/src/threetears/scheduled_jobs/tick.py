@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
@@ -59,6 +59,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
+    EVENT_FIRE_REAPED,
     EVENT_FIRE_SKIPPED_BUSY,
     EVENT_TICK_COMPLETED,
     EVENT_TICK_STARTED,
@@ -176,6 +177,7 @@ async def _run_tick_body(
     emitter = get_scheduled_jobs_emitter()
     tick_started = time.monotonic()
     now = datetime.now(UTC)
+    await _reap_stale_dispatching(fire_store, config, now, emitter)
     due = await schedule_store.list_due_for_tick(now=now, limit=config.tick_due_limit)
     log.info(
         EVENT_TICK_STARTED,
@@ -199,6 +201,50 @@ async def _run_tick_body(
         EVENT_TICK_COMPLETED,
         extra={"extra_data": {"processed": len(due), "duration_seconds": duration}},
     )
+
+
+async def _reap_stale_dispatching(
+    fire_store: FireStore,
+    config: JobConfig,
+    now: datetime,
+    emitter: Any,
+) -> None:
+    """Reap fire rows abandoned mid-dispatch, once per tick.
+
+    Delegates to :meth:`FireStore.reap_stale_dispatching` with the
+    configured age threshold. A pod that died between the in-flight
+    insert and a finalize leaves a permanent ``'dispatching'`` zombie;
+    this surfaces the loss as a ``'failed'`` fire + a failure-metric
+    increment. Wrapped in boundary isolation so a reaper failure (e.g. a
+    transient DB hiccup) never blocks the tick's dispatch work.
+
+    :param fire_store: the fire-side store
+    :ptype fire_store: FireStore
+    :param config: operational config (carries the reap-age threshold)
+    :ptype config: JobConfig
+    :param now: tick instant
+    :ptype now: datetime
+    :param emitter: metrics emitter
+    :ptype emitter: Any
+    :return: nothing
+    :rtype: None
+    """
+    older_than = timedelta(seconds=config.dispatch_reap_after_seconds)
+    try:
+        reaped = await fire_store.reap_stale_dispatching(now, older_than=older_than)
+    except Exception:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
+        log.exception(
+            "scheduled_tick: reaper sweep raised; continuing with dispatch",
+            extra={"extra_data": {"reap_after_seconds": config.dispatch_reap_after_seconds}},
+        )
+        return
+    if reaped > 0:
+        log.info(
+            EVENT_FIRE_REAPED,
+            extra={"extra_data": {"reaped_count": reaped, "reap_after_seconds": config.dispatch_reap_after_seconds}},
+        )
+        for _ in range(reaped):
+            emitter.inc_failure(reason="reaped")
 
 
 async def _dispatch_one(
@@ -236,6 +282,10 @@ async def _dispatch_one(
             missed_fire_policy=schedule.missed_fire_policy,
             last_fired_at=schedule.last_fired_at,
             now=tick_at,
+            # catch_up anchors on the occurrence being fired, NOT
+            # last_fired_at (the store stamps that to ``now`` on claim, so
+            # anchoring there collapses catch_up into coalesce).
+            current_fire_at=expected_next_fire,
         )
     new_status = "expired" if computed_next_fire is None else "active"
 
