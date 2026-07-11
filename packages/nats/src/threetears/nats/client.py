@@ -223,6 +223,10 @@ _RECONNECT_BACKOFF_MIN_SECONDS: Final[float] = 0.05
 #: and it busy-spins. returning a real, whole-second pace here fails safe instead of hot-looping.
 _RECONNECT_BACKOFF_FALLBACK_SECONDS: Final[float] = 1.0
 
+#: pace (seconds) the durable pull-consumer loop waits after a transport error before retrying, so a
+#: reconnect-window failure recovers without busy-spinning the CPU.
+_PULL_CONSUMER_ERROR_BACKOFF_SECONDS: Final[float] = 1.0
+
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
@@ -515,11 +519,30 @@ class JetStreamPullConsumer:
     async def run(self) -> None:
         """loop fetch+dispatch until :meth:`stop` (or task cancellation).
 
+        RESILIENT: a non-timeout transport error from ``fetch`` -- or from the ``nak`` / ``ack`` /
+        ``jetstream_publish`` inside the bounded-redelivery policy -- surfaces here during a NATS
+        reconnect window. it must NOT escape and kill the consumer task: the delivery worker spawns
+        ``run()`` unsupervised (fire-and-forget ``create_task``), so a dead task would SILENTLY stop
+        channel delivery until the pod restarts -- the exact "background loop silently stops" failure
+        class. catch, log, pace, and retry; the durable JetStream stream retains messages across the
+        blip so nothing is lost. only cancellation (shutdown) ends the loop.
+
         :return: nothing
         :rtype: None
         """
         while not self._stopped:
-            await self.fetch_and_process()
+            try:
+                await self.fetch_and_process()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a transport blip must never kill the consumer
+                log.warning(
+                    "durable pull consumer cycle failed (durable=%s); retrying after %.1fs: %s",
+                    self._durable,
+                    _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
+                    exc,
+                )
+                await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
 
     async def stop(self) -> None:
         """halt the fetch loop and unsubscribe the pull consumer.

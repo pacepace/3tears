@@ -1336,6 +1336,48 @@ async def test_pull_stop_unsubscribes_and_halts_run() -> None:
     psub.unsubscribe.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_pull_run_survives_transport_error_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REGRESSION: a non-timeout transport error from fetch must NOT kill run(); it retries.
+
+    run() had no guard, so a ConnectionClosedError from fetch (or from nak/ack/publish inside
+    redelivery) during a NATS reconnect escaped and silently killed the unsupervised consumer task --
+    channel delivery then stopped until the pod restarted. run() must catch, pace, and retry instead.
+    """
+    import threetears.nats.client as client_module
+    from nats.errors import ConnectionClosedError
+
+    # avoid the real 1s error-pace so the test is fast.
+    monkeypatch.setattr(client_module, "_PULL_CONSUMER_ERROR_BACKOFF_SECONDS", 0.0)
+
+    calls = {"n": 0}
+    psub = MagicMock()
+    psub.unsubscribe = AsyncMock()
+
+    async def _fetch(_batch: int, timeout: float) -> list[Any]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionClosedError()  # the reconnect-window transport error
+        consumer._stopped = True  # noqa: SLF001  # second cycle: end the loop cleanly
+        return []
+
+    psub.fetch = _fetch
+    client, _js = _pull_js(psub=psub)
+
+    consumer = await client.jetstream_pull_subscribe(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+
+    # run() must return normally (not propagate the transport error) after retrying past it.
+    await asyncio.wait_for(consumer.run(), timeout=5.0)
+    assert calls["n"] >= 2  # it retried after the transport error rather than dying
+
+
 # ---------------------------------------------------------------------------
 # reconnect callback fan-out (consumer-registered post-reconnect hooks)
 # ---------------------------------------------------------------------------
