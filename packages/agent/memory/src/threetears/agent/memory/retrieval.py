@@ -548,6 +548,7 @@ class MemoryRetriever:
                 similarity_threshold=cfg.similarity_threshold,
                 recency_half_life_hours=cfg.recency_half_life_hours,
                 signal_weights=cfg.signal_weights,
+                salience_ambient_floor=cfg.salience_ambient_floor,
                 agent_id=agent_id,
                 customer_id=customer_id,
                 fts_min_len=cfg.fts_min_query_len,
@@ -605,6 +606,17 @@ class MemoryRetriever:
         memories = [c for c in selected if c["_source_type"] == "memory"]
         media_content = [c for c in selected if c["_source_type"] == "media"]
         memory_chunks = [c for c in selected if c["_source_type"] == "chunk"]
+
+        # v024 reinforcement: ambient retrieval bumps the salience of the
+        # memories it surfaced (evergreen excluded) so used memories climb
+        # back up; only the neglected sink under scheduled decay. Direct
+        # id / alias recall does NOT bump -- this tracks proactive surfacing.
+        if memories:
+            await self._memories.bump_salience(
+                [m["memory_id"] for m in memories],
+                agent_id=agent_id,
+                access_bump=cfg.salience_access_bump,
+            )
 
         for c in selected:
             c.pop("_source_type", None)

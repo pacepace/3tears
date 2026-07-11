@@ -47,6 +47,7 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraint as SchemaUniqueConstraint,
     spans_partitions,
 )
+from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
@@ -1041,6 +1042,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         similarity_threshold: float,
         recency_half_life_hours: float,
         signal_weights: dict[str, float],
+        salience_ambient_floor: float = 0.0,
         fts_min_len: int = 3,
         fts_max_len: int = 500,
         date_after: datetime | None = None,
@@ -1081,6 +1083,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :param signal_weights: mapping ``{"semantic", "keyword",
             "recency"}`` to weights
         :ptype signal_weights: dict[str, float]
+        :param salience_ambient_floor: dormancy cutoff (v024). Ambient
+            retrieval excludes rows below this salience AND any row with a
+            non-null ``superseded_by`` (replaced by a consolidation gist).
+            Default 0.0 admits everything; the direct-recall paths
+            (``search_by_ids`` / ``find_by_alias``) always bypass this floor
+            so a dormant memory stays reachable by id / alias.
+        :ptype salience_ambient_floor: float
         :param fts_min_len: minimum query length for FTS activation
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
@@ -1125,6 +1134,18 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # absent / failed at write time -- they're recoverable on a
         # re-embed pass, but until then they must not enter the
         # similarity-ranked candidate set.
+        # v024 ambient filter: exclude superseded rows (replaced by a
+        # consolidation gist) and rows below the salience floor. The floor
+        # rides the last param slot; default 0.0 makes ``salience >= 0`` a
+        # no-op while ``superseded_by IS NULL`` still holds.
+        vec_params: list[Any] = [
+            embedding_str,
+            *scope_params,
+            candidate_limit,
+            *vec_extra_params,
+            salience_ambient_floor,
+        ]
+        vec_salience_idx = len(vec_params)
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
@@ -1133,13 +1154,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             FROM memories
             {vec_where}
               AND embedding IS NOT NULL{vec_date_clause}
+              AND superseded_by IS NULL AND salience >= ${vec_salience_idx}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
-            embedding_str,
-            *scope_params,
-            candidate_limit,
-            *vec_extra_params,
+            *vec_params,
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
@@ -1163,6 +1182,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
             # addressable. See :meth:`hybrid_search` docstring.
+            fts_params: list[Any] = [
+                fts_text,
+                *fts_scope_params,
+                candidate_limit,
+                *fts_extra_params,
+                salience_ambient_floor,
+            ]
+            fts_salience_idx = len(fts_params)
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
@@ -1172,13 +1199,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 {fts_where}
                   AND embedding IS NOT NULL
                   AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
+                  AND superseded_by IS NULL AND salience >= ${fts_salience_idx}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
-                fts_text,
-                *fts_scope_params,
-                candidate_limit,
-                *fts_extra_params,
+                *fts_params,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -1574,6 +1599,94 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
+
+    @spans_partitions(marker_only=True)
+    async def decay_salience(
+        self,
+        *,
+        half_life_days: float,
+        floor: float,
+    ) -> int:
+        """decay stored salience for every non-evergreen memory (v024).
+
+        The scheduled maintenance pass: ``salience`` sinks toward
+        ``floor`` on a ``half_life_days`` half-life, anchored on
+        ``last_decayed_at`` so the total decay over a period is
+        cadence-independent. ``evergreen`` rows are skipped. Delegates
+        to the shared :func:`apply_salience_decay` so ``agent/memory``
+        and ``agent/intention`` run identical decay; this method stays
+        the single entry point for the ``memories`` table's SQL.
+
+        Never deletes and never drops below ``floor`` (dormant, not
+        gone): a decayed memory drops out of ambient retrieval but is
+        still reachable by direct id / alias recall.
+
+        :param half_life_days: decay half-life in days
+        :ptype half_life_days: float
+        :param floor: salience asymptote; never decays below this
+        :ptype floor: float
+        :return: number of memories decayed
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        # __SPANS_PARTITIONS__: salience decay is a global maintenance
+        # sweep with no partition to scope to -- it ages every row the
+        # pool holds. The SQL literal lives in the shared helper (which
+        # carries no ``memories`` literal), so the partition-enforcement
+        # walker is satisfied and this method holds no raw table SQL.
+        return await apply_salience_decay(
+            self.l3_pool,
+            table="memories",
+            half_life_seconds=half_life_days * 86400.0,
+            floor=floor,
+        )
+
+    async def bump_salience(
+        self,
+        memory_ids: list[UUID],
+        *,
+        agent_id: UUID,
+        access_bump: float,
+    ) -> None:
+        """reinforce salience for memories surfaced by ambient retrieval (v024).
+
+        The other half of the decay cycle: on ambient retrieval, the
+        surfaced memories get ``salience = LEAST(1.0, salience +
+        access_bump)`` and a fresh ``last_accessed`` stamp, so used
+        memories climb back up while only the neglected sink.
+        ``evergreen`` rows are skipped (pinned, never bumped). Direct
+        recall (by id / alias) does NOT bump -- reinforcement tracks
+        proactive surfacing, not explicit lookup.
+
+        Partition-scoped by ``agent_id`` (the surfaced ids all belong to
+        the retrieving agent's partition), so no cross-partition sweep.
+
+        :param memory_ids: primary-key ids surfaced this retrieval
+        :ptype memory_ids: list[UUID]
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param access_bump: increment added to salience (clamped to 1.0)
+        :ptype access_bump: float
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not memory_ids:
+            return None
+        # cache-bypass: bulk reinforcement UPDATE keyed by a memory_id
+        # set is not primary-key-addressable one row at a time; the L1
+        # row cache holds a stale salience until the row is next read
+        # from L3, which is fine -- salience is an ambient ranking hint,
+        # eventually consistent by design.
+        await self.l3_pool.execute(
+            "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
+            "last_accessed = now() "
+            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
+            access_bump,
+            agent_id,
+            memory_ids,
+        )
+        return None
 
 
 class MediaCollection(SchemaBackedCollection[MediaEntity]):

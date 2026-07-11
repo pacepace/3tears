@@ -10,6 +10,7 @@ from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
 )
+from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
@@ -47,6 +48,7 @@ __all__ = [
     "UUID_TYPE",
     "VECTOR_TYPE",
     "WriteBuffer",
+    "apply_salience_decay",
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",
