@@ -69,6 +69,11 @@ version history:
 - v025 (presence/aliveness, v0.15.0) adds the nullable JSONB ``tags``
   label set + ``idx_memories_tags`` GIN index so containment /
   existence tag queries are index-served. Additive.
+- v026 (presence/aliveness, v0.15.0) creates the
+  ``memory_consolidations`` N:1 edge table (partition ``agent_id``,
+  composite PK, both refs FK to ``memories`` ON DELETE CASCADE,
+  ``rationale`` audit column, back-edge index) that Dream consolidation
+  populates. Additive; non-destructive to the source rows.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -153,6 +158,9 @@ from threetears.agent.memory.migrations.v024_memory_salience_and_scope import (
 from threetears.agent.memory.migrations.v025_add_memory_tags import (
     add_memory_tags,
 )
+from threetears.agent.memory.migrations.v026_create_memory_consolidations import (
+    create_memory_consolidations,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -206,6 +214,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(23)(fix_idx_chunks_message_id_start)
     pkg.version(24)(add_memory_salience_and_relax_scope)
     pkg.version(25)(add_memory_tags)
+    pkg.version(26)(create_memory_consolidations)
     runner.register(pkg)
     return pkg
 
@@ -226,6 +235,7 @@ __all__ = [
     "create_media_tables",
     "create_memories_table",
     "create_memory_chunks",
+    "create_memory_consolidations",
     "datetime_to_datetimetz",
     "drop_legacy_memory_columns",
     "enforce_conversation_id_not_null",

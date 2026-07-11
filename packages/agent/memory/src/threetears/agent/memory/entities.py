@@ -25,6 +25,7 @@ __all__ = [
     "MediaContentEntity",
     "MediaEntity",
     "MemoryChunkEntity",
+    "MemoryConsolidationEntity",
     "MemoryEntity",
     "MemoryRefEntity",
 ]
@@ -1233,4 +1234,113 @@ class MemoryRefEntity(BaseEntity):
         :param value: new updated datetime
         :ptype value: datetime
         """
+        BaseEntity.__setattr__(self, "date_updated", value)
+
+
+class MemoryConsolidationEntity(BaseEntity):
+    """cache proxy entity for the ``memory_consolidations`` edge table (v026).
+
+    Presence/aliveness program (3tears v0.15.0). One row records that
+    ``consolidated_memory_id`` (a Dream gist) was synthesised from
+    ``source_memory_id``; N source rows fan into one gist. The edge is
+    additive provenance — neither endpoint memory is mutated by it.
+
+    Composite primary key ``(agent_id, consolidated_memory_id,
+    source_memory_id)`` mirrors :class:`MemoryRefEntity`: ``_id`` holds
+    the tuple so :class:`BaseCollection`'s tuple-aware pk path addresses
+    L1 / L2 / L3 uniformly. ``rationale`` is the nullable audit trail.
+    """
+
+    primary_key_field: str = "agent_id"
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with the 3-tuple ``_id`` for composite-pk lookup.
+
+        :param data: row dict; must carry ``agent_id``,
+            ``consolidated_memory_id`` and ``source_memory_id`` keys
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        object.__setattr__(
+            self,
+            "_id",
+            (
+                data["agent_id"],
+                data["consolidated_memory_id"],
+                data["source_memory_id"],
+            ),
+        )
+
+    @property
+    def agent_id(self) -> UUID:
+        """get the agent UUID (partition, first pk column)."""
+        return _as_uuid(self._get_raw("agent_id"))
+
+    @agent_id.setter
+    def agent_id(self, value: UUID) -> None:
+        """set the agent UUID."""
+        BaseEntity.__setattr__(self, "agent_id", value)
+
+    @property
+    def consolidated_memory_id(self) -> UUID:
+        """get the gist (consolidated output) UUID (second pk column)."""
+        return _as_uuid(self._get_raw("consolidated_memory_id"))
+
+    @consolidated_memory_id.setter
+    def consolidated_memory_id(self, value: UUID) -> None:
+        """set the gist UUID."""
+        BaseEntity.__setattr__(self, "consolidated_memory_id", value)
+
+    @property
+    def source_memory_id(self) -> UUID:
+        """get the source (merged-in) UUID (third pk column)."""
+        return _as_uuid(self._get_raw("source_memory_id"))
+
+    @source_memory_id.setter
+    def source_memory_id(self, value: UUID) -> None:
+        """set the source UUID."""
+        BaseEntity.__setattr__(self, "source_memory_id", value)
+
+    @property
+    def rationale(self) -> str | None:
+        """get the nullable audit trail (why these merged), or ``None``."""
+        value: str | None = self._get_raw("rationale")
+        return value
+
+    @rationale.setter
+    def rationale(self, value: str | None) -> None:
+        """set the audit rationale."""
+        BaseEntity.__setattr__(self, "rationale", value)
+
+    @property
+    def date_created(self) -> datetime:
+        """get the timestamp when the edge was recorded."""
+        value: datetime = self._get_raw("date_created")
+        return value
+
+    @date_created.setter
+    def date_created(self, value: datetime) -> None:
+        """set the created timestamp."""
+        BaseEntity.__setattr__(self, "date_created", value)
+
+    @property
+    def date_updated(self) -> datetime | None:
+        """get the last-updated timestamp (framework-stamped on save)."""
+        value: datetime | None = self._get_raw("date_updated")
+        return value
+
+    @date_updated.setter
+    def date_updated(self, value: datetime | None) -> None:
+        """set the updated timestamp."""
         BaseEntity.__setattr__(self, "date_updated", value)

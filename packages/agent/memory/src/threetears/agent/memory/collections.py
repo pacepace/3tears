@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -62,24 +63,43 @@ from threetears.agent.memory.entities import (
     MediaContentEntity,
     MediaEntity,
     MemoryChunkEntity,
+    MemoryConsolidationEntity,
     MemoryEntity,
     MemoryRefEntity,
 )
 
 __all__ = [
+    "ConsolidationCycleError",
     "MediaCollection",
     "MediaContentCollection",
     "MemoriesCollection",
     "MemoryChunkCollection",
+    "MemoryConsolidationsCollection",
     "MemoryRefsCollection",
+    "assert_no_consolidation_cycle",
     "conversation_memory_refs_table",
     "media_content_table",
     "media_table",
     "memories_table",
     "memory_chunks_table",
+    "memory_consolidations_table",
 ]
 
 log = get_logger(__name__)
+
+
+def _as_pk_uuid(value: object) -> UUID:
+    """Coerce a memory/edge id to a stdlib :class:`UUID`.
+
+    Normalises across the two UUID types that flow through the edge
+    graph: asyncpg yields stdlib ``uuid.UUID`` on reads, while the app
+    passes ``uuid_utils.UUID`` (uuid7). The two are distinct types with
+    distinct hashing, so the cycle-guard walk must compare a single
+    canonical form or set-membership and ``==`` silently miss.
+    """
+    if type(value) is UUID:
+        return value
+    return UUID(str(value))
 
 
 def conversation_memory_refs_table(metadata: MetaData) -> Table:
@@ -203,6 +223,23 @@ def memory_chunks_table(metadata: MetaData) -> Table:
     :rtype: Table
     """
     return cast(Table, MemoryChunkCollection.schema.to_sqlalchemy_table(metadata))
+
+
+def memory_consolidations_table(metadata: MetaData) -> Table:
+    """Register the ``memory_consolidations`` edge table on ``metadata``.
+
+    Presence/aliveness program (v026). Thin idempotency wrapper around
+    :meth:`MemoryConsolidationsCollection.schema.to_sqlalchemy_table`.
+    Call before ``SQLiteCacheManager.initialize(metadata)`` so the L1
+    cache builds with the composite-pk edge table, and before Alembic
+    ``target_metadata`` reflection so auto-generate sees the same shape.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``memory_consolidations`` :class:`Table`
+    :rtype: Table
+    """
+    return cast(Table, MemoryConsolidationsCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str | None:
@@ -3377,3 +3414,258 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
+
+
+# Defensive upper bound on the consolidation-provenance walk. The visited
+# set already terminates any pre-existing cycle among non-gist nodes; this
+# caps a pathologically large provenance graph so the guard can never hang.
+_MAX_CONSOLIDATION_WALK_NODES = 10_000
+
+
+class ConsolidationCycleError(Exception):
+    """raised when recording consolidation edges would form a cycle.
+
+    A gist may not be consolidated from itself or from any of its
+    descendants (memories reachable through existing consolidation
+    edges). See :func:`assert_no_consolidation_cycle`.
+    """
+
+
+async def assert_no_consolidation_cycle(
+    *,
+    consolidated_memory_id: UUID,
+    source_memory_ids: Iterable[UUID],
+    sources_of: Callable[[UUID], Awaitable[Iterable[UUID]]],
+    max_nodes: int = _MAX_CONSOLIDATION_WALK_NODES,
+) -> None:
+    """reject a consolidation whose gist is reachable from any source.
+
+    A DAG reachability check (not a single-parent walk): starting from
+    every source, walk the ``consolidated -> source`` provenance edges
+    via ``sources_of`` and reject if the walk reaches
+    ``consolidated_memory_id``. That catches both a **self-merge** (a
+    source that IS the gist) and a **descendant-merge** (a source whose
+    provenance chain leads back to the gist).
+
+    A ``visited`` set makes the walk loop-safe and keeps a legitimate
+    diamond DAG — two sources that share a common ancestor — from
+    false-positiving: only the target gist is treated as a cycle, never a
+    merely-revisited node. Read-only over the edge graph; the source
+    rows are never mutated.
+
+    :param consolidated_memory_id: the prospective gist id
+    :ptype consolidated_memory_id: UUID
+    :param source_memory_ids: the sources fanning into the gist
+    :ptype source_memory_ids: Iterable[UUID]
+    :param sources_of: async lookup returning the sources a given memory
+        was itself consolidated from (empty for a non-gist memory)
+    :ptype sources_of: Callable[[UUID], Awaitable[Iterable[UUID]]]
+    :param max_nodes: defensive cap on distinct nodes walked
+    :ptype max_nodes: int
+    :return: nothing on success
+    :rtype: None
+    :raises ConsolidationCycleError: when the gist is reachable from a
+        source, or the walk exceeds ``max_nodes``
+    """
+    visited: set[UUID] = set()
+    stack: list[UUID] = list(source_memory_ids)
+    while stack:
+        node = stack.pop()
+        if node == consolidated_memory_id:
+            raise ConsolidationCycleError(
+                f"consolidation cycle: gist {consolidated_memory_id} is itself a source "
+                f"or a descendant of one of its sources",
+            )
+        if node in visited:
+            continue
+        visited.add(node)
+        if len(visited) > max_nodes:
+            raise ConsolidationCycleError(
+                f"consolidation provenance walk for gist {consolidated_memory_id} "
+                f"exceeded {max_nodes} nodes (likely a corrupt edge graph)",
+            )
+        stack.extend(await sources_of(node))
+
+
+class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationEntity]):
+    """three-tier collection for :class:`MemoryConsolidationEntity` (v026).
+
+    The N:1 provenance edge table that Dream consolidation (A5) writes:
+    one row per ``(consolidated_memory_id, source_memory_id)`` pair.
+    Composite primary key ``(agent_id, consolidated_memory_id,
+    source_memory_id)`` on top of the composite-pk
+    :class:`BaseCollection` support; both memory refs are composite FKs
+    to ``memories(agent_id, memory_id)`` ON DELETE CASCADE, so removing
+    either endpoint memory drops its edges without touching the surviving
+    endpoint's own row (fully non-destructive to the source's salience).
+
+    CRUD is generated from :attr:`schema`; there is no CAS column (the
+    edge is append-only). :meth:`find_sources` and
+    :meth:`find_consolidated_into` carry ``# cache-bypass:`` because a
+    back-lookup by one composite-pk prefix is not full-pk addressable.
+    :meth:`assert_no_cycle` guards writes against a provenance cycle.
+    """
+
+    primary_key_column: str | tuple[str, ...] = (
+        "agent_id",
+        "consolidated_memory_id",
+        "source_memory_id",
+    )
+    schema = TableSchema(
+        name="memory_consolidations",
+        primary_key=("agent_id", "consolidated_memory_id", "source_memory_id"),
+        columns=[
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("consolidated_memory_id", UUID_TYPE),
+            Column("source_memory_id", UUID_TYPE),
+            # the audit trail (why these merged); no crypto ceremony.
+            Column("rationale", STRING_TYPE, nullable=True),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+        ],
+        foreign_keys=(
+            # both refs are composite FKs to memories with CASCADE, so a
+            # memory delete cleans up its edges (either endpoint).
+            SchemaForeignKey(
+                ("agent_id", "consolidated_memory_id"),
+                "memories",
+                ("agent_id", "memory_id"),
+                on_delete="CASCADE",
+            ),
+            SchemaForeignKey(
+                ("agent_id", "source_memory_id"),
+                "memories",
+                ("agent_id", "memory_id"),
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            # back-edge lookup "what was this source merged into?" + the
+            # cycle-guard provenance walk.
+            SchemaIndex(
+                "idx_memory_consolidations_source",
+                "agent_id",
+                "source_memory_id",
+            ),
+        ),
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name
+        :rtype: str
+        """
+        return "memory_consolidations"
+
+    @property
+    def entity_class(self) -> type[MemoryConsolidationEntity]:
+        """return entity class for this collection.
+
+        :return: entity class
+        :rtype: type[MemoryConsolidationEntity]
+        """
+        return MemoryConsolidationEntity
+
+    async def find_sources(
+        self,
+        agent_id: UUID,
+        consolidated_memory_id: UUID,
+    ) -> list[UUID]:
+        """return the source ids a gist was consolidated from.
+
+        The forward edge: ``consolidated_memory_id -> source_memory_id``.
+        Drives the cycle-guard provenance walk.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param consolidated_memory_id: the gist to look up sources for
+        :ptype consolidated_memory_id: UUID
+        :return: source memory ids (empty for a non-gist memory)
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: back-lookup by the (agent_id,
+        # consolidated_memory_id) prefix of the composite pk is not
+        # full-pk-addressable, so the L1 row cache does not serve it;
+        # keeping it on the Collection preserves the single entry point.
+        rows = await self.l3_pool.fetch(
+            "SELECT source_memory_id FROM memory_consolidations WHERE agent_id = $1 AND consolidated_memory_id = $2",
+            agent_id,
+            consolidated_memory_id,
+        )
+        return [_as_pk_uuid(row["source_memory_id"]) for row in rows]
+
+    async def find_consolidated_into(
+        self,
+        agent_id: UUID,
+        source_memory_id: UUID,
+    ) -> list[UUID]:
+        """return the gist ids a source memory was merged into.
+
+        The back edge (served by ``idx_memory_consolidations_source``):
+        ``source_memory_id -> consolidated_memory_id``.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param source_memory_id: the source to look up gists for
+        :ptype source_memory_id: UUID
+        :return: consolidated (gist) memory ids
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: back-lookup by (agent_id, source_memory_id) is
+        # not full-pk-addressable; served by the back-edge GIN-free btree
+        # index idx_memory_consolidations_source.
+        rows = await self.l3_pool.fetch(
+            "SELECT consolidated_memory_id FROM memory_consolidations WHERE agent_id = $1 AND source_memory_id = $2",
+            agent_id,
+            source_memory_id,
+        )
+        return [_as_pk_uuid(row["consolidated_memory_id"]) for row in rows]
+
+    async def assert_no_cycle(
+        self,
+        agent_id: UUID,
+        *,
+        consolidated_memory_id: UUID,
+        source_memory_ids: Iterable[UUID],
+    ) -> None:
+        """guard a prospective consolidation against a provenance cycle.
+
+        Supplies the DB-backed ``sources_of`` lookup (scoped to
+        ``agent_id``) to :func:`assert_no_consolidation_cycle`. Call
+        before recording the edges (A5's ``run_consolidation``).
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param consolidated_memory_id: the prospective gist id
+        :ptype consolidated_memory_id: UUID
+        :param source_memory_ids: the sources fanning into the gist
+        :ptype source_memory_ids: Iterable[UUID]
+        :return: nothing on success
+        :rtype: None
+        :raises ConsolidationCycleError: when the gist is reachable from
+            a source
+        """
+
+        async def _sources_of(memory_id: UUID) -> list[UUID]:
+            # find_sources already normalises row ids via _as_pk_uuid.
+            return await self.find_sources(agent_id, memory_id)
+
+        # normalise the caller-supplied ids to the same canonical stdlib
+        # UUID form find_sources returns, so the walk's set membership and
+        # equality checks compare like with like.
+        await assert_no_consolidation_cycle(
+            consolidated_memory_id=_as_pk_uuid(consolidated_memory_id),
+            source_memory_ids=[_as_pk_uuid(sid) for sid in source_memory_ids],
+            sources_of=_sources_of,
+        )

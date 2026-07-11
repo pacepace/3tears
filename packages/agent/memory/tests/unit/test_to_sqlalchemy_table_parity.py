@@ -39,6 +39,7 @@ from threetears.agent.memory.collections import (
     MediaContentCollection,
     MemoriesCollection,
     MemoryChunkCollection,
+    MemoryConsolidationsCollection,
     MemoryRefsCollection,
 )
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
@@ -437,6 +438,42 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
     )
 
 
+def _reference_memory_consolidations_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing (v026).
+
+    The Dream-consolidation N:1 edge table: composite pk + two composite
+    FKs to ``memories`` ON DELETE CASCADE + a back-edge index.
+    """
+    if "memory_consolidations" in metadata.tables:
+        return metadata.tables["memory_consolidations"]
+    return sa.Table(
+        "memory_consolidations",
+        metadata,
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("consolidated_memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("source_memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("rationale", Text(), nullable=True),
+        SAColumn(
+            "date_created",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=sa_text("now()"),
+        ),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=True),
+        SAForeignKeyConstraint(
+            ["agent_id", "consolidated_memory_id"],
+            ["memories.agent_id", "memories.memory_id"],
+            ondelete="CASCADE",
+        ),
+        SAForeignKeyConstraint(
+            ["agent_id", "source_memory_id"],
+            ["memories.agent_id", "memories.memory_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("idx_memory_consolidations_source", "agent_id", "source_memory_id"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # parity tests — Collection-schema vs reference
 # ---------------------------------------------------------------------------
@@ -509,3 +546,24 @@ def test_parity_conversation_memory_refs_collection_schema() -> None:
     via_reference = _reference_conversation_memory_refs_table(sa.MetaData())
     via_collection = MemoryRefsCollection.schema.to_sqlalchemy_table(sa.MetaData())
     assert_tables_equivalent(via_reference, via_collection)
+
+
+def test_parity_memory_consolidations_collection_schema() -> None:
+    """Production :attr:`MemoryConsolidationsCollection.schema` produces a
+    Table structurally equal to ``_reference_memory_consolidations_table``
+    AND carries both composite FKs ``(agent_id, *) → memories``.
+    """
+    via_reference = _reference_memory_consolidations_table(sa.MetaData())
+    via_collection = MemoryConsolidationsCollection.schema.to_sqlalchemy_table(sa.MetaData())
+    assert_tables_equivalent(via_reference, via_collection)
+
+    # ground-truth augmentation: both composite CASCADE FKs to memories.
+    composite_fks = [
+        c for c in via_collection.constraints if isinstance(c, sa.ForeignKeyConstraint) and len(c.column_keys) > 1
+    ]
+    fk_local_cols = {tuple(c.column_keys) for c in composite_fks}
+    assert ("agent_id", "consolidated_memory_id") in fk_local_cols
+    assert ("agent_id", "source_memory_id") in fk_local_cols
+    assert all(
+        c.elements[0].target_fullname.split(".", 1)[0] == "memories" and c.ondelete == "CASCADE" for c in composite_fks
+    ), "both memory_consolidations FKs must target memories ON DELETE CASCADE"

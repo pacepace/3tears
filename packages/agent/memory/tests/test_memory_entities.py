@@ -9,7 +9,7 @@ from uuid import uuid7
 import pytest
 
 from threetears.core.cache import MISSING
-from threetears.agent.memory.entities import MemoryEntity
+from threetears.agent.memory.entities import MemoryConsolidationEntity, MemoryEntity
 
 
 @pytest.fixture
@@ -333,3 +333,54 @@ class TestMemoryEntityTags:
 
         assert entity.tags == ["persona"]
         assert entity.get_changes()["tags"] == ["persona"]
+
+
+def _consolidation_data() -> dict:
+    return {
+        "agent_id": uuid7(),
+        "consolidated_memory_id": uuid7(),
+        "source_memory_id": uuid7(),
+        "rationale": "near-duplicate preferences merged",
+        "date_created": datetime.now(UTC),
+        "date_updated": None,
+    }
+
+
+class TestMemoryConsolidationEntity:
+    """v026 edge entity: 3-tuple composite pk + accessors."""
+
+    def test_composite_id_is_three_tuple(self) -> None:
+        # white-box: the constructor override builds ``_id`` in
+        # (agent_id, consolidated, source) order — that ORDER is the L2
+        # key / tuple-pk addressing contract, so it is asserted directly.
+        data = _consolidation_data()
+        entity = MemoryConsolidationEntity(data)
+        assert entity._id == (  # noqa: SLF001 -- composite-pk tuple order is the contract under test
+            data["agent_id"],
+            data["consolidated_memory_id"],
+            data["source_memory_id"],
+        )
+
+    def test_accessors_round_trip(self) -> None:
+        data = _consolidation_data()
+        entity = MemoryConsolidationEntity(data)
+        assert entity.agent_id == data["agent_id"]
+        assert entity.consolidated_memory_id == data["consolidated_memory_id"]
+        assert entity.source_memory_id == data["source_memory_id"]
+        assert entity.rationale == "near-duplicate preferences merged"
+
+    def test_rationale_nullable(self) -> None:
+        data = _consolidation_data()
+        data["rationale"] = None
+        assert MemoryConsolidationEntity(data).rationale is None
+
+    def test_id_columns_coerce_from_string(self) -> None:
+        from uuid import UUID as StdUUID
+
+        data = _consolidation_data()
+        raw_id = data["consolidated_memory_id"]
+        data["consolidated_memory_id"] = str(raw_id)
+        entity = MemoryConsolidationEntity(data)
+        # accessor returns a stdlib UUID regardless of input form.
+        assert isinstance(entity.consolidated_memory_id, StdUUID)
+        assert entity.consolidated_memory_id == StdUUID(str(raw_id))

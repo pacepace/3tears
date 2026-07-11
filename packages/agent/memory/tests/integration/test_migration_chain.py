@@ -225,6 +225,17 @@ class TestFullChainApplies:
             # conversation_memory_refs table
             assert await _table_exists(conn, schema, "conversation_memory_refs")
 
+            # v026 memory_consolidations edge table + back-edge index +
+            # both composite CASCADE FKs to memories.
+            assert await _table_exists(conn, schema, "memory_consolidations")
+            consolidation_cols = await _columns(conn, schema, "memory_consolidations")
+            assert "consolidated_memory_id" in consolidation_cols
+            assert "source_memory_id" in consolidation_cols
+            assert "rationale" in consolidation_cols
+            assert await _index_exists(conn, schema, "idx_memory_consolidations_source")
+            assert await _constraint_exists(conn, schema, "fk_memory_consolidations_gist")
+            assert await _constraint_exists(conn, schema, "fk_memory_consolidations_source")
+
             # media + media_content tables — v015 added media.memory_id,
             # v017 made it NOT NULL + CASCADE FK to memories.
             media_cols = await _columns(conn, schema, "media")
