@@ -73,3 +73,12 @@ class MemoryConfig:
     # Extraction similarity search
     similar_memory_top_k: int = 5
     similar_memory_threshold: float = 0.55
+
+    # Salience decay + reinforcement (v024 substrate; luminara defaults).
+    # Injectable so metallm resolves per-user values and passes them in;
+    # the defaults reproduce the luminara reference exactly.
+    salience_half_life_days: float = 60.0
+    salience_floor: float = 0.1
+    salience_access_bump: float = 0.05
+    salience_ambient_floor: float = 0.2
+    salience_seed: float = 0.5

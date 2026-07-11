@@ -201,3 +201,102 @@ class TestMemoryEntityWithCollection:
         r = repr(entity)
         assert "MemoryEntity" in r
         assert str(data["memory_id"]) in r
+
+
+class TestMemoryEntityScopeNullTolerance:
+    """v024 relaxed customer_id / user_id to nullable (scope grains)."""
+
+    def test_null_user_and_customer_return_none(self) -> None:
+        data = _sample_data()
+        data["customer_id"] = None
+        data["user_id"] = None
+
+        entity = MemoryEntity(data)
+
+        assert entity.customer_id is None
+        assert entity.user_id is None
+
+    def test_populated_scope_coerces_to_uuid(self) -> None:
+        cust = uuid7()
+        user = uuid7()
+        data = _sample_data()
+        data["customer_id"] = cust
+        data["user_id"] = user
+
+        entity = MemoryEntity(data)
+
+        assert entity.customer_id == cust
+        assert entity.user_id == user
+
+    def test_string_scope_coerces_to_uuid(self) -> None:
+        user = uuid7()
+        data = _sample_data()
+        data["user_id"] = str(user)
+
+        entity = MemoryEntity(data)
+
+        assert entity.user_id == user
+
+
+class TestMemoryEntitySalienceSubstrate:
+    """v024 salience substrate accessors: salience / decay anchors /
+    evergreen / superseded_by."""
+
+    def test_salience_defaults_to_seed_when_absent(self) -> None:
+        # _sample_data() omits salience; the DB server default (0.5)
+        # applies on write, so the getter mirrors the seed.
+        entity = MemoryEntity(_sample_data())
+        assert entity.salience == 0.5
+
+    def test_salience_coerces_decimal_to_float(self) -> None:
+        from decimal import Decimal
+
+        data = _sample_data()
+        data["salience"] = Decimal("0.7500")
+
+        entity = MemoryEntity(data)
+
+        assert entity.salience == 0.75
+        assert isinstance(entity.salience, float)
+
+    def test_evergreen_defaults_false_and_round_trips(self) -> None:
+        assert MemoryEntity(_sample_data()).evergreen is False
+
+        data = _sample_data()
+        data["evergreen"] = True
+        assert MemoryEntity(data).evergreen is True
+
+    def test_decay_anchors_default_none_and_round_trip(self) -> None:
+        entity = MemoryEntity(_sample_data())
+        assert entity.last_decayed_at is None
+        assert entity.last_accessed is None
+
+        now = datetime.now(UTC)
+        data = _sample_data()
+        data["last_decayed_at"] = now
+        data["last_accessed"] = now
+        entity = MemoryEntity(data)
+        assert entity.last_decayed_at == now
+        assert entity.last_accessed == now
+
+    def test_superseded_by_null_tolerant_and_coerces(self) -> None:
+        assert MemoryEntity(_sample_data()).superseded_by is None
+
+        gist = uuid7()
+        data = _sample_data()
+        data["superseded_by"] = gist
+        assert MemoryEntity(data).superseded_by == gist
+
+    def test_salience_setter_tracks_change(self, mock_collection: tuple) -> None:
+        coll, _ = mock_collection
+        data = _sample_data()
+        entity = MemoryEntity(data, is_new=False, collection=coll)
+
+        entity.salience = 0.9
+        entity.evergreen = True
+
+        assert entity.salience == 0.9
+        assert entity.evergreen is True
+        changes = entity.get_changes()
+        assert changes["salience"] == 0.9
+        assert changes["evergreen"] is True

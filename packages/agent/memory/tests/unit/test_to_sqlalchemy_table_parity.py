@@ -19,6 +19,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     Column as SAColumn,
     DateTime,
     Enum as SAEnum,
@@ -70,12 +71,13 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
         metadata,
         SAColumn("memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
         SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        # customer_id / user_id relaxed to nullable in v024 (scope grains).
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=True),
         SAColumn(
             "user_id",
             PgUUID(as_uuid=True),
             SAForeignKey("users.user_id"),
-            nullable=False,
+            nullable=True,
         ),
         SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
         # message_id_source FK is table-level (below) with
@@ -105,6 +107,24 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
         SAColumn("alias", Text(), nullable=True),
         SAColumn("date_created", DateTime(timezone=True), nullable=False),
         SAColumn("date_updated", DateTime(timezone=True), nullable=True),
+        # v024 salience substrate. server_default strings mirror the
+        # Column declarations verbatim (column_signature compares the
+        # raw default arg), so parity holds byte-for-byte.
+        SAColumn(
+            "salience",
+            Numeric(5, 4),
+            nullable=False,
+            server_default="0.5",
+        ),
+        SAColumn("last_decayed_at", DateTime(timezone=True), nullable=True),
+        SAColumn("last_accessed", DateTime(timezone=True), nullable=True),
+        SAColumn(
+            "evergreen",
+            Boolean(),
+            nullable=False,
+            server_default="false",
+        ),
+        SAColumn("superseded_by", PgUUID(as_uuid=True), nullable=True),
         SAForeignKeyConstraint(
             ["message_id_source"],
             ["messages.message_id"],

@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
+from threetears.agent.memory.collections import _MEMORIES_SELECT_COLUMNS
+from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
@@ -61,6 +63,27 @@ async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[st
         table,
     )
     result = {r["column_name"]: r["data_type"] for r in rows}
+    return result
+
+
+async def _column_nullability(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, str]:
+    """return column_name -> is_nullable ('YES' / 'NO') for the table.
+
+    :param conn: live asyncpg connection
+    :ptype conn: asyncpg.Connection
+    :param schema: schema containing the table
+    :ptype schema: str
+    :param table: table to introspect
+    :ptype table: str
+    :return: mapping of column_name to is_nullable
+    :rtype: dict[str, str]
+    """
+    rows = await conn.fetch(
+        "SELECT column_name, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
+        schema,
+        table,
+    )
+    result = {r["column_name"]: r["is_nullable"] for r in rows}
     return result
 
 
@@ -182,6 +205,19 @@ class TestFullChainApplies:
             assert "date_deleted" not in memory_cols
             assert "summary" in memory_cols
             assert "search_vector" in memory_cols
+            # v024 salience substrate columns present.
+            assert "salience" in memory_cols
+            assert "last_decayed_at" in memory_cols
+            assert "last_accessed" in memory_cols
+            assert "evergreen" in memory_cols
+            assert "superseded_by" in memory_cols
+
+            # v024 relaxed customer_id / user_id to nullable (scope grains).
+            nullable = await _column_nullability(conn, schema, "memories")
+            assert nullable["customer_id"] == "YES"
+            assert nullable["user_id"] == "YES"
+            assert nullable["salience"] == "NO"
+            assert nullable["evergreen"] == "NO"
 
             # conversation_memory_refs table
             assert await _table_exists(conn, schema, "conversation_memory_refs")
@@ -539,6 +575,119 @@ class TestUnifiedMemoryParentFks:
                     "[" + ",".join(["0.1"] * 1024) + "]",
                     now,
                 )
+        finally:
+            await conn.close()
+
+
+class TestScopeRelaxationAndSalience:
+    """v024: null scope grains round-trip; salience/evergreen defaults apply."""
+
+    async def test_agent_scoped_memory_round_trips(self, pg_schema: tuple[str, str]) -> None:
+        """A memory with NULL customer_id + user_id inserts and hydrates.
+
+        Proves the scope relaxation end-to-end: the DB accepts the null
+        grain (v024 dropped NOT NULL), the omitted salience / evergreen
+        columns take their server defaults, and the entity accessors
+        tolerate the nulls rather than raising on ``UUID("None")``.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC)
+            agent_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
+
+            # agent-scoped: customer_id + user_id NULL; salience /
+            # evergreen omitted so the server defaults apply.
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, type_memory, content, date_created, date_updated"
+                ") VALUES ($1, $2, NULL, NULL, $3, 'fact', $4, $5, $5)",
+                memory_id,
+                agent_id,
+                uuid.uuid4(),
+                "agent-scoped gist",
+                now,
+            )
+
+            row = await conn.fetchrow(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
+                memory_id,
+            )
+            assert row is not None
+            entity = MemoryEntity(dict(row), is_new=False)
+            assert entity.customer_id is None
+            assert entity.user_id is None
+            assert entity.salience == 0.5  # server default
+            assert entity.evergreen is False  # server default
+            assert entity.last_decayed_at is None
+            assert entity.last_accessed is None
+            assert entity.superseded_by is None
+        finally:
+            await conn.close()
+
+    async def test_salience_flags_and_supersession_persist(self, pg_schema: tuple[str, str]) -> None:
+        """Explicit salience / evergreen / superseded_by persist + hydrate.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC)
+            agent_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
+            # superseded_by is a soft ref (no FK), so any UUID is valid.
+            gist_id = uuid.uuid4()
+
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, type_memory, content, "
+                "salience, evergreen, superseded_by, date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, 'fact', $6, $7, $8, $9, $10, $10)",
+                memory_id,
+                agent_id,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "a superseded source",
+                0.9,
+                True,
+                gist_id,
+                now,
+            )
+
+            row = await conn.fetchrow(
+                f"SELECT {_MEMORIES_SELECT_COLUMNS} FROM memories WHERE memory_id = $1",
+                memory_id,
+            )
+            assert row is not None
+            entity = MemoryEntity(dict(row), is_new=False)
+            assert entity.salience == 0.9
+            assert entity.evergreen is True
+            assert entity.superseded_by == gist_id
         finally:
             await conn.close()
 

@@ -29,6 +29,7 @@ from sqlalchemy import MetaData, Table
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
     DATETIMETZ_TYPE,
     ENUM_TYPE,
     INT_TYPE,
@@ -421,7 +422,10 @@ def _merge_chunk_search_rows(
 _MEMORIES_SELECT_COLUMNS = (
     "memory_id, agent_id, customer_id, user_id, type_memory, content, "
     "date_created, date_updated, embedding::text AS embedding, "
-    "conversation_id, message_id_source, summary, search_vector, alias"
+    "conversation_id, message_id_source, summary, search_vector, alias, "
+    # v024 salience substrate — keep in sync with the memories migration
+    # column set so raw-SQL read paths hydrate the full entity.
+    "salience, last_decayed_at, last_accessed, evergreen, superseded_by"
 )
 
 
@@ -472,11 +476,17 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         columns=[
             Column("memory_id", UUID_TYPE),
             Column("agent_id", UUID_TYPE, partition=True),
-            Column("customer_id", UUID_TYPE, immutable=True),
+            # customer_id / user_id relaxed to nullable in v024 so the
+            # memory primitive supports all three scope grains (agent /
+            # customer / user). metallm enforces NOT NULL at its own
+            # consumer layer; a null here means an agent- or customer-
+            # scoped row (e.g. a shared-knowledge gist).
+            Column("customer_id", UUID_TYPE, immutable=True, nullable=True),
             Column(
                 "user_id",
                 UUID_TYPE,
                 immutable=True,
+                nullable=True,
                 foreign_key=("users", "user_id"),
             ),
             Column("conversation_id", UUID_TYPE, immutable=True),
@@ -528,6 +538,33 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("alias", STRING_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+            # v024 (presence/aliveness): stored salience substrate.
+            # NUMERIC(5,4) with a server default so existing INSERTs that
+            # omit it apply 0.5 (metadata-only add, no table rewrite);
+            # mutable so the reinforcement bump + decay pass can update it.
+            Column(
+                "salience",
+                NUMERIC_TYPE,
+                precision=5,
+                scale=4,
+                nullable=False,
+                server_default="0.5",
+            ),
+            # decay anchor: age is measured from the last decay run, not
+            # last access, so total decay over a period is cadence-safe.
+            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True),
+            # reinforcement telemetry: stamped on ambient retrieval.
+            Column("last_accessed", DATETIMETZ_TYPE, nullable=True),
+            # pin for core identity facts: excluded from decay AND bump.
+            Column(
+                "evergreen",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
+            # soft ref (no FK) to a consolidation gist; ambient retrieval
+            # excludes non-null, direct recall still finds it.
+            Column("superseded_by", UUID_TYPE, nullable=True),
         ],
         cas_column="date_updated",
         foreign_keys=(

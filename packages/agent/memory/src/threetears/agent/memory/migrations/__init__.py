@@ -60,6 +60,12 @@ version history:
   to end. ships paired with the DATETIME_TYPE -> DATETIMETZ_TYPE
   Column-declaration flip in ``collections.py`` so the alignment
   enforcement test stays green.
+- v024 (presence/aliveness, v0.15.0) adds the salience substrate
+  (``salience``, ``last_decayed_at``, ``last_accessed``, ``evergreen``,
+  ``superseded_by``) backing scheduled decay + reinforcement, and
+  relaxes ``customer_id`` / ``user_id`` to nullable so the primitive
+  supports agent / customer / user scope grains (metallm enforces
+  NOT NULL at its own consumer layer). All additive.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -138,6 +144,9 @@ from threetears.agent.memory.migrations.v022_add_hnsw_gin_indexes import (
 from threetears.agent.memory.migrations.v023_fix_idx_chunks_message_id_start import (
     fix_idx_chunks_message_id_start,
 )
+from threetears.agent.memory.migrations.v024_memory_salience_and_scope import (
+    add_memory_salience_and_relax_scope,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -189,6 +198,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(21)(add_chunk_index_and_token_count)
     pkg.version(22)(add_hnsw_gin_indexes)
     pkg.version(23)(fix_idx_chunks_message_id_start)
+    pkg.version(24)(add_memory_salience_and_relax_scope)
     runner.register(pkg)
     return pkg
 
@@ -197,6 +207,7 @@ __all__ = [
     "PACKAGE_NAME",
     "add_chunk_index_and_token_count",
     "add_hnsw_gin_indexes",
+    "add_memory_salience_and_relax_scope",
     "fix_idx_chunks_message_id_start",
     "add_lifecycle_columns",
     "add_memories_alias",

@@ -36,6 +36,18 @@ def _as_uuid(value: object) -> UUID:
     return UUID(str(value))
 
 
+def _as_uuid_or_none(value: object) -> UUID | None:
+    """Coerce to UUID, tolerating ``None`` for nullable scope/ref columns.
+
+    ``customer_id`` / ``user_id`` became nullable in v024 (agent- and
+    customer-scoped rows), and ``superseded_by`` is a nullable soft ref;
+    a bare ``_as_uuid`` would raise ``ValueError`` on ``UUID("None")``.
+    """
+    if value is None:
+        return None
+    return _as_uuid(value)
+
+
 class MemoryEntity(BaseEntity):
     """Cache proxy entity for the ``memories`` table.
 
@@ -97,22 +109,30 @@ class MemoryEntity(BaseEntity):
         BaseEntity.__setattr__(self, "agent_id", value)
 
     @property
-    def customer_id(self) -> UUID:
-        """Get customer ID for memory scoping."""
-        return _as_uuid(self._get_raw("customer_id"))
+    def customer_id(self) -> UUID | None:
+        """Get customer ID for memory scoping (nullable since v024).
+
+        ``None`` on an agent-scoped row. metallm always sets it; the
+        3tears primitive tolerates the null grain.
+        """
+        return _as_uuid_or_none(self._get_raw("customer_id"))
 
     @customer_id.setter
-    def customer_id(self, value: UUID) -> None:
+    def customer_id(self, value: UUID | None) -> None:
         """Set customer ID."""
         BaseEntity.__setattr__(self, "customer_id", value)
 
     @property
-    def user_id(self) -> UUID:
-        """Get the user ID that owns this memory."""
-        return _as_uuid(self._get_raw("user_id"))
+    def user_id(self) -> UUID | None:
+        """Get the user ID that owns this memory (nullable since v024).
+
+        ``None`` on an agent- or customer-scoped row. metallm always
+        sets it; the 3tears primitive tolerates the null grain.
+        """
+        return _as_uuid_or_none(self._get_raw("user_id"))
 
     @user_id.setter
-    def user_id(self, value: UUID) -> None:
+    def user_id(self, value: UUID | None) -> None:
         """Set the user ID."""
         BaseEntity.__setattr__(self, "user_id", value)
 
@@ -196,6 +216,69 @@ class MemoryEntity(BaseEntity):
     def alias(self, value: str | None) -> None:
         """Set the named-anchor alias."""
         BaseEntity.__setattr__(self, "alias", value)
+
+    @property
+    def salience(self) -> float:
+        """Stored, decayed ranking weight (v024). Defaults to the seed.
+
+        NUMERIC(5,4) in the DB (asyncpg yields ``Decimal``); exposed as
+        ``float``. On an unsaved entity that has not set the column, the
+        DB server default (0.5) applies on write, so the getter mirrors
+        that seed rather than raising.
+        """
+        raw = self._get_raw("salience")
+        return float(raw) if raw is not None else 0.5
+
+    @salience.setter
+    def salience(self, value: float) -> None:
+        """Set the salience weight."""
+        BaseEntity.__setattr__(self, "salience", value)
+
+    @property
+    def last_decayed_at(self) -> datetime | None:
+        """Timestamp of the last decay pass (v024); decay anchor."""
+        value: datetime | None = self._get_raw("last_decayed_at")
+        return value
+
+    @last_decayed_at.setter
+    def last_decayed_at(self, value: datetime | None) -> None:
+        """Set the last-decayed timestamp."""
+        BaseEntity.__setattr__(self, "last_decayed_at", value)
+
+    @property
+    def last_accessed(self) -> datetime | None:
+        """Timestamp of the last ambient retrieval (v024); reinforcement."""
+        value: datetime | None = self._get_raw("last_accessed")
+        return value
+
+    @last_accessed.setter
+    def last_accessed(self, value: datetime | None) -> None:
+        """Set the last-accessed timestamp."""
+        BaseEntity.__setattr__(self, "last_accessed", value)
+
+    @property
+    def evergreen(self) -> bool:
+        """Pin flag (v024): excluded from both decay and the access-bump."""
+        return bool(self._get_raw("evergreen"))
+
+    @evergreen.setter
+    def evergreen(self, value: bool) -> None:
+        """Set the evergreen pin flag."""
+        BaseEntity.__setattr__(self, "evergreen", value)
+
+    @property
+    def superseded_by(self) -> UUID | None:
+        """Soft ref (v024) to a consolidation gist, or ``None``.
+
+        Set by Dream consolidation on each source it merges. Ambient
+        retrieval excludes non-null; direct recall still finds it.
+        """
+        return _as_uuid_or_none(self._get_raw("superseded_by"))
+
+    @superseded_by.setter
+    def superseded_by(self, value: UUID | None) -> None:
+        """Set the supersession soft ref."""
+        BaseEntity.__setattr__(self, "superseded_by", value)
 
 
 class MediaEntity(BaseEntity):
