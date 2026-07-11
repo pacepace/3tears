@@ -283,7 +283,14 @@ class TestBumpSalience:
 
 class TestAmbientGatingVsDirectRecall:
     async def test_ambient_floor_and_supersession_vs_direct(self, applied_schema: tuple[str, str]) -> None:
-        """Ambient search drops dormant + superseded; direct recall keeps them."""
+        """Ambient drops dormant + LIVE-gist-superseded; self-heals dead-gist orphans.
+
+        Supersession is self-healing (matches find_active_for_consolidation):
+        a source is hidden from ambient only while its gist still LIVES.
+        If the gist is hard-deleted, the source's dangling superseded_by no
+        longer suppresses it, so its knowledge returns to ambient rather
+        than being permanently invisible. Direct recall bypasses every gate.
+        """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         conn = await asyncpg.connect(url)
@@ -312,16 +319,48 @@ class TestAmbientGatingVsDirectRecall:
                 with_embedding=True,
                 content="dormant faded memory",
             )
-            superseded = await _insert_memory(
+            # a LIVE gist + the source it supersedes: source stays hidden.
+            gist_live = await _insert_memory(
                 conn,
                 agent_id=agent_id,
                 user_id=user_id,
                 customer_id=customer_id,
                 salience=0.9,
-                superseded_by=uuid.uuid4(),
                 with_embedding=True,
-                content="superseded merged memory",
+                content="live consolidation gist",
             )
+            superseded_live = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                salience=0.9,
+                superseded_by=gist_live,
+                with_embedding=True,
+                content="superseded by a live gist",
+            )
+            # a gist that gets HARD-DELETED + its orphaned source: the
+            # source must self-heal back into ambient retrieval.
+            gist_dead = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                salience=0.9,
+                with_embedding=True,
+                content="doomed consolidation gist",
+            )
+            superseded_dead = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                salience=0.9,
+                superseded_by=gist_dead,
+                with_embedding=True,
+                content="superseded by a deleted gist",
+            )
+            await conn.execute("DELETE FROM memories WHERE memory_id = $1", gist_dead)
 
             results = await coll.hybrid_search(
                 user_id=user_id,
@@ -329,7 +368,7 @@ class TestAmbientGatingVsDirectRecall:
                 customer_id=customer_id,
                 embedding=[0.1] * _DIM,
                 user_text="memory",
-                top_k=10,
+                top_k=20,
                 candidate_limit=50,
                 similarity_threshold=0.0,
                 recency_half_life_hours=24.0,
@@ -339,13 +378,14 @@ class TestAmbientGatingVsDirectRecall:
             ambient_ids = {r["memory_id"] for r in results}
             assert visible in ambient_ids
             assert dormant not in ambient_ids  # below the 0.2 floor
-            assert superseded not in ambient_ids  # replaced by a gist
+            assert superseded_live not in ambient_ids  # its gist still lives
+            assert superseded_dead in ambient_ids  # gist gone -> self-healed back
 
             # direct recall bypasses BOTH gates -- dormant, not gone
-            direct = await coll.search_by_ids([dormant, superseded], user_id, agent_id=agent_id)
+            direct = await coll.search_by_ids([dormant, superseded_live], user_id, agent_id=agent_id)
             direct_ids = {r["memory_id"] for r in direct}
             assert dormant in direct_ids
-            assert superseded in direct_ids
+            assert superseded_live in direct_ids
         finally:
             await conn.close()
             await pool.close()

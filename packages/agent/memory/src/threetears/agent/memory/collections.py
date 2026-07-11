@@ -1204,7 +1204,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # v024 ambient filter: exclude superseded rows (replaced by a
         # consolidation gist) and rows below the salience floor. The floor
         # rides the last param slot; default 0.0 makes ``salience >= 0`` a
-        # no-op while ``superseded_by IS NULL`` still holds.
+        # no-op. Supersession is SELF-HEALING (matches
+        # find_active_for_consolidation): a source is hidden only while its
+        # gist still LIVES -- if the gist was hard-deleted, the source's
+        # dangling superseded_by no longer suppresses it here, so its
+        # knowledge returns to ambient retrieval instead of being lost
+        # (superseded_by is a soft ref with no FK, so orphans do occur).
         vec_params: list[Any] = [
             embedding_str,
             *scope_params,
@@ -1221,7 +1226,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             FROM memories
             {vec_where}
               AND embedding IS NOT NULL{vec_date_clause}
-              AND superseded_by IS NULL AND salience >= ${vec_salience_idx}
+              AND (superseded_by IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM memories g
+                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+              AND salience >= ${vec_salience_idx}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
@@ -1266,7 +1274,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 {fts_where}
                   AND embedding IS NOT NULL
                   AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
-                  AND superseded_by IS NULL AND salience >= ${fts_salience_idx}
+                  AND (superseded_by IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM memories g
+                        WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                  AND salience >= ${fts_salience_idx}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
