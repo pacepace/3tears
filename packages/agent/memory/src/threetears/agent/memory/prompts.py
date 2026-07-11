@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 __all__ = [
+    "DEFAULT_CONSOLIDATION_PROMPT",
     "DEFAULT_EXTRACTION_PROMPT",
     "DEFAULT_RESOLUTION_PROMPT",
     "DEFAULT_WORTHINESS_PROMPT",
@@ -103,10 +104,28 @@ Rules:
 {candidates_section}"""
 
 
+DEFAULT_CONSOLIDATION_PROMPT = """You are consolidating a cluster of closely-related memories into a single gist.
+
+These memories all cover the same theme. Synthesize them into ONE dense memory that captures the shared, durable truth — subsuming the details without losing any specific fact that still matters.
+
+Rules:
+- 1-2 dense sentences. Specific names, tools, technologies, dates. No filler.
+- Preserve the specifics that appear across the sources; drop only genuine redundancy.
+- FACTUAL over interpretive — state what is known, not what it implies.
+- Do NOT invent facts absent from the sources.
+
+Return ONLY JSON, no other text:
+{{"gist": "the consolidated 1-2 sentence memory", "rationale": "one short sentence on why these merged"}}
+
+Memories to consolidate:
+{sources_section}"""
+
+
 @dataclass
 class ExtractionPrompts:
-    """Customizable prompts for the memory extraction pipeline."""
+    """Customizable prompts for the memory extraction + consolidation pipeline."""
 
     extraction: str = field(default=DEFAULT_EXTRACTION_PROMPT)
     worthiness: str = field(default=DEFAULT_WORTHINESS_PROMPT)
     resolution: str = field(default=DEFAULT_RESOLUTION_PROMPT)
+    consolidation: str = field(default=DEFAULT_CONSOLIDATION_PROMPT)

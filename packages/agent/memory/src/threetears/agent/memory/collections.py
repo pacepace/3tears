@@ -48,6 +48,7 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraint as SchemaUniqueConstraint,
     spans_partitions,
 )
+from threetears.core.backends.schema_sql import decode_vector
 from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
@@ -1738,6 +1739,137 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             access_bump,
             agent_id,
             memory_ids,
+        )
+        return None
+
+    async def find_active_for_consolidation(
+        self,
+        agent_id: UUID,
+        *,
+        customer_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """load the consolidation candidate set for one scope grain (A5).
+
+        Dream consolidation clusters memories WITHIN a pinned scope grain
+        and the gist inherits that grain's identity, so the scope filter
+        is EXACT — a ``None`` grain matches ``IS NULL`` (not "any"). That
+        is the isolation boundary: a user-scoped run
+        (``customer_id``+``user_id`` set) sees only that user's rows; an
+        agent-scoped run (both ``None``) sees only agent-scoped rows. This
+        differs deliberately from :meth:`find_by_scope`, which drops the
+        filter on a ``None`` argument.
+
+        Excludes ``evergreen`` rows (pinned, never consolidated) and rows
+        with no ``embedding`` (clustering needs a vector). Excludes
+        already-superseded rows — BUT only when their gist still exists:
+        a source whose ``superseded_by`` points at a memory that no longer
+        exists (e.g. the gist was bulk-deleted with its anchor
+        conversation) becomes eligible again, so a fresh gist regenerates
+        on the next run instead of the orphaned sources staying dormant
+        forever. Supersession is thus defined as "pointed at a LIVE gist",
+        which keeps the soft-ref self-healing without an FK.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param customer_id: customer grain; ``None`` matches ``IS NULL``
+        :ptype customer_id: UUID | None
+        :param user_id: user grain; ``None`` matches ``IS NULL``
+        :ptype user_id: UUID | None
+        :return: candidate dicts with decoded ``embedding`` (``list[float]``)
+            plus ``memory_id``, ``customer_id``, ``user_id``,
+            ``conversation_id``, ``type_memory``, ``content``,
+            ``date_created``
+        :rtype: list[dict[str, Any]]
+        """
+        if self.l3_pool is None:
+            return []
+        conditions = ["m.agent_id = $1"]
+        params: list[object] = [agent_id]
+        param_idx = 2
+
+        # exact scope match, including the NULL grain (see docstring): a
+        # None argument narrows to IS NULL rather than dropping the filter.
+        if customer_id is None:
+            conditions.append("m.customer_id IS NULL")
+        else:
+            conditions.append(f"m.customer_id = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+        if user_id is None:
+            conditions.append("m.user_id IS NULL")
+        else:
+            conditions.append(f"m.user_id = ${param_idx}")
+            params.append(user_id)
+            param_idx += 1
+
+        where_clause = " AND ".join(conditions)
+        # cache-bypass: a scope-scanned candidate load is not primary-key
+        # addressable, so the L1 row cache cannot serve it; keeping the SQL
+        # on the Collection preserves the single-entry-point contract.
+        # embedding::text so asyncpg decodes it on the no-codec L3 pool
+        # (same cast as _MEMORIES_SELECT_COLUMNS); decode_vector parses the
+        # bracketed text back to list[float] below. The self-healing
+        # supersession filter is a NOT EXISTS against a live gist row.
+        query = (
+            "SELECT m.memory_id, m.customer_id, m.user_id, m.conversation_id, "
+            "m.type_memory, m.content, m.embedding::text AS embedding, "
+            "m.date_created "
+            "FROM memories m "
+            f"WHERE {where_clause} "
+            "AND NOT m.evergreen "
+            "AND m.embedding IS NOT NULL "
+            "AND (m.superseded_by IS NULL OR NOT EXISTS ("
+            "SELECT 1 FROM memories g "
+            "WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+            "ORDER BY m.date_created"
+        )
+        rows = await self.l3_pool.fetch(query, *params)
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["memory_id"] = _as_pk_uuid(data["memory_id"])
+            data["embedding"] = decode_vector(data["embedding"])
+            candidates.append(data)
+        return candidates
+
+    async def mark_superseded(
+        self,
+        agent_id: UUID,
+        *,
+        source_memory_ids: list[UUID],
+        gist_id: UUID,
+    ) -> None:
+        """point a set of source memories at the gist that consolidated them (A5).
+
+        Sets ``superseded_by = gist_id`` on each source so ambient
+        retrieval drops them (a gist now represents them) while direct
+        recall by id / alias still finds them — dormant, not gone, and
+        non-destructive (the source's own ``salience`` / ``content`` are
+        untouched). Partition-scoped by ``agent_id``.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param source_memory_ids: the sources merged into the gist
+        :ptype source_memory_ids: list[UUID]
+        :param gist_id: the consolidation gist the sources are superseded by
+        :ptype gist_id: UUID
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not source_memory_ids:
+            return None
+        # cache-bypass: bulk supersession UPDATE keyed by a memory_id set is
+        # not one-row primary-key-addressable; the L1 row cache holds a
+        # stale superseded_by until the row is next read from L3, which is
+        # fine — supersession gates ambient ranking and is eventually
+        # consistent by design (mirrors bump_salience).
+        await self.l3_pool.execute(
+            "UPDATE memories SET superseded_by = $1, date_updated = now() "
+            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
+            gist_id,
+            agent_id,
+            source_memory_ids,
         )
         return None
 

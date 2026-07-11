@@ -54,6 +54,11 @@ if TYPE_CHECKING:
         conversation_memory_refs_table,
         memory_consolidations_table,
     )
+    from threetears.agent.memory.dream import (
+        ConsolidationResult,
+        DreamService,
+        ReflectorChatModelFactory,
+    )
     from threetears.agent.memory.embedding_utils import embedding_attribution_scope
     from threetears.agent.memory.entities import (
         MediaContentEntity,
@@ -64,6 +69,7 @@ if TYPE_CHECKING:
         MemoryRefEntity,
     )
     from threetears.agent.memory.events import (
+        MemoryConsolidatedEvent,
         MemoryCreatedEvent,
         MemoryRetrievedEvent,
         default_memory_created_dispatcher,
@@ -102,6 +108,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "ChunkRecallInput": ("threetears.agent.memory.tools", "ChunkRecallInput"),
     "ConsolidationCycleError": ("threetears.agent.memory.collections", "ConsolidationCycleError"),
     "ChunkSearchInput": ("threetears.agent.memory.tools", "ChunkSearchInput"),
+    "ConsolidationResult": ("threetears.agent.memory.dream", "ConsolidationResult"),
+    "DreamService": ("threetears.agent.memory.dream", "DreamService"),
     "ExtractionPrompts": ("threetears.agent.memory.prompts", "ExtractionPrompts"),
     "MEMORY_NAMESPACE_TYPE": ("threetears.agent.memory.authorize", "MEMORY_NAMESPACE_TYPE"),
     "MEMORY_OWNER_GROUP_PREFIX": ("threetears.agent.memory.authorize", "MEMORY_OWNER_GROUP_PREFIX"),
@@ -120,6 +128,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryConfig": ("threetears.agent.memory.types", "MemoryConfig"),
     "MemoryConsolidationEntity": ("threetears.agent.memory.entities", "MemoryConsolidationEntity"),
     "MemoryConsolidationsCollection": ("threetears.agent.memory.collections", "MemoryConsolidationsCollection"),
+    "MemoryConsolidatedEvent": ("threetears.agent.memory.events", "MemoryConsolidatedEvent"),
     "MemoryCreatedEvent": ("threetears.agent.memory.events", "MemoryCreatedEvent"),
     "MemoryEntity": ("threetears.agent.memory.entities", "MemoryEntity"),
     "MemoryExtractor": ("threetears.agent.memory.extraction", "MemoryExtractor"),
@@ -134,6 +143,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemorySearchInput": ("threetears.agent.memory.tools", "MemorySearchInput"),
     "MemoryType": ("threetears.agent.memory.types", "MemoryType"),
     "NatsEmbeddingAdapter": ("threetears.agent.memory.integration", "NatsEmbeddingAdapter"),
+    "ReflectorChatModelFactory": ("threetears.agent.memory.dream", "ReflectorChatModelFactory"),
     "RetrievalResult": ("threetears.agent.memory.retrieval", "RetrievalResult"),
     "authorize_memory_access": ("threetears.agent.memory.authorize", "authorize_memory_access"),
     "conversation_memory_refs_table": ("threetears.agent.memory.collections", "conversation_memory_refs_table"),
@@ -160,6 +170,8 @@ __all__ = [
     "ChunkRecallInput",
     "ChunkSearchInput",
     "ConsolidationCycleError",
+    "ConsolidationResult",
+    "DreamService",
     "ExtractionPrompts",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",
@@ -178,6 +190,7 @@ __all__ = [
     "MemoryConfig",
     "MemoryConsolidationEntity",
     "MemoryConsolidationsCollection",
+    "MemoryConsolidatedEvent",
     "MemoryCreatedEvent",
     "MemoryEntity",
     "MemoryExtractor",
@@ -192,6 +205,7 @@ __all__ = [
     "MemorySearchInput",
     "MemoryType",
     "NatsEmbeddingAdapter",
+    "ReflectorChatModelFactory",
     "RetrievalResult",
     "authorize_memory_access",
     "conversation_memory_refs_table",
