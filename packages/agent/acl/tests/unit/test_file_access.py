@@ -393,13 +393,9 @@ class TestUserAgentIntersection:
         namespace = _ns_workspace()
 
         user_role = _role_with_actions(["read_file_matching:**"])
-        u_group, u_membership, u_assignment = _grant_member(
-            namespace, user_role, MemberType.USER, user
-        )
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
         agent_role = _role_with_actions(["read_file_matching:sandbox/**"])
-        a_group, a_membership, a_assignment = _grant_member(
-            namespace, agent_role, MemberType.AGENT, agent
-        )
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
 
         store = FakeStore()
         for role in (user_role, agent_role):
@@ -429,13 +425,9 @@ class TestUserAgentIntersection:
         namespace = _ns_workspace()
 
         user_role = _role_with_actions(["read_file_matching:**"])
-        u_group, u_membership, u_assignment = _grant_member(
-            namespace, user_role, MemberType.USER, user
-        )
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
         agent_role = _role_with_actions(["read_file_matching:sandbox/**"])
-        a_group, a_membership, a_assignment = _grant_member(
-            namespace, agent_role, MemberType.AGENT, agent
-        )
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
 
         store = FakeStore()
         for role in (user_role, agent_role):
@@ -465,13 +457,9 @@ class TestUserAgentIntersection:
         namespace = _ns_workspace()
 
         user_role = _role_with_actions(["read_file_matching:docs/**"])
-        u_group, u_membership, u_assignment = _grant_member(
-            namespace, user_role, MemberType.USER, user
-        )
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
         agent_role = _role_with_actions(["read_file_matching:**"])
-        a_group, a_membership, a_assignment = _grant_member(
-            namespace, agent_role, MemberType.AGENT, agent
-        )
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
 
         store = FakeStore()
         for role in (user_role, agent_role):
@@ -501,9 +489,7 @@ class TestUserAgentIntersection:
         namespace = _ns_workspace()
 
         user_role = _role_with_actions(["read_file_matching:**"])
-        u_group, u_membership, u_assignment = _grant_member(
-            namespace, user_role, MemberType.USER, user
-        )
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
 
         store = FakeStore()
         store.add_role(user_role)
@@ -534,9 +520,7 @@ class TestUserAgentIntersection:
         )
 
         user_role = _role_with_actions(["read_file_matching:docs/**"])
-        u_group, u_membership, u_assignment = _grant_member(
-            namespace, user_role, MemberType.USER, user
-        )
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
 
         store = FakeStore()
         store.add_role(user_role)

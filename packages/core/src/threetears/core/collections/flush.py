@@ -142,7 +142,8 @@ class WriteBuffer:
         :return: normalized ``(table_name, <entity-id-as-text>)`` key
         :rtype: tuple[str, str]
         """
-        return (table_name, str(entity_id))  # convert at border: keyspace aligns with the persisted write_buffer String PK
+        entity_key = str(entity_id)  # convert at border: keyspace aligns with the persisted write_buffer String PK
+        return (table_name, entity_key)
 
     def _add_locked(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int) -> None:
         """insert-or-replace a pending write; caller MUST hold ``self._lock``.
