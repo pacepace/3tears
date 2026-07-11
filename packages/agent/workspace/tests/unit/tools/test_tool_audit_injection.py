@@ -72,6 +72,14 @@ class _FakeNats:
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
 
+    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None:
+        # publish_audit() rides jetstream_publish (durable) with an already-serialized
+        # bytes payload; record the same (subject_path, payload_bytes) shape publish does.
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        self.published.append((subject_path, payload))
+        if self.raise_on_publish is not None:
+            raise self.raise_on_publish
+
 
 @dataclass
 class _FakeWorkspaceEntity(FakeWorkspaceEntity):
