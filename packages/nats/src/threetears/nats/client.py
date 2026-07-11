@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
 import time
 from datetime import UTC, datetime, timedelta
@@ -212,6 +213,16 @@ DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS: Final[float] = 1.0
 #: recovery latency.
 DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS: Final[float] = 30.0
 
+#: resilience floor (seconds) the reconnect handler NEVER returns below, so a full-jitter near-zero
+#: draw -- or any degenerate/failed delay computation -- can never turn the reconnect path into a
+#: 100%-CPU hot spin. Small enough to preserve the jitter spread's fast early retries.
+_RECONNECT_BACKOFF_MIN_SECONDS: Final[float] = 0.05
+
+#: safe delay the reconnect handler returns if the delay computation ever RAISES: nats-py calls the
+#: handler sync on every attempt and sleeps its return, so a raising handler gives it no delay to sleep
+#: and it busy-spins. returning a real, whole-second pace here fails safe instead of hot-looping.
+_RECONNECT_BACKOFF_FALLBACK_SECONDS: Final[float] = 1.0
+
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
@@ -252,10 +263,21 @@ def _full_jitter_backoff(
         ``random`` -- two independent instances therefore draw INDEPENDENT delays, so they do not
         synchronize
     :ptype rng: random.Random | None
-    :return: a jittered delay in seconds within ``[0, min(cap, base * 2**attempt)]``
+    :return: a jittered delay in seconds within ``[0, min(cap, base * 2**attempt)]`` -- exponent-clamped so a long-running reconnect never overflows the float multiply (callers floor the sleep to avoid a hot spin)
     :rtype: float
     """
     exponent = attempt if attempt >= 0 else 0
+    # clamp the exponent so ``2**exponent`` can never overflow the float multiply below. once
+    # ``base * 2**exponent >= cap`` the ``min`` clamps to ``cap`` anyway, so a larger exponent is pure
+    # waste -- AND an unclamped exponent on a long-running reconnect (``attempt`` past ~1024) makes
+    # ``2**attempt`` a >308-digit int, so ``base * that`` raises ``OverflowError`` ("int too large to
+    # convert to float"). That escaped the handler, broke every reconnect attempt, and busy-spun the
+    # client at 100% CPU. ``ceil(log2(cap/base))`` is the smallest exponent at which the ceiling first
+    # reaches ``cap``; clamp there.
+    if cap > base > 0:
+        exponent = min(exponent, math.ceil(math.log2(cap / base)))
+    else:
+        exponent = 0
     ceiling = min(cap, base * (2**exponent))
     draw = rng.uniform(0.0, ceiling) if rng is not None else random.uniform(0.0, ceiling)
     return draw
@@ -291,9 +313,20 @@ def _make_reconnect_to_server_handler(
     ) -> tuple[_NatsServer | None, float]:
         """select the next server and return a full-jitter backoff delay keyed on its reconnect count."""
         selected = servers[0] if servers else None
-        attempt = selected.reconnects if selected is not None else 0
-        delay = _full_jitter_backoff(attempt, base=base, cap=cap)
-        return selected, delay
+        try:
+            attempt = selected.reconnects if selected is not None else 0
+            delay = _full_jitter_backoff(attempt, base=base, cap=cap)
+        except Exception:
+            # nats-py calls this handler SYNC on every reconnect attempt and sleeps whatever delay it
+            # returns; if the computation ever raises, nats-py gets no delay to sleep and busy-spins the
+            # client at 100% CPU (the exact failure this handler guards). fail safe to a whole-second pace
+            # rather than let an exception escape. (defense-in-depth: _full_jitter_backoff is now
+            # overflow-safe, but a raising handler must never be able to hot-spin the reconnect path.)
+            delay = _RECONNECT_BACKOFF_FALLBACK_SECONDS
+        # floor the delay so a full-jitter near-zero draw can never let nats-py retry fast enough to
+        # burn a core against a fast-failing (connection-refused) server. small enough to preserve the
+        # jitter spread that de-syncs a reconnecting fleet.
+        return selected, max(_RECONNECT_BACKOFF_MIN_SECONDS, delay)
 
     return _handler
 

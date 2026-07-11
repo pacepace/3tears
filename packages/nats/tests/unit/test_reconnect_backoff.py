@@ -25,6 +25,8 @@ from threetears.nats.client import (
     DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
     _full_jitter_backoff,
     _make_reconnect_to_server_handler,
+    _RECONNECT_BACKOFF_FALLBACK_SECONDS,
+    _RECONNECT_BACKOFF_MIN_SECONDS,
 )
 
 
@@ -105,6 +107,54 @@ def test_full_jitter_two_instances_desynchronize() -> None:
     draws = {_full_jitter_backoff(5, base=1.0, cap=30.0) for _ in range(200)}
     # a constant delay would collapse to a single value; jitter yields many distinct draws.
     assert len(draws) > 100
+
+
+def test_full_jitter_does_not_overflow_on_huge_attempt() -> None:
+    """REGRESSION: a long-running reconnect (attempt past ~1024) must NOT raise OverflowError.
+
+    with an unclamped exponent, ``base * 2**attempt`` for a large attempt is a >308-digit int, so the
+    float multiply raised ``OverflowError`` ("int too large to convert to float"), which escaped the
+    reconnect handler, broke every reconnect attempt, and busy-spun the client at 100% CPU while its
+    tools silently deregistered. the exponent clamp keeps the delay bounded by the cap, no exception.
+    """
+    for attempt in (1024, 5000, 100_000):
+        delay = _full_jitter_backoff(attempt, base=1.0, cap=30.0, rng=_FixedRng(1.0))
+        assert delay == pytest.approx(30.0)  # clamped to cap, never overflow
+
+
+def test_handler_survives_huge_reconnect_count() -> None:
+    """the handler keyed on a huge ``Server.reconnects`` returns a bounded, floored delay -- no raise."""
+    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    selected, delay = handler([_server(50_000)], {})
+    assert selected is not None
+    assert _RECONNECT_BACKOFF_MIN_SECONDS <= delay <= 30.0
+
+
+def test_handler_floors_delay_to_prevent_hot_spin() -> None:
+    """every handler delay is >= the floor, so a near-zero jitter draw can never let nats-py hot-spin."""
+    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    # attempt 0 has ceiling == base == 1.0, so raw draws land in [0, 1] and many fall below the floor;
+    # every returned delay must still be floored, never 0.
+    assert all(handler([_server(0)], {})[1] >= _RECONNECT_BACKOFF_MIN_SECONDS for _ in range(500))
+
+
+def test_handler_never_raises_fails_safe_to_fallback() -> None:
+    """if delay computation raises, the handler returns the whole-second fallback rather than escaping.
+
+    a raising sync handler gives nats-py no delay to sleep, so it busy-spins the reconnect path -- the
+    handler must fail safe instead.
+    """
+
+    class _BadServer:
+        """a server snapshot whose ``reconnects`` access raises, forcing the handler's except path."""
+
+        @property
+        def reconnects(self) -> int:
+            raise ValueError("boom")
+
+    handler = _make_reconnect_to_server_handler(base=1.0, cap=30.0)
+    selected, delay = handler([_BadServer()], {})  # type: ignore[list-item]
+    assert delay == pytest.approx(_RECONNECT_BACKOFF_FALLBACK_SECONDS)
 
 
 # ---------------------------------------------------------------------------
