@@ -13,6 +13,7 @@ deterministically.
 from __future__ import annotations
 
 import asyncio
+import socket
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -300,9 +301,11 @@ class TestConnectionCaching:
 
     @pytest.mark.asyncio
     async def test_connect_passes_aggressive_tcp_keepalive(self, redshift_config: RedshiftConnectionConfig) -> None:
-        """the config's TCP keepalive tuning reaches connect, so the OS detects a half-dead
-        socket in ~1 min (not the ~2h system default) -- a wedged in-flight query can no longer
-        hang a bridge worker forever in a native SSL read no client-side timeout can cancel.
+        """the config's TCP keepalive tuning is applied so the OS detects a half-dead
+        socket in ~1 min (not the ~2h system default). redshift_connector.connect (2.1.7)
+        accepts ONLY the tcp_keepalive bool, so the granular idle/interval/count are set
+        via setsockopt on the underlying socket -- passing them as connect kwargs raises
+        TypeError (the regression that silently broke every datasource connection).
         """
         conn = _build_mock_connection(fetchall_rows=[], description=[])
         with patch(
@@ -312,10 +315,28 @@ class TestConnectionCaching:
             driver = RedshiftDriver(redshift_config)
             await driver.fetch("SELECT 1")
             kwargs = connect_mock.call_args.kwargs
+            # only the supported bool reaches connect; the granular knobs must NOT
+            # (they raise TypeError against the real redshift_connector).
             assert kwargs["tcp_keepalive"] is True
-            assert kwargs["tcp_keepalive_idle"] == 30
-            assert kwargs["tcp_keepalive_interval"] == 10
-            assert kwargs["tcp_keepalive_count"] == 3
+            assert "tcp_keepalive_idle" not in kwargs
+            assert "tcp_keepalive_interval" not in kwargs
+            assert "tcp_keepalive_count" not in kwargs
+            # the granular tuning is applied via setsockopt on the underlying socket.
+            usock = getattr(conn, "_usock")
+            opts = {(call.args[0], call.args[1]): call.args[2] for call in usock.setsockopt.call_args_list}
+            # SO_KEEPALIVE is always enabled.
+            assert opts[(socket.SOL_SOCKET, socket.SO_KEEPALIVE)] == 1
+            # each granular option is applied when the platform exposes it -- Linux (hub
+            # container) has all three; macOS lacks TCP_KEEPIDLE. the driver skips an
+            # absent option (getattr-guarded), so the test mirrors that guard.
+            expected_granular = {"TCP_KEEPIDLE": 30, "TCP_KEEPINTVL": 10, "TCP_KEEPCNT": 3}
+            applied_any = False
+            for opt_name, value in expected_granular.items():
+                opt = getattr(socket, opt_name, None)
+                if opt is not None:
+                    assert opts[(socket.IPPROTO_TCP, opt)] == value
+                    applied_any = True
+            assert applied_any, "no granular keepalive option applied on this platform"
 
     @pytest.mark.asyncio
     async def test_connect_passes_verify_full_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
@@ -700,7 +721,11 @@ class TestTestConnection:
             # ``from None`` clears __cause__
             assert exc_info.value.__cause__ is None
             assert "rs.example.com" in str(exc_info.value)
+            # the original error MESSAGE stays sanitized (may carry sensitive detail)...
             assert "kapow" not in str(exc_info.value)
+            # ...but the exception TYPE is surfaced (a class name, never sensitive) so a
+            # config / library error is diagnosable, not masked as a bare "connection failed".
+            assert "RuntimeError" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
