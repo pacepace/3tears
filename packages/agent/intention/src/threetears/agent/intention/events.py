@@ -43,11 +43,6 @@ __all__ = [
 log = get_logger(__name__)
 
 
-#: maximum chars carried in an event payload's content preview. Callers
-#: needing the full want text re-fetch from storage by ``intention_id``.
-_CONTENT_PREVIEW_LEN: int = 120
-
-
 class IntentionSurfacedEvent(FrameworkEvent):
     """fired when the agent raises a standing want to the user.
 

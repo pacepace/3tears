@@ -17,7 +17,7 @@ a pgvector/pg16 container:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -470,5 +470,99 @@ class TestIntentionDecay:
                 )
             assert float(sal) < 0.9
             assert float(sal) >= 0.1  # never below the floor
+        finally:
+            await pool.close()
+
+
+class TestIntentionCacheCoherence:
+    """review R2 fix: salience + last_decayed_at are immutable to the entity
+    UPDATE, so a mark_surfaced / refresh save can't revert a scheduled decay
+    (matching memory's guard)."""
+
+    async def test_decay_survives_stale_entity_save(self, pg_schema: tuple[str, str]) -> None:
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            wid = uuid.uuid4()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, "
+                    "content, salience, last_decayed_at, date_created, date_updated) "
+                    "VALUES ($1,$2,$3,$4,'open','a want',0.9, now() - interval '60 days', now(), now())",
+                    wid,
+                    agent_id,
+                    customer_id,
+                    user_id,
+                )
+            # hold a stale entity carrying the pre-decay salience + old anchor
+            entity = await coll.get((agent_id, wid))
+            assert entity is not None
+            assert float(entity.salience) == 0.9
+
+            # decay L3 DIRECTLY (raw) so the held entity + its L1 stay at the
+            # pre-decay values -- reproduces the multi-pod window where a pod
+            # holds a stale entity while another pod's decay has committed.
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE intentions SET salience = 0.45, last_decayed_at = now() WHERE intention_id = $1",
+                    wid,
+                )
+
+            # a full-entity save from the stale entity (mark it surfaced) must
+            # NOT revert salience / last_decayed_at -- both are immutable to
+            # the entity-UPDATE generator.
+            entity.status = "asked"
+            entity.last_surfaced_at = datetime.now(UTC)
+            await coll.save_entity(entity)
+
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT salience, status, last_decayed_at FROM intentions WHERE intention_id = $1",
+                    wid,
+                )
+            assert abs(float(row["salience"]) - 0.45) < 1e-6  # decay NOT reverted to 0.9
+            assert row["status"] == "asked"  # the status update still landed
+            # the decay anchor was NOT rolled back to the 60-days-ago value
+            assert (datetime.now(UTC) - row["last_decayed_at"]) < timedelta(hours=1)
+        finally:
+            await pool.close()
+
+    async def test_decay_and_bump_invalidate_cache(self, pg_schema: tuple[str, str]) -> None:
+        """decay_salience + bump_salience each invalidate the affected pks (defense B)."""
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            wid = uuid.uuid4()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, "
+                    "content, salience, last_decayed_at, date_created, date_updated) "
+                    "VALUES ($1,$2,$3,$4,'open','a want',0.9, now() - interval '60 days', now(), now())",
+                    wid,
+                    agent_id,
+                    customer_id,
+                    user_id,
+                )
+            calls: list[Any] = []
+            original = coll.invalidate_cache
+
+            async def _spy(entity_id: Any) -> None:
+                calls.append(entity_id)
+                await original(entity_id)
+
+            coll.invalidate_cache = _spy  # type: ignore[method-assign]
+
+            await coll.decay_salience(half_life_days=60.0, floor=0.1)
+            assert (agent_id, wid) in calls
+
+            calls.clear()
+            await coll.bump_salience([wid], agent_id=agent_id, access_bump=0.05)
+            assert (agent_id, wid) in calls
         finally:
             await pool.close()

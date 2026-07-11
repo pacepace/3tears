@@ -133,6 +133,11 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 nullable=True,
             ),
             # reuses the memory decay substrate: NUMERIC(5,4) seeded 0.5.
+            # ``immutable=True`` (mirrors memory): salience is written ONLY
+            # by the raw decay / bump passes (decay_salience / bump_salience),
+            # never by a full-entity save -- so a mark_surfaced / refresh save
+            # can't carry a stale cached salience back and revert a scheduled
+            # decay. Insert still applies the value / server default.
             Column(
                 "salience",
                 NUMERIC_TYPE,
@@ -140,10 +145,14 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 scale=4,
                 nullable=False,
                 server_default="0.5",
+                immutable=True,
             ),
             # decay anchor: age is measured from the last decay run so
-            # total decay over a period is cadence-safe.
-            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True),
+            # total decay over a period is cadence-safe. ``immutable=True``:
+            # written only by the raw decay pass, excluded from the entity
+            # UPDATE so a save can't roll the anchor back (which would make
+            # the next pass double-count the elapsed age).
+            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True, immutable=True),
             # cooldown anchor: the read-path filter excludes a want
             # surfaced within intention_cooldown_days (enforced in B2).
             Column("last_surfaced_at", DATETIMETZ_TYPE, nullable=True),
@@ -360,6 +369,48 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             for row in rows
             if float(row["similarity"]) >= threshold
         ]
+
+    async def bump_salience(
+        self,
+        intention_ids: list[UUID],
+        *,
+        agent_id: UUID,
+        access_bump: float,
+    ) -> None:
+        """reinforce salience for re-logged wants (mirrors memory's raw bump).
+
+        ``intention_log``'s dedup-refresh calls this to raise a
+        near-duplicate open want's salience by ``access_bump`` (clamped to
+        1.0). ``salience`` is ``immutable`` to the entity-UPDATE generator,
+        so this raw pass is its only writer -- keeping decay and
+        reinforcement on the same raw path means a full-entity save (which
+        the refresh also does, for ``last_surfaced_at`` + ``embedding``)
+        can never carry a stale salience back and revert a scheduled decay.
+
+        Partition-scoped by ``agent_id``. Invalidates each bumped row's
+        L1/L2 entry so a subsequent ``get()`` re-reads the fresh salience.
+
+        :param intention_ids: primary-key ids to reinforce
+        :ptype intention_ids: list[UUID]
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param access_bump: increment added to salience (clamped to 1.0)
+        :ptype access_bump: float
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not intention_ids:
+            return None
+        await self.l3_pool.execute(
+            "UPDATE intentions SET salience = LEAST(1.0, salience + $1) "
+            "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
+            access_bump,
+            agent_id,
+            intention_ids,
+        )
+        for intention_id in intention_ids:
+            await self.invalidate_cache((agent_id, intention_id))
+        return None
 
     @spans_partitions(marker_only=True)
     async def decay_salience(

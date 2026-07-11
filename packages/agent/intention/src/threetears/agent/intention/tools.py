@@ -68,6 +68,10 @@ _DEFAULT_SALIENCE_SEED = 0.5
 _DEFAULT_NEAR_DUP_BUMP = 0.05
 _DEFAULT_MAX_RESULTS = 20
 
+# max chars carried in an event payload's content preview (the producer
+# truncates here; consumers needing the full want text re-fetch by id).
+_CONTENT_PREVIEW_LEN = 120
+
 # statuses ``intention_mark_surfaced`` may move a want to. ``open`` is
 # excluded -- the verb walks a want forward, never back to the start.
 _MARK_SURFACED_STATUSES = tuple(s for s in INTENTION_STATUS_VALUES if s != IntentionStatus.OPEN.value)
@@ -272,20 +276,27 @@ async def load_intention_log_tool(
                 existing = await intentions_collection.get((agent_id, existing_id))
                 if existing is None:
                     continue
-                # reinforcement: bump salience toward 1.0 and clear the
-                # cooldown anchor so the re-logged want re-enters the
-                # deliberation list (a re-log means "still wanting this").
-                existing.salience = min(1.0, float(existing.salience) + near_dup_bump)
+                # reinforcement: clear the cooldown anchor + refresh the
+                # embedding via the entity save, then bump salience via the
+                # raw pass. salience is immutable to the entity-UPDATE
+                # generator (like memory), so the save can't carry a stale
+                # salience back and revert a concurrent decay; the raw
+                # bump_salience is the only salience writer.
                 existing.last_surfaced_at = None
                 existing.embedding = embedding
                 try:
                     await intentions_collection.save_entity(existing)
+                    await intentions_collection.bump_salience(
+                        [existing_id],
+                        agent_id=agent_id,
+                        access_bump=near_dup_bump,
+                    )
                 except Exception as exc:
                     # preserve the tool's soft-fail-to-string contract: a CAS
-                    # conflict (concurrent re-log / a decay pass bumping
-                    # date_updated between the get and the save) or a
-                    # transient L3 error must not raise out of the tool. The
-                    # create + mark_surfaced paths catch the same way.
+                    # conflict (a concurrent re-log advancing date_updated
+                    # between this get and save) or a transient L3 error must
+                    # not raise out of the tool. The create + mark_surfaced
+                    # paths catch the same way.
                     log.warning(
                         "intention_log: refresh save failed",
                         extra={"extra_data": {"intention_id": str(existing_id), "error": str(exc)}},
@@ -507,7 +518,7 @@ async def load_intention_mark_surfaced_tool(
         except Exception as exc:
             return _tool_error("intention_mark_surfaced", "store", str(exc))
 
-        preview = entity.content[:120]
+        preview = entity.content[:_CONTENT_PREVIEW_LEN]
         # event payloads carry str-form uuids (FrameworkEvent wire contract,
         # matching MemoryConsolidatedEvent) -- this is the serialization border.
         event_user_id = str(user_id)  # convert at border: event payload wire uuid
