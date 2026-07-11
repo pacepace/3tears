@@ -81,8 +81,8 @@ packages/nats/tests/unit/test_distributed_lock.py:87:_FakeClient
 packages/mcp/tests/unit/test_http_client.py:17:_FakeTransport
 
 # audit + acl
-# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the publish surface, no full NatsClient parity to declare
-packages/agent/audit/tests/unit/test_publish.py:21:_FakeWrapper
+# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the jetstream_publish surface, no full NatsClient parity to declare
+packages/agent/audit/tests/unit/test_publish.py:22:_FakeWrapper
 # rationale: combined in-memory store satisfying both MembershipLoader and GrantLoader Protocols; the parity walker supports one marker per class so we exempt with both target Protocols named here
 packages/agent/acl/tests/unit/_fake_loaders.py:62:FakeStore
 

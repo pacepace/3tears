@@ -35,9 +35,18 @@ Identity comes from the VERIFIED ``call_context`` (the realign handler makes
 node read ``state["user_id"]`` / ``state["customer_id"]``, which the framework no
 longer threads through state.
 
-Every operation soft-fails exactly like the original node: a missing / unavailable
-knowledge backend, an embedding outage, or a render fault logs a warning naming the
-error class and proceeds on the un-merged request rather than failing the turn.
+Best-effort operations soft-fail exactly like the original node: a missing /
+unavailable knowledge backend, an embedding outage, or a SITUATIONAL (relevance-
+retrieved) item's render fault logs a warning naming the error class and degrades
+gracefully -- retrieval soft-fails the whole read to ``([], [])``; a single
+situational item that fails to render is SKIPPED (logged loudly) while the rest of
+the governed block still reaches the agent. Governance does NOT fail open on its own
+HARD rules, though: an INVARIANT (``always_inject``) concept / entry that fails to
+render is a rule the agent MUST always apply, so its render fault raises
+:class:`GovernedKnowledgeRenderError` and the seam FAILS CLOSED -- the turn surfaces
+the error rather than proceeding as if the hard rule did not exist. Dropping the
+entire governed block on one item's fault (the pattern this middleware previously
+carried) is exactly the fail-open a governance layer must not do.
 
 Async is the real path -- retrieval + embedding are ``async def``. The synchronous
 :meth:`~KnowledgeInjectionMiddleware.wrap_model_call` mirror cannot drive them, so
@@ -48,9 +57,9 @@ integration was in fact configured so the misconfiguration is visible.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, NotRequired
+from typing import Annotated, Any, NotRequired, TypeVar
 from uuid import UUID
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -69,9 +78,29 @@ from threetears.agent.knowledge.integration import (
     retrieve_entries,
 )
 
-__all__ = ["KnowledgeInjectionMiddleware", "KnowledgeInjectionState"]
+__all__ = [
+    "GovernedKnowledgeRenderError",
+    "KnowledgeInjectionMiddleware",
+    "KnowledgeInjectionState",
+]
 
 log = get_logger(__name__)
+
+
+class GovernedKnowledgeRenderError(RuntimeError):
+    """Raised when an INVARIANT (always-inject) governed item fails to render.
+
+    The fail-closed signal for the governance layer. Invariant concepts / entries
+    carry ``always_inject == True`` -- hard rules the agent must apply to the data in
+    scope on EVERY turn. When one fails to render, silently omitting it (or dropping
+    the whole block) would let the agent proceed ungoverned on a rule it is required
+    to always apply -- exactly the fail-open a governance layer must not do. This
+    error propagates PAST the middleware's best-effort soft-fail so the turn surfaces
+    the failure instead of answering as if the hard rule did not exist. SITUATIONAL
+    (relevance-retrieved) items are best-effort context, not hard rules, so a render
+    fault on one of them is skipped-and-logged rather than raised.
+    """
+
 
 #: Platform default for the situational-tail token budget (KNW-17 / note 4). The
 #: budget governs ONLY the situational (non-invariant) tail, SHARED across both
@@ -286,7 +315,15 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
                     messages=request.messages,
                     budget=self.token_budget,
                 )
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- knowledge injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
+            except GovernedKnowledgeRenderError:
+                # FAIL CLOSED: an invariant (always-inject) hard rule could not be
+                # rendered. dropping it -- or the whole block -- would let the agent
+                # proceed ungoverned on a rule it MUST always apply. governance does
+                # not fail open on its own hard rules, so surface the failure (the
+                # turn fails loudly) rather than swallowing it into a pass-through.
+                log.error("governed knowledge injection failed closed: an invariant rule could not be rendered")
+                raise
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- SITUATIONAL knowledge injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
                 log.warning(
                     "knowledge injection middleware failed (soft-fail): %s",
                     type(exc).__name__,
@@ -739,6 +776,75 @@ def _stable_order_concepts(
     )
 
 
+_V = TypeVar("_V")
+
+
+def _render_governed_items(
+    views: Sequence[_V],
+    render_one: Callable[[_V], str],
+    *,
+    id_of: Callable[[_V], str],
+    tier: str,
+    hard: bool,
+) -> list[str]:
+    """Render each governed view INDEPENDENTLY so one fault cannot drop the block.
+
+    Iterates the views and renders each on its own. The degradation policy is set by
+    ``hard``:
+
+    - ``hard=False`` (SITUATIONAL, relevance-retrieved): a view whose render RAISES
+      is SKIPPED with a loud warning naming its id + the error class; every other
+      view still renders, so the rest of the governed block reaches the agent rather
+      than the whole block being dropped on one bad item.
+    - ``hard=True`` (INVARIANT, ``always_inject``): a view whose render raises is a
+      HARD rule the agent must always apply. It is logged loudly and re-raised as
+      :class:`GovernedKnowledgeRenderError` so the seam fails CLOSED -- the turn
+      surfaces the failure rather than proceeding as if the rule did not exist.
+
+    :param views: the governed views to render, in the order they should appear
+    :ptype views: Sequence[_V]
+    :param render_one: the per-view render function (``_render_concept`` /
+        ``_render_entry``)
+    :ptype render_one: Callable[[_V], str]
+    :param id_of: extracts a view's id (as a string) for the diagnostic log
+    :ptype id_of: Callable[[_V], str]
+    :param tier: human-readable tier label for the log line (e.g.
+        ``"invariant concept"``)
+    :ptype tier: str
+    :param hard: ``True`` for invariants (fail closed), ``False`` for situational
+        (skip the faulting item)
+    :ptype hard: bool
+    :return: the successfully rendered item texts, in input order
+    :rtype: list[str]
+    :raises GovernedKnowledgeRenderError: when ``hard`` is ``True`` and any view
+        fails to render
+    """
+    rendered: list[str] = []
+    for view in views:
+        try:
+            rendered.append(render_one(view))
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- per-item render isolation: a situational fault skips one item, an invariant fault re-raises fail-closed below
+            if hard:
+                log.error(
+                    "governed invariant render failed (%s id=%s): %s: %s -- failing closed",
+                    tier,
+                    id_of(view),
+                    type(exc).__name__,
+                    exc,
+                )
+                raise GovernedKnowledgeRenderError(
+                    f"invariant {tier} {id_of(view)} failed to render: {type(exc).__name__}: {exc}"
+                ) from exc
+            log.warning(
+                "governed situational render failed (%s id=%s): %s: %s -- skipping this item",
+                tier,
+                id_of(view),
+                type(exc).__name__,
+                exc,
+            )
+    return rendered
+
+
 def _render_block(
     *,
     invariant_concepts: list[ConceptEffective],
@@ -758,6 +864,13 @@ def _render_block(
     :func:`_rank_and_trim_shared` already produced. The renderer MUST NOT re-sort
     the situational lists. Returns an empty string when every list is empty.
 
+    Each item is rendered INDEPENDENTLY via :func:`_render_governed_items` so one
+    item's render fault cannot drop the whole governed block: a SITUATIONAL item that
+    fails to render is skipped (logged loudly) while the rest still render; an
+    INVARIANT (``always_inject``) item that fails to render is a hard rule the agent
+    must always apply, so it raises :class:`GovernedKnowledgeRenderError` (fail
+    closed) rather than being silently omitted.
+
     :param invariant_concepts: invariant effective concept views
     :ptype invariant_concepts: list[ConceptEffective]
     :param situational_concepts: kept situational effective concept views, ALREADY
@@ -770,24 +883,75 @@ def _render_block(
     :ptype situational_entries: list[EntryEffective]
     :return: rendered context block, or empty string
     :rtype: str
+    :raises GovernedKnowledgeRenderError: when an invariant concept / entry fails to
+        render (fail closed on hard rules)
     """
     sections: list[str] = []
+
+    def _concept_id(view: ConceptEffective) -> str:
+        """Return an injected concept view's id for the diagnostic log.
+
+        :param view: effective concept view
+        :ptype view: ConceptEffective
+        :return: concept id as a string
+        :rtype: str
+        """
+        return str(view.concept.id)
+
+    def _entry_id(view: EntryEffective) -> str:
+        """Return an injected entry view's id for the diagnostic log.
+
+        :param view: effective entry view
+        :ptype view: EntryEffective
+        :return: entry id as a string
+        :rtype: str
+        """
+        return str(view.entry.id)
+
     # glossary (concepts) FIRST -- definitions before procedures.
     if invariant_concepts:
-        rendered = "\n\n".join(_render_concept(v) for v in _stable_order_concepts(invariant_concepts))
-        sections.append(_GLOSSARY_INVARIANT_HEADER + rendered)
+        parts = _render_governed_items(
+            _stable_order_concepts(invariant_concepts),
+            _render_concept,
+            id_of=_concept_id,
+            tier="invariant concept",
+            hard=True,
+        )
+        if parts:
+            sections.append(_GLOSSARY_INVARIANT_HEADER + "\n\n".join(parts))
     if situational_concepts:
         # ranked order preserved -- do NOT _stable_order_* the situational kept list
         # (KNW-92): _rank_and_trim_shared already ordered it by similarity DESC.
-        rendered = "\n\n".join(_render_concept(v) for v in situational_concepts)
-        sections.append(_GLOSSARY_SITUATIONAL_HEADER + rendered)
+        parts = _render_governed_items(
+            situational_concepts,
+            _render_concept,
+            id_of=_concept_id,
+            tier="situational concept",
+            hard=False,
+        )
+        if parts:
+            sections.append(_GLOSSARY_SITUATIONAL_HEADER + "\n\n".join(parts))
     # procedures (entries) AFTER the glossary.
     if invariant_entries:
-        rendered = "\n\n".join(_render_entry(v) for v in _stable_order_entries(invariant_entries))
-        sections.append(_INVARIANT_HEADER + rendered)
+        parts = _render_governed_items(
+            _stable_order_entries(invariant_entries),
+            _render_entry,
+            id_of=_entry_id,
+            tier="invariant entry",
+            hard=True,
+        )
+        if parts:
+            sections.append(_INVARIANT_HEADER + "\n\n".join(parts))
     if situational_entries:
-        rendered = "\n\n".join(_render_entry(v) for v in situational_entries)
-        sections.append(_SITUATIONAL_HEADER + rendered)
+        parts = _render_governed_items(
+            situational_entries,
+            _render_entry,
+            id_of=_entry_id,
+            tier="situational entry",
+            hard=False,
+        )
+        if parts:
+            sections.append(_SITUATIONAL_HEADER + "\n\n".join(parts))
     if not sections:
         result = ""
     else:

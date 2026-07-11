@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid7
 
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain.agents.middleware.types import ExtendedModelResponse
@@ -34,8 +35,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from threetears.knowledge import ConceptEffective, ConceptSnapshot, EntryEffective, EntrySnapshot, Scope
 
+import threetears.agent.knowledge.middleware as mw_module
 from threetears.agent.knowledge.integration import KnowledgeIntegration
 from threetears.agent.knowledge.middleware import (
+    GovernedKnowledgeRenderError,
     KnowledgeInjectionMiddleware,
     KnowledgeInjectionState,
     _concept_shadow_disclosures,
@@ -98,6 +101,36 @@ def _concept_effective(
         shadows_scope=shadows,
         ambiguous=ambiguous,
     )
+
+
+class _BoomEntrySnapshot:
+    """Entry snapshot whose ``title`` access raises, to force a single-item render fault.
+
+    Carries a real ``id`` (so the diagnostic log's id accessor works) and ``scope`` +
+    id ``.bytes`` (so the invariant stable-order sort that runs BEFORE render still
+    succeeds), but accessing ``title`` -- which ``_render_entry`` reads first --
+    raises, isolating the fault to the render step.
+    """
+
+    def __init__(self) -> None:
+        self.id = uuid7()
+        self.scope = Scope.PLATFORM
+        self.body = "body"
+
+    @property
+    def title(self) -> str:
+        """Raise to simulate a render fault on this one item.
+
+        :return: never returns.
+        :rtype: str
+        :raises RuntimeError: always.
+        """
+        raise RuntimeError("entry render boom")
+
+
+def _boom_entry_effective() -> EntryEffective:
+    """Build an :class:`EntryEffective` whose render raises on the ``title`` access."""
+    return EntryEffective(entry=cast("EntrySnapshot", _BoomEntrySnapshot()), shadows_scope=None)
 
 
 # --------------------------------------------------------------------------- #
@@ -515,6 +548,83 @@ class TestRenderAndTrim:
             budget=10_000,
         )
         assert len(kept_e) == 3
+
+
+class TestRenderFaultIsolation:
+    """One item's render fault must NOT drop the whole governed block.
+
+    A governance layer that fails open on its own hard rules is not governance: a
+    situational (best-effort) item's render fault is isolated to that item, while an
+    invariant (always-inject) item's render fault fails CLOSED rather than silently
+    proceeding ungoverned.
+    """
+
+    def test_situational_render_fault_skips_only_the_bad_item(self) -> None:
+        # one situational entry booms on render; the surviving situational entry
+        # (and the whole block) still reaches the agent -- the fault does NOT nuke
+        # the block.
+        good = _entry_snapshot(title="Filter deleted", body="exclude deleted rows")
+        block = _render_block(
+            invariant_concepts=[],
+            situational_concepts=[],
+            invariant_entries=[],
+            situational_entries=[_boom_entry_effective(), EntryEffective(entry=good, shadows_scope=None)],
+        )
+        assert block.startswith("# Governed data knowledge")
+        # the good item survived; the boom item was skipped, not fatal.
+        assert "Filter deleted" in block
+
+    def test_situational_all_faulting_yields_no_section_not_a_crash(self) -> None:
+        # if EVERY situational item faults, the section is simply empty (skipped),
+        # never a raised exception -- best-effort context degrades to nothing.
+        block = _render_block(
+            invariant_concepts=[],
+            situational_concepts=[],
+            invariant_entries=[],
+            situational_entries=[_boom_entry_effective()],
+        )
+        assert block == ""
+
+    def test_invariant_render_fault_fails_closed(self) -> None:
+        # an invariant (always-inject) hard rule that cannot render must FAIL CLOSED:
+        # silently dropping it would let the agent proceed ungoverned on a rule it
+        # must always apply.
+        with pytest.raises(GovernedKnowledgeRenderError):
+            _render_block(
+                invariant_concepts=[],
+                situational_concepts=[],
+                invariant_entries=[_boom_entry_effective()],
+                situational_entries=[],
+            )
+
+    def test_middleware_fails_closed_on_invariant_render_fault(self) -> None:
+        # the seam must NOT swallow the fail-closed signal into a pass-through: a
+        # GovernedKnowledgeRenderError from render surfaces (the turn fails loudly)
+        # rather than proceeding on the un-merged request. proven by forcing
+        # _render_block to raise the fail-closed error and asserting the handler is
+        # never reached and the error propagates.
+        integration = _integration(entries=[_entry_snapshot(always_inject=True)])
+        mw = KnowledgeInjectionMiddleware()
+        request = _request(SystemMessage(content="base"))
+        handler_calls: list[ModelRequest] = []
+
+        async def _handler(req: ModelRequest) -> Any:
+            handler_calls.append(req)
+            return SimpleNamespace(result=[AIMessage(content="ok")])
+
+        def _boom_render(**_kwargs: Any) -> str:
+            raise GovernedKnowledgeRenderError("invariant boom")
+
+        async def _run() -> Any:
+            with _configured(_configurable(integration)):
+                return await mw.awrap_model_call(request, _handler)
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(mw_module, "_render_block", _boom_render)
+            with pytest.raises(GovernedKnowledgeRenderError):
+                asyncio.run(_run())
+        # fail closed: the model was never invoked on the ungoverned request.
+        assert handler_calls == []
 
 
 class TestCosine:

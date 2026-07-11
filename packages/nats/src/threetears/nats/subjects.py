@@ -950,6 +950,22 @@ class Subjects:
             result = Subject(path=f"{_ns()}.audit.{area}.>", kind="pattern")
         return result
 
+    @classmethod
+    def audit_deadletter(cls) -> Subject:
+        """dead-letter subject for audit envelopes the consumer exhausted.
+
+        an audit envelope that stays un-persistable after the durable
+        consumer's bounded redelivery budget is republished here. a SIBLING
+        token of ``audit`` (``audit-deadletter``, NOT ``{ns}.audit.*``) so
+        :meth:`audit_wildcard` does NOT match it -- the poisoned envelope parks
+        in the ``{ns}-audit`` stream (which is declared over this subject too)
+        with no consumer draining it: inspectable, not lost, not looping.
+
+        :return: subject ``{ns}.audit-deadletter``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.audit-deadletter", kind="point")
+
     # ------------------------------------------------------------------
     # workspaces
     # ------------------------------------------------------------------
