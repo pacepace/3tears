@@ -7,6 +7,7 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -151,6 +152,15 @@ def tool_namespace_id(
 # immutable shape back (prevents accidental mutation of the internal
 # dict through the public accessor).
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
+
+#: consecutive heartbeat cycles the NATS data plane may be unrecoverably unhealthy
+#: (terminal close OR persistent auth/overflow wedge -- see :attr:`ToolServer.is_healthy`)
+#: before the heartbeat-loop supervisor crashes the process so the orchestrator recycles
+#: the pod. A transient network-drop reconnect keeps ``is_healthy`` True and resets the
+#: streak, so this only trips on the states forever-reconnect cannot recover. 3 cycles at
+#: the default 15s heartbeat is ~45s of sustained death -- prompt enough for cattle, long
+#: enough to ride out a one-cycle blip.
+_UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
@@ -869,6 +879,29 @@ class ToolServer:
         :rtype: bool
         """
         return self._nc is not None
+
+    @property
+    def is_healthy(self) -> bool:
+        """return whether this pod's NATS data plane is actually usable.
+
+        The load-bearing LIVENESS signal (as opposed to :attr:`is_connected`,
+        which reports only that a client OBJECT exists and stays ``True`` for a
+        dead connection -- the exact bug that lets a pod wedge "Running" forever
+        with a closed NATS connection). Delegates to the canonical client's real
+        state: ``False`` when the connection is terminally ``is_closed`` (a NATS
+        user-JWT expiry ``-ERR`` routes straight to a close that forever-reconnect
+        does NOT cover) OR when the client is stuck in a persistent
+        auth-violation / outbound-overflow loop (``not is_healthy`` -- a wedge
+        where ``is_closed`` never trips). A TRANSIENT network-drop reconnect keeps
+        this ``True`` (``is_closed`` False, ``is_healthy`` True) so a normal
+        forever-reconnect never flaps liveness. A ``/healthz`` liveness probe
+        keyed on this trips on the unrecoverable states so k8s recycles the pod.
+
+        :return: true iff the NATS connection is alive and not auth/overflow-wedged
+        :rtype: bool
+        """
+        nc = self._nc
+        return nc is not None and not nc.is_closed and nc.is_healthy
 
     @property
     def jwks_warmed(self) -> bool:
@@ -2226,6 +2259,7 @@ class ToolServer:
         if nc is None:
             raise RuntimeError("_heartbeat_loop started before NATS connected")
         subject = Subjects.tools_heartbeat(self._pod_id)
+        consecutive_unhealthy = 0
         while self._running:
             heartbeat = HeartbeatMessage(
                 pod_id=self._pod_id,
@@ -2246,6 +2280,30 @@ class ToolServer:
                     "periodic re-registration failed",
                     extra={"extra_data": {"error": str(exc)}},
                 )
+            # Liveness supervisor (the no-k8s net; the /healthz probe is the k8s net).
+            # Forever-reconnect rides out any transient drop (is_healthy stays True), but a
+            # TERMINAL close (user-JWT expiry -ERR) or a persistent auth/overflow wedge never
+            # self-recovers -- and the old loop swallowed the failed publishes forever, wedging
+            # the pod "Running" with a dead data plane. Instead, after a short sustained-unhealthy
+            # streak, crash the process so the orchestrator recycles it (k8s Deployment restart /
+            # docker restart policy) -- cattle, not a pet. os._exit because a SystemExit raised in
+            # a background task is swallowed by asyncio task bookkeeping and would not terminate
+            # the process.
+            if self.is_healthy:
+                consecutive_unhealthy = 0
+            else:
+                consecutive_unhealthy += 1
+                if consecutive_unhealthy >= _UNHEALTHY_EXIT_THRESHOLD:
+                    log.error(
+                        "NATS data plane unrecoverable; crashing so the pod recycles (cattle)",
+                        extra={
+                            "extra_data": {
+                                "pod_id": self._pod_id,
+                                "consecutive_unhealthy": consecutive_unhealthy,
+                            }
+                        },
+                    )
+                    os._exit(1)
             await asyncio.sleep(self._heartbeat_interval)
 
     @traced()

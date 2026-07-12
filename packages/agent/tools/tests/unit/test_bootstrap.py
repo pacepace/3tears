@@ -112,10 +112,12 @@ class TestRunServe:
 
 class _ReadinessFakeServer:
     """a ToolServer stand-in exposing the three probe surfaces the bootstrap health server reads;
-    ``jwks_warmed`` is flipped by the test to drive the NOT-READY -> READY transition."""
+    ``jwks_warmed`` is flipped by the test to drive the NOT-READY -> READY transition. ``is_healthy``
+    (not ``is_connected``) is the nats liveness surface the probe now reads -- real NATS health, so a
+    dead connection trips liveness instead of reporting healthy forever."""
 
     def __init__(self) -> None:
-        self.is_connected = True
+        self.is_healthy = True
         self.tools_count = 1
         self.jwks_warmed = False
 

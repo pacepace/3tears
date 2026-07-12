@@ -184,8 +184,14 @@ class ToolServerBootstrap:
             metrics_provider=server.render_metrics,
             checks=[
                 HealthCheck(
+                    # key liveness on REAL NATS health, not object-existence: a
+                    # terminal close (user-JWT expiry) or a persistent auth /
+                    # overflow wedge trips is_healthy so k8s recycles the pod. the
+                    # old is_connected probe reported healthy forever with a dead
+                    # connection (the silent-zombie bug). the in-process
+                    # heartbeat-loop supervisor is the no-k8s net (host / docker).
                     name="nats",
-                    probe=lambda: server.is_connected,
+                    probe=lambda: server.is_healthy,
                 ),
                 HealthCheck(
                     name="tools_registered",
