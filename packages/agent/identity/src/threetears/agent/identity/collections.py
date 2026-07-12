@@ -202,11 +202,18 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         user_id: UUID | None,
         block_key: str,
     ) -> IdentityVersionEntity | None:
-        """Return the one ``active`` version for a scope+block, or ``None``.
+        """Return the active version for a scope+block, or ``None``.
 
         This is the consumer's prompt-assembly read: the content the next
-        turn injects for ``block_key``. The partial unique index guarantees
-        at most one active row. Null-safe on the scope grains.
+        turn injects for ``block_key``. The partial unique index
+        ``uq_identity_active_per_block`` enforces at most one active row per
+        block **when the scope grains are populated** (metallm always sets
+        ``customer_id`` + ``user_id``). For the rare agent-internal case
+        where a grain is NULL, Postgres treats NULLs as distinct in the
+        unique index, so the caller (the write path, T2.1b) maintains
+        single-active; this read defends by returning the most recent
+        active (``ORDER BY date_created DESC``). ``IS NOT DISTINCT FROM`` is
+        null-safe on the nullable grains.
 
         :param agent_id: partition column; required
         :ptype agent_id: UUID
@@ -223,14 +230,16 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
             return None
         # cache-bypass: the scan by (agent, customer, user, block, status)
         # is not primary-key addressable, so it stays on the Collection
-        # (single entry point). IS NOT DISTINCT FROM is null-safe on the
-        # nullable scope grains.
+        # (single entry point). ORDER BY date_created DESC makes the read
+        # deterministic even in the NULL-grain edge where the partial unique
+        # index cannot enforce single-active.
         row = await self.l3_pool.fetchrow(
             f"SELECT {_IDENTITY_SELECT_COLUMNS} FROM identity_versions "
             "WHERE agent_id = $1 "
             "AND customer_id IS NOT DISTINCT FROM $2 "
             "AND user_id IS NOT DISTINCT FROM $3 "
-            f"AND block_key = $4 AND status = '{IdentityVersionStatus.ACTIVE.value}'",
+            f"AND block_key = $4 AND status = '{IdentityVersionStatus.ACTIVE.value}' "
+            "ORDER BY date_created DESC",
             agent_id,
             customer_id,
             user_id,
