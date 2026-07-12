@@ -504,7 +504,10 @@ class TestMemoryExtractorAgainstLiveSchema:
                 permissive_memory_authorizer,
             )
             extractor = MemoryExtractor(
-                config=MemoryConfig(),
+                # non-default salience_seed proves the ADD path threads the
+                # per-user knob (design §3) rather than falling through to the
+                # DB server default 0.5.
+                config=MemoryConfig(salience_seed=0.8),
                 embedding_provider=_StubEmbedding(),
                 chat_model_factory=factory,
                 authorizer=permissive_memory_authorizer,
@@ -524,13 +527,14 @@ class TestMemoryExtractorAgainstLiveSchema:
             )
 
             rows = await pool.fetch(
-                "SELECT content, type_memory, search_vector FROM memories WHERE user_id = $1",
+                "SELECT content, type_memory, search_vector, salience FROM memories WHERE user_id = $1",
                 user_id,
             )
             assert len(rows) == 1
             assert rows[0]["content"] == "User lives in Seattle"
             assert rows[0]["type_memory"] == "fact"
             assert rows[0]["search_vector"] is not None
+            assert float(rows[0]["salience"]) == 0.8  # seeded from config, not the DB default
         finally:
             await pool.close()
 
@@ -583,6 +587,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 permissive_memory_authorizer,
                 memories,
                 context_resolver=lambda: _StubCtx(conv_id, msg_id),
+                salience_seed=0.7,  # non-default proves the knob is threaded on insert
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke({"content": "User prefers Python", "memory_type": "preference"})
@@ -592,11 +597,12 @@ class TestMemoryToolsAgainstLiveSchema:
             assert "Stored as [memory:" in result
 
             row = await pool.fetchrow(
-                "SELECT content, type_memory, search_vector FROM memories WHERE user_id = $1",
+                "SELECT content, type_memory, search_vector, salience FROM memories WHERE user_id = $1",
                 user_id,
             )
             assert row is not None
             assert row["content"] == "User prefers Python"
+            assert float(row["salience"]) == 0.7  # seeded from the tool's salience_seed
             assert row["type_memory"] == "preference"
             assert row["search_vector"] is not None
         finally:

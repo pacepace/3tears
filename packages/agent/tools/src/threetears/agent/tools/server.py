@@ -7,6 +7,7 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -39,12 +40,16 @@ from threetears.agent.tools.config import (
     get_ready_timeout as _get_ready_timeout,
 )
 from threetears.agent.tools.config import (
+    get_nats_user_jwt_ttl_seconds,
+)
+from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
 from threetears.agent.tools.config import (
     get_connect_retry_backoff_cap,
     get_connect_retry_budget,
 )
+from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
@@ -69,7 +74,7 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError
-from threetears.observe import clear_context, get_logger, traced
+from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
 
 __all__ = [
     "CallRequest",
@@ -151,6 +156,15 @@ def tool_namespace_id(
 # immutable shape back (prevents accidental mutation of the internal
 # dict through the public accessor).
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
+
+#: consecutive heartbeat cycles the NATS data plane may be unrecoverably unhealthy
+#: (terminal close OR persistent auth/overflow wedge -- see :attr:`ToolServer.is_healthy`)
+#: before the heartbeat-loop supervisor crashes the process so the orchestrator recycles
+#: the pod. A transient network-drop reconnect keeps ``is_healthy`` True and resets the
+#: streak, so this only trips on the states forever-reconnect cannot recover. 3 cycles at
+#: the default 15s heartbeat is ~45s of sustained death -- prompt enough for cattle, long
+#: enough to ride out a one-cycle blip.
+_UNHEALTHY_EXIT_THRESHOLD: int = 3
 
 if TYPE_CHECKING:
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
@@ -283,6 +297,25 @@ class ToolManifestEntry(BaseModel):
         skills catalog; mirrors :attr:`TearsTool.skill_eligible`.
         Defaults to ``False``.
     :ptype skill_eligible: bool
+    :param face_platform_tool: whether the tool is reachable over the
+        internal NATS mesh as a native platform tool; mirrors
+        :attr:`TearsTool.face_platform_tool`. Defaults to ``True`` so
+        manifests built without an explicit value preserve the tool's
+        historical reach.
+    :ptype face_platform_tool: bool
+    :param face_api: whether the tool is reachable as an external HTTP
+        API operation; mirrors :attr:`TearsTool.face_api`. Defaults to
+        ``False``.
+    :ptype face_api: bool
+    :param face_mcp: whether the tool is reachable as an external MCP
+        tool; mirrors :attr:`TearsTool.face_mcp`. Defaults to
+        ``False``.
+    :ptype face_mcp: bool
+    :param requires_confirmation: whether a call to the tool must be
+        gated behind human-in-the-loop approval; mirrors
+        :attr:`TearsTool.requires_confirmation`. Defaults to ``False``
+        so manifests built without an explicit value stay ungated.
+    :ptype requires_confirmation: bool
     """
 
     name: str
@@ -292,6 +325,10 @@ class ToolManifestEntry(BaseModel):
     timeout_seconds: float | None = None
     tool_eligible: bool = True
     skill_eligible: bool = False
+    face_platform_tool: bool = True
+    face_api: bool = False
+    face_mcp: bool = False
+    requires_confirmation: bool = False
 
 
 class RegistrationManifest(BaseModel):
@@ -747,12 +784,24 @@ class ToolServer:
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        # proactive NATS-JWT re-auth loop (only started for the self-owned-connection path in serve()):
+        # forces a reconnect a margin before the auth-callout-minted user JWT expires, so the pod never
+        # hits the terminal auth-close forever-reconnect cannot recover. an INJECTED (agent-owned)
+        # connection has its OWN re-auth loop, so the pod must not double-drive it -- left None there.
+        self._nats_reauth_task: asyncio.Task[None] | None = None
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
         # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
         # silently skip single-use enforcement). serve() always provisions it over the pod's
         # connection; callers driving handle_call without serve() (tests) inject one here.
         self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
+        # leak-safe in-flight-requests gauge bracketed around every handle_call:
+        # the tool-pod bootstrap serves it on the shared HealthServer's /metrics
+        # route so KEDA's prometheus scaler can autoscale the pod's Deployment on
+        # aggregate in-flight call load (the tools.internal RPC path is a
+        # queue-group request/reply, not JetStream, so there is no stream backlog
+        # for the nats scaler to read).
+        self._inflight_gauge = InflightRequestsGauge("threetears_tools_inflight_requests")
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -784,6 +833,20 @@ class ToolServer:
         :rtype: int
         """
         return len(self._tools)
+
+    def render_metrics(self) -> tuple[str, bytes]:
+        """render the pod's prometheus metrics in text exposition format.
+
+        returns ``(content_type, body)`` for the shared HealthServer's
+        ``/metrics`` route (wired by :class:`ToolServerBootstrap`), so the
+        pod's in-flight-requests gauge is scrapable by KEDA's prometheus
+        scaler through the one HTTP listener the pod already runs for
+        ``/healthz``.
+
+        :return: tuple of prometheus content-type and exposition body
+        :rtype: tuple[str, bytes]
+        """
+        return self._inflight_gauge.render()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -825,6 +888,29 @@ class ToolServer:
         :rtype: bool
         """
         return self._nc is not None
+
+    @property
+    def is_healthy(self) -> bool:
+        """return whether this pod's NATS data plane is actually usable.
+
+        The load-bearing LIVENESS signal (as opposed to :attr:`is_connected`,
+        which reports only that a client OBJECT exists and stays ``True`` for a
+        dead connection -- the exact bug that lets a pod wedge "Running" forever
+        with a closed NATS connection). Delegates to the canonical client's real
+        state: ``False`` when the connection is terminally ``is_closed`` (a NATS
+        user-JWT expiry ``-ERR`` routes straight to a close that forever-reconnect
+        does NOT cover) OR when the client is stuck in a persistent
+        auth-violation / outbound-overflow loop (``not is_healthy`` -- a wedge
+        where ``is_closed`` never trips). A TRANSIENT network-drop reconnect keeps
+        this ``True`` (``is_closed`` False, ``is_healthy`` True) so a normal
+        forever-reconnect never flaps liveness. A ``/healthz`` liveness probe
+        keyed on this trips on the unrecoverable states so k8s recycles the pod.
+
+        :return: true iff the NATS connection is alive and not auth/overflow-wedged
+        :rtype: bool
+        """
+        nc = self._nc
+        return nc is not None and not nc.is_closed and nc.is_healthy
 
     @property
     def jwks_warmed(self) -> bool:
@@ -1118,6 +1204,13 @@ class ToolServer:
         self._ready_event.set()
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+        # proactive NATS-JWT re-auth: ONLY on the self-owned-connection path. an injected
+        # (agent-owned) connection carries its own re-auth loop on the agent runtime, so the pod must
+        # not race a second reconnect against it. a standalone pod (opened its own connection above)
+        # owns the reconnect and must re-auth before its user JWT expires.
+        if self._owns_nats_connection:
+            self._nats_reauth_task = asyncio.create_task(self._nats_reauth_loop())
 
         await self._shutdown_event.wait()
 
@@ -1466,6 +1559,10 @@ class ToolServer:
             schema = tool.mcp_schema()
             tool_eligible = bool(getattr(tool, "tool_eligible", True))
             skill_eligible = bool(getattr(tool, "skill_eligible", False))
+            face_platform_tool = bool(getattr(tool, "face_platform_tool", True))
+            face_api = bool(getattr(tool, "face_api", False))
+            face_mcp = bool(getattr(tool, "face_mcp", False))
+            requires_confirmation = bool(getattr(tool, "requires_confirmation", False))
             if not tool_eligible and not skill_eligible:
                 # registering a tool with both flags off makes it
                 # invisible to every agent surface. almost certainly
@@ -1494,6 +1591,10 @@ class ToolServer:
                 timeout_seconds=schema.timeout_seconds,
                 tool_eligible=tool_eligible,
                 skill_eligible=skill_eligible,
+                face_platform_tool=face_platform_tool,
+                face_api=face_api,
+                face_mcp=face_mcp,
+                requires_confirmation=requires_confirmation,
             )
             tools_list.append(entry)
 
@@ -1802,6 +1903,27 @@ class ToolServer:
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
+        """
+        # bracket the whole dispatch in the in-flight gauge: increment on entry,
+        # decrement on exit even when dispatch raises (try/finally inside
+        # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
+        # count and a failed call never strands the counter above baseline.
+        with self._inflight_gauge.track():
+            await self._dispatch_incoming_call(msg)
+
+    async def _dispatch_incoming_call(self, msg: IncomingMessage) -> None:
+        """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
+
+        split out of :meth:`handle_call` so the public NATS callback can
+        bracket the dispatch in the in-flight-requests gauge without
+        re-indenting the whole body. the full handler contract (identity
+        verification, proxy-assertion check, baseline audit) is documented
+        on :meth:`handle_call`.
+
+        :param msg: incoming wrapper envelope carrying the call request
+        :ptype msg: IncomingMessage
+        :return: nothing
+        :rtype: None
         """
         start_monotonic = time.monotonic()
         request: CallRequest | None = None
@@ -2153,6 +2275,7 @@ class ToolServer:
         if nc is None:
             raise RuntimeError("_heartbeat_loop started before NATS connected")
         subject = Subjects.tools_heartbeat(self._pod_id)
+        consecutive_unhealthy = 0
         while self._running:
             heartbeat = HeartbeatMessage(
                 pod_id=self._pod_id,
@@ -2173,7 +2296,105 @@ class ToolServer:
                     "periodic re-registration failed",
                     extra={"extra_data": {"error": str(exc)}},
                 )
+            # Liveness supervisor (the no-k8s net; the /healthz probe is the k8s net).
+            # Forever-reconnect rides out any transient drop (is_healthy stays True), but a
+            # TERMINAL close (user-JWT expiry -ERR) or a persistent auth/overflow wedge never
+            # self-recovers -- and the old loop swallowed the failed publishes forever, wedging
+            # the pod "Running" with a dead data plane. Instead, after a short sustained-unhealthy
+            # streak, crash the process so the orchestrator recycles it (k8s Deployment restart /
+            # docker restart policy) -- cattle, not a pet. os._exit because a SystemExit raised in
+            # a background task is swallowed by asyncio task bookkeeping and would not terminate
+            # the process.
+            if self.is_healthy:
+                consecutive_unhealthy = 0
+            else:
+                consecutive_unhealthy += 1
+                if consecutive_unhealthy >= _UNHEALTHY_EXIT_THRESHOLD:
+                    log.error(
+                        "NATS data plane unrecoverable; crashing so the pod recycles (cattle)",
+                        extra={
+                            "extra_data": {
+                                "pod_id": self._pod_id,
+                                "consecutive_unhealthy": consecutive_unhealthy,
+                            }
+                        },
+                    )
+                    os._exit(1)
             await asyncio.sleep(self._heartbeat_interval)
+
+    def _current_nats_jwt_ttl_seconds(self) -> int | None:
+        """the assumed TTL (seconds) of the pod's current NATS user JWT, from config.
+
+        unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
+        standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
+        from :func:`get_nats_user_jwt_ttl_seconds` (the platform default 150, env-overridable). read
+        every cycle so an operator env change reschedules correctly; ``None`` when the config value is
+        non-positive / malformed (unknown -> the loop re-checks rather than churning).
+
+        :return: the connection JWT TTL in seconds, or ``None`` when unknown
+        :rtype: int | None
+        """
+        return get_nats_user_jwt_ttl_seconds()
+
+    async def _reauth_nats_once(self) -> None:
+        """force ONE proactive NATS reconnect so the auth-callout re-mints a fresh user JWT.
+
+        the reconnect reuses the same nats-py client (the transport cycles), replays subscriptions
+        under their original ``sid``, and re-runs the auth-callout -- minting a FRESH user JWT with
+        full TTL -- so the connection rides on indefinitely and the schedule self-corrects. kept
+        separate from :meth:`_nats_reauth_loop` so the per-pass behaviour is unit-testable without
+        spinning up the loop.
+
+        :return: nothing
+        :rtype: None
+        """
+        nc = self._nc
+        if nc is None:
+            log.debug("NATS re-auth skipped: tool server not connected (no nats_client)")
+            return
+        await nc.reconnect()
+        log.info(
+            "NATS connection re-authenticated via proactive reconnect (fresh user JWT before expiry)",
+            extra={"extra_data": {"pod_id": self._pod_id}},
+        )
+
+    async def _nats_reauth_loop(self) -> None:
+        """force a NATS reconnect before the connection's user JWT expires; unkillable + self-healing.
+
+        mirrors the agent runtime's re-auth loop: a ``while True`` whose body is wrapped in a BROAD
+        ``except Exception`` so a single failed re-auth logs and retries FAST
+        (:data:`nats_reauth.REAUTH_RETRY_SECONDS`) instead of ending the loop -- a connection nearing
+        JWT expiry must never wait a full cycle after a transient failure. the sleep before each
+        re-auth is recomputed every cycle from the CURRENT config TTL (never a fixed interval), so a
+        changed TTL reschedules correctly. when the TTL is unknown the loop re-checks on a short
+        cadence WITHOUT reconnecting (it must not churn the connection on a guess; the heartbeat
+        supervisor covers a terminal close in that window). cancellation ends the loop.
+
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            while True:
+                try:
+                    ttl = self._current_nats_jwt_ttl_seconds()
+                    delay = nats_reauth.seconds_until_reauth(ttl)
+                    await asyncio.sleep(delay)
+                    if not nats_reauth.has_schedulable_ttl(ttl):
+                        # TTL still unknown after the wait -- re-check next cycle rather than force a
+                        # reconnect on a guess. SAME predicate the scheduler uses (so the two never
+                        # diverge); the heartbeat supervisor covers any terminal close while unknown.
+                        continue
+                    await self._reauth_nats_once()
+                except Exception as exc:
+                    log.warning(
+                        "NATS re-auth failed (retrying in %ss): %s",
+                        nats_reauth.REAUTH_RETRY_SECONDS,
+                        exc,
+                    )
+                    await asyncio.sleep(nats_reauth.REAUTH_RETRY_SECONDS)
+        # NOSILENT: cancellation ends the NATS re-auth loop on tool-server shutdown
+        except asyncio.CancelledError:
+            return
 
     @traced()
     async def shutdown(self) -> None:
@@ -2201,6 +2422,14 @@ class ToolServer:
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._nats_reauth_task is not None:
+            self._nats_reauth_task.cancel()
+            try:
+                await self._nats_reauth_task
+            except asyncio.CancelledError:
+                pass
+            self._nats_reauth_task = None
 
         if self._owned_jwks_provider is not None:
             await self._owned_jwks_provider.stop()

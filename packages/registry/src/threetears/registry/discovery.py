@@ -78,6 +78,8 @@ class DiscoverResultEntry(BaseModel):
     :ptype output_schema: dict[str, Any] | None
     :param timeout_seconds: per-tool timeout declaration from tool registration, None uses platform default
     :ptype timeout_seconds: float | None
+    :param requires_confirmation: whether calls to the tool must be gated behind human-in-the-loop approval
+    :ptype requires_confirmation: bool
     :param endpoint_count: number of pod endpoints serving this tool
     :ptype endpoint_count: int
     """
@@ -89,6 +91,7 @@ class DiscoverResultEntry(BaseModel):
     input_schema: dict[str, Any] = {}
     output_schema: dict[str, Any] | None = None
     timeout_seconds: float | None = None
+    requires_confirmation: bool = False
     endpoint_count: int = 0
 
 
@@ -249,6 +252,7 @@ class DiscoveryHandler:
                     input_schema=entry.input_schema,
                     output_schema=entry.output_schema,
                     timeout_seconds=entry.timeout_seconds,
+                    requires_confirmation=entry.requires_confirmation,
                     endpoint_count=len(entry.endpoints),
                 )
             )
@@ -278,6 +282,7 @@ class DiscoveryHandler:
                     input_schema=entry.input_schema,
                     output_schema=entry.output_schema,
                     timeout_seconds=entry.timeout_seconds,
+                    requires_confirmation=entry.requires_confirmation,
                     endpoint_count=len(entry.endpoints),
                 )
             else:

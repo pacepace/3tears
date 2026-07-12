@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-registry"
-version = "0.14.1"
+version = "0.15.0"
 description = "MCP-compatible tool registry for 3tears tool system"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -18,6 +18,7 @@ dependencies = [
     "3tears-nats",
     "3tears-observe",
     "nats-py>=2.0",
+    "prometheus-client>=0.20",
 ]
 
 [project.urls]

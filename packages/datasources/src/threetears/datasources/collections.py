@@ -7,10 +7,11 @@ originals -- this shard is pure relocation, not refactor.
 
 collections in this module:
 
-- :class:`DataSourceCollection` -- ``SchemaBackedCollection`` for the
-  ``platform.datasources`` registry. composite PK
-  ``(customer_id, id)`` with a ``find_by_id`` helper that uses the
-  v054 ``UNIQUE (id)`` constraint for partition-exempt lookups.
+- :class:`CapabilitySourceCollection` -- ``SchemaBackedCollection`` for
+  the ``platform.datasources`` registry, generalized (Fork-1,
+  gu-task-08) to hold database datasources, API imports, and MCP
+  imports discriminated by ``kind``. flat PK ``id`` with a
+  ``find_by_id`` helper that uses the v054 ``UNIQUE (id)`` constraint.
 - :class:`DataSourceTableCollection` -- ``BaseCollection`` for the
   ``platform.datasource_tables`` row set.
 - :class:`DataSourceColumnCollection` -- ``BaseCollection`` for
@@ -36,6 +37,7 @@ from uuid import UUID
 from threetears.core.backends import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
     DATETIMETZ_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -45,12 +47,14 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     encode_jsonb,
 )
+from threetears.core.security.secret_refs import validate_ref
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
 from threetears.datasources.entities import (
+    CapabilitySourceEntity,
+    CapabilitySourceKind,
     DataSourceColumnEntity,
-    DataSourceEntity,
     DataSourceRelationEntity,
     DataSourceSchemaDigestEntity,
     DataSourceStatus,
@@ -62,13 +66,24 @@ log = get_logger(__name__)
 
 
 __all__ = [
-    "DataSourceCollection",
+    "CapabilitySourceCollection",
     "DataSourceColumnCollection",
     "DataSourceRelationCollection",
     "DataSourceSchemaDigestCollection",
     "DataSourceTableCollection",
     "TableTemplateCollection",
 ]
+
+# gu-task-08 GU-08-03: config storage is KIND-CONDITIONAL. rows of these
+# kinds address their config via a secret_refs ``scheme://locator``
+# reference, validated at the write boundary (:func:`validate_ref`) and
+# resolved at use time. a ``datasource``-kind row is DELIBERATELY absent
+# here: its ``connection_config`` is an encrypted JSON blob, NOT a
+# ``scheme://locator``, so validating it as a ref would reject every
+# existing datasource write.
+_CONFIG_REF_KINDS: frozenset[str] = frozenset(
+    {CapabilitySourceKind.API_IMPORT.value, CapabilitySourceKind.MCP_IMPORT.value},
+)
 
 
 _TABLE_FIELD_TYPES: dict[str, Any] = {
@@ -158,18 +173,37 @@ _TEMPLATE_FIELD_TYPES: dict[str, Any] = {
 }
 
 
-class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
-    """three-tier collection for data source entities.
+class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity]):
+    """three-tier collection for capability-source entities.
 
-    provides CRUD operations with L1 -> L2 -> L3 caching. data sources
-    are hard-deleted (no soft-delete pattern). ``connection_config`` is
-    stored as encrypted JSON string in L3 (kept as ``STRING_TYPE`` so
-    the SchemaBackedCollection write path passes the ciphertext through
-    unchanged); ``allowed_schemas`` is stored as a JSONB array. CRUD
-    comes from the declarative :class:`TableSchema`; no domain queries
-    live on the subclass today (every callsite resolves by primary key
-    or filters in admin endpoints via the L3 pool with cache-bypass
-    rationales).
+    generalized from the former datasource-only collection (Fork-1,
+    gu-task-08): the SAME ``platform.datasources`` registry holds
+    database datasources, external API imports, and MCP imports,
+    discriminated by the ``kind`` column
+    (:class:`CapabilitySourceKind`). the table stays; the SHAPE widens.
+
+    provides CRUD operations with L1 -> L2 -> L3 caching. capability
+    sources are hard-deleted (no soft-delete pattern).
+
+    ``connection_config`` is KIND-CONDITIONAL (GU-08-03): a
+    ``datasource``-kind row keeps its existing encrypted-JSON-blob shape;
+    an ``api_import`` / ``mcp_import``-kind row stores a
+    :mod:`threetears.core.security.secret_refs` ``scheme://locator``
+    reference. both slot into the SAME ``STRING_TYPE`` passthrough so the
+    write path forwards the string unchanged; only the write-boundary
+    VALIDATION branches on ``kind`` (see :meth:`save_to_store`). never
+    plaintext for either kind.
+
+    ``allowed_schemas`` is stored as a JSONB array and scopes the source
+    for every kind (a datasource scopes schemas; an import scopes
+    operations / paths). ``ingress_agent_id`` (GU-08-05) is the per-source
+    ingress-agent principal for the external-API call flow, ``NULL`` for
+    pure internal datasources.
+
+    CRUD comes from the declarative :class:`TableSchema`; no domain
+    queries live on the subclass beyond the by-id / status / origin-link
+    helpers (every other callsite resolves by primary key or filters in
+    admin endpoints via the L3 pool with cache-bypass rationales).
     """
 
     primary_key_column: str = "id"
@@ -180,21 +214,41 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
             Column("id", UUID_TYPE),
             Column("name", STRING_TYPE),
             # customer_id is nullable + a plain column post-knowledge-
-            # task-08 (KNW-76): a platform-shared datasource (visibility
+            # task-08 (KNW-76): a platform-shared source (visibility
             # != 'private') carries customer_id NULL. v016 rebuilt the
             # table PK on ``id`` alone (dropping the v001 composite
             # partition PK) so the addressing key is the global ``id``,
             # backed by datasources_id_unique; a NULL customer_id never
             # blocks resolution.
             Column("customer_id", UUID_TYPE, nullable=True),
-            Column("datasource_type", STRING_TYPE, immutable=True),
-            # connection_config is nullable post-v056: agent_internal
-            # rows carry no external connection config because the
-            # broker routes via the L3 broker bound to schema_name.
+            # gu-task-08 GU-08-02: the capability-source discriminator.
+            # existing rows are 'datasource'; 'api_import' / 'mcp_import'
+            # widen the registry. distinct from datasource_type (the
+            # driver axis, applies only to kind='datasource').
+            Column("kind", STRING_TYPE),
+            # datasource_type is the DRIVER axis (redshift / snowflake /
+            # ...); applies only to kind='datasource'. nullable so an
+            # api_import / mcp_import row carries no driver. immutable:
+            # a row's backend identity is fixed once materialized.
+            Column("datasource_type", STRING_TYPE, immutable=True, nullable=True),
+            # connection_config is nullable post-v056 (agent_internal
+            # rows carry no external connection config because the broker
+            # routes via the L3 broker bound to schema_name) and
+            # KIND-CONDITIONAL post-gu-task-08: a datasource-kind row
+            # holds an encrypted JSON blob; an import-kind row holds a
+            # secret_refs scheme://locator reference. same STRING_TYPE
+            # passthrough; validation branches on kind in save_to_store.
             Column("connection_config", STRING_TYPE, nullable=True),
+            # allowed_schemas scopes the source for every kind (schemas
+            # for a datasource; operations / paths for an api_import).
             Column("allowed_schemas", JSONB_TYPE, nullable=True),
             Column("access_mode", STRING_TYPE),
             Column("status", STRING_TYPE),
+            # gu-task-08 GU-08-05: the per-source ingress-agent principal
+            # id — the agent identity RBAC grants on this source's tool
+            # namespaces for the external-API call flow. NULL for pure
+            # internal datasources (no external ingress).
+            Column("ingress_agent_id", UUID_TYPE, nullable=True),
             # owner_agent_id: NULL for external datasources, set for
             # agent_internal rows. v056 CHECK
             # datasources_agent_internal_shape_ck enforces the
@@ -213,6 +267,22 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
             # retrieval gathers across: datasource_id IN (D, P)).
             Column("visibility", STRING_TYPE),
             Column("origin_datasource_id", UUID_TYPE, nullable=True),
+            # knowledge-quarantine foundation: a datasource "requires
+            # knowledge" purely because someone authored knowledge anchored
+            # to it. the hub knowledge-write handlers AUTO-STAMP this flag
+            # true (through this Collection's write path — set field +
+            # save_entity) the first step of every entry write, BEFORE the
+            # entry persists, so intent (the requirement) is independent of
+            # load state (the entries). NEVER hand-set. NOT NULL with a FALSE
+            # server-default so the ADD COLUMN lands false on every existing
+            # row (hub migration v046). mutable: the stamp is an UPDATE of an
+            # existing row, so the column stays out of the immutable set.
+            Column(
+                "knowledge_required",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -229,16 +299,73 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
         return "datasources"
 
     @property
-    def entity_class(self) -> type[DataSourceEntity]:
+    def entity_class(self) -> type[CapabilitySourceEntity]:
         """return entity class for this collection.
 
-        :return: DataSourceEntity class
-        :rtype: type[DataSourceEntity]
+        :return: CapabilitySourceEntity class
+        :rtype: type[CapabilitySourceEntity]
         """
-        return DataSourceEntity
+        return CapabilitySourceEntity
+
+    async def save_to_store(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """persist one capability-source row, validating config by ``kind``.
+
+        the L3 write boundary for the registry (gu-task-08 GU-08-03).
+        config-storage validation is KIND-CONDITIONAL: an ``api_import``
+        / ``mcp_import`` row MUST carry a valid
+        :mod:`threetears.core.security.secret_refs` ``scheme://locator``
+        reference in ``connection_config`` (rejected via
+        :func:`validate_ref` when malformed), while a ``datasource`` row's
+        ``connection_config`` is an encrypted JSON blob that is passed
+        through UNVALIDATED — validating it as a ref would reject every
+        existing datasource write. after the kind-conditional check the
+        row is forwarded to the schema-driven upsert unchanged.
+
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param original_timestamp: pre-mutation CAS fence value
+        :ptype original_timestamp: datetime | None
+        :param conn: optional connection that overrides ``l3_pool`` for
+            this single write so it commits with the caller's transaction
+        :ptype conn: Any
+        :return: rows affected reported by the backend
+        :rtype: int
+        :raises SecretResolutionError: when an ``api_import`` /
+            ``mcp_import`` row's ``connection_config`` is not a valid
+            ``scheme://locator`` reference
+        """
+        self._validate_config_for_kind(data)
+        return await super().save_to_store(data, original_timestamp, conn=conn)
+
+    def _validate_config_for_kind(self, data: dict[str, Any]) -> None:
+        """enforce the KIND-CONDITIONAL config-ref rule at the write boundary.
+
+        for ``api_import`` / ``mcp_import`` rows a non-null
+        ``connection_config`` MUST be a valid ``scheme://locator``
+        reference. ``datasource``-kind rows are deliberately exempt (their
+        config is an encrypted JSON blob, not a ref). a ``None`` config is
+        allowed for either kind (the column is nullable).
+
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        :raises SecretResolutionError: when the reference is malformed for
+            an import kind
+        """
+        kind = data.get("kind")
+        config = data.get("connection_config")
+        if kind in _CONFIG_REF_KINDS and config is not None:
+            validate_ref(config)
 
     async def iter_active_ids(self) -> list[UUID]:
-        """list every ACTIVE datasource's primary-key ``id``.
+        """list every ACTIVE source's primary-key ``id``.
 
         consumed by background-task sweeps (e.g. the Hub-owned
         introspect scheduler in ``datasource-task-04``) that need
@@ -287,8 +414,8 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
     async def find_by_id(
         self,
         datasource_id: UUID,
-    ) -> DataSourceEntity | None:
-        """resolve a datasource by ``id`` alone via the v054 ``UNIQUE (id)``.
+    ) -> CapabilitySourceEntity | None:
+        """resolve a capability source by ``id`` alone via the v054 ``UNIQUE (id)``.
 
         the admin endpoints (GET / DELETE / connection-config update)
         and the agent-side tool flow take ``{datasource_id}`` in the
@@ -296,12 +423,12 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
         is preserved by the ``UNIQUE (id)`` constraint added by hub
         migration v054.
 
-        :param datasource_id: data source UUID
+        :param datasource_id: capability-source UUID
         :ptype datasource_id: UUID
-        :return: datasource entity or ``None`` when no row exists
-        :rtype: DataSourceEntity | None
+        :return: capability-source entity or ``None`` when no row exists
+        :rtype: CapabilitySourceEntity | None
         """
-        result: DataSourceEntity | None = None
+        result: CapabilitySourceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
                 "SELECT * FROM datasources WHERE id = $1",

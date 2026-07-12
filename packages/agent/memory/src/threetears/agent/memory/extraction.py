@@ -705,6 +705,12 @@ class MemoryExtractor:
                         "type_memory": candidate["type"],
                         "content": candidate["content"],
                         "embedding": candidate["embedding"],
+                        # honor the per-user salience_seed knob (design §3);
+                        # without this the DB server default (0.5) applies and
+                        # a tuned seed is a silent no-op. Mirrors how dream.py
+                        # threads consolidation_gist_salience_seed + how
+                        # agent/intention threads its salience_seed.
+                        "salience": self._config.salience_seed,
                         "date_created": now,
                         "date_updated": now,
                     }

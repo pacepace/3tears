@@ -274,7 +274,7 @@ class AsyncpgDriver(Driver):
     :ptype external_pool: asyncpg.Pool | None
     :param datasource_name: human-readable name of the datasource this
         driver instance serves (``DatasourceConfig.name`` from
-        agent.yaml or :class:`DataSourceEntity.name` from the Hub
+        agent.yaml or :class:`CapabilitySourceEntity.name` from the Hub
         admin row). surfaced as the ``datasource_name`` attribute on
         every OTel metric emitted by :func:`_observed`. defaults to
         ``"unknown"`` when callers can't supply one; the Hub broker /

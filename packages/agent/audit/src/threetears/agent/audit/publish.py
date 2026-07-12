@@ -1,14 +1,26 @@
-"""fire-and-forget audit publish helper.
+"""durable-but-fire-and-forget audit publish helper.
 
 :func:`publish_audit` is the single publish path for every domain.
-serializes the :class:`AuditEvent` via pydantic, awaits one
-:meth:`NatsClient.publish` on ``{namespace}.audit.{event_type}``, and
-swallows every exception at WARN. tool-call success must never depend
-on audit infrastructure availability; this invariant is load-bearing.
+serializes the :class:`AuditEvent` via pydantic and awaits one
+:meth:`NatsClient.jetstream_publish` on ``{namespace}.audit.{event_type}``
+-- a JetStream publish that PERSISTS the envelope to the durable
+``{ns}-audit`` stream and awaits the broker ``PubAck``. an envelope
+published while the hub consumer is restarting is retained and
+redelivered when it reconnects (at-least-once), so the audit trail is
+never silently dropped on a transient consumer outage.
 
-the hub-side ``unified_audit_consumer`` subscribes to
-``{namespace}.audit.>`` so new event types route automatically without
-a consumer-side change.
+it stays fire-and-forget at the PRODUCER: any exception (a JetStream
+outage, no stream, a broker timeout) is caught and logged at WARN; no
+exception propagates to the caller. tool-call success must never depend
+on audit infrastructure availability; this invariant is load-bearing.
+the common path is now durable, but a producer-side JetStream stall can
+never block the tool call.
+
+the hub-side ``unified_audit_consumer`` binds a durable push consumer on
+``{namespace}.audit.>`` (manual ack after the L3 write, bounded
+redelivery, dead-letter) so new event types route automatically without
+a consumer-side change and redelivery collapses to a single row via the
+idempotency indexes on ``audit_events``.
 """
 
 from __future__ import annotations
@@ -33,10 +45,13 @@ async def publish_audit(
     """
     publish one audit envelope on ``{namespace}.audit.{event_type}``.
 
-    fire-and-forget: any exception during publish is caught and logged
-    at WARN; no exception propagates to the caller. when
-    ``nats_client`` is ``None`` the call is an explicit no-op (useful
-    in tests and bootstrap windows before NATS wiring is complete).
+    durable transport: the envelope is JetStream-published (persisted to
+    the ``{ns}-audit`` stream + ``PubAck`` awaited), so it survives a
+    consumer restart and is redelivered at-least-once. fire-and-forget at
+    the producer: any exception during publish is caught and logged at
+    WARN; no exception propagates to the caller. when ``nats_client`` is
+    ``None`` the call is an explicit no-op (useful in tests and bootstrap
+    windows before NATS wiring is complete).
 
     the subject is built with the explicit ``namespace`` argument
     rather than reading the :class:`Subjects` ContextVar so callers
@@ -64,9 +79,16 @@ async def publish_audit(
         return
     subject = Subject.raw(f"{namespace}.audit.{event.event_type}")
     try:
-        await nats_client.publish(subject=subject, message=event)
-    # NOSILENT: audit publish is fire-and-forget; failures log at WARN
-    # so the producing call path is never blocked by audit health.
+        # serialize at the border and JetStream-publish for durability:
+        # the envelope is persisted to the ``{ns}-audit`` stream and the
+        # broker ``PubAck`` is awaited, so a consumer restart does not drop it.
+        await nats_client.jetstream_publish(
+            subject=subject,
+            payload=event.model_dump_json().encode(),
+        )
+    # NOSILENT: audit publish is fire-and-forget at the producer; failures
+    # (JetStream outage, no stream, broker timeout) log at WARN so the
+    # producing call path is never blocked by audit health.
     except Exception as exc:
         log.warning(
             "audit publish failed",

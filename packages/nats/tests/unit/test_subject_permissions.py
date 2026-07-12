@@ -115,6 +115,15 @@ class TestIdentityIsolation:
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         assert f"{_NS}.tools.heartbeat.>" not in a.publish
 
+    def test_agent_pod_may_publish_turn_completion(self) -> None:
+        # resilience-task-07 router-mediated delivery: an agent signals TRUE turn completion by
+        # publishing to ``agents.complete.{correlation_id}`` (the router awaits it to ack the durable
+        # turn / re-route). the subject is keyed by correlation id (no agent segment), so the grant is
+        # the wildcard ``agents.complete.*`` -- without it the completion publish is a NATS permissions
+        # violation and every turn hangs to the caller's finalize timeout.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.agents.complete.*" in a.publish
+
     def test_agent_pod_may_serve_only_its_own_in_process_tools(self) -> None:
         # an agent hosts its in-process tools (devx ``DevInProcessStrategy`` builtins, prod
         # ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``) on its OWN ``AGENT_POD``
@@ -337,3 +346,30 @@ class TestNamespaceBinding:
             s.startswith("prod7.") or s == CROSS_PLATFORM_CACHE_INVALIDATE or s.startswith("_INBOX_")
             for s in _all_subjects(perm)
         )
+
+
+class TestHitlApprovalBrokerGrants:
+    """the exploit HITL approval broker needs three new subject grants."""
+
+    def test_agent_pod_may_publish_approval_record(self) -> None:
+        """an agent pausing on a gated tool records the pending marker with the hub."""
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.hub.approval.record" in a.publish
+
+    def test_hub_subscribes_both_approval_subjects(self) -> None:
+        """the hub broker responder receives record + resolve requests."""
+        h = build_permissions(Principal.HUB, conn_id="hub-1")
+        assert f"{_NS}.hub.approval.record" in h.subscribe
+        assert f"{_NS}.hub.approval.resolve" in h.subscribe
+
+    def test_channel_adapter_may_publish_approval_resolve(self) -> None:
+        """the router (in the sandboxed adapter) forwards operator replies to resolve."""
+        c = build_permissions(Principal.CHANNEL_ADAPTER, conn_id="chan-1")
+        assert f"{_NS}.hub.approval.resolve" in c.publish
+
+    def test_agent_pod_cannot_publish_resolve_nor_adapter_record(self) -> None:
+        """least-privilege: neither principal holds the OTHER's approval grant."""
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        c = build_permissions(Principal.CHANNEL_ADAPTER, conn_id="chan-1")
+        assert f"{_NS}.hub.approval.resolve" not in a.publish
+        assert f"{_NS}.hub.approval.record" not in c.publish

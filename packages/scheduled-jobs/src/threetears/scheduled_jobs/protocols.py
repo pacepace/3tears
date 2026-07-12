@@ -26,7 +26,7 @@ agent-wake ``EncryptionService`` / ``WakeConfig`` precedent.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -257,5 +257,33 @@ class FireStore(Protocol):
         :ptype latency_ms: int | None
         :return: nothing
         :rtype: None
+        """
+        ...
+
+    async def reap_stale_dispatching(
+        self,
+        now: datetime,
+        *,
+        older_than: timedelta,
+    ) -> int:
+        """Finalize ``'dispatching'`` fire rows abandoned mid-dispatch.
+
+        A pod that dies after :meth:`create_dispatching` but before a
+        finalize leaves the fire row stuck in ``'dispatching'`` forever.
+        The occurrence's schedule already advanced (the claim ran first),
+        so it never re-fires -- without a sweep the row is a permanent
+        zombie and the loss is silent. This cross-partition reaper stamps
+        every ``'dispatching'`` row whose ``actual_fired_at`` is older
+        than ``older_than`` before ``now`` to ``'failed'`` with a reaper
+        marker, so the loss surfaces in fire history + failure metrics.
+        Invoked once per tick under the tick's cross-pod lock.
+
+        :param now: sweep instant (TZ-aware); the age cutoff is
+            ``now - older_than``
+        :ptype now: datetime
+        :param older_than: minimum in-flight age before a row is reaped
+        :ptype older_than: timedelta
+        :return: number of rows reaped
+        :rtype: int
         """
         ...

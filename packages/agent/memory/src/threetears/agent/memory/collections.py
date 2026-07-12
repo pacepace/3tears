@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, ClassVar, cast
 from uuid import UUID
@@ -29,6 +30,7 @@ from sqlalchemy import MetaData, Table
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
     DATETIMETZ_TYPE,
     ENUM_TYPE,
     INT_TYPE,
@@ -46,6 +48,8 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraint as SchemaUniqueConstraint,
     spans_partitions,
 )
+from threetears.core.backends.schema_sql import decode_vector
+from threetears.core.collections.salience import apply_salience_decay
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
@@ -60,24 +64,43 @@ from threetears.agent.memory.entities import (
     MediaContentEntity,
     MediaEntity,
     MemoryChunkEntity,
+    MemoryConsolidationEntity,
     MemoryEntity,
     MemoryRefEntity,
 )
 
 __all__ = [
+    "ConsolidationCycleError",
     "MediaCollection",
     "MediaContentCollection",
     "MemoriesCollection",
     "MemoryChunkCollection",
+    "MemoryConsolidationsCollection",
     "MemoryRefsCollection",
+    "assert_no_consolidation_cycle",
     "conversation_memory_refs_table",
     "media_content_table",
     "media_table",
     "memories_table",
     "memory_chunks_table",
+    "memory_consolidations_table",
 ]
 
 log = get_logger(__name__)
+
+
+def _as_pk_uuid(value: object) -> UUID:
+    """Coerce a memory/edge id to a stdlib :class:`UUID`.
+
+    Normalises across the two UUID types that flow through the edge
+    graph: asyncpg yields stdlib ``uuid.UUID`` on reads, while the app
+    passes ``uuid_utils.UUID`` (uuid7). The two are distinct types with
+    distinct hashing, so the cycle-guard walk must compare a single
+    canonical form or set-membership and ``==`` silently miss.
+    """
+    if type(value) is UUID:
+        return value
+    return UUID(str(value))
 
 
 def conversation_memory_refs_table(metadata: MetaData) -> Table:
@@ -201,6 +224,23 @@ def memory_chunks_table(metadata: MetaData) -> Table:
     :rtype: Table
     """
     return cast(Table, MemoryChunkCollection.schema.to_sqlalchemy_table(metadata))
+
+
+def memory_consolidations_table(metadata: MetaData) -> Table:
+    """Register the ``memory_consolidations`` edge table on ``metadata``.
+
+    Presence/aliveness program (v026). Thin idempotency wrapper around
+    :meth:`MemoryConsolidationsCollection.schema.to_sqlalchemy_table`.
+    Call before ``SQLiteCacheManager.initialize(metadata)`` so the L1
+    cache builds with the composite-pk edge table, and before Alembic
+    ``target_metadata`` reflection so auto-generate sees the same shape.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``memory_consolidations`` :class:`Table`
+    :rtype: Table
+    """
+    return cast(Table, MemoryConsolidationsCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str | None:
@@ -421,7 +461,14 @@ def _merge_chunk_search_rows(
 _MEMORIES_SELECT_COLUMNS = (
     "memory_id, agent_id, customer_id, user_id, type_memory, content, "
     "date_created, date_updated, embedding::text AS embedding, "
-    "conversation_id, message_id_source, summary, search_vector, alias"
+    "conversation_id, message_id_source, summary, search_vector, alias, "
+    # v024 salience substrate — keep in sync with the memories migration
+    # column set so raw-SQL read paths hydrate the full entity.
+    "salience, last_decayed_at, last_accessed, evergreen, superseded_by, "
+    # v025 tags JSONB label set. No codec is registered on the raw fetch
+    # pool, so asyncpg yields this column as a JSON string here; the
+    # entity accessor decodes it (schema-generated reads decode it too).
+    "tags"
 )
 
 
@@ -472,11 +519,17 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         columns=[
             Column("memory_id", UUID_TYPE),
             Column("agent_id", UUID_TYPE, partition=True),
-            Column("customer_id", UUID_TYPE, immutable=True),
+            # customer_id / user_id relaxed to nullable in v024 so the
+            # memory primitive supports all three scope grains (agent /
+            # customer / user). metallm enforces NOT NULL at its own
+            # consumer layer; a null here means an agent- or customer-
+            # scoped row (e.g. a shared-knowledge gist).
+            Column("customer_id", UUID_TYPE, immutable=True, nullable=True),
             Column(
                 "user_id",
                 UUID_TYPE,
                 immutable=True,
+                nullable=True,
                 foreign_key=("users", "user_id"),
             ),
             Column("conversation_id", UUID_TYPE, immutable=True),
@@ -528,6 +581,50 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("alias", STRING_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+            # v024 (presence/aliveness): stored salience substrate.
+            # NUMERIC(5,4) with a server default so existing INSERTs that
+            # omit it apply 0.5 (metadata-only add, no table rewrite).
+            # ``immutable=True`` excludes it from the entity-save UPDATE
+            # generator: salience is written ONLY by the raw decay / bump
+            # SQL (decay_salience / bump_salience), never by a full-entity
+            # save. Without this, an unrelated content UPDATE would carry a
+            # stale cached salience and revert a scheduled decay (design §2
+            # "the UPDATE narrows to content + embedding + date_updated").
+            # Insert still applies the value / server default.
+            Column(
+                "salience",
+                NUMERIC_TYPE,
+                precision=5,
+                scale=4,
+                nullable=False,
+                server_default="0.5",
+                immutable=True,
+            ),
+            # decay anchor: age is measured from the last decay run, not
+            # last access, so total decay over a period is cadence-safe.
+            # ``immutable=True`` for the same reason as salience -- written
+            # only by the raw decay pass, excluded from the entity UPDATE.
+            Column("last_decayed_at", DATETIMETZ_TYPE, nullable=True, immutable=True),
+            # reinforcement telemetry: stamped on ambient retrieval by the
+            # raw bump pass; excluded from the entity UPDATE (immutable).
+            Column("last_accessed", DATETIMETZ_TYPE, nullable=True, immutable=True),
+            # pin for core identity facts: excluded from decay AND bump.
+            # Mutable via the entity path (an admin pin/unpin toggles it).
+            Column(
+                "evergreen",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
+            # soft ref (no FK) to a consolidation gist; ambient retrieval
+            # excludes non-null, direct recall still finds it. Written only
+            # by the raw mark_superseded pass -> ``immutable=True`` so an
+            # entity save can't revert it.
+            Column("superseded_by", UUID_TYPE, nullable=True, immutable=True),
+            # v025 (presence/aliveness): nullable JSONB label set (a JSON
+            # array of strings). Mutable; GIN-indexed below for
+            # containment / existence queries.
+            Column("tags", JSONB_TYPE, nullable=True),
         ],
         cas_column="date_updated",
         foreign_keys=(
@@ -581,6 +678,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
                 pg_with={"m": "16", "ef_construction": "64"},
+            ),
+            # v025 (presence/aliveness): GIN over the ``tags`` JSONB label
+            # set serves containment (``tags @> '["identity"]'``) and
+            # existence (``tags ? 'identity'``) queries.
+            SchemaIndex(
+                "idx_memories_tags",
+                "tags",
+                using="gin",
             ),
         ),
         # v0.8.1: global uniqueness on ``memory_id`` (stronger than the
@@ -937,12 +1042,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # ``embedding IS NOT NULL`` filter for the same reason as
         # :meth:`hybrid_search`: ``NULL <=> vector`` is NULL, which
         # breaks the downstream ``float(similarity)`` cast.
+        # Self-healing supersession filter (matches hybrid_search +
+        # find_active_for_consolidation): a source hidden behind a LIVE
+        # gist is excluded from dedup, so a corrected fact never resolves
+        # onto an ambient-hidden row (which would leave the correction
+        # unreachable by proactive retrieval while the stale gist keeps
+        # surfacing). A source orphaned by a dead gist self-heals back into
+        # the candidate set. The gist itself (superseded_by NULL) stays a
+        # candidate, so a correction can still land on the live gist.
         rows = await self.l3_pool.fetch(
             """
             SELECT memory_id, content, type_memory,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
+              AND (superseded_by IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM memories g
+                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
@@ -1004,6 +1120,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         similarity_threshold: float,
         recency_half_life_hours: float,
         signal_weights: dict[str, float],
+        salience_ambient_floor: float = 0.0,
         fts_min_len: int = 3,
         fts_max_len: int = 500,
         date_after: datetime | None = None,
@@ -1044,6 +1161,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :param signal_weights: mapping ``{"semantic", "keyword",
             "recency"}`` to weights
         :ptype signal_weights: dict[str, float]
+        :param salience_ambient_floor: dormancy cutoff (v024). Ambient
+            retrieval excludes rows below this salience AND any row with a
+            non-null ``superseded_by`` (replaced by a consolidation gist).
+            Default 0.0 admits everything; the direct-recall paths
+            (``search_by_ids`` / ``find_by_alias``) always bypass this floor
+            so a dormant memory stays reachable by id / alias.
+        :ptype salience_ambient_floor: float
         :param fts_min_len: minimum query length for FTS activation
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
@@ -1088,6 +1212,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # absent / failed at write time -- they're recoverable on a
         # re-embed pass, but until then they must not enter the
         # similarity-ranked candidate set.
+        # v024 ambient filter: exclude superseded rows (replaced by a
+        # consolidation gist) and rows below the salience floor. The floor
+        # rides the last param slot; default 0.0 makes ``salience >= 0`` a
+        # no-op. Supersession is SELF-HEALING (matches
+        # find_active_for_consolidation): a source is hidden only while its
+        # gist still LIVES -- if the gist was hard-deleted, the source's
+        # dangling superseded_by no longer suppresses it here, so its
+        # knowledge returns to ambient retrieval instead of being lost
+        # (superseded_by is a soft ref with no FK, so orphans do occur).
+        vec_params: list[Any] = [
+            embedding_str,
+            *scope_params,
+            candidate_limit,
+            *vec_extra_params,
+            salience_ambient_floor,
+        ]
+        vec_salience_idx = len(vec_params)
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
@@ -1096,13 +1237,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             FROM memories
             {vec_where}
               AND embedding IS NOT NULL{vec_date_clause}
+              AND (superseded_by IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM memories g
+                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+              AND salience >= ${vec_salience_idx}
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT {limit_param}
             """,
-            embedding_str,
-            *scope_params,
-            candidate_limit,
-            *vec_extra_params,
+            *vec_params,
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
@@ -1126,6 +1268,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
             # addressable. See :meth:`hybrid_search` docstring.
+            fts_params: list[Any] = [
+                fts_text,
+                *fts_scope_params,
+                candidate_limit,
+                *fts_extra_params,
+                salience_ambient_floor,
+            ]
+            fts_salience_idx = len(fts_params)
             fts_coro = self.l3_pool.fetch(
                 f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
@@ -1133,14 +1283,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
                 {fts_where}
+                  AND embedding IS NOT NULL
                   AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
+                  AND (superseded_by IS NULL OR NOT EXISTS (
+                        SELECT 1 FROM memories g
+                        WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
+                  AND salience >= ${fts_salience_idx}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
-                fts_text,
-                *fts_scope_params,
-                candidate_limit,
-                *fts_extra_params,
+                *fts_params,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -1316,6 +1468,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         where_clause = " AND ".join(conditions)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
+        # DELIBERATE-RECALL by design (§3): this is the agent-invoked
+        # ``memory_search`` tool, NOT the proactive ambient path. It
+        # therefore does NOT apply the salience floor OR the supersession
+        # filter that ``hybrid_search`` (the during-a-turn grounding path)
+        # applies -- an explicit search surfaces dormant + superseded rows
+        # too (the source is "dormant, not gone"), leaving the gist-vs-
+        # source choice to the searching agent. Only proactive grounding
+        # hides them for a clean turn; direct id/alias recall likewise
+        # bypasses. (Contrast find_similar_for_dedup, which DOES filter,
+        # because it drives write-path UPDATE targeting, not display.)
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
@@ -1401,6 +1563,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             params.append(date_before)
             idx += 1
         where = " AND ".join(conditions)
+        # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
+        # the agent-invoked memory_search keyword leg applies NO salience
+        # floor and NO supersession filter (unlike ambient hybrid_search) --
+        # an explicit search surfaces dormant + superseded rows.
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
                    ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
@@ -1536,6 +1702,250 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
+
+    @spans_partitions(marker_only=True)
+    async def decay_salience(
+        self,
+        *,
+        half_life_days: float,
+        floor: float,
+    ) -> int:
+        """decay stored salience for every non-evergreen memory (v024).
+
+        The scheduled maintenance pass: ``salience`` sinks toward
+        ``floor`` on a ``half_life_days`` half-life, anchored on
+        ``last_decayed_at`` so the total decay over a period is
+        cadence-independent. ``evergreen`` rows are skipped. Delegates
+        to the shared :func:`apply_salience_decay` so ``agent/memory``
+        and ``agent/intention`` run identical decay; this method stays
+        the single entry point for the ``memories`` table's SQL.
+
+        Never deletes and never drops below ``floor`` (dormant, not
+        gone): a decayed memory drops out of ambient retrieval but is
+        still reachable by direct id / alias recall.
+
+        Cache coherence: the raw L3 decay leaves L1/L2 holding the
+        pre-decay salience, so each decayed pk is invalidated (via
+        :meth:`invalidate_cache`) — otherwise a later full-entity save
+        from the stale cache could write the old salience back. The
+        ``salience``/``last_decayed_at`` columns are also ``immutable`` to
+        the entity-UPDATE generator, so the two defenses compose: the
+        generator never emits salience, and the cache is refreshed anyway.
+
+        :param half_life_days: decay half-life in days
+        :ptype half_life_days: float
+        :param floor: salience asymptote; never decays below this
+        :ptype floor: float
+        :return: number of memories decayed
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        # __SPANS_PARTITIONS__: salience decay is a global maintenance
+        # sweep with no partition to scope to -- it ages every row the
+        # pool holds. The SQL literal lives in the shared helper (which
+        # carries no ``memories`` literal), so the partition-enforcement
+        # walker is satisfied and this method holds no raw table SQL.
+        result = await apply_salience_decay(
+            self.l3_pool,
+            table="memories",
+            half_life_seconds=half_life_days * 86400.0,
+            floor=floor,
+            returning_columns=self.primary_key_columns,
+        )
+        decayed_pks = result if isinstance(result, list) else []
+        # invalidate each decayed row's L1/L2 entry so a subsequent get()
+        # re-reads fresh salience from L3. A bulk sweep issues one
+        # invalidation per decayed row; acceptable for a maintenance pass
+        # (revisit with a coarser generation-bump if a huge corpus makes
+        # the per-row publish a bottleneck).
+        for pk in decayed_pks:
+            await self.invalidate_cache(pk)
+        return len(decayed_pks)
+
+    async def bump_salience(
+        self,
+        memory_ids: list[UUID],
+        *,
+        agent_id: UUID,
+        access_bump: float,
+    ) -> None:
+        """reinforce salience for memories surfaced by ambient retrieval (v024).
+
+        The other half of the decay cycle: on ambient retrieval, the
+        surfaced memories get ``salience = LEAST(1.0, salience +
+        access_bump)`` and a fresh ``last_accessed`` stamp, so used
+        memories climb back up while only the neglected sink.
+        ``evergreen`` rows are skipped (pinned, never bumped). Direct
+        recall (by id / alias) does NOT bump -- reinforcement tracks
+        proactive surfacing, not explicit lookup.
+
+        Partition-scoped by ``agent_id`` (the surfaced ids all belong to
+        the retrieving agent's partition), so no cross-partition sweep.
+
+        :param memory_ids: primary-key ids surfaced this retrieval
+        :ptype memory_ids: list[UUID]
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param access_bump: increment added to salience (clamped to 1.0)
+        :ptype access_bump: float
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not memory_ids:
+            return None
+        # bulk reinforcement UPDATE keyed by a memory_id set; salience /
+        # last_accessed are immutable to the entity-UPDATE generator, so
+        # this raw pass is the only writer.
+        await self.l3_pool.execute(
+            "UPDATE memories SET salience = LEAST(1.0, salience + $1), "
+            "last_accessed = now() "
+            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
+            access_bump,
+            agent_id,
+            memory_ids,
+        )
+        # cache coherence: invalidate each bumped row so a subsequent get()
+        # re-reads the fresh salience from L3 rather than serving a stale
+        # cached row (a bounded set — the ids surfaced this retrieval).
+        for memory_id in memory_ids:
+            await self.invalidate_cache((agent_id, memory_id))
+        return None
+
+    async def find_active_for_consolidation(
+        self,
+        agent_id: UUID,
+        *,
+        customer_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """load the consolidation candidate set for one scope grain (A5).
+
+        Dream consolidation clusters memories WITHIN a pinned scope grain
+        and the gist inherits that grain's identity, so the scope filter
+        is EXACT — a ``None`` grain matches ``IS NULL`` (not "any"). That
+        is the isolation boundary: a user-scoped run
+        (``customer_id``+``user_id`` set) sees only that user's rows; an
+        agent-scoped run (both ``None``) sees only agent-scoped rows. This
+        differs deliberately from :meth:`find_by_scope`, which drops the
+        filter on a ``None`` argument.
+
+        Excludes ``evergreen`` rows (pinned, never consolidated) and rows
+        with no ``embedding`` (clustering needs a vector). Excludes
+        already-superseded rows — BUT only when their gist still exists:
+        a source whose ``superseded_by`` points at a memory that no longer
+        exists (e.g. the gist was bulk-deleted with its anchor
+        conversation) becomes eligible again, so a fresh gist regenerates
+        on the next run instead of the orphaned sources staying dormant
+        forever. Supersession is thus defined as "pointed at a LIVE gist",
+        which keeps the soft-ref self-healing without an FK.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param customer_id: customer grain; ``None`` matches ``IS NULL``
+        :ptype customer_id: UUID | None
+        :param user_id: user grain; ``None`` matches ``IS NULL``
+        :ptype user_id: UUID | None
+        :return: candidate dicts with decoded ``embedding`` (``list[float]``)
+            plus ``memory_id``, ``customer_id``, ``user_id``,
+            ``conversation_id``, ``type_memory``, ``content``,
+            ``date_created``
+        :rtype: list[dict[str, Any]]
+        """
+        if self.l3_pool is None:
+            return []
+        conditions = ["m.agent_id = $1"]
+        params: list[object] = [agent_id]
+        param_idx = 2
+
+        # exact scope match, including the NULL grain (see docstring): a
+        # None argument narrows to IS NULL rather than dropping the filter.
+        if customer_id is None:
+            conditions.append("m.customer_id IS NULL")
+        else:
+            conditions.append(f"m.customer_id = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+        if user_id is None:
+            conditions.append("m.user_id IS NULL")
+        else:
+            conditions.append(f"m.user_id = ${param_idx}")
+            params.append(user_id)
+            param_idx += 1
+
+        where_clause = " AND ".join(conditions)
+        # cache-bypass: a scope-scanned candidate load is not primary-key
+        # addressable, so the L1 row cache cannot serve it; keeping the SQL
+        # on the Collection preserves the single-entry-point contract.
+        # embedding::text so asyncpg decodes it on the no-codec L3 pool
+        # (same cast as _MEMORIES_SELECT_COLUMNS); decode_vector parses the
+        # bracketed text back to list[float] below. The self-healing
+        # supersession filter is a NOT EXISTS against a live gist row.
+        query = (
+            "SELECT m.memory_id, m.customer_id, m.user_id, m.conversation_id, "
+            "m.type_memory, m.content, m.embedding::text AS embedding, "
+            "m.date_created "
+            "FROM memories m "
+            f"WHERE {where_clause} "
+            "AND NOT m.evergreen "
+            "AND m.embedding IS NOT NULL "
+            "AND (m.superseded_by IS NULL OR NOT EXISTS ("
+            "SELECT 1 FROM memories g "
+            "WHERE g.agent_id = m.agent_id AND g.memory_id = m.superseded_by)) "
+            "ORDER BY m.date_created"
+        )
+        rows = await self.l3_pool.fetch(query, *params)
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["memory_id"] = _as_pk_uuid(data["memory_id"])
+            data["embedding"] = decode_vector(data["embedding"])
+            candidates.append(data)
+        return candidates
+
+    async def mark_superseded(
+        self,
+        agent_id: UUID,
+        *,
+        source_memory_ids: list[UUID],
+        gist_id: UUID,
+    ) -> None:
+        """point a set of source memories at the gist that consolidated them (A5).
+
+        Sets ``superseded_by = gist_id`` on each source so ambient
+        retrieval drops them (a gist now represents them) while direct
+        recall by id / alias still finds them — dormant, not gone, and
+        non-destructive (the source's own ``salience`` / ``content`` are
+        untouched). Partition-scoped by ``agent_id``.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param source_memory_ids: the sources merged into the gist
+        :ptype source_memory_ids: list[UUID]
+        :param gist_id: the consolidation gist the sources are superseded by
+        :ptype gist_id: UUID
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None or not source_memory_ids:
+            return None
+        # bulk supersession UPDATE keyed by a memory_id set; superseded_by
+        # is immutable to the entity-UPDATE generator, so this raw pass is
+        # the only writer (an entity save can't revert it).
+        await self.l3_pool.execute(
+            "UPDATE memories SET superseded_by = $1, date_updated = now() "
+            "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[])",
+            gist_id,
+            agent_id,
+            source_memory_ids,
+        )
+        # cache coherence: invalidate each superseded source so a
+        # subsequent get() re-reads the fresh superseded_by + date_updated
+        # from L3 (the ambient-retrieval filter reads L3 directly, but a
+        # later entity save must see the advanced CAS fence).
+        for source_memory_id in source_memory_ids:
+            await self.invalidate_cache((agent_id, source_memory_id))
+        return None
 
 
 class MediaCollection(SchemaBackedCollection[MediaEntity]):
@@ -2521,6 +2931,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                   ON mc.agent_id = med.agent_id
                  AND mc.memory_id = med.memory_id
                 WHERE {fts_scope_conditions}
+                  AND mc.embedding IS NOT NULL
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                   {fts_cursor_clause}
                 ORDER BY fts_rank DESC
@@ -3209,3 +3620,258 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
+
+
+# Defensive upper bound on the consolidation-provenance walk. The visited
+# set already terminates any pre-existing cycle among non-gist nodes; this
+# caps a pathologically large provenance graph so the guard can never hang.
+_MAX_CONSOLIDATION_WALK_NODES = 10_000
+
+
+class ConsolidationCycleError(Exception):
+    """raised when recording consolidation edges would form a cycle.
+
+    A gist may not be consolidated from itself or from any of its
+    descendants (memories reachable through existing consolidation
+    edges). See :func:`assert_no_consolidation_cycle`.
+    """
+
+
+async def assert_no_consolidation_cycle(
+    *,
+    consolidated_memory_id: UUID,
+    source_memory_ids: Iterable[UUID],
+    sources_of: Callable[[UUID], Awaitable[Iterable[UUID]]],
+    max_nodes: int = _MAX_CONSOLIDATION_WALK_NODES,
+) -> None:
+    """reject a consolidation whose gist is reachable from any source.
+
+    A DAG reachability check (not a single-parent walk): starting from
+    every source, walk the ``consolidated -> source`` provenance edges
+    via ``sources_of`` and reject if the walk reaches
+    ``consolidated_memory_id``. That catches both a **self-merge** (a
+    source that IS the gist) and a **descendant-merge** (a source whose
+    provenance chain leads back to the gist).
+
+    A ``visited`` set makes the walk loop-safe and keeps a legitimate
+    diamond DAG — two sources that share a common ancestor — from
+    false-positiving: only the target gist is treated as a cycle, never a
+    merely-revisited node. Read-only over the edge graph; the source
+    rows are never mutated.
+
+    :param consolidated_memory_id: the prospective gist id
+    :ptype consolidated_memory_id: UUID
+    :param source_memory_ids: the sources fanning into the gist
+    :ptype source_memory_ids: Iterable[UUID]
+    :param sources_of: async lookup returning the sources a given memory
+        was itself consolidated from (empty for a non-gist memory)
+    :ptype sources_of: Callable[[UUID], Awaitable[Iterable[UUID]]]
+    :param max_nodes: defensive cap on distinct nodes walked
+    :ptype max_nodes: int
+    :return: nothing on success
+    :rtype: None
+    :raises ConsolidationCycleError: when the gist is reachable from a
+        source, or the walk exceeds ``max_nodes``
+    """
+    visited: set[UUID] = set()
+    stack: list[UUID] = list(source_memory_ids)
+    while stack:
+        node = stack.pop()
+        if node == consolidated_memory_id:
+            raise ConsolidationCycleError(
+                f"consolidation cycle: gist {consolidated_memory_id} is itself a source "
+                f"or a descendant of one of its sources",
+            )
+        if node in visited:
+            continue
+        visited.add(node)
+        if len(visited) > max_nodes:
+            raise ConsolidationCycleError(
+                f"consolidation provenance walk for gist {consolidated_memory_id} "
+                f"exceeded {max_nodes} nodes (likely a corrupt edge graph)",
+            )
+        stack.extend(await sources_of(node))
+
+
+class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationEntity]):
+    """three-tier collection for :class:`MemoryConsolidationEntity` (v026).
+
+    The N:1 provenance edge table that Dream consolidation (A5) writes:
+    one row per ``(consolidated_memory_id, source_memory_id)`` pair.
+    Composite primary key ``(agent_id, consolidated_memory_id,
+    source_memory_id)`` on top of the composite-pk
+    :class:`BaseCollection` support; both memory refs are composite FKs
+    to ``memories(agent_id, memory_id)`` ON DELETE CASCADE, so removing
+    either endpoint memory drops its edges without touching the surviving
+    endpoint's own row (fully non-destructive to the source's salience).
+
+    CRUD is generated from :attr:`schema`; there is no CAS column (the
+    edge is append-only). :meth:`find_sources` and
+    :meth:`find_consolidated_into` carry ``# cache-bypass:`` because a
+    back-lookup by one composite-pk prefix is not full-pk addressable.
+    :meth:`assert_no_cycle` guards writes against a provenance cycle.
+    """
+
+    primary_key_column: str | tuple[str, ...] = (
+        "agent_id",
+        "consolidated_memory_id",
+        "source_memory_id",
+    )
+    schema = TableSchema(
+        name="memory_consolidations",
+        primary_key=("agent_id", "consolidated_memory_id", "source_memory_id"),
+        columns=[
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("consolidated_memory_id", UUID_TYPE),
+            Column("source_memory_id", UUID_TYPE),
+            # the audit trail (why these merged); no crypto ceremony.
+            Column("rationale", STRING_TYPE, nullable=True),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+        ],
+        foreign_keys=(
+            # both refs are composite FKs to memories with CASCADE, so a
+            # memory delete cleans up its edges (either endpoint).
+            SchemaForeignKey(
+                ("agent_id", "consolidated_memory_id"),
+                "memories",
+                ("agent_id", "memory_id"),
+                on_delete="CASCADE",
+            ),
+            SchemaForeignKey(
+                ("agent_id", "source_memory_id"),
+                "memories",
+                ("agent_id", "memory_id"),
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            # back-edge lookup "what was this source merged into?" + the
+            # cycle-guard provenance walk.
+            SchemaIndex(
+                "idx_memory_consolidations_source",
+                "agent_id",
+                "source_memory_id",
+            ),
+        ),
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name
+        :rtype: str
+        """
+        return "memory_consolidations"
+
+    @property
+    def entity_class(self) -> type[MemoryConsolidationEntity]:
+        """return entity class for this collection.
+
+        :return: entity class
+        :rtype: type[MemoryConsolidationEntity]
+        """
+        return MemoryConsolidationEntity
+
+    async def find_sources(
+        self,
+        agent_id: UUID,
+        consolidated_memory_id: UUID,
+    ) -> list[UUID]:
+        """return the source ids a gist was consolidated from.
+
+        The forward edge: ``consolidated_memory_id -> source_memory_id``.
+        Drives the cycle-guard provenance walk.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param consolidated_memory_id: the gist to look up sources for
+        :ptype consolidated_memory_id: UUID
+        :return: source memory ids (empty for a non-gist memory)
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: back-lookup by the (agent_id,
+        # consolidated_memory_id) prefix of the composite pk is not
+        # full-pk-addressable, so the L1 row cache does not serve it;
+        # keeping it on the Collection preserves the single entry point.
+        rows = await self.l3_pool.fetch(
+            "SELECT source_memory_id FROM memory_consolidations WHERE agent_id = $1 AND consolidated_memory_id = $2",
+            agent_id,
+            consolidated_memory_id,
+        )
+        return [_as_pk_uuid(row["source_memory_id"]) for row in rows]
+
+    async def find_consolidated_into(
+        self,
+        agent_id: UUID,
+        source_memory_id: UUID,
+    ) -> list[UUID]:
+        """return the gist ids a source memory was merged into.
+
+        The back edge (served by ``idx_memory_consolidations_source``):
+        ``source_memory_id -> consolidated_memory_id``.
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param source_memory_id: the source to look up gists for
+        :ptype source_memory_id: UUID
+        :return: consolidated (gist) memory ids
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: back-lookup by (agent_id, source_memory_id) is
+        # not full-pk-addressable; served by the back-edge GIN-free btree
+        # index idx_memory_consolidations_source.
+        rows = await self.l3_pool.fetch(
+            "SELECT consolidated_memory_id FROM memory_consolidations WHERE agent_id = $1 AND source_memory_id = $2",
+            agent_id,
+            source_memory_id,
+        )
+        return [_as_pk_uuid(row["consolidated_memory_id"]) for row in rows]
+
+    async def assert_no_cycle(
+        self,
+        agent_id: UUID,
+        *,
+        consolidated_memory_id: UUID,
+        source_memory_ids: Iterable[UUID],
+    ) -> None:
+        """guard a prospective consolidation against a provenance cycle.
+
+        Supplies the DB-backed ``sources_of`` lookup (scoped to
+        ``agent_id``) to :func:`assert_no_consolidation_cycle`. Call
+        before recording the edges (A5's ``run_consolidation``).
+
+        :param agent_id: partition column (required)
+        :ptype agent_id: UUID
+        :param consolidated_memory_id: the prospective gist id
+        :ptype consolidated_memory_id: UUID
+        :param source_memory_ids: the sources fanning into the gist
+        :ptype source_memory_ids: Iterable[UUID]
+        :return: nothing on success
+        :rtype: None
+        :raises ConsolidationCycleError: when the gist is reachable from
+            a source
+        """
+
+        async def _sources_of(memory_id: UUID) -> list[UUID]:
+            # find_sources already normalises row ids via _as_pk_uuid.
+            return await self.find_sources(agent_id, memory_id)
+
+        # normalise the caller-supplied ids to the same canonical stdlib
+        # UUID form find_sources returns, so the walk's set membership and
+        # equality checks compare like with like.
+        await assert_no_consolidation_cycle(
+            consolidated_memory_id=_as_pk_uuid(consolidated_memory_id),
+            source_memory_ids=[_as_pk_uuid(sid) for sid in source_memory_ids],
+            sources_of=_sources_of,
+        )

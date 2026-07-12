@@ -90,14 +90,22 @@ async def test_fail_closed_outside_scope() -> None:
         await resolve_engagement_scope()
 
 
-async def test_fail_closed_when_no_engagement_id() -> None:
-    """Without an engagement_id on the context the helper refuses (no scan outside an engagement)."""
-    resolver = _FakeResolver(scope=_resolved())
+async def test_no_engagement_id_resolves_customer_default() -> None:
+    """Without an engagement_id on the context, the helper resolves the customer's DEFAULT scope.
+
+    Rather than refuse locally, it asks the hub to resolve the customer's single active
+    engagement (resolver called with ``engagement_id=None``). The hub returns those targets
+    or refuses (zero / multiple active); the fail-closed guarantee lives in the resolver +
+    empty-scope path, not a local no-id refusal.
+    """
+    resolved = _resolved()
+    resolver = _FakeResolver(scope=resolved)
     context = CallContext(customer_id=_CUSTOMER, identity_token=_TOKEN)  # no engagement_id
     async with enter_call_scope(_scope_obj(resolver, context)):
-        with pytest.raises(EngagementScopeUnavailableError, match="no engagement_id"):
-            await resolve_engagement_scope()
-    assert resolver.calls == []
+        got = await resolve_engagement_scope()
+    assert got is resolved
+    # the resolver was asked for the DEFAULT scope: engagement_id is None.
+    assert resolver.calls == [(None, _CUSTOMER, _TOKEN)]
 
 
 async def test_fail_closed_when_no_resolver_wired() -> None:

@@ -99,8 +99,11 @@ class EngagementScope(BaseModel):
     can re-assert it equals this call's verified customer), and the engagement's
     active target set.
 
-    :param engagement_id: the engagement this scope belongs to
-    :ptype engagement_id: UUID
+    :param engagement_id: the engagement this scope belongs to; ``None`` when the
+        scope was resolved via the customer's DEFAULT (single active) engagement
+        rather than an explicitly selected id (the hub's audit log still records
+        the concrete engagement it resolved)
+    :ptype engagement_id: UUID | None
     :param customer_id: the verified customer the hub resolved the scope against
     :ptype customer_id: UUID
     :param targets: the active authorized targets (may be empty -- an empty scope
@@ -110,7 +113,7 @@ class EngagementScope(BaseModel):
 
     model_config = {"frozen": True}
 
-    engagement_id: UUID
+    engagement_id: UUID | None
     customer_id: UUID
     targets: tuple[ScopeTarget, ...]
 
@@ -132,13 +135,14 @@ class EngagementScopeRequestModel(BaseModel):
         replay control -- replay is bounded by token expiry + session liveness
         hub-side)
     :ptype correlation_id: UUID
-    :param engagement_id: the engagement id whose scope to resolve
-    :ptype engagement_id: UUID
+    :param engagement_id: the engagement id whose scope to resolve; ``None``
+        requests the DEFAULT scope (the customer's single active engagement)
+    :ptype engagement_id: UUID | None
     """
 
     identity_token: str
     correlation_id: UUID
-    engagement_id: UUID
+    engagement_id: UUID | None = None
 
 
 class EngagementScopeResponseModel(BaseModel):
@@ -180,7 +184,7 @@ class EngagementScopeResolver(Protocol):
     tests inject a fake; production wires :class:`HubEngagementScopeResolver`.
     """
 
-    async def resolve(self, engagement_id: UUID, *, customer_id: UUID, identity_token: str) -> EngagementScope:
+    async def resolve(self, engagement_id: UUID | None, *, customer_id: UUID, identity_token: str) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
         :param engagement_id: the engagement id to resolve
@@ -223,7 +227,7 @@ class HubEngagementScopeResolver:
         self._nc = nats_client
         self._timeout = request_timeout_seconds
 
-    async def resolve(self, engagement_id: UUID, *, customer_id: UUID, identity_token: str) -> EngagementScope:
+    async def resolve(self, engagement_id: UUID | None, *, customer_id: UUID, identity_token: str) -> EngagementScope:
         """resolve ``engagement_id`` to its authorized scope, or raise.
 
         Sends a scope request carrying the ``identity_token`` (never a

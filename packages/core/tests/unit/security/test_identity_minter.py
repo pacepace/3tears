@@ -56,6 +56,33 @@ def test_pod_id_defaults_to_subject_but_can_differ() -> None:
     assert claims.pod_id == "pod-x"
 
 
+def test_identity_generation_absent_by_default() -> None:
+    """a plain mint carries NO fencing generation -- the pre-handshake bootstrap connect case."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(
+        minter.mint("agent-1", customer_id="c"),
+        jwks=minter.jwks(),
+        issuer=_ISSUER,
+    )
+
+    assert claims.identity_generation is None
+
+
+def test_identity_generation_round_trips_when_stamped() -> None:
+    """a post-handshake connect credential carries the fencing generation through mint -> verify."""
+    minter = IdentityMinter.generate(kid="agent-1", issuer=_ISSUER)
+
+    claims = verify_identity_token(
+        minter.mint("agent-1", customer_id="c", pod_id="pod-x", identity_generation="gen-abc123"),
+        jwks=minter.jwks(),
+        issuer=_ISSUER,
+    )
+
+    assert claims.pod_id == "pod-x"
+    assert claims.identity_generation == "gen-abc123"
+
+
 def test_from_pem_round_trips() -> None:
     """a minter loaded from a PKCS#8 PEM mints tokens that verify against its published JWKS."""
     minter = IdentityMinter.from_pem(_pem(Ed25519PrivateKey.generate()), kid="k1", issuer=_ISSUER)

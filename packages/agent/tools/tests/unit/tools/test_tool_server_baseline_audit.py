@@ -51,7 +51,7 @@ class _FakeNats:
     path that the inbound dispatch needs.
     """
 
-    published: list[tuple[Subject, BaseModel]] = field(default_factory=list)
+    published: list[tuple[Subject, BaseModel | bytes]] = field(default_factory=list)
     replies: list[tuple[str, BaseModel]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
@@ -64,6 +64,13 @@ class _FakeNats:
     ) -> None:
         del reply_to
         self.published.append((subject, message))
+        if self.raise_on_publish is not None:
+            raise self.raise_on_publish
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        # publish_audit() rides jetstream_publish (durable) with already-serialized
+        # bytes; record (subject, payload_bytes). _audit_envelopes decodes either shape.
+        self.published.append((subject, payload))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
 
@@ -132,7 +139,12 @@ def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any
     result: list[dict[str, Any]] = []
     for subject, message in nats.published:
         if subject.path.endswith(subject_suffix):
-            result.append(json.loads(message.model_dump_json()))
+            # audit rides jetstream_publish (raw bytes); other publishes record a
+            # typed model. decode either shape into the envelope dict.
+            if isinstance(message, bytes | bytearray):
+                result.append(json.loads(message))
+            else:
+                result.append(json.loads(message.model_dump_json()))
     return result
 
 

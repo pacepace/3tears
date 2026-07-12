@@ -35,8 +35,10 @@ __all__ = [
 #: maximum-capability chat model (deep reasoning, highest cost).
 DEFAULT_LARGE_MODEL = "claude-opus-4-8"
 
-#: balanced default chat model (quality vs. cost).
-DEFAULT_CHAT_MODEL = "claude-sonnet-4-6"
+#: balanced default chat model (quality vs. cost). matches the seeded lineup
+#: (docker/seed/cluster.yaml) so a scaffolded agent's default resolves to a model
+#: the gateway actually carries.
+DEFAULT_CHAT_MODEL = "claude-sonnet-5"
 
 #: cheap, fast utility chat model -- the default for scaffolded agents, the
 #: schema-interview agent, and per-turn helpers (adversarial review, summaries).

@@ -1,9 +1,9 @@
 """tests for threetears.datasources.entities.
 
-covers enum membership + value stability, composite-PK shape on
-DataSourceEntity / TableTemplateEntity, flat-PK shape on
-DataSourceTableEntity / DataSourceColumnEntity / DataSourceRelationEntity,
-and BaseEntity subclass invariants.
+covers enum membership + value stability, flat-PK shape on
+CapabilitySourceEntity, composite-PK shape on TableTemplateEntity, flat-PK
+shape on DataSourceTableEntity / DataSourceColumnEntity /
+DataSourceRelationEntity, and BaseEntity subclass invariants.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 from threetears.datasources.entities import (
+    CapabilitySourceEntity,
     DataSourceAccessMode,
     DataSourceColumnEntity,
-    DataSourceEntity,
     DataSourceRelationEntity,
     DataSourceStatus,
     DataSourceTableEntity,
@@ -55,18 +55,18 @@ class TestDataSourceStatusEnum:
         assert {m.value for m in DataSourceStatus} == {"active", "disabled"}
 
 
-class TestDataSourceEntity:
+class TestCapabilitySourceEntity:
     """flat-PK shape post-knowledge-task-08: ``primary_key_field == 'id'``.
 
     the v016 migration rebuilt the table PK on ``id`` alone (dropping the
     v001 composite ``(customer_id, id)`` partition PK) so a platform-shared
-    datasource can carry ``customer_id = NULL`` (KNW-76); ``customer_id`` is
+    source can carry ``customer_id = NULL`` (KNW-76); ``customer_id`` is
     now a plain nullable column, not the partition / addressing key.
     """
 
     def test_id_is_flat_primary_key(self) -> None:
         row_id = uuid4()
-        entity = DataSourceEntity(
+        entity = CapabilitySourceEntity(
             data={"customer_id": uuid4(), "id": row_id, "name": "ds"},
             is_new=True,
         )
@@ -75,10 +75,10 @@ class TestDataSourceEntity:
         # the addressing key is the flat ``id`` now, not the partition column
         assert entity.primary_key_field == "id"
 
-    def test_platform_shared_datasource_id_with_null_customer(self) -> None:
-        """a platform-shared datasource (customer_id NULL) addresses by id."""
+    def test_platform_shared_source_id_with_null_customer(self) -> None:
+        """a platform-shared source (customer_id NULL) addresses by id."""
         row_id = uuid4()
-        entity = DataSourceEntity(
+        entity = CapabilitySourceEntity(
             data={"customer_id": None, "id": row_id, "name": "shared"},
             is_new=True,
         )
@@ -130,7 +130,7 @@ class TestDataSourceRelationEntity:
 
 
 class TestTableTemplateEntity:
-    """template entities mirror DataSourceEntity's composite-PK shape."""
+    """template entities carry the composite-PK ``(customer_id, id)`` shape."""
 
     def test_id_and_partition(self) -> None:
         template_id = uuid4()

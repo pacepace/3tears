@@ -4,10 +4,11 @@
 rbac caller-visibility ``EXISTS`` fragment — the hub broker and every
 agent pod import it from here so the security SQL cannot drift across
 the repo boundary. these tests pin the exact fragment shape, the
-single-bind contract, and the ``param_offset`` composition knob so an
-accidental edit to the SQL (a forgotten JOIN, a flipped scope branch,
-a moved placeholder) fails loud rather than silently widening or
-narrowing what rows a caller can see.
+two-bind contract (caller user_id + the listed entity's namespace type),
+and the ``param_offset`` composition knob so an accidental edit to the
+SQL (a forgotten JOIN, a flipped scope branch, a moved placeholder, a
+dropped namespace-type predicate) fails loud rather than silently
+widening or narrowing what rows a caller can see.
 """
 
 from __future__ import annotations
@@ -22,20 +23,21 @@ from threetears.agent.acl import (
 )
 
 
-def test_returns_fragment_and_single_user_id_bind() -> None:
-    """clause returns the EXISTS fragment plus exactly one bind (user_id).
+def test_returns_fragment_and_two_binds() -> None:
+    """clause returns the EXISTS fragment plus two binds (user_id, namespace type).
 
-    the contract callers rely on: the fragment allocates exactly one
-    ``$N`` placeholder and the returned param list carries the caller
-    user_id as its sole element, so the caller can splice the bind into
-    its own param sequence at the named offset.
+    the contract callers rely on: the fragment allocates two ``$N``
+    placeholders and the returned param list carries the caller user_id
+    followed by the listed entity's namespace type, so the caller can
+    splice both binds into its own param sequence at the named offset.
     """
     user_id = uuid4()
     fragment, params = caller_visible_customer_clause(
         user_id=user_id,
         customer_id_column="g.customer_id",
+        scope_namespace_type="api_key",
     )
-    assert params == [user_id]
+    assert params == [user_id, "api_key"]
     assert fragment.strip().startswith("EXISTS (")
     assert "FROM role_assignments ra" in fragment
     assert "JOIN group_members gm ON gm.group_id = ra.group_id" in fragment
@@ -43,33 +45,39 @@ def test_returns_fragment_and_single_user_id_bind() -> None:
 
 
 def test_default_param_offset_is_one() -> None:
-    """the caller user_id bind defaults to ``$1``.
+    """the caller user_id bind defaults to ``$1``, namespace type to ``$2``.
 
     callers building a single-clause WHERE start at offset 1; the
-    fragment must reference ``$1`` for the membership match so the lone
-    bind lines up with the first param.
+    fragment must reference ``$1`` for the membership match and ``$2``
+    for the namespace-type predicate so the two binds line up with the
+    first two params.
     """
     fragment, _ = caller_visible_customer_clause(
         user_id=uuid4(),
         customer_id_column="g.customer_id",
+        scope_namespace_type="api_key",
     )
     assert "gm.member_id = $1" in fragment
+    assert "ra.scope_namespace_type = $2" in fragment
 
 
 def test_param_offset_shifts_placeholder() -> None:
     """``param_offset`` names the FIRST ``$N`` the fragment allocates.
 
     a caller that has already allocated three binds passes
-    ``param_offset=4`` so the membership match references ``$4`` and
-    composes additively with the caller's existing predicates.
+    ``param_offset=4`` so the membership match references ``$4``, the
+    namespace-type predicate ``$5``, and the fragment composes additively
+    with the caller's existing predicates.
     """
     fragment, params = caller_visible_customer_clause(
         user_id=uuid4(),
         customer_id_column="pe.customer_id",
+        scope_namespace_type="knowledge",
         param_offset=4,
     )
     assert "gm.member_id = $4" in fragment
-    assert len(params) == 1
+    assert "ra.scope_namespace_type = $5" in fragment
+    assert len(params) == 2
 
 
 def test_customer_id_column_embedded_verbatim() -> None:
@@ -82,9 +90,40 @@ def test_customer_id_column_embedded_verbatim() -> None:
     fragment, _ = caller_visible_customer_clause(
         user_id=uuid4(),
         customer_id_column="api_keys.customer_id",
+        scope_namespace_type="api_key",
     )
     assert "ra.scope_customer_id = api_keys.customer_id" in fragment
     assert "ns.customer_id = api_keys.customer_id" in fragment
+
+
+def test_type_customer_arm_constrains_on_namespace_type() -> None:
+    """the ``type_customer`` arm ANDs ``scope_namespace_type`` onto the customer match.
+
+    a ``type_customer`` grant is scoped to ONE namespace type within a
+    customer (:meth:`RoleAssignment.covers` requires the type to match).
+    without the type predicate a grant on one type (e.g. ``datasource``)
+    would admit every OTHER type's rows in the same customer — a
+    cross-type data leak. the type predicate must sit inside the
+    ``type_customer`` arm, bound (not embedded), alongside the customer
+    match.
+    """
+    fragment, params = caller_visible_customer_clause(
+        user_id=uuid4(),
+        customer_id_column="api_keys.customer_id",
+        scope_namespace_type="api_key",
+    )
+    # the namespace-type predicate must sit INSIDE the type_customer arm:
+    # after the type_customer marker + its customer match, and before the
+    # separate namespace arm. index ordering pins the placement without
+    # coupling the test to exact whitespace.
+    type_customer_at = fragment.index("ra.scope_type = 'type_customer'")
+    customer_match_at = fragment.index("ra.scope_customer_id = api_keys.customer_id")
+    type_pred_at = fragment.index("ra.scope_namespace_type = $2")
+    namespace_arm_at = fragment.index("ra.scope_type = 'namespace'")
+    assert type_customer_at < customer_match_at < type_pred_at < namespace_arm_at
+    # the namespace-type value is bound, never embedded verbatim.
+    assert "= 'api_key'" not in fragment
+    assert params[1] == "api_key"
 
 
 def test_three_scope_branches_present() -> None:
@@ -97,6 +136,7 @@ def test_three_scope_branches_present() -> None:
     fragment, _ = caller_visible_customer_clause(
         user_id=uuid4(),
         customer_id_column="g.customer_id",
+        scope_namespace_type="customer",
     )
     assert "ra.scope_type = 'all'" in fragment
     assert "ra.scope_type = 'type_customer'" in fragment
@@ -121,26 +161,30 @@ def test_customer_scope_wraps_platform_or_caller_visible() -> None:
     fragment, params = customer_scope_visibility_clause(
         user_id=user_id,
         customer_id_column="pe.customer_id",
+        scope_namespace_type="knowledge",
     )
-    assert params == [user_id]
+    assert params == [user_id, "knowledge"]
     assert fragment.startswith("(pe.customer_id IS NULL OR (")
     assert "EXISTS (" in fragment
     assert "gm.member_id = $1" in fragment
+    assert "ra.scope_namespace_type = $2" in fragment
 
 
 def test_customer_scope_param_offset_shifts() -> None:
     """``param_offset`` flows through to the delegated EXISTS membership match.
 
     a caller that has already allocated two binds passes ``param_offset=3``;
-    the lone user_id bind references ``$3``.
+    the user_id bind references ``$3`` and the namespace-type bind ``$4``.
     """
     fragment, params = customer_scope_visibility_clause(
         user_id=uuid4(),
         customer_id_column="co.customer_id",
+        scope_namespace_type="knowledge",
         param_offset=3,
     )
     assert "gm.member_id = $3" in fragment
-    assert len(params) == 1
+    assert "ra.scope_namespace_type = $4" in fragment
+    assert len(params) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -160,28 +204,31 @@ def test_three_scope_adds_user_privacy_predicate() -> None:
         user_id=user_id,
         customer_id_column="pe.customer_id",
         user_id_column="pe.user_id",
+        scope_namespace_type="knowledge",
     )
-    assert params == [user_id]
+    assert params == [user_id, "knowledge"]
     assert "(pe.customer_id IS NULL OR (" in fragment
     assert "(pe.user_id IS NULL OR pe.user_id = $1)" in fragment
     assert " AND " in fragment
 
 
-def test_three_scope_returns_single_reused_bind() -> None:
-    """the user predicate REUSES the customer clause's lone bind, not a new one.
+def test_three_scope_reuses_user_bind_and_adds_namespace_type() -> None:
+    """the user predicate REUSES the caller-user bind; the type is a SECOND bind.
 
     a user-scope row's owner IS the caller the customer EXISTS subquery
-    already binds, so both halves reference the SAME ``$param_offset`` and
-    the clause returns exactly one bind — never two.
+    already binds at ``$param_offset``, so both halves reference the SAME
+    placeholder for the user_id. the namespace type is the only additional
+    bind, so the clause returns exactly two binds (user_id, namespace type).
     """
     user_id = uuid4()
     _, params = three_scope_visibility_clause(
         user_id=user_id,
         customer_id_column="pe.customer_id",
         user_id_column="pe.user_id",
+        scope_namespace_type="knowledge",
     )
-    assert params == [user_id]
-    assert len(params) == 1
+    assert params == [user_id, "knowledge"]
+    assert len(params) == 2
 
 
 def test_three_scope_user_predicate_honors_param_offset() -> None:
@@ -189,17 +236,20 @@ def test_three_scope_user_predicate_honors_param_offset() -> None:
 
     this is the regression guard against the hand-rolled sites that assumed
     ``param_offset=1`` and hard-coded ``$1``: at offset 5 BOTH the EXISTS
-    membership match and the user predicate must reference ``$5``.
+    membership match and the user predicate must reference ``$5``, and the
+    namespace-type predicate references ``$6``.
     """
     fragment, params = three_scope_visibility_clause(
         user_id=uuid4(),
         customer_id_column="co.customer_id",
         user_id_column="co.user_id",
+        scope_namespace_type="knowledge",
         param_offset=5,
     )
     assert "gm.member_id = $5" in fragment
     assert "(co.user_id IS NULL OR co.user_id = $5)" in fragment
-    assert len(params) == 1
+    assert "ra.scope_namespace_type = $6" in fragment
+    assert len(params) == 2
 
 
 def test_three_scope_columns_embedded_verbatim() -> None:
@@ -213,6 +263,7 @@ def test_three_scope_columns_embedded_verbatim() -> None:
         user_id=uuid4(),
         customer_id_column="ec.customer_id",
         user_id_column="ec.user_id",
+        scope_namespace_type="knowledge",
     )
     assert "ra.scope_customer_id = ec.customer_id" in fragment
     assert "(ec.user_id IS NULL OR ec.user_id = $1)" in fragment

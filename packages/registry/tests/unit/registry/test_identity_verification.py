@@ -37,7 +37,7 @@ from threetears.core.security.identity_token import (
 )
 from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.nats import IncomingMessage, set_default_namespace
-from threetears.registry.auth import AllowAllAuthorizer
+from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
@@ -258,6 +258,7 @@ class TestDispatchIdentityEnforcement:
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
             _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
         )
@@ -465,6 +466,7 @@ class TestDispatchUserAssertion:
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
             _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
         )
@@ -769,6 +771,7 @@ class TestDispatchUserAssertion:
             await _catalog(),
             AllowAllAuthorizer(),
             guard,
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=lambda: jwks,
         )
@@ -886,6 +889,7 @@ class TestDispatchReactiveJwksRefresh:
             await _catalog(),
             AllowAllAuthorizer(),
             _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
             jwks_refresh=provider.refresh_now,
@@ -982,6 +986,7 @@ class TestVerificationObservability:
             await _catalog(),
             AllowAllAuthorizer(),
             _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=provider,
         )
@@ -1065,6 +1070,7 @@ class TestDispatchPopEnforcement:
             await _catalog(),
             AllowAllAuthorizer(),
             pop_replay_guard if pop_replay_guard is not None else _StubReplayGuard(fresh=True),
+            limit_guard=AllowAllLimitGuard(),
             namespace="test",
             jwks_provider=jwks_provider,
         )

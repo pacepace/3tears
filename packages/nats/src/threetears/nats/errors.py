@@ -17,6 +17,7 @@ __all__ = [
     "OpLogSequenceConflict",
     "PublishError",
     "RequestError",
+    "StreamSubjectsOverlapError",
     "SubscribeError",
 ]
 
@@ -39,6 +40,23 @@ class NamespaceNotConfiguredError(NatsClientError):
     ``THREETEARS_NATS_SUBJECT_NAMESPACE`` environment variable. requiring
     an explicit value prevents two unconfigured deployments from silently
     colliding on the same subjects when they share a NATS cluster.
+    """
+
+
+class StreamSubjectsOverlapError(NatsClientError):
+    """raised when a JetStream stream cannot be created because its subjects
+    are already claimed by a DIFFERENT stream on the same NATS account.
+
+    a subject belongs to exactly one stream. this is NOT the "stream already
+    exists under the same name" case (which is reconciled by updating the
+    existing stream's subject set): the requested stream name was never
+    created, so updating it would raise a confusing ``NotFoundError`` and mask
+    this actionable error. the usual cause is another connection publishing
+    over these subjects under the WRONG subject namespace -- e.g. a client that
+    did not pass its own ``nats_subject_namespace`` and fell back to a shared
+    default, minting a stream that squats the subject space. resolve the
+    conflicting stream or correct the namespace. ``__cause__`` carries the
+    underlying nats-py exception for diagnostics.
     """
 
 

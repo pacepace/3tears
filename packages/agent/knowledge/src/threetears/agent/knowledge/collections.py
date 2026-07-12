@@ -347,6 +347,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 user_id=user_id,
                 customer_id_column="pe.customer_id",
                 user_id_column="pe.user_id",
+                scope_namespace_type="knowledge",
                 param_offset=1,
             )
             sql = (
@@ -569,6 +570,7 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 user_id=user_id,
                 customer_id_column="co.customer_id",
                 user_id_column="co.user_id",
+                scope_namespace_type="knowledge",
                 param_offset=1,
             )
             sql = (

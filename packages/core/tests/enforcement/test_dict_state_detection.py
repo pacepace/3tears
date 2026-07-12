@@ -138,6 +138,25 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "precisely because the mappings are immutable). Its sibling engagement "
         "resolver deliberately has NO cache because scope IS mutable",
     ),
+    # -- agent-tools: DynamicToolPod per-spec live-registration bookkeeping --
+    (
+        "agent-tools/dynamic_pod.py",
+        "DynamicToolPod",
+        "_resources",
+        "live per-spec resource handles (drivers/clients) built by build_tools; "
+        "non-serializable and rebuilt from load_specs on restart — the same "
+        "infrastructure shape as the already-allowlisted ToolServer._tools, "
+        "cannot live in an L1/L2/L3 backend",
+    ),
+    (
+        "agent-tools/dynamic_pod.py",
+        "DynamicToolPod",
+        "_tool_names",
+        "per-run bookkeeping of spec_key -> registered tool mcp_names, held in "
+        "lockstep with the live ToolServer registrations so deregister_spec can "
+        "unregister exactly what it registered; ephemeral pod-local, no "
+        "cross-instance coherence, rebuilt from load_specs on restart",
+    ),
     # -- core: SqlL3Backend table→TableSchema registration map --
     (
         "core/backends/sql.py",

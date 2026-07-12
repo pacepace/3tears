@@ -92,6 +92,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import socket
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any
@@ -250,6 +251,50 @@ _PING_SQL = "SELECT 1"
 #: validates as ``int`` at config-build time, never from user-controlled
 #: SQL. format-string interpolation here is NOT a SQL-injection vector.
 _SET_STATEMENT_TIMEOUT_SQL_TEMPLATE = "SET statement_timeout TO {ms:d}"
+
+
+def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
+    """apply aggressive OS-level TCP keepalive on a redshift_connector connection.
+
+    redshift_connector's ``connect()`` accepts only the ``tcp_keepalive`` bool, so
+    the granular idle / interval / count from :class:`RedshiftConnectionConfig` are
+    set here via ``setsockopt`` on the ``SSLSocket`` it opened. best-effort +
+    platform-guarded: ``TCP_KEEPIDLE`` / ``TCP_KEEPINTVL`` / ``TCP_KEEPCNT`` are
+    Linux socket options (the hub + tool pods run Linux); one absent on the host
+    platform is skipped, and a ``setsockopt`` failure is logged, not raised -- the
+    connection is usable, only half-dead-socket detection falls back to the system
+    default. detection window ~= idle + count * interval.
+
+    :param conn: live redshift_connector connection to tune
+    :ptype conn: RedshiftConnection
+    :param cfg: datasource config carrying the keepalive knobs
+    :ptype cfg: RedshiftConnectionConfig
+    :return: nothing
+    :rtype: None
+    """
+    if not cfg.tcp_keepalive:
+        return
+    # redshift_connector exposes its underlying SSLSocket as ``_usock``; read it via
+    # getattr so a future rename degrades to a skip (and does not trip SLF001).
+    sock = getattr(conn, "_usock", None)
+    if sock is None:
+        log.warning("redshift keepalive: connection exposes no _usock; leaving keepalive at the system default")
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt_name, value in (
+            ("TCP_KEEPIDLE", cfg.tcp_keepalive_idle_seconds),
+            ("TCP_KEEPINTVL", cfg.tcp_keepalive_interval_seconds),
+            ("TCP_KEEPCNT", cfg.tcp_keepalive_count),
+        ):
+            opt = getattr(socket, opt_name, None)
+            if opt is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, opt, value)
+    except OSError as exc:
+        log.warning(
+            "redshift keepalive: setsockopt failed (%s); connection usable, keepalive at system default",
+            exc,
+        )
 
 
 #: server-side fetchmany batch size for :meth:`fetch_iter`. tunable in
@@ -642,13 +687,31 @@ class RedshiftDriver(Driver):
                 user=cfg.username,
                 password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
                 sslmode=cfg.sslmode,
+                # redshift_connector.connect (2.1.7) accepts only the tcp_keepalive
+                # BOOL. the granular idle / interval / count are applied post-connect
+                # via setsockopt (see _apply_socket_keepalive) -- passing them as
+                # connect kwargs raises TypeError, which this method used to swallow
+                # into a bare "connection failed", masking a total datasource outage.
+                tcp_keepalive=cfg.tcp_keepalive,
             )
-        except Exception:
-            # break the cause chain (``from None``) so the original
-            # redshift_connector exception, which may embed the
-            # password value in nested context, cannot reach loggers
-            # / tracebacks via ``__cause__``.
-            raise DriverConnectError(f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}") from None
+        except Exception as exc:
+            # break the cause chain (``from None``) so the original redshift_connector
+            # exception -- which may embed sensitive connection detail in its message
+            # or nested context -- cannot reach loggers / tracebacks. surface ONLY the
+            # exception TYPE (a class name, never sensitive) so a config / library
+            # error (an unsupported connect kwarg, a bad sslmode) is diagnosable
+            # instead of masked as a bare "connection failed" -- which is exactly how
+            # a total datasource outage hid when connect() rejected a keepalive kwarg.
+            raise DriverConnectError(
+                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database} ({type(exc).__name__})"
+            ) from None
+        # Aggressive TCP keepalive so the OS detects a half-dead socket (a silently-
+        # dropped Redshift connection while a worker blocks awaiting a query result)
+        # in ~1 min and surfaces it as a socket error -- instead of the bridge worker
+        # hanging forever in a native SSL read no client-side async / statement
+        # timeout can cancel. Applied here (not as connect kwargs) because
+        # redshift_connector's connect() has no granular keepalive parameters.
+        _apply_socket_keepalive(conn, cfg)
         # apply the server-side statement timeout once per connection.
         # Redshift expects milliseconds AND does not accept bind params
         # in ``SET`` statements (parser rejects ``SET x = $1`` with

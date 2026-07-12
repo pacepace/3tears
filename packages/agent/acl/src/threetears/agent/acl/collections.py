@@ -1311,6 +1311,22 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             ),
             Column("tool_eligible", BOOL_TYPE, server_default="true"),
             Column("skill_eligible", BOOL_TYPE, server_default="false"),
+            # gu-task-02b: ``face_*`` columns added by the 3tears-side
+            # ``agent_tools_platform`` migration package (v002 ``ALTER
+            # TABLE namespaces ADD COLUMN IF NOT EXISTS ...``). They
+            # persist the authored FACE flags (``TearsTool`` cvar ->
+            # ``ToolManifestEntry`` field, gu-task-02) that the hub
+            # ``ToolNamespaceEmitter`` stamps onto each ``tool``-type
+            # row. NOT NULL with DB-side defaults so pre-face rows read
+            # as "platform-tool only" without a backfill:
+            # ``face_platform_tool`` DEFAULT TRUE (the pre-face shape),
+            # ``face_api`` / ``face_mcp`` DEFAULT FALSE (explicit
+            # opt-in). Consumed by the API namespace stamp (gu-task-24),
+            # MCP export (gu-task-25, reads ``face_mcp``) and the
+            # face-flip CRUD re-stamp (gu-task-26).
+            Column("face_api", BOOL_TYPE, server_default="false"),
+            Column("face_mcp", BOOL_TYPE, server_default="false"),
+            Column("face_platform_tool", BOOL_TYPE, server_default="true"),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],

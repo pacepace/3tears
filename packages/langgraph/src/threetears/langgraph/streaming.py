@@ -31,6 +31,7 @@ UIs render a real error event rather than an empty done.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
 from uuid import UUID
@@ -1032,14 +1033,102 @@ def render_interrupt_prompt(payload: Any) -> str:
     payload both collapse to the hint alone so the surface never shows a literal ``"None"`` or a
     blank bubble.
 
+    The one non-generic shape it DOES understand is the LangChain human-in-the-loop middleware
+    interrupt (``action_requests`` / ``review_configs``), because that shape is produced by EVERY
+    HITL-gated tool call, not a single agent -- ``str()`` on it would dump a raw python-dict blob to
+    the human (the regression that leaked ``{'action_requests': ...}`` to Slack). Any other payload
+    falls through to the generic stringify-plus-hint floor.
+
     :param payload: the value a node passed to ``interrupt(...)``
     :ptype payload: Any
     :return: a human-readable prompt string
     :rtype: str
     """
-    rendered = "" if payload is None else str(payload).strip()
     hint = "Reply to approve or deny to continue."
-    return f"{rendered}\n\n{hint}" if rendered else hint
+    approval = _render_hitl_approval_request(payload)
+    if approval is not None:
+        result = approval
+    else:
+        rendered = "" if payload is None else str(payload).strip()
+        result = f"{rendered}\n\n{hint}" if rendered else hint
+    return result
+
+
+def _render_hitl_approval_request(payload: Any) -> str | None:
+    """render the LangChain human-in-the-loop middleware interrupt shape into a clean approval prompt.
+
+    the middleware pauses with ``{"action_requests": [{"name", "args", "description"}, ...],
+    "review_configs": [{"action_name", "allowed_decisions"}, ...]}``. ``str()`` on that dumps a raw
+    python-dict blob to every human surface (the regression that leaked the raw interrupt to Slack).
+    this renders each requested action as its ``name`` + arguments and closes with a reply-hint
+    reflecting the allowed decisions.
+
+    :param payload: the value a node passed to ``interrupt(...)``
+    :ptype payload: Any
+    :return: human-readable approval prompt, or ``None`` when ``payload`` is not the action-requests
+        shape (the caller then applies the generic floor)
+    :rtype: str | None
+    """
+    result: str | None = None
+    requests = payload.get("action_requests") if isinstance(payload, dict) else None
+    if isinstance(requests, list) and requests:
+        decisions_by_action = _allowed_decisions_by_action(payload)
+        blocks: list[str] = []
+        ordered_decisions: list[str] = []
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            name = str(request.get("name") or "an action")
+            for decision in decisions_by_action.get(name) or ["approve", "deny"]:
+                if decision not in ordered_decisions:
+                    ordered_decisions.append(decision)
+            arg_lines = _render_action_args(request.get("args"))
+            block = f"Approval required to run `{name}`"
+            blocks.append(f"{block}\n{arg_lines}" if arg_lines else block)
+        if blocks:
+            run_word = ordered_decisions[0] if ordered_decisions else "approve"
+            skip_word = ordered_decisions[1] if len(ordered_decisions) > 1 else "deny"
+            hint = f"Reply *{run_word}* to run it, or *{skip_word}* to skip."
+            result = "\n\n".join(blocks) + f"\n\n{hint}"
+    return result
+
+
+def _allowed_decisions_by_action(payload: dict[str, Any]) -> dict[str, list[str]]:
+    """map each action name to its allowed decisions from the interrupt ``review_configs``.
+
+    :param payload: the interrupt payload (its ``review_configs`` list is read when present)
+    :ptype payload: dict[str, Any]
+    :return: mapping of ``action_name`` to its ``allowed_decisions`` (empty when none declared)
+    :rtype: dict[str, list[str]]
+    """
+    result: dict[str, list[str]] = {}
+    configs = payload.get("review_configs")
+    if isinstance(configs, list):
+        for config in configs:
+            if isinstance(config, dict):
+                name = config.get("action_name")
+                decisions = config.get("allowed_decisions")
+                if isinstance(name, str) and isinstance(decisions, list) and decisions:
+                    result[name] = [str(decision) for decision in decisions]
+    return result
+
+
+def _render_action_args(args: Any) -> str:
+    """render an action's arguments as indented ``key: value`` lines for a human approval prompt.
+
+    :param args: the ``args`` mapping from an action request (rendered only when a non-empty dict)
+    :ptype args: Any
+    :return: indented argument lines, or empty string when there is nothing to render
+    :rtype: str
+    """
+    lines: list[str] = []
+    if isinstance(args, dict):
+        for key, value in args.items():
+            rendered_value = (
+                json.dumps(value, default=str, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+            )
+            lines.append(f"  • {key}: {rendered_value}")
+    return "\n".join(lines)
 
 
 async def _detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -36,13 +37,21 @@ def _bind_namespace() -> None:
 def _build_heartbeat_subscriber(
     catalog: ToolCatalog,
     timeout: float = 30.0,
+    max_consecutive_misses: int = 1,
 ) -> tuple[HeartbeatSubscriber, HeartbeatCollection]:
     """construct a HeartbeatSubscriber + HeartbeatCollection pair for a test.
+
+    ``max_consecutive_misses`` defaults to 1 (evict on the first missed
+    sweep) so the eviction-mechanics tests here reach eviction in a
+    single sweep.
 
     :param catalog: tool catalog to be driven by the subscriber
     :ptype catalog: ToolCatalog
     :param timeout: liveness timeout for the sweep
     :ptype timeout: float
+    :param max_consecutive_misses: consecutive missed sweeps tolerated
+        before full eviction
+    :ptype max_consecutive_misses: int
     :return: subscriber + collection pair wired against a fresh L1
     :rtype: tuple[HeartbeatSubscriber, HeartbeatCollection]
     """
@@ -56,6 +65,7 @@ def _build_heartbeat_subscriber(
         collection,
         namespace="test",
         timeout=timeout,
+        max_consecutive_misses=max_consecutive_misses,
     )
     return subscriber, collection
 
@@ -442,6 +452,85 @@ class TestMultiPodFailover:
         selected = strategy.select(surviving_entry.endpoints)
         assert selected is not None
         assert selected.pod_id == "pod-B"
+
+    @pytest.mark.asyncio
+    async def test_dead_pod_call_fails_over_to_healthy_pod(self) -> None:
+        """a call to a not-yet-evicted dead pod fails over to a healthy sibling pod.
+
+        the first forward hits a transport failure ("no responders" ->
+        TOOL_UNAVAILABLE), which the proxy retries against the other
+        available endpoint. the second forward succeeds, so the agent
+        receives a successful response instead of a whole-request
+        failure. this closes the window between a pod dying and the
+        heartbeat sweep evicting its catalog endpoints.
+        """
+        catalog = ToolCatalog()
+        entry = _make_catalog_entry(
+            endpoints=[
+                _make_endpoint(pod_id="pod-dead", in_flight=0),
+                _make_endpoint(pod_id="pod-live", in_flight=0),
+            ],
+        )
+        await catalog.register(entry)
+
+        proxy = _make_proxy(catalog, namespace="test", timeout=5.0)
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(
+            side_effect=[
+                RequestError("no responders available for request"),
+                _make_tool_response(success=True, content="result: ok"),
+            ]
+        )
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        # both endpoints were tried: the dead one, then the failover
+        assert nc.request_raw.await_count == 2
+        published = nc.publish_reply.call_args.kwargs["message"]
+        assert published.success is True
+        assert published.content == "result: ok"
+
+        # in_flight settles back to zero on both endpoints
+        settled = catalog.get("threetears.calculator@1.0.0")
+        assert settled is not None
+        assert all(ep.in_flight == 0 for ep in settled.endpoints)
+
+    @pytest.mark.asyncio
+    async def test_timeout_does_not_fail_over(self) -> None:
+        """a TOOL_TIMEOUT is not retried against another pod (double-execution risk).
+
+        a timeout may have reached the pod and be executing, so failing
+        over would risk running a non-idempotent tool twice. only a
+        transport-level dead-pod failure (TOOL_UNAVAILABLE) is retried.
+        """
+        catalog = ToolCatalog()
+        entry = _make_catalog_entry(
+            endpoints=[
+                _make_endpoint(pod_id="pod-A", in_flight=0),
+                _make_endpoint(pod_id="pod-B", in_flight=0),
+            ],
+        )
+        await catalog.register(entry)
+
+        proxy = _make_proxy(catalog, namespace="test", timeout=1.0)
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(side_effect=TimeoutError("timed out"))
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        # exactly one forward: a timeout does not trigger failover
+        assert nc.request_raw.await_count == 1
+        published = nc.publish_reply.call_args.kwargs["message"]
+        assert published.success is False
+        assert published.error_code == "TOOL_TIMEOUT"
 
     @pytest.mark.asyncio
     async def test_all_pods_dead_removes_entry(self) -> None:

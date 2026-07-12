@@ -68,6 +68,13 @@ class ChannelMessage:
     :ptype channel_id: str | None
     :param workspace_id: platform workspace or guild reference
     :ptype workspace_id: str | None
+    :param receiving_bot_id: platform identifier of the bot/app that RECEIVED
+        this message (e.g. the slack ``bot_user_id`` of the app whose socket the
+        event arrived on). a workspace can host several bots — one per agent —
+        so this is what lets a router resolve the target agent unambiguously
+        rather than guessing by workspace alone. None when the adapter has a
+        single bot (nothing to disambiguate) or cannot determine it.
+    :ptype receiving_bot_id: str | None
     :param attachments: files or images attached to message
     :ptype attachments: list[Attachment]
     :param reply_to_id: identifier of message being replied to
@@ -104,6 +111,7 @@ class ChannelMessage:
     conversation_id: str | None = None
     channel_id: str | None = None
     workspace_id: str | None = None
+    receiving_bot_id: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
     reply_to_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

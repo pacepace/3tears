@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-agent-identity"
+version = "0.15.0"
+description = "Versioned identity blocks for LLM agents -- self-evolution via a linear version chain with propose/consent/apply, rationale, and rollback"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# In-repo (3tears*) deps are declared only when a module imports them:
+# the dependency-alignment enforcement gate flags a declared 3tears* dep
+# that nothing imports. T2.1a (schema + collection + migration) imported
+# core + observe only. T2.1b adds the lifecycle/RBAC/event/tool surface:
+# 3tears-agent-acl (owner RBAC in authorize.py), 3tears-langgraph
+# (FrameworkEvents + dispatch in events.py / lifecycle.py), and langchain-
+# core + pydantic (the identity_propose tool + its args schema).
+dependencies = [
+    "3tears",
+    "3tears-agent-acl",
+    "3tears-langgraph",
+    "3tears-observe",
+    "langchain-core",
+    "pydantic",
+    "uuid-utils",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-langgraph = { workspace = true }
+3tears-observe = { workspace = true }

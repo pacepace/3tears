@@ -11,9 +11,14 @@ publish helper, one subject tree, one consumer, one table.
 the envelope below is the single wire contract. every domain
 (:mod:`threetears.agent.workspace.tools.*`, hub rbac endpoints, agent
 memory, user tools) builds an :class:`AuditEvent` and hands it to
-:func:`publish_audit`. the hub-side ``unified_audit_consumer``
-subscribes to ``{namespace}.audit.>`` and persists to
-``platform_audit.audit_events``.
+:func:`publish_audit`, which JetStream-publishes it to the durable
+``{ns}-audit`` stream. the hub-side ``unified_audit_consumer`` binds a
+durable push consumer on ``{namespace}.audit.>`` -- manual ack AFTER the
+L3 write, bounded redelivery, dead-letter -- and persists to
+``platform_audit.audit_events``. delivery is at-least-once: a consumer
+restart replays un-acked envelopes, and the persistence path is
+idempotent (see ``id`` / ``correlation_id`` below) so a replay collapses
+to a single row.
 
 anti-drift guarantees:
 
@@ -75,7 +80,11 @@ class AuditEvent(BaseModel):
     side from ``{namespace}.audit.>`` by the unified consumer.
 
     :param id: envelope identity (uuid7 time-ordered); doubles as the
-        audit row primary key when the consumer persists it
+        audit row primary key when the consumer persists it, and is the
+        PRIMARY idempotency anchor under JetStream at-least-once: an
+        identical redelivery carries the same ``id``, so the consumer's
+        ``on_conflict="ignore"`` insert on the row primary key collapses it
+        to a no-op (no duplicate row)
     :ptype id: UUID
     :param timestamp: timezone-aware UTC instant the event occurred
     :ptype timestamp: datetime
@@ -116,8 +125,11 @@ class AuditEvent(BaseModel):
         they know otherwise
     :ptype outcome: str
     :param correlation_id: request / tool-call correlation UUID; used
-        with ``event_type`` as the idempotency key for at-least-once
-        NATS redelivery
+        with ``event_type`` as the SECONDARY idempotency key (the partial
+        unique index ``idx_audit_events_correlation_event`` on
+        ``(correlation_id, event_type)``) so that the SAME logical event
+        re-emitted under a DIFFERENT envelope ``id`` still collapses to a
+        single row under JetStream at-least-once redelivery
     :ptype correlation_id: UUID
     :param conversation_id: conversation UUID when the event was
         emitted on behalf of a user-facing conversation (agent-tools

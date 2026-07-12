@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.14.1"
+version = "0.15.0"
 description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -31,6 +31,7 @@ dependencies = [
     "pydantic",
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
+    "httpx",  # traced outbound HTTP transport (core.http_client)
 ]
 
 [project.optional-dependencies]

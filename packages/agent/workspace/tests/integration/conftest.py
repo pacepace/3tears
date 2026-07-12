@@ -565,6 +565,30 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
             if _subject_matches(subject_path, prefix):
                 await handler(_FakeMsg(subject=subject_path, data=payload))
 
+    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None:
+        """record a JetStream publish + dispatch to any matching in-process subscriber.
+
+        mirrors :meth:`publish` for the JetStream persistence path the audit
+        producer uses: :func:`threetears.agent.audit.publish_audit` calls
+        ``jetstream_publish`` with an already-serialized raw ``payload`` rather
+        than a typed ``message``. records the ``(subject_path, payload)`` tuple
+        so audit assertions see the wire bytes and dispatches to registered
+        in-process subscribers, matching the canonical
+        :meth:`threetears.nats.NatsClient.jetstream_publish` shape.
+
+        :param subject: typed :class:`Subject` carrying dotted path
+        :ptype subject: Any
+        :param payload: already-serialized message bytes
+        :ptype payload: bytes
+        :return: None
+        :rtype: None
+        """
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        self.published.append((subject_path, payload))
+        for prefix, handler in self._subscriptions:
+            if _subject_matches(subject_path, prefix):
+                await handler(_FakeMsg(subject=subject_path, data=payload))
+
     def register_subscription(self, subject_prefix: str, handler: Any) -> None:
         """
         in-process subscription used by the audit-consumer stub.

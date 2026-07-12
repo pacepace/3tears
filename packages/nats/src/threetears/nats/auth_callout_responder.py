@@ -22,11 +22,13 @@ times out and denies), and a bad account signing key refuses to start.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from nkeys import NkeysError
+from nkeys import PREFIX_BYTE_ACCOUNT, NkeysError
 
 from threetears.nats.auth_callout import AuthCalloutRequest, decode_auth_request, mint_auth_response
 from threetears.nats.subject_permissions import PrincipalPermissions
@@ -63,10 +65,12 @@ DEFAULT_NATS_USER_JWT_TTL_SECONDS = 3600
 
 
 class AuthAccountKeyError(ValueError):
-    """the configured NATS auth-account signing key is not a usable nkey seed (fail closed).
+    """a configured NATS auth-account key is not usable (fail closed).
 
-    Raised at :class:`AuthCalloutResponder` construction (every path) so a misconfigured signing key
-    aborts startup rather than yielding a responder that mints unverifiable (server-rejected) responses.
+    Raised at :class:`AuthCalloutResponder` construction (every path) for either bad account-key
+    input -- the signing ``account_seed`` (not a usable nkey seed) or the ``issuer_account`` identity
+    key (not an account public key) -- so a misconfigured key aborts startup rather than yielding a
+    responder that mints unverifiable (server-rejected) responses.
     """
 
 
@@ -80,6 +84,27 @@ def _validated_seed(account_seed: bytes) -> bytes:
             f"NATS auth account signing key is not a usable nkey seed ({type(exc).__name__})"
         ) from None
     return seed
+
+
+def _validated_issuer_account(issuer_account: str) -> str:
+    """the account IDENTITY public key (``A...``), or raise :class:`AuthAccountKeyError`.
+
+    When ``account_seed`` is a subordinate SIGNING key rather than the account's identity key, every
+    minted JWT must name the account it belongs to via ``issuer_account`` -- the account's public
+    IDENTITY key -- or the NATS server cannot bind the connection to the account and denies it. A
+    misconfigured value would therefore fail EVERY connect at runtime; validating it here fails closed
+    at construction instead (mirroring :func:`_validated_seed`). Validates the nkey shape the same way
+    ``nkeys`` itself does -- base32-decodable with the ACCOUNT prefix byte -- without trusting the input.
+    """
+    candidate = issuer_account.strip()
+    try:
+        raw = base64.b32decode(candidate + "=" * (-len(candidate) % 8))
+    except binascii.Error, ValueError:
+        raise AuthAccountKeyError("NATS issuer_account is not a decodable nkey public key") from None
+    # a 32-byte ed25519 account public key encodes to prefix(1) + key(32) + crc(2) = 35 bytes, prefix first.
+    if len(raw) != 35 or raw[0] != PREFIX_BYTE_ACCOUNT:
+        raise AuthAccountKeyError("NATS issuer_account is not an ACCOUNT public key (expects 'A...')") from None
+    return candidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +165,9 @@ class AuthCalloutResponder:
     :param nc: a connected NATS client that is a member of the system account (so it can subscribe
         ``$SYS.REQ.USER.AUTH``). Only ``subscribe``/``unsubscribe``/``publish_raw_reply`` are used.
     :ptype nc: Any
-    :param account_seed: the NATS auth-account signing nkey seed (signs the response + user JWTs).
+    :param account_seed: the NATS auth-account nkey seed that SIGNS the response + user JWTs. Either
+        the account's identity seed, or a subordinate SIGNING seed registered in the account's
+        ``signing_keys`` -- in which case pass ``issuer_account`` so the identity seed can stay offline.
     :ptype account_seed: bytes
     :param resolver: the consumer's :class:`PrincipalResolver` ("who is this?").
     :ptype resolver: PrincipalResolver
@@ -149,6 +176,12 @@ class AuthCalloutResponder:
     :param account_name: the NATS account name minted users are placed in (the user JWT ``aud`` in
         config-mode callout); ``None`` in operator mode (placement follows the issuer).
     :ptype account_name: str | None
+    :param issuer_account: the account's public IDENTITY key (``A...``) to stamp on every minted JWT
+        when ``account_seed`` is a subordinate SIGNING key distinct from the identity key -- the NATS
+        server reads it to bind the connection to the account. OMIT (``None``) when the identity seed
+        itself signs. Supplying it lets the root identity seed stay OFFLINE (only the rotatable
+        signing seed is deployed), which shrinks the blast radius of a compromised responder host.
+    :ptype issuer_account: str | None
     :param queue_group: the callout subscription's queue group (one responder per group answers).
     :ptype queue_group: str
     :param user_jwt_ttl_seconds: TTL on each minted user JWT; a reconnect re-mints, so a short TTL
@@ -164,6 +197,7 @@ class AuthCalloutResponder:
         resolver: PrincipalResolver,
         policy: GrantPolicy,
         account_name: str | None = None,
+        issuer_account: str | None = None,
         queue_group: str = DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
         user_jwt_ttl_seconds: int = DEFAULT_NATS_USER_JWT_TTL_SECONDS,
     ) -> None:
@@ -172,6 +206,7 @@ class AuthCalloutResponder:
         self._resolver = resolver
         self._policy = policy
         self._account_name = account_name
+        self._issuer_account = _validated_issuer_account(issuer_account) if issuer_account is not None else None
         self._queue_group = queue_group
         self._ttl_seconds = user_jwt_ttl_seconds
         self._subscription: Any = None
@@ -185,6 +220,7 @@ class AuthCalloutResponder:
         resolver: PrincipalResolver,
         policy: GrantPolicy,
         account_name: str | None = None,
+        issuer_account: str | None = None,
         queue_group: str = DEFAULT_AUTH_CALLOUT_QUEUE_GROUP,
         user_jwt_ttl_seconds: int = DEFAULT_NATS_USER_JWT_TTL_SECONDS,
     ) -> AuthCalloutResponder:
@@ -192,18 +228,23 @@ class AuthCalloutResponder:
 
         :param account_seed: the account nkey seed (``SA...``), as ``str`` or ``bytes``; never logged.
         :ptype account_seed: str | bytes
+        :param issuer_account: the account's public IDENTITY key (``A...``) when ``account_seed`` is a
+            subordinate signing seed; ``None`` when the identity seed signs. See :class:`AuthCalloutResponder`.
+        :ptype issuer_account: str | None
         :return: a ready responder.
         :rtype: AuthCalloutResponder
-        :raises AuthAccountKeyError: when the seed is not a usable NATS account nkey seed.
+        :raises AuthAccountKeyError: when the seed is not a usable NATS account nkey seed, or
+            ``issuer_account`` is not an account public key.
         """
         seed = account_seed.encode("ascii") if isinstance(account_seed, str) else bytes(account_seed)
-        # __init__ validates the seed (fail closed) — a str convenience wrapper over the same guard.
+        # __init__ validates the seed + issuer_account (fail closed) — a str convenience over the same guard.
         return cls(
             nc,
             account_seed=seed,
             resolver=resolver,
             policy=policy,
             account_name=account_name,
+            issuer_account=issuer_account,
             queue_group=queue_group,
             user_jwt_ttl_seconds=user_jwt_ttl_seconds,
         )
@@ -270,12 +311,14 @@ class AuthCalloutResponder:
                 account_seed=self._account_seed,
                 server_id=server_id,
                 user_nkey=user_nkey,
+                issuer_account=self._issuer_account,
                 error="authentication failed",
             )
         return mint_auth_response(
             account_seed=self._account_seed,
             server_id=server_id,
             user_nkey=user_nkey,
+            issuer_account=self._issuer_account,
             user_jwt=user_jwt,
         )
 
@@ -305,6 +348,7 @@ class AuthCalloutResponder:
                 name=resolved.name,
                 expires_in_seconds=self._ttl_seconds,
                 audience=self._account_name,
+                issuer_account=self._issuer_account,
             )
             log.info("auth-callout: admitted name=%s conn_id=%s", resolved.name, resolved.conn_id)
             return user_jwt

@@ -10,6 +10,7 @@ import pytest
 
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
+    CircuitBreakerCallback,
     CircuitBreakerRegistry,
     CircuitOpenError,
     CircuitState,
@@ -256,3 +257,75 @@ class TestCircuitBreakerRegistry:
             "anthropic": CircuitState.CLOSED,
             "openai": CircuitState.OPEN,
         }
+
+
+class TestCircuitBreakerHalfOpenProbe:
+    """HALF_OPEN admits exactly one probe (no thundering herd)."""
+
+    def _half_open_breaker(self) -> CircuitBreaker:
+        """build a breaker driven into HALF_OPEN with no probe yet admitted."""
+        cb = CircuitBreaker("anthropic", failure_threshold=1, recovery_timeout_seconds=10.0)
+        with patch("threetears.models.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.return_value = 1000.0
+            cb.record_failure()  # -> OPEN
+            mock_time.monotonic.return_value = 1000.0 + 11.0
+            cb.check()  # first request after timeout -> HALF_OPEN + probe admitted
+        return cb
+
+    def test_half_open_admits_only_one_probe(self) -> None:
+        """the first request probes; concurrent requests are fast-failed."""
+        cb = self._half_open_breaker()
+        assert cb.state == CircuitState.HALF_OPEN
+        # a second concurrent request while the probe is in flight is rejected
+        with pytest.raises(CircuitOpenError):
+            cb.check()
+
+    def test_probe_success_closes_and_readmits(self) -> None:
+        """a successful probe closes the circuit and clears the probe gate."""
+        cb = self._half_open_breaker()
+        cb.record_success()
+        assert cb.state == CircuitState.CLOSED
+        cb.check()  # closed: passes freely, no lingering probe gate
+
+    def test_probe_failure_reopens_and_clears_gate(self) -> None:
+        """a failed probe re-opens; the next timeout admits a fresh single probe."""
+        cb = self._half_open_breaker()
+        with patch("threetears.models.circuit_breaker.time") as mock_time:
+            mock_time.monotonic.return_value = 2000.0
+            cb.record_failure()  # probe failed -> OPEN, gate cleared
+            assert cb.state == CircuitState.OPEN
+            mock_time.monotonic.return_value = 2000.0 + 11.0
+            cb.check()  # fresh single probe admitted
+            assert cb.state == CircuitState.HALF_OPEN
+            with pytest.raises(CircuitOpenError):
+                cb.check()  # gate holds again
+
+
+class TestCircuitBreakerCallback:
+    """the langchain callback fast-fails a request when the breaker is open."""
+
+    def test_raise_error_is_true(self) -> None:
+        """raise_error MUST be True or langchain swallows the CircuitOpenError.
+
+        langchain's callback manager catches every callback exception and only
+        re-raises when the handler sets raise_error -- without it the breaker
+        delivers zero fault isolation (the request proceeds to the dead provider).
+        """
+        cb = CircuitBreaker("anthropic", failure_threshold=1)
+        callback = cb.make_callback()
+        assert isinstance(callback, CircuitBreakerCallback)
+        assert callback.raise_error is True
+
+    def test_on_chat_model_start_raises_when_open(self) -> None:
+        """the callback raises CircuitOpenError on chat-model start when open."""
+        cb = CircuitBreaker("anthropic", failure_threshold=1, recovery_timeout_seconds=10.0)
+        cb.record_failure()  # -> OPEN
+        callback = cb.make_callback()
+        with pytest.raises(CircuitOpenError):
+            callback.on_chat_model_start({}, [[]])
+
+    def test_on_chat_model_start_passes_when_closed(self) -> None:
+        """the callback is a no-op on chat-model start when the circuit is closed."""
+        cb = CircuitBreaker("anthropic", failure_threshold=1)
+        callback = cb.make_callback()
+        callback.on_chat_model_start({}, [[]])  # does not raise

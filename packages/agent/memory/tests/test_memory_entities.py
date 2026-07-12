@@ -9,7 +9,7 @@ from uuid import uuid7
 import pytest
 
 from threetears.core.cache import MISSING
-from threetears.agent.memory.entities import MemoryEntity
+from threetears.agent.memory.entities import MemoryConsolidationEntity, MemoryEntity
 
 
 @pytest.fixture
@@ -201,3 +201,186 @@ class TestMemoryEntityWithCollection:
         r = repr(entity)
         assert "MemoryEntity" in r
         assert str(data["memory_id"]) in r
+
+
+class TestMemoryEntityScopeNullTolerance:
+    """v024 relaxed customer_id / user_id to nullable (scope grains)."""
+
+    def test_null_user_and_customer_return_none(self) -> None:
+        data = _sample_data()
+        data["customer_id"] = None
+        data["user_id"] = None
+
+        entity = MemoryEntity(data)
+
+        assert entity.customer_id is None
+        assert entity.user_id is None
+
+    def test_populated_scope_coerces_to_uuid(self) -> None:
+        cust = uuid7()
+        user = uuid7()
+        data = _sample_data()
+        data["customer_id"] = cust
+        data["user_id"] = user
+
+        entity = MemoryEntity(data)
+
+        assert entity.customer_id == cust
+        assert entity.user_id == user
+
+    def test_string_scope_coerces_to_uuid(self) -> None:
+        user = uuid7()
+        data = _sample_data()
+        data["user_id"] = str(user)
+
+        entity = MemoryEntity(data)
+
+        assert entity.user_id == user
+
+
+class TestMemoryEntitySalienceSubstrate:
+    """v024 salience substrate accessors: salience / decay anchors /
+    evergreen / superseded_by."""
+
+    def test_salience_defaults_to_seed_when_absent(self) -> None:
+        # _sample_data() omits salience; the DB server default (0.5)
+        # applies on write, so the getter mirrors the seed.
+        entity = MemoryEntity(_sample_data())
+        assert entity.salience == 0.5
+
+    def test_salience_coerces_decimal_to_float(self) -> None:
+        from decimal import Decimal
+
+        data = _sample_data()
+        data["salience"] = Decimal("0.7500")
+
+        entity = MemoryEntity(data)
+
+        assert entity.salience == 0.75
+        assert isinstance(entity.salience, float)
+
+    def test_evergreen_defaults_false_and_round_trips(self) -> None:
+        assert MemoryEntity(_sample_data()).evergreen is False
+
+        data = _sample_data()
+        data["evergreen"] = True
+        assert MemoryEntity(data).evergreen is True
+
+    def test_decay_anchors_default_none_and_round_trip(self) -> None:
+        entity = MemoryEntity(_sample_data())
+        assert entity.last_decayed_at is None
+        assert entity.last_accessed is None
+
+        now = datetime.now(UTC)
+        data = _sample_data()
+        data["last_decayed_at"] = now
+        data["last_accessed"] = now
+        entity = MemoryEntity(data)
+        assert entity.last_decayed_at == now
+        assert entity.last_accessed == now
+
+    def test_superseded_by_null_tolerant_and_coerces(self) -> None:
+        assert MemoryEntity(_sample_data()).superseded_by is None
+
+        gist = uuid7()
+        data = _sample_data()
+        data["superseded_by"] = gist
+        assert MemoryEntity(data).superseded_by == gist
+
+    def test_salience_setter_tracks_change(self, mock_collection: tuple) -> None:
+        coll, _ = mock_collection
+        data = _sample_data()
+        entity = MemoryEntity(data, is_new=False, collection=coll)
+
+        entity.salience = 0.9
+        entity.evergreen = True
+
+        assert entity.salience == 0.9
+        assert entity.evergreen is True
+        changes = entity.get_changes()
+        assert changes["salience"] == 0.9
+        assert changes["evergreen"] is True
+
+
+class TestMemoryEntityTags:
+    """v025 tags JSONB accessor: default / list round-trip / raw-string
+    decode / setter tracking."""
+
+    def test_tags_default_none_when_absent(self) -> None:
+        # _sample_data() omits tags; the column is nullable so the getter
+        # mirrors the NULL rather than raising.
+        assert MemoryEntity(_sample_data()).tags is None
+
+    def test_tags_list_round_trips(self) -> None:
+        # the schema-generated read path decodes JSONB to a list before
+        # hydration; the accessor passes it through unchanged.
+        data = _sample_data()
+        data["tags"] = ["persona", "identity"]
+        assert MemoryEntity(data).tags == ["persona", "identity"]
+
+    def test_tags_decodes_raw_json_string(self) -> None:
+        # the raw _MEMORIES_SELECT_COLUMNS fetch path has no JSONB codec,
+        # so asyncpg yields a JSON string; the accessor decodes it.
+        data = _sample_data()
+        data["tags"] = '["identity"]'
+        assert MemoryEntity(data).tags == ["identity"]
+
+    def test_tags_setter_tracks_change(self, mock_collection: tuple) -> None:
+        coll, _ = mock_collection
+        entity = MemoryEntity(_sample_data(), is_new=False, collection=coll)
+
+        entity.tags = ["persona"]
+
+        assert entity.tags == ["persona"]
+        assert entity.get_changes()["tags"] == ["persona"]
+
+
+def _consolidation_data() -> dict:
+    return {
+        "agent_id": uuid7(),
+        "consolidated_memory_id": uuid7(),
+        "source_memory_id": uuid7(),
+        "rationale": "near-duplicate preferences merged",
+        "date_created": datetime.now(UTC),
+        "date_updated": None,
+    }
+
+
+class TestMemoryConsolidationEntity:
+    """v026 edge entity: 3-tuple composite pk + accessors."""
+
+    def test_composite_id_is_three_tuple(self) -> None:
+        # white-box: the constructor override builds ``_id`` in
+        # (agent_id, consolidated, source) order — that ORDER is the L2
+        # key / tuple-pk addressing contract, so it is asserted directly.
+        data = _consolidation_data()
+        entity = MemoryConsolidationEntity(data)
+        assert entity._id == (  # noqa: SLF001 -- composite-pk tuple order is the contract under test
+            data["agent_id"],
+            data["consolidated_memory_id"],
+            data["source_memory_id"],
+        )
+
+    def test_accessors_round_trip(self) -> None:
+        data = _consolidation_data()
+        entity = MemoryConsolidationEntity(data)
+        assert entity.agent_id == data["agent_id"]
+        assert entity.consolidated_memory_id == data["consolidated_memory_id"]
+        assert entity.source_memory_id == data["source_memory_id"]
+        assert entity.rationale == "near-duplicate preferences merged"
+
+    def test_rationale_nullable(self) -> None:
+        data = _consolidation_data()
+        data["rationale"] = None
+        assert MemoryConsolidationEntity(data).rationale is None
+
+    def test_id_columns_coerce_from_string(self) -> None:
+        from uuid import UUID as StdUUID
+
+        data = _consolidation_data()
+        raw_id = data["consolidated_memory_id"]
+        data["consolidated_memory_id"] = str(raw_id)
+        entity = MemoryConsolidationEntity(data)
+        # accessor returns a stdlib UUID regardless of input form.
+        assert isinstance(entity.consolidated_memory_id, StdUUID)
+        assert entity.consolidated_memory_id == StdUUID(str(raw_id))

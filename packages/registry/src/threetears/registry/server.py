@@ -24,7 +24,7 @@ from threetears.core.security import (
     resolve_secret,
 )
 from threetears.nats import NatsClient
-from threetears.observe import HealthCheck, HealthServer, get_logger
+from threetears.observe import HealthCheck, HealthServer, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
@@ -32,7 +32,13 @@ from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
-from threetears.registry.auth import AgentToolAuthorizer, ToolPodAuthenticator
+from threetears.registry.auth import (
+    AgentToolAuthorizer,
+    AllowAllLimitGuard,
+    EndpointUsageEmitter,
+    LimitGuard,
+    ToolPodAuthenticator,
+)
 from threetears.registry.config import (
     get_jwks_request_timeout,
     get_proxy_assertion_signing_key_ref,
@@ -122,6 +128,10 @@ class RegistryServer:
         pod_authenticator: ToolPodAuthenticator | None = None,
         pod_authenticator_factory: ("Callable[[NatsClient], Awaitable[ToolPodAuthenticator | None]] | None") = None,
         health_port: int | None = None,
+        limit_guard: "LimitGuard | None" = None,
+        limit_guard_factory: ("Callable[[NatsClient], Awaitable[LimitGuard | None]] | None") = None,
+        usage_emitter: "EndpointUsageEmitter | None" = None,
+        usage_emitter_factory: ("Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None") = None,
     ) -> None:
         """initialize registry server.
 
@@ -186,6 +196,39 @@ class RegistryServer:
             so honcho callers MUST set THREETEARS_REGISTRY_HEALTH_PORT
             to a distinct port.
         :ptype health_port: int | None
+        :param limit_guard: pre-call spend gate threaded into the
+            :class:`~threetears.registry.proxy.CallProxy`. ``None`` (the
+            pure-3tears / dev default) wires :class:`AllowAllLimitGuard`
+            -- the standalone registry has no counter backend, so it
+            does not enforce spend limits. host applications with a
+            counter store (the aibots Hub) inject the concrete
+            ``KvCallLimitGuard`` (gu-task-15a) here to CLOSE the gate,
+            mirroring how ``pod_authenticator`` closes open registration
+            mode. the proxy itself REQUIRES a guard (no silent bypass);
+            this slot only chooses WHICH guard the standalone server
+            wires.
+        :ptype limit_guard: LimitGuard | None
+        :param limit_guard_factory: optional async factory taking the connected
+            :class:`NatsClient` and returning the pre-call spend gate (or ``None`` to keep the
+            constructor-supplied ``limit_guard``). invoked from :meth:`serve` after NATS connects
+            + before the handlers register (alongside ``pod_authenticator_factory``), so a guard
+            whose counter reads run over the live connection (the aibots Hub's
+            NATS-proxy-backed ``KvCallLimitGuard``) can build against it. takes precedence over
+            ``limit_guard`` when both are set. ``None`` keeps the constructor-supplied
+            ``limit_guard`` (``AllowAllLimitGuard`` by default) for the whole serve loop.
+        :ptype limit_guard_factory: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
+        :param usage_emitter: post-call endpoint-usage emit seam threaded into the
+            :class:`~threetears.registry.proxy.CallProxy`. ``None`` (the pure-3tears / dev default)
+            means no per-call usage event is published -- the standalone registry has no usage
+            pipeline. host applications with a metering bus (the aibots Hub) inject a concrete emitter
+            (or a factory) to publish the ``EndpointUsageEvent`` gu-task-16 consumes.
+        :ptype usage_emitter: EndpointUsageEmitter | None
+        :param usage_emitter_factory: optional async factory taking the connected
+            :class:`NatsClient` and returning the usage emitter (or ``None`` for no emit). invoked
+            from :meth:`serve` after NATS connects (alongside ``limit_guard_factory``) so an emitter
+            whose publish path needs the live connection can build against it. takes precedence over
+            ``usage_emitter`` when both are set. ``None`` keeps the constructor-supplied ``usage_emitter``.
+        :ptype usage_emitter_factory: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -210,9 +253,13 @@ class RegistryServer:
         self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
+        self._limit_guard: LimitGuard = limit_guard if limit_guard is not None else AllowAllLimitGuard()
         self._rbac_authorizer_factory = rbac_authorizer_factory
         self._pod_authenticator = pod_authenticator
         self._pod_authenticator_factory = pod_authenticator_factory
+        self._limit_guard_factory = limit_guard_factory
+        self._usage_emitter: EndpointUsageEmitter | None = usage_emitter
+        self._usage_emitter_factory = usage_emitter_factory
         if health_port is not None:
             self._health_port = health_port
         else:
@@ -228,6 +275,7 @@ class RegistryServer:
         self._call_proxy: CallProxy | None = None
         self._jwks_provider: CachedHubJwksProvider | None = None
         self._health_server: HealthServer | None = None
+        self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
 
     async def apply_rbac_factory(
@@ -291,6 +339,53 @@ class RegistryServer:
             self._pod_authenticator = await self._pod_authenticator_factory(nc)
         return self._pod_authenticator
 
+    async def apply_limit_guard_factory(
+        self,
+        nc: "NatsClient",
+    ) -> "LimitGuard":
+        """build the pre-call spend gate from the factory (if one was set).
+
+        mirrors :meth:`apply_pod_authenticator_factory`: the constructor may receive a
+        ``limit_guard`` directly OR a ``limit_guard_factory`` that needs the live NATS connection
+        to back its counter reads (the aibots Hub's NATS-proxy-backed ``KvCallLimitGuard``). this
+        resolves the factory once NATS is up and stores the result on ``self._limit_guard`` so the
+        :class:`~threetears.registry.proxy.CallProxy` built later in :meth:`serve` threads in the
+        resolved guard. a factory returning ``None`` falls back to :class:`AllowAllLimitGuard` so
+        the proxy's no-silent-bypass contract is never violated.
+
+        no-op when no factory is set (the constructor-supplied ``limit_guard`` --
+        ``AllowAllLimitGuard`` by default -- is kept).
+
+        :param nc: connected NATS client the factory needs to back its counter reads
+        :ptype nc: NatsClient
+        :return: the resolved guard (also stored on self) when a factory was set, else the existing
+            ``limit_guard``
+        :rtype: LimitGuard
+        """
+        if self._limit_guard_factory is not None:
+            self._limit_guard = await self._limit_guard_factory(nc) or AllowAllLimitGuard()
+        return self._limit_guard
+
+    async def apply_usage_emitter_factory(
+        self,
+        nc: "NatsClient",
+    ) -> "EndpointUsageEmitter | None":
+        """build the post-call endpoint-usage emitter from the factory (if one was set).
+
+        mirrors :meth:`apply_limit_guard_factory`: resolves the factory once NATS is up and stores
+        the result on ``self._usage_emitter`` so the :class:`~threetears.registry.proxy.CallProxy`
+        built later in :meth:`serve` threads in the resolved emitter. a factory returning ``None``
+        (or no factory) leaves the emit seam disabled -- the pure-3tears / dev default.
+
+        :param nc: connected NATS client the factory needs to back its publish path
+        :ptype nc: NatsClient
+        :return: the resolved emitter (also stored on self), or ``None`` when no factory / no emitter
+        :rtype: EndpointUsageEmitter | None
+        """
+        if self._usage_emitter_factory is not None:
+            self._usage_emitter = await self._usage_emitter_factory(nc)
+        return self._usage_emitter
+
     async def serve(self) -> None:
         """start registry server and wait for shutdown signal.
 
@@ -318,6 +413,17 @@ class RegistryServer:
         # so a factory whose authenticator reads pod identity over the live connection can build
         # against it before the registration handler starts. no-op / open mode when unset.
         await self.apply_pod_authenticator_factory(self._nc)
+
+        # resolve the pre-call spend gate now that NATS is up, so a factory whose counter reads run
+        # over the live connection (the Hub's NATS-proxy-backed KvCallLimitGuard) builds against it
+        # BEFORE the CallProxy is constructed and captures self._limit_guard. no-op / AllowAll when
+        # unset.
+        await self.apply_limit_guard_factory(self._nc)
+
+        # resolve the post-call endpoint-usage emitter now that NATS is up, so a host emitter whose
+        # publish path needs the live connection builds against it BEFORE the CallProxy captures
+        # self._usage_emitter. no-op (emit disabled) when unset.
+        await self.apply_usage_emitter_factory(self._nc)
 
         # the catalog KV bootstrap predates the wrapper's
         # :meth:`NatsClient.kv_bucket` cache; we still go through the
@@ -458,11 +564,22 @@ class RegistryServer:
         # for the same call body within the iat freshness window.
         pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
 
+        # one in-flight-requests gauge for this registry replica: the CallProxy
+        # brackets every dispatch through it, and the HealthServer serves it on
+        # ``/metrics`` so KEDA's prometheus scaler can autoscale replicas on
+        # aggregate in-flight tool-call load (the queue-group RPC path is not
+        # JetStream, so there is no stream backlog for the nats scaler to read).
+        inflight_gauge = InflightRequestsGauge("threetears_registry_inflight_requests")
+        self._inflight_gauge = inflight_gauge
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
+            limit_guard=self._limit_guard,
+            usage_emitter=self._usage_emitter,
+            inflight_gauge=inflight_gauge,
             jwks_provider=jwks_provider,
             # reactive self-heal on a Hub re-key: a kid-not-in-cache miss triggers ONE immediate,
             # debounced + rate-limited refresh + re-verify, so a valid token signed under a freshly-
@@ -485,6 +602,7 @@ class RegistryServer:
         health_server = HealthServer(
             port=self._health_port,
             service_name="registry",
+            metrics_provider=inflight_gauge.render,
             checks=[
                 HealthCheck(
                     name="nats",
@@ -676,6 +794,8 @@ def _run_server() -> None:
         authorizer=authorizer,
         rbac_authorizer_factory=rbac_authorizer_factory,
         pod_authenticator_factory=_resolve_pod_authenticator_factory(),
+        limit_guard_factory=_resolve_limit_guard_factory(),
+        usage_emitter_factory=_resolve_usage_emitter_factory(),
     )
     asyncio.run(server.serve())
 
@@ -713,6 +833,79 @@ def _resolve_pod_authenticator_factory() -> "Callable[[NatsClient], Awaitable[To
         result = getattr(module, attr)
         _logger.info(
             "registry tool-pod registration authenticator wired (per-key identity verify enabled)",
+            extra={"extra_data": {"factory": spec}},
+        )
+    return result
+
+
+def _resolve_limit_guard_factory() -> "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None":
+    """resolve the pre-call spend-gate factory from a configurable plugin path.
+
+    3tears stays host-agnostic: the standalone registry has no counter backend, so the limit-guard
+    factory is supplied out-of-band via ``THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY``, a
+    ``module:callable`` dotted path the operator points at a host-provided factory (the aibots Hub's
+    ``aibots.hub.tools.registry_auth:limit_guard_factory``, which builds a NATS-proxy-backed
+    ``KvCallLimitGuard`` over the usage counters). the referenced object is the async factory itself
+    -- ``Callable[[NatsClient], Awaitable[LimitGuard | None]]`` -- invoked by
+    :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> the constructor default
+    ``AllowAllLimitGuard`` (the pure-3tears / dev default; no counter store to enforce against).
+
+    :return: the resolved factory, or ``None`` when the env var is unset
+    :rtype: Callable[[NatsClient], Awaitable[LimitGuard | None]] | None
+    :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
+    :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
+        misconfigured limit-guard plugin must crash startup, never silently drop to allow-all)
+    """
+    import importlib
+
+    spec = os.environ.get("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "").strip()
+    result: "Callable[[NatsClient], Awaitable[LimitGuard | None]] | None" = None
+    if spec:
+        module_name, sep, attr = spec.partition(":")
+        if not module_name or not sep or not attr:
+            raise ValueError(
+                f"THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY must be a 'module:callable' dotted path; got {spec!r}"
+            )
+        module = importlib.import_module(module_name)
+        result = getattr(module, attr)
+        _logger.info(
+            "registry pre-call limit guard wired (spend enforcement enabled)",
+            extra={"extra_data": {"factory": spec}},
+        )
+    return result
+
+
+def _resolve_usage_emitter_factory() -> "Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None":
+    """resolve the post-call endpoint-usage emitter factory from a configurable plugin path.
+
+    3tears stays host-agnostic: the standalone registry has no metering bus, so the usage emitter is
+    supplied out-of-band via ``THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY``, a ``module:callable``
+    dotted path the operator points at a host-provided factory (the aibots Hub's factory that
+    publishes an ``EndpointUsageEvent`` on the metering subject gu-task-16 consumes). the referenced
+    object is the async factory itself -- ``Callable[[NatsClient], Awaitable[EndpointUsageEmitter |
+    None]]`` -- invoked by :meth:`RegistryServer.serve` once NATS is up. UNSET -> ``None`` -> no
+    per-call usage emit (the pure-3tears / dev default; no metering pipeline to publish to).
+
+    :return: the resolved factory, or ``None`` when the env var is unset
+    :rtype: Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None
+    :raises ValueError: when the env var is set but not a ``module:callable`` dotted path
+    :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
+        misconfigured emitter plugin must crash startup, never silently drop usage events)
+    """
+    import importlib
+
+    spec = os.environ.get("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "").strip()
+    result: "Callable[[NatsClient], Awaitable[EndpointUsageEmitter | None]] | None" = None
+    if spec:
+        module_name, sep, attr = spec.partition(":")
+        if not module_name or not sep or not attr:
+            raise ValueError(
+                f"THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY must be a 'module:callable' dotted path; got {spec!r}"
+            )
+        module = importlib.import_module(module_name)
+        result = getattr(module, attr)
+        _logger.info(
+            "registry endpoint-usage emitter wired (per-call usage events enabled)",
             extra={"extra_data": {"factory": spec}},
         )
     return result

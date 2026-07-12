@@ -33,6 +33,12 @@ _lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _thread: threading.Thread | None = None
 
+# strong references to tasks scheduled on a caller's running loop via
+# ``create_task``. asyncio keeps only a weak reference to such tasks, so an
+# unreferenced task can be garbage-collected mid-flight, silently dropping the
+# coroutine. holding the task here until it completes prevents that.
+_pending_tasks: set[asyncio.Task[Any]] = set()
+
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
     """Lazily start the background event loop on first use."""
@@ -68,10 +74,13 @@ def fire_and_forget(coro: Coroutine[Any, Any, Any]) -> None:
     """
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(coro)
     except RuntimeError:
         bg_loop = _ensure_loop()
         asyncio.run_coroutine_threadsafe(coro, bg_loop)
+    else:
+        task = loop.create_task(coro)
+        _pending_tasks.add(task)
+        task.add_done_callback(_pending_tasks.discard)
 
 
 def drain() -> None:

@@ -244,22 +244,26 @@ async def evaluate_file_access(
 
     1. :func:`evaluate_with_trail` is called with
        ``action=READ_FILE_MATCHING_PREFIX`` (or write equivalent)
-       so evaluator reduces its contribution walk to actor's
-       ``workspace``-bucket action set without an exact-action match
-       short-circuit mid-walk. ``ctx.action`` passed is a prefix
-       stem; decision bool coming out of evaluator is ignored
-       because action set is what we want.
+       so evaluator surfaces actor's ``workspace``-bucket action
+       set on each side without an exact-action match short-circuit
+       mid-walk. ``ctx.action`` passed is a prefix stem; decision
+       bool coming out of evaluator is ignored because per-side
+       action sets are what we glob against.
 
     2. on agent owner short-circuit agent side is "every
-       action" — we treat that as "every path" and return True without
-       running glob match.
+       action" — we treat that as "every path" so agent side
+       matches unconditionally.
 
-    3. effective action set is computed from whichever sides
-       caller supplied (user-only, agent-only, or intersection). for
-       each action string starting with direction prefix, suffix
-       is tested via :meth:`PurePosixPath.full_match` against
-       ``path``. first match returns True; exhausting set
-       returns False.
+    3. sides are AND-ed, mirroring the action-set intersection
+       :func:`evaluate_with_trail` performs for exact actions. when
+       both a user and an agent are on the call, ``path`` must be
+       matched by a glob on user side AND by a glob on agent
+       side: a broad user grant never widens access past agent's
+       own grant (agent's workspace sandbox), and a
+       missing/narrower agent grant constrains result. when only
+       one side is supplied that side alone decides. each candidate
+       action string starting with direction prefix has its suffix
+       tested via :meth:`PurePosixPath.full_match` against ``path``.
 
     :param namespace: workspace-type namespace file belongs to
     :ptype namespace: Namespace
@@ -303,48 +307,89 @@ async def evaluate_file_access(
     )
     trail_result = await evaluate_with_trail(ctx, cache=cache)
 
-    # owner short-circuit: agent owns namespace -> every action
-    # + every path on agent side. when only agent side ran this
-    # is an immediate allow; on intersection user side still
-    # caps (intersection narrows owner-implicit wildcard to
-    # user's actual action set, so we fall through to glob walk
-    # over user-side contribution).
     has_user = user_id is not None
     has_agent = agent_id is not None
-    if trail_result.agent_owner_short_circuited and not has_user:
-        return True
-
-    # collect every action string actor could contribute. when
-    # intersecting, only actions present on user side matter (
-    # agent short-circuit means agent side is open-ended); when
-    # user-only, single-side ``trails`` carry contributions
-    # and flat ``effective_actions`` is correct.
-    action_strings: set[str] = set()
-    if trail_result.user_trails:
-        for trail in trail_result.user_trails:
-            action_strings.update(trail.contributed_actions)
-    if trail_result.trails:
-        for trail in trail_result.trails:
-            action_strings.update(trail.contributed_actions)
-    if trail_result.agent_trails and not has_user:
-        # agent-only non-owner evaluation: agent-side trails carry
-        # contributions. (intersection path caps by user so
-        # agent-side trails are redundant there.)
-        for trail in trail_result.agent_trails:
-            action_strings.update(trail.contributed_actions)
-
     posix_path = PurePosixPath(path)
-    decision = False
-    for action in action_strings:
-        if not action.startswith(prefix):
-            continue
-        glob = action[len(prefix) :]
-        if not glob:
-            continue
-        if posix_path.full_match(glob):
-            decision = True
-            break
+
+    # owner short-circuit: agent owns namespace -> every action + every
+    # path on agent side, so the agent side matches unconditionally.
+    agent_side_open = has_agent and trail_result.agent_owner_short_circuited
+
+    if has_user and has_agent:
+        # intersection: the path must be granted on BOTH sides, mirroring
+        # the ``user_actions ∩ agent_actions`` cut :func:`evaluate_with_trail`
+        # applies to exact actions. the agent side is a genuine constraint
+        # here — a broad user grant must not widen access past what the
+        # agent is itself granted (the agent's workspace sandbox), and a
+        # missing/narrower agent grant denies. owner short-circuit is the
+        # only case where the agent side matches every path.
+        user_ok = _path_matches_trails(
+            trails=trail_result.user_trails,
+            prefix=prefix,
+            posix_path=posix_path,
+        )
+        agent_ok = agent_side_open or _path_matches_trails(
+            trails=trail_result.agent_trails,
+            prefix=prefix,
+            posix_path=posix_path,
+        )
+        decision = user_ok and agent_ok
+    elif has_agent:
+        # agent-only evaluation. owner short-circuit permits every path;
+        # otherwise the agent's single-side trails carry contributions.
+        decision = agent_side_open or _path_matches_trails(
+            trails=trail_result.trails,
+            prefix=prefix,
+            posix_path=posix_path,
+        )
+    else:
+        # user-only evaluation; single-side trails carry contributions.
+        decision = _path_matches_trails(
+            trails=trail_result.trails,
+            prefix=prefix,
+            posix_path=posix_path,
+        )
     return decision
+
+
+def _path_matches_trails(
+    *,
+    trails: tuple[Trail, ...],
+    prefix: str,
+    posix_path: PurePosixPath,
+) -> bool:
+    """test whether any direction-prefixed glob in ``trails`` matches ``posix_path``.
+
+    walks every contributed action across ``trails``, keeps those
+    beginning with ``prefix`` (the direction-appropriate
+    ``read_file_matching:`` / ``write_file_matching:`` stem),
+    strips the stem, and :meth:`pathlib.PurePosixPath.full_match`es
+    the remaining glob suffix against ``posix_path``. empty suffixes
+    are skipped. first match wins.
+
+    :param trails: grant chains contributing one side's action set
+    :ptype trails: tuple[Trail, ...]
+    :param prefix: direction-appropriate action-string prefix
+    :ptype prefix: str
+    :param posix_path: workspace-relative path under evaluation
+    :ptype posix_path: PurePosixPath
+    :return: True iff any suffix glob matches ``posix_path``
+    :rtype: bool
+    """
+    matched = False
+    for trail in trails:
+        for action in trail.contributed_actions:
+            if not action.startswith(prefix):
+                continue
+            glob = action[len(prefix) :]
+            if not glob:
+                continue
+            if posix_path.full_match(glob):
+                matched = True
+                break
+        if matched:
+            break
+    return matched
 
 
 # ---------------------------------------------------------------------------

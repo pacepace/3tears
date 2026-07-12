@@ -70,6 +70,12 @@ class DiscordAdapter:
 
         self._client.event(self._on_message)
         self._client.event(self._on_ready)
+        # whether the REST-only http session has been authenticated (via
+        # :meth:`_ensure_logged_in`). the out-of-band :meth:`post_message` path
+        # logs in ONCE and reuses the session; it never opens the gateway
+        # (``connect``), so a poster that only calls ``post_message`` holds no
+        # inbound connection.
+        self._rest_logged_in = False
 
     async def start(self) -> None:
         """start discord gateway connection.
@@ -85,6 +91,62 @@ class DiscordAdapter:
         closes websocket connection and cleans up resources.
         """
         await self._client.close()
+
+    async def _ensure_logged_in(self) -> None:
+        """authenticate the REST http session once, WITHOUT opening the gateway.
+
+        ``discord.Client.login`` performs only the token-auth REST handshake and
+        prepares the http layer; it does NOT connect the realtime gateway (that
+        is ``connect`` / ``start``). so a caller that only ever posts out-of-band
+        keeps no inbound connection open — the property the scalable delivery
+        worker relies on. idempotent: logs in only on first use.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self._rest_logged_in:
+            await self._client.login(self.bot_token)
+            self._rest_logged_in = True
+
+    async def post_message(
+        self,
+        *,
+        channel: str,
+        content: str,
+        thread_ref: str | None = None,
+    ) -> None:
+        """post a message to a channel/thread out-of-band (no inbound event).
+
+        the discord counterpart to :meth:`SlackAdapter.post_message`: a finished
+        agent answer can arrive long after the originating gateway event has
+        closed, so it is posted directly through discord's REST api on the bot
+        token rather than the event-bound :class:`discord.Message` reply path.
+        authenticates the http session lazily (:meth:`_ensure_logged_in`) and
+        resolves the destination by id — the thread ref when the answer belongs
+        to a thread, else the channel — via ``fetch_channel`` (a REST lookup, no
+        gateway cache). the body is split to discord's 2000-char limit, as in
+        :func:`_send_response`.
+
+        :param channel: discord channel id to post into
+        :ptype channel: str
+        :param content: message text in markdown
+        :ptype content: str
+        :param thread_ref: thread id to reply in; ``None`` posts to the channel
+        :ptype thread_ref: str | None
+        :return: nothing
+        :rtype: None
+        :raises TypeError: when the resolved target cannot receive messages
+        """
+        await self._ensure_logged_in()
+        target_id = int(thread_ref) if thread_ref else int(channel)
+        target = await self._client.fetch_channel(target_id)
+        if not isinstance(target, discord.abc.Messageable):
+            # a category / forum channel cannot receive a message -- an answer is
+            # only ever routed to a text channel, DM, or thread, so this is a
+            # misconfiguration rather than a transient failure.
+            raise TypeError(f"discord target {target_id} is not messageable: {type(target).__name__}")
+        for chunk in _split_message(content):
+            await target.send(content=chunk)
 
     async def _on_ready(self) -> None:
         """handle discord on_ready event.

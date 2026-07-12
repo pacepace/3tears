@@ -1,6 +1,8 @@
 """unit tests for :func:`threetears.agent.audit.publish_audit`.
 
-covers subject-naming, payload-shape, and the fire-and-forget
+covers subject-naming, payload-shape, the DURABLE-transport contract
+(the helper JetStream-publishes -- persisted + ``PubAck`` -- rather than
+core-NATS fire-and-forget), and the producer-side fire-and-forget
 invariant: every publish failure logs at WARN and returns cleanly.
 """
 
@@ -11,7 +13,6 @@ from datetime import UTC, datetime
 from uuid import uuid7
 
 import pytest
-from pydantic import BaseModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.nats import Subject, set_default_namespace
@@ -21,25 +22,24 @@ from threetears.nats import Subject, set_default_namespace
 class _FakeWrapper:
     """minimal fake :class:`threetears.nats.NatsClient` recording each publish.
 
-    matches the wrapper's :meth:`publish` shape (kw-only ``subject`` +
-    ``message``) so tests exercise the same call surface production
-    code uses. payload bytes are derived from the recorded
-    :class:`BaseModel` to keep round-trip assertions intact.
+    matches the wrapper's :meth:`jetstream_publish` shape (kw-only
+    ``subject`` + raw ``payload`` bytes) so tests exercise the same
+    DURABLE call surface production code uses. deliberately exposes NO
+    core ``publish`` method so a regression back to at-most-once core
+    NATS would ``AttributeError`` here rather than pass silently.
     """
 
-    publish_calls: list[tuple[Subject, BaseModel]] = field(default_factory=list)
+    jetstream_publish_calls: list[tuple[Subject, bytes]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
-    async def publish(
+    async def jetstream_publish(
         self,
         *,
         subject: Subject,
-        message: BaseModel,
-        reply_to: Subject | None = None,
+        payload: bytes,
     ) -> None:
-        """record the publish invocation or raise when configured to."""
-        del reply_to  # unused in audit publish
-        self.publish_calls.append((subject, message))
+        """record the JetStream publish invocation or raise when configured to."""
+        self.jetstream_publish_calls.append((subject, payload))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
 
@@ -81,23 +81,40 @@ async def test_publish_posts_to_namespace_dot_audit_dot_event_type() -> None:
 
     await publish_audit(event, nats_client=nats, namespace="dev")
 
-    assert len(nats.publish_calls) == 1
-    subject, _ = nats.publish_calls[0]
+    assert len(nats.jetstream_publish_calls) == 1
+    subject, _ = nats.jetstream_publish_calls[0]
     assert subject.path == "dev.audit.workspace.fs_write"
 
 
+async def test_publish_uses_durable_jetstream_not_core() -> None:
+    """the helper JetStream-publishes (durable) rather than core-NATS publish.
+
+    the fake exposes only ``jetstream_publish``; a regression to core
+    ``nats_client.publish`` would surface as a swallowed ``AttributeError``
+    and record ZERO jetstream calls, so a non-empty call list is the
+    durability guard.
+    """
+    nats = _FakeWrapper()
+    event = _build_event("workspace.fs_write")
+
+    await publish_audit(event, nats_client=nats, namespace="dev")
+
+    assert not hasattr(nats, "publish")
+    assert len(nats.jetstream_publish_calls) == 1
+
+
 async def test_publish_emits_typed_audit_event() -> None:
-    """recorded message is the same :class:`AuditEvent` instance round-trippable to JSON."""
+    """recorded payload is the serialized :class:`AuditEvent`, round-trippable to JSON."""
     nats = _FakeWrapper()
     event = _build_event("rbac.assignment.create")
 
     await publish_audit(event, nats_client=nats, namespace="staging")
 
-    _, message = nats.publish_calls[0]
-    assert isinstance(message, AuditEvent)
-    assert message == event
-    # round-trip the wire form to confirm the typed payload survives serialization
-    decoded = AuditEvent.model_validate_json(message.model_dump_json())
+    _, payload = nats.jetstream_publish_calls[0]
+    # the payload is raw bytes at the JetStream border; round-trip the wire
+    # form to confirm the typed envelope survives serialization
+    assert isinstance(payload, bytes)
+    decoded = AuditEvent.model_validate_json(payload)
     assert decoded == event
 
 
@@ -139,7 +156,7 @@ async def test_publish_preserves_dotted_event_type_in_subject(
 
     await publish_audit(event, nats_client=nats, namespace="prod")
 
-    subject, _ = nats.publish_calls[0]
+    subject, _ = nats.jetstream_publish_calls[0]
     assert subject.path == f"prod.audit.{event_type}"
 
 
@@ -147,14 +164,13 @@ async def test_publish_serialization_error_does_not_raise() -> None:
     """a mid-publish exception is caught and logged."""
 
     class _BrokenWrapper:
-        async def publish(
+        async def jetstream_publish(
             self,
             *,
             subject: Subject,
-            message: BaseModel,
-            reply_to: Subject | None = None,
+            payload: bytes,
         ) -> None:
-            del subject, message, reply_to
+            del subject, payload
             raise TimeoutError("publish timeout")
 
     event = _build_event()
