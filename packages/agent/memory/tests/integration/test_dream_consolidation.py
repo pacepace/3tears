@@ -256,9 +256,7 @@ class TestDreamEndToEnd:
             assert gist["has_embed"] is True
 
             # provenance edges recorded (gist <- each of the 3 sources).
-            edges = MemoryConsolidationsCollection(
-                registry=_registry(pool), config=_cfg(), nats_client=None
-            )
+            edges = MemoryConsolidationsCollection(registry=_registry(pool), config=_cfg(), nats_client=None)
             found = await edges.find_sources(agent_id, gist_id)
             assert sorted(str(s) for s in found) == sorted(str(s) for s in s_ids)
 
@@ -276,9 +274,7 @@ class TestDreamEndToEnd:
 
             # a second consolidation load no longer surfaces the superseded
             # sources (a live gist now represents them).
-            active = await mems.find_active_for_consolidation(
-                agent_id, customer_id=customer_id, user_id=user_id
-            )
+            active = await mems.find_active_for_consolidation(agent_id, customer_id=customer_id, user_id=user_id)
             active_ids = {c["memory_id"] for c in active}
             assert not (set(s_ids) & active_ids)
         finally:
@@ -297,11 +293,19 @@ class TestDreamEndToEnd:
             user_b = uuid.uuid4()
 
             a_ids = [
-                (await _insert_source(conn, agent_id=agent_id, customer_id=customer_id, user_id=user_a, seed=0.05, content=f"a{i}"))[0]
+                (
+                    await _insert_source(
+                        conn, agent_id=agent_id, customer_id=customer_id, user_id=user_a, seed=0.05, content=f"a{i}"
+                    )
+                )[0]
                 for i in range(2)
             ]
             b_ids = [
-                (await _insert_source(conn, agent_id=agent_id, customer_id=customer_id, user_id=user_b, seed=0.05, content=f"b{i}"))[0]
+                (
+                    await _insert_source(
+                        conn, agent_id=agent_id, customer_id=customer_id, user_id=user_b, seed=0.05, content=f"b{i}"
+                    )
+                )[0]
                 for i in range(2)
             ]
 
@@ -318,9 +322,7 @@ class TestDreamEndToEnd:
                 assert await _superseded_by(conn, s) is None
 
             # the gist is user-A scoped (isolation is the user_id boundary).
-            gist_user = await conn.fetchval(
-                "SELECT user_id FROM memories WHERE memory_id = $1", gist_id
-            )
+            gist_user = await conn.fetchval("SELECT user_id FROM memories WHERE memory_id = $1", gist_id)
             assert gist_user == user_a
         finally:
             await conn.close()
@@ -341,27 +343,40 @@ class TestDreamEndToEnd:
                 conn, agent_id=agent_id, customer_id=customer_id, user_id=user_id, seed=0.9, content="live gist"
             )
             live_superseded, _ = await _insert_source(
-                conn, agent_id=agent_id, customer_id=customer_id, user_id=user_id,
-                seed=0.05, content="represented by a live gist", superseded_by=live_gist,
+                conn,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                seed=0.05,
+                content="represented by a live gist",
+                superseded_by=live_gist,
             )
             # a DEAD gist (id never inserted) supersedes two sources -> orphaned;
             # they must become eligible candidates again.
             dead_gist = uuid.uuid4()
             orphan_a, _ = await _insert_source(
-                conn, agent_id=agent_id, customer_id=customer_id, user_id=user_id,
-                seed=0.05, content="orphan a", superseded_by=dead_gist,
+                conn,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                seed=0.05,
+                content="orphan a",
+                superseded_by=dead_gist,
             )
             orphan_b, _ = await _insert_source(
-                conn, agent_id=agent_id, customer_id=customer_id, user_id=user_id,
-                seed=0.05, content="orphan b", superseded_by=dead_gist,
+                conn,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                user_id=user_id,
+                seed=0.05,
+                content="orphan b",
+                superseded_by=dead_gist,
             )
 
             mems = MemoriesCollection(
                 registry=_registry(pool), config=_cfg(), authorizer=MagicMock(spec=MemoryAuthorizerDependencies)
             )
-            active = await mems.find_active_for_consolidation(
-                agent_id, customer_id=customer_id, user_id=user_id
-            )
+            active = await mems.find_active_for_consolidation(agent_id, customer_id=customer_id, user_id=user_id)
             active_ids = {c["memory_id"] for c in active}
 
             # orphaned-by-dead-gist sources are eligible again; the

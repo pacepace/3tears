@@ -61,17 +61,13 @@ def _collection_without_l3() -> IdentityVersionsCollection:
 
 async def test_resolve_active_none_without_l3() -> None:
     coll = _collection_without_l3()
-    result = await coll.resolve_active(
-        agent_id=_AGENT, customer_id=_USER, user_id=_USER, block_key="personality"
-    )
+    result = await coll.resolve_active(agent_id=_AGENT, customer_id=_USER, user_id=_USER, block_key="personality")
     assert result is None
 
 
 async def test_find_versions_empty_without_l3() -> None:
     coll = _collection_without_l3()
-    result = await coll.find_versions_for_block(
-        agent_id=_AGENT, customer_id=_USER, user_id=_USER, block_key="presence"
-    )
+    result = await coll.find_versions_for_block(agent_id=_AGENT, customer_id=_USER, user_id=_USER, block_key="presence")
     assert result == []
 
 

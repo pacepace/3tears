@@ -197,11 +197,7 @@ async def propose(
             "rationale": rationale,
             "content_hash": digest,
             "parent_version_id": active.version_id if active is not None else None,
-            "status": (
-                IdentityVersionStatus.ACTIVE.value
-                if is_auto
-                else IdentityVersionStatus.PROPOSED.value
-            ),
+            "status": (IdentityVersionStatus.ACTIVE.value if is_auto else IdentityVersionStatus.PROPOSED.value),
             "proposer_agent_id": proposer_agent_id,
             "consenter_user_id": None,
             "date_created": stamp,
@@ -336,11 +332,7 @@ async def consent(
         deps=authorizer,
     )
     version = await collection.get((agent_id, version_id))
-    if (
-        version is None
-        or version.user_id != user_id
-        or version.status != IdentityVersionStatus.PROPOSED.value
-    ):
+    if version is None or version.user_id != user_id or version.status != IdentityVersionStatus.PROPOSED.value:
         return None
     prior_active = await collection.resolve_active(
         agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=version.block_key
@@ -380,11 +372,7 @@ async def reject(
         deps=authorizer,
     )
     version = await collection.get((agent_id, version_id))
-    if (
-        version is None
-        or version.user_id != user_id
-        or version.status != IdentityVersionStatus.PROPOSED.value
-    ):
+    if version is None or version.user_id != user_id or version.status != IdentityVersionStatus.PROPOSED.value:
         return None
     version.status = IdentityVersionStatus.REJECTED.value
     await collection.save_entity(version, conn=conn)
@@ -496,9 +484,7 @@ def _applied_event(version: IdentityVersionEntity, *, auto_applied: bool) -> Ide
     )
 
 
-def _rolled_back_event(
-    version: IdentityVersionEntity, target_version_id: UUID
-) -> IdentityRestoredEvent:
+def _rolled_back_event(version: IdentityVersionEntity, target_version_id: UUID) -> IdentityRestoredEvent:
     return IdentityRestoredEvent(
         agent_id=str(version.agent_id),  # convert at border: event payload wire uuid
         version_id=str(version.version_id),  # convert at border: event payload wire uuid

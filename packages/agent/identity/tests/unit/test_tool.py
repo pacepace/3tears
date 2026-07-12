@@ -28,9 +28,7 @@ async def test_tier1_return_mentions_awaiting_consent() -> None:
     version = SimpleNamespace(version_id=uuid4())
     with patch(_PROPOSE, new_callable=AsyncMock, return_value=version) as prop:
         tool = await _tool()
-        out = await tool.ainvoke(
-            {"block_key": "personality", "content": "v2", "rationale": "sharper"}
-        )
+        out = await tool.ainvoke({"block_key": "personality", "content": "v2", "rationale": "sharper"})
     assert "awaiting the user's consent" in out
     # user_id + agent bound; proposer + caller are the agent
     kw = prop.await_args.kwargs
@@ -42,9 +40,7 @@ async def test_tier2_return_mentions_live_now() -> None:
     version = SimpleNamespace(version_id=uuid4())
     with patch(_PROPOSE, new_callable=AsyncMock, return_value=version):
         tool = await _tool()
-        out = await tool.ainvoke(
-            {"block_key": "self_improvement", "content": "note", "rationale": "r"}
-        )
+        out = await tool.ainvoke({"block_key": "self_improvement", "content": "note", "rationale": "r"})
     assert "live now" in out
 
 

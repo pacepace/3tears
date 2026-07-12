@@ -44,10 +44,7 @@ log = get_logger(__name__)
 class IdentityProposeInput(BaseModel):
     """Args for ``identity_propose``."""
 
-    block_key: str = Field(
-        description="which identity block to change: one of "
-        f"{', '.join(IDENTITY_BLOCK_KEY_VALUES)}"
-    )
+    block_key: str = Field(description=f"which identity block to change: one of {', '.join(IDENTITY_BLOCK_KEY_VALUES)}")
     content: str = Field(description="the full new text of the block")
     rationale: str = Field(description="why you want to change it (one or two sentences)")
 
@@ -79,10 +76,7 @@ async def load_identity_propose_tool(
     async def identity_propose(block_key: str, content: str, rationale: str) -> str:
         """Propose a change to one of your own identity blocks."""
         if block_key not in IDENTITY_BLOCK_KEY_VALUES:
-            return (
-                f"Unknown block_key '{block_key}'. Use one of: "
-                f"{', '.join(IDENTITY_BLOCK_KEY_VALUES)}."
-            )
+            return f"Unknown block_key '{block_key}'. Use one of: {', '.join(IDENTITY_BLOCK_KEY_VALUES)}."
         version = await propose(
             collection,
             authorizer,

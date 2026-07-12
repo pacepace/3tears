@@ -90,8 +90,13 @@ class TestPropose:
         coll = _collection(active=None)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.propose(
-                coll, _authorizer(), block_key="personality",
-                content="v2", rationale="sharper", proposer_agent_id=_AGENT, **_kwargs(),
+                coll,
+                _authorizer(),
+                block_key="personality",
+                content="v2",
+                rationale="sharper",
+                proposer_agent_id=_AGENT,
+                **_kwargs(),
             )
         assert out is not None and out.status == "proposed"
         coll.save_entity.assert_awaited_once()
@@ -101,8 +106,13 @@ class TestPropose:
         coll = _collection(active=None)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.propose(
-                coll, _authorizer(), block_key="self_improvement",
-                content="note", rationale="r", proposer_agent_id=_AGENT, **_kwargs(),
+                coll,
+                _authorizer(),
+                block_key="self_improvement",
+                content="note",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                **_kwargs(),
             )
         assert out is not None and out.status == "active"
         applied = ev.await_args.args[0]
@@ -113,8 +123,13 @@ class TestPropose:
         coll = _collection(active=prior)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             await lifecycle.propose(
-                coll, _authorizer(), block_key="self_improvement",
-                content="new", rationale="r", proposer_agent_id=_AGENT, **_kwargs(),
+                coll,
+                _authorizer(),
+                block_key="self_improvement",
+                content="new",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                **_kwargs(),
             )
         # supersede prior + save new = two saves; prior flipped to superseded
         assert coll.save_entity.await_count == 2
@@ -125,8 +140,13 @@ class TestPropose:
         coll = _collection(active=active)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.propose(
-                coll, _authorizer(), block_key="personality",
-                content="same", rationale="r", proposer_agent_id=_AGENT, **_kwargs(),
+                coll,
+                _authorizer(),
+                block_key="personality",
+                content="same",
+                rationale="r",
+                proposer_agent_id=_AGENT,
+                **_kwargs(),
             )
         assert out is active
         coll.save_entity.assert_not_awaited()
@@ -140,8 +160,11 @@ class TestSeedActive:
         coll = _collection(active=None)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.seed_active(
-                coll, _authorizer(), block_key="personality",
-                content="You are Saoirse.", **self._seed_kw,
+                coll,
+                _authorizer(),
+                block_key="personality",
+                content="You are Saoirse.",
+                **self._seed_kw,
             )
         assert out.status == "active"
         assert out.parent_version_id is None  # root
@@ -156,8 +179,11 @@ class TestSeedActive:
         coll = _collection(active=active)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.seed_active(
-                coll, _authorizer(), block_key="personality",
-                content="different", **self._seed_kw,
+                coll,
+                _authorizer(),
+                block_key="personality",
+                content="different",
+                **self._seed_kw,
             )
         assert out is active  # returns the existing active, does not overwrite
         coll.save_entity.assert_not_awaited()
@@ -171,8 +197,11 @@ class TestSeedActive:
         coll.save_entity = AsyncMock(side_effect=RuntimeError("unique_violation"))
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.seed_active(
-                coll, _authorizer(), block_key="personality",
-                content="mine", **self._seed_kw,
+                coll,
+                _authorizer(),
+                block_key="personality",
+                content="mine",
+                **self._seed_kw,
             )
         assert out is winner
 
@@ -181,8 +210,11 @@ class TestSeedActive:
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             with pytest.raises(ValueError):
                 await lifecycle.seed_active(
-                    coll, _authorizer(), block_key="bogus",
-                    content="x", **self._seed_kw,
+                    coll,
+                    _authorizer(),
+                    block_key="bogus",
+                    content="x",
+                    **self._seed_kw,
                 )
 
 
@@ -193,8 +225,11 @@ class TestConsent:
         coll = _collection(active=prior, get_result=proposed)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.consent(
-                coll, _authorizer(), version_id=proposed.version_id,
-                consenter_user_id=_USER, **_kwargs(),
+                coll,
+                _authorizer(),
+                version_id=proposed.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
             )
         assert out is proposed and proposed.status == "active"
         assert proposed.consenter_user_id == _USER
@@ -207,8 +242,11 @@ class TestConsent:
         coll = _collection(get_result=foreign)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.consent(
-                coll, _authorizer(), version_id=foreign.version_id,
-                consenter_user_id=_USER, **_kwargs(),
+                coll,
+                _authorizer(),
+                version_id=foreign.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
             )
         assert out is None
         coll.save_entity.assert_not_awaited()
@@ -218,8 +256,11 @@ class TestConsent:
         coll = _collection(get_result=already)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.consent(
-                coll, _authorizer(), version_id=already.version_id,
-                consenter_user_id=_USER, **_kwargs(),
+                coll,
+                _authorizer(),
+                version_id=already.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
             )
         assert out is None
 
@@ -230,7 +271,10 @@ class TestReject:
         coll = _collection(get_result=proposed)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.reject(
-                coll, _authorizer(), version_id=proposed.version_id, **_kwargs(),
+                coll,
+                _authorizer(),
+                version_id=proposed.version_id,
+                **_kwargs(),
             )
         assert out is proposed and proposed.status == "rejected"
         coll.save_entity.assert_awaited_once()
@@ -243,8 +287,11 @@ class TestRollback:
         coll = _collection(active=prior, get_result=target)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
             out = await lifecycle.rollback(
-                coll, _authorizer(), target_version_id=target.version_id,
-                consenter_user_id=_USER, **_kwargs(),
+                coll,
+                _authorizer(),
+                target_version_id=target.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
             )
         assert out is not None
         assert out.content == "the good version" and out.status == "active"
@@ -259,7 +306,10 @@ class TestRollback:
         coll = _collection(get_result=foreign)
         with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
             out = await lifecycle.rollback(
-                coll, _authorizer(), target_version_id=foreign.version_id,
-                consenter_user_id=_USER, **_kwargs(),
+                coll,
+                _authorizer(),
+                target_version_id=foreign.version_id,
+                consenter_user_id=_USER,
+                **_kwargs(),
             )
         assert out is None

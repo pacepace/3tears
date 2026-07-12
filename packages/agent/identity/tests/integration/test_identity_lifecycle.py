@@ -93,49 +93,47 @@ async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
     try:
         # tier-1 propose -> proposed; pending queue shows it; no active yet
         v1 = await lifecycle.propose(
-            coll, authz, block_key=_BLOCK, content="v1", rationale="seed",
-            proposer_agent_id=_AGENT, **_kw(),
+            coll,
+            authz,
+            block_key=_BLOCK,
+            content="v1",
+            rationale="seed",
+            proposer_agent_id=_AGENT,
+            **_kw(),
         )
         assert v1 is not None and v1.status == "proposed"
         pending = await coll.find_pending(agent_id=_AGENT, user_id=_USER)
         assert [p.version_id for p in pending] == [v1.version_id]
-        assert await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
-        ) is None
+        assert await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK) is None
 
         # consent -> active
-        applied = await lifecycle.consent(
-            coll, authz, version_id=v1.version_id, consenter_user_id=_USER, **_kw()
-        )
+        applied = await lifecycle.consent(coll, authz, version_id=v1.version_id, consenter_user_id=_USER, **_kw())
         assert applied is not None and applied.status == "active"
-        active = await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
-        )
+        active = await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
         assert active is not None and active.version_id == v1.version_id and active.content == "v1"
         assert await _count_active(pool, _BLOCK) == 1
 
         # propose v2 -> consent -> v1 superseded, v2 active, still exactly one active
         v2 = await lifecycle.propose(
-            coll, authz, block_key=_BLOCK, content="v2", rationale="sharper",
-            proposer_agent_id=_AGENT, **_kw(),
+            coll,
+            authz,
+            block_key=_BLOCK,
+            content="v2",
+            rationale="sharper",
+            proposer_agent_id=_AGENT,
+            **_kw(),
         )
         assert v2 is not None and v2.parent_version_id == v1.version_id  # linear chain
         await lifecycle.consent(coll, authz, version_id=v2.version_id, consenter_user_id=_USER, **_kw())
-        active2 = await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
-        )
+        active2 = await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
         assert active2 is not None and active2.version_id == v2.version_id
         assert await _count_active(pool, _BLOCK) == 1
 
         # rollback to v1 -> a NEW clone becomes active with v1's content
-        clone = await lifecycle.rollback(
-            coll, authz, target_version_id=v1.version_id, consenter_user_id=_USER, **_kw()
-        )
+        clone = await lifecycle.rollback(coll, authz, target_version_id=v1.version_id, consenter_user_id=_USER, **_kw())
         assert clone is not None and clone.content == "v1" and clone.status == "active"
         assert clone.version_id not in (v1.version_id, v2.version_id)
-        active3 = await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
-        )
+        active3 = await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK)
         assert active3 is not None and active3.version_id == clone.version_id
         assert await _count_active(pool, _BLOCK) == 1
 
@@ -147,8 +145,13 @@ async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
 
         # tier-2 block auto-applies with no consent step
         t2 = await lifecycle.propose(
-            coll, authz, block_key="self_improvement", content="note", rationale="r",
-            proposer_agent_id=_AGENT, **_kw(),
+            coll,
+            authz,
+            block_key="self_improvement",
+            content="note",
+            rationale="r",
+            proposer_agent_id=_AGENT,
+            **_kw(),
         )
         assert t2 is not None and t2.status == "active"
         assert await _count_active(pool, "self_improvement") == 1
@@ -175,31 +178,38 @@ async def test_conn_binds_apply_to_caller_transaction(pg_schema: tuple[str, str]
 
     try:
         root = await lifecycle.seed_active(
-            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
-            block_key=block, content="baseline",
+            coll,
+            authz,
+            agent_id=_AGENT,
+            customer_id=_CUST,
+            user_id=_USER,
+            block_key=block,
+            content="baseline",
         )
         assert root.status == "active"
 
         with pytest.raises(_Rollback):
             async with pool.acquire() as conn, conn.transaction():
                 applied = await lifecycle.propose(
-                    coll, authz, block_key=block, content="new", rationale="r",
-                    proposer_agent_id=_AGENT, conn=conn, **_kw(),
+                    coll,
+                    authz,
+                    block_key=block,
+                    content="new",
+                    rationale="r",
+                    proposer_agent_id=_AGENT,
+                    conn=conn,
+                    **_kw(),
                 )
                 assert applied is not None and applied.status == "active"
                 raise _Rollback  # force the caller transaction to roll back
 
         # the apply rolled back with the transaction: baseline is still the one
         # active version, and the attempted new content never persisted.
-        active = await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=block
-        )
+        active = await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=block)
         assert active is not None and active.version_id == root.version_id
         assert active.content == "baseline"
         assert await _count_active(pool, block) == 1
-        assert await pool.fetchval(
-            "SELECT count(*) FROM identity_versions WHERE content = $1", "new"
-        ) == 0
+        assert await pool.fetchval("SELECT count(*) FROM identity_versions WHERE content = $1", "new") == 0
     finally:
         await pool.close()
 
@@ -210,8 +220,13 @@ async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[s
     try:
         # seed the pre-existing content as the active root
         root = await lifecycle.seed_active(
-            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
-            block_key=_BLOCK, content="baseline",
+            coll,
+            authz,
+            agent_id=_AGENT,
+            customer_id=_CUST,
+            user_id=_USER,
+            block_key=_BLOCK,
+            content="baseline",
         )
         assert root.status == "active" and root.parent_version_id is None
         assert root.proposer_agent_id is None and root.rationale is None
@@ -219,16 +234,26 @@ async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[s
 
         # idempotent: a second seed with different content is a no-op
         again = await lifecycle.seed_active(
-            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
-            block_key=_BLOCK, content="ignored",
+            coll,
+            authz,
+            agent_id=_AGENT,
+            customer_id=_CUST,
+            user_id=_USER,
+            block_key=_BLOCK,
+            content="ignored",
         )
         assert again.version_id == root.version_id
         assert await _count_active(pool, _BLOCK) == 1
 
         # a subsequent proposal parents onto the seeded root (real chain floor)
         v2 = await lifecycle.propose(
-            coll, authz, block_key=_BLOCK, content="v2", rationale="sharper",
-            proposer_agent_id=_AGENT, **_kw(),
+            coll,
+            authz,
+            block_key=_BLOCK,
+            content="v2",
+            rationale="sharper",
+            proposer_agent_id=_AGENT,
+            **_kw(),
         )
         assert v2 is not None and v2.parent_version_id == root.version_id
     finally:
@@ -240,15 +265,18 @@ async def test_reject_leaves_active_untouched(pg_schema: tuple[str, str]) -> Non
     authz = _authorizer()
     try:
         proposed = await lifecycle.propose(
-            coll, authz, block_key=_BLOCK, content="maybe", rationale="r",
-            proposer_agent_id=_AGENT, **_kw(),
+            coll,
+            authz,
+            block_key=_BLOCK,
+            content="maybe",
+            rationale="r",
+            proposer_agent_id=_AGENT,
+            **_kw(),
         )
         assert proposed is not None
         rejected = await lifecycle.reject(coll, authz, version_id=proposed.version_id, **_kw())
         assert rejected is not None and rejected.status == "rejected"
-        assert await coll.resolve_active(
-            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
-        ) is None
+        assert await coll.resolve_active(agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK) is None
         assert await coll.find_pending(agent_id=_AGENT, user_id=_USER) == []
     finally:
         await pool.close()

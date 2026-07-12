@@ -75,9 +75,7 @@ class TestImportCost:
             " if any(n == p or n.startswith(p + '.') for p in prefixes))\n"
             "print(json.dumps(loaded))\n"
         )
-        result = subprocess.run(
-            [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120
-        )
+        result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, f"probe failed:\n{result.stderr}"
         loaded = json.loads(result.stdout.strip())
         assert loaded == [], f"types import loaded the data stack: {loaded}"
