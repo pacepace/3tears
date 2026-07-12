@@ -141,6 +141,14 @@ class TearsTool(ABC):
         API operation. Defaults to ``False``.
     :cvar face_mcp: whether this tool is reachable as an external MCP
         tool. Defaults to ``False``.
+    :cvar requires_confirmation: whether a call to this tool must be
+        gated behind a human-in-the-loop approval (the agent pauses via
+        a LangGraph ``interrupt`` and only runs the tool after an
+        authorized operator approves). Defaults to ``False`` so ordinary
+        tools run without a gate; intrusive tools (exploit / brute-force
+        / post-exploitation) set it ``True``. Governs the gate only --
+        ACL still governs whether the tool is callable at all, and who
+        may approve is a separate authorization decision at the hub.
     """
 
     tool_eligible: bool = True
@@ -148,6 +156,7 @@ class TearsTool(ABC):
     face_platform_tool: bool = True
     face_api: bool = False
     face_mcp: bool = False
+    requires_confirmation: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """enforce the run/execute contract at subclass-creation time.

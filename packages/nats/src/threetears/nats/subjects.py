@@ -823,6 +823,39 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
 
     @classmethod
+    def hub_approval_record(cls) -> Subject:
+        """request/reply subject for recording a pending human-approval marker.
+
+        A consuming AGENT that has PAUSED a graph on a ``requires_confirmation``
+        tool call asks the hub to record a pending-approval marker for the
+        conversation (the hub half of the exploit HITL gate). The agent forwards
+        its ``identity_token``; the hub verifies it, derives the owning customer,
+        writes the marker, and audits the request. Mirrors the auth path of
+        :meth:`hub_engagement_scope`.
+
+        :return: subject ``{ns}.hub.approval.record``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.approval.record", kind="point")
+
+    @classmethod
+    def hub_approval_resolve(cls) -> Subject:
+        """request/reply subject for resolving an operator reply against a pending approval.
+
+        The channel router (sandboxed, NATS-only) forwards an inbound operator
+        reply for a conversation that may be awaiting approval. The hub looks up
+        the pending marker, parses approve/deny, authorizes the replier
+        (``exploit.approve`` on the paused agent's namespace), audits the
+        decision, clears the marker, and returns the resume directive to inject
+        onto the agent's resume rail. Keeps DB + ACL + audit HUB-side, out of the
+        adapter sandbox.
+
+        :return: subject ``{ns}.hub.approval.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.approval.resolve", kind="point")
+
+    @classmethod
     def hub_channel_installs(cls) -> Subject:
         """request/reply subject for a channel adapter to fetch its installs.
 

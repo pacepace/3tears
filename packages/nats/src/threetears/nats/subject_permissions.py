@@ -168,6 +168,9 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
         str(Subjects.hub_secrets_request()),
         str(Subjects.hub_object_commit()),  # Path-2: catalogs a produced object under its own tenant
         str(Subjects.hub_object_resolve()),  # Path-2: resolves an object id it owns to its stored key
+        # HITL: on a requires_confirmation tool pause the agent records a pending-approval marker
+        # with the hub (forwarding its own identity token; the hub verifies + tenant-scopes).
+        str(Subjects.hub_approval_record()),
         str(Subjects.hub_jwks()),
         str(Subjects.gateway_completion()),
         str(Subjects.gateway_embedding()),
@@ -339,6 +342,10 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         str(Subjects.hub_object_commit()),  # Path-2: responds to object catalog commits
         str(Subjects.hub_object_resolve()),  # Path-2: responds to object id -> key resolves
         str(Subjects.hub_engagement_scope()),  # engagement scope: responds to engagement_id -> targets resolves
+        # HITL approval broker: record a pending marker (agent-forwarded) + resolve an operator reply
+        # (channel-router-forwarded) into an authorized approve/deny verdict on the resume rail.
+        str(Subjects.hub_approval_record()),
+        str(Subjects.hub_approval_resolve()),
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),
@@ -415,6 +422,9 @@ def _channel_adapter(*, agent_id: str | None, pod_id: str | None, conn_id: str |
         f"{ns}.agents.route.*",  # routes inbound channel messages to agents
         str(Subjects.hub_channel_installs()),  # fetches its bot installs
         str(Subjects.hub_user_resolve()),  # resolves a channel sender to a platform user
+        # HITL: the router (in this sandboxed adapter) forwards an operator reply to the approval
+        # broker, which authorizes + resolves it into a resume verdict. reply only; no marker write.
+        str(Subjects.hub_approval_resolve()),
         f"{ns}.hub.channel.installs.changed",  # best-effort orphan-reload signal
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )

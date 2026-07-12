@@ -297,6 +297,11 @@ class ToolManifestEntry(BaseModel):
         tool; mirrors :attr:`TearsTool.face_mcp`. Defaults to
         ``False``.
     :ptype face_mcp: bool
+    :param requires_confirmation: whether a call to the tool must be
+        gated behind human-in-the-loop approval; mirrors
+        :attr:`TearsTool.requires_confirmation`. Defaults to ``False``
+        so manifests built without an explicit value stay ungated.
+    :ptype requires_confirmation: bool
     """
 
     name: str
@@ -309,6 +314,7 @@ class ToolManifestEntry(BaseModel):
     face_platform_tool: bool = True
     face_api: bool = False
     face_mcp: bool = False
+    requires_confirmation: bool = False
 
 
 class RegistrationManifest(BaseModel):
@@ -1507,6 +1513,7 @@ class ToolServer:
             face_platform_tool = bool(getattr(tool, "face_platform_tool", True))
             face_api = bool(getattr(tool, "face_api", False))
             face_mcp = bool(getattr(tool, "face_mcp", False))
+            requires_confirmation = bool(getattr(tool, "requires_confirmation", False))
             if not tool_eligible and not skill_eligible:
                 # registering a tool with both flags off makes it
                 # invisible to every agent surface. almost certainly
@@ -1538,6 +1545,7 @@ class ToolServer:
                 face_platform_tool=face_platform_tool,
                 face_api=face_api,
                 face_mcp=face_mcp,
+                requires_confirmation=requires_confirmation,
             )
             tools_list.append(entry)
 

@@ -153,6 +153,10 @@ class CatalogEntry:
     :ptype endpoints: list[ToolEndpoint]
     :param date_registered: timestamp when tool was first registered
     :ptype date_registered: datetime
+    :param requires_confirmation: whether calls to the tool must be gated
+        behind human-in-the-loop approval; mirrors
+        :attr:`TearsTool.requires_confirmation`. Defaults to ``False``.
+    :ptype requires_confirmation: bool
     """
 
     tool_name: str
@@ -162,6 +166,7 @@ class CatalogEntry:
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None = None
     timeout_seconds: float | None = None
+    requires_confirmation: bool = False
     endpoints: list[ToolEndpoint] = field(default_factory=list)
     date_registered: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -238,6 +243,7 @@ class CatalogEntry:
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
             "timeout_seconds": self.timeout_seconds,
+            "requires_confirmation": self.requires_confirmation,
             "endpoints": [ep.to_dict() for ep in self.endpoints],
             "date_registered": self.date_registered.isoformat(),
         }
@@ -261,6 +267,7 @@ class CatalogEntry:
             input_schema=data["input_schema"],
             output_schema=data.get("output_schema"),
             timeout_seconds=data.get("timeout_seconds"),
+            requires_confirmation=data.get("requires_confirmation", False),
             endpoints=endpoints,
             date_registered=datetime.fromisoformat(data["date_registered"]),
         )
@@ -325,6 +332,7 @@ class ToolCatalog:
             existing.input_schema = entry.input_schema
             existing.output_schema = entry.output_schema
             existing.timeout_seconds = entry.timeout_seconds
+            existing.requires_confirmation = entry.requires_confirmation
             for endpoint in entry.endpoints:
                 existing.add_endpoint(endpoint)
             target = existing
@@ -576,6 +584,7 @@ class ToolCatalog:
                     input_schema=entry.input_schema,
                     output_schema=entry.output_schema,
                     timeout_seconds=entry.timeout_seconds,
+                    requires_confirmation=entry.requires_confirmation,
                     endpoints=projected_endpoints,
                     date_registered=entry.date_registered,
                 )
