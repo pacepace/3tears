@@ -156,6 +156,37 @@ async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
         await pool.close()
 
 
+async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[str, str]) -> None:
+    coll, pool = await _stack(pg_schema)
+    authz = _authorizer()
+    try:
+        # seed the pre-existing content as the active root
+        root = await lifecycle.seed_active(
+            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
+            block_key=_BLOCK, content="baseline",
+        )
+        assert root.status == "active" and root.parent_version_id is None
+        assert root.proposer_agent_id is None and root.rationale is None
+        assert await _count_active(pool, _BLOCK) == 1
+
+        # idempotent: a second seed with different content is a no-op
+        again = await lifecycle.seed_active(
+            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
+            block_key=_BLOCK, content="ignored",
+        )
+        assert again.version_id == root.version_id
+        assert await _count_active(pool, _BLOCK) == 1
+
+        # a subsequent proposal parents onto the seeded root (real chain floor)
+        v2 = await lifecycle.propose(
+            coll, authz, block_key=_BLOCK, content="v2", rationale="sharper",
+            proposer_agent_id=_AGENT, **_kw(),
+        )
+        assert v2 is not None and v2.parent_version_id == root.version_id
+    finally:
+        await pool.close()
+
+
 async def test_reject_leaves_active_untouched(pg_schema: tuple[str, str]) -> None:
     coll, pool = await _stack(pg_schema)
     authz = _authorizer()

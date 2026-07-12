@@ -50,6 +50,7 @@ if TYPE_CHECKING:
         propose,
         reject,
         rollback,
+        seed_active,
     )
     from threetears.agent.identity.tools import (
         IdentityProposeInput,
@@ -108,6 +109,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "propose": ("threetears.agent.identity.lifecycle", "propose"),
     "reject": ("threetears.agent.identity.lifecycle", "reject"),
     "rollback": ("threetears.agent.identity.lifecycle", "rollback"),
+    "seed_active": ("threetears.agent.identity.lifecycle", "seed_active"),
 }
 
 __all__ = [
@@ -138,6 +140,7 @@ __all__ = [
     "propose",
     "reject",
     "rollback",
+    "seed_active",
 ]
 
 

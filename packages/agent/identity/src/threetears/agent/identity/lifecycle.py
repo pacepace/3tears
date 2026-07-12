@@ -72,6 +72,7 @@ __all__ = [
     "propose",
     "reject",
     "rollback",
+    "seed_active",
 ]
 
 #: rationale-preview length carried on the proposed event.
@@ -199,6 +200,96 @@ async def propose(
         await collection.save_entity(new_version)
         await _emit(_proposed_event(new_version, rationale))
     return new_version
+
+
+async def seed_active(
+    collection: IdentityVersionsCollection,
+    authorizer: IdentityAuthorizerDependencies,
+    *,
+    agent_id: UUID,
+    customer_id: UUID | None,
+    user_id: UUID | None,
+    block_key: str,
+    content: str,
+    now: datetime | None = None,
+) -> IdentityVersionEntity:
+    """Import existing content as the ``active`` root version for a block.
+
+    The baseline-import op a consumer adopting identity versioning over
+    pre-existing prompt state calls once per block: it materialises the
+    current content as an ``active`` root (``parent_version_id=None``,
+    ``proposer_agent_id=None``, ``consenter_user_id=None``, ``rationale=None``)
+    so the block's history starts at what was already live and rollback has a
+    floor. **Idempotent**: if the block already has an active version this is a
+    no-op returning it -- so a lazy "seed on first access" caller is safe to
+    call every access. Emits no event (a silent baseline, not a proposal /
+    apply -- it must never appear in the veto queue).
+
+    Concurrency: two first-access callers can race; the ``active`` partial-
+    unique index lets exactly one insert win and the loser re-resolves to it.
+
+    :param collection: the identity-versions collection
+    :ptype collection: IdentityVersionsCollection
+    :param authorizer: the owner-short-circuit authorizer bundle
+    :ptype authorizer: IdentityAuthorizerDependencies
+    :param agent_id: partition column (the namespace owner)
+    :ptype agent_id: UUID
+    :param customer_id: scope grain (nullable)
+    :ptype customer_id: UUID | None
+    :param user_id: owning user (isolation boundary; nullable grain)
+    :ptype user_id: UUID | None
+    :param block_key: the identity block being seeded
+    :ptype block_key: str
+    :param content: the existing content to import as the active root
+    :ptype content: str
+    :param now: clock injection point; defaults to ``datetime.now(UTC)``
+    :ptype now: datetime | None
+    :return: the seeded root (or the pre-existing active on a no-op)
+    :rtype: IdentityVersionEntity
+    """
+    await authorize_identity_access(
+        action=ACTION_IDENTITY_WRITE,
+        agent_id=agent_id,
+        customer_id=_scope(customer_id),
+        caller_agent_id=agent_id,
+        deps=authorizer,
+    )
+    _tier_for(block_key)  # validate the key
+    existing = await collection.resolve_active(
+        agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key
+    )
+    if existing is not None:
+        return existing  # already seeded; idempotent no-op
+
+    stamp = now if now is not None else datetime.now(UTC)
+    root: IdentityVersionEntity = collection.create(
+        {
+            "version_id": UUID(str(uuid7())),
+            "agent_id": agent_id,
+            "customer_id": customer_id,
+            "user_id": user_id,
+            "block_key": block_key,
+            "content": content,
+            "rationale": None,
+            "content_hash": content_hash(content),
+            "parent_version_id": None,
+            "status": IdentityVersionStatus.ACTIVE.value,
+            "proposer_agent_id": None,
+            "consenter_user_id": None,
+            "date_created": stamp,
+            "date_updated": stamp,
+        }
+    )
+    try:
+        await collection.save_entity(root)
+    except Exception:  # prawduct:allow prawduct/broad-except -- concurrent first-access seed races on the active partial-unique index; re-resolve returns the winner
+        winner = await collection.resolve_active(
+            agent_id=agent_id, customer_id=customer_id, user_id=user_id, block_key=block_key
+        )
+        if winner is not None:
+            return winner
+        raise
+    return root
 
 
 async def consent(

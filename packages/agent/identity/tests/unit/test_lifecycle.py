@@ -133,6 +133,59 @@ class TestPropose:
         ev.assert_not_awaited()
 
 
+class TestSeedActive:
+    _seed_kw = dict(agent_id=_AGENT, customer_id=_USER, user_id=_USER)
+
+    async def test_seed_creates_active_root_when_absent(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock) as ev:
+            out = await lifecycle.seed_active(
+                coll, _authorizer(), block_key="personality",
+                content="You are Saoirse.", **self._seed_kw,
+            )
+        assert out.status == "active"
+        assert out.parent_version_id is None  # root
+        assert out.proposer_agent_id is None and out.consenter_user_id is None
+        assert out.rationale is None
+        assert out.content_hash == content_hash("You are Saoirse.")
+        coll.save_entity.assert_awaited_once()
+        ev.assert_not_awaited()  # a silent baseline, never in the veto queue
+
+    async def test_seed_is_idempotent_noop_when_active_exists(self) -> None:
+        active = _version(content="already here")
+        coll = _collection(active=active)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
+            out = await lifecycle.seed_active(
+                coll, _authorizer(), block_key="personality",
+                content="different", **self._seed_kw,
+            )
+        assert out is active  # returns the existing active, does not overwrite
+        coll.save_entity.assert_not_awaited()
+
+    async def test_seed_race_loser_reresolves_to_winner(self) -> None:
+        winner = _version(content="winner")
+        coll = _collection(active=None)
+        # first resolve (absent) then, after the save collides, the re-resolve
+        # returns the concurrent winner.
+        coll.resolve_active = AsyncMock(side_effect=[None, winner])
+        coll.save_entity = AsyncMock(side_effect=RuntimeError("unique_violation"))
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
+            out = await lifecycle.seed_active(
+                coll, _authorizer(), block_key="personality",
+                content="mine", **self._seed_kw,
+            )
+        assert out is winner
+
+    async def test_seed_rejects_unknown_block(self) -> None:
+        coll = _collection(active=None)
+        with patch(_AUTHZ, new_callable=AsyncMock), patch(_DISPATCH, new_callable=AsyncMock):
+            with pytest.raises(ValueError):
+                await lifecycle.seed_active(
+                    coll, _authorizer(), block_key="bogus",
+                    content="x", **self._seed_kw,
+                )
+
+
 class TestConsent:
     async def test_consent_activates_and_supersedes(self) -> None:
         proposed = _version(status="proposed")
