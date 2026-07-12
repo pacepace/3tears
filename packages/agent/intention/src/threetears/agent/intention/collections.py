@@ -114,7 +114,12 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             # agent-internal wants and deployments without a users table,
             # and avoids a cross-package teardown-order constraint.
             # Isolation is the WHERE clause on this column, not a FK.
-            Column("user_id", UUID_TYPE, nullable=True),
+            # ``immutable=True`` (matches memory's user_id): user_id is the
+            # SOLE user-isolation boundary (agent_id is shared across all
+            # metallm users), so it is write-once -- excluded from the
+            # entity-UPDATE generator so a stray setter can never move a
+            # want across users.
+            Column("user_id", UUID_TYPE, nullable=True, immutable=True),
             # a fresh PG enum -- no shared-memory_type ALTER pain. Default
             # 'open' on log; mutable as the want walks its lifecycle.
             Column(

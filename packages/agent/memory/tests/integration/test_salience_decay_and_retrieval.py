@@ -390,6 +390,72 @@ class TestAmbientGatingVsDirectRecall:
             await conn.close()
             await pool.close()
 
+    async def test_dedup_excludes_live_gist_sources_selfheals_dead(self, applied_schema: tuple[str, str]) -> None:
+        """find_similar_for_dedup skips live-gist-superseded sources; the gist +
+        dead-gist orphans stay candidates (so a correction never lands on a hidden row)."""
+        url, schema = applied_schema
+        pool = await _make_pool(url, schema)
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            agent_id, user_id, customer_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+            coll = _build_collection(pool)
+
+            plain = await _insert_memory(
+                conn, agent_id=agent_id, user_id=user_id, customer_id=customer_id, with_embedding=True, content="plain"
+            )
+            gist_live = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                with_embedding=True,
+                content="live gist",
+            )
+            superseded_live = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                superseded_by=gist_live,
+                with_embedding=True,
+                content="hidden behind live gist",
+            )
+            gist_dead = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                with_embedding=True,
+                content="doomed gist",
+            )
+            superseded_dead = await _insert_memory(
+                conn,
+                agent_id=agent_id,
+                user_id=user_id,
+                customer_id=customer_id,
+                superseded_by=gist_dead,
+                with_embedding=True,
+                content="orphaned by dead gist",
+            )
+            await conn.execute("DELETE FROM memories WHERE memory_id = $1", gist_dead)
+
+            candidates = await coll.find_similar_for_dedup(
+                user_id=user_id,
+                agent_id=agent_id,
+                embedding=[0.1] * _DIM,
+                top_k=20,
+                threshold=0.0,
+            )
+            cand_ids = {c["memory_id"] for c in candidates}
+            assert plain in cand_ids
+            assert gist_live in cand_ids  # the gist itself is still a dedup target
+            assert superseded_live not in cand_ids  # hidden behind a live gist
+            assert superseded_dead in cand_ids  # dead gist -> self-healed back
+        finally:
+            await conn.close()
+            await pool.close()
+
 
 class TestCacheCoherence:
     """v0.15.0 review fix: decay/bump/supersede stay coherent with the caches.

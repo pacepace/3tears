@@ -566,3 +566,35 @@ class TestIntentionCacheCoherence:
             assert (agent_id, wid) in calls
         finally:
             await pool.close()
+
+    async def test_user_id_is_immutable_across_saves(self, pg_schema: tuple[str, str]) -> None:
+        """user_id (the sole isolation boundary) can't be moved by an entity save."""
+        url, schema = pg_schema
+        await apply_migrations(url, schema)
+        pool = await make_pool(url, schema)
+        try:
+            coll, _l1 = build_collection(pool, _InMemoryNatsBus())
+            agent_id, customer_id = uuid.uuid4(), uuid.uuid4()
+            owner, other = uuid.uuid4(), uuid.uuid4()
+            wid = uuid.uuid4()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO intentions (intention_id, agent_id, customer_id, user_id, status, "
+                    "content, salience, date_created, date_updated) "
+                    "VALUES ($1,$2,$3,$4,'open','a want',0.5, now(), now())",
+                    wid,
+                    agent_id,
+                    customer_id,
+                    owner,
+                )
+            entity = await coll.get((agent_id, wid))
+            assert entity is not None
+            # a stray attempt to move the want to another user must NOT persist
+            entity.user_id = other
+            entity.status = "asked"
+            await coll.save_entity(entity)
+            async with pool.acquire() as conn:
+                db_user = await conn.fetchval("SELECT user_id FROM intentions WHERE intention_id = $1", wid)
+            assert db_user == owner  # isolation boundary held; only status changed
+        finally:
+            await pool.close()

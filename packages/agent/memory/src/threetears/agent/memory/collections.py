@@ -1042,12 +1042,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # ``embedding IS NOT NULL`` filter for the same reason as
         # :meth:`hybrid_search`: ``NULL <=> vector`` is NULL, which
         # breaks the downstream ``float(similarity)`` cast.
+        # Self-healing supersession filter (matches hybrid_search +
+        # find_active_for_consolidation): a source hidden behind a LIVE
+        # gist is excluded from dedup, so a corrected fact never resolves
+        # onto an ambient-hidden row (which would leave the correction
+        # unreachable by proactive retrieval while the stale gist keeps
+        # surfacing). A source orphaned by a dead gist self-heals back into
+        # the candidate set. The gist itself (superseded_by NULL) stays a
+        # candidate, so a correction can still land on the live gist.
         rows = await self.l3_pool.fetch(
             """
             SELECT memory_id, content, type_memory,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
             FROM memories
             WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
+              AND (superseded_by IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM memories g
+                    WHERE g.agent_id = memories.agent_id AND g.memory_id = memories.superseded_by))
             ORDER BY embedding OPERATOR(public.<=>) $1::text::public.vector
             LIMIT $4
             """,
