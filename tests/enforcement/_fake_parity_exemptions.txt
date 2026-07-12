@@ -120,9 +120,9 @@ packages/agent/tools/tests/testing_utils.py:66:FakePool
 # rationale: the integration-conftest store is the dispatch table for every workspace integration test; its execute+fetchrow surface is exactly what the integration tests need and does not align with any single production class
 packages/agent/workspace/tests/integration/conftest.py:141:_FakeStore
 # rationale: nats-py Msg shape for audit subscriber fixtures; minimal subject+data carrier matching the canonical NATS Msg the workspace audit consumer reads
-packages/agent/workspace/tests/integration/conftest.py:588:_FakeMsg
+packages/agent/workspace/tests/integration/conftest.py:612:_FakeMsg
 # rationale: ToolContextManager subset for workspace integration tests; the integration suite exercises pin namespaces only and the production manager has additional context surfaces out of scope
-packages/agent/workspace/tests/integration/conftest.py:637:_FakeToolContextManager
+packages/agent/workspace/tests/integration/conftest.py:661:_FakeToolContextManager
 
 # workspace unit-test one-offs (each fake stands in for a single production interface and the test exercises a small subset)
 # rationale: NatsClient subset for the audit-publish unit covering bind in test_bind; the bind audit emitter calls publish so the test only models that surface
