@@ -1131,9 +1131,7 @@ class TestRenderInterruptPrompt:
                     "description": "Approval required before running pentest.metasploit.",
                 }
             ],
-            "review_configs": [
-                {"action_name": "pentest.metasploit", "allowed_decisions": ["approve", "reject"]}
-            ],
+            "review_configs": [{"action_name": "pentest.metasploit", "allowed_decisions": ["approve", "reject"]}],
         }
         out = render_interrupt_prompt(payload)
         assert "pentest.metasploit" in out
