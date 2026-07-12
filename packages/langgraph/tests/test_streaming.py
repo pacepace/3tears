@@ -1115,3 +1115,44 @@ class TestRenderInterruptPrompt:
         out = render_interrupt_prompt(None)
         assert out == "Reply to approve or deny to continue."
         assert "None" not in out
+
+    def test_renders_hitl_action_request_not_raw_dict(self) -> None:
+        # regression: the LangChain human-in-the-loop middleware interrupt shape
+        # (action_requests / review_configs) leaked to Slack as a raw str(dict) blob.
+        # it must render as a clean human approval prompt naming the tool + its args.
+        payload = {
+            "action_requests": [
+                {
+                    "name": "pentest.metasploit",
+                    "args": {
+                        "module": "auxiliary/scanner/ssh/ssh_version",
+                        "options": {"RHOSTS": "10.23.68.16"},
+                    },
+                    "description": "Approval required before running pentest.metasploit.",
+                }
+            ],
+            "review_configs": [
+                {"action_name": "pentest.metasploit", "allowed_decisions": ["approve", "reject"]}
+            ],
+        }
+        out = render_interrupt_prompt(payload)
+        assert "pentest.metasploit" in out
+        assert "auxiliary/scanner/ssh/ssh_version" in out
+        assert "10.23.68.16" in out
+        assert "approve" in out.lower()
+        assert "reject" in out.lower()
+        # NOT the raw python-dict dump
+        assert "action_requests" not in out
+        assert "'name':" not in out
+
+    def test_renders_multiple_action_requests(self) -> None:
+        payload = {
+            "action_requests": [
+                {"name": "pentest.zap", "args": {"target": "a"}},
+                {"name": "pentest.sqlmap", "args": {"url": "b"}},
+            ],
+        }
+        out = render_interrupt_prompt(payload)
+        assert "pentest.zap" in out
+        assert "pentest.sqlmap" in out
+        assert "action_requests" not in out
