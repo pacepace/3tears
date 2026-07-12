@@ -23,14 +23,19 @@ classifiers = [
 ]
 # In-repo (3tears*) deps are declared only when a module imports them:
 # the dependency-alignment enforcement gate flags a declared 3tears* dep
-# that nothing imports. T2.1a (schema + collection + migration) imports
-# core (entities/collections/data) + observe (logging) only. T2.1b adds
-# the tool/RBAC/event surface that imports 3tears-agent-acl (owner RBAC)
-# and 3tears-langgraph (FrameworkEvents); both get declared here alongside
-# the code that uses them then.
+# that nothing imports. T2.1a (schema + collection + migration) imported
+# core + observe only. T2.1b adds the lifecycle/RBAC/event/tool surface:
+# 3tears-agent-acl (owner RBAC in authorize.py), 3tears-langgraph
+# (FrameworkEvents + dispatch in events.py / lifecycle.py), and langchain-
+# core + pydantic (the identity_propose tool + its args schema).
 dependencies = [
     "3tears",
+    "3tears-agent-acl",
+    "3tears-langgraph",
     "3tears-observe",
+    "langchain-core",
+    "pydantic",
+    "uuid-utils",
 ]
 
 [project.urls]
@@ -41,4 +46,6 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-langgraph = { workspace = true }
 3tears-observe = { workspace = true }

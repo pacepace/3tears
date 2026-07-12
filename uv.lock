@@ -159,13 +159,23 @@ version = "0.15.0"
 source = { editable = "packages/agent/identity" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-agent-acl" },
+    { name = "3tears-langgraph" },
     { name = "3tears-observe" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-agent-acl", editable = "packages/agent/acl" },
+    { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]

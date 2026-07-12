@@ -1,9 +1,8 @@
 """Agent identity package -- versioned identity blocks for self-evolution.
 
-Ships (T2.1a): the ``identity_versions`` entity + three-tier collection +
-schema/table factory, and the block-key / status / consent-tier value
-types. The lifecycle ops (propose/consent/reject/rollback) + events +
-owner RBAC + tools land in T2.1b.
+The store + linear version chain (``identity_versions``), the
+propose→consent/reject→apply + rollback lifecycle, the FrameworkEvents, the
+owner RBAC, and the private ``identity_propose`` tool.
 """
 
 from __future__ import annotations
@@ -21,16 +20,41 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 # lazy public API (PEP 562), mirroring agent/intention: importing this
-# package costs only this file; each public attribute resolves its
-# defining module on first access. The three-way agreement between
-# __all__, _LAZY, and the TYPE_CHECKING block is pinned by the package's
-# lazy-surface consistency test.
+# package costs only this file; each public attribute resolves its defining
+# module on first access. The three-way agreement between __all__, _LAZY,
+# and the TYPE_CHECKING block is pinned by the package's lazy-surface test.
 if TYPE_CHECKING:
+    from threetears.agent.identity.authorize import (
+        ACTION_IDENTITY_READ,
+        ACTION_IDENTITY_WRITE,
+        IDENTITY_NAMESPACE_TYPE,
+        IdentityAccessDenied,
+        IdentityAuthorizerDependencies,
+        authorize_identity_access,
+        identity_namespace_name,
+    )
     from threetears.agent.identity.collections import (
         IdentityVersionsCollection,
         identity_versions_table,
     )
     from threetears.agent.identity.entities import IdentityVersionEntity
+    from threetears.agent.identity.events import (
+        IdentityAppliedEvent,
+        IdentityConsentedEvent,
+        IdentityProposedEvent,
+        IdentityRolledBackEvent,
+    )
+    from threetears.agent.identity.lifecycle import (
+        consent,
+        content_hash,
+        propose,
+        reject,
+        rollback,
+    )
+    from threetears.agent.identity.tools import (
+        IdentityProposeInput,
+        load_identity_propose_tool,
+    )
     from threetears.agent.identity.types import (
         IDENTITY_BLOCK_KEY_VALUES,
         IDENTITY_BLOCK_TIERS,
@@ -42,10 +66,23 @@ if TYPE_CHECKING:
 
 # public attribute -> (defining module, attribute name in that module)
 _LAZY: dict[str, tuple[str, str]] = {
+    "ACTION_IDENTITY_READ": ("threetears.agent.identity.authorize", "ACTION_IDENTITY_READ"),
+    "ACTION_IDENTITY_WRITE": ("threetears.agent.identity.authorize", "ACTION_IDENTITY_WRITE"),
     "IDENTITY_BLOCK_KEY_VALUES": ("threetears.agent.identity.types", "IDENTITY_BLOCK_KEY_VALUES"),
     "IDENTITY_BLOCK_TIERS": ("threetears.agent.identity.types", "IDENTITY_BLOCK_TIERS"),
+    "IDENTITY_NAMESPACE_TYPE": ("threetears.agent.identity.authorize", "IDENTITY_NAMESPACE_TYPE"),
     "IDENTITY_STATUS_VALUES": ("threetears.agent.identity.types", "IDENTITY_STATUS_VALUES"),
+    "IdentityAccessDenied": ("threetears.agent.identity.authorize", "IdentityAccessDenied"),
+    "IdentityAppliedEvent": ("threetears.agent.identity.events", "IdentityAppliedEvent"),
+    "IdentityAuthorizerDependencies": (
+        "threetears.agent.identity.authorize",
+        "IdentityAuthorizerDependencies",
+    ),
     "IdentityBlockKey": ("threetears.agent.identity.types", "IdentityBlockKey"),
+    "IdentityConsentedEvent": ("threetears.agent.identity.events", "IdentityConsentedEvent"),
+    "IdentityProposeInput": ("threetears.agent.identity.tools", "IdentityProposeInput"),
+    "IdentityProposedEvent": ("threetears.agent.identity.events", "IdentityProposedEvent"),
+    "IdentityRolledBackEvent": ("threetears.agent.identity.events", "IdentityRolledBackEvent"),
     "IdentityTier": ("threetears.agent.identity.types", "IdentityTier"),
     "IdentityVersionEntity": ("threetears.agent.identity.entities", "IdentityVersionEntity"),
     "IdentityVersionStatus": ("threetears.agent.identity.types", "IdentityVersionStatus"),
@@ -53,22 +90,54 @@ _LAZY: dict[str, tuple[str, str]] = {
         "threetears.agent.identity.collections",
         "IdentityVersionsCollection",
     ),
+    "authorize_identity_access": (
+        "threetears.agent.identity.authorize",
+        "authorize_identity_access",
+    ),
+    "consent": ("threetears.agent.identity.lifecycle", "consent"),
+    "content_hash": ("threetears.agent.identity.lifecycle", "content_hash"),
+    "identity_namespace_name": ("threetears.agent.identity.authorize", "identity_namespace_name"),
     "identity_versions_table": (
         "threetears.agent.identity.collections",
         "identity_versions_table",
     ),
+    "load_identity_propose_tool": (
+        "threetears.agent.identity.tools",
+        "load_identity_propose_tool",
+    ),
+    "propose": ("threetears.agent.identity.lifecycle", "propose"),
+    "reject": ("threetears.agent.identity.lifecycle", "reject"),
+    "rollback": ("threetears.agent.identity.lifecycle", "rollback"),
 }
 
 __all__ = [
+    "ACTION_IDENTITY_READ",
+    "ACTION_IDENTITY_WRITE",
     "IDENTITY_BLOCK_KEY_VALUES",
     "IDENTITY_BLOCK_TIERS",
+    "IDENTITY_NAMESPACE_TYPE",
     "IDENTITY_STATUS_VALUES",
+    "IdentityAccessDenied",
+    "IdentityAppliedEvent",
+    "IdentityAuthorizerDependencies",
     "IdentityBlockKey",
+    "IdentityConsentedEvent",
+    "IdentityProposeInput",
+    "IdentityProposedEvent",
+    "IdentityRolledBackEvent",
     "IdentityTier",
     "IdentityVersionEntity",
     "IdentityVersionStatus",
     "IdentityVersionsCollection",
+    "authorize_identity_access",
+    "consent",
+    "content_hash",
+    "identity_namespace_name",
     "identity_versions_table",
+    "load_identity_propose_tool",
+    "propose",
+    "reject",
+    "rollback",
 ]
 
 
