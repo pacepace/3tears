@@ -662,6 +662,10 @@ class TestToolServerShutdown:
 
         mock_nc = AsyncMock()
         mock_nc.is_connected = True
+        # healthy connection so the heartbeat-loop liveness supervisor does not trip its os._exit
+        # crash-recycle during this short-interval test (bare AsyncMock leaves is_closed truthy).
+        mock_nc.is_closed = False
+        mock_nc.is_healthy = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
