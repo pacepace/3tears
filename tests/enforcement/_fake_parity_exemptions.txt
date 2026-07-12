@@ -81,8 +81,8 @@ packages/nats/tests/unit/test_distributed_lock.py:87:_FakeClient
 packages/mcp/tests/unit/test_http_client.py:17:_FakeTransport
 
 # audit + acl
-# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the publish surface, no full NatsClient parity to declare
-packages/agent/audit/tests/unit/test_publish.py:21:_FakeWrapper
+# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the jetstream_publish surface, no full NatsClient parity to declare
+packages/agent/audit/tests/unit/test_publish.py:22:_FakeWrapper
 # rationale: combined in-memory store satisfying both MembershipLoader and GrantLoader Protocols; the parity walker supports one marker per class so we exempt with both target Protocols named here
 packages/agent/acl/tests/unit/_fake_loaders.py:62:FakeStore
 
@@ -106,7 +106,7 @@ packages/agent/tools/tests/unit/test_bootstrap.py:14:_FakeToolServer
 # rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
 packages/agent/tools/tests/unit/test_migrations.py:32:_FakeDataStore
 # rationale: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
-packages/agent/tools/tests/unit/test_platform_migrations.py:30:_FakeDataStore
+packages/agent/tools/tests/unit/test_platform_migrations.py:31:_FakeDataStore
 # rationale: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
 packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
 # rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope

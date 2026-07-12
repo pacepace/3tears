@@ -147,6 +147,29 @@ class TestDispatchHappyPath:
         result = await server._dispatch("probe", {})  # noqa: SLF001
         assert result == [text_content]
 
+    async def test_handler_returning_call_tool_result_passes_through(self) -> None:
+        """handler that returns a full CallToolResult (isError=True downstream envelope) is forwarded verbatim."""
+        error_result = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text='{"error": {"code": "INSUFFICIENT_CREDITS"}}')],
+            isError=True,
+        )
+
+        async def handler(**_kwargs: Any) -> mcp_types.CallToolResult:
+            return error_result
+
+        tool = _make_tool(handler=handler)
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=identity),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(tool),
+        )
+        result = await server._dispatch("probe", {})  # noqa: SLF001
+        # forwarded unchanged -- not re-wrapped into an isError=False text body
+        assert result is error_result
+        assert result.isError is True
+
 
 # ---------------------------------------------------------------------
 # error paths -- structured envelopes, no raw exceptions

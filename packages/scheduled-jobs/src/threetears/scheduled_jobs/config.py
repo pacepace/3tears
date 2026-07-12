@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "DEFAULT_DISPATCH_REAP_AFTER_SECONDS",
     "DEFAULT_JOB_CONFIG",
     "DEFAULT_TICK_DUE_LIMIT",
     "DEFAULT_TICK_LOCK_KEY",
@@ -39,6 +40,16 @@ DEFAULT_TICK_LOCK_KEY: str = "scheduled_jobs_tick"
 DEFAULT_TICK_DUE_LIMIT: int = 200
 
 
+# Default age (seconds) after which a ``job_fires`` row still stuck in
+# ``'dispatching'`` is reaped to ``'failed'`` by the tick's sweep. A
+# dispatch is expected to stage its work and return promptly, so a row
+# in-flight for many minutes signals a pod that died mid-dispatch; the
+# occurrence's schedule already advanced, so the row would otherwise
+# remain a zombie forever. 15 minutes is generous headroom over a normal
+# dispatch while still surfacing the loss the same operational day.
+DEFAULT_DISPATCH_REAP_AFTER_SECONDS: int = 900
+
+
 @runtime_checkable
 class JobConfig(Protocol):
     """Read-side operational config for the tick engine.
@@ -50,6 +61,8 @@ class JobConfig(Protocol):
 
     :ivar tick_lock_key: the cross-pod lock key the tick acquires
     :ivar tick_due_limit: per-tick cap on the due-row scan
+    :ivar dispatch_reap_after_seconds: age after which a stuck
+        ``'dispatching'`` fire row is reaped to ``'failed'``
     """
 
     @property
@@ -57,6 +70,9 @@ class JobConfig(Protocol):
 
     @property
     def tick_due_limit(self) -> int: ...
+
+    @property
+    def dispatch_reap_after_seconds(self) -> int: ...
 
 
 class _DefaultJobConfig:
@@ -75,6 +91,10 @@ class _DefaultJobConfig:
     @property
     def tick_due_limit(self) -> int:
         return DEFAULT_TICK_DUE_LIMIT
+
+    @property
+    def dispatch_reap_after_seconds(self) -> int:
+        return DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 
 
 # Platform-default :class:`JobConfig` singleton. Returns the ``DEFAULT_*``

@@ -403,6 +403,7 @@ class RegistrationHandler:
                 description=tool.description,
                 input_schema=tool.input_schema,
                 timeout_seconds=tool.timeout_seconds,
+                requires_confirmation=tool.requires_confirmation,
                 endpoints=[endpoint],
                 date_registered=now,
             )

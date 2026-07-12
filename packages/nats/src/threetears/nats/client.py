@@ -51,6 +51,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import random
 import time
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -63,6 +65,7 @@ from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
+    OutboundBufferLimitError as _NatsOutboundBufferLimitError,
     StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
@@ -70,14 +73,23 @@ from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger
 
 from threetears.nats.errors import (
+    NamespaceNotConfiguredError,
     NatsClientError,
     PublishError,
     RequestError,
+    StreamSubjectsOverlapError,
     SubscribeError,
 )
 from threetears.nats.subjects import Subject, Subjects, set_default_namespace
 
+# JetStream API error code for "subjects overlap with an existing stream": a
+# subject belongs to exactly one stream. distinct from "stream name already in
+# use" -- the two are conflated by a naive create-or-update. see
+# ensure_jetstream_stream.
+_JS_ERR_SUBJECTS_OVERLAP = 10065
+
 if TYPE_CHECKING:
+    from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
     from nats.aio.subscription import Subscription as _NatsSub
 
@@ -91,8 +103,15 @@ __all__ = [
     "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_STARTUP_TIMEOUT",
     "DEFAULT_DRAIN_TIMEOUT",
+    # resilience-task-03: explicit bounded outbound/pending buffer defaults.
+    "DEFAULT_PENDING_SIZE_BYTES",
+    "DEFAULT_FLUSHER_QUEUE_SIZE",
+    # resilience-task-06: jittered reconnect backoff defaults (thundering-herd defense).
+    "DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS",
+    "DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS",
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
+    "JetStreamPullConsumer",
     "NatsClient",
     "ReconnectCallback",
     "Subscription",
@@ -148,6 +167,66 @@ RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = -1
 #: enough that a ``/healthz`` keyed on it trips promptly so k8s restarts the pod.
 _AUTH_VIOLATION_UNHEALTHY_THRESHOLD: Final[int] = 3
 
+#: resilience-task-03: consecutive outbound-buffer overflow events (no intervening successful publish
+#: or (re)connect) after which :attr:`NatsClient.is_healthy` reports unhealthy. Mirrors the
+#: auth-violation threshold: nats-py raises ``OutboundBufferLimitError`` synchronously from
+#: ``publish`` only while the client is disconnected/reconnecting AND the pending buffer is full (the
+#: wedge state). A sustained run of those means the connection is not draining, so a ``/healthz`` keyed
+#: on ``is_healthy`` trips and the supervisor (resilience-task-02) restarts the pod. Kept at 3 to match
+#: the auth path: long enough that a one-off burst during a brief blip self-clears on the next
+#: successful publish, short enough that a real wedge surfaces promptly.
+_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD: Final[int] = 3
+
+#: resilience-task-03: explicit bounded pending (outbound) buffer size in bytes handed to nats-py's
+#: ``pending_size`` connect option. nats-py's untuned default is 2 MiB
+#: (:data:`nats.aio.client.DEFAULT_PENDING_SIZE`); this sets a larger, EXPLICIT 4 MiB bound so a
+#: healthy bursty agent (10s heartbeats + per-turn streaming-token publishes) never trips the limit
+#: while connected, while still BOUNDING what a disconnected/reconnecting client accumulates before
+#: nats-py raises ``OutboundBufferLimitError`` (which the wrapper turns into an ``is_healthy`` signal
+#: rather than an unbounded thrash). Set explicitly -- not left to the library default -- so the bound
+#: is asserted in tests and tunable per-consumer. resilience-task-06 will re-touch the same options
+#: dict to add reconnect backoff/jitter; keep these keys clearly delimited.
+DEFAULT_PENDING_SIZE_BYTES: Final[int] = 4 * 1024 * 1024
+
+#: resilience-task-03: explicit bounded flusher queue depth handed to nats-py's ``flusher_queue_size``
+#: connect option. nats-py's default is 1024 (:data:`nats.aio.client.DEFAULT_MAX_FLUSHER_QUEUE_SIZE`);
+#: this doubles it to 2048 so bursty publish batches queue for the flusher without backpressure under
+#: healthy load. Set explicitly for the same asserted-and-tunable reason as the pending bound.
+DEFAULT_FLUSHER_QUEUE_SIZE: Final[int] = 2048
+
+#: resilience-task-06: base (seconds) of the per-attempt capped-exponential FULL-JITTER reconnect
+#: backoff wired into nats-py's ``reconnect_to_server_handler``. The un-jittered ceiling for a reconnect
+#: attempt is ``min(cap, base * 2**server.reconnects)`` and the actual delay is
+#: ``uniform(0, ceiling)`` -- full jitter, which de-synchronizes a mass reconnect better than equal
+#: jitter. At ``base = 1.0`` the first-attempt delay is uniform in ``[0, 1]`` s, so a fleet of N pods
+#: reconnecting on a shared trigger (Hub restart, KEDA scale-out) spreads its handshakes across the
+#: window instead of spiking simultaneously. Replaces the fixed 2s ``reconnect_time_wait`` on the
+#: RECONNECT path (``_attempt_reconnect``); ``reconnect_time_wait`` still paces the distinct startup
+#: server-selection loop (``_select_next_server``). Set explicitly -- not left to a library default --
+#: so the bound is asserted in tests and tunable per-consumer.
+DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS: Final[float] = 1.0
+
+#: resilience-task-06: cap (seconds) on the un-jittered reconnect-backoff ceiling. Bounds the growth of
+#: ``base * 2**server.reconnects`` so a single agent that has been reconnecting for a while still
+#: recovers PROMPTLY (its delay never exceeds ``uniform(0, cap)``) -- the anti-pattern the shard calls
+#: out is UNBOUNDED backoff that makes single-agent recovery sluggish. 30s balances herd-spread against
+#: recovery latency.
+DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS: Final[float] = 30.0
+
+#: resilience floor (seconds) the reconnect handler NEVER returns below, so a full-jitter near-zero
+#: draw -- or any degenerate/failed delay computation -- can never turn the reconnect path into a
+#: 100%-CPU hot spin. Small enough to preserve the jitter spread's fast early retries.
+_RECONNECT_BACKOFF_MIN_SECONDS: Final[float] = 0.05
+
+#: safe delay the reconnect handler returns if the delay computation ever RAISES: nats-py calls the
+#: handler sync on every attempt and sleeps its return, so a raising handler gives it no delay to sleep
+#: and it busy-spins. returning a real, whole-second pace here fails safe instead of hot-looping.
+_RECONNECT_BACKOFF_FALLBACK_SECONDS: Final[float] = 1.0
+
+#: pace (seconds) the durable pull-consumer loop waits after a transport error before retrying, so a
+#: reconnect-window failure recovers without busy-spinning the CPU.
+_PULL_CONSUMER_ERROR_BACKOFF_SECONDS: Final[float] = 1.0
+
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
@@ -159,6 +238,101 @@ DEFAULT_DRAIN_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
 #: dedup window for error-callback rate limiting.
 _ERROR_LOG_RATE_LIMIT_SECONDS: Final[float] = 10.0
+
+
+def _full_jitter_backoff(
+    attempt: int,
+    *,
+    base: float,
+    cap: float,
+    rng: random.Random | None = None,
+) -> float:
+    """compute a per-attempt capped-exponential FULL-JITTER backoff delay (resilience-task-06).
+
+    the un-jittered ceiling is ``min(cap, base * 2**attempt)`` and the returned delay is a uniform
+    random draw in ``[0, ceiling]`` -- FULL jitter, which de-synchronizes a fleet reconnecting on a
+    shared trigger (Hub restart, KEDA scale-out) better than equal jitter (equal jitter keeps a
+    fixed floor every pod shares; full jitter spreads the whole window). the exponent grows the
+    ceiling until ``cap`` clamps it, so early attempts retry fast and a persistent outage backs off
+    without ever exceeding ``cap`` -- a single agent still recovers promptly.
+
+    :param attempt: the per-attempt count (nats-py's ``Server.reconnects`` on the socket path, the
+        consecutive-failure count on the identity-refresh path); ``0`` for the first attempt
+    :ptype attempt: int
+    :param base: base backoff (seconds) doubled per attempt before the jitter draw
+    :ptype base: float
+    :param cap: upper bound (seconds) on the un-jittered ceiling so growth stays bounded
+    :ptype cap: float
+    :param rng: optional random source (injected in tests for determinism); ``None`` uses the module
+        ``random`` -- two independent instances therefore draw INDEPENDENT delays, so they do not
+        synchronize
+    :ptype rng: random.Random | None
+    :return: a jittered delay in seconds within ``[0, min(cap, base * 2**attempt)]`` -- exponent-clamped so a long-running reconnect never overflows the float multiply (callers floor the sleep to avoid a hot spin)
+    :rtype: float
+    """
+    exponent = attempt if attempt >= 0 else 0
+    # clamp the exponent so ``2**exponent`` can never overflow the float multiply below. once
+    # ``base * 2**exponent >= cap`` the ``min`` clamps to ``cap`` anyway, so a larger exponent is pure
+    # waste -- AND an unclamped exponent on a long-running reconnect (``attempt`` past ~1024) makes
+    # ``2**attempt`` a >308-digit int, so ``base * that`` raises ``OverflowError`` ("int too large to
+    # convert to float"). That escaped the handler, broke every reconnect attempt, and busy-spun the
+    # client at 100% CPU. ``ceil(log2(cap/base))`` is the smallest exponent at which the ceiling first
+    # reaches ``cap``; clamp there.
+    if cap > base > 0:
+        exponent = min(exponent, math.ceil(math.log2(cap / base)))
+    else:
+        exponent = 0
+    ceiling = min(cap, base * (2**exponent))
+    draw = rng.uniform(0.0, ceiling) if rng is not None else random.uniform(0.0, ceiling)
+    return draw
+
+
+def _make_reconnect_to_server_handler(
+    *,
+    base: float,
+    cap: float,
+) -> Callable[[list[_NatsServer], dict[str, Any]], tuple[_NatsServer | None, float]]:
+    """build the sync ``reconnect_to_server_handler`` nats-py invokes on each reconnect (resilience-task-06).
+
+    nats-py calls the returned handler on EVERY reconnect attempt (``_attempt_reconnect``), passing a
+    snapshot of the eligible servers (each carrying its own ``reconnects`` count) and the current
+    server info, and expects back ``(selected_server, callback_delay)``; it then sleeps
+    ``callback_delay`` before connecting. the handler selects the first eligible server (the pool is
+    already shuffled by nats-py before the call, so this matches the default round-robin selection) and
+    returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so the
+    per-attempt count drives the backoff and a mass reconnect spreads across the window rather than
+    synchronizing. the handler is sync because nats-py calls it un-awaited.
+
+    :param base: base backoff (seconds) for :func:`_full_jitter_backoff`
+    :ptype base: float
+    :param cap: cap (seconds) on the un-jittered ceiling for :func:`_full_jitter_backoff`
+    :ptype cap: float
+    :return: a sync handler mapping ``(servers, server_info)`` to ``(selected_server, jittered_delay)``
+    :rtype: Callable[[list[_NatsServer], dict[str, Any]], tuple[_NatsServer | None, float]]
+    """
+
+    def _handler(
+        servers: list[_NatsServer],
+        server_info: dict[str, Any],
+    ) -> tuple[_NatsServer | None, float]:
+        """select the next server and return a full-jitter backoff delay keyed on its reconnect count."""
+        selected = servers[0] if servers else None
+        try:
+            attempt = selected.reconnects if selected is not None else 0
+            delay = _full_jitter_backoff(attempt, base=base, cap=cap)
+        except Exception:
+            # nats-py calls this handler SYNC on every reconnect attempt and sleeps whatever delay it
+            # returns; if the computation ever raises, nats-py gets no delay to sleep and busy-spins the
+            # client at 100% CPU (the exact failure this handler guards). fail safe to a whole-second pace
+            # rather than let an exception escape. (defense-in-depth: _full_jitter_backoff is now
+            # overflow-safe, but a raising handler must never be able to hot-spin the reconnect path.)
+            delay = _RECONNECT_BACKOFF_FALLBACK_SECONDS
+        # floor the delay so a full-jitter near-zero draw can never let nats-py retry fast enough to
+        # burn a core against a fast-failing (connection-refused) server. small enough to preserve the
+        # jitter spread that de-syncs a reconnecting fleet.
+        return selected, max(_RECONNECT_BACKOFF_MIN_SECONDS, delay)
+
+    return _handler
 
 
 class Subscription:
@@ -253,6 +427,133 @@ class Subscription:
         self._closed = True
 
 
+class JetStreamPullConsumer:
+    """a bound durable PULL subscription that drains a subject in a fetch loop.
+
+    returned by :meth:`NatsClient.jetstream_pull_subscribe`. N of these across
+    worker replicas bind the SAME durable name and share the backlog one-of-N:
+    JetStream hands each pending message to exactly one fetcher. each instance
+    owns a fetch loop (:meth:`run`) that pulls a batch, dispatches every message
+    to the handler, and routes a handler raise through the bounded-redelivery
+    policy so one poisoned message cannot kill the loop. it holds NO
+    server-pushed delivery subject, so an idle instance keeps no open delivery
+    flow — the property that makes a delivery worker scale-to-zero eligible.
+
+    :param psub: nats-py pull subscription handle
+    :ptype psub: Any
+    :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+    :ptype cb: Callable[[Any], Awaitable[None]]
+    :param redeliver: bound policy applied to a message whose handler raised
+    :ptype redeliver: Callable[[Any, BaseException], Awaitable[None]]
+    :param durable: durable consumer name (diagnostics)
+    :ptype durable: str
+    :param subject: subject being consumed (diagnostics)
+    :ptype subject: Subject
+    :param batch: max messages one fetch pulls
+    :ptype batch: int
+    :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
+    :ptype fetch_timeout_seconds: float
+    """
+
+    def __init__(
+        self,
+        *,
+        psub: Any,
+        cb: Callable[[Any], Awaitable[None]],
+        redeliver: Callable[[Any, BaseException], Awaitable[None]],
+        durable: str,
+        subject: Subject,
+        batch: int,
+        fetch_timeout_seconds: float,
+    ) -> None:
+        """initialize the pull consumer over its subscription + handlers.
+
+        :param psub: nats-py pull subscription handle
+        :ptype psub: Any
+        :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param redeliver: bound bounded-redelivery policy for a raised handler
+        :ptype redeliver: Callable[[Any, BaseException], Awaitable[None]]
+        :param durable: durable consumer name (diagnostics)
+        :ptype durable: str
+        :param subject: subject being consumed (diagnostics)
+        :ptype subject: Subject
+        :param batch: max messages one fetch pulls
+        :ptype batch: int
+        :param fetch_timeout_seconds: idle poll cadence (per-fetch wait)
+        :ptype fetch_timeout_seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self._psub = psub
+        self._cb = cb
+        self._redeliver = redeliver
+        self._durable = durable
+        self._subject = subject
+        self._batch = batch
+        self._fetch_timeout_seconds = fetch_timeout_seconds
+        self._stopped = False
+
+    async def fetch_and_process(self) -> int:
+        """pull one batch and dispatch each message; return the count processed.
+
+        a fetch that times out with no message returns ``0`` (the idle case) —
+        the normal scale-to-zero-friendly poll, not an error. a handler raise is
+        routed through the bounded-redelivery policy, never propagated, so one
+        poisoned message cannot kill the loop.
+
+        :return: number of messages fetched this cycle
+        :rtype: int
+        """
+        try:
+            msgs = await self._psub.fetch(self._batch, timeout=self._fetch_timeout_seconds)
+        except _NatsTimeoutError:
+            msgs = []
+        for msg in msgs:
+            try:
+                await self._cb(msg)
+            except Exception as exc:  # noqa: BLE001 — bounded redelivery owns the outcome; never swallow
+                await self._redeliver(msg, exc)
+        return len(msgs)
+
+    async def run(self) -> None:
+        """loop fetch+dispatch until :meth:`stop` (or task cancellation).
+
+        RESILIENT: a non-timeout transport error from ``fetch`` -- or from the ``nak`` / ``ack`` /
+        ``jetstream_publish`` inside the bounded-redelivery policy -- surfaces here during a NATS
+        reconnect window. it must NOT escape and kill the consumer task: the delivery worker spawns
+        ``run()`` unsupervised (fire-and-forget ``create_task``), so a dead task would SILENTLY stop
+        channel delivery until the pod restarts -- the exact "background loop silently stops" failure
+        class. catch, log, pace, and retry; the durable JetStream stream retains messages across the
+        blip so nothing is lost. only cancellation (shutdown) ends the loop.
+
+        :return: nothing
+        :rtype: None
+        """
+        while not self._stopped:
+            try:
+                await self.fetch_and_process()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a transport blip must never kill the consumer
+                log.warning(
+                    "durable pull consumer cycle failed (durable=%s); retrying after %.1fs: %s",
+                    self._durable,
+                    _PULL_CONSUMER_ERROR_BACKOFF_SECONDS,
+                    exc,
+                )
+                await asyncio.sleep(_PULL_CONSUMER_ERROR_BACKOFF_SECONDS)
+
+    async def stop(self) -> None:
+        """halt the fetch loop and unsubscribe the pull consumer.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._stopped = True
+        await self._psub.unsubscribe()
+
+
 class NatsClient:
     """canonical NATS client wrapper.
 
@@ -300,7 +601,9 @@ class NatsClient:
         # ``auth_violations`` counts consecutive Authorization-Violation errors since the last
         # successful (re)connect; :meth:`connect` rebinds this to the dict its error/reconnect
         # dispatchers close over, so the count reflects the live connection.
-        self._health_state: dict[str, int] = {"auth_violations": 0}
+        # resilience-task-03: ``overflow_events`` counts consecutive outbound-buffer overflows at the
+        # publish boundary since the last successful publish/(re)connect; folded into :meth:`is_healthy`.
+        self._health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -311,7 +614,7 @@ class NatsClient:
         cls,
         *,
         nats_url: str,
-        nats_subject_namespace: str = "3tears",
+        nats_subject_namespace: str,
         client_name: str,
         cluster_urls: list[str] | None = None,
         auth_token: TokenCallback | None = None,
@@ -321,6 +624,10 @@ class NatsClient:
         inbox_prefix: str | None = None,
         startup_timeout: timedelta = DEFAULT_STARTUP_TIMEOUT,
         verify_jetstream: bool = True,
+        pending_size: int = DEFAULT_PENDING_SIZE_BYTES,
+        flusher_queue_size: int = DEFAULT_FLUSHER_QUEUE_SIZE,
+        reconnect_backoff_base: float = DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS,
+        reconnect_backoff_cap: float = DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS,
     ) -> NatsClient:
         """connect to NATS and return a ready :class:`NatsClient`.
 
@@ -366,6 +673,26 @@ class NatsClient:
         :ptype startup_timeout: timedelta
         :param verify_jetstream: when True (default) verify JetStream is reachable post-connect
         :ptype verify_jetstream: bool
+        :param pending_size: explicit bounded outbound/pending buffer size in bytes handed to nats-py's
+            ``pending_size`` option (resilience-task-03). defaults to :data:`DEFAULT_PENDING_SIZE_BYTES`
+            (4 MiB, deliberately above nats-py's 2 MiB library default). bounds what a
+            disconnected/reconnecting client accumulates before nats-py raises
+            ``OutboundBufferLimitError`` -- which the wrapper turns into an :attr:`is_healthy` signal.
+        :ptype pending_size: int
+        :param flusher_queue_size: explicit bounded flusher queue depth handed to nats-py's
+            ``flusher_queue_size`` option (resilience-task-03). defaults to
+            :data:`DEFAULT_FLUSHER_QUEUE_SIZE` (2048).
+        :ptype flusher_queue_size: int
+        :param reconnect_backoff_base: base (seconds) of the per-attempt capped-exponential FULL-JITTER
+            reconnect backoff wired into nats-py's ``reconnect_to_server_handler`` (resilience-task-06).
+            defaults to :data:`DEFAULT_RECONNECT_BACKOFF_BASE_SECONDS` (1.0). the per-attempt delay is
+            ``uniform(0, min(reconnect_backoff_cap, base * 2**server.reconnects))`` so a mass reconnect
+            spreads out instead of synchronizing the fleet on a shared trigger.
+        :ptype reconnect_backoff_base: float
+        :param reconnect_backoff_cap: cap (seconds) on the un-jittered reconnect-backoff ceiling
+            (resilience-task-06). defaults to :data:`DEFAULT_RECONNECT_BACKOFF_CAP_SECONDS` (30.0);
+            bounds the exponential growth so a single agent still recovers promptly.
+        :ptype reconnect_backoff_cap: float
         :return: connected and ready NATS client
         :rtype: NatsClient
         :raises NatsClientError: if connection fails, times out, or JetStream verification fails
@@ -375,7 +702,12 @@ class NatsClient:
         if not client_name:
             raise NatsClientError("client_name must be non-empty")
         if not nats_subject_namespace:
-            raise NatsClientError("nats_subject_namespace must be non-empty")
+            raise NamespaceNotConfiguredError(
+                "nats_subject_namespace must be non-empty: every client passes its "
+                "own subject namespace explicitly. there is no default -- sharing a "
+                "default subject space is what lets two services collide on a shared "
+                "NATS cluster."
+            )
 
         servers = [nats_url]
         if cluster_urls:
@@ -388,11 +720,15 @@ class NatsClient:
         reconnect_callbacks: list[ReconnectCallback] = []
         # bridged like reconnect_callbacks: the error/reconnect dispatchers below close over this dict
         # now; the instance adopts it after construction so :attr:`is_healthy` reads the live count.
-        health_state: dict[str, int] = {"auth_violations": 0}
+        # resilience-task-03: seed ``overflow_events`` alongside ``auth_violations``.
+        health_state: dict[str, int] = {"auth_violations": 0, "overflow_events": 0}
 
         async def _dispatch_reconnected() -> None:
             """fan a reconnect out to the wrapper log + every consumer-registered callback."""
             health_state["auth_violations"] = 0  # a successful (re)connect clears the wedged-auth signal
+            # resilience-task-03: a successful (re)connect also clears the outbound-overflow signal --
+            # the transport is healthy again, so any buffered-full streak is stale.
+            health_state["overflow_events"] = 0
             await _on_reconnected()
             for callback in list(reconnect_callbacks):
                 try:
@@ -420,6 +756,23 @@ class NatsClient:
             "reconnected_cb": _dispatch_reconnected,
             "disconnected_cb": _on_disconnected,
             "error_cb": _dispatch_error,
+            # resilience-task-03: bound the outbound/pending buffer EXPLICITLY (not the untuned
+            # nats-py default). overflow raises OutboundBufferLimitError at the publish boundary,
+            # caught below and folded into is_healthy.
+            "pending_size": pending_size,
+            "flusher_queue_size": flusher_queue_size,
+            # resilience-task-06: per-attempt capped-exponential FULL-JITTER reconnect backoff. nats-py
+            # calls this handler on EVERY reconnect attempt (``_attempt_reconnect``), passing a snapshot
+            # of eligible servers (each carrying its ``reconnects`` count) and receiving
+            # ``(selected_server, callback_delay)``; it then sleeps ``callback_delay`` before connecting.
+            # This REPLACES the fixed 2s ``reconnect_time_wait`` on the reconnect path so a mass
+            # reconnect (Hub restart, KEDA scale-out) spreads across the backoff window instead of
+            # thundering-herd-ing the Hub/NATS. ``reconnect_time_wait`` still paces the DISTINCT startup
+            # server-selection loop (``_select_next_server``), so it is left in place above.
+            "reconnect_to_server_handler": _make_reconnect_to_server_handler(
+                base=reconnect_backoff_base,
+                cap=reconnect_backoff_cap,
+            ),
         }
         if auth_token:
             # store the provider UNWRAPPED: nats-py's _connect_command invokes it on every
@@ -534,7 +887,7 @@ class NatsClient:
 
     @property
     def is_healthy(self) -> bool:
-        """whether the connection is NOT stuck in a persistent auth-violation reconnect loop.
+        """whether the connection is NOT stuck in a persistent auth-violation or outbound-overflow loop.
 
         Forever-reconnect (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS`) deliberately rides out network
         drops of any duration, so it also rides out a **persistent auth violation** -- a server that
@@ -547,10 +900,35 @@ class NatsClient:
         restarts the pod (a fresh connect re-mints the credential). A network drop -- no auth
         violation -- does NOT trip this; forever-reconnect still owns that path.
 
-        :return: ``False`` when stuck being auth-rejected; ``True`` otherwise.
+        resilience-task-03 folds a SECOND signal in: once
+        :data:`_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD` consecutive outbound-buffer overflows have
+        landed at the publish boundary with no intervening successful publish/(re)connect, the
+        connection is wedged with a full pending buffer (disconnected/reconnecting and not draining) --
+        the ``outbound buffer limit exceeded`` thrash. That flips unhealthy too, so the same
+        supervised-restart path (resilience-task-02) recovers it rather than the pod thrashing forever.
+
+        :return: ``False`` when stuck being auth-rejected OR overflowing the outbound buffer; ``True`` otherwise.
         :rtype: bool
         """
-        return self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
+        return (
+            self._health_state["auth_violations"] < _AUTH_VIOLATION_UNHEALTHY_THRESHOLD
+            and self._health_state["overflow_events"] < _OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD
+        )
+
+    @property
+    def overflow_events(self) -> int:
+        """current consecutive outbound-buffer overflow count (resilience-task-03).
+
+        number of ``OutboundBufferLimitError`` events raised at the publish boundary with no
+        intervening successful publish / (re)connect -- reset to 0 on either. folds into
+        :attr:`is_healthy` at :data:`_OUTBOUND_OVERFLOW_UNHEALTHY_THRESHOLD`. exposed publicly
+        so a consumer's health/metrics surface (the SDK ``outbound_overflow_events`` gauge) can
+        read it without binding to the private health-state dict.
+
+        :return: consecutive outbound-overflow count since the last successful publish/connect
+        :rtype: int
+        """
+        return self._health_state["overflow_events"]
 
     async def ping(self, *, timeout: float = 2.0) -> bool:
         """force a server round-trip to verify the broker is responsive.
@@ -735,6 +1113,48 @@ class NatsClient:
         # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float); the
         # wrapper's float timeout is intentional, so the int annotation is over-strict.
         await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
+        # resilience-task-03: a successful flush drained the outbound buffer -- clear the overflow streak.
+        self._health_state["overflow_events"] = 0
+
+    def _note_publish_success(self) -> None:
+        """clear the outbound-overflow streak after a successful publish (resilience-task-03).
+
+        a publish that reaches the wire means the outbound buffer accepted it, so any prior
+        ``OutboundBufferLimitError`` streak is stale -- the connection is draining again. Keeps the
+        overflow signal from tripping :attr:`is_healthy` on a transient burst that self-clears.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._health_state["overflow_events"] = 0
+
+    def _note_if_outbound_overflow(self, exc: Exception) -> None:
+        """count an outbound-buffer overflow raised synchronously at the publish boundary (resilience-task-03).
+
+        nats-py raises :class:`nats.errors.OutboundBufferLimitError` from ``publish``/``request`` ONLY
+        while disconnected/reconnecting with a full pending buffer -- exactly the wedge state. It is
+        NOT delivered to the error callback, so it cannot be counted in ``_dispatch_error`` (the
+        auth-violation path); it must be caught here, at the publish boundary. Incrementing
+        ``overflow_events`` folds into :attr:`is_healthy` so a sustained overflow flips the client
+        unhealthy (feeding resilience-task-02's supervised restart) instead of thrashing unbounded.
+        Non-overflow errors are ignored here -- the caller's generic handler wraps them.
+
+        :param exc: the exception the underlying nats-py ``publish``/``request`` raised.
+        :ptype exc: Exception
+        :return: nothing
+        :rtype: None
+        """
+        if _is_outbound_overflow(exc):
+            self._health_state["overflow_events"] += 1
+            log.warning(
+                "NATS outbound buffer overflow at publish boundary",
+                extra={
+                    "extra_data": {
+                        "client_name": self._client_name,
+                        "overflow_events": self._health_state["overflow_events"],
+                    }
+                },
+            )
 
     async def publish(
         self,
@@ -849,7 +1269,9 @@ class NatsClient:
         try:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise PublishError(f"publish_reply failed: subject={reply_subject}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
 
     async def publish_raw_reply(
         self,
@@ -878,7 +1300,9 @@ class NatsClient:
         try:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise PublishError(f"publish_raw_reply failed: subject={reply_subject}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
 
     async def _publish_bytes(
         self,
@@ -905,7 +1329,12 @@ class NatsClient:
             else:
                 await self._raw.publish(subject.path, payload, reply=reply_to.path)
         except Exception as exc:
+            # resilience-task-03: an outbound-buffer overflow is counted into is_healthy here (the
+            # publish boundary) -- it never reaches error_cb. re-raised as a typed PublishError so the
+            # caller gets the wrapper's contract, not an unhandled nats-py raise crashing the coroutine.
+            self._note_if_outbound_overflow(exc)
             raise PublishError(f"publish failed: subject={subject.path}: {exc}") from exc
+        self._note_publish_success()
 
     # ------------------------------------------------------------------
     # subscribe
@@ -1243,7 +1672,9 @@ class NatsClient:
             except _NatsNoRespondersError as exc:
                 raise RequestError(f"no responders for subject: subject={sub.path}") from exc
             except Exception as exc:
+                self._note_if_outbound_overflow(exc)  # resilience-task-03
                 raise RequestError(f"request failed: subject={sub.path}: {exc}") from exc
+            self._note_publish_success()  # resilience-task-03
             return msg
         if subject is None or message is None or response_type is None:
             raise RequestError(
@@ -1291,7 +1722,9 @@ class NatsClient:
         except _NatsConnectionClosedError as exc:
             raise RequestError(f"NATS connection closed during request: subject={subject.path}") from exc
         except Exception as exc:
+            self._note_if_outbound_overflow(exc)  # resilience-task-03
             raise RequestError(f"request failed: subject={subject.path}: {exc}") from exc
+        self._note_publish_success()  # resilience-task-03
         return bytes(msg.data)
 
     # ------------------------------------------------------------------
@@ -1374,6 +1807,7 @@ class NatsClient:
         :ptype storage: str
         :return: full namespace-prefixed stream name
         :rtype: str
+        :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
         :raises RuntimeError: if stream creation and update both fail
         """
         from nats.js.api import StorageType, StreamConfig  # noqa: PLC0415
@@ -1384,10 +1818,26 @@ class NatsClient:
         js = self.jetstream_context()
         try:
             await js.add_stream(config)
-        except Exception:  # noqa: BLE001 -- stream may already exist; reconcile below
-            # rationale: nats-py raises a generic error when the stream name is
-            # already in use; the recovery (update to reconcile subjects) is the
-            # create-or-bind path, mirroring NatsKvBucket.open.
+        except Exception as exc:  # noqa: BLE001 -- classified below, not swallowed
+            # add_stream fails for DISTINCT conditions that must not be conflated:
+            #   - "subjects overlap with an existing stream" (JetStream err_code
+            #     10065): a DIFFERENT stream already owns these subjects. full_name
+            #     was never created, so update_stream would raise NotFoundError and
+            #     mask this actionable error. surface it -- the real problem is a
+            #     conflicting stream (usually a client on the wrong namespace).
+            #   - anything else (chiefly "stream name already in use"): a stream of
+            #     THIS name exists; reconcile its subject set via update. if that
+            #     also fails, it propagates -- never silently swallowed.
+            err_code = getattr(exc, "err_code", None)
+            if err_code == _JS_ERR_SUBJECTS_OVERLAP or "subjects overlap" in str(exc).lower():
+                raise StreamSubjectsOverlapError(
+                    f"cannot create JetStream stream {full_name!r} over subjects "
+                    f"{subjects}: they overlap subjects already claimed by a different "
+                    f"stream on this NATS account (a subject belongs to exactly one "
+                    f"stream). the usual cause is another connection using the wrong "
+                    f"subject namespace; resolve the conflicting stream or correct the "
+                    f"namespace."
+                ) from exc
             await js.update_stream(config)
         log.info(
             "jetstream stream ensured: stream=%s subjects=%s storage=%s",
@@ -1482,31 +1932,14 @@ class NatsClient:
             try:
                 await cb(msg)
             except Exception as exc:  # noqa: BLE001 - bounded redelivery is the whole point; we re-route, never swallow
-                metadata = getattr(msg, "metadata", None)
-                num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
-                if num_delivered >= max_deliver:
-                    if dead_letter_subject is not None:
-                        await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
-                    await msg.ack()
-                    log.error(
-                        "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",
-                        num_delivered,
-                        durable,
-                        subject.path,
-                        dead_letter_subject.path if dead_letter_subject is not None else None,
-                        exc,
-                    )
-                else:
-                    backoff = float(min(num_delivered * 5, 30))
-                    await msg.nak(delay=backoff)
-                    log.warning(
-                        "durable consumer redelivering message (attempt %d/%d, backoff=%.0fs): durable=%s error=%s",
-                        num_delivered,
-                        max_deliver,
-                        backoff,
-                        durable,
-                        exc,
-                    )
+                await self._redeliver_or_deadletter(
+                    msg,
+                    exc,
+                    max_deliver=max_deliver,
+                    dead_letter_subject=dead_letter_subject,
+                    durable=durable,
+                    subject=subject,
+                )
 
         js = self.jetstream_context()
         config = _NatsConsumerConfig(
@@ -1532,6 +1965,186 @@ class NatsClient:
             dead_letter_subject.path if dead_letter_subject is not None else None,
         )
         return sub
+
+    async def _redeliver_or_deadletter(
+        self,
+        msg: Any,
+        exc: BaseException,
+        *,
+        max_deliver: int,
+        dead_letter_subject: Subject | None,
+        durable: str,
+        subject: Subject,
+    ) -> None:
+        """apply the bounded-redelivery policy to a message whose handler raised.
+
+        shared by the push (:meth:`jetstream_subscribe_durable`) and pull
+        (:meth:`jetstream_pull_subscribe`) durable consumers so the
+        nak-with-backoff-then-dead-letter contract is defined ONCE:
+
+        - attempts ``1..max_deliver-1``: ``msg.nak(delay=...)`` with a capped
+          linear backoff so a transient failure recovers without a hot loop;
+        - attempt ``max_deliver``: republish the payload to
+          ``dead_letter_subject`` (when given), ``ack`` the original so it leaves
+          the live consumer, and log ONE error.
+
+        :param msg: raw nats-py JetStream message whose handler raised
+        :ptype msg: Any
+        :param exc: exception the handler raised
+        :ptype exc: BaseException
+        :param max_deliver: maximum delivery attempts before dead-lettering
+        :ptype max_deliver: int
+        :param dead_letter_subject: subject poisoned payload parks on, or None
+        :ptype dead_letter_subject: Subject | None
+        :param durable: durable consumer name (for the log line)
+        :ptype durable: str
+        :param subject: subject being consumed (for the log line)
+        :ptype subject: Subject
+        :return: nothing
+        :rtype: None
+        """
+        metadata = getattr(msg, "metadata", None)
+        num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
+        if num_delivered >= max_deliver:
+            if dead_letter_subject is not None:
+                await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
+            await msg.ack()
+            log.error(
+                "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",
+                num_delivered,
+                durable,
+                subject.path,
+                dead_letter_subject.path if dead_letter_subject is not None else None,
+                exc,
+            )
+        else:
+            backoff = float(min(num_delivered * 5, 30))
+            await msg.nak(delay=backoff)
+            log.warning(
+                "durable consumer redelivering message (attempt %d/%d, backoff=%.0fs): durable=%s error=%s",
+                num_delivered,
+                max_deliver,
+                backoff,
+                durable,
+                exc,
+            )
+
+    async def jetstream_pull_subscribe(
+        self,
+        *,
+        subject: Subject,
+        durable: str,
+        cb: Callable[[Any], Awaitable[None]],
+        max_deliver: int,
+        dead_letter_subject: Subject | None = None,
+        ack_wait_seconds: float = 60.0,
+        stream: str | None = None,
+        batch: int = 8,
+        fetch_timeout_seconds: float = 5.0,
+    ) -> JetStreamPullConsumer:
+        """create a SHARED durable PULL consumer with MANUAL ack + BOUNDED redelivery.
+
+        the pull counterpart to :meth:`jetstream_subscribe_durable`. where the
+        push variant binds ONE subscriber to a durable, a pull consumer is
+        drained by N independent fetchers that all bind the SAME ``durable``
+        name: JetStream hands each pending message to exactly one fetcher, so M
+        messages split one-of-N across the worker replicas (horizontal scale). a
+        replica holding no in-flight fetch keeps NO server-pushed delivery
+        subject open, so the consumer is scale-to-zero friendly (spin replicas up
+        on ``num_pending``, down to zero when the backlog drains).
+
+        the redelivery contract is identical to the push variant and shares its
+        implementation (:meth:`_redeliver_or_deadletter`): the ``cb`` acks on
+        success / terminal-drop and RAISES to retry; attempts
+        ``1..max_deliver-1`` nak-with-backoff, attempt ``max_deliver``
+        dead-letters. ``max_deliver`` bounds attempts at the consumer config too.
+
+        the consumer FILTERS on ``subject`` (an exact subject, never a wildcard)
+        so a sibling dead-letter subject retained on the SAME stream is not
+        re-drained by this consumer.
+
+        :param subject: exact subject to consume (the consumer filter subject)
+        :ptype subject: Subject
+        :param durable: shared durable consumer name (stable; the same name binds
+            every replica so they share the backlog)
+        :ptype durable: str
+        :param cb: async handler; acks on success/terminal-drop, RAISES to retry
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param max_deliver: maximum delivery attempts before dead-lettering (>= 1)
+        :ptype max_deliver: int
+        :param dead_letter_subject: subject poisoned payload parks on, or None
+        :ptype dead_letter_subject: Subject | None
+        :param ack_wait_seconds: server-side ack timeout; a fetcher that dies
+            mid-handle redelivers the message to another fetcher after this
+        :ptype ack_wait_seconds: float
+        :param stream: backing stream name to bind the consumer to
+        :ptype stream: str | None
+        :param batch: max messages one fetch pulls
+        :ptype batch: int
+        :param fetch_timeout_seconds: how long one fetch waits for a message
+            before returning empty (the idle poll cadence)
+        :ptype fetch_timeout_seconds: float
+        :return: a pull-consumer handle whose ``run`` loops fetch+dispatch
+        :rtype: JetStreamPullConsumer
+        :raises ValueError: when ``max_deliver`` < 1
+        """
+        if max_deliver < 1:
+            raise ValueError(
+                f"max_deliver must be >= 1: a durable consumer cannot redeliver forever (got {max_deliver})",
+            )
+        js = self.jetstream_context()
+        config = _NatsConsumerConfig(
+            durable_name=durable,
+            ack_policy=_NatsAckPolicy.EXPLICIT,
+            max_deliver=max_deliver,
+            ack_wait=ack_wait_seconds,
+            filter_subject=subject.path,
+        )
+        psub = await js.pull_subscribe(
+            subject.path,
+            durable=durable,
+            stream=stream,
+            config=config,
+        )
+
+        async def _redeliver(msg: Any, exc: BaseException) -> None:
+            """route a raised handler through the shared bounded-redelivery policy.
+
+            :param msg: raw nats-py JetStream message whose handler raised
+            :ptype msg: Any
+            :param exc: exception the handler raised
+            :ptype exc: BaseException
+            :return: nothing
+            :rtype: None
+            """
+            await self._redeliver_or_deadletter(
+                msg,
+                exc,
+                max_deliver=max_deliver,
+                dead_letter_subject=dead_letter_subject,
+                durable=durable,
+                subject=subject,
+            )
+
+        consumer = JetStreamPullConsumer(
+            psub=psub,
+            cb=cb,
+            redeliver=_redeliver,
+            durable=durable,
+            subject=subject,
+            batch=batch,
+            fetch_timeout_seconds=fetch_timeout_seconds,
+        )
+        log.info(
+            "jetstream pull consumer bound: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s batch=%d",
+            subject.path,
+            durable,
+            stream,
+            max_deliver,
+            dead_letter_subject.path if dead_letter_subject is not None else None,
+            batch,
+        )
+        return consumer
 
     # ------------------------------------------------------------------
     # internal helpers
@@ -1703,6 +2316,25 @@ def _is_authorization_violation(exc: Exception) -> bool:
         return True
     text = str(exc).lower()
     return "authorization violation" in text or "authorization failed" in text
+
+
+def _is_outbound_overflow(exc: Exception) -> bool:
+    """whether ``exc`` is an outbound/pending-buffer overflow raised at the publish boundary (resilience-task-03).
+
+    nats-py raises :class:`nats.errors.OutboundBufferLimitError` (str: ``"nats: outbound buffer limit
+    exceeded"``) synchronously from ``publish``/``request`` while disconnected/reconnecting with a full
+    pending buffer -- the wedge state this signal exists to catch. Detected BOTH by type and by the
+    ``-ERR`` text (mirroring :func:`_is_authorization_violation`) so a future nats-py that wraps or
+    re-routes the error still trips the counter rather than silently re-opening the unbounded thrash.
+
+    :param exc: the exception the underlying nats-py ``publish``/``request`` raised.
+    :ptype exc: Exception
+    :return: ``True`` when it is an outbound-buffer overflow.
+    :rtype: bool
+    """
+    if isinstance(exc, _NatsOutboundBufferLimitError):
+        return True
+    return "outbound buffer limit exceeded" in str(exc).lower()
 
 
 async def _on_error(exc: Exception) -> None:

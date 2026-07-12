@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-agent-intention"
+version = "0.15.0"
+description = "Standing-wants corpus for LLM agents -- intention lifecycle, salience decay, embedding dedup, and private deliberation tools"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# In-repo (3tears*) deps are declared only when a module imports them:
+# the dependency-alignment enforcement gate flags a declared 3tears*
+# dep that nothing imports. B1 (schema + collection) imported core +
+# observe only; B2 adds the tool surface that imports 3tears-agent-acl
+# (owner RBAC in authorize.py) and 3tears-langgraph (FrameworkEvents in
+# events.py), so both are declared here alongside the code that uses them.
+dependencies = [
+    "3tears",
+    "3tears-agent-acl",
+    "3tears-langgraph",
+    "3tears-observe",
+    "pgvector",
+    "langchain-core",
+    "pydantic",
+    "uuid-utils",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-langgraph = { workspace = true }
+3tears-observe = { workspace = true }

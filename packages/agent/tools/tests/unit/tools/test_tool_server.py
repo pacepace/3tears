@@ -603,6 +603,14 @@ class TestToolServerHeartbeat:
 
         mock_nc = AsyncMock()
         mock_nc.is_connected = True
+        # Healthy NATS: the heartbeat loop's liveness supervisor os._exit(1)s the
+        # PROCESS after a sustained-unhealthy streak, and ToolServer.is_healthy is
+        # `not is_closed and is_healthy`. A bare AsyncMock leaves both truthy ->
+        # is_closed truthy -> unhealthy -> the supervisor kills the test process
+        # (exit 1, no traceback). This test runs the loop long enough to hit the
+        # threshold, so pin the client healthy (the publish path it exercises).
+        mock_nc.is_closed = False
+        mock_nc.is_healthy = True
         mock_nc.subscribe = AsyncMock()
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()

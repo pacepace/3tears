@@ -91,11 +91,13 @@ async def resolve_engagement_scope() -> EngagementScope:
             "engagement scope helper called outside a ToolServer call scope; an "
             "engagement-bound tool runs inside enter_call_scope"
         )
+    # engagement_id MAY be None: the caller's conversation has not explicitly selected
+    # an engagement. Rather than refuse here, ask the hub to resolve the customer's
+    # DEFAULT scope (its single active engagement) -- the hub returns those targets or
+    # refuses (zero or multiple active). Fail-closed still holds end to end: an
+    # unresolved / empty scope is refused below, so no scan runs without a resolved
+    # authorized target set.
     engagement_id: UUID | None = scope.context.engagement_id
-    if engagement_id is None:
-        raise EngagementScopeUnavailableError(
-            "the call context carries no engagement_id; refusing to authorize a scan outside any authorized engagement"
-        )
     resolver = scope.engagement_resolver
     if resolver is None:
         raise EngagementScopeUnavailableError(

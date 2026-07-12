@@ -60,6 +60,20 @@ version history:
   to end. ships paired with the DATETIME_TYPE -> DATETIMETZ_TYPE
   Column-declaration flip in ``collections.py`` so the alignment
   enforcement test stays green.
+- v024 (presence/aliveness, v0.15.0) adds the salience substrate
+  (``salience``, ``last_decayed_at``, ``last_accessed``, ``evergreen``,
+  ``superseded_by``) backing scheduled decay + reinforcement, and
+  relaxes ``customer_id`` / ``user_id`` to nullable so the primitive
+  supports agent / customer / user scope grains (metallm enforces
+  NOT NULL at its own consumer layer). All additive.
+- v025 (presence/aliveness, v0.15.0) adds the nullable JSONB ``tags``
+  label set + ``idx_memories_tags`` GIN index so containment /
+  existence tag queries are index-served. Additive.
+- v026 (presence/aliveness, v0.15.0) creates the
+  ``memory_consolidations`` N:1 edge table (partition ``agent_id``,
+  composite PK, both refs FK to ``memories`` ON DELETE CASCADE,
+  ``rationale`` audit column, back-edge index) that Dream consolidation
+  populates. Additive; non-destructive to the source rows.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -138,6 +152,15 @@ from threetears.agent.memory.migrations.v022_add_hnsw_gin_indexes import (
 from threetears.agent.memory.migrations.v023_fix_idx_chunks_message_id_start import (
     fix_idx_chunks_message_id_start,
 )
+from threetears.agent.memory.migrations.v024_memory_salience_and_scope import (
+    add_memory_salience_and_relax_scope,
+)
+from threetears.agent.memory.migrations.v025_add_memory_tags import (
+    add_memory_tags,
+)
+from threetears.agent.memory.migrations.v026_create_memory_consolidations import (
+    create_memory_consolidations,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -189,6 +212,9 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(21)(add_chunk_index_and_token_count)
     pkg.version(22)(add_hnsw_gin_indexes)
     pkg.version(23)(fix_idx_chunks_message_id_start)
+    pkg.version(24)(add_memory_salience_and_relax_scope)
+    pkg.version(25)(add_memory_tags)
+    pkg.version(26)(create_memory_consolidations)
     runner.register(pkg)
     return pkg
 
@@ -197,16 +223,19 @@ __all__ = [
     "PACKAGE_NAME",
     "add_chunk_index_and_token_count",
     "add_hnsw_gin_indexes",
+    "add_memory_salience_and_relax_scope",
     "fix_idx_chunks_message_id_start",
     "add_lifecycle_columns",
     "add_memories_alias",
     "add_memory_fts",
+    "add_memory_tags",
     "add_unified_memory_columns",
     "backfill_memory_ids",
     "create_conversation_memory_refs",
     "create_media_tables",
     "create_memories_table",
     "create_memory_chunks",
+    "create_memory_consolidations",
     "datetime_to_datetimetz",
     "drop_legacy_memory_columns",
     "enforce_conversation_id_not_null",

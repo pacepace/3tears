@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
+import uuid
+
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import (
     _FK_RETRY_LIMIT,
     _MAX_FLUSH_RETRIES,
@@ -404,6 +407,163 @@ class TestFkAwareRetryPolicy:
 
         assert flushed == 0
         assert buf.pending_count() == 0  # dropped at _MAX_FLUSH_RETRIES
+
+
+class TestWriteThroughDurability:
+    """Write-through ordering: ``drain`` claims but does not delete the durable
+    row; the L1 buffer entry is evicted only AFTER the L3 write is acked, so a
+    crash between claim and persist replays the write instead of losing it from
+    both tiers. Regression for the ``drain deletes before persist`` defect.
+    """
+
+    @pytest.mark.asyncio
+    async def test_drain_does_not_delete_durable_row(self) -> None:
+        """``drain`` claims the write but leaves the crash-safe SQLite row intact."""
+        l1 = SQLiteBackend(db_name=f"wb_durability_{uuid.uuid4().hex}")
+        buf = WriteBuffer(l1_backend=l1)
+        await buf.add("users", "u1", {"id": "u1", "name": "Alice"})
+
+        claimed = await buf.drain()
+
+        assert len(claimed) == 1
+        # the durable row MUST still be present after a claim -- deleting it here
+        # is exactly the crash window the fix closes.
+        rows = l1.execute_query("SELECT * FROM write_buffer")
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == "u1"
+
+    @pytest.mark.asyncio
+    async def test_ack_evicts_durable_row_after_persist(self) -> None:
+        """Only ``ack`` (post-persist) removes the durable row."""
+        l1 = SQLiteBackend(db_name=f"wb_durability_{uuid.uuid4().hex}")
+        buf = WriteBuffer(l1_backend=l1)
+        await buf.add("users", "u1", {"id": "u1"})
+        await buf.drain()
+
+        await buf.ack("users", "u1")
+
+        assert l1.execute_query("SELECT * FROM write_buffer") == []
+        assert buf.pending_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_claimed_write_survives_process_restart(self) -> None:
+        """A write claimed by a flush that never acked is replayed after a restart.
+
+        Simulates a crash mid-flush: the first buffer claims the write (drain)
+        but the process dies before persist/ack. A fresh WriteBuffer over the
+        SAME durable store (its in-flight set reset) must re-claim the write --
+        proving it was NOT lost from L1.
+        """
+        db_name = f"wb_durability_{uuid.uuid4().hex}"
+        l1 = SQLiteBackend(db_name=db_name)
+        buf = WriteBuffer(l1_backend=l1)
+        await buf.add("users", "u1", {"id": "u1", "name": "Alice"})
+        # claim it, then "crash" before ack.
+        await buf.drain()
+
+        # restart: new buffer + backend over the same named store.
+        l1_restart = SQLiteBackend(db_name=db_name)
+        buf_restart = WriteBuffer(l1_backend=l1_restart)
+        replayed = await buf_restart.drain()
+
+        assert len(replayed) == 1
+        assert replayed[0].entity_id == "u1"
+        assert replayed[0].data["name"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_successful_flush_evicts_durable_row(self) -> None:
+        """End-to-end: a successful ``flush_pending`` evicts the durable row via ack."""
+        l1 = SQLiteBackend(db_name=f"wb_durability_{uuid.uuid4().hex}")
+        buf = WriteBuffer(l1_backend=l1)
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        coll = MagicMock()
+        coll.table_name = "users"
+        coll.persist_to_store = AsyncMock(return_value=1)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 1
+        assert l1.execute_query("SELECT * FROM write_buffer") == []
+        assert buf.pending_count() == 0
+
+
+class TestReEnqueueVersionGuard:
+    """The in-flight claim is a version guard: a newer write that coalesces in
+    during the flush window clears the claim, so a stale ``ack`` / ``re_enqueue``
+    from the in-flight flush can never clobber the newer value. Regression for
+    the ``re-enqueue has no version guard -> lost update`` defect.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stale_re_enqueue_does_not_clobber_newer_write(self) -> None:
+        """A failed write's re-enqueue is dropped when a newer value arrived mid-flush."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1", "v": "old"})
+        # flush claims the old value.
+        await buf.drain()
+        # a newer write for the same key lands DURING the flush window.
+        await buf.add("users", "u1", {"id": "u1", "v": "new"})
+
+        # the old write failed; its re-enqueue must be rejected as superseded.
+        re_enqueued = await buf.re_enqueue("users", "u1", {"id": "u1", "v": "old"}, retries=1)
+
+        assert re_enqueued is False
+        items = await buf.drain()
+        assert len(items) == 1
+        assert items[0].data["v"] == "new"  # newer value preserved
+        assert items[0].retries == 0  # fresh, not the stale retries=1
+
+    @pytest.mark.asyncio
+    async def test_stale_ack_does_not_evict_newer_write(self) -> None:
+        """A late ack from the in-flight flush must not evict a newer coalesced write."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1", "v": "old"})
+        await buf.drain()
+        await buf.add("users", "u1", {"id": "u1", "v": "new"})
+
+        # the in-flight flush "succeeded" on the OLD value and acks -- but the
+        # newer value must survive.
+        await buf.ack("users", "u1")
+
+        assert buf.pending_count() == 1
+        items = await buf.drain()
+        assert items[0].data["v"] == "new"
+
+    @pytest.mark.asyncio
+    async def test_lost_update_race_through_flush_pending(self) -> None:
+        """End-to-end: a newer write landing mid-persist is not clobbered by the
+        failed old write's re-enqueue.
+
+        ``persist_to_store`` performs the concurrent ``add`` (a fresh write for the
+        same entity landing during the flush) and then raises, driving the failed
+        path. Without the version guard the re-enqueue would overwrite the fresh
+        value with the stale one and bump its retries.
+        """
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1", "v": "old"})
+
+        registry = CollectionRegistry()
+        coll = MagicMock()
+        coll.table_name = "users"
+
+        async def _persist(data: dict[str, object], *, conn: object = None) -> int:
+            # a newer write for the same entity lands mid-flush, then this one fails.
+            await buf.add("users", "u1", {"id": "u1", "v": "new"})
+            raise RuntimeError("db down")
+
+        coll.persist_to_store = AsyncMock(side_effect=_persist)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        assert buf.pending_count() == 1
+        items = await buf.drain()
+        assert items[0].data["v"] == "new"  # fresh value not clobbered
+        assert items[0].retries == 0  # not the stale re-enqueue's retries=1
 
 
 # parity-exempt: a bare transaction-connection stub (records persisted rows); it mirrors no production protocol

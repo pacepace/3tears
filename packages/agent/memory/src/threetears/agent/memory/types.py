@@ -73,3 +73,21 @@ class MemoryConfig:
     # Extraction similarity search
     similar_memory_top_k: int = 5
     similar_memory_threshold: float = 0.55
+
+    # Salience decay + reinforcement (v024 substrate; luminara defaults).
+    # Injectable so metallm resolves per-user values and passes them in;
+    # the defaults reproduce the luminara reference exactly.
+    salience_half_life_days: float = 60.0
+    salience_floor: float = 0.1
+    salience_access_bump: float = 0.05
+    salience_ambient_floor: float = 0.2
+    salience_seed: float = 0.5
+
+    # Dream consolidation (A5; luminara defaults). Injectable per-user like
+    # the salience knobs. ``cluster_threshold`` is the cosine floor that
+    # groups near-duplicate memories (luminara clustering.py:57);
+    # ``min_cluster_size`` is the smallest cluster worth a gist; the gist
+    # seeds its salience at ``gist_salience_seed``.
+    consolidation_cluster_threshold: float = 0.85
+    consolidation_min_cluster_size: int = 2
+    consolidation_gist_salience_seed: float = 0.5

@@ -307,6 +307,105 @@ class TestPackageIsolation:
             await runner.apply_package(store, "nonexistent")
 
 
+def _lock_calls(store: FakeDataStore) -> list[tuple[str, tuple[object, ...]]]:
+    """
+    return the advisory lock/unlock executes recorded by the fake store.
+
+    :param store: fake store that recorded the runner's executes
+    :ptype store: FakeDataStore
+    :return: ordered (sql, params) tuples for pg_advisory_(un)lock calls
+    :rtype: list[tuple[str, tuple[object, ...]]]
+    """
+    return [(sql, params) for sql, params in store.executed if "pg_advisory_" in sql]
+
+
+class TestAdvisoryLocking:
+    """apply runs are gated by a per-schema advisory lock.
+
+    two pods starting concurrently must not both read an empty
+    applied-set and double-apply DDL. the runner takes
+    ``pg_advisory_lock`` around the whole apply sequence and releases it
+    afterwards -- even when a migration body raises.
+    """
+
+    async def test_apply_wraps_run_in_advisory_lock(self) -> None:
+        """apply_for_agent_schema locks before and unlocks after the DDL."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store = FakeDataStore(schema="agent_abc")
+        await runner.apply_for_agent_schema(store)
+
+        # the very first execute is the lock acquire; the very last is
+        # the release. the migration INSERT lands strictly between them.
+        first_sql = store.executed[0][0]
+        last_sql = store.executed[-1][0]
+        assert "pg_advisory_lock" in first_sql
+        assert "pg_advisory_unlock" in last_sql
+
+        insert_index = next(
+            i for i, (sql, _params) in enumerate(store.executed) if "INSERT INTO _schema_migrations" in sql
+        )
+        assert 0 < insert_index < len(store.executed) - 1
+
+    async def test_lock_released_when_migration_fails(self) -> None:
+        """a raising migration still releases the advisory lock."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+
+        async def boom(store: object) -> None:
+            """simulate a failing migration body."""
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        pkg.version(1)(boom)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store = FakeDataStore(schema="agent_abc")
+        with pytest.raises(MigrationFailedError):
+            await runner.apply_for_agent_schema(store)
+
+        calls = _lock_calls(store)
+        assert any("pg_advisory_lock" in sql for sql, _ in calls)
+        assert any("pg_advisory_unlock" in sql for sql, _ in calls)
+
+    async def test_lock_key_differs_per_schema(self) -> None:
+        """distinct schemas produce distinct lock keys so they do not serialise."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store_a = FakeDataStore(schema="agent_aaa")
+        store_b = FakeDataStore(schema="agent_bbb")
+        await runner.apply_for_agent_schema(store_a)
+        await runner.apply_for_agent_schema(store_b)
+
+        acquire_a = next(params for sql, params in _lock_calls(store_a) if "pg_advisory_lock" in sql)
+        acquire_b = next(params for sql, params in _lock_calls(store_b) if "pg_advisory_lock" in sql)
+        # same namespace ($1), different schema key ($2)
+        assert acquire_a[0] == acquire_b[0]
+        assert acquire_a[1] != acquire_b[1]
+
+    async def test_lock_key_stable_for_same_schema(self) -> None:
+        """the same schema yields the same lock key across runs (cross-pod agreement)."""
+        pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
+        pkg.version(1)(_noop)
+        runner = MigrationRunner()
+        runner.register(pkg)
+
+        store_1 = FakeDataStore(schema="platform")
+        store_2 = FakeDataStore(schema="platform")
+        await runner.apply_for_agent_schema(store_1)
+        await runner.apply_for_agent_schema(store_2)
+
+        key_1 = next(params for sql, params in _lock_calls(store_1) if "pg_advisory_lock" in sql)
+        key_2 = next(params for sql, params in _lock_calls(store_2) if "pg_advisory_lock" in sql)
+        assert key_1 == key_2
+
+
 class TestPackagesView:
     """``packages`` exposes a read-only view of registered packages.
 

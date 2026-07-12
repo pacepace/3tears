@@ -386,6 +386,90 @@ class Subjects:
             kind="point",
         )
 
+    @classmethod
+    def agent_turn(cls, agent_id: str | UUID) -> Subject:
+        """durable JetStream subject for an inbound agent turn (resilience-task-07).
+
+        the caller (hub) JetStream-publishes each inbound user turn here instead
+        of the at-most-once ``agent_route`` request/reply; the agent-router is the
+        durable consumer that forwards it to the sticky pod and acks only after
+        the pod confirms completion. redelivery on pod crash / drain makes inbound
+        delivery at-least-once. backed by the ``{ns}-agents-turn`` JetStream stream
+        over ``{ns}.agents.turn.>`` (plus the sibling dead-letter subject from
+        :meth:`agent_turn_deadletter`).
+
+        :param agent_id: target agent identifier
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.agents.turn.{agent_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn.{_sanitize(agent_id)}", kind="point")
+
+    @classmethod
+    def agent_turn_wildcard(cls) -> Subject:
+        """wildcard consumer filter for every agent's inbound turns.
+
+        the agent-router's durable consumer subscribes on this pattern to drain
+        every agent's inbound turns. deliberately does NOT cover
+        :meth:`agent_turn_deadletter` (a sibling token, not a ``.turn.`` child),
+        so exhausted turns park in the stream WITHOUT being re-consumed
+        (resilience-task-07).
+
+        :return: subject ``{ns}.agents.turn.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn.>", kind="pattern")
+
+    @classmethod
+    def agent_turn_deadletter(cls) -> Subject:
+        """dead-letter subject for turns the router exhausted (resilience-task-07).
+
+        a turn that stays undeliverable after the bounded redelivery budget is
+        republished here. a SIBLING token of ``turn`` (not ``{ns}.agents.turn.*``)
+        so :meth:`agent_turn_wildcard` does NOT match it -- the poisoned turn parks
+        in the ``{ns}-agents-turn`` stream (which is declared over this subject too)
+        with no consumer draining it: inspectable, not lost, not looping.
+
+        :return: subject ``{ns}.agents.turn-deadletter``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.turn-deadletter", kind="point")
+
+    @classmethod
+    def agent_complete(cls, correlation_id: str | UUID) -> Subject:
+        """per-turn completion-confirmation subject the router awaits (resilience-task-07).
+
+        the pod publishes here once the turn's result is durably produced (the
+        answer is in the request/reply reply, streamed, or handed to the durable
+        channel-delivery subject). the router awaits this before acking the
+        durable turn message; its absence (pod crash / drain refusal / timeout)
+        triggers a re-route. keyed on the per-turn ``correlation_id`` so the
+        signal maps 1:1 to the turn.
+
+        :param correlation_id: per-turn correlation identifier
+        :ptype correlation_id: str | UUID
+        :return: subject ``{ns}.agents.complete.{correlation_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.complete.{_sanitize(correlation_id)}", kind="point")
+
+    @classmethod
+    def agent_reply(cls, correlation_id: str | UUID) -> Subject:
+        """per-turn caller reply inbox for the durable turn path (resilience-task-07).
+
+        the caller subscribes here BEFORE JetStream-publishing the turn and awaits
+        the synchronous answer; the router publishes the pod's reply (full answer
+        for request/reply callers, ack envelope for streaming / channel callers)
+        here once the turn confirms. keyed on the per-turn ``correlation_id`` so
+        it is deterministic and unique per turn (no opaque inbox to thread).
+
+        :param correlation_id: per-turn correlation identifier
+        :ptype correlation_id: str | UUID
+        :return: subject ``{ns}.agents.reply.{correlation_id}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.reply.{_sanitize(correlation_id)}", kind="point")
+
     # ------------------------------------------------------------------
     # tools (registry / tool pods)
     # ------------------------------------------------------------------
@@ -739,6 +823,39 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
 
     @classmethod
+    def hub_approval_record(cls) -> Subject:
+        """request/reply subject for recording a pending human-approval marker.
+
+        A consuming AGENT that has PAUSED a graph on a ``requires_confirmation``
+        tool call asks the hub to record a pending-approval marker for the
+        conversation (the hub half of the exploit HITL gate). The agent forwards
+        its ``identity_token``; the hub verifies it, derives the owning customer,
+        writes the marker, and audits the request. Mirrors the auth path of
+        :meth:`hub_engagement_scope`.
+
+        :return: subject ``{ns}.hub.approval.record``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.approval.record", kind="point")
+
+    @classmethod
+    def hub_approval_resolve(cls) -> Subject:
+        """request/reply subject for resolving an operator reply against a pending approval.
+
+        The channel router (sandboxed, NATS-only) forwards an inbound operator
+        reply for a conversation that may be awaiting approval. The hub looks up
+        the pending marker, parses approve/deny, authorizes the replier
+        (``exploit.approve`` on the paused agent's namespace), audits the
+        decision, clears the marker, and returns the resume directive to inject
+        onto the agent's resume rail. Keeps DB + ACL + audit HUB-side, out of the
+        adapter sandbox.
+
+        :return: subject ``{ns}.hub.approval.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.approval.resolve", kind="point")
+
+    @classmethod
     def hub_channel_installs(cls) -> Subject:
         """request/reply subject for a channel adapter to fetch its installs.
 
@@ -793,6 +910,20 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.hub.usage.track", kind="point")
+
+    @classmethod
+    def hub_endpoint_usage_track(cls) -> Subject:
+        """publish subject for per-tool-call endpoint usage events posted to hub.
+
+        distinct from :meth:`hub_usage_track` (the gateway model-usage stream) so
+        the two usage streams / queue groups never collide: the registry usage
+        emitter (gu-task-16) publishes here and the hub ``EndpointUsageConsumer``
+        subscribes.
+
+        :return: subject ``{ns}.hub.usage.endpoint``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.usage.endpoint", kind="point")
 
     @classmethod
     def hub_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
@@ -851,6 +982,22 @@ class Subjects:
         else:
             result = Subject(path=f"{_ns()}.audit.{area}.>", kind="pattern")
         return result
+
+    @classmethod
+    def audit_deadletter(cls) -> Subject:
+        """dead-letter subject for audit envelopes the consumer exhausted.
+
+        an audit envelope that stays un-persistable after the durable
+        consumer's bounded redelivery budget is republished here. a SIBLING
+        token of ``audit`` (``audit-deadletter``, NOT ``{ns}.audit.*``) so
+        :meth:`audit_wildcard` does NOT match it -- the poisoned envelope parks
+        in the ``{ns}-audit`` stream (which is declared over this subject too)
+        with no consumer draining it: inspectable, not lost, not looping.
+
+        :return: subject ``{ns}.audit-deadletter``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.audit-deadletter", kind="point")
 
     # ------------------------------------------------------------------
     # workspaces

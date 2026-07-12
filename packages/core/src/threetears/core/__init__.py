@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from threetears.core.data.store import DataStore
     from threetears.core.entities.base import BaseEntity
     from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
+    from threetears.core.http_client import TracedHttpClient, UpstreamHttpError
     from threetears.core.namespaces import PLURAL_PREFIX_BY_NAMESPACE_TYPE, build_namespace_name, sanitize_segment
     from threetears.core.pagination import CursorError, Keyset, Page, decode_cursor, encode_cursor
     from threetears.core.security import PathSandbox, Sandbox, SandboxDecision, SandboxDenied
@@ -87,7 +88,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     "SandboxDecision": ("threetears.core.security", "SandboxDecision"),
     "SandboxDenied": ("threetears.core.security", "SandboxDenied"),
     "TableDef": ("threetears.core.data.schema", "TableDef"),
+    "TracedHttpClient": ("threetears.core.http_client", "TracedHttpClient"),
     "UnknownFormatError": ("threetears.core.serialization", "UnknownFormatError"),
+    "UpstreamHttpError": ("threetears.core.http_client", "UpstreamHttpError"),
     "atomic_write": ("threetears.core.utils.atomic_write", "atomic_write"),
     "build_create_index_sql": ("threetears.core.data.sql_builder", "build_create_index_sql"),
     "build_create_table_sql": ("threetears.core.data.sql_builder", "build_create_table_sql"),
@@ -129,7 +132,9 @@ __all__ = [
     "SandboxDecision",
     "SandboxDenied",
     "TableDef",
+    "TracedHttpClient",
     "UnknownFormatError",
+    "UpstreamHttpError",
     "atomic_write",
     "build_create_index_sql",
     "build_create_table_sql",

@@ -331,6 +331,11 @@ class SlackAdapter:
             channel_id=event.get("channel", ""),
             conversation_id=thread_ts if thread_ts else event.get("ts"),
             workspace_id=event.get("team"),
+            # this adapter is bound to ONE slack app / bot; stamp that bot's id so
+            # a router serving several bots in the same workspace resolves the
+            # target agent unambiguously. the host passes it via config; None (no
+            # config) means single-bot and nothing to disambiguate.
+            receiving_bot_id=self.config.get("bot_user_id") or None,
             attachments=attachments,
             reply_to_id=thread_ts,
             metadata=metadata,

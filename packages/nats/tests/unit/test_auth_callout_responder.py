@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from typing import Any
 
+import nkeys
 import pytest
 
 from threetears.nats.auth_callout_responder import (
@@ -23,7 +25,7 @@ from threetears.nats.auth_callout_responder import (
 )
 from threetears.nats.subject_permissions import PrincipalPermissions
 from threetears.nats.subjects import Subject
-from threetears.nats.user_jwt import generate_account_seed
+from threetears.nats.user_jwt import account_public_key, generate_account_seed
 
 
 def _b64url(raw: bytes) -> str:
@@ -308,3 +310,114 @@ def test_from_secret_accepts_a_valid_account_seed() -> None:
         account_name="SCRIOB",
     )
     assert isinstance(responder, AuthCalloutResponder)
+
+
+# --- issuer_account: signing-key custody (mint with a subordinate key; keep the identity seed offline)
+
+
+def _account_public_key() -> str:
+    """a standalone valid account IDENTITY public key (``A...``), distinct from the signing seed."""
+    return account_public_key(generate_account_seed())
+
+
+def _user_public_key() -> str:
+    """a valid USER public key (``U...``) — a WRONG-TYPE key for issuer_account (must be account)."""
+    pub = nkeys.from_seed(nkeys.encode_seed(os.urandom(32), nkeys.PREFIX_BYTE_USER)).public_key
+    return pub if isinstance(pub, str) else bytes(pub).decode("ascii")
+
+
+async def test_admit_stamps_issuer_account_on_both_the_response_and_the_user_jwt() -> None:
+    """A subordinate SIGNING seed signs, and ``issuer_account`` (the account identity key) is stamped
+    on BOTH the auth response and the minted user JWT — the split that lets the identity seed stay
+    offline while the server still binds the connection to the account."""
+    signing_seed = generate_account_seed()
+    identity_pub = _account_public_key()
+    responder = AuthCalloutResponder(
+        _FakeNats(),
+        account_seed=signing_seed,
+        resolver=_FakeResolver(_principal()),
+        policy=_FakePolicy(_perms()),
+        account_name="SCRIOB",
+        issuer_account=identity_pub,
+    )
+    from threetears.nats.auth_callout import decode_auth_request
+
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+    response_payload = _decode_payload(await responder.build_response(request))
+
+    # signed by the SIGNING key (iss), but names the account via issuer_account — the custody split.
+    assert response_payload["iss"] == account_public_key(signing_seed), "response signed by the signing key"
+    assert response_payload["iss"] != identity_pub, "the signing key is NOT the identity key"
+    assert response_payload["nats"]["issuer_account"] == identity_pub, "response names the account identity"
+    user_payload = _decode_payload(response_payload["nats"]["jwt"])
+    assert user_payload["iss"] == account_public_key(signing_seed), "user JWT signed by the signing key"
+    assert user_payload["nats"]["issuer_account"] == identity_pub, "user JWT names the account identity"
+
+
+async def test_deny_response_also_carries_issuer_account_when_a_signing_key_signs() -> None:
+    """A DENY signed by a signing key must ALSO name the account, or the server rejects the deny
+    itself — which would silently break the fail-closed guarantee."""
+    responder = AuthCalloutResponder(
+        _FakeNats(),
+        account_seed=generate_account_seed(),
+        resolver=_FakeResolver(None),  # unresolved → deny
+        policy=_FakePolicy(_perms()),
+        issuer_account=_account_public_key(),
+    )
+    from threetears.nats.auth_callout import decode_auth_request
+
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+    nats_claim = _decode_payload(await responder.build_response(request))["nats"]
+    assert nats_claim.get("error") == "authentication failed"
+    assert "issuer_account" in nats_claim, "the deny response also names the account identity"
+
+
+async def test_without_issuer_account_no_such_claim_is_stamped() -> None:
+    """The default (the identity seed itself signs) omits ``issuer_account`` entirely — the
+    unchanged legacy behavior every existing consumer (aibots) relies on."""
+    responder = _responder(_FakeNats(), resolver=_FakeResolver(_principal()), policy=_FakePolicy(_perms()))
+    from threetears.nats.auth_callout import decode_auth_request
+
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+    response_payload = _decode_payload(await responder.build_response(request))
+    assert "issuer_account" not in response_payload["nats"], "no issuer_account on the response by default"
+    user_payload = _decode_payload(response_payload["nats"]["jwt"])
+    assert "issuer_account" not in user_payload["nats"], "no issuer_account on the user JWT by default"
+
+
+async def test_from_secret_threads_issuer_account_through_to_the_mint() -> None:
+    """``from_secret`` passes ``issuer_account`` all the way to the minted JWTs (not just construction)."""
+    responder = AuthCalloutResponder.from_secret(
+        generate_account_seed(),
+        nc=_FakeNats(),
+        resolver=_FakeResolver(_principal()),
+        policy=_FakePolicy(_perms()),
+        issuer_account=(identity_pub := _account_public_key()),
+    )
+    from threetears.nats.auth_callout import decode_auth_request
+
+    request = decode_auth_request(_request_jwt(server_id="NSRV", user_nkey="UME"))
+    user_payload = _decode_payload(_decode_payload(await responder.build_response(request))["nats"]["jwt"])
+    assert user_payload["nats"]["issuer_account"] == identity_pub
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["garbage", "seed", "user_key"],
+)
+def test_constructing_with_a_bad_issuer_account_fails_closed(label: str) -> None:
+    """A malformed / wrong-type ``issuer_account`` fails closed at construction — never mints JWTs the
+    server would reject (garbage, an account SEED instead of a public key, or a USER public key)."""
+    bad = {
+        "garbage": "not-a-real-account-key",
+        "seed": generate_account_seed().decode("ascii"),  # an SA... seed, not an A... public key
+        "user_key": _user_public_key(),  # a U... key — wrong nkey type
+    }[label]
+    with pytest.raises(AuthAccountKeyError):
+        AuthCalloutResponder(
+            _FakeNats(),
+            account_seed=generate_account_seed(),
+            resolver=_FakeResolver(_principal()),
+            policy=_FakePolicy(_perms()),
+            issuer_account=bad,
+        )

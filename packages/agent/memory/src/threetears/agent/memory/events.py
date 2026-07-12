@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from threetears.agent.memory.entities import MemoryEntity
 
 __all__ = [
+    "MemoryConsolidatedEvent",
     "MemoryCreatedEvent",
     "MemoryRetrievedEvent",
     "default_memory_created_dispatcher",
@@ -117,12 +118,53 @@ class MemoryCreatedEvent(FrameworkEvent):
     content_preview: str = ""
 
 
+class MemoryConsolidatedEvent(FrameworkEvent):
+    """fired once per Dream consolidation merge (A5, v0.15.0).
+
+    Emitted by :meth:`threetears.agent.memory.dream.DreamService.run_consolidation`
+    after a gist memory commits and its provenance edges are recorded.
+    Feeds the presence timeline ("Saoirse consolidated N memories into a
+    gist"). One event per gist, carrying the merge shape a consumer needs
+    to render the timeline entry + link into the memories view without a
+    follow-up read.
+
+    Scope-flexible per the v024 relaxation: ``user_id`` / ``customer_id``
+    are string-form uuids when the consolidation is user- / customer-
+    scoped and ``None`` for an agent-scoped gist (customer_id + user_id
+    null). This is the first framework event that writes null-scoped
+    rows, so both fields are optional by design — a consumer scoping a
+    per-user refresh checks for the non-null value.
+
+    :ivar agent_id: string-form uuid of the agent whose memories merged
+    :ivar consolidated_memory_id: string-form uuid of the new gist row
+    :ivar source_memory_ids: string-form uuids of the sources subsumed
+        (now ``superseded_by`` the gist; still directly recallable)
+    :ivar source_count: number of sources merged into the gist
+    :ivar user_id: string-form uuid of the owning user, or ``None`` on an
+        agent- / customer-scoped gist
+    :ivar customer_id: string-form uuid of the owning customer, or
+        ``None`` on an agent-scoped gist
+    :ivar content_preview: first ~120 chars of the gist content for ui
+        rendering without re-fetching
+    """
+
+    type: Literal["memory_consolidated"] = "memory_consolidated"
+    agent_id: str
+    consolidated_memory_id: str
+    source_memory_ids: list[str] = Field(default_factory=list)
+    source_count: int = 0
+    user_id: str | None = None
+    customer_id: str | None = None
+    content_preview: str = ""
+
+
 _CONTENT_PREVIEW_LEN: int = 120
 """maximum chars carried in the event payload's content preview.
 
-trims the ``content_preview`` field on :class:`MemoryCreatedEvent` to
-match the field's docstring (~120 chars). callers that need the full
-content re-fetch from storage by the ``memory_id`` on the event.
+trims the ``content_preview`` field on :class:`MemoryCreatedEvent` and
+:class:`MemoryConsolidatedEvent` to match the field docstrings (~120
+chars). callers that need the full content re-fetch from storage by the
+``memory_id`` on the event.
 """
 
 
@@ -220,6 +262,7 @@ def _register_memory_events(registry: Any) -> None:
     for cls in (
         MemoryRetrievedEvent,
         MemoryCreatedEvent,
+        MemoryConsolidatedEvent,
     ):
         if cls.model_fields["type"].default in registry.names():
             continue

@@ -94,8 +94,8 @@ class TestLeastConnectionsSelection:
         assert selected is not None
         assert selected.pod_id == "pod-only"
 
-    def test_tie_breaking_returns_first(self) -> None:
-        """strategy returns first endpoint in list when multiple share lowest in_flight."""
+    def test_tie_breaking_returns_a_tied_endpoint(self) -> None:
+        """strategy returns one of the endpoints tied for lowest in_flight."""
         endpoints = [
             _make_endpoint(pod_id="pod-first", in_flight=2),
             _make_endpoint(pod_id="pod-second", in_flight=2),
@@ -103,7 +103,30 @@ class TestLeastConnectionsSelection:
         strategy = LeastConnectionsStrategy()
         selected = strategy.select(endpoints)
         assert selected is not None
-        assert selected.pod_id == "pod-first"
+        assert selected.pod_id in {"pod-first", "pod-second"}
+        assert selected.in_flight == 2
+
+    def test_tie_breaking_is_randomized_across_tied_endpoints(self) -> None:
+        """ties for lowest in_flight are broken at random, not by list order.
+
+        this is the multi-replica convergence guard: a deterministic
+        list-order tie-break would make every registry replica route to
+        the same pod whenever their local in_flight counts agree (the
+        steady state, and always so at cold start when all counts are
+        zero). repeated selection over equally-loaded endpoints must
+        reach BOTH pods, proving the tie-break spreads load.
+        """
+        strategy = LeastConnectionsStrategy()
+        seen: set[str] = set()
+        for _ in range(200):
+            endpoints = [
+                _make_endpoint(pod_id="pod-first", in_flight=0),
+                _make_endpoint(pod_id="pod-second", in_flight=0),
+            ]
+            selected = strategy.select(endpoints)
+            assert selected is not None
+            seen.add(selected.pod_id)
+        assert seen == {"pod-first", "pod-second"}
 
     def test_zero_in_flight_preferred(self) -> None:
         """strategy prefers endpoint with zero in_flight over endpoints with positive counts."""

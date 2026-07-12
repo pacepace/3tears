@@ -38,6 +38,7 @@ from threetears.scheduled_jobs.collections import (
     ScheduledJobCollection,
 )
 from threetears.scheduled_jobs.config import (
+    DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
     DEFAULT_JOB_CONFIG,
     DEFAULT_TICK_DUE_LIMIT,
     DEFAULT_TICK_LOCK_KEY,
@@ -91,6 +92,7 @@ from threetears.scheduled_jobs.types import (
 )
 
 __all__ = [
+    "DEFAULT_DISPATCH_REAP_AFTER_SECONDS",
     "DEFAULT_JOB_CONFIG",
     "DEFAULT_TICK_DUE_LIMIT",
     "DEFAULT_TICK_LOCK_KEY",

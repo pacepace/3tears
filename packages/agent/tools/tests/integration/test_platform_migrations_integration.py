@@ -150,7 +150,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 1, f"expected exactly v001 to apply, applied {count}"
+            assert count == 2, f"expected v001 + v002 to apply, applied {count}"
             cols = await conn.fetch(
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
@@ -179,7 +179,7 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             first = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert first == 1
+            assert first == 2
             # second apply with a fresh runner: the bookkeeping table
             # remembers the prior apply so the runner does nothing.
             runner_two = MigrationRunner()
@@ -195,6 +195,46 @@ class TestPlatformMigrationAddsColumns:
             await conn.execute(
                 "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS skill_eligible BOOLEAN NOT NULL DEFAULT FALSE"
             )
+            await conn.execute(
+                "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_platform_tool BOOLEAN NOT NULL DEFAULT TRUE"
+            )
+            await conn.execute(
+                "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_api BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await conn.execute(
+                "ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS face_mcp BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        finally:
+            await conn.close()
+
+    async def test_v002_applies_face_columns_with_defaults(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """gu-task-02b: v002 lands the three face columns with defaults."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}"')
+            runner = MigrationRunner()
+            register(runner)
+            store = _AsyncpgStore(conn)
+            await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+            cols = await conn.fetch(
+                "SELECT column_name, data_type, is_nullable, column_default "
+                "FROM information_schema.columns "
+                "WHERE table_schema = $1 AND table_name = 'namespaces' "
+                "AND column_name IN ('face_api', 'face_mcp', 'face_platform_tool')",
+                schema,
+            )
+            assert len(cols) == 3
+            by_name = {row["column_name"]: row for row in cols}
+            for name in ("face_api", "face_mcp", "face_platform_tool"):
+                assert by_name[name]["data_type"] == "boolean"
+                assert by_name[name]["is_nullable"] == "NO"
+            assert "true" in (by_name["face_platform_tool"]["column_default"] or "").lower()
+            assert "false" in (by_name["face_api"]["column_default"] or "").lower()
+            assert "false" in (by_name["face_mcp"]["column_default"] or "").lower()
         finally:
             await conn.close()
 
@@ -217,12 +257,16 @@ class TestPlatformMigrationAddsColumns:
             register(runner)
             store = _AsyncpgStore(conn)
             count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-            assert count == 1
+            assert count == 2
             row = await conn.fetchrow(
-                "SELECT tool_eligible, skill_eligible FROM namespaces WHERE name = 'tools.legacy.1-0'",
+                "SELECT tool_eligible, skill_eligible, face_platform_tool, face_api, face_mcp "
+                "FROM namespaces WHERE name = 'tools.legacy.1-0'",
             )
             assert row is not None
             assert row["tool_eligible"] is True
             assert row["skill_eligible"] is False
+            assert row["face_platform_tool"] is True
+            assert row["face_api"] is False
+            assert row["face_mcp"] is False
         finally:
             await conn.close()

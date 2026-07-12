@@ -842,3 +842,198 @@ class TestMemoryRetrieverE2E:
             customer_id=uuid.uuid7(),
         )
         assert result is None
+
+
+# -- FTS NULL-embedding guard --------------------------------------------------
+
+
+def _make_null_embedding_recording_pool(fts_null_rows: list[dict]) -> AsyncMock:
+    """build a pool that models the DB honoring ``embedding IS NOT NULL``.
+
+    The vector legs of every collection already filter NULL embeddings.
+    The FTS legs must do the same: a not-yet-embedded row that matched
+    full-text search but has a NULL ``embedding`` would otherwise flow
+    into the cross-type MMR rerank, whose cosine-similarity redundancy
+    term dereferences ``candidate["embedding"]`` and crashes on ``None``.
+
+    This pool returns two valid vector rows for the memories vector leg
+    and, for the memories FTS leg, returns ``fts_null_rows`` ONLY when
+    the emitted SQL lacks the ``embedding IS NOT NULL`` guard -- exactly
+    how a real database would behave when the WHERE clause is present vs
+    absent. all other legs return empty.
+
+    :param fts_null_rows: rows a guardless FTS query would surface
+    :ptype fts_null_rows: list[dict]
+    :return: asyncpg-shape recording mock
+    :rtype: AsyncMock
+    """
+    pool = AsyncMock()
+    now = datetime.now(timezone.utc)
+    vec_rows = [
+        {
+            "memory_id": uuid.uuid7(),
+            "content": "User likes Python",
+            "summary": None,
+            "type_memory": "preference",
+            "date_created": now,
+            "embedding": [1.0, 0.0, 0.0],
+            "similarity": 0.90,
+        },
+        {
+            "memory_id": uuid.uuid7(),
+            "content": "User dislikes meetings",
+            "summary": None,
+            "type_memory": "preference",
+            "date_created": now,
+            "embedding": [0.0, 1.0, 0.0],
+            "similarity": 0.85,
+        },
+    ]
+
+    async def _fetch(sql: str, *args: object) -> list[dict]:
+        _ = args
+        sql_lower = sql.lower()
+        if "from memories" not in sql_lower:
+            return []
+        if "ts_rank_cd" in sql_lower:
+            # FTS leg: the DB only returns NULL-embedding rows when the
+            # guard is absent from the query.
+            if "embedding is not null" in sql_lower:
+                return []
+            return fts_null_rows
+        # vector leg
+        return vec_rows
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+    pool.execute = AsyncMock(return_value="INSERT 0 1")
+    return pool
+
+
+class TestFtsNullEmbeddingGuard:
+    """FTS legs must exclude NULL-embedding rows so MMR never crashes."""
+
+    async def test_fts_null_embedding_row_does_not_crash_mmr(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """a keyword-only hit with a NULL embedding must not reach MMR.
+
+        Without the ``embedding IS NOT NULL`` guard on the memories FTS
+        sub-query, the guardless pool surfaces a NULL-embedding row that
+        joins the two valid vector rows in the MMR candidate set. With
+        ``context_budget=2`` and three candidates, the MMR selection
+        loop reaches its cosine-redundancy term and dereferences the
+        NULL embedding, raising ``TypeError``. The guard keeps that row
+        out of the FTS result entirely, so retrieval succeeds.
+        """
+        fts_null_rows = [
+            {
+                "memory_id": uuid.uuid7(),
+                "content": "keyword-only memory not yet embedded",
+                "summary": None,
+                "type_memory": "fact",
+                "date_created": datetime.now(timezone.utc),
+                "embedding": None,
+                "fts_rank": 5.0,
+            }
+        ]
+        pool = _make_null_embedding_recording_pool(fts_null_rows)
+        config = MemoryConfig(context_budget=2, similarity_threshold=-1.0)
+        retriever = _make_retriever(pool, permissive_memory_authorizer, config)
+
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "tell me about python preferences",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
+
+        assert result is not None
+        assert "Things you remember" in result
+        # the NULL-embedding keyword-only row never surfaces
+        assert "keyword-only memory not yet embedded" not in result
+
+    async def test_all_fts_legs_emit_null_embedding_guard(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """every collection's FTS sub-query carries the NULL guard.
+
+        The guard belongs on all three FTS legs (memories, media_content,
+        memory_chunks) because their outputs are merged into one MMR
+        candidate set; a single unguarded leg re-opens the crash.
+        """
+        recorded: list[str] = []
+
+        async def _fetch(sql: str, *args: object) -> list[dict]:
+            _ = args
+            recorded.append(sql)
+            return []
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=_fetch)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        core_config = DefaultCoreConfig(
+            collection_flush="ALWAYS",
+            collection_flush_tables="",
+        )
+        memories = MemoriesCollection(
+            registry=registry,
+            config=core_config,
+            authorizer=permissive_memory_authorizer,
+        )
+        media_content = MediaContentCollection(registry=registry, config=core_config)
+        chunks = MemoryChunkCollection(registry=registry, config=core_config)
+
+        user_id = uuid.uuid7()
+        agent_id = uuid.uuid7()
+        customer_id = uuid.uuid7()
+        embedding = [1.0, 0.0, 0.0]
+        user_text = "tell me about python preferences"
+
+        await memories.hybrid_search(
+            user_id=user_id,
+            embedding=embedding,
+            user_text=user_text,
+            top_k=10,
+            candidate_limit=30,
+            similarity_threshold=0.4,
+            recency_half_life_hours=24.0,
+            signal_weights={"semantic": 0.55, "keyword": 0.15, "recency": 0.30},
+            agent_id=agent_id,
+            customer_id=customer_id,
+        )
+        await media_content.hybrid_search(
+            user_id=user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            embedding=embedding,
+            user_text=user_text,
+            top_k=5,
+            candidate_limit=15,
+            similarity_threshold=0.4,
+            recency_half_life_hours=24.0,
+            signal_weights={"semantic": 0.55, "keyword": 0.15, "recency": 0.30},
+        )
+        await chunks.hybrid_search(
+            user_id=user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            embedding=embedding,
+            user_text=user_text,
+            candidate_k=15,
+            similarity_threshold=0.4,
+            chunk_signal_weights={"semantic": 0.80, "keyword": 0.20},
+        )
+
+        fts_sqls = [q for q in recorded if "ts_rank_cd" in q.lower()]
+        # one FTS leg per collection
+        assert len(fts_sqls) == 3
+        for fts_sql in fts_sqls:
+            assert "embedding is not null" in fts_sql.lower(), (
+                "FTS leg is missing the NULL-embedding guard; a not-yet-"
+                "embedded keyword hit would crash MMR:\n" + fts_sql
+            )

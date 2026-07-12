@@ -19,7 +19,7 @@ def test_package_imports():
 def test_version():
     from threetears.langgraph import __version__
 
-    assert __version__ == "0.14.1"
+    assert __version__ == "0.15.0"
 
 
 def test_protocols_are_runtime_checkable():

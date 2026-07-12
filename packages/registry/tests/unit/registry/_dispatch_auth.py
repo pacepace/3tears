@@ -29,7 +29,7 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, make_pop_proof
-from threetears.registry.auth import AllowAllAuthorizer
+from threetears.registry.auth import AllowAllAuthorizer, AllowAllLimitGuard, LimitGuard
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import CallProxy, ProxyCallRequest
 
@@ -82,6 +82,7 @@ def make_proxy(
     authorizer: Any = None,
     *,
     pop_replay_guard: Any = None,
+    limit_guard: "LimitGuard | None" = None,
     jwks_provider: Any = hub_jwks_provider,
     **kwargs: Any,
 ) -> CallProxy:
@@ -89,13 +90,16 @@ def make_proxy(
 
     injects the Hub-JWKS provider + a fresh pop replay guard so the unconditional identity + pop
     gates accept the authenticated requests :func:`make_authed_request` builds. ``authorizer``
-    defaults to :class:`AllowAllAuthorizer`; extra kwargs (namespace, timeout, proxy_signer,
-    routing_strategy) pass straight through.
+    defaults to :class:`AllowAllAuthorizer` and ``limit_guard`` to :class:`AllowAllLimitGuard`
+    (the spend gate is a required constructor arg, so the dispatch-mechanics tests wire an
+    allow-all double unless a test overrides it); extra kwargs (namespace, timeout, proxy_signer,
+    routing_strategy, usage_emitter) pass straight through.
     """
     return CallProxy(
         catalog,
         authorizer if authorizer is not None else AllowAllAuthorizer(),
         pop_replay_guard if pop_replay_guard is not None else StubReplayGuard(),
+        limit_guard if limit_guard is not None else AllowAllLimitGuard(),
         jwks_provider=jwks_provider,
         **kwargs,
     )

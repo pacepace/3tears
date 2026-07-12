@@ -17,12 +17,23 @@ version history:
   ``skill_eligible`` (defaults FALSE -- no row leaks into the
   skills catalog without explicit opt-in). Idempotent via ``ADD
   COLUMN IF NOT EXISTS``.
+- v002 (gu-task-02b) adds three ``BOOLEAN NOT NULL DEFAULT``
+  face columns to the ``namespaces`` table: ``face_platform_tool``
+  (defaults TRUE -- pre-face rows keep their "platform tool" shape),
+  ``face_api`` and ``face_mcp`` (default FALSE -- explicit opt-in).
+  Persists the authored FACE flags (``TearsTool`` cvar ->
+  ``ToolManifestEntry`` field, gu-task-02) the hub
+  ``ToolNamespaceEmitter`` stamps onto each ``tool``-type row.
+  Idempotent via ``ADD COLUMN IF NOT EXISTS``.
 """
 
 from __future__ import annotations
 
 from threetears.agent.tools.platform_migrations.v001_add_tool_eligibility_columns import (
     add_tool_eligibility_columns,
+)
+from threetears.agent.tools.platform_migrations.v002_add_tool_face_columns import (
+    add_tool_face_columns,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -69,6 +80,7 @@ def register(
         depends_on=depends_on,
     )
     pkg.version(1)(add_tool_eligibility_columns)
+    pkg.version(2)(add_tool_face_columns)
     runner.register(pkg)
     return pkg
 
@@ -76,5 +88,6 @@ def register(
 __all__ = [
     "PACKAGE_NAME",
     "add_tool_eligibility_columns",
+    "add_tool_face_columns",
     "register",
 ]

@@ -13,11 +13,13 @@ import cost.
 
 public surface (per shard DS-07-10):
 
-- entities -- :class:`DataSourceEntity`, :class:`DataSourceTableEntity`,
-  :class:`DataSourceColumnEntity`, :class:`DataSourceRelationEntity`,
-  :class:`TableTemplateEntity` + lifecycle enums (:class:`DataSourceType`,
-  :class:`DataSourceAccessMode`, :class:`DataSourceStatus`)
-- collections -- :class:`DataSourceCollection`,
+- entities -- :class:`CapabilitySourceEntity`,
+  :class:`DataSourceTableEntity`, :class:`DataSourceColumnEntity`,
+  :class:`DataSourceRelationEntity`, :class:`TableTemplateEntity` +
+  the discriminator + lifecycle enums (:class:`CapabilitySourceKind`,
+  :class:`DataSourceType`, :class:`DataSourceAccessMode`,
+  :class:`DataSourceStatus`)
+- collections -- :class:`CapabilitySourceCollection`,
   :class:`DataSourceTableCollection`, :class:`DataSourceColumnCollection`,
   :class:`DataSourceRelationCollection`, :class:`TableTemplateCollection`
 - namespace helpers -- :data:`DATASOURCE_NAMESPACE_TYPE`,
@@ -45,7 +47,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.datasources.collections import (
-    DataSourceCollection,
+    CapabilitySourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
     DataSourceSchemaDigestCollection,
@@ -63,9 +65,10 @@ from threetears.datasources.config import (
     YugabyteConnectionConfig,
 )
 from threetears.datasources.entities import (
+    CapabilitySourceEntity,
+    CapabilitySourceKind,
     DataSourceAccessMode,
     DataSourceColumnEntity,
-    DataSourceEntity,
     DataSourceRelationEntity,
     DataSourceSchemaDigestEntity,
     DataSourceStatus,
@@ -89,12 +92,13 @@ __all__ = [
     "DATASOURCE_NAMESPACE_TYPE",
     "AgentInternalConnectionConfig",
     "BigQueryConnectionConfig",
+    "CapabilitySourceCollection",
+    "CapabilitySourceEntity",
+    "CapabilitySourceKind",
     "ConnectionConfig",
     "DataSourceAccessMode",
-    "DataSourceCollection",
     "DataSourceColumnCollection",
     "DataSourceColumnEntity",
-    "DataSourceEntity",
     "DataSourceRelationCollection",
     "DataSourceRelationEntity",
     "DataSourceSchemaDigestCollection",

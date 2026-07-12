@@ -90,6 +90,13 @@ select = ["SLF"]
 # the public sys.settrace alternative has different semantics. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
+# lifecycle test asserts fire_and_forget holds a strong reference to a task
+# scheduled on a caller's running loop until it completes (asyncio keeps only a
+# weak reference, so an unheld task can be GC'd mid-flight). _pending_tasks is
+# the internal strong-reference anchor with no public accessor; exposing one
+# would add API surface only this test needs. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_bridge.py" = ["SLF001"]
 # test monkeypatches module-level _otel_available cache sentinel to exercise
 # both the "otel installed" and "otel missing" branches; the sentinel is an
 # import-time implementation anchor with no public accessor (would become a
@@ -124,6 +131,8 @@ select = ["SLF"]
 "packages/core/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/identity/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/intention/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
@@ -160,6 +169,10 @@ select = ["SLF"]
 # is shared per-registry to lock in the identity-by-registry contract.
 # paired entries live in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/tests/unit/models/test_tracking.py" = ["SLF001"]
+# GU-05-05 span-attribute tests re-init the tracer provider via the same
+# OTel ``_TRACER_PROVIDER_SET_ONCE._done`` escape as test_tracking.py above.
+# paired entry lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_tracking_dimensions.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

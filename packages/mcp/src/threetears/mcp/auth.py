@@ -43,11 +43,14 @@ from threetears.observe import get_logger
 
 __all__ = [
     "Authorizer",
+    "BearerTokenIdentityProvider",
+    "BearerTokenResolver",
     "EnvVarIdentityProvider",
     "Identity",
     "IdentityProvider",
     "LocalGrantAuthorizer",
     "PrincipalType",
+    "TokenSource",
 ]
 
 log = get_logger(__name__)
@@ -120,10 +123,14 @@ class EnvVarIdentityProvider:
     will resolve per request from the MCP-client-supplied bearer
     token using the same :class:`Identity` shape.
 
-    the admin flag is True by default -- the env-var creds in v1 are
-    admin-equivalent (same as the existing prototype's behaviour).
-    consumers wiring a non-admin identity should pass ``is_admin=False``
-    explicitly.
+    the admin flag is default-deny: ``is_admin`` defaults to False so a
+    wiring that forgets the flag yields an ordinary (non-admin) identity
+    subject to the same grant checks as any other principal. admin
+    authority is a privilege that must be granted explicitly -- a
+    consumer wiring the admin-equivalent env-var creds passes
+    ``is_admin=True`` at construction (the two stdio launchers do). the
+    previous True-by-default admitted every tool for any caller whose
+    wirer omitted the flag, a total RBAC bypass.
 
     :param principal_id: user UUID; if ``None`` reads from
         ``user_id_env_var``
@@ -131,8 +138,8 @@ class EnvVarIdentityProvider:
     :param user_id_env_var: env var name that holds the admin user
         UUID when ``principal_id`` is unset
     :ptype user_id_env_var: str
-    :param is_admin: whether this identity has admin role; v1 default
-        True matches the prototype's env-var-admin behaviour
+    :param is_admin: whether this identity has admin role; default-deny
+        False, admin granted only when passed explicitly
     :ptype is_admin: bool
     """
 
@@ -141,7 +148,7 @@ class EnvVarIdentityProvider:
         *,
         principal_id: UUID | None = None,
         user_id_env_var: str = "MCP_ADMIN_USER_ID",
-        is_admin: bool = True,
+        is_admin: bool = False,
     ) -> None:
         """capture identity source; resolve at :meth:`identify` call.
 
@@ -150,7 +157,8 @@ class EnvVarIdentityProvider:
         :param user_id_env_var: env var consulted when ``principal_id``
             is ``None``
         :ptype user_id_env_var: str
-        :param is_admin: admin flag; default True for v1 env-var creds
+        :param is_admin: admin flag; default-deny False, granted only
+            when the wirer passes True explicitly
         :ptype is_admin: bool
         :return: nothing
         :rtype: None
@@ -187,6 +195,102 @@ class EnvVarIdentityProvider:
             principal_id=principal_id,
             is_admin=self._is_admin,
         )
+
+
+BearerTokenResolver = Callable[[str], Awaitable["Identity"]]
+"""signature for the bearer-token -> :class:`Identity` resolver.
+
+injected into :class:`BearerTokenIdentityProvider` so the 3tears mcp
+package never imports hub auth code: the hub wires its own
+``APIKeyAuthStrategy`` / ``JWTAuthStrategy``-backed resolver. the
+resolver validates the token and returns the resolved caller
+:class:`Identity`; it raises when the token cannot be resolved.
+"""
+
+
+TokenSource = Callable[[], "str | None"]
+"""signature for the per-request bearer-token source.
+
+returns the current request's bearer token (or ``None`` when absent).
+in production the transport layer populates a request-scoped
+contextvar and passes its reader here (see
+:func:`threetears.mcp.http_server.current_bearer_token`); tests pass a
+simple mutable holder. keeping this injectable is what lets
+:meth:`BearerTokenIdentityProvider.identify` honour the fixed
+zero-argument Protocol signature while still re-resolving per request.
+"""
+
+
+class BearerTokenIdentityProvider:
+    """v2 HTTP :class:`IdentityProvider` -- one identity per request.
+
+    unlike :class:`EnvVarIdentityProvider` (one fixed identity per
+    server lifetime), this provider re-resolves the caller on every
+    :meth:`identify` call from the request-scoped bearer token. the
+    token is obtained from the injected ``token_source`` (a
+    request-scoped contextvar reader in production) and mapped to an
+    :class:`Identity` by the injected ``resolver``. neither the token
+    nor the resolved identity is cached across requests.
+
+    the 3tears mcp package deliberately does not decode JWTs or read a
+    user table itself: both the token source and the resolver are
+    injected so the hub can supply its own credential-validation
+    backend without this package importing hub code.
+
+    :param resolver: async token -> :class:`Identity` resolver
+    :ptype resolver: BearerTokenResolver
+    :param token_source: callable returning the current request's
+        bearer token (or ``None`` when absent)
+    :ptype token_source: TokenSource
+    """
+
+    def __init__(
+        self,
+        *,
+        resolver: BearerTokenResolver,
+        token_source: TokenSource,
+    ) -> None:
+        """capture the resolver + token source; resolve at :meth:`identify`.
+
+        :param resolver: async token -> :class:`Identity` resolver
+        :ptype resolver: BearerTokenResolver
+        :param token_source: current-request bearer-token reader
+        :ptype token_source: TokenSource
+        :return: nothing
+        :rtype: None
+        """
+        self._resolver = resolver
+        self._token_source = token_source
+
+    async def identify(self) -> Identity:
+        """resolve the calling identity from the current request's bearer token.
+
+        re-resolves per call (v2 semantics): reads the token from the
+        injected source, then maps it via the injected resolver. a
+        resolver exception of any type is surfaced as ``RuntimeError``
+        to honour the :class:`IdentityProvider` Protocol contract;
+        :meth:`McpServer._dispatch` maps that to the existing
+        ``IDENTITY_UNAVAILABLE`` error result.
+
+        :return: resolved caller identity
+        :rtype: Identity
+        :raises RuntimeError: when the bearer token is absent or the
+            resolver cannot resolve it to an identity
+        """
+        token = self._token_source()
+        if not token:
+            raise RuntimeError(
+                "bearer token absent from request context; caller identity cannot be resolved",
+            )
+        try:
+            identity = await self._resolver(token)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"bearer token could not be resolved to an identity: {type(exc).__name__}: {exc}",
+            ) from exc
+        return identity
 
 
 @runtime_checkable

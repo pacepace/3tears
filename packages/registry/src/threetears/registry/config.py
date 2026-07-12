@@ -15,6 +15,7 @@ from threetears.observe import get_logger
 __all__ = [
     "get_call_timeout",
     "get_heartbeat_check_interval",
+    "get_heartbeat_max_misses",
     "get_heartbeat_timeout",
     "get_jwks_request_timeout",
     "get_mcp_timeout",
@@ -31,6 +32,12 @@ _PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
 _PLATFORM_DEFAULT_HEARTBEAT_TIMEOUT = 45.0
 # platform default for heartbeat check sweep interval (seconds)
 _PLATFORM_DEFAULT_HEARTBEAT_CHECK_INTERVAL = 5.0
+# platform default for the number of CONSECUTIVE missed sweeps a pod
+# tolerates before its endpoints are fully evicted from the catalog. a
+# value of 1 restores immediate eviction on the first miss; the default
+# of 3 gives a transient blip (a slow sweep, a brief GC pause, a network
+# hiccup) room to recover before the pod is torn out of the catalog.
+_PLATFORM_DEFAULT_HEARTBEAT_MAX_MISSES = 3
 # platform default for tool pod reachability probe timeout (seconds)
 _PLATFORM_DEFAULT_PROBE_TIMEOUT = 3.0
 # platform default for the Hub JWKS fetch request/reply timeout (seconds)
@@ -98,6 +105,36 @@ def get_heartbeat_check_interval() -> float:
                 _PLATFORM_DEFAULT_HEARTBEAT_CHECK_INTERVAL,
             )
     return _PLATFORM_DEFAULT_HEARTBEAT_CHECK_INTERVAL
+
+
+def get_heartbeat_max_misses() -> int:
+    """read heartbeat max consecutive misses from environment or return platform default.
+
+    env var: THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES
+
+    a pod's endpoints are quarantined (marked unavailable, kept in the
+    catalog) on each missed sweep and only fully deregistered once its
+    consecutive-miss count reaches this threshold, so a transient miss
+    recovers on the next heartbeat instead of forcing re-registration.
+    values below 1 are clamped to 1 (evict on the first miss).
+
+    :return: max consecutive missed sweeps before full eviction
+    :rtype: int
+    """
+    raw = os.environ.get("THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES")
+    result = _PLATFORM_DEFAULT_HEARTBEAT_MAX_MISSES
+    if raw is not None:
+        try:
+            result = int(raw)
+        except ValueError:
+            log.warning(
+                "invalid THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES=%r, using default %d",
+                raw,
+                _PLATFORM_DEFAULT_HEARTBEAT_MAX_MISSES,
+            )
+    if result < 1:
+        result = 1
+    return result
 
 
 def get_probe_timeout() -> float:

@@ -118,8 +118,10 @@ class UsageRecord:
     :param conversation_id: optional conversation UUID (consumer tenant context)
     :ptype conversation_id: UUID | None
     :param invocation_ref: optional free-form reference to the underlying
-        invocation (a consumer may pass its tool-LLM invocation id rendered as a
-        string; others typically pass ``None``)
+        invocation. NOT the correlation carrier -- use ``correlation_id`` for
+        the request correlation id and ``origin_invocation_ref`` for the
+        tool-LLM back-link. this field is a human-readable label only; most
+        callers pass ``None``.
     :ptype invocation_ref: str | None
     :param category: optional consumer-defined usage category (for example:
         ``chat`` / ``sycophancy`` / ``tool`` / ``embedding`` /
@@ -131,6 +133,28 @@ class UsageRecord:
         :class:`TokenAuditSink` can write the FK column;
         other consumers leave it ``None``.
     :ptype model_id: UUID | None
+    :param bytes_in: bytes received by a non-LLM (HTTP / tool) call this
+        record meters; ``0`` for pure-LLM records. flows to OTel + sinks;
+        never to Prometheus labels.
+    :ptype bytes_in: int
+    :param bytes_out: bytes sent by a non-LLM (HTTP / tool) call this
+        record meters; ``0`` for pure-LLM records. flows to OTel + sinks;
+        never to Prometheus labels.
+    :ptype bytes_out: int
+    :param api_calls: count of downstream api calls a tool dispatch made
+        this record meters; ``0`` for pure-LLM records. flows to OTel +
+        sinks; never to Prometheus labels.
+    :ptype api_calls: int
+    :param correlation_id: dedicated request correlation id (the structured
+        field the gateway previously smuggled through ``invocation_ref``).
+        flows to OTel + sinks; never to Prometheus labels (unbounded
+        cardinality).
+    :ptype correlation_id: UUID | None
+    :param origin_invocation_ref: back-link to the ORIGINATING tool call's
+        id, set when an LLM call is made from inside a tool dispatch (the
+        join key tying a ``tool_llm`` row to its tool row). flows to OTel +
+        sinks; never to Prometheus labels.
+    :ptype origin_invocation_ref: UUID | None
     """
 
     model_name: str
@@ -162,6 +186,18 @@ class UsageRecord:
     # unchanged. flow to OTel + sinks; never to Prometheus labels.
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    # gu-task-05: non-LLM metering dimensions. bytes_in / bytes_out / api_calls
+    # are what an HTTP / tool call meters; default 0 keeps pure-LLM callers
+    # unchanged. correlation_id is the dedicated request correlation id
+    # (previously smuggled through invocation_ref); origin_invocation_ref is the
+    # back-link to the originating tool call. all flow to OTel spans (as
+    # ``llm.*``) and to attached sinks; never to Prometheus labels
+    # (cardinality discipline).
+    bytes_in: int = 0
+    bytes_out: int = 0
+    api_calls: int = 0
+    correlation_id: UUID | None = None
+    origin_invocation_ref: UUID | None = None
 
 
 @runtime_checkable
@@ -648,6 +684,23 @@ class UsageTracker:
                 span.set_attribute("llm.tenant.invocation_ref", usage.invocation_ref)
             if usage.category is not None:
                 span.set_attribute("llm.tenant.category", usage.category)
+
+            # gu-task-05: metering dimensions under the llm.* namespace (call
+            # dimensions, NOT tenant context -- kept out of llm.tenant.*).
+            # additive attribute names; emitted only when populated so a
+            # pure-LLM record's span is byte-identical to pre-shard. UUIDs
+            # stringified at the span border; ints gated on non-zero, mirroring
+            # the cache-token precedent. never Prometheus labels.
+            if usage.correlation_id is not None:
+                span.set_attribute("llm.correlation_id", str(usage.correlation_id))
+            if usage.origin_invocation_ref is not None:
+                span.set_attribute("llm.origin_invocation_ref", str(usage.origin_invocation_ref))
+            if usage.bytes_in:
+                span.set_attribute("llm.bytes_in", usage.bytes_in)
+            if usage.bytes_out:
+                span.set_attribute("llm.bytes_out", usage.bytes_out)
+            if usage.api_calls:
+                span.set_attribute("llm.api_calls", usage.api_calls)
 
     def make_callback(
         self,

@@ -18,12 +18,14 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.schema_sql import decode_jsonb
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
     "MediaContentEntity",
     "MediaEntity",
     "MemoryChunkEntity",
+    "MemoryConsolidationEntity",
     "MemoryEntity",
     "MemoryRefEntity",
 ]
@@ -34,6 +36,18 @@ def _as_uuid(value: object) -> UUID:
     if isinstance(value, UUID):
         return value
     return UUID(str(value))
+
+
+def _as_uuid_or_none(value: object) -> UUID | None:
+    """Coerce to UUID, tolerating ``None`` for nullable scope/ref columns.
+
+    ``customer_id`` / ``user_id`` became nullable in v024 (agent- and
+    customer-scoped rows), and ``superseded_by`` is a nullable soft ref;
+    a bare ``_as_uuid`` would raise ``ValueError`` on ``UUID("None")``.
+    """
+    if value is None:
+        return None
+    return _as_uuid(value)
 
 
 class MemoryEntity(BaseEntity):
@@ -97,22 +111,30 @@ class MemoryEntity(BaseEntity):
         BaseEntity.__setattr__(self, "agent_id", value)
 
     @property
-    def customer_id(self) -> UUID:
-        """Get customer ID for memory scoping."""
-        return _as_uuid(self._get_raw("customer_id"))
+    def customer_id(self) -> UUID | None:
+        """Get customer ID for memory scoping (nullable since v024).
+
+        ``None`` on an agent-scoped row. metallm always sets it; the
+        3tears primitive tolerates the null grain.
+        """
+        return _as_uuid_or_none(self._get_raw("customer_id"))
 
     @customer_id.setter
-    def customer_id(self, value: UUID) -> None:
+    def customer_id(self, value: UUID | None) -> None:
         """Set customer ID."""
         BaseEntity.__setattr__(self, "customer_id", value)
 
     @property
-    def user_id(self) -> UUID:
-        """Get the user ID that owns this memory."""
-        return _as_uuid(self._get_raw("user_id"))
+    def user_id(self) -> UUID | None:
+        """Get the user ID that owns this memory (nullable since v024).
+
+        ``None`` on an agent- or customer-scoped row. metallm always
+        sets it; the 3tears primitive tolerates the null grain.
+        """
+        return _as_uuid_or_none(self._get_raw("user_id"))
 
     @user_id.setter
-    def user_id(self, value: UUID) -> None:
+    def user_id(self, value: UUID | None) -> None:
         """Set the user ID."""
         BaseEntity.__setattr__(self, "user_id", value)
 
@@ -196,6 +218,87 @@ class MemoryEntity(BaseEntity):
     def alias(self, value: str | None) -> None:
         """Set the named-anchor alias."""
         BaseEntity.__setattr__(self, "alias", value)
+
+    @property
+    def salience(self) -> float:
+        """Stored, decayed ranking weight (v024). Defaults to the seed.
+
+        NUMERIC(5,4) in the DB (asyncpg yields ``Decimal``); exposed as
+        ``float``. On an unsaved entity that has not set the column, the
+        DB server default (0.5) applies on write, so the getter mirrors
+        that seed rather than raising.
+        """
+        raw = self._get_raw("salience")
+        return float(raw) if raw is not None else 0.5
+
+    @salience.setter
+    def salience(self, value: float) -> None:
+        """Set the salience weight."""
+        BaseEntity.__setattr__(self, "salience", value)
+
+    @property
+    def last_decayed_at(self) -> datetime | None:
+        """Timestamp of the last decay pass (v024); decay anchor."""
+        value: datetime | None = self._get_raw("last_decayed_at")
+        return value
+
+    @last_decayed_at.setter
+    def last_decayed_at(self, value: datetime | None) -> None:
+        """Set the last-decayed timestamp."""
+        BaseEntity.__setattr__(self, "last_decayed_at", value)
+
+    @property
+    def last_accessed(self) -> datetime | None:
+        """Timestamp of the last ambient retrieval (v024); reinforcement."""
+        value: datetime | None = self._get_raw("last_accessed")
+        return value
+
+    @last_accessed.setter
+    def last_accessed(self, value: datetime | None) -> None:
+        """Set the last-accessed timestamp."""
+        BaseEntity.__setattr__(self, "last_accessed", value)
+
+    @property
+    def evergreen(self) -> bool:
+        """Pin flag (v024): excluded from both decay and the access-bump."""
+        return bool(self._get_raw("evergreen"))
+
+    @evergreen.setter
+    def evergreen(self, value: bool) -> None:
+        """Set the evergreen pin flag."""
+        BaseEntity.__setattr__(self, "evergreen", value)
+
+    @property
+    def superseded_by(self) -> UUID | None:
+        """Soft ref (v024) to a consolidation gist, or ``None``.
+
+        Set by Dream consolidation on each source it merges. Ambient
+        retrieval excludes non-null; direct recall still finds it.
+        """
+        return _as_uuid_or_none(self._get_raw("superseded_by"))
+
+    @superseded_by.setter
+    def superseded_by(self, value: UUID | None) -> None:
+        """Set the supersession soft ref."""
+        BaseEntity.__setattr__(self, "superseded_by", value)
+
+    @property
+    def tags(self) -> list[str] | None:
+        """JSON array of label strings (v025), or ``None``.
+
+        JSONB in the DB. The schema-generated read path decodes it to a
+        list; the raw ``_MEMORIES_SELECT_COLUMNS`` fetch path (no codec
+        registered) yields a JSON string. :func:`decode_jsonb` normalises
+        both to a Python list.
+        """
+        raw = self._get_raw("tags")
+        decoded: list[str] | None = decode_jsonb(raw)
+        return decoded
+
+    @tags.setter
+    def tags(self, value: list[str] | None) -> None:
+        """Set the JSONB label set."""
+        BaseEntity.__setattr__(self, "tags", value)
 
 
 class MediaEntity(BaseEntity):
@@ -1131,4 +1234,113 @@ class MemoryRefEntity(BaseEntity):
         :param value: new updated datetime
         :ptype value: datetime
         """
+        BaseEntity.__setattr__(self, "date_updated", value)
+
+
+class MemoryConsolidationEntity(BaseEntity):
+    """cache proxy entity for the ``memory_consolidations`` edge table (v026).
+
+    Presence/aliveness program (3tears v0.15.0). One row records that
+    ``consolidated_memory_id`` (a Dream gist) was synthesised from
+    ``source_memory_id``; N source rows fan into one gist. The edge is
+    additive provenance — neither endpoint memory is mutated by it.
+
+    Composite primary key ``(agent_id, consolidated_memory_id,
+    source_memory_id)`` mirrors :class:`MemoryRefEntity`: ``_id`` holds
+    the tuple so :class:`BaseCollection`'s tuple-aware pk path addresses
+    L1 / L2 / L3 uniformly. ``rationale`` is the nullable audit trail.
+    """
+
+    primary_key_field: str = "agent_id"
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with the 3-tuple ``_id`` for composite-pk lookup.
+
+        :param data: row dict; must carry ``agent_id``,
+            ``consolidated_memory_id`` and ``source_memory_id`` keys
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        object.__setattr__(
+            self,
+            "_id",
+            (
+                data["agent_id"],
+                data["consolidated_memory_id"],
+                data["source_memory_id"],
+            ),
+        )
+
+    @property
+    def agent_id(self) -> UUID:
+        """get the agent UUID (partition, first pk column)."""
+        return _as_uuid(self._get_raw("agent_id"))
+
+    @agent_id.setter
+    def agent_id(self, value: UUID) -> None:
+        """set the agent UUID."""
+        BaseEntity.__setattr__(self, "agent_id", value)
+
+    @property
+    def consolidated_memory_id(self) -> UUID:
+        """get the gist (consolidated output) UUID (second pk column)."""
+        return _as_uuid(self._get_raw("consolidated_memory_id"))
+
+    @consolidated_memory_id.setter
+    def consolidated_memory_id(self, value: UUID) -> None:
+        """set the gist UUID."""
+        BaseEntity.__setattr__(self, "consolidated_memory_id", value)
+
+    @property
+    def source_memory_id(self) -> UUID:
+        """get the source (merged-in) UUID (third pk column)."""
+        return _as_uuid(self._get_raw("source_memory_id"))
+
+    @source_memory_id.setter
+    def source_memory_id(self, value: UUID) -> None:
+        """set the source UUID."""
+        BaseEntity.__setattr__(self, "source_memory_id", value)
+
+    @property
+    def rationale(self) -> str | None:
+        """get the nullable audit trail (why these merged), or ``None``."""
+        value: str | None = self._get_raw("rationale")
+        return value
+
+    @rationale.setter
+    def rationale(self, value: str | None) -> None:
+        """set the audit rationale."""
+        BaseEntity.__setattr__(self, "rationale", value)
+
+    @property
+    def date_created(self) -> datetime:
+        """get the timestamp when the edge was recorded."""
+        value: datetime = self._get_raw("date_created")
+        return value
+
+    @date_created.setter
+    def date_created(self, value: datetime) -> None:
+        """set the created timestamp."""
+        BaseEntity.__setattr__(self, "date_created", value)
+
+    @property
+    def date_updated(self) -> datetime | None:
+        """get the last-updated timestamp (framework-stamped on save)."""
+        value: datetime | None = self._get_raw("date_updated")
+        return value
+
+    @date_updated.setter
+    def date_updated(self, value: datetime | None) -> None:
+        """set the updated timestamp."""
         BaseEntity.__setattr__(self, "date_updated", value)

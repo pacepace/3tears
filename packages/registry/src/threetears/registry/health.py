@@ -76,6 +76,7 @@ class HeartbeatSubscriber:
         namespace: str = "3tears",
         check_interval: float | None = None,
         timeout: float | None = None,
+        max_consecutive_misses: int | None = None,
     ) -> None:
         """initialize heartbeat subscriber.
 
@@ -96,9 +97,18 @@ class HeartbeatSubscriber:
             THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var when
             ``None``
         :ptype timeout: float | None
+        :param max_consecutive_misses: number of CONSECUTIVE missed
+            sweeps a pod tolerates before its endpoints are fully
+            evicted from the catalog; sourced from
+            THREETEARS_REGISTRY_HEARTBEAT_MAX_MISSES env var when
+            ``None``. below the threshold a missed pod is quarantined
+            (endpoints marked unavailable but kept) so a returning
+            heartbeat revives it without re-registration
+        :ptype max_consecutive_misses: int | None
         """
         from threetears.registry.config import (
             get_heartbeat_check_interval,
+            get_heartbeat_max_misses,
             get_heartbeat_timeout,
         )
 
@@ -107,6 +117,9 @@ class HeartbeatSubscriber:
         self._namespace = namespace
         self._check_interval = check_interval if check_interval is not None else get_heartbeat_check_interval()
         self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
+        self._max_consecutive_misses = (
+            max_consecutive_misses if max_consecutive_misses is not None else get_heartbeat_max_misses()
+        )
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
         self._check_task: asyncio.Task[None] | None = None
@@ -312,13 +325,25 @@ class HeartbeatSubscriber:
 
         asks the Collection for each known pod and compares its
         ``date_last_heartbeat`` against the configured liveness
-        timeout. pods that exceed the timeout are marked
-        ``"unresponsive"`` in the Collection, their endpoints are
-        dropped from the :class:`ToolCatalog`, and they are purged
-        from the Collection + the in-memory known-pods set so the
-        next sweep does not re-examine them. the Collection delete
-        publishes an L2 invalidation so peer registry processes
-        evict their own L1 copy.
+        timeout. a pod that exceeds the timeout has its
+        ``consecutive_misses`` incremented and its status set to
+        ``"unresponsive"`` in the Collection.
+
+        eviction is HYSTERETIC, gated on ``max_consecutive_misses``:
+
+        - below the threshold the pod is QUARANTINED -- its catalog
+          endpoints are marked unavailable (so routing stops selecting
+          it) but LEFT in place, and the pod stays in the known-pods
+          set. a heartbeat arriving before the threshold resets
+          ``consecutive_misses`` to zero and re-marks the endpoints
+          available (:meth:`handle_heartbeat`), so a transient blip
+          recovers with no re-registration.
+        - at the threshold the pod is fully EVICTED: its endpoints are
+          dropped from the :class:`ToolCatalog` and it is purged from
+          the Collection + the in-memory known-pods set so the next
+          sweep does not re-examine it. the Collection delete publishes
+          an L2 invalidation so peer registry processes evict their own
+          L1 copy.
 
         :return: nothing
         :rtype: None
@@ -340,13 +365,29 @@ class HeartbeatSubscriber:
             entity.consecutive_misses = int(entity.consecutive_misses) + 1
             entity.status = _STATUS_UNRESPONSIVE
             await self._collection.save_entity(entity)
+            if entity.consecutive_misses < self._max_consecutive_misses:
+                quarantined = self._catalog.mark_pod_endpoints_unavailable(pod_id)
+                log.warning(
+                    "pod heartbeat miss under eviction threshold; quarantining endpoints",
+                    extra={
+                        "extra_data": {
+                            "pod_id": pod_id,
+                            "elapsed_seconds": elapsed,
+                            "consecutive_misses": entity.consecutive_misses,
+                            "max_consecutive_misses": self._max_consecutive_misses,
+                            "quarantined_tools": quarantined,
+                        }
+                    },
+                )
+                continue
             log.warning(
-                "pod heartbeat timeout",
+                "pod heartbeat timeout; consecutive-miss threshold reached",
                 extra={
                     "extra_data": {
                         "pod_id": pod_id,
                         "elapsed_seconds": elapsed,
                         "consecutive_misses": entity.consecutive_misses,
+                        "max_consecutive_misses": self._max_consecutive_misses,
                     }
                 },
             )

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-tools"
-version = "0.14.1"
+version = "0.15.0"
 description = "Tool framework for LLM agents -- routing, execution, and builtin tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -31,6 +31,7 @@ dependencies = [
     "3tears-observe",
     "langchain-core",
     "httpx",
+    "prometheus-client>=0.20",
 ]
 
 [project.urls]

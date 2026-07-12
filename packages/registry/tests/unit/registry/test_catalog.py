@@ -217,6 +217,7 @@ class TestCatalogEntry:
             "input_schema",
             "output_schema",
             "timeout_seconds",
+            "requires_confirmation",
             "endpoints",
             "date_registered",
         }

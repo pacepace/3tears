@@ -93,6 +93,47 @@ def _grant(
     return group, membership, assignment
 
 
+def _grant_member(
+    namespace: Namespace,
+    role: Role,
+    member_type: MemberType,
+    member_id,
+) -> tuple[Group, GroupMembership, RoleAssignment]:
+    """build a one-group one-membership one-assignment chain for any member.
+
+    symmetric to :func:`_grant` but parameterized on
+    :class:`MemberType` so an agent-side grant can be built for the
+    user-intersect-agent path.
+
+    :param namespace: workspace namespace grant targets
+    :ptype namespace: Namespace
+    :param role: role to grant
+    :ptype role: Role
+    :param member_type: user or agent member type
+    :ptype member_type: MemberType
+    :param member_id: member UUID
+    :return: tuple of (group, membership, assignment) for fake-store insertion
+    :rtype: tuple[Group, GroupMembership, RoleAssignment]
+    """
+    group = Group(id=uuid4(), name="grantee", customer_id=namespace.customer_id)
+    membership = GroupMembership(
+        group_id=group.id,
+        member_type=member_type,
+        member_id=member_id,
+        customer_id=namespace.customer_id,
+    )
+    assignment = RoleAssignment(
+        id=uuid4(),
+        role_id=role.id,
+        group_id=group.id,
+        scope_type=ScopeType.NAMESPACE,
+        scope_namespace_id=namespace.id,
+        scope_namespace_type=None,
+        scope_customer_id=None,
+    )
+    return group, membership, assignment
+
+
 class TestReadPermit:
     """direction='read' permit paths."""
 
@@ -334,6 +375,178 @@ class TestOwnerShortCircuit:
             cache=make_cache(store),
         )
         assert decision is True
+
+
+class TestUserAgentIntersection:
+    """user-intersect-agent path: the agent side is a genuine constraint.
+
+    the namespace is NOT owned by the agent under test (``_ns_workspace``
+    assigns a random ``owner_agent_id``), so the owner short-circuit does
+    not fire and both sides must independently grant the path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_broad_user_narrow_agent_denies_outside_agent_sandbox(self) -> None:
+        """broad user grant must NOT widen access past the agent's sandbox."""
+        user = uuid4()
+        agent = uuid4()
+        namespace = _ns_workspace()
+
+        user_role = _role_with_actions(["read_file_matching:**"])
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
+        agent_role = _role_with_actions(["read_file_matching:sandbox/**"])
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
+
+        store = FakeStore()
+        for role in (user_role, agent_role):
+            store.add_role(role)
+        for group in (u_group, a_group):
+            store.add_group(group)
+        for membership in (u_membership, a_membership):
+            store.add_membership(membership)
+        for assignment in (u_assignment, a_assignment):
+            store.add_assignment(assignment)
+
+        decision = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="secrets/key.txt",
+            direction="read",
+            cache=make_cache(store),
+        )
+        assert decision is False
+
+    @pytest.mark.asyncio
+    async def test_intersection_permits_when_both_sides_match(self) -> None:
+        """a path granted on BOTH sides permits."""
+        user = uuid4()
+        agent = uuid4()
+        namespace = _ns_workspace()
+
+        user_role = _role_with_actions(["read_file_matching:**"])
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
+        agent_role = _role_with_actions(["read_file_matching:sandbox/**"])
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
+
+        store = FakeStore()
+        for role in (user_role, agent_role):
+            store.add_role(role)
+        for group in (u_group, a_group):
+            store.add_group(group)
+        for membership in (u_membership, a_membership):
+            store.add_membership(membership)
+        for assignment in (u_assignment, a_assignment):
+            store.add_assignment(assignment)
+
+        decision = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="sandbox/notes.txt",
+            direction="read",
+            cache=make_cache(store),
+        )
+        assert decision is True
+
+    @pytest.mark.asyncio
+    async def test_user_side_still_caps_broad_agent(self) -> None:
+        """a narrow user grant caps a broad agent grant (intersection is symmetric)."""
+        user = uuid4()
+        agent = uuid4()
+        namespace = _ns_workspace()
+
+        user_role = _role_with_actions(["read_file_matching:docs/**"])
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
+        agent_role = _role_with_actions(["read_file_matching:**"])
+        a_group, a_membership, a_assignment = _grant_member(namespace, agent_role, MemberType.AGENT, agent)
+
+        store = FakeStore()
+        for role in (user_role, agent_role):
+            store.add_role(role)
+        for group in (u_group, a_group):
+            store.add_group(group)
+        for membership in (u_membership, a_membership):
+            store.add_membership(membership)
+        for assignment in (u_assignment, a_assignment):
+            store.add_assignment(assignment)
+
+        decision = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="secrets/key.txt",
+            direction="read",
+            cache=make_cache(store),
+        )
+        assert decision is False
+
+    @pytest.mark.asyncio
+    async def test_agent_with_no_grants_denies_broad_user(self) -> None:
+        """an agent with NO file grants collapses the intersection to deny."""
+        user = uuid4()
+        agent = uuid4()
+        namespace = _ns_workspace()
+
+        user_role = _role_with_actions(["read_file_matching:**"])
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
+
+        store = FakeStore()
+        store.add_role(user_role)
+        store.add_group(u_group)
+        store.add_membership(u_membership)
+        store.add_assignment(u_assignment)
+
+        decision = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="anything.txt",
+            direction="read",
+            cache=make_cache(store),
+        )
+        assert decision is False
+
+    @pytest.mark.asyncio
+    async def test_owner_agent_with_user_caps_by_user(self) -> None:
+        """owner agent side matches every path; the user side still caps."""
+        user = uuid4()
+        agent = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=uuid4(),
+            namespace_type="workspace",
+            owner_agent_id=agent,
+        )
+
+        user_role = _role_with_actions(["read_file_matching:docs/**"])
+        u_group, u_membership, u_assignment = _grant_member(namespace, user_role, MemberType.USER, user)
+
+        store = FakeStore()
+        store.add_role(user_role)
+        store.add_group(u_group)
+        store.add_membership(u_membership)
+        store.add_assignment(u_assignment)
+        cache = make_cache(store)
+
+        permitted = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="docs/readme.md",
+            direction="read",
+            cache=cache,
+        )
+        denied = await evaluate_file_access(
+            namespace=namespace,
+            user_id=user,
+            agent_id=agent,
+            path="secrets/key.txt",
+            direction="read",
+            cache=cache,
+        )
+        assert permitted is True
+        assert denied is False
 
 
 class TestValidation:

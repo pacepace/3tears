@@ -374,12 +374,16 @@ class TestHeartbeatSubscriberFlow:
         )
         await catalog.register(entry)
 
+        # max_consecutive_misses=1: this test exercises the EVICTION path, so a
+        # single missed sweep evicts immediately (the hysteretic quarantine path
+        # -- misses below the threshold -- is covered by the unit suite).
         subscriber = HeartbeatSubscriber(
             catalog,
             collection,
             namespace="test",
             check_interval=100.0,
             timeout=30.0,
+            max_consecutive_misses=1,
         )
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)

@@ -86,6 +86,13 @@ class IdentityClaims:
     mismatch, so a captured user-assertion cannot be replayed into a DIFFERENT conversation (the
     cross-conversation impersonation residual). ``None`` for the handshake identity token (which
     binds no conversation) -- only the user-assertion sets it.
+    ``identity_generation`` is the single-writer fencing token for a per-pod-session connect
+    credential: a fresh handshake for a given pod-session principal STAMPS the current generation,
+    and the NATS auth-callout DENIES a reauth that presents a now-stale generation for that same
+    principal -- superseding only a zombie/stale connection of the SAME pod-session, never a distinct
+    pod of the same agent (horizontal scaling stays intact). ``None`` on a pre-handshake bootstrap
+    connect (which has not yet been stamped a generation) and on tokens that do not participate in
+    connection fencing (the Hub identity token / user-assertion).
     """
 
     sub: str  # the agent_id the token authenticates
@@ -98,6 +105,7 @@ class IdentityClaims:
     user_id: str | None = None
     cnf: str | None = None  # holder-key thumbprint (jkt) for proof-of-possession
     conversation_id: str | None = None  # the conversation a user-assertion is bound to
+    identity_generation: str | None = None  # single-writer fencing generation for the pod-session
 
 
 def generate_signing_keypair() -> tuple[Ed25519PrivateKey, Ed25519PublicKey]:
@@ -153,6 +161,8 @@ def sign_identity_token(claims: IdentityClaims, *, signing_key: Ed25519PrivateKe
         payload["cnf"] = {"jkt": claims.cnf}
     if claims.conversation_id is not None:
         payload["conversation_id"] = claims.conversation_id
+    if claims.identity_generation is not None:
+        payload["identity_generation"] = claims.identity_generation
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid})
 
 
@@ -246,6 +256,11 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
     # is normalized to ``None`` so the verify gates' "user-assertion carries no conversation_id"
     # deny fires rather than a confusing empty-string mismatch.
     conversation_id = payload.get("conversation_id")
+    # identity_generation is an OPTIONAL fencing claim (only a post-handshake connect credential
+    # carries one). when present it must be a non-empty string -- a present-but-empty/null value is
+    # not a usable generation and is normalized to ``None`` so the auth-callout's admission rule reads
+    # it as "no generation presented" (bootstrap grant) rather than an unmatchable empty string.
+    identity_generation = payload.get("identity_generation")
     return IdentityClaims(
         sub=_require_nonempty_str(payload, "sub"),
         customer_id=_require_nonempty_str(payload, "customer_id"),
@@ -257,6 +272,9 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
         user_id=None if user_id is None else _require_nonempty_str(payload, "user_id"),
         cnf=cnf if isinstance(cnf, str) and cnf else None,
         conversation_id=conversation_id if isinstance(conversation_id, str) and conversation_id else None,
+        identity_generation=(
+            identity_generation if isinstance(identity_generation, str) and identity_generation else None
+        ),
     )
 
 

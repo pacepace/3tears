@@ -32,8 +32,8 @@ jobs:
 
       - name: Typecheck
         env:
-          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/tools/src
-        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.tools
+          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src
+        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources
 
       - name: Test (unit + enforcement; integration excluded - no docker on the runner)
         run: uv run pytest packages/ tests/ -m "not integration" -v

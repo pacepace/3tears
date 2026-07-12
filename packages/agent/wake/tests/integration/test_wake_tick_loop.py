@@ -275,7 +275,7 @@ class TestMissedFirePolicy:
         finally:
             await pool.close()
 
-    async def test_catch_up_advances_one_step_from_last_fire(self, pg_schema: tuple[str, str]) -> None:
+    async def test_catch_up_advances_one_step_from_the_fired_occurrence(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
         pool = await _apply_schema(url, schema)
         try:
@@ -298,8 +298,12 @@ class TestMissedFirePolicy:
             row = await _read_schedule(pool, sched)
             next_fire = row["next_fire_at"]
             assert isinstance(next_fire, datetime)
-            # catch_up advances exactly one step (60s) from last_fired_at
-            assert next_fire == last_fire + timedelta(seconds=60)
+            # catch_up advances exactly one interval (60s) from the OCCURRENCE
+            # being fired (the claimed row's next_fire_at = backlog_anchor), NOT
+            # from last_fired_at. anchoring on last_fired_at would collapse
+            # catch_up into coalesce because the store stamps last_fired_at = now
+            # on every claim. subsequent ticks drain the backlog one step each.
+            assert next_fire == backlog_anchor + timedelta(seconds=60)
         finally:
             await pool.close()
 

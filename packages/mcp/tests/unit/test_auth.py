@@ -75,6 +75,22 @@ class TestEnvVarIdentityProvider:
         identity = await provider.identify()
         assert identity.principal_id == target
         assert identity.principal_type == "user"
+
+    @pytest.mark.asyncio
+    async def test_is_admin_defaults_deny(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """is_admin defaults False: a wirer that omits the flag gets a
+        non-admin identity, not a total RBAC bypass. admin authority is
+        granted only when the wirer passes is_admin=True explicitly."""
+        target = uuid4()
+        monkeypatch.setenv("MCP_ADMIN_USER_ID", str(target))
+        assert (await EnvVarIdentityProvider().identify()).is_admin is False
+        assert (await EnvVarIdentityProvider(principal_id=target).identify()).is_admin is False
+
+    @pytest.mark.asyncio
+    async def test_is_admin_granted_when_explicit(self) -> None:
+        """admin authority is honoured when the wirer opts in explicitly."""
+        provider = EnvVarIdentityProvider(principal_id=uuid4(), is_admin=True)
+        identity = await provider.identify()
         assert identity.is_admin is True
 
     @pytest.mark.asyncio

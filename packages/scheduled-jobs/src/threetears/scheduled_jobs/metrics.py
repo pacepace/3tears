@@ -235,7 +235,7 @@ class ScheduledJobsMetricsEmitter:
         """Increment :data:`SCHEDULED_JOBS_FAILURES_TOTAL` by reason.
 
         Reasons (bounded): ``handler_exception``, ``claim_lost``,
-        ``other``.
+        ``reaped``, ``other``.
 
         :param reason: bounded failure reason string
         :ptype reason: str

@@ -26,7 +26,7 @@ predicate cannot apply to it by construction.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -40,6 +40,7 @@ from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 
 __all__ = [
+    "REAPED_DISPATCH_ERROR",
     "JobFireCollection",
     "ScheduledJobCollection",
 ]
@@ -197,6 +198,11 @@ _JOB_FIRES_FETCH_SQL = (
 
 
 _JOB_FIRES_DELETE_SQL = "DELETE FROM job_fires WHERE partition_key = $1 AND fire_id = $2"
+
+
+# Terminal error text stamped onto a fire row the reaper reclaims. Names
+# the cause so the loss is self-explanatory in fire history.
+REAPED_DISPATCH_ERROR: str = "reaped: dispatch abandoned in 'dispatching' (pod died mid-dispatch)"
 
 
 # the column list reused by every multi-row scheduled_jobs read.
@@ -629,6 +635,49 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
             fire_id,
         )
         return None
+
+    async def reap_stale_dispatching(
+        self,
+        now: datetime,
+        *,
+        older_than: timedelta,
+    ) -> int:
+        """Reap ``'dispatching'`` fire rows abandoned mid-dispatch to ``'failed'``.
+
+        Cross-partition sweep: a pod that dies after
+        :meth:`create_dispatching` but before a finalize leaves a
+        permanent ``'dispatching'`` zombie whose occurrence never
+        re-fires (its schedule already advanced). This stamps every such
+        row older than ``older_than`` to ``'failed'`` with
+        :data:`REAPED_DISPATCH_ERROR`, making the loss visible in fire
+        history + failure metrics instead of silent.
+
+        :param now: sweep instant; the cutoff is ``now - older_than``
+        :ptype now: datetime
+        :param older_than: minimum in-flight age before a row is reaped
+        :ptype older_than: timedelta
+        :return: number of rows reaped
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        cutoff = now - older_than
+        # __SPANS_PARTITIONS__: reclaiming abandoned in-flight fires is a
+        # global sweep across every partition; the partition predicate
+        # cannot apply by construction. ``partition_key`` is named in the
+        # RETURNING clause so the partition-column enforcement walker sees
+        # it as a static literal (same technique as list_due_for_tick).
+        # cache-bypass: bulk terminal-state UPDATE across partitions; not
+        # pk-addressable, so the L1 row cache cannot serve or invalidate
+        # it -- the reaped rows re-materialize on the next targeted fetch.
+        rows = await self.l3_pool.fetch(
+            "UPDATE job_fires SET status = 'failed', error = $1 "
+            "WHERE status = 'dispatching' AND actual_fired_at < $2 "
+            "RETURNING partition_key, fire_id",
+            REAPED_DISPATCH_ERROR,
+            cutoff,
+        )
+        return len(rows)
 
     async def list_for_job(
         self,

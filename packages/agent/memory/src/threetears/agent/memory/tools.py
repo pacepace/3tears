@@ -1058,6 +1058,7 @@ async def load_memory_add_tool(
     *,
     context_resolver: Callable[[], Any],
     similarity_dedup_threshold: float = 0.90,
+    salience_seed: float = 0.5,
 ) -> list[BaseTool]:
     """create a memory_add tool for explicit memory storage.
 
@@ -1096,6 +1097,10 @@ async def load_memory_add_tool(
         exceeds this similarity score, the existing memory is
         updated instead of creating a duplicate. default 0.90
     :ptype similarity_dedup_threshold: float
+    :param salience_seed: starting salience for a newly-added memory
+        (design §3 per-user knob). default 0.5 matches the DB server
+        default; a tuned value is honored on insert
+    :ptype salience_seed: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -1262,6 +1267,10 @@ async def load_memory_add_tool(
                 "content": content,
                 "embedding": embedding,
                 "alias": normalised_alias,
+                # honor the per-user salience_seed knob (design §3); without
+                # it the DB server default (0.5) applies and a tuned seed is
+                # a silent no-op.
+                "salience": salience_seed,
                 "date_created": now,
                 "date_updated": now,
             }

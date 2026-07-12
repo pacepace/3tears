@@ -98,8 +98,14 @@ def _make_subscriber(
     timeout: float = 30.0,
     check_interval: float = 5.0,
     namespace: str = "test",
+    max_consecutive_misses: int = 1,
 ) -> tuple[HeartbeatSubscriber, HeartbeatCollection]:
     """build subscriber + collection pair for tests.
+
+    defaults ``max_consecutive_misses`` to 1 (evict on the first missed
+    sweep) so the eviction-mechanics tests keep exercising the eviction
+    path in a single sweep; the hysteresis tests pass a higher threshold
+    explicitly.
 
     :param catalog: optional pre-built catalog; a fresh one is
         created when ``None``
@@ -110,6 +116,9 @@ def _make_subscriber(
     :ptype check_interval: float
     :param namespace: NATS subject namespace for heartbeat subscription
     :ptype namespace: str
+    :param max_consecutive_misses: consecutive missed sweeps tolerated
+        before full eviction
+    :ptype max_consecutive_misses: int
     :return: (subscriber, collection) pair
     :rtype: tuple[HeartbeatSubscriber, HeartbeatCollection]
     """
@@ -121,6 +130,7 @@ def _make_subscriber(
         namespace=namespace,
         check_interval=check_interval,
         timeout=timeout,
+        max_consecutive_misses=max_consecutive_misses,
     )
     return subscriber, collection
 
@@ -441,6 +451,146 @@ class TestHeartbeatSubscriberHealthCheck:
         await subscriber.run_health_check()
 
         assert "pod-miss" not in subscriber.known_pod_ids
+
+    @pytest.mark.asyncio
+    async def test_transient_miss_quarantines_but_keeps_pod(self) -> None:
+        """a miss below the threshold quarantines endpoints without evicting the pod.
+
+        this is the hysteresis guard: a single missed sweep must NOT
+        permanently tear a pod out of the catalog. its endpoints are
+        marked unavailable (routing stops selecting it) but kept, and
+        the pod stays tracked so a returning heartbeat can revive it.
+        """
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-blip")
+        await catalog.register(entry)
+
+        subscriber, collection = _make_subscriber(
+            catalog=catalog,
+            timeout=30.0,
+            max_consecutive_misses=3,
+        )
+
+        stale_time = datetime.now(UTC) - timedelta(seconds=60)
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-blip",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-blip")
+
+        await subscriber.run_health_check()
+
+        # pod still tracked + still in the collection (not evicted)
+        assert "pod-blip" in subscriber.known_pod_ids
+        reloaded = await collection.get("pod-blip")
+        assert reloaded is not None
+        assert reloaded.consecutive_misses == 1
+        assert reloaded.status == "unresponsive"
+
+        # catalog entry survives but the endpoint is quarantined (unavailable)
+        surviving = catalog.get("threetears.calculator@1.0.0")
+        assert surviving is not None
+        assert len(surviving.endpoints) == 1
+        assert surviving.endpoints[0].status == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_quarantined_pod_recovers_on_heartbeat(self) -> None:
+        """a returning heartbeat revives a quarantined pod without re-registration."""
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-recover")
+        await catalog.register(entry)
+
+        subscriber, collection = _make_subscriber(
+            catalog=catalog,
+            timeout=30.0,
+            max_consecutive_misses=3,
+        )
+        nc = AsyncMock()
+        mock_sub = AsyncMock()
+        nc.subscribe = AsyncMock(return_value=mock_sub)
+        await subscriber.start(nc)
+
+        stale_time = datetime.now(UTC) - timedelta(seconds=60)
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-recover",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-recover")
+
+        # one missed sweep quarantines the endpoint
+        await subscriber.run_health_check()
+        quarantined = catalog.get("threetears.calculator@1.0.0")
+        assert quarantined is not None
+        assert quarantined.endpoints[0].status == "unavailable"
+
+        # heartbeat returns -> endpoint revived, misses reset, no re-registration
+        msg = _make_heartbeat_msg(pod_id="pod-recover")
+        await subscriber.handle_heartbeat(msg)
+
+        revived = catalog.get("threetears.calculator@1.0.0")
+        assert revived is not None
+        assert revived.endpoints[0].status == "available"
+        reloaded = await collection.get("pod-recover")
+        assert reloaded is not None
+        assert reloaded.consecutive_misses == 0
+        assert reloaded.status == "healthy"
+        await subscriber.stop()
+
+    @pytest.mark.asyncio
+    async def test_evicts_only_after_threshold_consecutive_misses(self) -> None:
+        """pod is fully evicted only once consecutive misses reach the threshold."""
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-persistent")
+        await catalog.register(entry)
+
+        subscriber, collection = _make_subscriber(
+            catalog=catalog,
+            timeout=30.0,
+            max_consecutive_misses=3,
+        )
+
+        stale_time = datetime.now(UTC) - timedelta(seconds=60)
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-persistent",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-persistent")
+
+        # sweeps 1 and 2: below threshold -> quarantined, still tracked
+        await subscriber.run_health_check()
+        assert "pod-persistent" in subscriber.known_pod_ids
+        assert catalog.get("threetears.calculator@1.0.0") is not None
+
+        await subscriber.run_health_check()
+        assert "pod-persistent" in subscriber.known_pod_ids
+        assert catalog.get("threetears.calculator@1.0.0") is not None
+
+        # sweep 3: threshold reached -> full eviction
+        await subscriber.run_health_check()
+        assert "pod-persistent" not in subscriber.known_pod_ids
+        assert await collection.get("pod-persistent") is None
+        assert catalog.get("threetears.calculator@1.0.0") is None
 
 
 # -- lifecycle tests --

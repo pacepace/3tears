@@ -1,11 +1,14 @@
-"""datasource entity definitions for the registry, schema-metadata, and table-template tables.
+"""capability-source entity definitions for the registry, schema-metadata, and table-template tables.
 
 each entity subclasses :class:`threetears.core.entities.base.BaseEntity`
 and matches the shape of the corresponding ``platform.*`` table:
 
-- :class:`DataSourceEntity` -- the external datasource registration
-  row (``platform.datasources``). composite PK ``(customer_id, id)``;
-  customer-scoped per namespace-task-01 phase 4.5.
+- :class:`CapabilitySourceEntity` -- the registered capability-source
+  row (``platform.datasources``). generalized from the former
+  datasource-only shape (Fork-1, gu-task-08): a ``kind`` discriminator
+  (``datasource`` / ``api_import`` / ``mcp_import``) widens the same
+  registry to hold API imports and MCP imports alongside database
+  datasources. flat PK ``id``.
 - :class:`DataSourceTableEntity` -- discovered table row
   (``platform.datasource_tables``). flat PK ``id``.
 - :class:`DataSourceColumnEntity` -- discovered column row
@@ -14,13 +17,15 @@ and matches the shape of the corresponding ``platform.*`` table:
 - :class:`DataSourceRelationEntity` -- cross-table join metadata
   (``platform.datasource_relations``). flat PK ``id``.
 - :class:`TableTemplateEntity` -- reusable table-shape definition
-  (``platform.table_templates``). composite PK ``(customer_id, id)``
-  matching :class:`DataSourceEntity`.
+  (``platform.table_templates``). composite PK ``(customer_id, id)``.
 
-plus the lifecycle enums:
+plus the discriminator + lifecycle enums:
 
+- :class:`CapabilitySourceKind` -- ``datasource`` / ``api_import`` /
+  ``mcp_import``; the higher-level capability-source discriminator
 - :class:`DataSourceType` -- ``redshift`` / ``snowflake`` / ``bigquery``
-  / ``postgres`` (or ``yugabyte`` once shard 08 adds it) / ``agent_internal``
+  / ``postgres`` / ``yugabyte`` / ``agent_internal`` (the datasource
+  DRIVER axis; applies only to ``kind='datasource'`` rows)
 - :class:`DataSourceAccessMode` -- ``read`` / ``write`` / ``readwrite``
 - :class:`DataSourceStatus` -- ``active`` / ``disabled``
 """
@@ -33,9 +38,10 @@ from typing import Any
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
+    "CapabilitySourceEntity",
+    "CapabilitySourceKind",
     "DataSourceAccessMode",
     "DataSourceColumnEntity",
-    "DataSourceEntity",
     "DataSourceRelationEntity",
     "DataSourceSchemaDigestEntity",
     "DataSourceStatus",
@@ -43,6 +49,37 @@ __all__ = [
     "DataSourceType",
     "TableTemplateEntity",
 ]
+
+
+class CapabilitySourceKind(StrEnum):
+    """capability-source kind discriminator (Fork-1, gu-task-08).
+
+    the higher-level axis over the ``platform.datasources`` registry:
+    it says WHETHER a row is a database datasource, an external API
+    import, or an MCP import. distinct from :class:`DataSourceType`,
+    which is the datasource DRIVER axis and applies only to
+    ``kind='datasource'`` rows (an ``api_import`` / ``mcp_import`` row
+    carries no :class:`DataSourceType`).
+
+    config storage is KIND-CONDITIONAL (gu-task-08 GU-08-03): a
+    ``DATASOURCE`` row keeps its existing encrypted-JSON-blob
+    ``connection_config``; an ``API_IMPORT`` / ``MCP_IMPORT`` row stores
+    a :mod:`threetears.core.security.secret_refs` ``scheme://locator``
+    reference in the same physical column, validated at the write
+    boundary and resolved at use time.
+
+    :cvar DATASOURCE: database datasource (the original registry shape);
+        carries a :class:`DataSourceType` driver + encrypted-JSON-blob
+        config
+    :cvar API_IMPORT: external API import (OpenAPI spec); config is a
+        secret-ref, no :class:`DataSourceType`
+    :cvar MCP_IMPORT: MCP-server import; config is a secret-ref, no
+        :class:`DataSourceType`
+    """
+
+    DATASOURCE = "datasource"
+    API_IMPORT = "api_import"
+    MCP_IMPORT = "mcp_import"
 
 
 class DataSourceType(StrEnum):
@@ -101,16 +138,37 @@ class DataSourceStatus(StrEnum):
     DISABLED = "disabled"
 
 
-class DataSourceEntity(BaseEntity):
-    """data source entity representing a registered external data source.
+class CapabilitySourceEntity(BaseEntity):
+    """capability-source entity representing a registered capability source.
 
-    extends :class:`BaseEntity` with data-source-specific field access.
-    all field data lives in L1 cache, accessed via the parent collection
+    generalized from the former datasource-only entity (Fork-1,
+    gu-task-08): the SAME ``platform.datasources`` registry now holds
+    database datasources, external API imports, and MCP imports,
+    discriminated by the ``kind`` field
+    (:class:`CapabilitySourceKind`). the shape is additive over the
+    datasource shape — every datasource field (``datasource_type``,
+    ``access_mode``, ``schema_name``, ``owner_agent_id``, ``visibility``,
+    ``origin_datasource_id``) is retained; the generalization ADDS:
+
+    - ``kind`` -- the capability-source discriminator; existing rows are
+      ``'datasource'``.
+    - ``connection_config`` -- KIND-CONDITIONAL config storage
+      (GU-08-03): a ``datasource``-kind row keeps its existing encrypted
+      JSON blob; an ``api_import`` / ``mcp_import``-kind row stores a
+      :mod:`threetears.core.security.secret_refs` ``scheme://locator``
+      reference in the same physical column.
+    - ``ingress_agent_id`` -- the per-source ingress-agent principal id
+      (GU-08-05): the agent identity RBAC grants on this source's tool
+      namespaces for the external-API call flow. ``None`` for pure
+      internal datasources.
+
+    extends :class:`BaseEntity` with capability-source field access. all
+    field data lives in L1 cache, accessed via the parent collection
     proxy. fields match ``platform.datasources``.
 
     flat primary key ``id`` post-knowledge-task-08: the v016 migration
     rebuilt the table PK on ``id`` alone (dropping the v001 composite
-    ``(customer_id, id)`` partition PK) so a platform-shared datasource
+    ``(customer_id, id)`` partition PK) so a platform-shared source
     can carry ``customer_id = NULL`` (KNW-76). ``customer_id`` is now a
     plain nullable column, no longer the partition / addressing key —
     every lookup resolves by the global ``id`` (backed by the
