@@ -131,6 +131,7 @@ select = ["SLF"]
 "packages/core/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/identity/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/intention/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
