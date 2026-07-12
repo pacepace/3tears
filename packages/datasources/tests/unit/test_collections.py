@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from threetears.core.collections.schema_backed import BOOL_TYPE
 
 from threetears.datasources.collections import (
     CapabilitySourceCollection,
@@ -77,6 +78,31 @@ class TestCapabilitySourceCollection:
         # rebuilt the composite ``(customer_id, id)`` partition PK on ``id``
         # alone so a platform-shared source can carry customer_id NULL).
         assert CapabilitySourceCollection.primary_key_column == "id"
+
+    def test_schema_declares_knowledge_required_column(self) -> None:
+        """the schema carries the auto-stamped ``knowledge_required`` flag.
+
+        the hub knowledge-write handlers stamp this bool through the
+        Collection write path (set field + save_entity), so it MUST be a
+        declared schema column or the schema-driven upsert would drop it.
+        NOT NULL with a FALSE server-default so existing rows land false
+        and the ADD COLUMN succeeds against a populated table.
+        """
+        col = CapabilitySourceCollection.schema.column("knowledge_required")
+        assert col.column_type == BOOL_TYPE
+        assert col.nullable is False
+        assert col.server_default == "false"
+
+    def test_knowledge_required_is_mutable(self) -> None:
+        """``knowledge_required`` is a mutable (updatable) column.
+
+        the stamp path is an UPDATE of an existing datasource row, so the
+        column must be in :meth:`TableSchema.mutable_columns` (not immutable,
+        not part of the primary key) or the ``DO UPDATE SET`` clause the
+        upsert generates would never carry the stamped value.
+        """
+        mutable_names = {c.name for c in CapabilitySourceCollection.schema.mutable_columns()}
+        assert "knowledge_required" in mutable_names
 
     @pytest.mark.asyncio
     async def test_iter_active_ids_filters_status_active(self) -> None:

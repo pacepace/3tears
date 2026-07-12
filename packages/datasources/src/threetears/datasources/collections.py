@@ -37,6 +37,7 @@ from uuid import UUID
 from threetears.core.backends import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
     DATETIMETZ_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -266,6 +267,22 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             # retrieval gathers across: datasource_id IN (D, P)).
             Column("visibility", STRING_TYPE),
             Column("origin_datasource_id", UUID_TYPE, nullable=True),
+            # knowledge-quarantine foundation: a datasource "requires
+            # knowledge" purely because someone authored knowledge anchored
+            # to it. the hub knowledge-write handlers AUTO-STAMP this flag
+            # true (through this Collection's write path — set field +
+            # save_entity) the first step of every entry write, BEFORE the
+            # entry persists, so intent (the requirement) is independent of
+            # load state (the entries). NEVER hand-set. NOT NULL with a FALSE
+            # server-default so the ADD COLUMN lands false on every existing
+            # row (hub migration v046). mutable: the stamp is an UPDATE of an
+            # existing row, so the column stays out of the immutable set.
+            Column(
+                "knowledge_required",
+                BOOL_TYPE,
+                nullable=False,
+                server_default="false",
+            ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
