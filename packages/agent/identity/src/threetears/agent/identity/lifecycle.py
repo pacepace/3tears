@@ -21,10 +21,15 @@ back to the default; a re-propose / rollback restores an active).
 auto-applies immediately (with an async veto via :func:`reject` of a later
 proposal / :func:`rollback`). :data:`IDENTITY_BLOCK_TIERS` is the map.
 
-**Cycle-freedom.** The chain is linear by construction: every new version
-parents to the CURRENT active head, so a cycle is impossible -- no origin
-walk / guard is needed (unlike the knowledge shadow-chain's arbitrary
-origin pointers).
+**Cycle-freedom (not strict linearity).** Every new version parents to a
+version that already exists at creation time (the current active head, or
+``None`` for the first), so a cycle is impossible -- no origin walk / guard
+is needed (unlike the knowledge shadow-chain's arbitrary origin pointers).
+The chain is NOT guaranteed strictly linear, though: two concurrent tier-1
+proposals both parent to the same head, and consent does not re-parent, so
+sibling branches can exist among proposed/superseded rows. That is
+harmless here -- the one-active invariant still holds and nothing walks
+parents -- but a history UI must not assume a single linear path.
 """
 
 from __future__ import annotations

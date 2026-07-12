@@ -139,7 +139,7 @@ async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
         assert active3 is not None and active3.version_id == clone.version_id
         assert await _count_active(pool, _BLOCK) == 1
 
-        # history: all four versions for the block are retained
+        # history: all three personality versions are retained (nothing deleted)
         history = await coll.find_versions_for_block(
             agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=_BLOCK
         )
