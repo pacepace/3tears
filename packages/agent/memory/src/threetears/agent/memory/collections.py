@@ -1468,6 +1468,16 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         where_clause = " AND ".join(conditions)
         # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
         # which trips ``float(similarity)`` downstream.
+        # DELIBERATE-RECALL by design (§3): this is the agent-invoked
+        # ``memory_search`` tool, NOT the proactive ambient path. It
+        # therefore does NOT apply the salience floor OR the supersession
+        # filter that ``hybrid_search`` (the during-a-turn grounding path)
+        # applies -- an explicit search surfaces dormant + superseded rows
+        # too (the source is "dormant, not gone"), leaving the gist-vs-
+        # source choice to the searching agent. Only proactive grounding
+        # hides them for a clean turn; direct id/alias recall likewise
+        # bypasses. (Contrast find_similar_for_dedup, which DOES filter,
+        # because it drives write-path UPDATE targeting, not display.)
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
                    1 - (embedding OPERATOR(public.<=>) $1::text::public.vector) AS similarity
@@ -1553,6 +1563,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             params.append(date_before)
             idx += 1
         where = " AND ".join(conditions)
+        # DELIBERATE-RECALL by design (§3), mirroring search_by_semantic:
+        # the agent-invoked memory_search keyword leg applies NO salience
+        # floor and NO supersession filter (unlike ambient hybrid_search) --
+        # an explicit search surfaces dormant + superseded rows.
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
                    ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
