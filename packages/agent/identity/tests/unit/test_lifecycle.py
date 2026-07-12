@@ -20,7 +20,7 @@ from threetears.agent.identity.events import (
     IdentityAppliedEvent,
     IdentityConsentedEvent,
     IdentityProposedEvent,
-    IdentityRolledBackEvent,
+    IdentityRestoredEvent,
 )
 from threetears.agent.identity.lifecycle import content_hash
 
@@ -251,7 +251,7 @@ class TestRollback:
         assert out.version_id != target.version_id  # a NEW version (clone)
         assert prior.status == "superseded"
         rolled = ev.await_args.args[0]
-        assert isinstance(rolled, IdentityRolledBackEvent)
+        assert isinstance(rolled, IdentityRestoredEvent)
         assert rolled.target_version_id == str(target.version_id)
 
     async def test_rollback_foreign_target_returns_none(self) -> None:

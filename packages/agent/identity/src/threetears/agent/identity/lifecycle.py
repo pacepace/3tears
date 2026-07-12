@@ -10,11 +10,15 @@ maps to a 404 / error).
 
 **The one-active invariant.** The partial UNIQUE index forbids two
 ``active`` rows per block, so an apply supersedes the prior active FIRST,
-then activates the new one. The ordering (not a DB transaction -- the L3
-abstraction exposes no connection-level one) is the guarantee: the brief
-window between the two writes has ZERO active rows (allowed), never two. A
-crash between them leaves no active version, which is recoverable (fall
-back to the default; a re-propose / rollback restores an active).
+then activates the new one. When the caller passes no ``conn``, the
+*ordering* is the guarantee: the brief window between the two writes has
+ZERO active rows (allowed), never two, and a crash between them leaves no
+active version -- recoverable (fall back to the default; a re-propose /
+rollback restores an active). A caller that needs the apply atomic with
+its own writes (e.g. a consumer's derived ``config_*`` cache) may pass a
+``conn`` transaction handle: it is threaded to every ``save_entity`` here
+so the whole apply, plus the caller's coupled writes on the same
+transaction, commits or rolls back as one unit.
 
 **The consent tiers** (Pace: tier from day one). Tier-1 blocks are born
 ``proposed`` and await :func:`consent`; tier-2 blocks :func:`propose`
@@ -36,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from uuid_utils import uuid7
@@ -54,7 +59,7 @@ from threetears.agent.identity.events import (
     IdentityAppliedEvent,
     IdentityConsentedEvent,
     IdentityProposedEvent,
-    IdentityRolledBackEvent,
+    IdentityRestoredEvent,
 )
 from threetears.agent.identity.types import (
     IDENTITY_BLOCK_KEY_VALUES,
@@ -113,6 +118,7 @@ async def _apply(
     *,
     new_version: IdentityVersionEntity,
     prior_active: IdentityVersionEntity | None,
+    conn: Any = None,
 ) -> None:
     """Supersede the prior active, then persist the new active.
 
@@ -121,14 +127,18 @@ async def _apply(
     the two writes has ZERO active rows (allowed), never two. A crash
     between them leaves the block with no active version, which is
     recoverable (the consumer falls back to its default and a re-propose /
-    rollback restores an active). The L3 abstraction does not expose a
-    connection-level transaction, so this ordering is the atomicity
-    guarantee rather than a single DB transaction.
+    rollback restores an active).
+
+    When ``conn`` is passed, both writes bind to the caller's transaction,
+    so the supersede + activate (and any coupled caller write on the same
+    ``conn``) commit or roll back as one unit -- a crash between them leaves
+    neither, not a superseded-with-no-active gap. Without a ``conn`` the
+    ordering above is the guarantee.
     """
     if prior_active is not None and prior_active.version_id != new_version.version_id:
         prior_active.status = IdentityVersionStatus.SUPERSEDED.value
-        await collection.save_entity(prior_active)
-    await collection.save_entity(new_version)
+        await collection.save_entity(prior_active, conn=conn)
+    await collection.save_entity(new_version, conn=conn)
 
 
 async def propose(
@@ -144,6 +154,7 @@ async def propose(
     proposer_agent_id: UUID,
     caller_agent_id: UUID,
     now: datetime | None = None,
+    conn: Any = None,
 ) -> IdentityVersionEntity | None:
     """Propose a new version of an identity block.
 
@@ -151,6 +162,10 @@ async def propose(
     :func:`consent`. Tier-2 (routine) blocks auto-apply immediately. Identical
     content to the current active is a no-op (returns the active).
 
+    :param conn: optional transaction handle; when passed, every version write
+        binds to it so a tier-2 auto-apply is atomic with the caller's coupled
+        writes (see :func:`_apply`)
+    :ptype conn: Any
     :return: the new version (or the active on a dedup no-op)
     :rtype: IdentityVersionEntity | None
     """
@@ -194,10 +209,10 @@ async def propose(
         }
     )
     if is_auto:
-        await _apply(collection, new_version=new_version, prior_active=active)
+        await _apply(collection, new_version=new_version, prior_active=active, conn=conn)
         await _emit(_applied_event(new_version, auto_applied=True))
     else:
-        await collection.save_entity(new_version)
+        await collection.save_entity(new_version, conn=conn)
         await _emit(_proposed_event(new_version, rationale))
     return new_version
 
@@ -302,9 +317,13 @@ async def consent(
     version_id: UUID,
     consenter_user_id: UUID,
     caller_agent_id: UUID,
+    conn: Any = None,
 ) -> IdentityVersionEntity | None:
     """Consent to a proposed version -> it becomes active (tier-1 apply).
 
+    :param conn: optional transaction handle; when passed, the apply binds to
+        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :ptype conn: Any
     :return: the applied version, or ``None`` if not found / not owned / not
         currently ``proposed``
     :rtype: IdentityVersionEntity | None
@@ -328,7 +347,7 @@ async def consent(
     )
     version.status = IdentityVersionStatus.ACTIVE.value
     version.consenter_user_id = consenter_user_id
-    await _apply(collection, new_version=version, prior_active=prior_active)
+    await _apply(collection, new_version=version, prior_active=prior_active, conn=conn)
     await _emit(_consented_event(version))
     await _emit(_applied_event(version, auto_applied=False))
     return version
@@ -343,9 +362,12 @@ async def reject(
     user_id: UUID | None,
     version_id: UUID,
     caller_agent_id: UUID,
+    conn: Any = None,
 ) -> IdentityVersionEntity | None:
     """Reject a proposed version (kept for history; no active change).
 
+    :param conn: optional transaction handle for the status write
+    :ptype conn: Any
     :return: the rejected version, or ``None`` if not found / not owned / not
         currently ``proposed``
     :rtype: IdentityVersionEntity | None
@@ -365,7 +387,7 @@ async def reject(
     ):
         return None
     version.status = IdentityVersionStatus.REJECTED.value
-    await collection.save_entity(version)
+    await collection.save_entity(version, conn=conn)
     return version
 
 
@@ -380,6 +402,7 @@ async def rollback(
     consenter_user_id: UUID,
     caller_agent_id: UUID,
     now: datetime | None = None,
+    conn: Any = None,
 ) -> IdentityVersionEntity | None:
     """Restore a prior version's content as a NEW active version (non-destructive).
 
@@ -387,6 +410,9 @@ async def rollback(
     the current head; the prior active is superseded. History is never
     mutated.
 
+    :param conn: optional transaction handle; when passed, the apply binds to
+        it so it is atomic with the caller's coupled writes (see :func:`_apply`)
+    :ptype conn: Any
     :return: the new active (clone) version, or ``None`` if the target is not
         found / not owned
     :rtype: IdentityVersionEntity | None
@@ -423,7 +449,7 @@ async def rollback(
             "date_updated": stamp,
         }
     )
-    await _apply(collection, new_version=clone, prior_active=prior_active)
+    await _apply(collection, new_version=clone, prior_active=prior_active, conn=conn)
     await _emit(_rolled_back_event(clone, target_version_id))
     return clone
 
@@ -472,8 +498,8 @@ def _applied_event(version: IdentityVersionEntity, *, auto_applied: bool) -> Ide
 
 def _rolled_back_event(
     version: IdentityVersionEntity, target_version_id: UUID
-) -> IdentityRolledBackEvent:
-    return IdentityRolledBackEvent(
+) -> IdentityRestoredEvent:
+    return IdentityRestoredEvent(
         agent_id=str(version.agent_id),  # convert at border: event payload wire uuid
         version_id=str(version.version_id),  # convert at border: event payload wire uuid
         block_key=version.block_key,

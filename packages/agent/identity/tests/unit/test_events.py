@@ -6,7 +6,7 @@ from threetears.agent.identity.events import (
     IdentityAppliedEvent,
     IdentityConsentedEvent,
     IdentityProposedEvent,
-    IdentityRolledBackEvent,
+    IdentityRestoredEvent,
 )
 from threetears.langgraph.events import default_registry
 
@@ -17,7 +17,7 @@ def test_wire_discriminators() -> None:
     assert IdentityProposedEvent.model_fields["type"].default == "identity_proposed"
     assert IdentityConsentedEvent.model_fields["type"].default == "identity_consented"
     assert IdentityAppliedEvent.model_fields["type"].default == "identity_applied"
-    assert IdentityRolledBackEvent.model_fields["type"].default == "identity_rolled_back"
+    assert IdentityRestoredEvent.model_fields["type"].default == "identity_restored"
 
 
 def test_applied_event_carries_auto_applied_flag() -> None:
@@ -32,6 +32,6 @@ def test_events_registered_in_default_registry() -> None:
         "identity_proposed",
         "identity_consented",
         "identity_applied",
-        "identity_rolled_back",
+        "identity_restored",
     ):
         assert wire in names

@@ -17,8 +17,8 @@ events defined here (the self-evolution lifecycle):
 - :class:`IdentityAppliedEvent` -- a version became ACTIVE (tier-1 consent
   OR tier-2 auto-apply; ``auto_applied`` distinguishes). The consumer
   writes the block content back to its prompt cache + refreshes.
-- :class:`IdentityRolledBackEvent` -- a prior version was restored as the
-  active one.
+- :class:`IdentityRestoredEvent` -- a prior version was restored as the
+  active one (a rollback).
 
 naming follows the framework convention: ``noun_verb`` with a past-tense
 verb. ``user_id`` is a string-form uuid when user-scoped and ``None`` for
@@ -36,7 +36,7 @@ __all__ = [
     "IdentityAppliedEvent",
     "IdentityConsentedEvent",
     "IdentityProposedEvent",
-    "IdentityRolledBackEvent",
+    "IdentityRestoredEvent",
 ]
 
 log = get_logger(__name__)
@@ -107,8 +107,8 @@ class IdentityAppliedEvent(FrameworkEvent):
     auto_applied: bool = False
 
 
-class IdentityRolledBackEvent(FrameworkEvent):
-    """fired when a prior version is restored as the active one.
+class IdentityRestoredEvent(FrameworkEvent):
+    """fired when a prior version is restored as the active one (a rollback).
 
     Rollback is non-destructive: a NEW version cloning the target's content
     becomes active; the prior active flips to superseded. ``target_version_id``
@@ -121,7 +121,7 @@ class IdentityRolledBackEvent(FrameworkEvent):
     :ivar target_version_id: string-form uuid of the restored prior version
     """
 
-    type: Literal["identity_rolled_back"] = "identity_rolled_back"
+    type: Literal["identity_restored"] = "identity_restored"
     agent_id: str
     version_id: str
     block_key: str
@@ -147,7 +147,7 @@ def _register_identity_events(registry: Any) -> None:
         IdentityProposedEvent,
         IdentityConsentedEvent,
         IdentityAppliedEvent,
-        IdentityRolledBackEvent,
+        IdentityRestoredEvent,
     ):
         if cls.model_fields["type"].default in registry.names():
             continue

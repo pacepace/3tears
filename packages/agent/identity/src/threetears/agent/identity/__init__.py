@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         IdentityAppliedEvent,
         IdentityConsentedEvent,
         IdentityProposedEvent,
-        IdentityRolledBackEvent,
+        IdentityRestoredEvent,
     )
     from threetears.agent.identity.lifecycle import (
         consent,
@@ -83,7 +83,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "IdentityConsentedEvent": ("threetears.agent.identity.events", "IdentityConsentedEvent"),
     "IdentityProposeInput": ("threetears.agent.identity.tools", "IdentityProposeInput"),
     "IdentityProposedEvent": ("threetears.agent.identity.events", "IdentityProposedEvent"),
-    "IdentityRolledBackEvent": ("threetears.agent.identity.events", "IdentityRolledBackEvent"),
+    "IdentityRestoredEvent": ("threetears.agent.identity.events", "IdentityRestoredEvent"),
     "IdentityTier": ("threetears.agent.identity.types", "IdentityTier"),
     "IdentityVersionEntity": ("threetears.agent.identity.entities", "IdentityVersionEntity"),
     "IdentityVersionStatus": ("threetears.agent.identity.types", "IdentityVersionStatus"),
@@ -126,7 +126,7 @@ __all__ = [
     "IdentityConsentedEvent",
     "IdentityProposeInput",
     "IdentityProposedEvent",
-    "IdentityRolledBackEvent",
+    "IdentityRestoredEvent",
     "IdentityTier",
     "IdentityVersionEntity",
     "IdentityVersionStatus",

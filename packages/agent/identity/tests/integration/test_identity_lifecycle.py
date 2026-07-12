@@ -156,6 +156,54 @@ async def test_full_lifecycle(pg_schema: tuple[str, str]) -> None:
         await pool.close()
 
 
+async def test_conn_binds_apply_to_caller_transaction(pg_schema: tuple[str, str]) -> None:
+    """A caller ``conn`` makes the apply atomic with the caller's transaction.
+
+    Seeds a baseline active root, then runs a tier-2 auto-apply inside a caller
+    transaction and forces that transaction to roll back. Both writes the apply
+    made (supersede the root + activate the new version) must roll back as one
+    unit -- the baseline stays the sole active version and the new content never
+    persists. This is the guarantee a consumer relies on to keep a derived
+    cache atomic with the apply.
+    """
+    coll, pool = await _stack(pg_schema)
+    authz = _authorizer()
+    block = "self_improvement"  # tier-2: propose auto-applies (no consent step)
+
+    class _Rollback(Exception):
+        pass
+
+    try:
+        root = await lifecycle.seed_active(
+            coll, authz, agent_id=_AGENT, customer_id=_CUST, user_id=_USER,
+            block_key=block, content="baseline",
+        )
+        assert root.status == "active"
+
+        with pytest.raises(_Rollback):
+            async with pool.acquire() as conn, conn.transaction():
+                applied = await lifecycle.propose(
+                    coll, authz, block_key=block, content="new", rationale="r",
+                    proposer_agent_id=_AGENT, conn=conn, **_kw(),
+                )
+                assert applied is not None and applied.status == "active"
+                raise _Rollback  # force the caller transaction to roll back
+
+        # the apply rolled back with the transaction: baseline is still the one
+        # active version, and the attempted new content never persisted.
+        active = await coll.resolve_active(
+            agent_id=_AGENT, customer_id=_CUST, user_id=_USER, block_key=block
+        )
+        assert active is not None and active.version_id == root.version_id
+        assert active.content == "baseline"
+        assert await _count_active(pool, block) == 1
+        assert await pool.fetchval(
+            "SELECT count(*) FROM identity_versions WHERE content = $1", "new"
+        ) == 0
+    finally:
+        await pool.close()
+
+
 async def test_seed_active_imports_root_then_proposes_over_it(pg_schema: tuple[str, str]) -> None:
     coll, pool = await _stack(pg_schema)
     authz = _authorizer()
