@@ -57,9 +57,17 @@ SkillOutcome = Literal["success", "failure"]
 # ``outcome_source`` column on ``agent_skill_invocations``. Records the
 # provenance of the populated ``outcome`` value:
 #
-# - ``'agent_marker'`` -- parsed from the assistant's response text
-#   (the synchronous post-LLM hook path).
+# - ``'agent_marker'`` -- DEPRECATED: was parsed from the assistant's
+#   response text (the synchronous post-LLM hook path). Superseded by
+#   ``'agent_tool'``; kept for historical rows only, no longer written.
+# - ``'agent_tool'`` -- the agent self-reported via the
+#   ``skill_report_outcome`` tool call. Never enters the visible
+#   response stream (leak-proof by construction, unlike the retired
+#   text-marker path).
 # - ``'user_feedback'`` -- attributed to user-driven feedback (reserved
 #   for future enhancement; not populated in v1 but typed here so the
 #   column can carry the value without a follow-up migration).
-OutcomeSource = Literal["agent_marker", "user_feedback"]
+#
+# No CHECK constraint backs this column (``tables.py`` -- plain
+# ``Text()``), so adding a value is Literal-only; no migration required.
+OutcomeSource = Literal["agent_marker", "agent_tool", "user_feedback"]
