@@ -105,9 +105,10 @@ log = get_logger(__name__)
 
 #: list tables visible inside the schema allow-list.
 #:
-#: migrated verbatim from Hub's ``3tears.hub.datasources.schema_introspector``
-#: so a future shard-13 rewire flips the introspector to call this driver
-#: rather than maintain two copies of the SQL.
+#: originally migrated verbatim from Hub's
+#: ``aibots.hub.datasources.schema_introspector``; the shard-13 rewire has
+#: since landed and the introspector calls this driver directly instead of
+#: embedding its own copy of the SQL.
 _POSTGRES_TABLES_SQL = """
 SELECT table_schema, table_name
 FROM information_schema.tables
