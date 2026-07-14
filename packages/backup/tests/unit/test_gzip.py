@@ -41,3 +41,13 @@ async def test_compresses_repetitive_data() -> None:
     payload = b"A" * 100_000
     compressed = await _collect(gzip_stream(_emit(payload)))
     assert len(compressed) < len(payload)  # actually smaller
+
+
+@pytest.mark.asyncio
+async def test_truncated_stream_is_rejected() -> None:
+    # flush() does not raise on an incomplete gzip stream; gunzip must catch it via the eof flag.
+    full = await _collect(gzip_stream(_emit(b"CREATE TABLE t (id int);\n" * 2000)))
+    truncated = full[:-16]  # lop off the gzip trailer + tail
+
+    with pytest.raises(ValueError, match="truncated"):
+        await _collect(gunzip_stream(_emit(truncated)))

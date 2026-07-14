@@ -50,10 +50,14 @@ class FilesystemObjectStore:
         try:
             async for chunk in body:
                 await asyncio.to_thread(handle.write, chunk)
-        finally:
             await asyncio.to_thread(handle.close)
-        # atomic publish: a reader/lister never sees a half-written object.
-        await asyncio.to_thread(os.replace, tmp, path)
+            # atomic publish: a reader/lister never sees a half-written object.
+            await asyncio.to_thread(os.replace, tmp, path)
+        except BaseException:
+            # a failed write (body errored, cancelled) must not leave an orphan temp file behind.
+            await asyncio.to_thread(handle.close)
+            await asyncio.to_thread(tmp.unlink, missing_ok=True)
+            raise
 
     async def open_read(self, key: str) -> AsyncIterator[bytes]:
         path = self._path_for(key)
@@ -79,21 +83,28 @@ class FilesystemObjectStore:
             yield entry.key
 
     async def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:
-        paths = await asyncio.to_thread(self._scan)
-        for path in paths:
+        # all blocking filesystem work (walk + stat) happens in one thread hop, off the event loop.
+        for entry in await asyncio.to_thread(self._scan_entries, prefix):
+            yield entry
+
+    def _scan_entries(self, prefix: str | None) -> list[ObjectListing]:
+        entries: list[ObjectListing] = []
+        for path in sorted(self._root.rglob("*")):
+            # temp files (partial writes) start with a dot and are never surfaced.
+            if not path.is_file() or path.name.endswith(".tmp"):
+                continue
             key = path.relative_to(self._root).as_posix()
             if prefix is not None and not key.startswith(prefix):
                 continue
             stat = path.stat()
-            yield ObjectListing(
-                key=key,
-                last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-                size_bytes=stat.st_size,
+            entries.append(
+                ObjectListing(
+                    key=key,
+                    last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                    size_bytes=stat.st_size,
+                )
             )
-
-    def _scan(self) -> list[Path]:
-        # temp files (partial writes) start with a dot and are never surfaced.
-        return sorted(p for p in self._root.rglob("*") if p.is_file() and not p.name.endswith(".tmp"))
+        return entries
 
     async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
         # a filesystem has no server-side presign; hand back a file:// URL (expires_in is moot).

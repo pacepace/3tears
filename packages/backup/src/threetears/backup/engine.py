@@ -89,7 +89,7 @@ class BackupEngine:
         """
         moment = when or datetime.now(UTC)
         key = self._key_for(moment)
-        stream = self._driver.dump(source_dsn, env=self._env)
+        stream = self._driver.dump(source_dsn, env=self._env, timeout=self._config.dump_timeout_seconds)
         if not self._driver.compressed:
             stream = gzip_stream(stream)
         await self._store.put(key, stream, content_type=_ENCRYPTED_CONTENT_TYPE)
@@ -102,7 +102,7 @@ class BackupEngine:
         stream = self._store.open_read(key)
         if not self._driver.compressed:
             stream = gunzip_stream(stream)
-        await self._driver.restore(target_dsn, stream, env=self._env)
+        await self._driver.restore(target_dsn, stream, env=self._env, timeout=self._config.dump_timeout_seconds)
         log.info("backup restored", extra={"extra_data": {"key": key, "driver": self._driver.name}})
 
     async def list_backups(self) -> list[BackupRecord]:

@@ -39,13 +39,22 @@ class DbDumpDriver(ABC):
     def restore_argv(self, dsn: str) -> list[str]:
         """Argv that restores into ``dsn`` from stdin."""
 
-    def dump(self, dsn: str, *, env: Mapping[str, str] | None = None) -> AsyncIterator[bytes]:
-        """Stream a dump of ``dsn`` as bytes."""
-        return stream_stdout(self.dump_argv(dsn), env=env)
+    def dump(
+        self, dsn: str, *, env: Mapping[str, str] | None = None, timeout: float | None = None
+    ) -> AsyncIterator[bytes]:
+        """Stream a dump of ``dsn`` as bytes (bounded by ``timeout`` seconds when given)."""
+        return stream_stdout(self.dump_argv(dsn), env=env, timeout=timeout)
 
-    async def restore(self, dsn: str, source: AsyncIterator[bytes], *, env: Mapping[str, str] | None = None) -> None:
-        """Restore ``source`` (a dump stream) into ``dsn``."""
-        await feed_stdin(self.restore_argv(dsn), source, env=env)
+    async def restore(
+        self,
+        dsn: str,
+        source: AsyncIterator[bytes],
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Restore ``source`` (a dump stream) into ``dsn`` (bounded by ``timeout`` seconds)."""
+        await feed_stdin(self.restore_argv(dsn), source, env=env, timeout=timeout)
 
 
 class PostgresDriver(DbDumpDriver):

@@ -227,3 +227,56 @@ async def test_presigned_url_passes_through() -> None:
 async def test_rejects_nonpositive_frame_size() -> None:
     with pytest.raises(ValueError, match="frame_size"):
         EncryptedObjectStore(_MemStore(), _PASS, frame_size=0)
+
+
+@pytest.mark.asyncio
+async def test_whole_object_substitution_is_rejected() -> None:
+    # the object key is bound into the AAD, so swapping one object's ciphertext in at another's
+    # key (rollback / substitution under the same passphrase) fails to decrypt.
+    inner = _MemStore()
+    store = _store(inner)
+    await store.put("keyA", _emit(b"contents of A" * 20), content_type="text/plain")
+    await store.put("keyB", _emit(b"contents of B" * 20), content_type="text/plain")
+
+    inner.blobs["keyA"] = inner.blobs["keyB"]  # attacker overwrites A's location with B's ciphertext
+
+    with pytest.raises(InvalidTag):
+        await _collect(store.open_read("keyA"))
+    assert await _collect(store.open_read("keyB")) == b"contents of B" * 20  # B itself still valid
+
+
+@pytest.mark.asyncio
+async def test_oversized_frame_length_is_rejected_before_buffering() -> None:
+    inner = _MemStore()
+    store = _store(inner)  # frame_size=16
+    await store.put("k", _emit(b"payload"), content_type="text/plain")
+
+    blob = bytearray(inner.blobs["k"])
+    # frame header ct-len is the uint32 at offset MAGIC(4)+salt(16)+final-flag(1) = 21.
+    blob[21:25] = b"\xff\xff\xff\xff"
+    inner.blobs["k"] = bytes(blob)
+
+    with pytest.raises(ValueError, match="per-frame bound"):
+        await _collect(store.open_read("k"))
+
+
+class _EmptyTailStore(_MemStore):
+    """A hostile store whose read yields a few bytes then an endless run of empty chunks."""
+
+    async def _read(self, key: str, *, chunk: int = 7) -> AsyncIterator[bytes]:
+        yield self.blobs[key][:3]
+        while True:
+            yield b""
+
+
+@pytest.mark.asyncio
+async def test_empty_chunks_do_not_stall_the_reader() -> None:
+    import asyncio
+
+    inner = _EmptyTailStore()
+    store = _store(inner)
+    await store.put("k", _emit(b"data"), content_type="text/plain")
+
+    # an endless run of empty chunks must be treated as EOF (truncation), never an infinite loop.
+    with pytest.raises(ValueError, match="truncated"):
+        await asyncio.wait_for(_collect(store.open_read("k")), timeout=5)

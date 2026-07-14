@@ -114,3 +114,18 @@ async def test_encrypted_over_filesystem_end_to_end(tmp_path: Path) -> None:
     assert got == payload
     assert payload not in on_disk  # what landed on disk is ciphertext
     assert on_disk.startswith(b"3TB1")
+
+
+@pytest.mark.asyncio
+async def test_failed_put_leaves_no_orphan_temp_file(tmp_path: Path) -> None:
+    store = FilesystemObjectStore(tmp_path)
+
+    async def _boom() -> AsyncIterator[bytes]:
+        yield b"partial-write"
+        raise RuntimeError("dump failed mid-stream")
+
+    with pytest.raises(RuntimeError, match="dump failed"):
+        await store.put("k", _boom(), content_type="text/plain")
+
+    leftovers = [p.name for p in tmp_path.rglob("*") if p.is_file()]
+    assert leftovers == []  # neither the object nor a dangling .tmp remains

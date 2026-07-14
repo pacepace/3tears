@@ -48,6 +48,8 @@ class BackupConfig:
     encryption_work_factor: int = 2**18
 
     def __post_init__(self) -> None:
+        if not self.prefix or self.prefix != self.prefix.strip("/"):
+            raise ValueError("prefix must be non-empty with no leading/trailing '/'")
         for name in ("retention_daily", "retention_weekly", "retention_monthly"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be >= 1")

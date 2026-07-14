@@ -32,14 +32,23 @@ class _FakeDriverBase(DbDumpDriver):
     def restore_argv(self, dsn: str) -> list[str]:
         return ["true"]
 
-    def dump(self, dsn: str, *, env: Mapping[str, str] | None = None) -> AsyncIterator[bytes]:
+    def dump(
+        self, dsn: str, *, env: Mapping[str, str] | None = None, timeout: float | None = None
+    ) -> AsyncIterator[bytes]:
         return self._emit()
 
     async def _emit(self) -> AsyncIterator[bytes]:
         yield self.payload[:5]
         yield self.payload[5:]
 
-    async def restore(self, dsn: str, source: AsyncIterator[bytes], *, env: Mapping[str, str] | None = None) -> None:
+    async def restore(
+        self,
+        dsn: str,
+        source: AsyncIterator[bytes],
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> None:
         buf = bytearray()
         async for chunk in source:
             buf += chunk

@@ -77,3 +77,15 @@ def test_from_env_requires_passphrase() -> None:
 def test_from_env_bool_parsing(raw: str, expected: bool) -> None:
     config = BackupConfig.from_env({"THREETEARS_BACKUP_PASSPHRASE": "x", "THREETEARS_BACKUP_ALLOW_DELETE": raw})
     assert config.allow_delete is expected
+
+
+@pytest.mark.parametrize("bad_prefix", ["", "/backups", "backups/", "/backups/"])
+def test_invalid_prefix_rejected(bad_prefix: str) -> None:
+    # an empty or slash-wrapped prefix produces root-escaping keys on the filesystem backend.
+    with pytest.raises(ValueError, match="prefix"):
+        BackupConfig(passphrase=SecretStr("pw"), prefix=bad_prefix)
+
+
+@pytest.mark.parametrize("ok_prefix", ["backups", "ranch/db-backups", "a"])
+def test_valid_prefix_accepted(ok_prefix: str) -> None:
+    assert BackupConfig(passphrase=SecretStr("pw"), prefix=ok_prefix).prefix == ok_prefix
