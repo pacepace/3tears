@@ -18,7 +18,7 @@ from threetears.backup.retention import (
 from threetears.backup.verify import (
     RestoreVerifier,
     VerificationResult,
-    count_public_tables,
+    count_tables,
     make_subprocess_hook,
     make_temp_db_provisioner,
 )
@@ -36,7 +36,7 @@ __all__ = [
     "RetentionDecision",
     "VerificationResult",
     "YugabyteDriver",
-    "count_public_tables",
+    "count_tables",
     "detect_driver",
     "driver_for_version",
     "make_subprocess_hook",

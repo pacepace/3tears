@@ -11,7 +11,7 @@ import pytest
 
 from threetears.backup.verify import (
     RestoreVerifier,
-    count_public_tables,
+    count_tables,
     make_subprocess_hook,
     make_temp_db_provisioner,
 )
@@ -52,7 +52,7 @@ async def test_verify_restores_asserts_and_runs_hook() -> None:
     hook_seen: list[str] = []
 
     async def assertions(dsn: str) -> Mapping[str, Any]:
-        return {"public_tables": 3, "dsn": dsn}
+        return {"checked": 3, "dsn": dsn}
 
     async def hook(dsn: str) -> None:
         hook_seen.append(dsn)
@@ -62,7 +62,7 @@ async def test_verify_restores_asserts_and_runs_hook() -> None:
 
     assert result.ok is True
     assert result.hook_ran is True
-    assert result.checks == {"public_tables": 3, "dsn": _TEMP_DSN}
+    assert result.checks == {"checked": 3, "dsn": _TEMP_DSN}  # arbitrary checks pass through verbatim
     assert engine.calls == [(_TEMP_DSN, "backups/k.enc")]  # restored into the temp db
     assert hook_seen == [_TEMP_DSN]
     assert lifecycle == ["enter", "exit"]  # temp db torn down
@@ -131,17 +131,17 @@ class _FakeConn:
 
 
 @pytest.mark.asyncio
-async def test_count_public_tables_reports_and_guards() -> None:
+async def test_count_tables_reports_and_guards() -> None:
     async def connect_ok(dsn: str) -> _FakeConn:
         return _FakeConn(4)
 
-    assert await count_public_tables(connect=connect_ok)("dsn") == {"public_tables": 4}
+    assert await count_tables(connect=connect_ok)("dsn") == {"tables": 4}
 
     async def connect_empty(dsn: str) -> _FakeConn:
         return _FakeConn(0)
 
-    with pytest.raises(AssertionError, match="no public tables"):
-        await count_public_tables(connect=connect_empty)("dsn")
+    with pytest.raises(AssertionError, match="no user tables"):
+        await count_tables(connect=connect_empty)("dsn")
 
 
 @pytest.mark.asyncio
