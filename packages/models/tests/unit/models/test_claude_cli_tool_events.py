@@ -115,3 +115,21 @@ class TestSubscriptionToolEvents:
 
         assert result["content"][0]["text"] == "echo:{'x': 'hi'}"
         assert "is_error" not in result
+
+    async def test_a_broken_event_bus_is_logged_not_silently_swallowed(self) -> None:
+        """A dispatch failure is exactly the signal that verifying ambient-config
+        propagation across the SDK subprocess boundary needs -- it must be logged,
+        not disappear into a bare `except: pass`."""
+        with (
+            patch(
+                "threetears.models.providers._claude_cli.dispatch_event",
+                AsyncMock(side_effect=RuntimeError("event bus is down")),
+            ),
+            patch("threetears.models.providers._claude_cli._logger") as mock_logger,
+        ):
+            handler = _wrapped_handler(_EchoTool())
+            await handler({"x": "hi"})
+
+        assert mock_logger.warning.call_count == 3  # dispatched + started + completed all fail
+        first_call = mock_logger.warning.call_args_list[0]
+        assert "event bus is down" in first_call.kwargs["extra"]["extra_data"]["error"]

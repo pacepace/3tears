@@ -45,8 +45,11 @@ from threetears.langgraph.events import (
     ToolStartedEvent,
     dispatch_event,
 )
+from threetears.observe import get_logger
 
 __all__ = ["OAUTH_TOKEN_PREFIX", "is_subscription_token", "create_subscription_chat"]
+
+_logger = get_logger(__name__)
 
 #: A Claude subscription OAuth token (``claude setup-token``) starts with this; an API key does not.
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
@@ -92,10 +95,17 @@ def _subscription_model_cls() -> type:
                 # `dispatch_event` resolves the ambient RunnableConfig via
                 # langchain_core's own context propagation, same as any
                 # other custom-event dispatch not holding a config handle.
+                # Logged (not silently swallowed): ambient-config propagation
+                # across the SDK's subprocess-callback boundary is the one
+                # thing this chunk couldn't verify by reading source alone --
+                # a failure here is exactly the signal that verification needs.
                 try:
                     await dispatch_event(event, config=None)
-                except Exception:  # prawduct:allow prawduct/broad-except -- tool-status is observability, never load-bearing for the turn
-                    pass
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- tool-status is observability, never load-bearing for the turn
+                    _logger.warning(
+                        "subscription tool-status event dispatch failed",
+                        extra={"extra_data": {"event_type": type(event).__name__, "error": str(exc)}},
+                    )
 
             @sdk_tool(tool.name, tool.description or "", param_types)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
