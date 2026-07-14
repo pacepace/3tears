@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
+from pydantic import Field
 
 from threetears.langgraph.events import (
     ToolCompletedEvent,
@@ -64,6 +65,9 @@ _FORWARDED_KWARGS = frozenset(
         "permission_mode",
         "allowed_tools",
         "disallowed_tools",
+        "tools",  # see _SubscriptionChatModel.tools -- NOT a ClaudeCodeChatModel field,
+        # declared on our subclass below so it actually binds (a bare kwarg the base
+        # class doesn't declare is silently dropped by its `extra="ignore"` config).
         "cwd",
         "fallback_model",
         "max_budget_usd",
@@ -82,7 +86,27 @@ def _subscription_model_cls() -> type:
     from langchain_claude_code import ClaudeCodeChatModel
 
     class _SubscriptionChatModel(ClaudeCodeChatModel):
-        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API."""
+        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API.
+
+        Also default-denies Claude Code's own built-in tool belt (Bash, Read, Write, Edit,
+        WebFetch, WebSearch, …) — see :attr:`tools`.
+        """
+
+        # ``ClaudeAgentOptions.tools`` gates whether ANY built-in tool is even available, fully
+        # independent of ``allowed_tools``/``disallowed_tools`` (which only gate auto-approval /
+        # removal of tools ``tools`` already made available). ``ClaudeCodeChatModel`` itself
+        # declares no ``tools`` field and silently drops an unknown constructor kwarg (its
+        # ``model_config`` is ``extra="ignore"``), so this MUST be declared here to bind at all.
+        # Defaults to ``[]`` (every built-in disabled, only LangChain-bound tools available) --
+        # default-deny rather than requiring every caller to remember to pass it, since a
+        # subscription-backed turn otherwise gets the model server-side Bash / filesystem /
+        # network access with zero caller-side gate.
+        tools: list[str] | None = Field(default_factory=list)
+
+        def _build_options(self, **overrides: Any) -> Any:
+            """Force ``ClaudeAgentOptions.tools`` from :attr:`tools` unless a call overrides it."""
+            overrides.setdefault("tools", self.tools)
+            return super()._build_options(**overrides)
 
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
             props = schema.get("properties", {})
@@ -151,6 +175,11 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     package threads it into the SDK's per-subprocess ``ClaudeAgentOptions.env``, so concurrent models
     with different tokens never share process env (no global ``os.environ`` write, no cross-user race).
     HTTP-API kwargs the CLI backend cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
+
+    Claude Code's own built-in tool belt (Bash, Read, Write, Edit, WebFetch, WebSearch, …) is
+    active by default and independent of any LangChain tools bound via ``bind_tools()``. A caller
+    that wants the model to use ONLY its own bound tools should pass ``tools=[]`` — omitting it
+    keeps the full built-in preset available.
     """
     opts = {k: v for k, v in extra_kwargs.items() if k in _FORWARDED_KWARGS}
     model: BaseChatModel = _subscription_model_cls()(model=model_name, oauth_token=token, **opts)
