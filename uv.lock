@@ -682,6 +682,7 @@ dependencies = [
 
 [package.optional-dependencies]
 claude-cli = [
+    { name = "3tears-langgraph" },
     { name = "langchain-claude-code" },
 ]
 image = [
@@ -699,6 +700,7 @@ whisper = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-langgraph", marker = "extra == 'claude-cli'", editable = "packages/langgraph" },
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", marker = "extra == 'image'", specifier = ">=0.27" },
