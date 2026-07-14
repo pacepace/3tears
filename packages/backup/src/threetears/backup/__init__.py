@@ -14,7 +14,6 @@ from threetears.backup.retention import (
     BackupRecord,
     GfsRetention,
     RetentionDecision,
-    classify_tier,
 )
 from threetears.backup.verify import (
     RestoreVerifier,
@@ -37,7 +36,6 @@ __all__ = [
     "RetentionDecision",
     "VerificationResult",
     "YugabyteDriver",
-    "classify_tier",
     "count_public_tables",
     "detect_driver",
     "driver_for_version",

@@ -1,57 +1,23 @@
-"""Unit tests for GFS retention (tier classification + keep/delete selection)."""
+"""Unit tests for GFS retention (newest-backup-per-recent-period selection)."""
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import SecretStr
 
 from threetears.backup.config import BackupConfig
-from threetears.backup.retention import BackupRecord, GfsRetention, classify_tier
+from threetears.backup.retention import BackupRecord, GfsRetention
 
 
 def _rec(iso: str) -> BackupRecord:
-    return BackupRecord(key=f"backups/{iso}.enc", created_at=datetime.fromisoformat(iso).replace(tzinfo=UTC))
+    """A record at ``iso`` (date or datetime), keyed by the timestamp for readable assertions."""
+    return BackupRecord(key=iso, created_at=datetime.fromisoformat(iso).replace(tzinfo=UTC))
 
 
-@pytest.mark.parametrize(
-    ("iso", "tier"),
-    [
-        ("2026-07-01", "monthly"),  # 1st of month
-        ("2026-04-01", "monthly"),
-        ("2026-07-05", "weekly"),  # Sunday
-        ("2026-06-28", "weekly"),
-        ("2026-07-07", "daily"),  # Tuesday
-        ("2026-07-09", "daily"),
-    ],
-)
-def test_classify_tier(iso: str, tier: str) -> None:
-    assert classify_tier(date.fromisoformat(iso)) == tier
-
-
-def test_keeps_newest_per_tier_prunes_the_rest() -> None:
-    policy = GfsRetention(daily=2, weekly=2, monthly=3)
-    records = [
-        _rec("2026-07-01"),  # monthly (newest monthly)
-        _rec("2026-06-01"),  # monthly
-        _rec("2026-05-01"),  # monthly
-        _rec("2026-04-01"),  # monthly — 4th, over the limit of 3 -> delete
-        _rec("2026-07-05"),  # weekly
-        _rec("2026-06-28"),  # weekly
-        _rec("2026-06-21"),  # weekly — 3rd, over the limit of 2 -> delete
-        _rec("2026-07-09"),  # daily (newest daily)
-        _rec("2026-07-08"),  # daily
-        _rec("2026-07-07"),  # daily — 3rd, over the limit of 2 -> delete
-    ]
-
-    decision = policy.select(records)
-    deleted_keys = {r.key for r in decision.delete}
-
-    assert deleted_keys == {"backups/2026-04-01.enc", "backups/2026-06-21.enc", "backups/2026-07-07.enc"}
-    assert len(decision.keep) == 7
-    # the kept set is exactly the input minus the deleted set
-    assert {r.key for r in decision.keep} == {r.key for r in records} - deleted_keys
+def _keys(records: tuple[BackupRecord, ...]) -> set[str]:
+    return {r.key for r in records}
 
 
 def test_empty_input() -> None:
@@ -60,32 +26,87 @@ def test_empty_input() -> None:
     assert decision.delete == ()
 
 
+def test_keeps_only_the_newest_backup_of_a_day() -> None:
+    # three backups the same day -> the day keeps one representative (its newest).
+    records = [_rec("2026-07-08T08:00"), _rec("2026-07-08T12:00"), _rec("2026-07-08T20:00")]
+    decision = GfsRetention(daily=7, weekly=4, monthly=3).select(records)
+
+    assert _keys(decision.keep) == {"2026-07-08T20:00"}
+    assert _keys(decision.delete) == {"2026-07-08T08:00", "2026-07-08T12:00"}
+
+
+def test_weekly_promotes_the_newest_of_each_recent_week() -> None:
+    # ISO weeks 25 / 26 / 27; weekly=2 keeps the two most recent weeks' newest.
+    records = [_rec("2026-06-15"), _rec("2026-06-22"), _rec("2026-06-29")]
+    decision = GfsRetention(daily=1, weekly=2, monthly=1).select(records)
+
+    assert _keys(decision.keep) == {"2026-06-29", "2026-06-22"}  # weeks 27 + 26
+    assert _keys(decision.delete) == {"2026-06-15"}  # week 25 falls outside the 2-week window
+
+
+def test_monthly_keeper_does_not_depend_on_the_first_of_month() -> None:
+    # THE fragility fix: neither backup is the 1st or a Sunday, yet each month keeps its newest.
+    # the old date-classification model would have tagged both "daily" and lost June entirely.
+    records = [_rec("2026-06-17"), _rec("2026-07-15")]  # both Wednesdays, mid-month
+    decision = GfsRetention(daily=1, weekly=1, monthly=2).select(records)
+
+    assert _keys(decision.keep) == {"2026-06-17", "2026-07-15"}
+    assert decision.delete == ()
+
+
+def test_iso_week_grouping_is_year_boundary_safe() -> None:
+    # 2026-12-28 and 2026-12-31 share ISO week 2026-W53; 2027-01-04 is ISO week 2027-W01.
+    records = [_rec("2026-12-28"), _rec("2026-12-31"), _rec("2027-01-04")]
+    decision = GfsRetention(daily=1, weekly=2, monthly=2).select(records)
+
+    # newest of W53 is the 31st (not the 28th), plus the new-year week; the 28th is redundant.
+    assert _keys(decision.keep) == {"2027-01-04", "2026-12-31"}
+    assert _keys(decision.delete) == {"2026-12-28"}
+
+
+def test_keep_and_delete_partition_the_input() -> None:
+    records = [_rec(f"2026-07-{d:02d}") for d in range(1, 21)]
+    decision = GfsRetention(daily=3, weekly=2, monthly=1).select(records)
+
+    assert _keys(decision.keep).isdisjoint(_keys(decision.delete))
+    assert _keys(decision.keep) | _keys(decision.delete) == _keys(tuple(records))
+    assert len(decision.keep) + len(decision.delete) == len(records)
+
+
+def test_tiers_union_without_duplicates() -> None:
+    # the newest backup is simultaneously the day/week/month keeper — it appears once.
+    records = [_rec("2026-07-10"), _rec("2026-07-13")]
+    decision = GfsRetention(daily=7, weekly=4, monthly=3).select(records)
+
+    kept = [r.key for r in decision.keep]
+    assert len(kept) == len(set(kept))  # no record kept twice despite qualifying under many tiers
+    assert set(kept) == {"2026-07-10", "2026-07-13"}
+
+
 def test_select_does_not_mutate_input() -> None:
     records = [_rec("2026-07-09"), _rec("2026-07-01")]
     snapshot = list(records)
     GfsRetention().select(records)
-    assert records == snapshot  # order + contents untouched
+    assert records == snapshot
 
 
 def test_input_order_does_not_matter() -> None:
     policy = GfsRetention(daily=1, weekly=1, monthly=1)
-    ascending = [_rec("2026-07-07"), _rec("2026-07-08"), _rec("2026-07-09")]  # all daily
-    descending = list(reversed(ascending))
+    ascending = [_rec("2026-07-07T01:00"), _rec("2026-07-07T02:00"), _rec("2026-07-07T03:00")]
 
-    keep_a = {r.key for r in policy.select(ascending).keep}
-    keep_d = {r.key for r in policy.select(descending).keep}
+    keep_ascending = _keys(policy.select(ascending).keep)
+    keep_descending = _keys(policy.select(list(reversed(ascending))).keep)
 
-    assert keep_a == keep_d == {"backups/2026-07-09.enc"}  # newest daily wins regardless of order
+    assert keep_ascending == keep_descending == {"2026-07-07T03:00"}  # newest wins regardless
 
 
 def test_from_config() -> None:
-    config = BackupConfig(passphrase=SecretStr("pw"), retention_daily=1, retention_weekly=5, retention_monthly=9)
+    config = BackupConfig(passphrase=SecretStr("pw"), retention_daily=1, retention_weekly=1, retention_monthly=1)
     policy = GfsRetention.from_config(config)
-    # 6 dailies, keep only 1 (the newest)
-    dailies = [_rec(f"2026-07-{d:02d}") for d in (7, 8, 9, 10, 13, 14)]  # Tue..Mon, none a Sunday/1st
-    decision = policy.select(dailies)
-    assert len(decision.keep) == 1
-    assert decision.keep[0].key == "backups/2026-07-14.enc"
+    # six backups in one ISO week + month -> daily/weekly/monthly all collapse to the newest.
+    records = [_rec(f"2026-07-{d:02d}") for d in (6, 7, 8, 9, 10, 11)]
+    decision = policy.select(records)
+    assert _keys(decision.keep) == {"2026-07-11"}
 
 
 @pytest.mark.parametrize("field", ["daily", "weekly", "monthly"])

@@ -125,19 +125,18 @@ async def test_apply_retention_prunes_beyond_the_policy(tmp_path: Path) -> None:
         allow_delete=True,
         retention_daily=1,
         retention_weekly=1,
-        retention_monthly=1,
+        retention_monthly=2,
     )
-    keep_daily = await engine.create_backup("dsn", when=datetime(2026, 7, 8, tzinfo=UTC))  # newest daily
-    drop_daily = await engine.create_backup("dsn", when=datetime(2026, 7, 7, tzinfo=UTC))  # older daily
-    keep_weekly = await engine.create_backup("dsn", when=datetime(2026, 7, 5, tzinfo=UTC))  # Sunday
-    drop_weekly = await engine.create_backup("dsn", when=datetime(2026, 6, 28, tzinfo=UTC))  # older Sunday
-    keep_monthly = await engine.create_backup("dsn", when=datetime(2026, 7, 1, tzinfo=UTC))  # 1st
+    # three mid-month backups (none on the 1st/Sunday); monthly=2 keeps the two newest months.
+    keep_jul = await engine.create_backup("dsn", when=datetime(2026, 7, 15, tzinfo=UTC))
+    keep_jun = await engine.create_backup("dsn", when=datetime(2026, 6, 17, tzinfo=UTC))
+    drop_may = await engine.create_backup("dsn", when=datetime(2026, 5, 20, tzinfo=UTC))
 
     decision = await engine.apply_retention()
 
-    assert {r.key for r in decision.delete} == {drop_daily.key, drop_weekly.key}
+    assert {r.key for r in decision.delete} == {drop_may.key}
     surviving = {r.key for r in await engine.list_backups()}
-    assert surviving == {keep_daily.key, keep_weekly.key, keep_monthly.key}
+    assert surviving == {keep_jul.key, keep_jun.key}
 
 
 @pytest.mark.asyncio
