@@ -13,8 +13,14 @@ import pytest
 from cryptography.exceptions import InvalidTag
 from pydantic import SecretStr
 
-from threetears.media.contracts import ObjectListing
+from threetears.media.contracts import ObjectListing, ObjectStore
 from threetears.object_store.encrypted import EncryptedObjectStore
+
+
+def test_conforms_to_object_store_protocol() -> None:
+    # mypy verifies the signatures structurally; runtime_checkable verifies the method set.
+    store: ObjectStore = EncryptedObjectStore(_MemStore(), _PASS, scrypt_n=_FAST_N)
+    assert isinstance(store, ObjectStore)
 
 # a low scrypt factor so a per-object KDF doesn't dominate the suite (crypto is unchanged).
 _FAST_N = 2**8
