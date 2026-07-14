@@ -34,6 +34,8 @@ class BackupConfig:
     :param retention_monthly: number of monthly backups to keep (>= 1).
     :param allow_delete: master switch for destructive operations (delete / retention prune).
     :param dump_timeout_seconds: wall-clock ceiling for a dump/restore subprocess (> 0).
+    :param encryption_work_factor: scrypt cost N for the per-object key (power of two > 1); the
+        default is deployment-grade, lower it only to trade brute-force resistance for speed.
     """
 
     passphrase: SecretStr
@@ -43,6 +45,7 @@ class BackupConfig:
     retention_monthly: int = 3
     allow_delete: bool = False
     dump_timeout_seconds: int = 3600
+    encryption_work_factor: int = 2**18
 
     def __post_init__(self) -> None:
         for name in ("retention_daily", "retention_weekly", "retention_monthly"):
@@ -50,6 +53,8 @@ class BackupConfig:
                 raise ValueError(f"{name} must be >= 1")
         if self.dump_timeout_seconds <= 0:
             raise ValueError("dump_timeout_seconds must be > 0")
+        if self.encryption_work_factor <= 1 or (self.encryption_work_factor & (self.encryption_work_factor - 1)) != 0:
+            raise ValueError("encryption_work_factor must be a power of two greater than 1")
         if not self.passphrase.get_secret_value():
             raise ValueError("passphrase must not be empty")
 
@@ -72,6 +77,7 @@ class BackupConfig:
             retention_monthly=_int(source, "RETENTION_MONTHLY", 3),
             allow_delete=_bool(source, "ALLOW_DELETE", default=False),
             dump_timeout_seconds=_int(source, "DUMP_TIMEOUT_SECONDS", 3600),
+            encryption_work_factor=_int(source, "ENCRYPTION_WORK_FACTOR", 2**18),
         )
 
 

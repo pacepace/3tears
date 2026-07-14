@@ -37,6 +37,16 @@ def test_nonpositive_timeout_rejected() -> None:
         BackupConfig(passphrase=SecretStr("pw"), dump_timeout_seconds=0)
 
 
+@pytest.mark.parametrize("bad", [0, 1, 3, 1000])
+def test_work_factor_must_be_power_of_two_gt_one(bad: int) -> None:
+    with pytest.raises(ValueError, match="work_factor"):
+        BackupConfig(passphrase=SecretStr("pw"), encryption_work_factor=bad)
+
+
+def test_work_factor_default_is_deployment_grade() -> None:
+    assert BackupConfig(passphrase=SecretStr("pw")).encryption_work_factor == 2**18
+
+
 def test_from_env_reads_prefixed_vars() -> None:
     env = {
         "THREETEARS_BACKUP_PASSPHRASE": "s3cret",

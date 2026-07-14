@@ -24,10 +24,9 @@ classifiers = [
 # storage-agnostic: the engine takes an injected ObjectStore (S3 is one driver,
 # filesystem another), streams the dump through EncryptedObjectStore, and reads
 # the dump tool from the DB driver. object-store brings the store + the streaming
-# AEAD primitive; media-contracts is the ObjectStore protocol; core carries the
-# encryption + secret_refs helpers; observe is structured logging.
+# AEAD primitive; media-contracts is the ObjectStore protocol; observe is
+# structured logging.
 dependencies = [
-    "3tears",
     "3tears-media-contracts",
     "3tears-object-store",
     "3tears-observe",
@@ -37,7 +36,6 @@ dependencies = [
 Repository = "https://github.com/pacepace/3tears"
 
 [tool.uv.sources]
-3tears = { workspace = true }
 3tears-media-contracts = { workspace = true }
 3tears-object-store = { workspace = true }
 3tears-observe = { workspace = true }

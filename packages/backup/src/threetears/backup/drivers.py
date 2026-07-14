@@ -28,6 +28,8 @@ class DbDumpDriver(ABC):
     """Abstract dump/restore driver: declares the argv, inherits the streaming."""
 
     name: ClassVar[str]
+    #: True when the dump format is already compressed (so the engine skips gzip).
+    compressed: ClassVar[bool]
 
     @abstractmethod
     def dump_argv(self, dsn: str) -> list[str]:
@@ -50,6 +52,7 @@ class PostgresDriver(DbDumpDriver):
     """Vanilla PostgreSQL via ``pg_dump`` (custom format) + ``pg_restore``."""
 
     name: ClassVar[str] = "postgres"
+    compressed: ClassVar[bool] = True  # pg_dump custom format is zlib-compressed already
 
     def dump_argv(self, dsn: str) -> list[str]:
         return ["pg_dump", "--dbname", dsn, "--format=custom", "--no-owner", "--no-privileges"]
@@ -63,6 +66,7 @@ class YugabyteDriver(DbDumpDriver):
     """YugabyteDB via ``ysql_dump`` (plain SQL) + ``ysqlsh``."""
 
     name: ClassVar[str] = "yugabyte"
+    compressed: ClassVar[bool] = False  # ysql_dump emits plain SQL — gzip it
 
     def dump_argv(self, dsn: str) -> list[str]:
         return ["ysql_dump", "--dbname", dsn, "--no-owner", "--no-privileges"]

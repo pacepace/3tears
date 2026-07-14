@@ -17,7 +17,7 @@ import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import uuid7
 
 from threetears.media.contracts import ObjectListing
 
@@ -45,7 +45,7 @@ class FilesystemObjectStore:
     async def put(self, key: str, body: AsyncIterator[bytes], *, content_type: str, size: int | None = None) -> None:
         path = self._path_for(key)
         await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        tmp = path.with_name(f".{path.name}.{uuid7().hex}.tmp")
         handle = await asyncio.to_thread(open, tmp, "wb")
         try:
             async for chunk in body:

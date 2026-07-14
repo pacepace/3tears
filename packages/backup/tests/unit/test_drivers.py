@@ -50,6 +50,7 @@ def test_driver_for_version(version: str, expected: str) -> None:
     assert driver_for_version(version).name == expected
 
 
+# parity-with: threetears.backup.drivers._VersionSource
 class _FakeConn:
     def __init__(self, version: str) -> None:
         self._version = version
