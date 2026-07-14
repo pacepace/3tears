@@ -22,6 +22,7 @@ def test_conforms_to_object_store_protocol() -> None:
     store: ObjectStore = EncryptedObjectStore(_MemStore(), _PASS, scrypt_n=_FAST_N)
     assert isinstance(store, ObjectStore)
 
+
 # a low scrypt factor so a per-object KDF doesn't dominate the suite (crypto is unchanged).
 _FAST_N = 2**8
 _PASS = SecretStr("correct horse battery staple")

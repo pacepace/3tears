@@ -34,8 +34,8 @@ jobs:
           # is the documented escape and matches the layout that
           # ``uv run mypy`` resolves from the installed-editable
           # environment.
-          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src
-        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources
+          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src:packages/media-contracts/src:packages/object-store/src:packages/backup/src
+        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources -p threetears.media.contracts -p threetears.object_store -p threetears.backup
 
       - name: Test (unit + enforcement; integration excluded - no docker on the runner)
         run: uv run pytest packages/ tests/ -m "not integration" -v

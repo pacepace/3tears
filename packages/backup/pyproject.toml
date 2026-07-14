@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-backup"
+version = "0.15.0"
+description = "Encrypted, GFS-rotated database backups to any ObjectStore, with restore verification"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: System :: Archiving :: Backup",
+    "Typing :: Typed",
+]
+# storage-agnostic: the engine takes an injected ObjectStore (S3 is one driver,
+# filesystem another), streams the dump through EncryptedObjectStore, and reads
+# the dump tool from the DB driver. object-store brings the store + the streaming
+# AEAD primitive; media-contracts is the ObjectStore protocol; core carries the
+# encryption + secret_refs helpers; observe is structured logging.
+dependencies = [
+    "3tears",
+    "3tears-media-contracts",
+    "3tears-object-store",
+    "3tears-observe",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-media-contracts = { workspace = true }
+3tears-object-store = { workspace = true }
+3tears-observe = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
