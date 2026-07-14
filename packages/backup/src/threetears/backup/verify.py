@@ -8,7 +8,7 @@ temp database is created and dropped around the check.
 
 Everything the verifier touches is injected: the temp-database *provisioner* (an async context
 manager yielding a dsn), the *assertions*, and the *hook*. That keeps the orchestration unit-testable
-with fakes; :func:`make_temp_db_provisioner` and :func:`count_public_tables` are the real
+with fakes; :func:`make_temp_db_provisioner` and :func:`count_tables` are the real
 asyncpg-backed defaults for integration use.
 """
 
@@ -33,7 +33,7 @@ __all__ = [
     "SupportsRestore",
     "TempDbProvisioner",
     "VerificationResult",
-    "count_public_tables",
+    "count_tables",
     "make_subprocess_hook",
     "make_temp_db_provisioner",
 ]
@@ -145,23 +145,31 @@ def make_temp_db_provisioner(
     return provision
 
 
-def count_public_tables(*, connect: Callable[[str], Awaitable[Any]]) -> Assertions:
-    """Default assertion: the restored database has at least one ``public`` table (asyncpg).
+def count_tables(*, connect: Callable[[str], Awaitable[Any]]) -> Assertions:
+    """Default assertion: the restored database has at least one user table (asyncpg).
+
+    Counts base tables across every non-system schema (excluding ``pg_catalog`` /
+    ``information_schema``), not just ``public`` — real apps put their tables in named schemas
+    (scriob's live in ``platform``), so a ``public``-only check would read zero and falsely fail.
 
     :param connect: an async connect callable (``asyncpg.connect``); injected for testability.
-    :return: an :data:`Assertions` recording ``{"public_tables": n}`` and asserting ``n > 0``.
+    :return: an :data:`Assertions` recording ``{"tables": n}`` and asserting ``n > 0``.
     """
 
     async def assertion(dsn: str) -> Mapping[str, Any]:
         conn = await connect(dsn)
         try:
-            count = await conn.fetchval("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")
+            count = await conn.fetchval(
+                "SELECT count(*) FROM information_schema.tables "
+                "WHERE table_type = 'BASE TABLE' "
+                "AND table_schema NOT IN ('pg_catalog', 'information_schema')"
+            )
         finally:
             await conn.close()
         tables = int(count)
         if tables < 1:
-            raise AssertionError("restored database has no public tables")
-        return {"public_tables": tables}
+            raise AssertionError("restored database has no user tables")
+        return {"tables": tables}
 
     return assertion
 

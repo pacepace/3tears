@@ -20,7 +20,7 @@ from threetears.backup.drivers import PostgresDriver, detect_driver
 from threetears.backup.engine import BackupEngine
 from threetears.backup.verify import (
     RestoreVerifier,
-    count_public_tables,
+    count_tables,
     make_subprocess_hook,
     make_temp_db_provisioner,
 )
@@ -118,7 +118,7 @@ async def test_default_table_count_assertion_and_subprocess_hook(db_container: s
     verifier = RestoreVerifier(
         engine,
         make_temp_db_provisioner(db_container, connect=asyncpg.connect),
-        assertions=count_public_tables(connect=asyncpg.connect),
+        assertions=count_tables(connect=asyncpg.connect),
         post_restore_hook=hook,
     )
 
@@ -126,5 +126,5 @@ async def test_default_table_count_assertion_and_subprocess_hook(db_container: s
 
     assert result.ok is True
     assert result.hook_ran is True
-    assert result.checks["public_tables"] >= 1  # the built-in default assertion
+    assert result.checks["tables"] >= 1  # the built-in default assertion
     assert hook_output.read_text().strip() == str(_ROW_COUNT)  # the hook ran against the restored db
