@@ -1,7 +1,11 @@
 """KVLease — TTL-bounded distributed mutex over NATS JetStream KV.
 
-generalizes the ownership-token + expiry-in-value pattern in
-``3tears/hub/security/auth_strategies.py:LoginLockout`` into a reusable
+generalizes the ownership-token + expiry-in-value pattern used
+historically by the hub's login-lockout tracking (since migrated to
+:class:`~aibots.hub.security.collections.LoginLockoutCollection`, a
+durable three-tier ``BaseCollection`` — not a candidate for this
+primitive, since lockout state must survive pod restarts and counts
+failures rather than granting exclusive ownership) into a reusable
 primitive for cross-pod coordination (workspace bind locks, leader
 election, fencing tokens).
 

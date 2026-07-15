@@ -20,16 +20,37 @@ Upstream bug worked around: the package's bound-tool wrapper invokes a LangChain
 ``tool._run(**args)`` path, which current langchain-core rejects ("missing ``config``"). We subclass
 and override that one method to call the public ``tool.ainvoke(args)`` instead, so a caller's OWN
 tools work (each tool call is one Agent-SDK turn). Filed upstream; the override is the local fix.
+
+Tool-status events (claude-max-convergence Chunk 7): ``ClaudeCodeChatModel._astream``/``_agenerate``
+only ever fire ``on_llm_new_token`` — the SDK subprocess's internal tool-calling loop is invisible to
+LangChain's own instrumentation (verified by reading the package source: ``astream_events`` never
+emits ``on_tool_start``/``on_tool_end`` for tools invoked this way). ``_wrap_langchain_tool``'s
+``wrapped`` closure is the one place with real-time visibility into each call, so it dispatches the
+SAME typed events node-path tools already emit (:mod:`threetears.langgraph.events`) around
+``tool.ainvoke`` -- a subscription-backed turn's tool-status chips render through the identical
+consumer-side code path a normal turn's do, no new event vocabulary needed downstream.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
+from pydantic import Field
+
+from threetears.langgraph.events import (
+    ToolCompletedEvent,
+    ToolDispatchedEvent,
+    ToolStartedEvent,
+    dispatch_event,
+)
+from threetears.observe import get_logger
 
 __all__ = ["OAUTH_TOKEN_PREFIX", "is_subscription_token", "create_subscription_chat"]
+
+_logger = get_logger(__name__)
 
 #: A Claude subscription OAuth token (``claude setup-token``) starts with this; an API key does not.
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
@@ -44,6 +65,9 @@ _FORWARDED_KWARGS = frozenset(
         "permission_mode",
         "allowed_tools",
         "disallowed_tools",
+        "tools",  # see _SubscriptionChatModel.tools -- NOT a ClaudeCodeChatModel field,
+        # declared on our subclass below so it actually binds (a bare kwarg the base
+        # class doesn't declare is silently dropped by its `extra="ignore"` config).
         "cwd",
         "fallback_model",
         "max_budget_usd",
@@ -61,26 +85,85 @@ def _subscription_model_cls() -> type:
     from claude_agent_sdk import tool as sdk_tool
     from langchain_claude_code import ClaudeCodeChatModel
 
-    class _SubscriptionChatModel(ClaudeCodeChatModel):  # type: ignore[misc]
-        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API."""
+    class _SubscriptionChatModel(ClaudeCodeChatModel):
+        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API.
+
+        Also default-denies Claude Code's own built-in tool belt (Bash, Read, Write, Edit,
+        WebFetch, WebSearch, …) — see :attr:`tools`.
+        """
+
+        # ``ClaudeAgentOptions.tools`` gates whether ANY built-in tool is even available, fully
+        # independent of ``allowed_tools``/``disallowed_tools`` (which only gate auto-approval /
+        # removal of tools ``tools`` already made available). ``ClaudeCodeChatModel`` itself
+        # declares no ``tools`` field and silently drops an unknown constructor kwarg (its
+        # ``model_config`` is ``extra="ignore"``), so this MUST be declared here to bind at all.
+        # Defaults to ``[]`` (every built-in disabled, only LangChain-bound tools available) --
+        # default-deny rather than requiring every caller to remember to pass it, since a
+        # subscription-backed turn otherwise gets the model server-side Bash / filesystem /
+        # network access with zero caller-side gate.
+        tools: list[str] | None = Field(default_factory=list)
+
+        def _build_options(self, **overrides: Any) -> Any:
+            """Force ``ClaudeAgentOptions.tools`` from :attr:`tools` unless a call overrides it."""
+            overrides.setdefault("tools", self.tools)
+            return super()._build_options(**overrides)
 
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
             props = schema.get("properties", {})
             tmap = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
             param_types = {n: tmap.get(p.get("type", "string"), str) for n, p in props.items()}
 
+            async def _emit(event: Any) -> None:
+                # Best-effort: a broken event bus must never break tool
+                # execution or the turn. No `config` is threaded through --
+                # `dispatch_event` resolves the ambient RunnableConfig via
+                # langchain_core's own context propagation, same as any
+                # other custom-event dispatch not holding a config handle.
+                # Logged (not silently swallowed): ambient-config propagation
+                # across the SDK's subprocess-callback boundary is the one
+                # thing this chunk couldn't verify by reading source alone --
+                # a failure here is exactly the signal that verification needs.
+                try:
+                    await dispatch_event(event, config=None)
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- tool-status is observability, never load-bearing for the turn
+                    _logger.warning(
+                        "subscription tool-status event dispatch failed",
+                        extra={"extra_data": {"event_type": type(event).__name__, "error": str(exc)}},
+                    )
+
             @sdk_tool(tool.name, tool.description or "", param_types)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
+                await _emit(ToolDispatchedEvent(tool_name=tool.name))
+                await _emit(ToolStartedEvent(tool_name=tool.name, tool_args=args))
+                start = time.monotonic()
                 try:
                     result = await tool.ainvoke(args)  # public API (handles config/run_manager); was tool._run
                     captured = self._tool_results_var.get(None) if self._tool_results_var else None
                     if captured is not None:
                         captured.append({"name": tool.name, "args": args, "result": result})
+                    await _emit(
+                        ToolCompletedEvent(
+                            tool_name=tool.name,
+                            tool_status="completed",
+                            tool_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                    )
                     return {"content": [{"type": "text", "text": str(result)}]}
                 except Exception as exc:  # surfaced to the model as a tool error so its loop continues
+                    await _emit(
+                        ToolCompletedEvent(
+                            tool_name=tool.name,
+                            tool_status="failed",
+                            tool_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                    )
                     return {"content": [{"type": "text", "text": f"Error: {exc}"}], "is_error": True}
 
-            return wrapped
+            return wrapped  # type: ignore[return-value]  # @sdk_tool wraps `wrapped` into an SdkMcpTool,
+            # which the base class's own `_wrap_langchain_tool -> Callable[..., Any]` signature doesn't
+            # account for -- a stub gap in langchain-claude-code itself (pre-existing: this exact
+            # decorator-then-return shape is unchanged by this chunk's edit, only newly surfaced because
+            # 3tears-models isn't in CI's mypy invocation, so nothing here has been type-checked before).
 
     return _SubscriptionChatModel
 
@@ -92,6 +175,11 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     package threads it into the SDK's per-subprocess ``ClaudeAgentOptions.env``, so concurrent models
     with different tokens never share process env (no global ``os.environ`` write, no cross-user race).
     HTTP-API kwargs the CLI backend cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
+
+    Claude Code's own built-in tool belt (Bash, Read, Write, Edit, WebFetch, WebSearch, …) is
+    active by default and independent of any LangChain tools bound via ``bind_tools()``. A caller
+    that wants the model to use ONLY its own bound tools should pass ``tools=[]`` — omitting it
+    keeps the full built-in preset available.
     """
     opts = {k: v for k, v in extra_kwargs.items() if k in _FORWARDED_KWARGS}
     model: BaseChatModel = _subscription_model_cls()(model=model_name, oauth_token=token, **opts)
