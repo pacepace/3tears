@@ -28,6 +28,13 @@ The embedder is constructor-injected as a plain ``langchain_core.embeddings.
 Embeddings`` instance — this module does NOT import from ``agent/memory``
 (wrong direction of coupling for an ``agent/tools`` capability); callers pass
 whatever embedding client they already use elsewhere.
+
+This module has no notion of an "always-bound core set" (e.g. metallm's
+``recall_context`` / ``invoke_tool_llm`` workflow primitives, which must stay
+callable regardless of top-K). That composition is entirely the caller's
+responsibility: a caller adds its always-bound tools to :meth:`ToolRelevanceIndex
+.select`'s result AFTER selection runs, so ``select`` never has to be asked to
+avoid excluding them.
 """
 
 from __future__ import annotations
@@ -272,10 +279,14 @@ class ToolRelevanceIndex:
     async def search(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[BaseTool]:
         """Rank ``tools`` (typically the FULL catalog) by relevance to ``query``.
 
-        No fallback contract here (unlike :meth:`select`): a failed search
-        soft-fails to an empty list of hits. ``tool_search`` failing to find
-        anything is a normal, recoverable outcome for its caller -- it does
-        not gate a turn's entire tool surface the way :meth:`select` does.
+        No smaller-than-input fallback contract here (unlike :meth:`select`):
+        a failed OR slow search soft-fails to an empty list of hits.
+        ``tool_search`` failing to find anything is a normal, recoverable
+        outcome for its caller -- it does not gate a turn's entire tool
+        surface the way :meth:`select` does. Still bounded by the SAME
+        latency ceiling as :meth:`select` (both share one embedder and one
+        failure surface) -- an unresponsive-but-not-raising embedder must
+        not hang a mid-turn ``tool_search`` call indefinitely.
 
         :param tools: the catalog to search (the caller decides scope -- the
             sign-off contract for ``tool_search`` is that this is the FULL
@@ -285,13 +296,27 @@ class ToolRelevanceIndex:
         :ptype query: str
         :param limit: maximum number of hits to return
         :ptype limit: int
-        :return: up to ``limit`` tools, most relevant first; empty on failure
-            or an empty catalog
+        :return: up to ``limit`` tools, most relevant first; empty on
+            failure, timeout, or an empty catalog
         :rtype: list[BaseTool]
         """
         if not tools:
             return []
-        ranked, fallback_reason = await self._rank(tools, query)
+        try:
+            ranked, fallback_reason = await asyncio.wait_for(
+                self._rank(tools, query), timeout=self._latency_ceiling_s
+            )
+        except TimeoutError:
+            _log.warning(
+                "tool-relevance search exceeded latency ceiling; returning no hits",
+                extra={
+                    "extra_data": {
+                        "tool_count": len(tools),
+                        "ceiling_s": self._latency_ceiling_s,
+                    }
+                },
+            )
+            return []
         if fallback_reason is not None:
             return []
         return ranked[:limit]

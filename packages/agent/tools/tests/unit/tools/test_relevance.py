@@ -123,6 +123,28 @@ async def test_select_noop_when_catalog_at_or_below_top_k() -> None:
     assert embedder.aembed_query_calls == []
 
 
+async def test_select_noop_when_catalog_size_exactly_equals_top_k() -> None:
+    tools = _catalog(5)
+    embedder = _FakeEmbeddings({})
+    index = ToolRelevanceIndex(embedder=embedder, top_k=5)
+
+    result = await index.select(tools, "anything")
+
+    assert result.selected == tools
+    assert not result.fallback_used
+    assert embedder.aembed_documents_calls == []
+
+
+async def test_select_on_empty_catalog_returns_empty() -> None:
+    embedder = _FakeEmbeddings({})
+    index = ToolRelevanceIndex(embedder=embedder, top_k=5)
+
+    result = await index.select([], "anything")
+
+    assert result.selected == []
+    assert not result.fallback_used
+
+
 # ---------------------------------------------------------------------------
 # content-hash cache: reuse + invalidation
 # ---------------------------------------------------------------------------
@@ -278,6 +300,20 @@ async def test_search_returns_empty_on_embedder_failure_no_fallback_contract() -
     tools = _catalog(5)
     embedder = _FakeEmbeddings({}, raise_on_documents=True)
     index = ToolRelevanceIndex(embedder=embedder, top_k=2)
+
+    hits = await index.search(tools, "query")
+
+    assert hits == []
+
+
+async def test_search_returns_empty_on_latency_ceiling() -> None:
+    """search() shares select()'s latency ceiling -- a slow (not raising)
+    embedder must not hang a mid-turn tool_search call indefinitely.
+    """
+    tools = _catalog(5)
+    vectors = {_tool_text(t): [1.0, 0.0] for t in tools}
+    embedder = _FakeEmbeddings(vectors, sleep_s=0.2)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=2, latency_ceiling_s=0.01)
 
     hits = await index.search(tools, "query")
 
