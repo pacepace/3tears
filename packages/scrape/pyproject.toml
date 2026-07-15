@@ -1,0 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-scrape"
+version = "0.16.0"
+description = "AI-driven, self-healing web scraping: pluggable render backends + LLM-proposed extraction candidates validated and judged against real page content, never hand-rolled per-site parsers"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears",
+    # drivers/document.py's DocumentDriver reuses parse_document to feed
+    # PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
+    # targets already use.
+    "3tears-agent-tools[document]",
+    "3tears-models",
+    "3tears-observe",
+    "httpx[socks]>=0.27",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    # extraction.py needs a CSS-selector engine to execute candidate
+    # extraction strategies (structural validation + recipe reuse on later
+    # fetches, both without an LLM call). MIT-licensed, pure-Python when
+    # backed by stdlib html.parser (no lxml C-extension required) -- safe
+    # in the MIT-licensed core tree, unlike nodriver's AGPL boundary.
+    "beautifulsoup4>=4.12",
+    # drivers/camoufox.py -- an in-process ScrapeDriver backend (unlike
+    # drivers/nodriver_sidecar.py's sidecar-only AGPL isolation). The
+    # camoufox Python wrapper package itself is MIT-licensed; the browser
+    # patches it launches (a separate binary, fetched via `camoufox fetch`,
+    # not this dependency) are MPL-2.0 (verified via GitHub's license API)
+    # -- file-level copyleft only, safe in-process.
+    "camoufox>=0.4",
+    # Pin below Playwright's own 1.61 release: it added an `isMobile`
+    # viewport field Camoufox's bundled Firefox patch (Juggler protocol)
+    # doesn't recognize yet, breaking every browser launch with a
+    # schema-validation error. Matches a currently-open upstream bug:
+    # https://github.com/daijro/camoufox/issues/653. Revisit this pin once
+    # camoufox ships a fix (or Playwright reverts/gates the new field).
+    "playwright<1.61",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-agent-tools = { workspace = true }
+3tears-models = { workspace = true }
+3tears-observe = { workspace = true }

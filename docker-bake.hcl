@@ -192,3 +192,24 @@ target "agent" {
     "${REGISTRY}/aibots-agent:latest",
   ]
 }
+
+# ---------------------------------------------------------------------------
+# 3tears-scrape's nodriver sidecar (AGPL-3.0 isolation boundary)
+# ---------------------------------------------------------------------------
+
+# Standalone, genuinely separate-process HTTP wrapper around nodriver
+# (AGPL-3.0) -- never imported as a Python library by 3tears-scrape (MIT).
+# In-repo context (unlike the cross-repo consumer targets above), its own
+# base image (python:3.12-slim-bookworm, not threetears-base/aibots-base),
+# not wired into any group by default -- opt in explicitly, the same way
+# `admin` is, since not every 3tears-scrape consumer needs the sidecar
+# backend (CamoufoxDriver is a fully in-process alternative).
+target "nodriver-sidecar" {
+  inherits   = ["common"]
+  context    = "packages/scrape/sidecar"
+  dockerfile = "Dockerfile"
+  tags = [
+    "${REGISTRY}/nodriver-sidecar:${VERSION}",
+    "${REGISTRY}/nodriver-sidecar:latest",
+  ]
+}
