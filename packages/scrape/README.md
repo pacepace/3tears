@@ -15,6 +15,7 @@ pip install 3tears-scrape
 - **Pluggable target config** -- `TargetSource` (`StaticTargetSource` / `YamlTargetSource` / `CollectionTargetSource`) and `bootstrap_targets()` for seeding a database-backed target collection from a git-tracked YAML file, never overwriting a row already present.
 - **`ScrapeTool`** -- an ad-hoc, single-call MCP-exposed entry point: give it a URL and a field schema, get back real extracted data through the same eval loop, no target pre-configuration required.
 - **`enrichment.py`** -- a secondary, separate LLM pass capturing free-form context a structured schema has no field for, kept distinct from validated structured data.
+- **`find_target_page()`** -- a bounded-turn research agent: give it a plain-language query ("Ohio WARN Act notices"), it searches and fetches candidate pages (WebSearch/WebFetch, capped turns), deterministically verifies the winner has real extractable structure (a table, a document link, a JSON API response -- never a browser fetch, so it never needs the sidecar running), and returns a `PageFinderResult` (`url`, a `driver_backend` guess, `verified`). Independently callable -- it never persists a `ScrapeTarget` or forces extraction to follow; a caller with a known URL never needs this at all.
 
 ## Quickstart
 
