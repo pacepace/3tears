@@ -21,8 +21,14 @@ from unittest.mock import AsyncMock, patch
 from threetears.models import LlmPurpose
 
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-from threetears.scrape.eval_loop import _JudgeVerdict, run_eval_loop, run_eval_loop_multi_row
+from threetears.scrape.eval_loop import (
+    _JudgeVerdict,
+    _judge_one_document_extraction,
+    run_eval_loop,
+    run_eval_loop_multi_row,
+)
 from threetears.scrape.extraction import (
+    NoticeDocument,
     _CandidateStrategy,
     _CandidateStrategyList,
     _RegexCandidateStrategy,
@@ -912,12 +918,26 @@ _NOTICES_PAGE_HTML = """
 
 
 class TestRunEvalLoopMultiRowPerDocumentStrategy:
-    async def test_extracts_one_record_per_document_no_judge_no_candidates(self):
-        recipe_collection, extraction_collection = _collections()
-        fake_model_a, ainvoke_a = _fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
-        fake_model_b, ainvoke_b = _fake_structured_model({"employer": "Beta LLC", "affected_count": "7"})
+    """Mocks at the extract_fields_directly_chunked / _judge_one_document_extraction
+    function boundary (patched directly on the eval_loop module), not the deep
+    create_chat_model level -- these tests exercise per-document ROUTING/aggregation
+    logic; extraction's and the judge's own internals get their own dedicated unit
+    tests in test_extraction.py and TestJudgeOneDocumentExtraction below."""
 
-        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_model_a, fake_model_b]):
+    async def test_extracts_one_confirmed_record_per_document(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+
+        async def fake_extract(text, schema, *, model_id, api_key):
+            return {"employer": "Acme Corp", "affected_count": 42} if "Acme" in text else {"employer": "Beta LLC", "affected_count": 7}
+
+        judge_mock = AsyncMock(return_value=True)
+
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", judge_mock),
+        ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
                 _NOTICES_PAGE_HTML,
@@ -937,17 +957,51 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
             ]
         }
         assert extraction.extraction_recipe_id == "warn_act_wv"
-        assert ainvoke_a.await_count == 1
-        assert ainvoke_b.await_count == 1
+        assert judge_mock.await_count == 2
+
+    async def test_a_judge_rejected_record_is_dropped_even_though_structurally_complete(self):
+        """The whole point of scrape-task-06's own grounding check: a well-typed,
+        complete-looking extraction that the judge says is wrong/hallucinated must
+        never count as a real record."""
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
+
+        async def fake_extract(text, schema, *, model_id, api_key):
+            return {"employer": "Acme Corp", "affected_count": 42}
+
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=False)),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_wv",
+                single_notice_html,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="per_document",
+            )
+
+        assert extraction.validation_status == "failed"
+        assert extraction.structured_fields == {"records": []}
 
     async def test_second_run_always_calls_the_llm_again_no_caching(self):
         """Unlike css/regex, a healthy "recipe" (there isn't a reusable one) never
         skips the LLM call -- every document, every poll, gets its own fresh call."""
+        import threetears.scrape.eval_loop as eval_loop_module
+
         recipe_collection, extraction_collection = _collections()
-        fake_model, ainvoke_mock = _fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
+        extract_mock = AsyncMock(return_value={"employer": "Acme Corp", "affected_count": 42})
 
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", extract_mock),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
+        ):
             await run_eval_loop_multi_row(
                 "warn_act_wv",
                 single_notice_html,
@@ -969,15 +1023,21 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 strategy_type="per_document",
             )
 
-        assert ainvoke_mock.await_count == 2
+        assert extract_mock.await_count == 2
 
-    async def test_a_document_missing_a_required_field_is_dropped_entirely(self):
+    async def test_a_document_missing_a_required_field_is_dropped_without_spending_a_judge_call(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
         recipe_collection, extraction_collection = _collections()
         # affected_count missing (None) -- all-or-nothing, this record must not appear.
-        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": None})
+        extract_mock = AsyncMock(return_value={"employer": "Acme Corp"})
+        judge_mock = AsyncMock(return_value=True)
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", extract_mock),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", judge_mock),
+        ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
                 single_notice_html,
@@ -992,6 +1052,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
         assert extraction.extraction_recipe_id is None
+        judge_mock.assert_not_called()
 
     async def test_no_notice_divs_found_persists_failed_not_a_crash(self):
         recipe_collection, extraction_collection = _collections()
@@ -1013,13 +1074,18 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.structured_fields == {"records": []}
 
     async def test_one_document_llm_total_failure_does_not_sink_the_others(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
         recipe_collection, extraction_collection = _collections()
-        fake_model_a, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
-        fake_model_b, _ = _fake_structured_model({"employer": "Beta LLC", "affected_count": "7"})
+
+        async def fake_extract(text, schema, *, model_id, api_key):
+            if "Acme" in text:
+                return None
+            return {"employer": "Beta LLC", "affected_count": 7}
 
         with (
-            patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_model_a, fake_model_b]),
-            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_wv",
@@ -1059,6 +1125,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract_chunked),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
             patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
         ):
             extraction = await run_eval_loop_multi_row(
@@ -1075,12 +1142,47 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "validated"
         assert extraction.structured_fields == {"records": [{"employer": "Beta LLC", "affected_count": 7}]}
 
-    async def test_consecutive_failures_tracked_on_the_marker_recipe(self):
+    async def test_a_hanging_judge_call_is_bounded_the_same_as_a_hanging_extraction(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
         recipe_collection, extraction_collection = _collections()
-        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": None})
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id):
+            await asyncio.sleep(1)
+            raise AssertionError("should have been cancelled by the outer deadline")
+
+        with (
+            patch.object(
+                eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp", "affected_count": 42})
+            ),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", hanging_judge),
+            patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_wv",
+                single_notice_html,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="per_document",
+            )
+
+        assert extraction.validation_status == "failed"
+        assert extraction.structured_fields == {"records": []}
+
+    async def test_consecutive_failures_tracked_on_the_marker_recipe(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
+
+        with (
+            patch.object(eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp"})),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
+        ):
             await run_eval_loop_multi_row(
                 "warn_act_wv",
                 single_notice_html,
@@ -1136,9 +1238,16 @@ class TestRunEvalLoopMultiRowVisionRouting:
             vision_calls.append(images)
             return {"employer": "Scanned Co", "affected_count": 2}
 
+        judge_calls: list[bool] = []
+
+        async def fake_judge(document, extracted, schema, *, api_key, judge_model_id):
+            judge_calls.append(document.was_ocr)
+            return True
+
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_text),
             patch.object(eval_loop_module, "extract_fields_from_images", fake_vision),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", fake_judge),
         ):
             extraction = await run_eval_loop_multi_row(
                 "warn_act_hi",
@@ -1154,6 +1263,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
         assert len(text_calls) == 1
         assert len(vision_calls) == 1
         assert vision_calls[0] == [b"fake-png"]
+        assert sorted(judge_calls) == [False, True]  # judged once per document, matching its own was_ocr
         assert extraction.validation_status == "validated"
         records = extraction.structured_fields["records"]
         assert {"employer": "Acme Corp", "affected_count": 1} in records
@@ -1175,6 +1285,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
 
         with (
             patch.object(eval_loop_module, "extract_fields_from_images", hanging_vision),
+            patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
             patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
         ):
             extraction = await run_eval_loop_multi_row(
@@ -1190,3 +1301,79 @@ class TestRunEvalLoopMultiRowVisionRouting:
 
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
+
+
+# ===========================================================================
+# _judge_one_document_extraction -- per_document's own grounding check (scrape-task-06)
+# ===========================================================================
+
+_TEXT_DOCUMENT = NoticeDocument(text="Acme Corp letter text", was_ocr=False, images=[])
+_VISION_DOCUMENT = NoticeDocument(text="", was_ocr=True, images=[b"fake-png-page-0"])
+_EXTRACTED = {"employer": "Acme Corp", "affected_count": 42}
+
+
+class TestJudgeOneDocumentExtraction:
+    async def test_confirmed_verdict_returns_true(self):
+        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches the document")
+        fake_model, ainvoke_mock = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await _judge_one_document_extraction(
+                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
+            )
+        assert result is True
+        assert ainvoke_mock.await_count == 1
+
+    async def test_rejected_verdict_returns_false(self):
+        verdict = _JudgeVerdict(winning_candidate_index=None, reasoning="affected_count is not stated anywhere")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await _judge_one_document_extraction(
+                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
+            )
+        assert result is False
+
+    async def test_total_judge_failure_returns_false_not_a_crash(self):
+        """An unconfirmable record is treated the same as a rejected one -- never
+        silently kept just because the judge itself couldn't be reached."""
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await _judge_one_document_extraction(
+                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
+            )
+        assert result is False
+
+    async def test_text_document_uses_the_given_judge_model_no_provider_override(self):
+        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="ok")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            await _judge_one_document_extraction(
+                _TEXT_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
+            )
+        assert create_model.call_args.args[0] == "deepseek/deepseek-chat-v3-0324"
+        assert create_model.call_args.kwargs["provider"] is None
+
+    async def test_scanned_document_uses_the_vision_model_and_provider_ignoring_judge_model_id(self):
+        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="matches the image")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            result = await _judge_one_document_extraction(
+                _VISION_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="this-should-be-ignored"
+            )
+        assert result is True
+        assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
+        assert create_model.call_args.kwargs["provider"] == "openrouter"
+
+    async def test_scanned_document_judge_prompt_includes_the_images(self):
+        verdict = _JudgeVerdict(winning_candidate_index=0, reasoning="ok")
+        fake_model, ainvoke_mock = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            await _judge_one_document_extraction(
+                _VISION_DOCUMENT, _EXTRACTED, _SCHEMA, api_key="k", judge_model_id="deepseek/deepseek-chat-v3-0324"
+            )
+        [call] = ainvoke_mock.await_args_list
+        [message] = call.args[0]
+        image_blocks = [block for block in message.content if block.get("type") == "image_url"]
+        assert len(image_blocks) == 1

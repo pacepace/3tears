@@ -32,9 +32,11 @@ from threetears.observe import get_logger
 from .collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipe, ScrapeRecipeCollection
 from .extraction import (
     DEFAULT_EXTRACTION_MODEL_ID,
+    DEFAULT_VISION_MODEL_ID,
     MAX_HTML_CHARS_IN_PROMPT,
     FieldSchema,
     NoticeDocument,
+    _VISION_PROVIDER,
     extract_fields_directly_chunked,
     extract_fields_from_images,
     generate_candidates,
@@ -132,6 +134,43 @@ def _build_judge_prompt(html: str, survivors: list[dict[str, Any]], schema: Fiel
     )
 
 
+async def _judge(
+    prompt_or_messages: str | list[Any],
+    *,
+    model_id: str,
+    api_key: str,
+    provider: str | None = None,
+    attempts: int = _JUDGE_ATTEMPTS,
+    backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
+    log_label: str,
+) -> _JudgeVerdict | None:
+    """The one shared judge call every judge use in this module funnels through --
+    structured-output :class:`_JudgeVerdict`, retried on transient failure, never
+    raises. Callers vary only in how *prompt_or_messages* was built (a plain text
+    prompt for css/regex candidate comparison against real page HTML; a multimodal
+    message list for a vision-grounded per_document confirmation against real page
+    images -- ``bounded_retry_structured_call``'s own ``prompt`` parameter already
+    accepts either shape) and *log_label*. Previously ``_judge_candidates`` and
+    ``_judge_row_candidates`` each called ``bounded_retry_structured_call`` directly
+    with near-identical arguments (scrape-task-06's own per-document grounding
+    check made that duplication worth closing, not adding a third copy of it).
+    """
+    return await bounded_retry_structured_call(
+        prompt_or_messages,
+        _JudgeVerdict,
+        model_id=model_id,
+        api_key=api_key,
+        provider=provider,
+        purpose=LlmPurpose.UTILITY,
+        temperature=0.0,
+        timeout=_JUDGE_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label=log_label,
+        degraded_to="no winner",
+    )
+
+
 async def _judge_candidates(
     html: str,
     survivors: list[dict[str, Any]],
@@ -142,25 +181,16 @@ async def _judge_candidates(
     attempts: int = _JUDGE_ATTEMPTS,
     backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
 ) -> _JudgeVerdict | None:
-    """Structured-output judge call, retried on transient failure.
+    """Structured-output judge call comparing several candidates, retried on transient failure.
 
     Same bounded-retry shape as ``extraction.generate_candidates`` /
-    ``query_agent/matching.py``'s ``_invoke_match_disambiguation``. Never
-    raises; returns ``None`` only after every attempt fails.
+    ``query_agent/matching.py``'s ``_invoke_match_disambiguation`` -- via the
+    shared :func:`_judge`. Never raises; returns ``None`` only after every
+    attempt fails.
     """
     prompt = _build_judge_prompt(html, survivors, schema)
-    return await bounded_retry_structured_call(
-        prompt,
-        _JudgeVerdict,
-        model_id=model_id,
-        api_key=api_key,
-        purpose=LlmPurpose.UTILITY,
-        temperature=0.0,
-        timeout=_JUDGE_TIMEOUT_SECONDS,
-        attempts=attempts,
-        backoff_seconds=backoff_seconds,
-        log_label="scrape judge",
-        degraded_to="no winner",
+    return await _judge(
+        prompt, model_id=model_id, api_key=api_key, attempts=attempts, backoff_seconds=backoff_seconds, log_label="scrape judge"
     )
 
 
@@ -609,26 +639,128 @@ async def _judge_row_candidates(
 ) -> _JudgeVerdict | None:
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
-    Shares :func:`_judge_candidates`'s retry/logging shape via
-    :func:`bounded_retry_structured_call` (backlog SCR-K7M3, closed
-    2026-07-14 -- see build-plan.md's Chunk 07 design decision for the
-    original "duplicated, not shared" call and this chunk for why it
-    changed). Never raises; returns ``None`` only after every attempt fails.
+    Shares :func:`_judge_candidates`'s retry/logging shape via the shared
+    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14 -- see build-plan.md's
+    Chunk 07 design decision for the original "duplicated, not shared" call
+    and this chunk for why it changed; scrape-task-06 closed the SAME
+    duplication again between this function and ``_judge_candidates`` once a
+    third judge use -- per-document grounding -- made it worth a shared
+    primitive instead of a third copy). Never raises; returns ``None`` only
+    after every attempt fails.
     """
     prompt = _build_row_judge_prompt(html, survivors, schema)
-    return await bounded_retry_structured_call(
+    return await _judge(
         prompt,
-        _JudgeVerdict,
         model_id=model_id,
         api_key=api_key,
-        purpose=LlmPurpose.UTILITY,
-        temperature=0.0,
-        timeout=_JUDGE_TIMEOUT_SECONDS,
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         log_label="scrape row judge",
-        degraded_to="no winner",
     )
+
+
+def _build_per_document_judge_prompt(text: str, extracted: dict[str, Any], schema: FieldSchema) -> str:
+    field_lines = ", ".join(schema.keys())
+    truncated = text[:MAX_HTML_CHARS_IN_PROMPT]
+    return (
+        f"You are judging whether an already-extracted record actually matches the real content of "
+        f"ONE independent document -- there is exactly one candidate (no page-wide pattern to compare "
+        f"against others), confirm it or reject it. Fields: {field_lines}.\n\n"
+        f"Document text (may be truncated):\n{truncated}\n\n"
+        f"Extracted record: {extracted}\n\n"
+        f"Compare the extracted record against what the document's own text actually says. If every "
+        f"field's value is genuinely grounded in and correct per the document's own content, return "
+        f"winning_candidate_index=0. If any field is wrong, hallucinated, or not actually supported by "
+        f"the document's own text, return winning_candidate_index=null."
+    )
+
+
+def _build_per_document_vision_judge_content(
+    images: list[bytes], extracted: dict[str, Any], schema: FieldSchema
+) -> list[Any]:
+    from threetears.models import format_vision_content
+
+    field_lines = ", ".join(schema.keys())
+    content: list[Any] = []
+    for image_bytes in images:
+        content.extend(format_vision_content(image_bytes, "image/png", "")[:-1])
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                "You are judging whether an already-extracted record actually matches what you see in "
+                "this document's own page image(s) -- there is exactly one candidate (no page-wide "
+                f"pattern to compare against others), confirm it or reject it. Fields: {field_lines}.\n\n"
+                f"Extracted record: {extracted}\n\n"
+                "Compare the extracted record against what the image(s) actually show. If every field's "
+                "value is genuinely grounded in and correct per the document's own content, return "
+                "winning_candidate_index=0. If any field is wrong, hallucinated, or not actually "
+                "supported by what you see, return winning_candidate_index=null."
+            ),
+        }
+    )
+    return content
+
+
+async def _judge_one_document_extraction(
+    document: NoticeDocument,
+    extracted: dict[str, Any],
+    schema: FieldSchema,
+    *,
+    api_key: str,
+    judge_model_id: str,
+) -> bool:
+    """Confirms (or rejects) ONE document's already-extracted record against its own real
+    source content -- the ``"per_document"`` StrategyType's counterpart to
+    :func:`_judge_candidates`/:func:`_judge_row_candidates`'s own "semantic correctness
+    against the real page content" check (css/regex strategies get this once, on cold
+    start, when candidates are first generated; per_document has no cached recipe to
+    ever skip it, so every document, every poll, gets grounded the same way).
+
+    Routes through the SAME shared :func:`_judge` used by every other judge call in this
+    module -- for a scanned document (``document.was_ocr``), the grounding source is its
+    own page images (a vision-capable model, mirroring
+    :func:`~threetears.scrape.extraction.extract_fields_from_images`'s own model/provider
+    choice, since the text-only judge model can't read images); for a born-digital
+    document, the grounding source is its own plain text, judged by the regular
+    *judge_model_id*.
+
+    :param document: the document *extracted* came from (its own text/images/was_ocr)
+    :ptype document: NoticeDocument
+    :param extracted: the already-coerced, already-complete field values to confirm
+    :ptype extracted: dict[str, Any]
+    :param schema: field_name -> expected Python type
+    :ptype schema: FieldSchema
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param judge_model_id: the text judge model (ignored for a scanned document, which
+        always uses the vision model instead -- see above)
+    :ptype judge_model_id: str
+    :return: ``True`` only if the judge explicitly confirmed the record (``winning_
+        candidate_index == 0``); ``False`` on rejection OR total judge failure -- an
+        unconfirmable record is treated the same as a rejected one, never silently kept
+    :rtype: bool
+    """
+    prompt_or_messages: str | list[Any]
+    if document.was_ocr:
+        from langchain_core.messages import HumanMessage
+
+        content = _build_per_document_vision_judge_content(document.images, extracted, schema)
+        prompt_or_messages = [HumanMessage(content=content)]
+        model_id = DEFAULT_VISION_MODEL_ID
+        provider = _VISION_PROVIDER
+    else:
+        prompt_or_messages = _build_per_document_judge_prompt(document.text, extracted, schema)
+        model_id = judge_model_id
+        provider = None
+    verdict = await _judge(
+        prompt_or_messages,
+        model_id=model_id,
+        api_key=api_key,
+        provider=provider,
+        log_label="scrape per-document judge",
+    )
+    return verdict is not None and verdict.winning_candidate_index == 0
 
 
 async def _reuse_row_recipe(
@@ -928,6 +1060,7 @@ async def _run_per_document_extraction(
     extraction_collection: ScrapeExtractionCollection,
     api_key: str,
     extraction_model_id: str,
+    judge_model_id: str,
 ) -> ScrapeExtraction:
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
     Literal's own comment) -- every document gets a fresh, independent LLM
@@ -971,6 +1104,19 @@ async def _run_per_document_extraction(
     (``was_ocr=False``, no embedded images to read anyway) stays on the fast/cheap
     text path unchanged -- vision's own real cost/latency is only paid where OCR
     was needed in the first place, not globally.
+
+    **Grounding check (scrape-task-06):** css/regex strategies get a real semantic-
+    correctness check -- the judge (:func:`_judge_candidates`/:func:`_judge_row_candidates`)
+    compares candidate values against real page content -- but only once, on cold
+    start, when candidates are first generated; a healthy cached recipe skips it on
+    every later poll. per_document has no cached recipe to ever skip it: every
+    document's own extraction, every poll, is confirmed against its own real source
+    content (text or images, matching the extraction path's own choice) via
+    :func:`_judge_one_document_extraction` before counting as a real record --
+    otherwise structural type-validity alone (the only check
+    :func:`~threetears.scrape.extraction.extract_fields_directly`'s own
+    ``is_acceptable`` plausibility guard provides) can't catch a confident,
+    well-typed, but wrong or hallucinated value.
     """
     documents = split_notice_documents(html)
 
@@ -981,7 +1127,7 @@ async def _run_per_document_extraction(
             else extract_fields_directly_chunked(document.text, schema, model_id=extraction_model_id, api_key=api_key)
         )
         try:
-            return await asyncio.wait_for(extraction_call, timeout=_PER_DOCUMENT_TIMEOUT_SECONDS)
+            extracted = await asyncio.wait_for(extraction_call, timeout=_PER_DOCUMENT_TIMEOUT_SECONDS)
         except TimeoutError:
             log.warning(
                 "scrape per-document extraction: one document hung past %ss, skipping",
@@ -989,12 +1135,29 @@ async def _run_per_document_extraction(
                 extra={"extra_data": {"target_id": target_id}},
             )
             return None
+        # All-or-nothing-per-record, matching every other strategy's own philosophy
+        # (validate_row_candidate / validate_regex_row_candidate): a record only
+        # counts if EVERY schema field was found and coerced, never a partial one --
+        # checked before spending a judge call on something already going to be dropped.
+        if extracted is None or set(extracted) != set(schema):
+            return None
+        try:
+            confirmed = await asyncio.wait_for(
+                _judge_one_document_extraction(document, extracted, schema, api_key=api_key, judge_model_id=judge_model_id),
+                timeout=_PER_DOCUMENT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            log.warning(
+                "scrape per-document extraction: judge hung past %ss, treating as unconfirmed",
+                _PER_DOCUMENT_TIMEOUT_SECONDS,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            return None
+        return extracted if confirmed else None
 
-    extractions = await asyncio.gather(*(_extract_one(document) for document in documents))
-    # All-or-nothing-per-record, matching every other strategy's own philosophy
-    # (validate_row_candidate / validate_regex_row_candidate): a record only
-    # counts if EVERY schema field was found and coerced, never a partial one.
-    records = [extracted for extracted in extractions if extracted is not None and set(extracted) == set(schema)]
+    records = [
+        extracted for extracted in await asyncio.gather(*(_extract_one(document) for document in documents)) if extracted is not None
+    ]
 
     now = datetime.now(UTC)
     existing_recipe = await recipe_collection.get(target_id)
@@ -1090,6 +1253,7 @@ async def run_eval_loop_multi_row(
             extraction_collection=extraction_collection,
             api_key=api_key,
             extraction_model_id=extraction_model_id,
+            judge_model_id=judge_model_id,
         )
     reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
