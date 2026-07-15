@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from bs4 import BeautifulSoup, Comment
+from bs4.element import Tag
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
+from soupsieve.util import SelectorSyntaxError
 from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
@@ -31,9 +33,13 @@ from .llm_retry import bounded_retry_structured_call
 __all__ = [
     "DEFAULT_EXTRACTION_MODEL_ID",
     "MAX_HTML_CHARS_IN_PROMPT",
+    "DiscoveredField",
+    "DiscoverySchemaResult",
     "FieldSchema",
     "RowValidationResult",
     "ValidationResult",
+    "discover_candidates",
+    "discover_row_candidates",
     "generate_candidates",
     "generate_regex_candidates",
     "generate_regex_row_candidates",
@@ -159,6 +165,50 @@ def _coerce_field_value(text: str, expected_type: type) -> Any:
     return result
 
 
+def _select_one_safe(node: BeautifulSoup | Tag, selector: str) -> Tag | None:
+    """``node.select_one(selector)``, treating an invalid CSS selector as "matched nothing."
+
+    Live-discovered (schema-discovery mode, real Maryland WARN page,
+    2026-07-15): an LLM-proposed selector is not guaranteed to be valid CSS
+    -- a jQuery-ism like ``td:eq(0)`` raises ``SelectorSyntaxError``
+    (soupsieve, bs4's own selector engine), an UNCAUGHT exception that
+    crashes the entire caller. This was a real, pre-existing gap in this
+    function (not new code) -- every candidate-generation path in
+    ``eval_loop.py`` calls this with LLM-proposed selectors and was equally
+    exposed. Fixed at the source rather than worked around only in the new
+    discovery code that surfaced it.
+
+    :param node: the ``BeautifulSoup`` document or a ``Tag`` to search within
+    :ptype node: BeautifulSoup | Tag
+    :param selector: a CSS selector, not guaranteed to be syntactically valid
+    :ptype selector: str
+    :return: the first matching element, or ``None`` if nothing matched or the selector was invalid
+    :rtype: Tag | None
+    """
+    try:
+        return node.select_one(selector)
+    except SelectorSyntaxError:
+        return None
+
+
+def _select_safe(node: BeautifulSoup | Tag, selector: str) -> list[Tag]:
+    """``node.select(selector)``, treating an invalid CSS selector as "matched nothing."
+
+    See :func:`_select_one_safe`'s docstring for why this exists.
+
+    :param node: the ``BeautifulSoup`` document or a ``Tag`` to search within
+    :ptype node: BeautifulSoup | Tag
+    :param selector: a CSS selector, not guaranteed to be syntactically valid
+    :ptype selector: str
+    :return: every matching element, or ``[]`` if nothing matched or the selector was invalid
+    :rtype: list[Tag]
+    """
+    try:
+        return node.select(selector)
+    except SelectorSyntaxError:
+        return []
+
+
 @dataclass(frozen=True)
 class ValidationResult:
     """Outcome of applying one candidate strategy's selectors to real HTML."""
@@ -191,7 +241,7 @@ def validate_candidate(html: str, strategy: dict[str, str], schema: FieldSchema)
         if not selector:
             errors.append(f"{field_name}: no selector proposed")
             continue
-        element = soup.select_one(selector)
+        element = _select_one_safe(soup, selector)
         if element is None:
             errors.append(f"{field_name}: selector {selector!r} matched nothing")
             continue
@@ -271,7 +321,7 @@ def validate_row_candidate(html: str, strategy: dict[str, Any], schema: FieldSch
     field_selectors = strategy.get("field_selectors", {})
     errors: list[str] = [] if row_selector else ["no row_selector proposed"]
     records_out: list[dict[str, Any]] = []
-    row_elements = soup.select(row_selector) if row_selector else []
+    row_elements = _select_safe(soup, row_selector) if row_selector else []
     for row_index, row_element in enumerate(row_elements):
         row_extracted: dict[str, Any] = {}
         row_errors: list[str] = []
@@ -280,7 +330,7 @@ def validate_row_candidate(html: str, strategy: dict[str, Any], schema: FieldSch
             if not selector:
                 row_errors.append(f"row {row_index} {field_name}: no selector proposed")
                 continue
-            element = row_element.select_one(selector)
+            element = _select_one_safe(row_element, selector)
             if element is None:
                 row_errors.append(f"row {row_index} {field_name}: selector {selector!r} matched nothing")
                 continue
@@ -497,6 +547,335 @@ async def generate_row_candidates(
             {"row_selector": c.row_selector, "field_selectors": c.field_selectors} for c in result.candidates
         ]
     return candidates_out
+
+
+# ===========================================================================
+# Schema discovery (scrape-task-03) -- the inverse of generate_candidates/
+# generate_row_candidates: no caller-supplied schema in, a discovered field
+# list (name, inferred type, selector, sample value) out, validated against
+# the real page by the exact same validate_candidate/validate_row_candidate
+# this module already uses for the schema-known path. Deliberately NOT
+# wired into eval_loop.py's recipe-persistence functions -- discovery is a
+# pre-onboarding operation (no ScrapeTarget/recipe exists yet), not a mode
+# of the persisted-recipe lifecycle. See
+# docs/scrape-task-03-schema-discovery-mode.md's placement-deviation note.
+# ===========================================================================
+
+#: Mirrors collections.py's own _FIELD_SCHEMA_TYPE_NAMES (4 entries, same set) --
+#: kept independent rather than imported, since extraction.py has zero dependency
+#: on collections.py today and this is a 4-entry dict, not worth a new coupling.
+#: If a type is ever added to one, add it to the other.
+_DISCOVERY_TYPE_NAMES: dict[str, type] = {"str": str, "int": int, "float": float, "bool": bool}
+
+
+@dataclass(frozen=True)
+class DiscoveredField:
+    """One field discovery validated against the real page -- never a hallucinated, unvalidated guess."""
+
+    name: str
+    python_type: type
+    selector: str
+    sample_value: Any
+
+
+@dataclass(frozen=True)
+class DiscoverySchemaResult:
+    """Outcome of a discovery run -- plain data, never persisted by this module.
+
+    ``field_schema``/``strategy`` are already shaped exactly as
+    ``ScrapeTarget.field_schema``/``ScrapeRecipe.extraction_strategy`` expect --
+    a caller who likes the result hands them straight through, no re-derivation.
+    """
+
+    validated: bool
+    fields: list[DiscoveredField] = field(default_factory=list)
+    field_schema: FieldSchema = field(default_factory=dict)
+    strategy: dict[str, Any] = field(default_factory=dict)
+    sample_records: list[dict[str, Any]] = field(default_factory=list)
+
+
+class _DiscoveredFieldProposal(BaseModel):
+    """One field an LLM proposes exists on the page, within a discovery candidate."""
+
+    name: str = PydanticField(description="a short, descriptive field name (snake_case)")
+    type_name: Literal["str", "int", "float", "bool"] = PydanticField(description="the field's inferred Python type")
+    selector: str = PydanticField(description="a CSS selector that extracts this field's text from the page")
+    sample_value_hint: str = PydanticField(description="what you observed this field's value looks like on the page")
+
+
+class _DiscoveredCandidate(BaseModel):
+    """One full discovery proposal -- every field this attempt found."""
+
+    fields: list[_DiscoveredFieldProposal] = PydanticField(default_factory=list)
+
+
+class _DiscoveredCandidateList(BaseModel):
+    """Forced response shape for the single-record discovery LLM call."""
+
+    candidates: list[_DiscoveredCandidate] = PydanticField(default_factory=list)
+
+
+class _DiscoveredRowCandidate(BaseModel):
+    """One full row-discovery proposal -- a row selector plus every field found within a row."""
+
+    row_selector: str = PydanticField(
+        description="CSS selector matching every repeating record's container element (e.g. a table row)"
+    )
+    fields: list[_DiscoveredFieldProposal] = PydanticField(default_factory=list)
+
+
+class _DiscoveredRowCandidateList(BaseModel):
+    """Forced response shape for the multi-row discovery LLM call."""
+
+    candidates: list[_DiscoveredRowCandidate] = PydanticField(default_factory=list)
+
+
+def _build_discovery_prompt(html: str, n: int) -> str:
+    truncated = strip_boilerplate(html)[:MAX_HTML_CHARS_IN_PROMPT]
+    return (
+        f"You are examining a rendered web page to identify every distinct, genuinely useful field of "
+        f"structured data on it -- e.g. the columns of a table describing ONE record, or the labeled "
+        f"values in a single record's own detail view. Do not propose navigation, menu, footer, or "
+        f"unrelated boilerplate as fields.\n\n"
+        f"Page HTML (may be truncated):\n{truncated}\n\n"
+        f"Propose {n} DIFFERENT candidate field lists (different attempts at identifying the same "
+        f"underlying data, not different data). For each field, give a short descriptive name, its "
+        f"inferred type (str/int/float/bool only), a CSS selector that extracts its text from the page, "
+        f"and a hint at what value you observed. Prefer selectors specific enough to match exactly one "
+        f"element."
+    )
+
+
+def _build_row_discovery_prompt(html: str, n: int) -> str:
+    truncated = strip_boilerplate(html)[:MAX_HTML_CHARS_IN_PROMPT]
+    return (
+        f"You are examining a rendered web page that lists MANY repeating records (e.g. a table with "
+        f"one row per record) to identify every distinct, genuinely useful field each record has. Do "
+        f"not propose navigation, menu, footer, or unrelated boilerplate as fields.\n\n"
+        f"Page HTML (may be truncated):\n{truncated}\n\n"
+        f"Propose {n} DIFFERENT candidate field lists (different attempts at identifying the same "
+        f"underlying data, not different data). For each candidate, give a single CSS selector "
+        f"(row_selector) that matches every repeating record's container element, plus for each field a "
+        f"short descriptive name, its inferred type (str/int/float/bool only), a CSS selector applied "
+        f"RELATIVE TO each row_selector match that extracts its text from within one record, and a hint "
+        f"at what value you observed."
+    )
+
+
+def _fields_matching_any_row(html: str, row_selector: str, fields: list[_DiscoveredFieldProposal]) -> list[_DiscoveredFieldProposal]:
+    """Which of *fields* extract a real, type-parsing value from at least one row.
+
+    ``validate_row_candidate`` is all-or-nothing PER RECORD (a row counts
+    only if every schema field matched) -- feeding it a schema with even one
+    bad field would zero out every row's record and silently discard every
+    OTHER genuinely good field along with it. This pre-filters independently
+    per field first, so a single bad discovery proposal can't sink the good
+    ones; the real, unmodified ``validate_row_candidate`` still does the
+    actual final validation afterward, just against the survivors only.
+
+    :param html: the rendered page's full HTML
+    :ptype html: str
+    :param row_selector: candidate CSS selector for each record's container
+    :ptype row_selector: str
+    :param fields: proposed fields to check independently
+    :ptype fields: list[_DiscoveredFieldProposal]
+    :return: the subset of *fields* that matched real, parsing text in at least one row
+    :rtype: list[_DiscoveredFieldProposal]
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    rows = _select_safe(soup, row_selector)
+    survivors = []
+    for proposal in fields:
+        expected_type = _DISCOVERY_TYPE_NAMES[proposal.type_name]
+        for row in rows:
+            element = _select_one_safe(row, proposal.selector)
+            if element is None:
+                continue
+            text = _normalize_whitespace_text(element.get_text(" ", strip=True))
+            if not text:
+                continue
+            try:
+                _coerce_field_value(text, expected_type)
+            except (ValueError, TypeError):
+                continue
+            survivors.append(proposal)
+            break
+    return survivors
+
+
+def _best_discovery_result(
+    proposals_and_validations: list[tuple[list[_DiscoveredFieldProposal], ValidationResult]],
+) -> DiscoverySchemaResult:
+    """Pick the candidate whose validation kept the most fields -- no judge step.
+
+    Unlike the schema-known path, there's no external ground truth to judge
+    semantic correctness against (the LLM invented the fields) -- "most
+    fields validated" is the honest, objective, comparable signal, the same
+    kind of tiebreak ``_regenerate_row_recipe``'s own ``needs_review``
+    fallback already uses.
+    """
+    best: DiscoverySchemaResult = DiscoverySchemaResult(validated=False)
+    for proposals, validation in proposals_and_validations:
+        if len(validation.extracted) <= len(best.fields):
+            continue
+        kept = [p for p in proposals if p.name in validation.extracted]
+        best = DiscoverySchemaResult(
+            validated=True,
+            fields=[
+                DiscoveredField(
+                    name=p.name,
+                    python_type=_DISCOVERY_TYPE_NAMES[p.type_name],
+                    selector=p.selector,
+                    sample_value=validation.extracted[p.name],
+                )
+                for p in kept
+            ],
+            field_schema={p.name: _DISCOVERY_TYPE_NAMES[p.type_name] for p in kept},
+            strategy={p.name: p.selector for p in kept},
+            sample_records=[validation.extracted],
+        )
+    return best
+
+
+async def discover_candidates(
+    html: str,
+    *,
+    n: int = 3,
+    model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+) -> DiscoverySchemaResult:
+    """Discover a single-record field schema from *html* -- no caller-supplied schema.
+
+    The inverse of :func:`generate_candidates`: instead of proposing
+    selectors for known fields, an LLM proposes field names/types/selectors
+    it finds on the page, each validated the same way
+    :func:`validate_candidate` validates every other candidate. Never
+    raises; returns ``validated=False`` with no fields if every proposal
+    validates zero fields.
+
+    :param html: the rendered page's full HTML
+    :ptype html: str
+    :param n: how many discovery attempts to request
+    :ptype n: int
+    :param model_id: the discovery model
+    :ptype model_id: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number)
+    :ptype backoff_seconds: float
+    :return: the best-validating discovery, or an honest empty result
+    :rtype: DiscoverySchemaResult
+    """
+    prompt = _build_discovery_prompt(html, n)
+    result = await bounded_retry_structured_call(
+        prompt,
+        _DiscoveredCandidateList,
+        model_id=model_id,
+        api_key=api_key,
+        purpose=LlmPurpose.EXTRACTION,
+        temperature=0.2,
+        timeout=_EXTRACTION_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape schema discovery",
+        degraded_to="no discovered fields",
+    )
+    if result is None:
+        return DiscoverySchemaResult(validated=False)
+    proposals_and_validations = []
+    for candidate in result.candidates:
+        schema = {f.name: _DISCOVERY_TYPE_NAMES[f.type_name] for f in candidate.fields}
+        strategy = {f.name: f.selector for f in candidate.fields}
+        proposals_and_validations.append((candidate.fields, validate_candidate(html, strategy, schema)))
+    return _best_discovery_result(proposals_and_validations)
+
+
+async def discover_row_candidates(
+    html: str,
+    *,
+    n: int = 3,
+    model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+) -> DiscoverySchemaResult:
+    """Discover a multi-row field schema from *html* -- no caller-supplied schema.
+
+    The row counterpart to :func:`discover_candidates` -- the inverse of
+    :func:`generate_row_candidates`. ``sample_records`` holds up to every
+    validated record from the winning candidate (not capped here --
+    ``RowValidationResult`` already caps error detail, not record count).
+
+    :param html: the rendered page's full HTML
+    :ptype html: str
+    :param n: how many discovery attempts to request
+    :ptype n: int
+    :param model_id: the discovery model
+    :ptype model_id: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number)
+    :ptype backoff_seconds: float
+    :return: the best-validating discovery, or an honest empty result
+    :rtype: DiscoverySchemaResult
+    """
+    prompt = _build_row_discovery_prompt(html, n)
+    result = await bounded_retry_structured_call(
+        prompt,
+        _DiscoveredRowCandidateList,
+        model_id=model_id,
+        api_key=api_key,
+        purpose=LlmPurpose.EXTRACTION,
+        temperature=0.2,
+        timeout=_EXTRACTION_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape row schema discovery",
+        degraded_to="no discovered fields",
+    )
+    if result is None:
+        return DiscoverySchemaResult(validated=False)
+    best: DiscoverySchemaResult = DiscoverySchemaResult(validated=False)
+    for candidate in result.candidates:
+        survivors = _fields_matching_any_row(html, candidate.row_selector, candidate.fields)
+        if not survivors:
+            continue
+        schema = {f.name: _DISCOVERY_TYPE_NAMES[f.type_name] for f in survivors}
+        strategy = {"row_selector": candidate.row_selector, "field_selectors": {f.name: f.selector for f in survivors}}
+        validation = validate_row_candidate(html, strategy, schema)
+        if not validation.records:
+            # _fields_matching_any_row only confirms each field matches SOME row
+            # independently -- two sparse/disjoint fields can each survive that check
+            # yet never co-occur in any single row (Critic-caught, chunk review): under
+            # validate_row_candidate's all-or-nothing-per-record semantics that means
+            # zero real records despite nonzero survivors. A candidate that produces no
+            # coherent full record is genuinely unusable -- skip it rather than accept a
+            # "validated" result no real record backs.
+            continue
+        if len(survivors) <= len(best.fields):
+            continue
+        best = DiscoverySchemaResult(
+            validated=True,
+            fields=[
+                DiscoveredField(
+                    name=f.name,
+                    python_type=_DISCOVERY_TYPE_NAMES[f.type_name],
+                    selector=f.selector,
+                    sample_value=validation.records[0].get(f.name) if validation.records else None,
+                )
+                for f in survivors
+            ],
+            field_schema=schema,
+            strategy=strategy,
+            sample_records=validation.records,
+        )
+    return best
 
 
 # ===========================================================================

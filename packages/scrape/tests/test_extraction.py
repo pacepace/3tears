@@ -9,15 +9,23 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from threetears.scrape.extraction import (
+    DiscoverySchemaResult,
     RowValidationResult,
     ValidationResult,
     _CandidateStrategy,
     _CandidateStrategyList,
+    _DiscoveredCandidate,
+    _DiscoveredCandidateList,
+    _DiscoveredFieldProposal,
+    _DiscoveredRowCandidate,
+    _DiscoveredRowCandidateList,
     _normalize_numeric_text,
     _RegexCandidateStrategy,
     _RegexCandidateStrategyList,
     _RowCandidateStrategy,
     _RowCandidateStrategyList,
+    discover_candidates,
+    discover_row_candidates,
     generate_candidates,
     generate_regex_candidates,
     generate_regex_row_candidates,
@@ -141,6 +149,18 @@ class TestValidateCandidate:
         result = ValidationResult(valid=True)
         assert result.extracted == {}
         assert result.errors == []
+
+    def test_syntactically_invalid_selector_degrades_gracefully_not_a_crash(self):
+        # Real bug, live-discovered via schema-discovery mode (real Maryland WARN page,
+        # 2026-07-15): an LLM-proposed selector is not guaranteed to be valid CSS -- a jQuery-ism
+        # like "td:eq(0)" raised an uncaught soupsieve.util.SelectorSyntaxError here, crashing
+        # every eval_loop.py candidate-generation path that calls this with LLM-proposed selectors.
+        # Fixed at the source (_select_one_safe) -- this is the regression test for that fix.
+        strategy = {"employer": "td:eq(0)"}
+        schema = {"employer": str}
+        result = validate_candidate(_PAGE_HTML, strategy, schema)
+        assert result.valid is False
+        assert any("matched nothing" in e for e in result.errors)
 
 
 # ===========================================================================
@@ -267,6 +287,20 @@ class TestValidateRowCandidate:
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
         assert result.total_rows_matched == 0
+        assert result.records == []
+
+    def test_syntactically_invalid_row_selector_degrades_gracefully_not_a_crash(self):
+        # Regression test for the same live-discovered bug as TestValidateCandidate's own --
+        # an invalid row_selector must degrade like "matched nothing," never crash.
+        strategy = {"row_selector": "tr:eq(0)", "field_selectors": {"employer": "td.employer"}}
+        result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
+        assert result.valid is False
+        assert result.total_rows_matched == 0
+
+    def test_syntactically_invalid_field_selector_degrades_gracefully_not_a_crash(self):
+        strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td:eq(0)"}}
+        result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
+        assert result.valid is False
         assert result.records == []
 
     def test_every_row_failing_is_invalid(self):
@@ -518,3 +552,235 @@ class TestGenerateRegexRowCandidates:
         ):
             candidates = await generate_regex_row_candidates(_TEXT_ROWS_PAGE, {"employer": str}, api_key="k")
         assert candidates == []
+
+
+# ===========================================================================
+# discover_candidates
+# ===========================================================================
+
+
+class TestDiscoverCandidates:
+    async def test_discovers_and_validates_real_fields(self):
+        parsed = _DiscoveredCandidateList(
+            candidates=[
+                _DiscoveredCandidate(
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="Acme Corp"
+                        ),
+                        _DiscoveredFieldProposal(
+                            name="count", type_name="int", selector="td.count", sample_value_hint="42"
+                        ),
+                    ]
+                )
+            ]
+        )
+        fake_model, ainvoke_mock = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_candidates(_PAGE_HTML, api_key="k")
+        assert isinstance(result, DiscoverySchemaResult)
+        assert result.validated is True
+        assert result.field_schema == {"employer": str, "count": int}
+        assert result.strategy == {"employer": "td.employer", "count": "td.count"}
+        assert result.sample_records == [{"employer": "Acme Corp", "count": 42}]
+        assert {f.name for f in result.fields} == {"employer", "count"}
+        assert ainvoke_mock.await_count == 1
+
+    async def test_a_proposed_field_that_does_not_validate_is_dropped_not_included(self):
+        parsed = _DiscoveredCandidateList(
+            candidates=[
+                _DiscoveredCandidate(
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="Acme Corp"
+                        ),
+                        _DiscoveredFieldProposal(
+                            name="ghost", type_name="str", selector=".does-not-exist", sample_value_hint="?"
+                        ),
+                    ]
+                )
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_candidates(_PAGE_HTML, api_key="k")
+        assert result.validated is True
+        assert "ghost" not in result.field_schema
+        assert set(result.field_schema) == {"employer"}
+
+    async def test_most_fields_validated_wins_no_judge(self):
+        worse = _DiscoveredCandidate(
+            fields=[_DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x")]
+        )
+        better = _DiscoveredCandidate(
+            fields=[
+                _DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x"),
+                _DiscoveredFieldProposal(name="count", type_name="int", selector="td.count", sample_value_hint="42"),
+            ]
+        )
+        parsed = _DiscoveredCandidateList(candidates=[worse, better])
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_candidates(_PAGE_HTML, api_key="k")
+        assert set(result.field_schema) == {"employer", "count"}
+
+    async def test_zero_fields_validate_returns_honest_empty_result(self):
+        parsed = _DiscoveredCandidateList(
+            candidates=[
+                _DiscoveredCandidate(
+                    fields=[_DiscoveredFieldProposal(name="ghost", type_name="str", selector=".nope", sample_value_hint="?")]
+                )
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_candidates(_PAGE_HTML, api_key="k")
+        assert result.validated is False
+        assert result.fields == []
+        assert result.field_schema == {}
+
+    async def test_total_llm_failure_returns_honest_empty_result_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await discover_candidates(_PAGE_HTML, api_key="k")
+        assert result.validated is False
+        assert result.fields == []
+
+
+# ===========================================================================
+# discover_row_candidates
+# ===========================================================================
+
+
+class TestDiscoverRowCandidates:
+    async def test_discovers_and_validates_real_row_fields(self):
+        parsed = _DiscoveredRowCandidateList(
+            candidates=[
+                _DiscoveredRowCandidate(
+                    row_selector="tbody tr",
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="Dejana Truck"
+                        ),
+                        _DiscoveredFieldProposal(
+                            name="county", type_name="str", selector="td.county", sample_value_hint="Baltimore"
+                        ),
+                    ],
+                )
+            ]
+        )
+        fake_model, ainvoke_mock = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert result.validated is True
+        assert result.field_schema == {"employer": str, "county": str}
+        assert result.strategy == {
+            "row_selector": "tbody tr",
+            "field_selectors": {"employer": "td.employer", "county": "td.county"},
+        }
+        # third row's employer is empty -- only 2 of 3 rows fully validate
+        assert len(result.sample_records) == 2
+        assert ainvoke_mock.await_count == 1
+
+    async def test_one_candidates_invalid_jquery_style_selector_does_not_crash_the_whole_call(self):
+        # Real, live-discovered failure mode (real Maryland WARN page, 2026-07-15): an LLM
+        # genuinely proposed a jQuery-ism like "td:eq(0)" for one candidate. That candidate must
+        # be skipped (or its field dropped), never crash the whole discovery call -- a good
+        # sibling candidate's real fields must still be found and returned.
+        parsed = _DiscoveredRowCandidateList(
+            candidates=[
+                _DiscoveredRowCandidate(
+                    row_selector="tbody tr",
+                    fields=[_DiscoveredFieldProposal(name="bad", type_name="str", selector="td:eq(0)", sample_value_hint="x")],
+                ),
+                _DiscoveredRowCandidate(
+                    row_selector="tbody tr",
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="Dejana Truck"
+                        )
+                    ],
+                ),
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert result.validated is True
+        assert set(result.field_schema) == {"employer"}
+
+    async def test_disjoint_fields_that_never_co_occur_in_one_row_are_rejected(self):
+        # Critic-caught, chunk review: _fields_matching_any_row only confirms each field
+        # matches SOME row independently -- two fields whose non-empty rows are DISJOINT can
+        # each survive that pre-filter yet never co-occur in a single row together, so
+        # validate_row_candidate's all-or-nothing-per-record check returns zero real records.
+        # This candidate must be rejected, not accepted with validated=True and no records.
+        disjoint_html = (
+            "<html><body><table><tbody>"
+            '<tr><td class="employer">Acme Corp</td><td class="county"></td></tr>'
+            '<tr><td class="employer"></td><td class="county">Baltimore</td></tr>'
+            "</tbody></table></body></html>"
+        )
+        parsed = _DiscoveredRowCandidateList(
+            candidates=[
+                _DiscoveredRowCandidate(
+                    row_selector="tbody tr",
+                    fields=[
+                        _DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x"),
+                        _DiscoveredFieldProposal(name="county", type_name="str", selector="td.county", sample_value_hint="x"),
+                    ],
+                )
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_row_candidates(disjoint_html, api_key="k")
+        assert result.validated is False
+        assert result.sample_records == []
+
+    async def test_a_field_that_never_validates_across_any_row_is_dropped(self):
+        parsed = _DiscoveredRowCandidateList(
+            candidates=[
+                _DiscoveredRowCandidate(
+                    row_selector="tbody tr",
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
+                        ),
+                        _DiscoveredFieldProposal(name="ghost", type_name="str", selector=".nope", sample_value_hint="?"),
+                    ],
+                )
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert result.validated is True
+        assert set(result.field_schema) == {"employer"}
+
+    async def test_bad_row_selector_returns_honest_empty_result(self):
+        parsed = _DiscoveredRowCandidateList(
+            candidates=[
+                _DiscoveredRowCandidate(
+                    row_selector=".does-not-exist",
+                    fields=[_DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x")],
+                )
+            ]
+        )
+        fake_model, _ = _fake_structured_model(parsed)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert result.validated is False
+        assert result.sample_records == []
+
+    async def test_total_llm_failure_returns_honest_empty_result_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
+        assert result.validated is False
