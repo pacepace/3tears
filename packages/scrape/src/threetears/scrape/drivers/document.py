@@ -33,6 +33,17 @@ from ..driver import NavStep, RenderedPage, ScrapeDriver
 
 __all__ = ["DocumentDriver", "DocumentDriverError"]
 
+#: Same fix, same reason as ApiDriver's own _DEFAULT_USER_AGENT (Michigan's Sitecore
+#: XA API, 2026-07-14): live-found across multiple state WARN-notice document hosts
+#: (2026-07-15) -- a plain httpx client's default User-Agent gets a flat 403/401 from
+#: the CDN/WAF in front of the endpoint (Kentucky's kyworks.ky.gov among others); a
+#: genuine browser UA passes cleanly. Only applied to a client this driver constructs
+#: itself -- an injected *client* (test injection, or a caller with its own header
+#: policy) is used exactly as given.
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
 log = get_logger(__name__)
 
 #: GitHub-flavored markdown pipe-table shape -- exactly what parse_document's
@@ -219,7 +230,9 @@ class DocumentDriver(ScrapeDriver):
         client = self._client
         owns_client = client is None
         if client is None:
-            client = httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+            client = httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+            )
         try:
             try:
                 response = await client.get(url)

@@ -132,6 +132,57 @@ class TestDocumentDriver:
         driver = DocumentDriver()
         assert driver.name == "document"
 
+    async def test_a_default_constructed_client_gets_the_browser_user_agent(self, monkeypatch):
+        """Live-found (multiple state WARN-notice document hosts, 2026-07-15, e.g. Kentucky's
+        kyworks.ky.gov): a plain httpx client's default User-Agent gets a flat 403/401 from
+        the CDN/WAF in front of the endpoint -- same fix, same reason as ApiDriver's own."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        real_async_client = httpx.AsyncClient
+
+        def spying_async_client(**kwargs):
+            captured["constructor_headers"] = kwargs.get("headers")
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_async_client(**kwargs)
+
+        monkeypatch.setattr("threetears.scrape.drivers.document.httpx.AsyncClient", spying_async_client)
+        driver = DocumentDriver()
+
+        fake_result = DocumentResult(text="Acme Corp", title="notices", page_count=None, word_count=2, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+
+        await driver.render("https://example.gov/warn.txt")
+
+        expected_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        assert captured["constructor_headers"] == {"User-Agent": expected_ua}
+        assert captured["user_agent"] == expected_ua
+
+    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self, monkeypatch):
+        """The default browser User-Agent only applies to a client this driver constructs
+        itself -- an injected client's own header policy (or lack of one) must be left alone."""
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["user_agent"] = request.headers.get("user-agent")
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+
+        fake_result = DocumentResult(text="Acme Corp", title="notices", page_count=None, word_count=2, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+
+        await driver.render("https://example.gov/warn.txt")
+
+        assert captured["user_agent"] != (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+        await client.aclose()
+
     async def test_render_fetches_parses_and_returns_synthetic_html(self, monkeypatch):
         client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
         driver = DocumentDriver(client=client)

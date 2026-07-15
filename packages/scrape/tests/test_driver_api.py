@@ -64,7 +64,7 @@ class TestResolvePath:
 # ===========================================================================
 
 
-def _json_response_handler(body: dict, *, status: int = 200):
+def _json_response_handler(body: dict | list, *, status: int = 200):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(status, content=json.dumps(body).encode())
 
@@ -122,14 +122,93 @@ class TestApiDriver:
         assert exc_info.value.code == "missing_config"
         await client.aclose()
 
-    async def test_render_raises_when_fragment_field_is_missing(self):
-        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
+    async def test_render_with_no_fragment_field_uses_structured_mode(self):
+        # fragment_field=None is a deliberate mode switch, not a missing-config error --
+        # each record's own keys become a synthetic <table> row instead (Texas's real
+        # Socrata WARN endpoint, 2026-07-15).
+        body = {"Results": [{"employer": "Acme Corp", "county": "Travis"}, {"employer": "Beta Inc", "county": "Dallas"}]}
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="Results")
+
+        assert "<table>" in page.html
+        assert "<th>employer</th>" in page.html
+        assert "<td>Acme Corp</td>" in page.html
+        assert "<td>Beta Inc</td>" in page.html
+        await client.aclose()
+
+    async def test_empty_string_fragment_field_also_uses_structured_mode(self):
+        # Critic-caught (chunk review): fragment_field="" (distinct from None -- e.g. a
+        # nullable column holding "" rather than NULL) must trigger the same structured
+        # mode None does, not silently look up a literal "" key and return an empty body.
+        body = {"Results": [{"employer": "Acme Corp"}]}
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="Results", fragment_field="")
+
+        assert "<table>" in page.html
+        assert "<td>Acme Corp</td>" in page.html
+        await client.aclose()
+
+    async def test_structured_mode_uses_the_union_of_every_records_keys(self):
+        # Critic-caught (chunk review): taking columns from the first record alone would
+        # silently drop a key that only appears on a later record -- a real API can return
+        # heterogeneous records (e.g. an optional field only present when non-null).
+        body = {"Results": [{"employer": "Acme Corp"}, {"employer": "Beta Inc", "county": "Dallas"}]}
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="Results")
+
+        assert "<th>employer</th>" in page.html
+        assert "<th>county</th>" in page.html
+        assert "<td>Dallas</td>" in page.html
+        await client.aclose()
+
+    async def test_structured_mode_escapes_html_in_values(self):
+        body = {"Results": [{"employer": "<script>alert(1)</script>"}]}
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="Results")
+
+        assert "<script>alert(1)</script>" not in page.html
+        assert "&lt;script&gt;" in page.html
+        await client.aclose()
+
+    async def test_structured_mode_fills_missing_keys_with_empty_cell(self):
+        body = {"Results": [{"employer": "Acme Corp", "county": "Travis"}, {"employer": "Beta Inc"}]}
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="Results")
+
+        assert page.html.count("<tr>") == 3  # header + 2 records, no column shift
+        await client.aclose()
+
+    async def test_empty_results_path_uses_the_response_root_as_the_list(self):
+        # Socrata (Texas's real WARN endpoint) returns a bare JSON array, not wrapped
+        # under a named key.
+        body = [{"employer": "Acme Corp"}, {"employer": "Beta Inc"}]
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
+        driver = ApiDriver(client=client)
+
+        page = await driver.render("https://example.gov/api/search", results_path="")
+
+        assert "<td>Acme Corp</td>" in page.html
+        assert "<td>Beta Inc</td>" in page.html
+        await client.aclose()
+
+    async def test_empty_results_path_raises_when_root_is_not_a_list(self):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"not": "a list"})))
         driver = ApiDriver(client=client)
 
         with pytest.raises(ApiDriverError) as exc_info:
-            await driver.render("https://example.gov/api/search", results_path="Results")
+            await driver.render("https://example.gov/api/search", results_path="")
 
-        assert exc_info.value.code == "missing_config"
+        assert exc_info.value.code == "bad_results_path"
         await client.aclose()
 
     async def test_render_raises_on_transport_failure(self):
