@@ -41,9 +41,9 @@ from threetears.observe.logging import (
     get_logger,
     set_context,
 )
-from threetears.observe.metrics import metered
+from threetears.observe.metrics import counter, gauge, histogram, metered
 from threetears.observe.resilience import retry_with_backoff
-from threetears.observe.tracing import traced
+from threetears.observe.tracing import set_span_attribute, traced
 
 __all__ = [
     "ContextFormatter",
@@ -54,10 +54,14 @@ __all__ = [
     "clear_context",
     "configure_logging",
     "configure_third_party_logging",
+    "counter",
+    "gauge",
     "get_context",
     "get_logger",
+    "histogram",
     "metered",
     "set_context",
+    "set_span_attribute",
     "retry_with_backoff",
     "spawn_background",
     "traced",

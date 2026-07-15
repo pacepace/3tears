@@ -1,11 +1,20 @@
-"""@metered decorator -- zero-cost without prometheus_client.
+"""Prometheus metrics -- zero-cost without prometheus_client.
 
-Creates prometheus counters and a duration histogram around sync and
-async functions, mirroring :func:`threetears.observe.tracing.traced`'s
-design exactly: bare ``@metered`` or parameterised ``@metered(name=...)``,
-works transparently on sync and async functions, and degrades to a pure
-passthrough with no overhead beyond a single cached bool check when
-``prometheus_client`` is not installed.
+Provides two layers:
+
+- :func:`counter`/:func:`histogram`/:func:`gauge` -- get-or-create
+  accessors for named prometheus instruments, cached after first call.
+  Any code, decorated or not, can record an arbitrary custom metric this
+  way (e.g. ``histogram("survey_completion_rate").observe(rate)`` for a
+  value only known after a function's result is computed, which no
+  decorator can see). When ``prometheus_client`` is not installed, every
+  accessor returns a no-op stand-in whose ``.inc()``/``.observe()``/
+  ``.set()``/``.labels()`` methods are all safe to call and do nothing.
+- :func:`metered` -- a decorator built on top of the accessors above,
+  mirroring :func:`threetears.observe.tracing.traced`'s design exactly:
+  bare ``@metered`` or parameterised ``@metered(name=...)``, works
+  transparently on sync and async functions, zero overhead beyond one
+  cached bool check when the backend is absent.
 
 unlike :func:`traced` (OpenTelemetry spans, push/export-based), this
 module's backend is ``prometheus_client`` (pull/scrape-based), matching
@@ -24,7 +33,7 @@ import inspect
 import time
 from typing import Any, Callable, TypeVar, overload
 
-__all__ = ["metered"]
+__all__ = ["counter", "gauge", "histogram", "metered"]
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -50,7 +59,7 @@ def _check_prometheus() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# metric name sanitization and lazy instrument cache
+# metric name sanitization
 # ---------------------------------------------------------------------------
 
 #: characters prometheus metric names commonly avoid in practice across
@@ -73,35 +82,195 @@ def _sanitize_metric_name(name: str) -> str:
     return name.translate(_SANITIZE_TRANSLATION)
 
 
-#: lazily created (Counter, Histogram) pairs, keyed by sanitized metric
-#: name -- created once per distinct name, reused across every call,
-#: mirroring how a real Counter/Histogram is meant to be a long-lived
-#: module-level object rather than recreated per call.
-_counters: dict[str, Any] = {}
-_histograms: dict[str, Any] = {}
+# ---------------------------------------------------------------------------
+# no-op fallback returned by every accessor when prometheus_client is absent
+# ---------------------------------------------------------------------------
 
 
-def _get_or_create_instruments(metric_name: str) -> tuple[Any, Any]:
-    """Lazily create (and cache) the Counter/Histogram pair for *metric_name*.
+class _NoOpMetric:
+    """Safe stand-in for a Counter/Histogram/Gauge when prometheus_client is absent.
 
-    :param metric_name: sanitized base name for this call site's metrics
-    :ptype metric_name: str
-    :return: tuple of (calls counter, duration histogram)
-    :rtype: tuple[Any, Any]
+    every method accepts and ignores arbitrary arguments, and
+    :meth:`labels` returns ``self`` so label-chained call sites
+    (``counter("x").labels(status="ok").inc()``) work unmodified whether
+    or not the real backend is installed.
     """
-    if metric_name not in _counters:
-        from prometheus_client import Counter, Histogram
 
-        _counters[metric_name] = Counter(
-            f"{metric_name}_calls",
-            f"calls to {metric_name}",
-            ["status"],
-        )
-        _histograms[metric_name] = Histogram(
-            f"{metric_name}_duration_seconds",
-            f"duration of {metric_name} in seconds",
-        )
-    return _counters[metric_name], _histograms[metric_name]
+    def inc(self, *args: Any, **kwargs: Any) -> None:
+        """No-op increment.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: none
+        :rtype: None
+        """
+
+    def dec(self, *args: Any, **kwargs: Any) -> None:
+        """No-op decrement.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: none
+        :rtype: None
+        """
+
+    def observe(self, *args: Any, **kwargs: Any) -> None:
+        """No-op histogram observation.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: none
+        :rtype: None
+        """
+
+    def set(self, *args: Any, **kwargs: Any) -> None:
+        """No-op gauge set.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: none
+        :rtype: None
+        """
+
+    def labels(self, *args: Any, **kwargs: Any) -> "_NoOpMetric":
+        """No-op label binding, returns self for chaining.
+
+        :param args: ignored
+        :ptype args: Any
+        :param kwargs: ignored
+        :ptype kwargs: Any
+        :return: this same no-op instance
+        :rtype: _NoOpMetric
+        """
+        return self
+
+
+_NOOP_METRIC = _NoOpMetric()
+
+
+# ---------------------------------------------------------------------------
+# get-or-create instrument accessors
+# ---------------------------------------------------------------------------
+
+#: lazily created instruments, keyed by (kind, sanitized name, label_names)
+#: -- created once per distinct key, reused across every call, mirroring
+#: how a real Counter/Histogram/Gauge is meant to be a long-lived
+#: module-level object rather than recreated per call.
+_instruments: dict[tuple[str, str, tuple[str, ...]], Any] = {}
+
+
+def _get_or_create_instrument(
+    kind: str,
+    name: str,
+    description: str | None,
+    label_names: tuple[str, ...],
+) -> Any:
+    """Lazily create (and cache) a named prometheus instrument.
+
+    :param kind: one of ``"counter"``, ``"histogram"``, ``"gauge"``
+    :ptype kind: str
+    :param name: raw metric name, sanitized before use
+    :ptype name: str
+    :param description: metric help text; a generic default is used when omitted
+    :ptype description: str | None
+    :param label_names: label dimension names; empty for an unlabelled instrument
+    :ptype label_names: tuple[str, ...]
+    :return: the cached prometheus instrument, or a no-op stand-in when
+        prometheus_client is unavailable
+    :rtype: Any
+    """
+    if not _check_prometheus():
+        return _NOOP_METRIC
+
+    sanitized = _sanitize_metric_name(name)
+    key = (kind, sanitized, label_names)
+    if key not in _instruments:
+        from prometheus_client import Counter, Gauge, Histogram
+
+        instrument_classes = {"counter": Counter, "histogram": Histogram, "gauge": Gauge}
+        instrument_class = instrument_classes[kind]
+        _instruments[key] = instrument_class(sanitized, description or f"{sanitized} {kind}", list(label_names))
+    return _instruments[key]
+
+
+def counter(
+    name: str,
+    *,
+    description: str | None = None,
+    label_names: tuple[str, ...] = (),
+) -> Any:
+    """Get or create a named prometheus Counter (cached across calls).
+
+    Returns a no-op stand-in with an identical ``.inc()``/``.labels()``
+    surface when ``prometheus_client`` is not installed, so call sites
+    never need their own availability check.
+
+    :param name: metric name; dots/angle-brackets sanitized automatically
+    :ptype name: str
+    :param description: metric help text; defaults to a generic description
+    :ptype description: str | None
+    :param label_names: label dimension names; empty for an unlabelled counter
+    :ptype label_names: tuple[str, ...]
+    :return: prometheus Counter, or a no-op stand-in
+    :rtype: Any
+    """
+    return _get_or_create_instrument("counter", name, description, label_names)
+
+
+def histogram(
+    name: str,
+    *,
+    description: str | None = None,
+    label_names: tuple[str, ...] = (),
+) -> Any:
+    """Get or create a named prometheus Histogram (cached across calls).
+
+    Returns a no-op stand-in with an identical ``.observe()``/``.labels()``
+    surface when ``prometheus_client`` is not installed, so call sites
+    never need their own availability check.
+
+    :param name: metric name; dots/angle-brackets sanitized automatically
+    :ptype name: str
+    :param description: metric help text; defaults to a generic description
+    :ptype description: str | None
+    :param label_names: label dimension names; empty for an unlabelled histogram
+    :ptype label_names: tuple[str, ...]
+    :return: prometheus Histogram, or a no-op stand-in
+    :rtype: Any
+    """
+    return _get_or_create_instrument("histogram", name, description, label_names)
+
+
+def gauge(
+    name: str,
+    *,
+    description: str | None = None,
+    label_names: tuple[str, ...] = (),
+) -> Any:
+    """Get or create a named prometheus Gauge (cached across calls).
+
+    Returns a no-op stand-in with an identical ``.inc()``/``.dec()``/
+    ``.set()``/``.labels()`` surface when ``prometheus_client`` is not
+    installed, so call sites never need their own availability check.
+
+    :param name: metric name; dots/angle-brackets sanitized automatically
+    :ptype name: str
+    :param description: metric help text; defaults to a generic description
+    :ptype description: str | None
+    :param label_names: label dimension names; empty for an unlabelled gauge
+    :ptype label_names: tuple[str, ...]
+    :return: prometheus Gauge, or a no-op stand-in
+    :rtype: Any
+    """
+    return _get_or_create_instrument("gauge", name, description, label_names)
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +294,16 @@ def metered(
     """Decorator that records prometheus call-count and duration metrics for a function.
 
     Supports both bare ``@metered`` and parameterised ``@metered(name=...)``
-    usage.  Works for sync and async functions.
+    usage.  Works for sync and async functions.  Built on top of
+    :func:`counter`/:func:`histogram` -- functions needing additional,
+    result-derived, or business-specific metrics can call those accessors
+    directly from inside the wrapped function body.
 
     Records two instruments per decorated call site: a ``<name>_calls_total``
     counter labelled ``status`` (``"success"`` or ``"error"``), and a
-    ``<name>_duration_seconds`` histogram.  Both instruments are created
-    once (lazily, on first call) and reused for every subsequent call.
+    ``<name>_duration_seconds`` histogram.  Both instruments are resolved
+    once, at decoration time (via :func:`counter`/:func:`histogram`'s own
+    cache), and reused for every subsequent call.
 
     When ``prometheus_client`` is not installed, the decorator is a pure
     passthrough with no overhead beyond a single bool check per call --
@@ -144,7 +317,9 @@ def metered(
     """
 
     def decorator(fn: F) -> F:
-        metric_name = _sanitize_metric_name(name or f"{fn.__module__}.{fn.__qualname__}")
+        metric_name = name or f"{fn.__module__}.{fn.__qualname__}"
+        calls_counter = counter(f"{metric_name}_calls", description=f"calls to {metric_name}", label_names=("status",))
+        duration_histogram = histogram(f"{metric_name}_duration_seconds", description=f"duration of {metric_name} in seconds")
 
         if inspect.iscoroutinefunction(fn):
 
@@ -153,18 +328,17 @@ def metered(
                 if not _check_prometheus():
                     return await fn(*args, **kwargs)
 
-                counter, histogram = _get_or_create_instruments(metric_name)
                 start = time.monotonic()
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception:
-                    counter.labels(status="error").inc()
+                    calls_counter.labels(status="error").inc()
                     raise
                 else:
-                    counter.labels(status="success").inc()
+                    calls_counter.labels(status="success").inc()
                     return result
                 finally:
-                    histogram.observe(time.monotonic() - start)
+                    duration_histogram.observe(time.monotonic() - start)
 
             return async_wrapper  # type: ignore[return-value]
 
@@ -175,18 +349,17 @@ def metered(
                 if not _check_prometheus():
                     return fn(*args, **kwargs)
 
-                counter, histogram = _get_or_create_instruments(metric_name)
                 start = time.monotonic()
                 try:
                     result = fn(*args, **kwargs)
                 except Exception:
-                    counter.labels(status="error").inc()
+                    calls_counter.labels(status="error").inc()
                     raise
                 else:
-                    counter.labels(status="success").inc()
+                    calls_counter.labels(status="success").inc()
                     return result
                 finally:
-                    histogram.observe(time.monotonic() - start)
+                    duration_histogram.observe(time.monotonic() - start)
 
             return sync_wrapper  # type: ignore[return-value]
 

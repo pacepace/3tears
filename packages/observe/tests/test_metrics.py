@@ -7,6 +7,9 @@ import pytest
 from threetears.observe.metrics import (
     _check_prometheus,
     _sanitize_metric_name,
+    counter,
+    gauge,
+    histogram,
     metered,
 )
 
@@ -54,6 +57,98 @@ class TestSanitizeMetricName:
 
     def test_already_clean_name_unchanged(self):
         assert _sanitize_metric_name("already_clean") == "already_clean"
+
+
+class TestAccessors:
+    """counter/histogram/gauge get-or-create accessors."""
+
+    def test_counter_records_arbitrary_value(self):
+        from prometheus_client import REGISTRY
+
+        c = counter("test.accessor.counter")
+        c.inc()
+        c.inc(2)
+
+        assert REGISTRY.get_sample_value("test_accessor_counter_total") == 3.0
+
+    def test_counter_with_labels(self):
+        from prometheus_client import REGISTRY
+
+        c = counter("test.accessor.labelled.counter", label_names=("outcome",))
+        c.labels(outcome="win").inc()
+        c.labels(outcome="loss").inc()
+        c.labels(outcome="loss").inc()
+
+        assert REGISTRY.get_sample_value("test_accessor_labelled_counter_total", {"outcome": "win"}) == 1.0
+        assert REGISTRY.get_sample_value("test_accessor_labelled_counter_total", {"outcome": "loss"}) == 2.0
+
+    def test_histogram_records_result_derived_value(self):
+        """the whole point: a value only known after a function returns."""
+        from prometheus_client import REGISTRY
+
+        def process_response():
+            return {"completion_rate": 0.75}
+
+        result = process_response()
+        histogram("test.accessor.completion_rate").observe(result["completion_rate"])
+
+        assert REGISTRY.get_sample_value("test_accessor_completion_rate_sum") == 0.75
+
+    def test_gauge_set_and_inc_dec(self):
+        from prometheus_client import REGISTRY
+
+        g = gauge("test.accessor.gauge")
+        g.set(5)
+        assert REGISTRY.get_sample_value("test_accessor_gauge") == 5.0
+
+        g.inc()
+        assert REGISTRY.get_sample_value("test_accessor_gauge") == 6.0
+
+        g.dec(2)
+        assert REGISTRY.get_sample_value("test_accessor_gauge") == 4.0
+
+    def test_accessor_cached_across_calls(self):
+        """a second accessor call under the same name reuses the instrument.
+
+        prometheus_client raises ValueError on duplicate registration, so
+        calling counter() twice with the same name without an exception is
+        itself sufficient proof the cache works.
+        """
+        first = counter("test.accessor.cached")
+        second = counter("test.accessor.cached")
+
+        assert first is second
+
+    def test_different_kinds_under_the_same_name_raise(self):
+        """counter/histogram/gauge each register under the exact name given;
+
+        prometheus's registry conflicts purely on metric name regardless of
+        instrument type, so requesting two different kinds under the
+        identical name is a genuine caller error that must surface as
+        prometheus_client's own ValueError, not be silently papered over
+        by the accessor cache (which correctly does not prevent this --
+        each (kind, name, label_names) key only dedupes identical requests).
+        """
+        counter("test.accessor.shared_name_conflict")
+        with pytest.raises(ValueError, match="Duplicated timeseries"):
+            histogram("test.accessor.shared_name_conflict")
+
+    def test_accessor_passthrough_without_prometheus(self):
+        import threetears.observe.metrics as mod
+
+        mod._prometheus_available = False
+
+        c = counter("test.accessor.passthrough")
+        h = histogram("test.accessor.passthrough.histogram")
+        g = gauge("test.accessor.passthrough.gauge")
+
+        # every method is safe to call and does nothing
+        c.inc()
+        c.labels(status="x").inc()
+        h.observe(1.0)
+        g.set(1.0)
+        g.inc()
+        g.dec()
 
 
 class TestMeteredDecorator:
