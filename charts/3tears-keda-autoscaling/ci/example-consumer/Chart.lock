@@ -1,0 +1,6 @@
+dependencies:
+- name: 3tears-keda-autoscaling
+  repository: file://../..
+  version: 0.1.0
+digest: sha256:7b7c4cc93ddf9278b924c07bdaa2117f6fa07cc1b74ca0fb445ab915a45f9865
+generated: "2026-07-15T08:55:57.066718-07:00"

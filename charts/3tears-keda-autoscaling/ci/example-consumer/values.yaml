@@ -1,0 +1,41 @@
+# Default values for the example-consumer CI proof chart. Both autoscaling gates
+# default off, matching the "renders nothing by default" contract the library helper
+# guarantees -- see ci-values.yaml for the overlay that flips both gates.
+
+autoscaling:
+  enabled: false
+
+# MUST be nested under `global:` -- the vendored keda subchart dependency is declared on
+# the 3tears-keda-autoscaling LIBRARY chart (one level of nesting below this consuming
+# chart), and Chart.yaml's `condition:` there is `global.keda.install` specifically
+# because only Helm's `global` values reach that nested scope. See
+# 3tears-keda-autoscaling/Chart.yaml's own comment for the full explanation (and the bug
+# this avoids: a bare `keda.install` here renders the KEDA operator by DEFAULT).
+global:
+  keda:
+    install: false
+
+exampleWorker:
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    pollingInterval: 15
+    cooldownPeriod: 300
+    triggers:
+      # KEDA nats-jetstream scaler: scales on the depth (num pending + consumer lag)
+      # of a durable JetStream consumer. Metadata keys per the KEDA nats-jetstream
+      # scaler docs (https://keda.sh/docs/latest/scalers/nats-jetstream/).
+      - type: nats-jetstream
+        metadata:
+          # NATS monitoring endpoint (the /jsz surface), host:monitoring-port.
+          natsServerMonitoringEndpoint: "nats:8222"
+          # NATS account the stream lives in; "$G" is the default account.
+          account: "$G"
+          # JetStream stream + durable consumer this pod drains (example names).
+          stream: "example_work"
+          consumer: "example-worker"
+          # Average target lag per replica that triggers a scale-out.
+          lagThreshold: "10"
+          # Lag at which KEDA activates the scaler from 0->1 (0 = activate on any lag).
+          activationLagThreshold: "0"
