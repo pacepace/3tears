@@ -58,10 +58,20 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: bounded CAS retry budget for increment()/decrement()'s read-modify-write --
-#: mirrors IdempotencyKeyStore's _CAS_MAX_RETRIES shape (this module's
-#: sibling in packages/core/src/threetears/core/coordination/).
-_CAS_MAX_RETRIES: Final[int] = 8
+#: bounded CAS retry budget for increment()/decrement()'s read-modify-write.
+#: deliberately higher than IdempotencyKeyStore's 8 (this module's sibling):
+#: that primitive's keys are mostly distinct per operation, so contention on
+#: any ONE key is rare, whereas this primitive's whole point is many pods
+#: hammering the SAME shared key (a fixed-window rate-limit counter, a
+#: concurrent-in-flight gauge) -- a genuinely hotter access pattern. 30
+#: matches 14-eng-ai-survey's own empirically-tuned constant for this exact
+#: shape (IndexesData/SplitAssignmentsData, tuned against a live 20-way
+#: concurrent integration test after 8 proved insufficient under real
+#: multi-connection contention -- confirmed here too: a 25-connection
+#: integration test against this primitive raised
+#: DistributedCounterConflict on ~75% of runs at _CAS_MAX_RETRIES=8, zero
+#: failures at 30, across repeated runs).
+_CAS_MAX_RETRIES: Final[int] = 30
 
 #: full-jitter backoff bound between CAS retries, seconds.
 _CAS_RETRY_BACKOFF_SECONDS: Final[float] = 0.02

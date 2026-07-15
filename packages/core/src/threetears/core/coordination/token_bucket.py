@@ -63,9 +63,16 @@ _DEFAULT_KV_TTL: Final[timedelta] = timedelta(hours=1)
 #: bounded CAS retry budget for claim()'s read-modify-write, when the CAS
 #: update loses to a DIFFERENT concurrent claimer on the SAME key -- not
 #: the same thing as "insufficient tokens" (see claim()'s docstring).
-#: mirrors IdempotencyKeyStore's _CAS_MAX_RETRIES shape (this module's
-#: sibling in packages/core/src/threetears/core/coordination/).
-_CAS_MAX_RETRIES: Final[int] = 8
+#: deliberately higher than IdempotencyKeyStore's 8 (this module's sibling):
+#: this primitive's whole point is many pods hammering the SAME shared
+#: bucket key -- a genuinely hotter access pattern than a mostly-distinct-
+#: per-operation idempotency key. 30 matches 14-eng-ai-survey's own
+#: empirically-tuned constant for this exact shape (IndexesData/
+#: SplitAssignmentsData, tuned against a live 20-way concurrent
+#: integration test after 8 proved insufficient under real multi-
+#: connection contention -- confirmed here too, via this package's own
+#: real-NATS integration test).
+_CAS_MAX_RETRIES: Final[int] = 30
 
 #: full-jitter backoff bound between CAS retries, seconds.
 _CAS_RETRY_BACKOFF_SECONDS: Final[float] = 0.02
