@@ -103,6 +103,12 @@ select = ["SLF"]
 # new public api surface just for tests; no library caller needs it). paired
 # entries live in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/tests/test_tracing.py" = ["SLF001"]
+# test monkeypatches module-level _prometheus_available cache sentinel to
+# exercise both the "prometheus installed" and "prometheus missing"
+# branches; same import-time-anchor reasoning as _otel_available above --
+# no public accessor warranted. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/tests/test_metrics.py" = ["SLF001"]
 # test monkeypatches module-level _HAS_DUCKDB import-availability sentinel to
 # force the ImportError branch without uninstalling the duckdb package.
 # Analogous to _otel_available above: a stable import-time anchor that tests
