@@ -24,11 +24,26 @@ the rest of the family.
 
 ## The problem it solves
 
-Horizontal scaling breaks naive state management. State scatters across pods.
-Caches drift out of sync. Cross-pod coordination becomes a second job. Add an
-LLM agent on top and the problem compounds: the agent needs memory, tools,
-RBAC, and model access that all have to stay coherent across every pod running
-it.
+Two problems, not one. First: a new app, script, or agent gets built against
+ad hoc plumbing -- a hand-rolled SQLite cache, a bespoke tool-dispatch loop,
+one-off RBAC checks -- because building it from primitives is slower than
+building it from scratch. Second: when that app succeeds and needs to scale
+past one process, the ad hoc plumbing doesn't scale, and state-scatter,
+cache-drift, and cross-pod coordination set in. Most projects solve problem
+one fast and dirty, then pay for it at problem two.
+
+3tears is built to solve both with the same primitives, not one at the cost
+of the other. Start a project against `core` and it behaves like a normal
+local data layer -- L1 SQLite, no NATS connection, no pod concept. Nothing
+about that early code has to be rewritten when the project grows into a
+multi-pod deployment: you add a NATS deployment and pass an L2 client into
+the same `CollectionRegistry`. The three-tier design isn't scaffolding you
+build later -- it's the shape the code already has.
+
+At scale, the second problem takes over: state scatters across pods, caches
+drift out of sync, cross-pod coordination becomes a second job. Add an LLM
+agent on top and it compounds -- the agent needs memory, tools, RBAC, and
+model access that all have to stay coherent across every pod running it.
 
 3tears turns your data into three-tier cached objects -- L1 in-process SQLite,
 L2 NATS JetStream KV, L3 PostgreSQL -- so every pod reads local and fast, every
@@ -39,7 +54,8 @@ foundation, not bolted onto it.
 
 ## The core mental model
 
-> **The library instruments; the host configures.**
+> **3tears makes no connections. The host supplies every external dependency
+> by dependency injection.**
 
 3tears never opens a connection, reads an environment variable, or installs a
 log handler on your behalf. You construct the backing clients -- a PostgreSQL
@@ -74,11 +90,18 @@ Full wiring detail, decision tables, and copy-pasteable code: see
 These recur across modules. Treat them as defaults, not suggestions, when
 extending or integrating with 3tears:
 
-1. **Library instruments, host configures.** No hidden connections, no
-   env-var magic. The host owns lifecycle, secrets, and logging destinations.
+1. **No implicit connections; dependency injection only.** 3tears never
+   opens a socket, reads an environment variable, or constructs an
+   infrastructure client on its own. The host owns lifecycle, secrets, and
+   logging destinations for everything it hands in. (The mechanism -- one
+   seam per concern -- is principle 4.)
 2. **The durable tier is the source of truth; caches are disposable.**
-   Applies beyond L1/L2/L3 -- it is the same reasoning behind every
-   cache-invalidation and reload path in the platform.
+   Reads are read-through (a miss at L1 or L2 falls through to L3 and
+   promotes the result back up); writes are write-through (a write commits
+   to L3 first, then promotes into L1/L2). Neither tier is ever written to
+   independently of L3. This reasoning applies beyond L1/L2/L3 -- it is the
+   same principle behind every cache-invalidation and reload path in the
+   platform.
 3. **Graceful degradation.** A missing or unhealthy dependency narrows to a
    specific failure mode and falls through, rather than taking the whole path
    down. Transport errors degrade; programming errors still surface.
@@ -89,7 +112,13 @@ extending or integrating with 3tears:
    justifies itself only if the capability genuinely does not exist yet
    elsewhere in the platform.
 6. **Do the structurally-best thing.** Backward compatibility is a
-   consideration, not a constraint that blocks a better design.
+   consideration, not a constraint that blocks a better design. This
+   platform is built and consumed with AI-assisted development, where
+   updating every call site of a changed interface is fast and mechanical
+   rather than slow and risky -- so a breaking change is weighed against
+   that lower cost, not against a hand-maintained codebase's cost. A
+   consumer is expected to update, not shielded indefinitely from a better
+   design.
 7. **Fire-and-forget side channels never break the caller.** Audit,
    telemetry, and cache invalidation are side effects. A failure in one of
    them must never fail the operation that triggered it.
@@ -100,6 +129,13 @@ extending or integrating with 3tears:
    envelope, one ACL evaluator, one NATS client. Where the platform already
    has a canonical way to do something, packages use it instead of
    reimplementing it.
+10. **Python is the root language, not an assumption baked into the
+    design.** 3tears ships as Python libraries; every integration today is
+    Python. A non-Python integration isn't architecturally excluded -- it
+    would be a purpose-built, thin client for that language (talking to the
+    same wire protocols, not a port of the Python object model), added only
+    when a real consumer justifies it. Python stays canonical; other
+    languages are additive, not a rewrite target.
 
 These principles are enforced, not just stated: `3tears-enforcement` runs
 static-analysis scanners across the ecosystem that check pattern compliance
@@ -188,6 +224,38 @@ Every module doc states its dependencies under "Composes with." Follow that
 chain to find the minimal install for what you need -- but a few packages
 (`models` notably) are meant to be added independently rather than pulled in
 transitively; each doc calls this out where it applies.
+
+## Testing your integration
+
+3tears ships reusable pytest fixtures for local integration tests --
+`threetears.core.testing.fixtures` spins up Postgres (and pgvector, via a
+parametrized image) in testcontainers, and skips cleanly when Docker isn't
+available. Reuse these in your own `conftest.py` rather than hand-rolling a
+Postgres fixture per consuming app. Full setup: `docs/integration-guide.md`,
+"Local integration testing" (§8.1).
+
+If your app defines its own test fake standing in for a 3tears protocol --
+an ACL evaluator, a store client, a workspace shell -- declare what
+production protocol it stands in for: a subclass, a `# parity-with:` marker
+comment, or an explicit exemption. This is the same fake-parity discipline
+3tears enforces on itself (see this repo's own `CLAUDE.md`, "Test Fakes");
+it's what keeps a fake from silently rotting out of sync with the real
+protocol it's supposed to mirror.
+
+## External references
+
+Curated links for the underlying technology 3tears sits on, not 3tears
+itself:
+
+| Technology | What it's for here | Docs |
+|---|---|---|
+| PostgreSQL | L3, the source of truth | <https://www.postgresql.org/docs/> |
+| pgvector | Semantic search for `agent-memory` / `agent-knowledge` | <https://github.com/pgvector/pgvector> |
+| NATS JetStream | L2 cache, cross-pod pub/sub, audit and epoch transport | <https://docs.nats.io/nats-concepts/jetstream> |
+| OpenTelemetry | Tracing backend for `observe` | <https://opentelemetry.io/docs/> |
+| Model Context Protocol | The protocol `mcp` implements | <https://modelcontextprotocol.io/> |
+| LangGraph | Agent orchestration `langgraph` checkpoints into | <https://docs.langchain.com/oss/python/langgraph/overview> |
+| S3 API | The protocol `object-store` speaks (any S3-compatible backend) | <https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html> |
 
 ## Keeping this guide current
 
