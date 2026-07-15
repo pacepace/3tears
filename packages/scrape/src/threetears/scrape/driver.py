@@ -88,6 +88,16 @@ class RenderedPage:
     #: :meth:`ScrapeDriver.render` -- capturing costs an extra round-trip per
     #: request, so it's opt-in, not collected by default.
     network_calls: list[NetworkCall] = field(default_factory=list)
+    #: True when this page's own document (only meaningful for
+    #: :class:`~threetears.scrape.drivers.document.DocumentDriver`/
+    #: :class:`~threetears.scrape.drivers.nodriver_download.NodriverDownloadDriver`)
+    #: needed OCR fallback -- a scanned/image PDF, not born-digital text. Always
+    #: ``False`` for every other driver (an HTML page render has no such concept).
+    #: Consumed by :class:`~threetears.scrape.drivers.multi_document.
+    #: MultiDocumentDriver` (scrape-task-06) to mark which combined-page documents
+    #: need vision-based extraction rather than the faster/cheaper text path --
+    #: see ``eval_loop._run_per_document_extraction``.
+    was_ocr: bool = False
 
 
 class ScrapeDriver(ABC):
@@ -115,6 +125,7 @@ class ScrapeDriver(ABC):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Render *url* and return the resulting page.
 
@@ -139,16 +150,26 @@ class ScrapeDriver(ABC):
         :param results_path: dotted JSON path to the list of per-record
             objects in a JSON API response (e.g. ``"Results"``) -- only
             meaningful to :class:`~threetears.scrape.drivers.api.ApiDriver`
-            (network/API-query capability, 2026-07-14); every other backend
-            accepts and ignores it, per this contract's own "accept the
-            full signature, use what you need" precedent (``wait_for`` on
+            (network/API-query capability, 2026-07-14) and, in its JSON
+            discovery mode, :class:`~threetears.scrape.drivers.
+            multi_document.MultiDocumentDriver`; every other backend accepts
+            and ignores it, per this contract's own "accept the full
+            signature, use what you need" precedent (``wait_for`` on
             ``DocumentDriver``)
         :ptype results_path: str | None
         :param fragment_field: which field within each per-record JSON
             object holds the HTML/text fragment to concatenate into a
-            synthetic page -- only meaningful to
-            :class:`~threetears.scrape.drivers.api.ApiDriver`
+            synthetic page (``ApiDriver``), or the document URL to fetch
+            (``MultiDocumentDriver``'s JSON discovery mode) -- only
+            meaningful to those two backends
         :ptype fragment_field: str | None
+        :param link_selector: CSS selector matching document links on a
+            listing page -- only meaningful to
+            :class:`~threetears.scrape.drivers.multi_document.
+            MultiDocumentDriver`'s HTML discovery mode (multi-document
+            capability, 2026-07-15); every other backend accepts and
+            ignores it
+        :ptype link_selector: str | None
         :return: the rendered page's HTML, status, final URL, timing, and
             (if requested) captured network calls
         :rtype: RenderedPage

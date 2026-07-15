@@ -11,6 +11,8 @@ this container via docker compose.
 from __future__ import annotations
 
 import asyncio
+import base64
+import os
 from types import SimpleNamespace
 
 import httpx
@@ -843,3 +845,228 @@ class TestWarmUp:
 
         assert main._ready is True
         assert browser.get_calls == 3
+
+
+# ===========================================================================
+# POST /v1/download (scrape-task-04, browser-forced-download capability)
+# ===========================================================================
+
+
+class _FakeDownloadTab:
+    """A tab created within an isolated browser context for a download request."""
+
+    def __init__(self, target_id: str, context_id: str, owner: "_FakeDownloadBrowser") -> None:
+        self.target = SimpleNamespace(target_id=target_id, browser_context_id=context_id)
+        self._context_id = context_id
+        self._owner = owner
+        self.closed = False
+        self.navigated_to: str | None = None
+
+    async def send(self, cmd: object):
+        co_name = getattr(getattr(cmd, "gi_code", None), "co_name", None)
+        if co_name == "navigate":
+            url = cmd.gi_frame.f_locals["url"]
+            self.navigated_to = url
+            await self._owner._simulate_navigation(self._context_id, url)
+        return None
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeDownloadBrowser:
+    """Fakes the subset of nodriver's ``Browser`` surface ``_download``/``_create_isolated_tab`` use.
+
+    Simulates a real download by writing a file into whatever
+    ``download_path`` was configured for a context, the moment a tab within
+    that context "navigates" -- real arguments extracted via
+    ``cmd.gi_frame.f_locals`` (live-verified this works for nodriver's own
+    CDP generator commands), not guessed at.
+    """
+
+    def __init__(
+        self,
+        *,
+        file_content: bytes | None = b"%PDF-fake-content",
+        write_delay_seconds: float = 0.0,
+        never_writes: bool = False,
+        target_lookup_failures: int = 0,
+        context_dispose_raises: bool = False,
+    ) -> None:
+        self.sent: list[object] = []
+        self.targets: list[_FakeDownloadTab] = []
+        self._pending_targets: dict[str, _FakeDownloadTab] = {}
+        self._context_download_paths: dict[str, str] = {}
+        self._file_content = file_content
+        self._write_delay_seconds = write_delay_seconds
+        self._never_writes = never_writes
+        self._target_lookup_failures_remaining = target_lookup_failures
+        self._context_dispose_raises = context_dispose_raises
+        self.disposed_contexts: list[str] = []
+        self._context_counter = 0
+        self._target_counter = 0
+
+    async def send(self, cmd: object):
+        self.sent.append(cmd)
+        co_name = getattr(getattr(cmd, "gi_code", None), "co_name", None)
+        if co_name == "create_browser_context":
+            self._context_counter += 1
+            return f"ctx-{self._context_counter}"
+        if co_name == "create_target":
+            context_id = cmd.gi_frame.f_locals["browser_context_id"]
+            self._target_counter += 1
+            target_id = f"target-{self._target_counter}"
+            self._pending_targets[target_id] = _FakeDownloadTab(target_id, context_id, self)
+            return target_id
+        if co_name == "set_download_behavior":
+            context_id = cmd.gi_frame.f_locals["browser_context_id"]
+            download_path = cmd.gi_frame.f_locals["download_path"]
+            self._context_download_paths[context_id] = download_path
+            return None
+        if co_name == "dispose_browser_context":
+            context_id = cmd.gi_frame.f_locals["browser_context_id"]
+            self.disposed_contexts.append(context_id)
+            if self._context_dispose_raises:
+                raise RuntimeError("simulated context disposal failure")
+            return None
+        return None
+
+    async def update_targets(self) -> None:
+        if self._target_lookup_failures_remaining > 0:
+            self._target_lookup_failures_remaining -= 1
+            return
+        self.targets.extend(self._pending_targets.values())
+        self._pending_targets.clear()
+
+    async def _simulate_navigation(self, context_id: str, url: str) -> None:
+        if self._never_writes:
+            return
+        if self._write_delay_seconds:
+            await asyncio.sleep(self._write_delay_seconds)
+        download_path = self._context_download_paths.get(context_id)
+        if download_path is None:
+            return
+        filename = url.rsplit("/", 1)[-1] or "download.pdf"
+        with open(os.path.join(download_path, filename), "wb") as f:
+            f.write(self._file_content or b"")
+
+    def stop(self) -> None:
+        pass
+
+
+class TestDownloadContract:
+    async def test_returns_503_when_browser_not_started(self, client: httpx.AsyncClient):
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 503
+        assert r.json()["error"]["code"] == "not_ready"
+
+    async def test_success_shape(self, client: httpx.AsyncClient):
+        browser = _FakeDownloadBrowser(file_content=b"%PDF-1.7 real content")
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == 200
+        assert body["filename"] == "notice.pdf"
+        assert body["content_type"] == "application/pdf"
+        assert base64.b64decode(body["content_base64"]) == b"%PDF-1.7 real content"
+        assert body["timing_ms"] >= 0
+
+    async def test_isolated_context_is_disposed_after_download(self, client: httpx.AsyncClient):
+        browser = _FakeDownloadBrowser()
+        main._browser = browser
+        async with client:
+            await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert len(browser.disposed_contexts) == 1
+
+    async def test_tab_is_closed_after_download(self, client: httpx.AsyncClient):
+        browser = _FakeDownloadBrowser()
+        main._browser = browser
+        async with client:
+            await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert len(browser.targets) == 1
+        assert browser.targets[0].closed is True
+
+    async def test_download_that_never_completes_returns_504(self, client: httpx.AsyncClient, monkeypatch):
+        monkeypatch.setattr(main, "_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.01)
+        browser = _FakeDownloadBrowser(never_writes=True)
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 0.1})
+        assert r.status_code == 504
+        assert r.json()["error"]["code"] == "download_timeout"
+
+    async def test_crdownload_in_progress_file_is_not_treated_as_complete(self, client: httpx.AsyncClient, monkeypatch):
+        """A file still being written carries a .crdownload suffix -- must not
+        be mistaken for a completed download."""
+        monkeypatch.setattr(main, "_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.01)
+
+        class _PartialThenCompleteBrowser(_FakeDownloadBrowser):
+            async def _simulate_navigation(self, context_id, url):
+                download_path = self._context_download_paths.get(context_id)
+                with open(os.path.join(download_path, "notice.pdf.crdownload"), "wb") as f:
+                    f.write(b"partial")
+                await asyncio.sleep(0.05)
+                os.remove(os.path.join(download_path, "notice.pdf.crdownload"))
+                with open(os.path.join(download_path, "notice.pdf"), "wb") as f:
+                    f.write(b"%PDF-complete")
+
+        browser = _PartialThenCompleteBrowser()
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 200
+        assert base64.b64decode(r.json()["content_base64"]) == b"%PDF-complete"
+
+    async def test_non_pdf_filename_gets_octet_stream_content_type(self, client: httpx.AsyncClient):
+        browser = _FakeDownloadBrowser()
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.docx", "timeout": 5.0})
+        assert r.json()["content_type"] == "application/octet-stream"
+
+    async def test_target_lookup_retries_past_transient_propagation_delay(self, client: httpx.AsyncClient, monkeypatch):
+        """Live-reproduced (2026-07-15): a freshly created target does not
+        always appear in browser.targets on the first update_targets() call."""
+        monkeypatch.setattr(main, "_TAB_LOOKUP_DELAY_SECONDS", 0.01)
+        browser = _FakeDownloadBrowser(target_lookup_failures=3)
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 200
+
+    async def test_target_never_appearing_reports_driver_crash(self, client: httpx.AsyncClient, monkeypatch):
+        monkeypatch.setattr(main, "_TAB_LOOKUP_ATTEMPTS", 3)
+        monkeypatch.setattr(main, "_TAB_LOOKUP_DELAY_SECONDS", 0.01)
+        browser = _FakeDownloadBrowser(target_lookup_failures=999)
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 502
+        assert r.json()["error"]["code"] == "driver_crash"
+
+    async def test_context_disposal_failure_does_not_mask_a_successful_download(self, client: httpx.AsyncClient):
+        browser = _FakeDownloadBrowser(context_dispose_raises=True)
+        main._browser = browser
+        async with client:
+            r = await client.post("/v1/download", json={"url": "https://example.gov/notice.pdf", "timeout": 5.0})
+        assert r.status_code == 200
+
+    async def test_concurrent_downloads_do_not_cross_contaminate(self, client: httpx.AsyncClient):
+        """Two concurrent requests must each get their own isolated context/download
+        directory -- mirrors the real live-verified concurrency proof (scrape-task-04)."""
+        browser = _FakeDownloadBrowser()
+        main._browser = browser
+        async with client:
+            r1, r2 = await asyncio.gather(
+                client.post("/v1/download", json={"url": "https://example.gov/a.pdf", "timeout": 5.0}),
+                client.post("/v1/download", json={"url": "https://example.gov/b.pdf", "timeout": 5.0}),
+            )
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        filenames = {r1.json()["filename"], r2.json()["filename"]}
+        assert filenames == {"a.pdf", "b.pdf"}
+        assert len(browser.disposed_contexts) == 2
+        assert len(set(browser.disposed_contexts)) == 2  # each context disposed exactly once, no reuse/collision

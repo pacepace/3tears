@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel
 from threetears.models import LlmPurpose, create_chat_model
@@ -40,7 +41,7 @@ log = get_logger(__name__)
 
 
 async def bounded_retry_structured_call[T: BaseModel](
-    prompt: str,
+    prompt: str | list[Any],
     response_model: type[T],
     *,
     model_id: str,
@@ -53,6 +54,7 @@ async def bounded_retry_structured_call[T: BaseModel](
     log_label: str,
     degraded_to: str,
     is_acceptable: Callable[[T], bool] | None = None,
+    provider: str | None = None,
 ) -> T | None:
     """Invoke a structured-output LLM call, retried on transient failure. Never raises.
 
@@ -64,8 +66,11 @@ async def bounded_retry_structured_call[T: BaseModel](
     honest "nothing here" result (e.g. no candidates / no winner / no match),
     never as a crash.
 
-    :param prompt: the fully-built prompt text for this call
-    :ptype prompt: str
+    :param prompt: the fully-built prompt text for this call, OR a pre-built list of
+        LangChain messages (e.g. one ``HumanMessage`` with multimodal image+text
+        content blocks, scrape-task-06's vision extraction path) -- passed straight
+        through to ``ainvoke()``, which accepts either shape natively
+    :ptype prompt: str | list[Any]
     :param response_model: pydantic model the structured output is forced into
     :ptype response_model: type[T]
     :param model_id: the model to invoke
@@ -94,6 +99,11 @@ async def bounded_retry_structured_call[T: BaseModel](
         rejected -- something is better than nothing once retries are
         exhausted). ``None`` accepts any successfully parsed result.
     :ptype is_acceptable: Callable[[T], bool] | None
+    :param provider: optional explicit provider override forwarded to
+        ``create_chat_model`` (e.g. ``"openrouter"`` to route a model id not
+        pre-registered under its natural provider -- see ``defaults.py``'s own
+        registry); ``None`` uses the registry's own resolution
+    :ptype provider: str | None
     :return: the validated result, or ``None`` after every attempt failed
     :rtype: T | None
     """
@@ -102,7 +112,12 @@ async def bounded_retry_structured_call[T: BaseModel](
     for attempt in range(attempts):
         try:
             model = create_chat_model(
-                model_id, api_key=api_key, purpose=purpose, temperature=temperature, timeout=timeout
+                model_id,
+                api_key=api_key,
+                purpose=purpose,
+                temperature=temperature,
+                timeout=timeout,
+                provider=provider,
             )
             structured_model = model.with_structured_output(response_model, method="json_schema")
             parsed = await structured_model.ainvoke(prompt)

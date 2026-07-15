@@ -302,9 +302,28 @@ class ScrapeTarget(BaseEntity):
         """Which field within each per-record JSON object holds the fragment to concatenate.
 
         Passed straight through to ``ScrapeDriver.render(..., fragment_field=...)``
-        -- see :attr:`api_results_path`.
+        -- see :attr:`api_results_path`. Also doubles as ``MultiDocumentDriver``'s
+        JSON discovery mode's document-URL field name (``driver_backend:
+        "multi_document"`` with :attr:`api_results_path` set) -- both drivers
+        read this exact YAML key, no separate field needed (multi-document
+        capability, 2026-07-15).
         """
         result: str | None = self._get_raw("api_fragment_field", None)
+        return result
+
+    @property
+    def link_selector(self) -> str | None:
+        """CSS selector matching document links on a listing page.
+
+        Passed straight through to ``ScrapeDriver.render(..., link_selector=...)``
+        -- ``None`` (the default) is fine for every non-``"multi_document"``
+        target, which ignores it. Required for ``MultiDocumentDriver``'s HTML
+        discovery mode (multi-document capability, 2026-07-15) -- see
+        ``drivers.multi_document.MultiDocumentDriver``. Its JSON discovery
+        mode uses :attr:`api_results_path`/:attr:`api_fragment_field` instead
+        (the same fields ``driver_backend: "api"`` targets already use).
+        """
+        result: str | None = self._get_raw("link_selector", None)
         return result
 
     @property

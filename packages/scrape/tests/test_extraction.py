@@ -9,9 +9,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from threetears.scrape.extraction import (
+    NOTICE_DOCUMENT_CLASS,
+    OCR_PAGE_IMAGE_CLASS,
     DiscoverySchemaResult,
     RowValidationResult,
     ValidationResult,
+    _build_direct_extraction_model,
+    _is_plausible_direct_extraction,
+    _MAX_PLAUSIBLE_FIELD_LENGTH,
     _CandidateStrategy,
     _CandidateStrategyList,
     _DiscoveredCandidate,
@@ -26,11 +31,15 @@ from threetears.scrape.extraction import (
     _RowCandidateStrategyList,
     discover_candidates,
     discover_row_candidates,
+    extract_fields_directly,
+    extract_fields_directly_chunked,
+    extract_fields_from_images,
     generate_candidates,
     generate_regex_candidates,
     generate_regex_row_candidates,
     generate_row_candidates,
     html_to_text,
+    split_notice_documents,
     strip_boilerplate,
     validate_candidate,
     validate_regex_candidate,
@@ -784,3 +793,323 @@ class TestDiscoverRowCandidates:
         ):
             result = await discover_row_candidates(_ROWS_PAGE_HTML, api_key="k")
         assert result.validated is False
+
+
+# ===========================================================================
+# split_notice_documents
+# ===========================================================================
+
+_NOTICES_HTML = """
+<html><body>
+<div class="notice"><p>Acme Corp</p><p>42 employees</p></div>
+<div class="notice"><p>Beta LLC</p><p>7 employees</p></div>
+</body></html>
+"""
+
+
+class TestSplitNoticeDocuments:
+    def test_splits_one_block_per_notice_div(self):
+        result = split_notice_documents(_NOTICES_HTML)
+        assert [d.text for d in result] == ["Acme Corp\n42 employees", "Beta LLC\n7 employees"]
+        assert all(d.was_ocr is False for d in result)
+        assert all(d.images == [] for d in result)
+
+    def test_no_notice_divs_returns_empty_list(self):
+        assert split_notice_documents("<html><body><p>nothing here</p></body></html>") == []
+
+    def test_only_matches_the_documented_class_name(self):
+        assert NOTICE_DOCUMENT_CLASS == "notice"
+        html = '<html><body><div class="not-a-notice"><p>Acme</p></div></body></html>'
+        assert split_notice_documents(html) == []
+
+    def test_preserves_page_order(self):
+        html = """
+        <html><body>
+        <div class="notice">First</div>
+        <div class="notice">Second</div>
+        <div class="notice">Third</div>
+        </body></html>
+        """
+        assert [d.text for d in split_notice_documents(html)] == ["First", "Second", "Third"]
+
+    def test_data_was_ocr_true_attribute_is_read_as_was_ocr_true(self):
+        html = '<html><body><div class="notice" data-was-ocr="true">Scanned</div></body></html>'
+        result = split_notice_documents(html)
+        assert len(result) == 1
+        assert result[0].was_ocr is True
+
+    def test_data_was_ocr_false_attribute_is_read_as_was_ocr_false(self):
+        html = '<html><body><div class="notice" data-was-ocr="false">Born digital</div></body></html>'
+        result = split_notice_documents(html)
+        assert result[0].was_ocr is False
+
+    def test_missing_data_was_ocr_attribute_defaults_to_false(self):
+        html = '<html><body><div class="notice">No attribute at all</div></body></html>'
+        result = split_notice_documents(html)
+        assert result[0].was_ocr is False
+
+    def test_embedded_ocr_page_images_are_decoded_from_base64(self):
+        import base64
+
+        b64_a = base64.b64encode(b"page-a-png-bytes").decode("ascii")
+        b64_b = base64.b64encode(b"page-b-png-bytes").decode("ascii")
+        html = (
+            '<html><body><div class="notice" data-was-ocr="true">'
+            "<p>Scanned letter</p>"
+            f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="0" src="data:image/png;base64,{b64_a}">'
+            f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="1" src="data:image/png;base64,{b64_b}">'
+            "</div></body></html>"
+        )
+        result = split_notice_documents(html)
+        assert len(result) == 1
+        assert result[0].was_ocr is True
+        assert result[0].images == [b"page-a-png-bytes", b"page-b-png-bytes"]
+        # the image tags themselves contribute no text (BeautifulSoup's own get_text
+        # ignores img content) -- only the real letter text survives into .text
+        assert result[0].text == "Scanned letter"
+
+    def test_born_digital_document_has_no_images(self):
+        html = '<html><body><div class="notice" data-was-ocr="false"><p>Clean text</p></div></body></html>'
+        result = split_notice_documents(html)
+        assert result[0].images == []
+
+
+# ===========================================================================
+# extract_fields_directly
+# ===========================================================================
+
+_SCHEMA_DIRECT = {"employer": str, "affected_count": int}
+
+
+class TestExtractFieldsDirectly:
+    """*result* passed to :func:`_fake_structured_model` is a plain dict, not a
+    ``_build_direct_extraction_model(...)`` instance -- ``bounded_retry_structured_call``
+    validates whatever ``ainvoke`` returns via ``response_model.model_validate(parsed)``,
+    and *response_model* here is a fresh dynamic class built INSIDE
+    :func:`extract_fields_directly` on every call, so a real (differently-constructed)
+    instance of "the same shape" would fail ``isinstance``/``model_validate`` -- a dict
+    validates against any matching model, exactly like a real LLM response body would.
+    """
+
+    async def test_success_returns_coerced_field_values(self):
+        fake_model, ainvoke_mock = _fake_structured_model({"employer": "Acme Corp", "affected_count": "1,234"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp", "affected_count": 1234}
+        assert ainvoke_mock.await_count == 1
+
+    async def test_field_the_model_returned_null_for_is_simply_absent(self):
+        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": None})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp"}
+
+    async def test_field_that_fails_to_coerce_is_dropped_not_a_crash(self):
+        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": "not-a-number"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp"}
+
+    async def test_total_llm_failure_returns_none_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result is None
+
+    async def test_whitespace_around_a_returned_value_is_normalized(self):
+        fake_model, _ = _fake_structured_model({"employer": "  Acme   Corp  \n", "affected_count": "42"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp", "affected_count": 42}
+
+    async def test_an_implausibly_long_field_value_triggers_a_retry_not_a_silent_accept(self):
+        """Live-reproduced (scrape-task-05): the model can echo its entire prompt into
+        one field's value instead of a clean answer -- since every field is plain str,
+        that garbage still type-validates, so only is_acceptable's own length sanity
+        check can catch it and force a retry."""
+        garbage = {"employer": "x" * 5000, "affected_count": "42"}
+        good = {"employer": "Acme Corp", "affected_count": "42"}
+        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[garbage, good])
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp", "affected_count": 42}
+        assert ainvoke_mock.await_count == 2
+
+    async def test_every_attempt_implausible_degrades_to_the_last_one_not_a_crash(self):
+        garbage = {"employer": "x" * 5000, "affected_count": "42"}
+        fake_model, _ = _fake_structured_model(garbage)
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
+        # is_acceptable's own contract: the last attempt's result is returned even if
+        # rejected once retries are exhausted -- something is better than nothing, and
+        # the all-or-nothing check downstream (eval_loop) will drop this record anyway
+        # once employer's absurd length fails no further validation of its own (it's
+        # still a syntactically valid str) -- this call's job is only to never crash.
+        assert result is not None
+        assert result["employer"] == "x" * 5000
+
+
+class TestIsPlausibleDirectExtraction:
+    def test_normal_values_are_plausible(self):
+        model_cls = _build_direct_extraction_model(_SCHEMA_DIRECT)
+        candidate = model_cls(employer="Acme Corp", affected_count="42")
+        assert _is_plausible_direct_extraction(candidate) is True
+
+    def test_none_values_are_plausible(self):
+        model_cls = _build_direct_extraction_model(_SCHEMA_DIRECT)
+        candidate = model_cls(employer=None, affected_count=None)
+        assert _is_plausible_direct_extraction(candidate) is True
+
+    def test_a_wildly_long_string_value_is_not_plausible(self):
+        model_cls = _build_direct_extraction_model(_SCHEMA_DIRECT)
+        candidate = model_cls(employer="x" * (_MAX_PLAUSIBLE_FIELD_LENGTH + 1), affected_count="42")
+        assert _is_plausible_direct_extraction(candidate) is False
+
+    def test_exactly_at_the_length_ceiling_is_still_plausible(self):
+        model_cls = _build_direct_extraction_model(_SCHEMA_DIRECT)
+        candidate = model_cls(employer="x" * _MAX_PLAUSIBLE_FIELD_LENGTH, affected_count="42")
+        assert _is_plausible_direct_extraction(candidate) is True
+
+
+# ===========================================================================
+# extract_fields_directly_chunked
+# ===========================================================================
+
+_SCHEMA_FOUR_FIELDS = {"employer": str, "notice_date": str, "effective_date": str, "affected_count": int}
+
+
+class TestExtractFieldsDirectlyChunked:
+    """Live-verified (scrape-task-05): asking for fewer fields per call is
+    measurably more reliable than one call for everything -- see
+    _DEFAULT_FIELDS_PER_CALL's own comment. create_chat_model's call ORDER matches
+    chunk order deterministically (each chunk's own create_chat_model() call is a
+    plain sync call made before that chunk's first await), so side_effect=[...] lets
+    each chunk be independently controlled."""
+
+    async def test_splits_a_four_field_schema_into_two_chunks_and_merges(self):
+        fake_a, ainvoke_a = _fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
+        fake_b, ainvoke_b = _fake_structured_model({"effective_date": "June 1, 2026", "affected_count": "12"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]):
+            result = await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
+        assert result == {
+            "employer": "Acme Corp",
+            "notice_date": "May 1, 2026",
+            "effective_date": "June 1, 2026",
+            "affected_count": 12,
+        }
+        assert ainvoke_a.await_count == 1
+        assert ainvoke_b.await_count == 1
+
+    async def test_a_five_field_schema_splits_into_three_chunks(self):
+        schema = {**_SCHEMA_FOUR_FIELDS, "county": str}
+        fake_a, _ = _fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
+        fake_b, _ = _fake_structured_model({"effective_date": "June 1, 2026", "affected_count": "12"})
+        fake_c, _ = _fake_structured_model({"county": "Baltimore"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b, fake_c]):
+            result = await extract_fields_directly_chunked("some document text", schema, api_key="k")
+        assert result["county"] == "Baltimore"
+        assert len(result) == 5
+
+    async def test_one_chunks_total_failure_only_costs_that_chunks_fields(self):
+        fake_a, _ = _fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
+        fake_b, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
+        assert result == {"employer": "Acme Corp", "notice_date": "May 1, 2026"}
+
+    async def test_every_chunk_failing_returns_an_empty_dict_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
+        assert result == {}
+
+    async def test_custom_fields_per_call_of_one_makes_one_call_per_field(self):
+        schema = {"employer": str, "notice_date": str}
+        fake_a, ainvoke_a = _fake_structured_model({"employer": "Acme Corp"})
+        fake_b, ainvoke_b = _fake_structured_model({"notice_date": "May 1, 2026"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]):
+            result = await extract_fields_directly_chunked("some document text", schema, api_key="k", fields_per_call=1)
+        assert result == {"employer": "Acme Corp", "notice_date": "May 1, 2026"}
+        assert ainvoke_a.await_count == 1
+        assert ainvoke_b.await_count == 1
+
+
+# ===========================================================================
+# extract_fields_from_images -- vision extraction path (scrape-task-06)
+# ===========================================================================
+
+
+class TestExtractFieldsFromImages:
+    async def test_empty_images_returns_none_without_calling_the_model(self):
+        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
+            result = await extract_fields_from_images([], _SCHEMA_DIRECT, api_key="k")
+        assert result is None
+        create_model.assert_not_called()
+
+    async def test_success_returns_coerced_field_values(self):
+        fake_model, ainvoke_mock = _fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            result = await extract_fields_from_images([b"fake-png-page-0"], _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp", "affected_count": 42}
+        assert ainvoke_mock.await_count == 1
+        # the vision path needs an explicit provider override (not pre-registered
+        # under "openrouter" in threetears-models' own capability registry)
+        assert create_model.call_args.kwargs["provider"] == "openrouter"
+
+    async def test_uses_the_default_vision_model_id(self):
+        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": "1"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
+
+    async def test_multiple_images_are_all_included_in_one_call(self):
+        fake_model, ainvoke_mock = _fake_structured_model({"employer": "Acme Corp", "affected_count": "1"})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            await extract_fields_from_images([b"page-0", b"page-1", b"page-2"], _SCHEMA_DIRECT, api_key="k")
+        assert ainvoke_mock.await_count == 1
+        [call] = ainvoke_mock.await_args_list
+        [message] = call.args[0]
+        image_blocks = [block for block in message.content if block.get("type") == "image_url"]
+        assert len(image_blocks) == 3
+
+    async def test_field_the_model_returned_null_for_is_simply_absent(self):
+        fake_model, _ = _fake_structured_model({"employer": "Acme Corp", "affected_count": None})
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp"}
+
+    async def test_total_llm_failure_returns_none_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result is None
+
+    async def test_an_implausibly_long_field_value_triggers_a_retry(self):
+        garbage = {"employer": "x" * 5000, "affected_count": "42"}
+        good = {"employer": "Acme Corp", "affected_count": "42"}
+        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[garbage, good])
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result == {"employer": "Acme Corp", "affected_count": 42}
+        assert ainvoke_mock.await_count == 2

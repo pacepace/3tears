@@ -28,7 +28,14 @@ import pytest
 from threetears.agent.tools.document import DocumentResult
 
 from threetears.scrape.driver import RenderedPage
-from threetears.scrape.drivers.document import DocumentDriver, DocumentDriverError, document_text_to_html
+from threetears.scrape.drivers.document import (
+    OCR_PAGE_IMAGE_CLASS,
+    DocumentDriver,
+    DocumentDriverError,
+    ParsedDocumentHtml,
+    document_text_to_html,
+    parse_document_bytes_to_html,
+)
 
 # ===========================================================================
 # document_text_to_html
@@ -111,6 +118,63 @@ class TestDocumentTextToHtml:
         but never closes) must degrade gracefully, not loop forever."""
         html = document_text_to_html("| never closes")
         assert "<table>" not in html
+
+
+# ===========================================================================
+# parse_document_bytes_to_html -- was_ocr / embedded page images (scrape-task-06)
+# ===========================================================================
+
+
+class TestParseDocumentBytesToHtmlOcrImages:
+    async def test_was_ocr_false_embeds_no_images(self, monkeypatch):
+        from unittest.mock import Mock
+
+        fake_result = DocumentResult(text="Acme Corp", title=None, page_count=None, word_count=2, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        render_mock = Mock()
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", render_mock)
+
+        result = await parse_document_bytes_to_html(b"fake-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert isinstance(result, ParsedDocumentHtml)
+        assert result.was_ocr is False
+        assert OCR_PAGE_IMAGE_CLASS not in result.html
+        render_mock.assert_not_called()
+
+    async def test_was_ocr_true_embeds_each_page_as_a_base64_img_tag(self, monkeypatch):
+        fake_result = DocumentResult(text="Scanned letter text", title=None, page_count=2, word_count=3, was_ocr=True)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.render_pdf_pages_to_images",
+            lambda data: [b"page0-png-bytes", b"page1-png-bytes"],
+        )
+
+        result = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert result.was_ocr is True
+        assert "Scanned letter text" in result.html
+        assert f'class="{OCR_PAGE_IMAGE_CLASS}"' in result.html
+        assert result.html.count(f'class="{OCR_PAGE_IMAGE_CLASS}"') == 2
+        import base64
+
+        assert f"data:image/png;base64,{base64.b64encode(b'page0-png-bytes').decode('ascii')}" in result.html
+        assert f"data:image/png;base64,{base64.b64encode(b'page1-png-bytes').decode('ascii')}" in result.html
+        assert result.html.strip().endswith("</html>")  # embedded before the closing tag, still well-formed
+
+    async def test_was_ocr_true_but_image_rendering_fails_still_returns_the_text_html(self, monkeypatch):
+        """A rendering failure must never take down an otherwise-usable OCR'd
+        text result -- render_pdf_pages_to_images's own honest-empty-list
+        contract (see its docstring) means zero <img> tags get embedded,
+        not a crash."""
+        fake_result = DocumentResult(text="Scanned letter text", title=None, page_count=1, word_count=3, was_ocr=True)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [])
+
+        result = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert result.was_ocr is True
+        assert "Scanned letter text" in result.html
+        assert OCR_PAGE_IMAGE_CLASS not in result.html
 
 
 # ===========================================================================
@@ -293,6 +357,19 @@ class TestDocumentDriver:
             await driver.render("https://example.gov/warn.xlsx")
 
         assert exc_info.value.code == "parse_failed"
+        await client.aclose()
+
+    async def test_render_propagates_was_ocr_true_onto_rendered_page(self, monkeypatch):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
+        driver = DocumentDriver(client=client)
+
+        fake_result = DocumentResult(text="Scanned text", title=None, page_count=1, word_count=2, was_ocr=True)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [])
+
+        page = await driver.render("https://example.gov/warn.pdf")
+
+        assert page.was_ocr is True
         await client.aclose()
 
     async def test_render_accepts_and_ignores_wait_for_and_nav_steps(self, monkeypatch):

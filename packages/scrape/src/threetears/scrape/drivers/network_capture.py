@@ -154,6 +154,7 @@ class NetworkCaptureDriver(ScrapeDriver):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Render *url* through the inner driver and synthesize HTML from its largest captured record list.
 
@@ -176,6 +177,8 @@ class NetworkCaptureDriver(ScrapeDriver):
         :ptype results_path: str | None
         :param fragment_field: accepted for interface conformance; not applicable
         :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not applicable
+        :ptype link_selector: str | None
         :return: synthetic HTML built from the largest captured JSON record
             list, with the inner render's real status/final_url/timing
         :rtype: RenderedPage

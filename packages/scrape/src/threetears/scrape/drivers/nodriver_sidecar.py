@@ -71,6 +71,7 @@ class NodriverSidecarDriver(ScrapeDriver):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Render *url* through the sidecar's ``POST /v1/render`` endpoint.
 
@@ -93,6 +94,9 @@ class NodriverSidecarDriver(ScrapeDriver):
         :param fragment_field: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.api.ApiDriver` uses it)
         :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
+        :ptype link_selector: str | None
         :return: the rendered page
         :rtype: RenderedPage
         :raises NodriverSidecarError: on a sidecar-reported error (4xx/5xx

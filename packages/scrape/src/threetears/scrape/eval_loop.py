@@ -8,11 +8,19 @@ no LLM call at all (just re-executing its stored selectors); only when
 generation re-run, survivors get compared by an LLM judge against the real
 page content, and the winner is persisted as the new recipe.
 
+**Exception: ``StrategyType`` ``"per_document"``** (scrape-task-05,
+2026-07-15) has no cached-recipe cycle at all -- some real multi-document
+targets (independently-worded documents sharing no template, see
+``drivers/multi_document.py``) genuinely cannot be served by a pattern
+learned once and reused; every document gets its own fresh LLM extraction
+call on every poll instead (:func:`_run_per_document_extraction`).
+
 Zero faidh imports (see ``scrape/__init__.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -26,11 +34,15 @@ from .extraction import (
     DEFAULT_EXTRACTION_MODEL_ID,
     MAX_HTML_CHARS_IN_PROMPT,
     FieldSchema,
+    NoticeDocument,
+    extract_fields_directly_chunked,
+    extract_fields_from_images,
     generate_candidates,
     generate_regex_candidates,
     generate_regex_row_candidates,
     generate_row_candidates,
     html_to_text,
+    split_notice_documents,
     strip_boilerplate,
     validate_candidate,
     validate_regex_candidate,
@@ -42,12 +54,18 @@ from .llm_retry import bounded_retry_structured_call
 __all__ = ["DEFAULT_JUDGE_MODEL_ID", "StrategyType", "run_eval_loop", "run_eval_loop_multi_row"]
 
 #: Which extraction-strategy shape a target's page needs -- "css" (an HTML
-#: table, the original v1 shape) or "regex" (a text-block/prose listing with
-#: no table structure at all, added 2026-07-14). A per-call flag mirroring
-#: how ``multi_row`` already works, not read from the stored recipe -- a
-#: target's own page shape doesn't change between calls, so the caller
-#: (``ScrapeTarget.extraction_strategy_type``) is the source of truth.
-StrategyType = Literal["css", "regex"]
+#: table, the original v1 shape), "regex" (a text-block/prose listing with
+#: no table structure at all, added 2026-07-14), or "per_document" (a
+#: MultiDocumentDriver-combined page whose documents are each independently
+#: worded -- e.g. one employer's own freeform letter per notice -- sharing
+#: no boilerplate any single cached pattern could generalize across; added
+#: scrape-task-05, 2026-07-15, live-verified against West Virginia's real
+#: WARN letters after a regex-strategy attempt matched only 1 of 10). A
+#: per-call flag mirroring how ``multi_row`` already works, not read from
+#: the stored recipe -- a target's own page shape doesn't change between
+#: calls, so the caller (``ScrapeTarget.extraction_strategy_type``) is the
+#: source of truth.
+StrategyType = Literal["css", "regex", "per_document"]
 
 log = get_logger(__name__)
 
@@ -68,6 +86,18 @@ DEFAULT_FAILURE_THRESHOLD = 3
 
 #: Default candidate count per (re)generation round.
 DEFAULT_CANDIDATE_COUNT = 3
+
+#: Hard outer deadline for ONE document's ``extract_fields_directly`` call inside
+#: ``"per_document"`` StrategyType (:func:`_run_per_document_extraction`) -- live-
+#: reproduced (scrape-task-05, a real West Virginia document): the underlying chat
+#: client can hang well past its own configured per-attempt timeout with zero
+#: further retry activity, so ``extract_fields_directly``'s own *timeout*/*attempts*
+#: parameters alone are not a reliable bound. 90s covers every well-behaved case
+#: seen live (a successful call takes single-digit seconds; a well-behaved retry
+#: cycle through several failed attempts still lands well under a minute) with
+#: margin, while still keeping one truly-hung document from blocking an entire
+#: poll of N documents indefinitely.
+_PER_DOCUMENT_TIMEOUT_SECONDS = 90
 
 
 class _JudgeVerdict(BaseModel):
@@ -888,6 +918,113 @@ async def _regenerate_regex_row_recipe(
     return result
 
 
+async def _run_per_document_extraction(
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    source_url: str,
+    *,
+    recipe_collection: ScrapeRecipeCollection,
+    extraction_collection: ScrapeExtractionCollection,
+    api_key: str,
+    extraction_model_id: str,
+) -> ScrapeExtraction:
+    """``"per_document"`` StrategyType: no cached pattern is possible (see that
+    Literal's own comment) -- every document gets a fresh, independent LLM
+    extraction call, every single poll, never a reuse-without-an-LLM-call path.
+
+    Still persists a marker ``ScrapeRecipe`` (``extraction_strategy={"strategy":
+    "per_document"}``, no reusable pattern inside it) so ``consecutive_validation_
+    failures`` keeps tracking a real operational signal -- "how many recent polls
+    found zero extractable records," e.g. the listing's own JSON shape changed --
+    the same way css/regex targets are already observable, even though nothing
+    here is ever reused to skip an LLM call.
+
+    Each document's call is bounded by an explicit outer deadline
+    (:data:`_PER_DOCUMENT_TIMEOUT_SECONDS`), not just ``extract_fields_directly``'s
+    own per-attempt *timeout* -- live-reproduced (scrape-task-05, real West Virginia
+    document): the underlying chat client occasionally hangs well past its
+    configured per-attempt timeout with zero further retry activity (the 200 OK
+    response headers land, the body read then never completes), a pre-existing
+    reliability gap in :func:`~threetears.scrape.llm_retry.bounded_retry_structured_call`
+    shared by every caller in this module, filed separately (not fixed here -- out
+    of scope for this feature, bigger blast radius). What per_document uniquely
+    needs, and gets: one stuck document must never hang an entire poll of N
+    documents forever, the same "isolate one bad unit's failure" philosophy
+    :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
+    applies to one document's FETCH failing.
+
+    Documents run concurrently (``asyncio.gather``), not one at a time -- each is a
+    fully independent extraction (no shared cache/state), and
+    :func:`~threetears.scrape.extraction.extract_fields_directly_chunked` already
+    roughly doubles the LLM calls a single document needs (scrape-task-05's own
+    reliability fix), so serializing across documents on top of that would make an
+    N-document poll's wall-clock cost grow far faster than the accuracy gain
+    justifies.
+
+    **Routing by document shape (scrape-task-06):** a scanned document
+    (``NoticeDocument.was_ocr``) routes to :func:`~threetears.scrape.extraction.
+    extract_fields_from_images` (a vision-capable model reading the original page
+    images) rather than the OCR'd-text path -- full-set live comparison against a
+    real target's own documents found OCR'd text measurably less reliable (2/10
+    complete records vs. vision's 10/10, same documents). A born-digital document
+    (``was_ocr=False``, no embedded images to read anyway) stays on the fast/cheap
+    text path unchanged -- vision's own real cost/latency is only paid where OCR
+    was needed in the first place, not globally.
+    """
+    documents = split_notice_documents(html)
+
+    async def _extract_one(document: NoticeDocument) -> dict[str, Any] | None:
+        extraction_call = (
+            extract_fields_from_images(document.images, schema, api_key=api_key)
+            if document.was_ocr
+            else extract_fields_directly_chunked(document.text, schema, model_id=extraction_model_id, api_key=api_key)
+        )
+        try:
+            return await asyncio.wait_for(extraction_call, timeout=_PER_DOCUMENT_TIMEOUT_SECONDS)
+        except TimeoutError:
+            log.warning(
+                "scrape per-document extraction: one document hung past %ss, skipping",
+                _PER_DOCUMENT_TIMEOUT_SECONDS,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            return None
+
+    extractions = await asyncio.gather(*(_extract_one(document) for document in documents))
+    # All-or-nothing-per-record, matching every other strategy's own philosophy
+    # (validate_row_candidate / validate_regex_row_candidate): a record only
+    # counts if EVERY schema field was found and coerced, never a partial one.
+    records = [extracted for extracted in extractions if extracted is not None and set(extracted) == set(schema)]
+
+    now = datetime.now(UTC)
+    existing_recipe = await recipe_collection.get(target_id)
+    await _save_recipe(
+        recipe_collection,
+        target_id=target_id,
+        extraction_strategy={"strategy": "per_document"},
+        won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
+        last_validated_at=now,
+        consecutive_validation_failures=(
+            0 if records else (existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1)
+        ),
+    )
+    log.info(
+        "scrape per-document extraction: target=%s documents=%d records_captured=%d",
+        target_id,
+        len(documents),
+        len(records),
+        extra={"extra_data": {"target_id": target_id}},
+    )
+    return await _persist_extraction(
+        extraction_collection,
+        target_id=target_id,
+        source_url=source_url,
+        structured_fields={"records": records},
+        validation_status="validated" if records else "failed",
+        extraction_recipe_id=target_id if records else None,
+    )
+
+
 async def run_eval_loop_multi_row(
     target_id: str,
     html: str,
@@ -934,13 +1071,26 @@ async def run_eval_loop_multi_row(
     :ptype extraction_model_id: str
     :param judge_model_id: model for the candidate-comparison judge
     :ptype judge_model_id: str
-    :param strategy_type: ``"css"`` (row/field CSS selectors) or ``"regex"``
+    :param strategy_type: ``"css"`` (row/field CSS selectors), ``"regex"``
         (a single pattern matched repeatedly via ``re.finditer`` against the
-        page's plain text, one match per record) -- see :func:`run_eval_loop`
+        page's plain text, one match per record), or ``"per_document"`` (no
+        cached pattern at all -- a fresh LLM extraction call per document,
+        every poll; see :data:`StrategyType`'s own comment for why)
     :ptype strategy_type: StrategyType
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     """
+    if strategy_type == "per_document":
+        return await _run_per_document_extraction(
+            html,
+            schema,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            api_key=api_key,
+            extraction_model_id=extraction_model_id,
+        )
     reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
     existing_recipe = await recipe_collection.get(target_id)

@@ -16,13 +16,15 @@ Zero faidh imports (see ``scrape/__init__.py``).
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from bs4 import BeautifulSoup, Comment
 from bs4.element import Tag
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 from pydantic import Field as PydanticField
 from soupsieve.util import SelectorSyntaxError
 from threetears.models import LlmPurpose
@@ -40,11 +42,19 @@ __all__ = [
     "ValidationResult",
     "discover_candidates",
     "discover_row_candidates",
+    "DEFAULT_VISION_MODEL_ID",
+    "extract_fields_directly",
+    "extract_fields_directly_chunked",
+    "extract_fields_from_images",
     "generate_candidates",
     "generate_regex_candidates",
     "generate_regex_row_candidates",
     "generate_row_candidates",
     "html_to_text",
+    "NOTICE_DOCUMENT_CLASS",
+    "NoticeDocument",
+    "OCR_PAGE_IMAGE_CLASS",
+    "split_notice_documents",
     "strip_boilerplate",
     "validate_candidate",
     "validate_regex_candidate",
@@ -917,6 +927,66 @@ def html_to_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+#: The ``"per_document"`` StrategyType's (see ``eval_loop.py``) half of a shared
+#: contract with :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver`:
+#: that driver wraps each successfully fetched document in ``<div class="notice">...
+#: </div>`` when combining N documents into one page; :func:`split_notice_documents`
+#: is the other half, splitting that same combined page back into one plain-text block
+#: per document. A plain string constant (not an import of the driver module) --
+#: ``extraction.py``/``eval_loop.py`` stay driver-agnostic, the driver depends on this
+#: constant, never the reverse (drivers already depend on core utilities, e.g.
+#: ``multi_document.py`` importing ``api.py``'s ``_resolve_path``; the reverse would be new).
+NOTICE_DOCUMENT_CLASS = "notice"
+
+#: Same driver-agnostic-core convention as :data:`NOTICE_DOCUMENT_CLASS` -- the other
+#: half of :class:`~threetears.scrape.drivers.document`'s own embedded-page-image
+#: contract (scrape-task-06): when a document needed OCR, its combined-page ``<div>``
+#: contains one ``<img class="ocr-page-image">`` per rendered page, read back out by
+#: :func:`split_notice_documents` for the vision-extraction path.
+OCR_PAGE_IMAGE_CLASS = "ocr-page-image"
+
+
+class NoticeDocument(NamedTuple):
+    """One document recovered from a per_document-strategy combined page.
+
+    :func:`split_notice_documents`'s own return shape -- carries both the plain
+    text (the fast/cheap path every document already had) and, when the document
+    needed OCR, the embedded page images (the vision path scrape-task-06 added).
+    """
+
+    text: str
+    was_ocr: bool
+    images: list[bytes]
+
+
+def split_notice_documents(html: str) -> list[NoticeDocument]:
+    """Split a per_document-strategy combined page back into one document per notice.
+
+    Used by the ``"per_document"`` StrategyType (see :mod:`threetears.scrape.eval_loop`)
+    instead of a page-wide regex/CSS pattern -- some real multi-document targets
+    (e.g. Hawaii/West Virginia's WARN Act letters, one independently-worded letter
+    per employer) share no boilerplate a single pattern could ever generalize
+    across, so each document needs its own fresh extraction call, not a cached recipe.
+
+    :param html: the combined page's full HTML (see :data:`NOTICE_DOCUMENT_CLASS`)
+    :ptype html: str
+    :return: one :class:`NoticeDocument` per discovered document, in page order
+    :rtype: list[NoticeDocument]
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    documents: list[NoticeDocument] = []
+    for tag in soup.select(f"div.{NOTICE_DOCUMENT_CLASS}"):
+        was_ocr = tag.get("data-was-ocr") == "true"
+        images: list[bytes] = []
+        for img_tag in tag.select(f"img.{OCR_PAGE_IMAGE_CLASS}"):
+            src = str(img_tag.get("src", ""))
+            _prefix, _sep, encoded = src.partition("base64,")
+            if _sep:
+                images.append(base64.b64decode(encoded))
+        documents.append(NoticeDocument(text=html_to_text(str(tag)), was_ocr=was_ocr, images=images))
+    return documents
+
+
 #: Every regex candidate is compiled with these flags -- MULTILINE so ``^``/
 #: ``$`` anchor to line boundaries (a text-block record's own natural unit),
 #: DOTALL so ``.`` can span a record's own internal line breaks (a company
@@ -1238,3 +1308,348 @@ async def generate_regex_row_candidates(
         degraded_to="no candidates",
     )
     return [] if result is None else [c.pattern for c in result.candidates]
+
+
+# ===========================================================================
+# extract_fields_directly -- no cached pattern, one LLM call per document
+# ===========================================================================
+
+
+def _build_direct_extraction_model(schema: FieldSchema) -> type[BaseModel]:
+    """Build a one-off Pydantic model with one optional string field per *schema* key.
+
+    Every field is ``str | None`` (never the schema's own declared type)
+    regardless of what the schema asks for -- the LLM returns the RAW text
+    it found (or null if genuinely absent), and that raw text goes through
+    the exact same :func:`_coerce_field_value` normalization every other
+    extraction path already uses (numeric shorthand, whitespace), rather
+    than trusting the model's own, less consistent native type coercion.
+    """
+    fields: dict[str, Any] = {
+        name: (
+            str | None,
+            PydanticField(default=None, description=f"this document's own {name}, or null if not present"),
+        )
+        for name in schema
+    }
+    return create_model("DirectExtractionFields", **fields)
+
+
+def _build_direct_extraction_prompt(text: str, schema: FieldSchema) -> str:
+    field_lines = "\n".join(f"- {name} ({expected.__name__})" for name, expected in schema.items())
+    truncated = text[:MAX_HTML_CHARS_IN_PROMPT]
+    return (
+        f"Extract the following fields from this ONE document's own text. This document is "
+        f"independently written (e.g. one company's own business letter) -- it shares no "
+        f"template with any other document, so extract only what THIS document's own text "
+        f"actually says.\n\n"
+        f"Fields:\n{field_lines}\n\n"
+        f"Document text (may be truncated):\n{truncated}\n\n"
+        f"Return each field's raw value exactly as it appears in the text (do not reformat "
+        f"dates or numbers). CRITICAL: each field's value must be ONLY the raw text you found "
+        f"-- never append your own notes, comments, caveats, or explanations to a value (e.g. "
+        f"do NOT return something like 'June 26, 2026\" // Note: the quote is curly in the "
+        f"original' -- return exactly 'June 26, 2026' and nothing else). If you have something "
+        f"to say about a value (an ambiguity, a formatting quirk), say nothing -- return your "
+        f"best raw value or null, never a value with commentary mixed in. Read the ENTIRE "
+        f"document text before deciding a field is absent -- e.g. an effective/termination date "
+        f"or an affected employee count is often stated in a middle paragraph, a summary table, "
+        f"or a schedule near the end, not only in the opening lines. If a field is genuinely not "
+        f"present anywhere in this document's text after reading it fully, return null for it "
+        f"rather than guessing a plausible-looking value. Two common real-letter shapes to "
+        f"watch for: (1) prose sometimes states an explicit total directly (e.g. 'the total "
+        f"number of affected employees ... is one') -- ALWAYS prefer that explicit statement "
+        f"over adding up any attached position/department breakdown table yourself, especially "
+        f"when the table's own scope looks broader than this document's own subject (e.g. a "
+        f"nationwide list of job titles attached to a notice about a single state or site) -- "
+        f"only sum a breakdown table when NO explicit total is stated anywhere and the table's "
+        f"own rows are clearly scoped to this exact document's subject, not a wider company-wide "
+        f"list; (2) a document can mention more than one date in connection with the layoff/"
+        f"closure (e.g. different phase-out dates for different locations, or a notice date vs. "
+        f"a termination date) -- for a field asking for the effective/termination date, prefer "
+        f"whichever date is most clearly described as when employment actually ends, and if "
+        f"truly no single date applies to everyone, use the LATEST such date mentioned."
+    )
+
+
+#: Live-found (scrape-task-05, a real West Virginia document): every schema field
+#: here is ``str | None`` (see :func:`_build_direct_extraction_model`'s own docstring
+#: for why), which means a garbage response -- observed live: the model echoed its
+#: ENTIRE prompt back into one field's value, with the real answer buried in a
+#: trailing ```json code block instead of the forced structured-output shape --
+#: still VALIDATES successfully (any string satisfies ``str``), so
+#: ``bounded_retry_structured_call``'s own retry-on-failure never triggers; nothing
+#: about this is a coercion/type problem :func:`_coerce_field_value` could catch
+#: downstream. No genuine field value in this schema's domain (a date, a name, a
+#: count) is ever anywhere close to this long -- a generous, cheap sanity ceiling
+#: that only rejects obviously-malformed output, not unusually verbose real values.
+_MAX_PLAUSIBLE_FIELD_LENGTH = 300
+
+
+def _is_plausible_direct_extraction(candidate: BaseModel) -> bool:
+    """``is_acceptable`` predicate for :func:`extract_fields_directly`'s retry call.
+
+    Rejects (triggers a retry on) a response whose own string values are wildly too
+    long to be a genuine field value -- see :data:`_MAX_PLAUSIBLE_FIELD_LENGTH`'s own
+    comment for the live-observed failure mode this catches.
+    """
+    return all(
+        not isinstance(value, str) or len(value) <= _MAX_PLAUSIBLE_FIELD_LENGTH
+        for value in candidate.model_dump().values()
+    )
+
+
+async def extract_fields_directly(
+    text: str,
+    schema: FieldSchema,
+    *,
+    model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+) -> dict[str, Any] | None:
+    """Ask an LLM to extract *schema*'s field values directly from ONE independent document's text.
+
+    No cached pattern, no candidate/judge comparison -- unlike every other
+    ``generate_*_candidates`` function in this module, there is nothing to
+    learn once and reuse: a :class:`~threetears.scrape.drivers.
+    multi_document.MultiDocumentDriver` target whose documents are
+    genuinely independently-worded (e.g. Hawaii/West Virginia's real WARN
+    Act letters, one freeform letter per employer, live-verified to share
+    no boilerplate a single regex/CSS pattern could ever generalize across)
+    needs a fresh extraction call on every single document, every poll --
+    the eval loop's ``"per_document"`` :data:`~threetears.scrape.eval_loop.
+    StrategyType` (see that module) calls this once per document rather
+    than once per page.
+
+    :param text: one document's own plain text (see :func:`html_to_text`), never HTML
+    :ptype text: str
+    :param schema: field_name -> expected Python type
+    :ptype schema: FieldSchema
+    :param model_id: the extraction model
+    :ptype model_id: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number)
+    :ptype backoff_seconds: float
+    :return: field_name -> coerced value for every field the model found AND that
+        coerced successfully as *schema* declares (a field it couldn't find, or
+        whose text doesn't parse as the declared type, is simply absent from the
+        dict -- callers decide whether a partial record counts); ``None`` only on
+        total LLM failure (never raises)
+    :rtype: dict[str, Any] | None
+    """
+    model_cls = _build_direct_extraction_model(schema)
+    prompt = _build_direct_extraction_prompt(text, schema)
+    result = await bounded_retry_structured_call(
+        prompt,
+        model_cls,
+        model_id=model_id,
+        api_key=api_key,
+        purpose=LlmPurpose.EXTRACTION,
+        temperature=0.1,
+        timeout=_EXTRACTION_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape direct per-document field extraction",
+        degraded_to="no extraction",
+        is_acceptable=_is_plausible_direct_extraction,
+    )
+    if result is None:
+        return None
+    return _coerce_direct_extraction_result(result, schema)
+
+
+def _coerce_direct_extraction_result(result: BaseModel, schema: FieldSchema) -> dict[str, Any]:
+    """Shared by :func:`extract_fields_directly` and :func:`extract_fields_from_images` --
+    both force the same ``_build_direct_extraction_model``-shaped response (every
+    field a plain ``str | None``) and coerce it the same way."""
+    extracted: dict[str, Any] = {}
+    for name, expected_type in schema.items():
+        raw = getattr(result, name)
+        if raw is None:
+            continue
+        normalized = _normalize_whitespace_text(raw)
+        if not normalized:
+            continue
+        try:
+            extracted[name] = _coerce_field_value(normalized, expected_type)
+        except (ValueError, TypeError):
+            continue
+    return extracted
+
+
+#: Live-verified (scrape-task-05, real West Virginia and Hawaii documents): a single
+#: call asking for every schema field at once is measurably LESS reliable than several
+#: smaller calls each asking for fewer fields -- isolated proof: a 2-field-only call
+#: succeeded on a real document where that same document's 4-field call returned null
+#: for exactly those 2 fields. :func:`extract_fields_directly_chunked` is the fix --
+#: split *schema* into chunks of this size, one independent LLM call per chunk. Not a
+#: magic number verified across many schema sizes, just the smallest chunk size that
+#: showed a real, reproduced improvement -- revisit if a real schema needs otherwise.
+_DEFAULT_FIELDS_PER_CALL = 2
+
+
+async def extract_fields_directly_chunked(
+    text: str,
+    schema: FieldSchema,
+    *,
+    model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+    fields_per_call: int = _DEFAULT_FIELDS_PER_CALL,
+) -> dict[str, Any]:
+    """Split *schema* into smaller chunks, extract each with its own independent
+    :func:`extract_fields_directly` call (run concurrently), merge into one dict.
+
+    The reliability fix :func:`extract_fields_directly` alone couldn't reach -- see
+    :data:`_DEFAULT_FIELDS_PER_CALL`'s own comment for the live-reproduced evidence.
+    This is what the ``"per_document"`` StrategyType (see
+    :mod:`threetears.scrape.eval_loop`) actually calls, not the single-call version
+    directly, for exactly this reason.
+
+    :param text: one document's own plain text (see :func:`html_to_text`), never HTML
+    :ptype text: str
+    :param schema: field_name -> expected Python type
+    :ptype schema: FieldSchema
+    :param model_id: the extraction model
+    :ptype model_id: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures, per chunk
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number), per chunk
+    :ptype backoff_seconds: float
+    :param fields_per_call: how many schema fields each chunk's own call requests
+    :ptype fields_per_call: int
+    :return: field_name -> coerced value, the union of every chunk's own result (one
+        chunk's total failure only costs that chunk's own fields, never the others --
+        the caller decides whether the merged, possibly-partial dict counts as a
+        complete record, same contract :func:`extract_fields_directly` itself has)
+    :rtype: dict[str, Any]
+    """
+    items = list(schema.items())
+    chunks = [dict(items[i : i + fields_per_call]) for i in range(0, len(items), fields_per_call)]
+    chunk_results = await asyncio.gather(
+        *(
+            extract_fields_directly(
+                text, chunk_schema, model_id=model_id, api_key=api_key, attempts=attempts, backoff_seconds=backoff_seconds
+            )
+            for chunk_schema in chunks
+        )
+    )
+    merged: dict[str, Any] = {}
+    for chunk_result in chunk_results:
+        if chunk_result:
+            merged.update(chunk_result)
+    return merged
+
+
+# ===========================================================================
+# extract_fields_from_images -- vision extraction path (scrape-task-06)
+# ===========================================================================
+
+#: OpenRouter model id for a vision-capable Claude model, reached through the
+#: SAME OpenRouter API key every other extraction call in this module already
+#: uses -- no new secret needed (live-verified, scrape-task-06). Not pre-
+#: registered in threetears-models' own capability registry under the
+#: "openrouter" provider (only "anthropic" has it, for a direct-Anthropic-key
+#: deployment), so every call here passes ``provider="openrouter"`` explicitly
+#: rather than relying on registry auto-resolution.
+DEFAULT_VISION_MODEL_ID = "anthropic/claude-sonnet-5"
+_VISION_PROVIDER = "openrouter"
+
+#: A vision call reasons over one or more full-page images, not a short text
+#: block -- live-measured slower per attempt than a text-only call but still
+#: single-digit-to-tens-of-seconds normally; wider than _EXTRACTION_TIMEOUT_SECONDS
+#: to give a multi-page document real room before a retry fires.
+_VISION_TIMEOUT_SECONDS = 60
+
+
+def _build_vision_extraction_prompt(schema: FieldSchema) -> str:
+    field_lines = "\n".join(f"- {name} ({expected.__name__})" for name, expected in schema.items())
+    return (
+        "This is one scanned document (one or more page images of the same document). "
+        "Extract the following fields directly from what you see in the image(s):\n\n"
+        f"{field_lines}\n\n"
+        "Return each field's raw value exactly as it appears (do not reformat dates or "
+        "numbers). If a field is genuinely not present, illegible, or redacted anywhere "
+        "in the image(s), return null for it rather than guessing a plausible-looking value."
+    )
+
+
+async def extract_fields_from_images(
+    images: list[bytes],
+    schema: FieldSchema,
+    *,
+    model_id: str = DEFAULT_VISION_MODEL_ID,
+    provider: str = _VISION_PROVIDER,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+) -> dict[str, Any] | None:
+    """Ask a vision-capable LLM to extract *schema*'s field values directly from page images.
+
+    The scanned-document counterpart to :func:`extract_fields_directly` -- for a
+    document that needed OCR (see :class:`~threetears.scrape.drivers.multi_document.
+    MultiDocumentDriver`'s own ``data-was-ocr`` convention and :func:`split_notice_documents`),
+    reading the ORIGINAL page images directly full-set live-verified dramatically more
+    reliable than the OCR'd-text path (scrape-task-06: 10/10 complete records via vision
+    vs. 2/10 via OCR'd text across all of a real target's documents) -- OCR can drop or
+    garble a narrow numeric table column a vision model reads correctly by seeing the
+    actual page layout, and can recover none of a genuinely-redacted value either (a
+    real, confirmed finding, not a gap this function claims to close).
+
+    :param images: one or more PNG-encoded page images of the SAME document, in page order
+    :ptype images: list[bytes]
+    :param schema: field_name -> expected Python type
+    :ptype schema: FieldSchema
+    :param model_id: the vision-capable model to invoke
+    :ptype model_id: str
+    :param provider: explicit provider override forwarded to ``create_chat_model``
+        (see :data:`_VISION_PROVIDER`'s own comment for why this is needed)
+    :ptype provider: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number)
+    :ptype backoff_seconds: float
+    :return: field_name -> coerced value, same partial-result contract as
+        :func:`extract_fields_directly`; ``None`` when *images* is empty or every
+        attempt failed (never raises)
+    :rtype: dict[str, Any] | None
+    """
+    if not images:
+        return None
+
+    from langchain_core.messages import HumanMessage
+    from threetears.models import format_vision_content
+
+    content: list[Any] = []
+    for image_bytes in images:
+        content.extend(format_vision_content(image_bytes, "image/png", "")[:-1])
+    content.append({"type": "text", "text": _build_vision_extraction_prompt(schema)})
+
+    model_cls = _build_direct_extraction_model(schema)
+    result = await bounded_retry_structured_call(
+        [HumanMessage(content=content)],
+        model_cls,
+        model_id=model_id,
+        api_key=api_key,
+        provider=provider,
+        purpose=LlmPurpose.EXTRACTION,
+        temperature=0.1,
+        timeout=_VISION_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape vision per-document field extraction",
+        degraded_to="no extraction",
+        is_acceptable=_is_plausible_direct_extraction,
+    )
+    if result is None:
+        return None
+    return _coerce_direct_extraction_result(result, schema)

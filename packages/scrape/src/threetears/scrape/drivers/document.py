@@ -19,19 +19,22 @@ HTTP GET of a static file, no browser, no JS, nothing to wait for or click.
 
 from __future__ import annotations
 
+import base64
 import html as html_lib
 import re
 import time
 from pathlib import PurePosixPath
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 import httpx
-from threetears.agent.tools.document import OcrConfig, detect_mime_from_filename, parse_document
+from threetears.agent.tools.document import OcrConfig, detect_mime_from_filename, parse_document, render_pdf_pages_to_images
 from threetears.observe import get_logger
 
 from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..extraction import OCR_PAGE_IMAGE_CLASS
 
-__all__ = ["DocumentDriver", "DocumentDriverError"]
+__all__ = ["DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
 
 #: Same fix, same reason as ApiDriver's own _DEFAULT_USER_AGENT (Michigan's Sitecore
 #: XA API, 2026-07-14): live-found across multiple state WARN-notice document hosts
@@ -67,6 +70,76 @@ class DocumentDriverError(Exception):
         self.code = code
         self.message = message
         super().__init__(f"{code}: {message}")
+
+
+class ParsedDocumentHtml(NamedTuple):
+    """Return shape of :func:`parse_document_bytes_to_html`."""
+
+    html: str
+    was_ocr: bool
+
+
+def _embed_ocr_page_images(pdf_data: bytes) -> str:
+    """Render *pdf_data*'s leading pages and embed each as a base64 ``<img>`` tag.
+
+    scrape-task-06: OCR'd text alone has proven unreliable for some real scanned
+    WARN Act notices (a numeric table column either dropped by Tesseract's own
+    layout analysis or genuinely too scan-degraded to recover -- see
+    scrape-task-05's own findings). Embedding the rendered page images directly in
+    the returned HTML -- reusing the SAME html-as-transport-channel
+    :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
+    uses to combine documents -- lets a vision-capable extraction path read them
+    later, without a second network fetch and without widening ``RenderedPage``
+    beyond the one ``was_ocr`` flag. A no-op (returns ``""``) if page rendering
+    itself fails; the plain OCR'd text this gets appended to is still usable on
+    its own, so a rendering failure here must never fail the whole parse.
+    """
+    images = render_pdf_pages_to_images(pdf_data)
+    tags = [
+        f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="{i}" '
+        f'src="data:image/png;base64,{base64.b64encode(image).decode("ascii")}">'
+        for i, image in enumerate(images)
+    ]
+    return "\n".join(tags)
+
+
+async def parse_document_bytes_to_html(
+    data: bytes, *, content_type: str, filename: str, ocr_config: OcrConfig | None = None
+) -> ParsedDocumentHtml:
+    """Parse raw document bytes into synthetic HTML -- the shared core of ``DocumentDriver``.
+
+    Extracted (scrape-task-04, 2026-07-15) so :class:`~threetears.scrape.drivers.
+    nodriver_download.NodriverDownloadDriver` -- which gets document bytes from a
+    real browser's forced download rather than a plain HTTP GET -- reuses this
+    exact parse-and-convert step instead of a second copy of it. ``DocumentDriver.
+    render`` itself now just fetches bytes and delegates here.
+
+    :param data: the document's raw bytes
+    :ptype data: bytes
+    :param content_type: the source's declared content-type (``parse_document``
+        falls back to filename-extension detection itself when this isn't one
+        it recognizes -- passing it verbatim, even empty, is enough)
+    :ptype content_type: str
+    :param filename: the document's filename (drives extension-based MIME fallback)
+    :ptype filename: str
+    :param ocr_config: OCR fallback config for scanned PDF pages, passed
+        straight through to ``parse_document``
+    :ptype ocr_config: OcrConfig | None
+    :return: synthetic ``<html><body>...</body></html>`` content plus whether OCR
+        was needed (scrape-task-06: when ``True``, the leading pages' own rendered
+        images are ALSO embedded as base64 ``<img>`` tags inside that same HTML,
+        for a vision-based extraction path to use)
+    :rtype: ParsedDocumentHtml
+    :raises DocumentDriverError: the parser couldn't handle this document
+    """
+    mime_type = content_type or (detect_mime_from_filename(filename) or "")
+    result = await parse_document(data, mime_type, filename, ocr_config=ocr_config)
+    if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
+        raise DocumentDriverError("parse_failed", result.text)
+    html = document_text_to_html(result.text)
+    if result.was_ocr:
+        html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")
+    return ParsedDocumentHtml(html=html, was_ocr=result.was_ocr)
 
 
 def _merge_broken_pipe_rows(lines: list[str]) -> list[str]:
@@ -199,6 +272,7 @@ class DocumentDriver(ScrapeDriver):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Fetch and parse the document at *url*.
 
@@ -221,6 +295,9 @@ class DocumentDriver(ScrapeDriver):
         :param fragment_field: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.api.ApiDriver` uses it)
         :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
+        :ptype link_selector: str | None
         :return: the parsed document's content as synthetic HTML
         :rtype: RenderedPage
         :raises DocumentDriverError: on a transport failure, a non-2xx HTTP
@@ -248,21 +325,13 @@ class DocumentDriver(ScrapeDriver):
 
         filename = PurePosixPath(urlparse(str(response.url)).path).name or "document"
         content_type = response.headers.get("content-type", "").split(";")[0].strip()
-        # parse_document falls back to filename-extension detection itself
-        # when the given mime_type isn't one it recognizes (its own
-        # documented behavior) -- passing the server's declared content-type
-        # verbatim, even a generic one, is enough; no need to duplicate that
-        # fallback logic here.
-        mime_type = content_type or (detect_mime_from_filename(filename) or "")
-
-        result = await parse_document(response.content, mime_type, filename, ocr_config=self._ocr_config)
-        if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
-            raise DocumentDriverError("parse_failed", result.text)
-
-        html = document_text_to_html(result.text)
+        parsed = await parse_document_bytes_to_html(
+            response.content, content_type=content_type, filename=filename, ocr_config=self._ocr_config
+        )
         return RenderedPage(
-            html=html,
+            html=parsed.html,
             status=response.status_code,
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            was_ocr=parsed.was_ocr,
         )

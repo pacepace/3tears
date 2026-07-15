@@ -37,6 +37,7 @@ __all__ = [
     "create_parse_document_tool",
     "detect_mime_from_filename",
     "parse_document",
+    "render_pdf_pages_to_images",
 ]
 
 log = get_logger(__name__)
@@ -51,6 +52,21 @@ class OcrConfig:
 
     enabled: bool = False
     language: str = "eng"
+    #: Tesseract Page Segmentation Mode. Default 4 ("assume a single column of
+    #: text of variable sizes") -- live-researched and tested (scrape-task-05,
+    #: 2026-07-15): PSM 3 (Tesseract's own upstream default, "fully automatic
+    #: page segmentation") can misclassify a narrow, sparse column (e.g. a
+    #: numeric "Number of Employees" column beside a "Job Title" column) as
+    #: non-text and drop it entirely -- a documented PSM-3 failure mode, not
+    #: ordinary misrecognition. PSM 4 is the commonly-recommended mode for
+    #: exactly this "OCR column/table data" shape and is this module's own
+    #: default for that reason, but it explicitly assumes single-column text --
+    #: a real risk for a genuinely multi-column document (a form, a
+    #: side-by-side layout) parsed by some OTHER caller of this shared,
+    #: general-purpose tool. Override per call (e.g. ``psm=3`` or ``psm=6``)
+    #: rather than living with one target's own evidence as an unconditional
+    #: global default.
+    psm: int = 4
 
 
 @dataclass
@@ -181,7 +197,7 @@ def _parse_pdf(
 
                 # OCR fallback for pages with very little text
                 if len(text.strip()) < 50 and ocr.enabled:
-                    ocr_text = _ocr_page(data, page_num, ocr.language)
+                    ocr_text = _ocr_page(data, page_num, ocr.language, ocr.psm)
                     if ocr_text:
                         text = ocr_text
                         was_ocr = True
@@ -350,8 +366,15 @@ def _extract_pdf_headings(
         return []
 
 
-def _ocr_page(pdf_data: bytes, page_num: int, language: str) -> str | None:
-    """OCR a single PDF page using pytesseract + pdf2image."""
+def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | None:
+    """OCR a single PDF page using pytesseract + pdf2image.
+
+    :param psm: Tesseract Page Segmentation Mode -- see :attr:`OcrConfig.psm`'s
+        own docstring for why this is caller-configurable, not a hardcoded
+        module constant (one target's own evidence for PSM 4 shouldn't become
+        an unconditional default for every consumer of this shared tool).
+    :ptype psm: int
+    """
     try:
         from pdf2image import convert_from_bytes
         import pytesseract
@@ -365,7 +388,7 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str) -> str | None:
         if not images:
             return None
 
-        text = pytesseract.image_to_string(images[0], lang=language)
+        text = pytesseract.image_to_string(images[0], lang=language, config=f"--psm {psm}")
         return text.strip() if text.strip() else None
 
     except Exception as exc:
@@ -374,6 +397,53 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str) -> str | None:
             extra={"extra_data": {"page": page_num, "error": str(exc)}},
         )
         return None
+
+
+#: Default page cap for :func:`render_pdf_pages_to_images` -- a vision-capable model
+#: call bills/latency-scales per image, and a real WARN Act letter's substantive
+#: content (the letter body + any table) live in the first few pages; later pages are
+#: typically signatures/boilerplate/cc lists. Not a hard technical limit, a cost bound
+#: -- revisit if a real target's own data lives deeper than this.
+_DEFAULT_MAX_VISION_PAGES = 3
+
+
+def render_pdf_pages_to_images(pdf_data: bytes, *, dpi: int = 150, max_pages: int = _DEFAULT_MAX_VISION_PAGES) -> list[bytes]:
+    """Render a PDF's first *max_pages* pages to PNG image bytes, one per page.
+
+    Shared by :mod:`threetears.scrape.drivers.document`'s vision-extraction path
+    (scrape-task-06) -- reuses the exact ``pdf2image`` import already established
+    by :func:`_ocr_page`, rather than a second package taking on the same optional
+    ``ocr`` extra dependency.
+
+    :param pdf_data: raw PDF bytes
+    :ptype pdf_data: bytes
+    :param dpi: render resolution -- 150 balances legibility against image payload
+        size for a vision model call (300, ``_ocr_page``'s own DPI, is Tesseract's
+        own sharper-is-better preference; a vision model reasons over the whole
+        image holistically and doesn't need that much, live-verified sufficient)
+    :ptype dpi: int
+    :param max_pages: cap on how many leading pages to render
+    :ptype max_pages: int
+    :return: one PNG-encoded image per rendered page, in page order; empty list on
+        any failure (never raises -- mirrors ``_ocr_page``'s own honest-empty contract)
+    :rtype: list[bytes]
+    """
+    try:
+        import io
+
+        from pdf2image import convert_from_bytes
+
+        images = convert_from_bytes(pdf_data, dpi=dpi, first_page=1, last_page=max_pages)
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-empty contract, mirrors _ocr_page's own: a rendering failure must never crash the caller, only degrade to "no images"
+        log.warning("PDF page image rendering failed", extra={"extra_data": {"error": str(exc)}})
+        return []
+
+    encoded: list[bytes] = []
+    for image in images:
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        encoded.append(buf.getvalue())
+    return encoded
 
 
 # -- DOCX parser --------------------------------------------------------------

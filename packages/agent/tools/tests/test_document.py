@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import sys
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -11,9 +13,11 @@ from threetears.agent.tools.document import (
     DocumentResult,
     OcrConfig,
     ParseDocumentInput,
+    _ocr_page,
     create_parse_document_tool,
     detect_mime_from_filename,
     parse_document,
+    render_pdf_pages_to_images,
 )
 
 
@@ -25,11 +29,141 @@ class TestOcrConfig:
         cfg = OcrConfig()
         assert cfg.enabled is False
         assert cfg.language == "eng"
+        assert cfg.psm == 4
 
     def test_custom(self):
-        cfg = OcrConfig(enabled=True, language="deu")
+        cfg = OcrConfig(enabled=True, language="deu", psm=3)
         assert cfg.enabled is True
         assert cfg.language == "deu"
+        assert cfg.psm == 3
+
+
+# -- _ocr_page -----------------------------------------------------------------
+# pytesseract/pdf2image are lazily imported inside _ocr_page (an optional "ocr"
+# extra, not installed in this package's own default test env) -- fake modules
+# injected via sys.modules so this test runs regardless of whether the real
+# packages happen to be installed, matching how the function itself resolves them.
+
+
+class TestOcrPage:
+    def test_passes_the_given_psm_to_pytesseract(self, monkeypatch):
+        """scrape-task-06, 2026-07-16: psm is caller-configurable (OcrConfig.psm),
+        not a hardcoded module constant -- one target's own PSM 4 evidence
+        (scrape-task-05: PSM 3 can drop a narrow numeric table column entirely,
+        a documented failure mode distinct from misrecognition) shouldn't become
+        an unconditional default for every consumer of this shared tool. This
+        test only proves the config string reaches pytesseract's own call, not
+        OCR accuracy itself (that needs the real Tesseract binary, proven
+        separately against real live documents)."""
+        captured: dict[str, Any] = {}
+
+        fake_pdf2image = ModuleType("pdf2image")
+        fake_pdf2image.convert_from_bytes = lambda *a, **kw: ["fake-image"]  # type: ignore[attr-defined]
+
+        fake_pytesseract = ModuleType("pytesseract")
+
+        def fake_image_to_string(image, lang=None, config=None):
+            captured["image"] = image
+            captured["lang"] = lang
+            captured["config"] = config
+            return "extracted text"
+
+        fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
+
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+
+        result = _ocr_page(b"fake-pdf-bytes", page_num=0, language="eng", psm=4)
+
+        assert result == "extracted text"
+        assert captured["config"] == "--psm 4"
+        assert captured["lang"] == "eng"
+
+    def test_a_different_psm_is_passed_through_unchanged(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        fake_pdf2image = ModuleType("pdf2image")
+        fake_pdf2image.convert_from_bytes = lambda *a, **kw: ["fake-image"]  # type: ignore[attr-defined]
+
+        fake_pytesseract = ModuleType("pytesseract")
+
+        def fake_image_to_string(image, lang=None, config=None):
+            captured["config"] = config
+            return "extracted text"
+
+        fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
+
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+
+        _ocr_page(b"fake-pdf-bytes", page_num=0, language="eng", psm=3)
+
+        assert captured["config"] == "--psm 3"
+
+
+# -- render_pdf_pages_to_images -------------------------------------------------
+# Same lazy-import-fake pattern as TestOcrPage -- pdf2image is an optional "ocr"
+# extra, not installed in this package's own default test env.
+
+
+class _FakePILImage:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def save(self, buf, format=None):  # noqa: A002 -- matches PIL.Image.save's own kwarg name
+        buf.write(f"png-bytes-for-{self.label}".encode())
+
+
+class TestRenderPdfPagesToImages:
+    def test_encodes_each_page_as_png_bytes(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        fake_pdf2image = ModuleType("pdf2image")
+
+        def fake_convert_from_bytes(pdf_data, *, dpi=None, first_page=None, last_page=None):
+            captured["dpi"] = dpi
+            captured["first_page"] = first_page
+            captured["last_page"] = last_page
+            return [_FakePILImage("page0"), _FakePILImage("page1")]
+
+        fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+
+        result = render_pdf_pages_to_images(b"fake-pdf-bytes", dpi=150, max_pages=3)
+
+        assert result == [b"png-bytes-for-page0", b"png-bytes-for-page1"]
+        assert captured["dpi"] == 150
+        assert captured["first_page"] == 1
+        assert captured["last_page"] == 3
+
+    def test_render_failure_returns_empty_list_not_a_crash(self, monkeypatch):
+        fake_pdf2image = ModuleType("pdf2image")
+
+        def fake_convert_from_bytes(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+
+        result = render_pdf_pages_to_images(b"fake-pdf-bytes")
+
+        assert result == []
+
+    def test_default_max_pages_is_three(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        fake_pdf2image = ModuleType("pdf2image")
+
+        def fake_convert_from_bytes(pdf_data, *, dpi=None, first_page=None, last_page=None):
+            captured["last_page"] = last_page
+            return []
+
+        fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+
+        render_pdf_pages_to_images(b"fake-pdf-bytes")
+
+        assert captured["last_page"] == 3
 
 
 # -- detect_mime_from_filename ------------------------------------------------

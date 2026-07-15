@@ -103,6 +103,7 @@ class CamoufoxDriver(ScrapeDriver):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Render *url* through a fresh, in-process Camoufox page.
 
@@ -127,6 +128,9 @@ class CamoufoxDriver(ScrapeDriver):
         :param fragment_field: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.api.ApiDriver` uses it)
         :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
+        :ptype link_selector: str | None
         :return: the rendered page's HTML, status, final URL, timing, and
             (if requested) captured network calls
         :rtype: RenderedPage

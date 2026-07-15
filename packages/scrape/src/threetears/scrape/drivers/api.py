@@ -176,6 +176,7 @@ class ApiDriver(ScrapeDriver):
         nav_steps: list[NavStep] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
+        link_selector: str | None = None,
     ) -> RenderedPage:
         """Fetch *url*'s JSON response and concatenate per-record fragments into synthetic HTML.
 
@@ -199,6 +200,9 @@ class ApiDriver(ScrapeDriver):
             own keys become a synthetic
             ``<table>`` row instead -- see this module's own docstring)
         :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
+        :ptype link_selector: str | None
         :return: the concatenated fragments, or the synthetic table (structured mode), as HTML
         :rtype: RenderedPage
         :raises ApiDriverError: on a transport failure, a non-2xx HTTP

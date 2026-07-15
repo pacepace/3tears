@@ -14,8 +14,12 @@ matching the product brief's rationale for choosing nodriver first).
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
+import shutil
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from typing import Any, NamedTuple
@@ -30,6 +34,39 @@ log = logging.getLogger("nodriver_sidecar")
 logging.basicConfig(level=logging.INFO)
 
 CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
+
+# Browser-forced-download capability (scrape-task-04, 2026-07-15): a fixed profile
+# directory (rather than nodriver's own auto-generated temp one) so the Preferences
+# file below is written before uc.start() launches Chromium and reliably applies to
+# the ONE persistent browser instance this process runs for its whole lifetime.
+_USER_DATA_DIR = "/tmp/nodriver-sidecar-profile"
+
+# Live-verified (2026-07-15, real West Virginia Cloudflare-protected PDF): Chrome's
+# own built-in PDF viewer intercepts a direct navigation to a PDF response BEFORE
+# Browser.setDownloadBehavior's "allow" has any effect, unless this preference is
+# set -- and it must be written into the profile's Preferences file before Chromium
+# starts; a CLI flag (--disable-extensions) does NOT touch it, since the built-in
+# PDF viewer is a Chrome component, not a regular extension. Only affects a direct
+# navigation TO a PDF response -- confirmed live this does not affect normal HTML
+# page rendering (a page that merely links to a PDF triggers nothing).
+_CHROME_PREFERENCES = {"plugins": {"always_open_pdf_externally": True}}
+
+# Download polling (mirrors _render's own settle-wait shape): Chrome writes a
+# ".crdownload" extension while a download is still in progress -- only a file
+# WITHOUT that suffix is complete. Bounded by the caller's own request timeout,
+# not a separate constant, matching /v1/render's own timeout-is-the-caller's-budget
+# contract.
+_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
+
+# Target-list propagation race (live-reproduced, 2026-07-15): browser.create_context()'s
+# own internal target lookup (a single 0.5s sleep then one `self.targets` check) is
+# NOT reliably enough time for a freshly created target to appear -- reproduced live,
+# StopIteration inside nodriver's own create_context. Bounded retry with an explicit
+# browser.update_targets() call each attempt, the same "retry the whole find-then-act
+# sequence from scratch" shape _select_with_retry already established for a different
+# CDP timing race in this same file.
+_TAB_LOOKUP_ATTEMPTS = 10
+_TAB_LOOKUP_DELAY_SECONDS = 0.2
 
 # Network-capture bounds (2026-07-14, network/API-detection capability): a
 # page can fire dozens of XHR/fetch calls -- capped so one render can't blow
@@ -112,6 +149,23 @@ class RenderResponse(BaseModel):
     final_url: str
     timing_ms: float
     network_calls: list[NetworkCall] = []
+
+
+class DownloadRequest(BaseModel):
+    """Browser-forced-download capability (scrape-task-04, 2026-07-15) -- a distinct
+    contract from RenderRequest/RenderResponse, not another optional field bolted onto
+    them: the response shape is fundamentally different (raw file bytes, not HTML)."""
+
+    url: str
+    timeout: float = 30.0
+
+
+class DownloadResponse(BaseModel):
+    status: int
+    filename: str
+    content_type: str
+    content_base64: str
+    timing_ms: float
 
 
 def _is_main_frame_document(event: uc.cdp.network.ResponseReceived, main_frame_id: str) -> bool:
@@ -398,6 +452,107 @@ async def _render(
     return _RenderResult(html=html, final_url=final_url, status=status, network_calls=network_calls)
 
 
+class DownloadError(Exception):
+    """Raised when a forced download never completes (mirrors NavStepError's role for /v1/render).
+
+    Caught by the ``/v1/download`` endpoint and reported as ``download_timeout`` (504).
+    """
+
+
+class _DownloadResult(NamedTuple):
+    status: int
+    filename: str
+    content_type: str
+    data: bytes
+
+
+async def _create_isolated_tab(browser: Any, url: str) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
+    """Create a fresh, isolated browser context + one tab within it, navigated to *url*.
+
+    Live-reproduced (2026-07-15): ``browser.create_context()``'s own internal
+    target lookup (one 0.5s sleep, one ``self.targets`` check) is not
+    reliably enough time for a freshly created target to appear --
+    ``StopIteration`` inside nodriver's own implementation. Reimplemented
+    here with the same bounded-retry-with-explicit-refresh shape
+    ``_select_with_retry`` already established for a different CDP timing
+    race in this file, rather than trusting the library's own single-shot
+    lookup.
+
+    :return: the new tab, and its isolated browser context's id (needed by
+        the caller to scope ``Browser.setDownloadBehavior`` and to dispose
+        the context afterward)
+    :rtype: tuple[Any, uc.cdp.browser.BrowserContextID]
+    :raises RuntimeError: the created target never appeared in ``browser.targets``
+    """
+    context_id = await browser.send(uc.cdp.target.create_browser_context())
+    target_id = await browser.send(uc.cdp.target.create_target(url, browser_context_id=context_id, new_window=True))
+    for attempt in range(_TAB_LOOKUP_ATTEMPTS):
+        await browser.update_targets()
+        tab = next((t for t in browser.targets if t.target.target_id == target_id), None)
+        if tab is not None:
+            return tab, context_id
+        if attempt < _TAB_LOOKUP_ATTEMPTS - 1:
+            await asyncio.sleep(_TAB_LOOKUP_DELAY_SECONDS)
+    raise RuntimeError(f"tab for target {target_id} never appeared in browser.targets")
+
+
+async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
+    """Navigate to *url* in an isolated browser context with forced-download behavior,
+    and return the downloaded file's own bytes.
+
+    Live-verified (2026-07-15, real West Virginia Cloudflare-protected PDF): a
+    genuine browser session passes a real Cloudflare managed challenge on its
+    own (no active challenge-solving involved) -- the only reason this needs
+    to exist at all is that Chrome's built-in PDF viewer intercepts the
+    navigation before any bytes are otherwise reachable, which
+    ``_CHROME_PREFERENCES``' ``always_open_pdf_externally`` setting plus
+    ``Browser.setDownloadBehavior`` fixes.
+
+    Isolated context per call (not the shared/default one): concurrent
+    ``/v1/download`` requests must never race each other's download
+    directories -- live-verified with two real concurrent downloads into two
+    separate directories, zero cross-contamination.
+
+    :param url: the document URL to download
+    :ptype url: str
+    :param timeout: seconds to wait for the download to complete
+    :ptype timeout: float
+    :raises DownloadError: no file appeared in the download directory within *timeout*
+    """
+    download_dir = tempfile.mkdtemp(prefix="nodriver-download-")
+    tab, context_id = await _create_isolated_tab(_browser, "about:blank")
+    try:
+        await _browser.send(
+            uc.cdp.browser.set_download_behavior(behavior="allow", browser_context_id=context_id, download_path=download_dir)
+        )
+        await tab.send(uc.cdp.page.navigate(url))
+        deadline = time.monotonic() + timeout
+        downloaded_path: str | None = None
+        while time.monotonic() < deadline:
+            # A ".crdownload" suffix means Chrome is still writing the file --
+            # only a file WITHOUT it is complete (mirrors _render's own
+            # settle-wait shape: poll, don't assume one wait is enough).
+            complete = [f for f in os.listdir(download_dir) if not f.endswith(".crdownload")]
+            if complete:
+                downloaded_path = os.path.join(download_dir, complete[0])
+                break
+            await asyncio.sleep(_DOWNLOAD_POLL_INTERVAL_SECONDS)
+        if downloaded_path is None:
+            raise DownloadError(f"no download completed for {url} within {timeout}s")
+        with open(downloaded_path, "rb") as f:
+            data = f.read()
+        filename = os.path.basename(downloaded_path)
+        content_type = "application/pdf" if filename.lower().endswith(".pdf") else "application/octet-stream"
+        return _DownloadResult(status=200, filename=filename, content_type=content_type, data=data)
+    finally:
+        await tab.close()
+        try:
+            await _browser.send(uc.cdp.target.dispose_browser_context(context_id))
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- context disposal is best-effort cleanup, must never mask the real download outcome above
+            log.debug("download: browser context disposal failed: %s", exc)
+        shutil.rmtree(download_dir, ignore_errors=True)
+
+
 async def _warm_up() -> None:
     """Render one real page before declaring the sidecar ready.
 
@@ -433,9 +588,19 @@ async def _warm_up() -> None:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _browser
+    # Pinned user_data_dir (not nodriver's own auto-generated temp one) so this
+    # Preferences file is guaranteed to be the ONE the persistent browser instance
+    # below actually reads -- see _CHROME_PREFERENCES' own comment for why this is
+    # needed at all (forced-download capability, scrape-task-04).
+    profile_default_dir = os.path.join(_USER_DATA_DIR, "Default")
+    os.makedirs(profile_default_dir, exist_ok=True)
+    with open(os.path.join(profile_default_dir, "Preferences"), "w") as f:
+        json.dump(_CHROME_PREFERENCES, f)
+
     _browser = await uc.start(
         headless=False,
         browser_executable_path=CHROMIUM_PATH,
+        user_data_dir=_USER_DATA_DIR,
         # sandbox=False is nodriver's own recognized kwarg for "running as
         # root" (the container has no non-root USER); passing --no-sandbox
         # only via browser_args is not sufficient -- nodriver's own
@@ -487,6 +652,33 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         final_url=result.final_url,
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
+    )
+
+
+@app.post("/v1/download", response_model=DownloadResponse)
+async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
+    """Download *req.url*'s real file bytes through a real browser session with forced-download
+    behavior, per scrape-api-contract.md's ``POST /v1/download`` contract (scrape-task-04)."""
+    if _browser is None:
+        return JSONResponse(status_code=503, content={"error": {"code": "not_ready", "message": "browser not started"}})
+
+    start = time.monotonic()
+    try:
+        result = await asyncio.wait_for(_download(req.url, timeout=req.timeout), timeout=req.timeout)
+    except (TimeoutError, DownloadError) as exc:
+        return JSONResponse(
+            status_code=504, content={"error": {"code": "download_timeout", "message": str(exc) or f"download timed out after {req.timeout}s"}}
+        )
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- driver crash surface must not take the sidecar process down; reported to the caller, never swallowed
+        return JSONResponse(status_code=502, content={"error": {"code": "driver_crash", "message": str(exc)}})
+
+    timing_ms = (time.monotonic() - start) * 1000
+    return DownloadResponse(
+        status=result.status,
+        filename=result.filename,
+        content_type=result.content_type,
+        content_base64=base64.b64encode(result.data).decode("ascii"),
+        timing_ms=timing_ms,
     )
 
 
