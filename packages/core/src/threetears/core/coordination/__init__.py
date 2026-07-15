@@ -13,8 +13,19 @@ public surface:
 - :class:`ClaimResult` — outcome of :meth:`IdempotencyKeyStore.claim`
 - :class:`IdempotencyKeyNotFound` — raised by complete()/fail() on an unclaimed key
 - :class:`IdempotencyConflict` — raised when a complete()/fail() CAS retry budget is exhausted
+- :class:`TokenBucket` — distributed token-bucket rate limiter
+- :class:`TokenClaimResult` — outcome of :meth:`TokenBucket.claim`
+- :class:`TokenBucketConflict` — raised when a claim()'s CAS retry budget is exhausted
+- :class:`DistributedCounter` — atomic increment/decrement counter, for fixed-window
+  rate limiting and concurrent-in-flight tracking
+- :class:`DistributedCounterConflict` — raised when an increment()/decrement()'s CAS
+  retry budget is exhausted
 """
 
+from threetears.core.coordination.distributed_counter import (
+    DistributedCounter,
+    DistributedCounterConflict,
+)
 from threetears.core.coordination.idempotency import (
     ClaimResult,
     IdempotencyConflict,
@@ -30,9 +41,16 @@ from threetears.core.coordination.lease import (
     LeaseUnavailable,
 )
 from threetears.core.coordination.replay_guard import ReplayGuard
+from threetears.core.coordination.token_bucket import (
+    TokenBucket,
+    TokenBucketConflict,
+    TokenClaimResult,
+)
 
 __all__ = [
     "ClaimResult",
+    "DistributedCounter",
+    "DistributedCounterConflict",
     "IdempotencyConflict",
     "IdempotencyKeyNotFound",
     "IdempotencyKeyStore",
@@ -43,4 +61,7 @@ __all__ = [
     "LeaseTimeout",
     "LeaseUnavailable",
     "ReplayGuard",
+    "TokenBucket",
+    "TokenBucketConflict",
+    "TokenClaimResult",
 ]
