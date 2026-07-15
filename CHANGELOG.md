@@ -4,6 +4,25 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.16.1 -- 2026-07-15
+
+**Real token-level streaming for the Claude Max subscription backend.** `ClaudeCodeChatModel._astream`
+(`langchain-claude-code` 0.1.0) requests `include_partial_messages=True` from the Claude Agent SDK --
+which makes the subprocess emit granular `StreamEvent` text deltas -- but the method only ever
+consumed the terminal, whole-block `AssistantMessage`, silently dropping every delta. A subscription
+turn arrived as one or two large lumps instead of a real token stream.
+
+- **`_SubscriptionChatModel._astream`** (`_claude_cli.py`, alongside the existing `_build_options` /
+  `_wrap_langchain_tool` overrides for other upstream gaps in this same package) now consumes
+  `StreamEvent` text deltas and yields each one immediately as it arrives, tracked per content-block
+  index so the terminal `AssistantMessage` never re-yields (and thereby doubles) text a delta already
+  streamed. A block that produces no `StreamEvent` at all (older CLI build, future SDK regression)
+  still gets its text emitted whole from the `AssistantMessage` -- strictly additive, never worse than
+  before.
+- Verified against a real Claude Max subscription session: a response streamed in 13 chunks over
+  ~10.6s (visible incremental delivery), versus 1-2 chunks arriving all at once under the prior
+  behavior.
+
 ## v0.14.1 -- 2026-07-06
 
 **Refreshing NATS connect credentials + per-key tool-pod identity.** A connection's auth
