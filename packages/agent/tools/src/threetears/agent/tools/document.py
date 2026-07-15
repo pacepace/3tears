@@ -1,6 +1,6 @@
 """Document reader -- parse documents into clean markdown.
 
-Supports PDF, DOCX, XLSX, TXT, Markdown, and LaTeX formats.
+Supports PDF, DOCX, XLSX, CSV, TXT, Markdown, and LaTeX formats.
 Single entry point ``parse_document()`` dispatches by MIME type.
 All sync parsers run via ``asyncio.to_thread()`` for non-blocking I/O.
 
@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
+import io
 import mimetypes
 import re
 from dataclasses import dataclass, field
@@ -80,6 +82,7 @@ _MIME_PARSERS: dict[str, str] = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "text/csv": "csv",
     "text/plain": "txt",
     "text/markdown": "markdown",
     "application/x-tex": "latex",
@@ -94,6 +97,7 @@ def detect_mime_from_filename(filename: str) -> str | None:
         "pdf": "application/pdf",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "csv": "text/csv",
         "txt": "text/plain",
         "md": "text/markdown",
         "tex": "application/x-tex",
@@ -135,6 +139,7 @@ async def parse_document(
         "pdf": _parse_pdf,
         "docx": _parse_docx,
         "xlsx": _parse_xlsx,
+        "csv": _parse_csv,
         "txt": _parse_txt,
         "markdown": _parse_markdown,
         "latex": _parse_latex,
@@ -614,6 +619,87 @@ def _parse_xlsx(
         )
 
 
+# -- CSV parser ---------------------------------------------------------------
+
+
+def _parse_csv(
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
+) -> DocumentResult:
+    """Parse CSV into a single markdown table using the stdlib ``csv`` module.
+
+    Already tabular -- unlike XLSX/DOCX, there's no source-format table
+    structure to walk, just rows to read (``csv.reader`` handles RFC 4180
+    quoting -- embedded commas/newlines inside quoted fields -- correctly,
+    unlike a naive ``line.split(",")``). Mirrors ``_parse_xlsx``'s single-
+    table shape: first non-empty row is the header, every row after is
+    padded/trimmed to the header's width so a ragged CSV still produces a
+    well-formed table.
+    """
+    try:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+
+        all_rows: list[list[str]] = []
+        for row in csv.reader(io.StringIO(text)):
+            if any(cell.strip() for cell in row):
+                all_rows.append(row)
+
+        if not all_rows:
+            return DocumentResult(
+                text="(empty file)",
+                title=filename,
+                page_count=None,
+                word_count=0,
+                was_ocr=False,
+            )
+
+        header = all_rows[0]
+        header_line = "| " + " | ".join(header) + " |"
+        sep_line = "| " + " | ".join("---" for _ in header) + " |"
+        body_lines = []
+        for row in all_rows[1:]:
+            padded = row + [""] * (len(header) - len(row))
+            body_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+
+        full_text = "\n".join([header_line, sep_line] + body_lines)
+        word_count = len(full_text.split())
+
+        sections = [
+            DocumentSection(
+                heading=None,
+                content=full_text,
+                page_number=None,
+                level=0,
+            )
+        ]
+
+        return DocumentResult(
+            text=full_text,
+            title=filename,
+            page_count=None,
+            word_count=word_count,
+            was_ocr=False,
+            sections=sections,
+        )
+
+    except Exception as exc:
+        log.error(
+            "CSV parsing failed",
+            extra={"extra_data": {"error": str(exc)}},
+        )
+        return DocumentResult(
+            text=f"[Parsing failed: {exc}]",
+            title=filename,
+            page_count=None,
+            word_count=0,
+            was_ocr=False,
+        )
+
+
 # -- TXT parser ---------------------------------------------------------------
 
 
@@ -912,7 +998,7 @@ def create_parse_document_tool(
             return _tool_error(
                 "parse_document",
                 "detect format",
-                f"Cannot determine format from filename '{filename}'. Supported: .pdf, .docx, .xlsx, .txt, .md, .tex",
+                f"Cannot determine format from filename '{filename}'. Supported: .pdf, .docx, .xlsx, .csv, .txt, .md, .tex",
             )
 
         try:
@@ -945,7 +1031,7 @@ def create_parse_document_tool(
 class ParseDocumentTool(TearsTool):
     """TearsTool wrapper for document parsing into clean markdown.
 
-    parses binary document content (PDF, DOCX, XLSX, TXT, Markdown,
+    parses binary document content (PDF, DOCX, XLSX, CSV, TXT, Markdown,
     LaTeX) into markdown text. accepts base64-encoded content and
     detects format from filename extension. optionally supports OCR
     for scanned PDF pages.

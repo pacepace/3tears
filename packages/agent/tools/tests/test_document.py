@@ -42,6 +42,7 @@ class TestDetectMime:
             ("report.pdf", "application/pdf"),
             ("doc.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
             ("data.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            ("data.csv", "text/csv"),
             ("notes.txt", "text/plain"),
             ("README.md", "text/markdown"),
             ("paper.tex", "application/x-tex"),
@@ -95,6 +96,71 @@ class TestParseText:
         md = b"**bold** and *italic*"
         result = await parse_document(md, "text/markdown")
         assert result.text == "**bold** and *italic*"
+
+
+class TestParseCsv:
+    async def test_basic_table(self):
+        data = b"Employer,County,Affected\nAcme Corp,Oakland,42\nWidgets Inc,Wayne,7\n"
+        result = await parse_document(data, "text/csv", "warn.csv")
+        assert isinstance(result, DocumentResult)
+        assert result.title == "warn.csv"
+        assert result.was_ocr is False
+        assert result.text == (
+            "| Employer | County | Affected |\n"
+            "| --- | --- | --- |\n"
+            "| Acme Corp | Oakland | 42 |\n"
+            "| Widgets Inc | Wayne | 7 |"
+        )
+        assert result.word_count > 0
+        assert len(result.sections) == 1
+
+    async def test_embedded_comma_in_quoted_field_is_not_split(self):
+        data = b'Employer,City\n"Acme, Corp",Oakland\n'
+        result = await parse_document(data, "text/csv")
+        assert "| Acme, Corp | Oakland |" in result.text
+
+    async def test_embedded_newline_in_quoted_field_stays_one_row(self):
+        data = b'Employer,Notes\n"Acme Corp","line one\nline two"\n'
+        result = await parse_document(data, "text/csv")
+        assert "line one\nline two" in result.text
+        # exactly one data row -- the embedded newline must not have been
+        # mistaken for a new CSV row
+        assert result.text.count("| Acme Corp") == 1
+        assert result.text.count("| --- | --- |") == 1
+
+    async def test_ragged_short_row_is_padded(self):
+        data = b"A,B,C\n1,2,3\n4,5\n"
+        result = await parse_document(data, "text/csv")
+        assert "| 4 | 5 |  |" in result.text
+
+    async def test_ragged_long_row_is_trimmed(self):
+        data = b"A,B\n1,2,3,4\n"
+        result = await parse_document(data, "text/csv")
+        assert "| 1 | 2 |" in result.text
+        assert "3" not in result.text
+
+    async def test_blank_rows_are_skipped(self):
+        data = b"A,B\n1,2\n,\n3,4\n"
+        result = await parse_document(data, "text/csv")
+        assert result.text.count("\n") == 3  # header + sep + 2 real data rows
+
+    async def test_empty_file(self):
+        result = await parse_document(b"", "text/csv", "empty.csv")
+        assert result.text == "(empty file)"
+        assert result.word_count == 0
+
+    async def test_latin1_fallback(self):
+        data = "Employer,City\ncafé résumé,Oakland\n".encode("latin-1")
+        result = await parse_document(data, "text/csv")
+        assert "café résumé" in result.text
+
+    async def test_no_filename_still_parses(self):
+        # Google Sheets' CSV export URL has no .csv extension -- content-type
+        # alone (already resolved to "text/csv" by the caller) must be enough.
+        data = b"A,B\n1,2\n"
+        result = await parse_document(data, "text/csv")
+        assert "| 1 | 2 |" in result.text
+        assert result.title is None
 
 
 class TestParseLaTeX:
@@ -152,6 +218,13 @@ class TestParseDocumentTool:
         content = base64.b64encode(b"Hello from tool test.").decode()
         result = await tool.ainvoke({"content_base64": content, "filename": "test.txt"})
         assert "Hello from tool test" in result
+        assert "Words:" in result
+
+    async def test_parse_csv_via_tool(self):
+        tool = self._create()
+        content = base64.b64encode(b"Employer,Count\nAcme Corp,42\n").decode()
+        result = await tool.ainvoke({"content_base64": content, "filename": "warn.csv"})
+        assert "| Acme Corp | 42 |" in result
         assert "Words:" in result
 
     async def test_invalid_base64(self):
