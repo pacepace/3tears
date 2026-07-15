@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-backup"
-version = "0.16.0"
+version = "0.16.1"
 description = "Encrypted, GFS-rotated database backups to any ObjectStore, with restore verification"
 readme = "README.md"
 requires-python = ">=3.14"
