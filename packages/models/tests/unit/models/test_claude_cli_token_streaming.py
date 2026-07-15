@@ -99,7 +99,8 @@ async def _collect_chunks(messages: list[Any]) -> list[Any]:
         chunks = [
             chunk
             async for chunk in model._astream(  # noqa: SLF001 -- the method under test
-                [HumanMessage(content="hi")], run_manager=None,
+                [HumanMessage(content="hi")],
+                run_manager=None,
             )
         ]
     return chunks
@@ -151,10 +152,12 @@ class TestTokenLevelStreaming:
         messages = [
             _text_delta_event(0, "First, streamed."),
             AssistantMessage(
-                content=[TextBlock(text="First, streamed.")], model=DEFAULT_CHAT_MODEL,
+                content=[TextBlock(text="First, streamed.")],
+                model=DEFAULT_CHAT_MODEL,
             ),
             AssistantMessage(
-                content=[TextBlock(text="Second, not streamed.")], model=DEFAULT_CHAT_MODEL,
+                content=[TextBlock(text="Second, not streamed.")],
+                model=DEFAULT_CHAT_MODEL,
             ),
             _result_message(),
         ]
