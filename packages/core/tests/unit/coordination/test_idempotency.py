@@ -87,6 +87,30 @@ class TestClaim:
         assert outcome.record.status == "completed"
         assert outcome.record.result == b"done"
 
+    @pytest.mark.asyncio
+    async def test_claim_stores_metadata(self, client: FakeNatsClient) -> None:
+        store = IdempotencyKeyStore(client, bucket_name="jobs")  # type: ignore[arg-type]
+        outcome = await store.claim("key-1", metadata=b"request-hash-abc")
+
+        assert outcome.record.metadata == b"request-hash-abc"
+
+    @pytest.mark.asyncio
+    async def test_claim_without_metadata_defaults_to_none(self, client: FakeNatsClient) -> None:
+        store = IdempotencyKeyStore(client, bucket_name="jobs")  # type: ignore[arg-type]
+        outcome = await store.claim("key-1")
+
+        assert outcome.record.metadata is None
+
+    @pytest.mark.asyncio
+    async def test_exists_outcome_returns_original_claimers_metadata(self, client: FakeNatsClient) -> None:
+        store = IdempotencyKeyStore(client, bucket_name="jobs")  # type: ignore[arg-type]
+        await store.claim("key-1", metadata=b"request-hash-abc")
+
+        outcome = await store.claim("key-1", metadata=b"different-hash")
+
+        assert outcome.status == "exists"
+        assert outcome.record.metadata == b"request-hash-abc"  # original claimer's, not the second caller's
+
 
 class TestComplete:
     @pytest.mark.asyncio
@@ -114,6 +138,17 @@ class TestComplete:
         record = await store.get("key-1")
         assert record is not None
         assert record.date_claimed == original_claimed
+
+    @pytest.mark.asyncio
+    async def test_complete_preserves_claim_time_metadata(self, client: FakeNatsClient) -> None:
+        store = IdempotencyKeyStore(client, bucket_name="jobs")  # type: ignore[arg-type]
+        await store.claim("key-1", metadata=b"request-hash-abc")
+
+        await store.complete("key-1", result=b"x")
+
+        record = await store.get("key-1")
+        assert record is not None
+        assert record.metadata == b"request-hash-abc"
 
     @pytest.mark.asyncio
     async def test_complete_unclaimed_key_raises(self, client: FakeNatsClient) -> None:

@@ -113,6 +113,11 @@ class IdempotencyRecord:
     :ptype result: bytes | None
     :param error: stored error message, present only when ``status == "failed"``
     :ptype error: str | None
+    :param metadata: opaque caller-supplied bytes attached at :meth:`IdempotencyKeyStore.claim`
+        time (e.g. a request-body hash for detecting the same key reused
+        for a different request), present for the record's whole
+        lifetime once claimed; ``None`` if the claimer supplied none
+    :ptype metadata: bytes | None
     :param date_claimed: timezone-aware datetime the key was first claimed
     :ptype date_claimed: datetime
     :param date_completed: timezone-aware datetime the key reached a terminal
@@ -124,6 +129,7 @@ class IdempotencyRecord:
     status: _Status
     result: bytes | None
     error: str | None
+    metadata: bytes | None
     date_claimed: datetime
     date_completed: datetime | None
 
@@ -161,6 +167,7 @@ def _encode_envelope(record: IdempotencyRecord) -> bytes:
         "status": record.status,
         "result": base64.b64encode(record.result).decode("ascii") if record.result is not None else None,
         "error": record.error,
+        "metadata": base64.b64encode(record.metadata).decode("ascii") if record.metadata is not None else None,
         "date_claimed": record.date_claimed.isoformat(),
         "date_completed": record.date_completed.isoformat() if record.date_completed is not None else None,
     }
@@ -178,11 +185,13 @@ def _decode_envelope(value: bytes) -> IdempotencyRecord:
     """
     raw = deserialize_from_json(value, field_types={})
     result_b64 = raw.get("result")
+    metadata_b64 = raw.get("metadata")
     return IdempotencyRecord(
         key=str(raw["key"]),
         status=raw["status"],
         result=base64.b64decode(result_b64) if result_b64 is not None else None,
         error=raw.get("error"),
+        metadata=base64.b64decode(metadata_b64) if metadata_b64 is not None else None,
         date_claimed=datetime.fromisoformat(str(raw["date_claimed"])),
         date_completed=datetime.fromisoformat(str(raw["date_completed"])) if raw.get("date_completed") else None,
     )
@@ -228,7 +237,7 @@ class IdempotencyKeyStore:
         """
         return self._bucket_name
 
-    async def claim(self, key: str) -> ClaimResult:
+    async def claim(self, key: str, *, metadata: bytes | None = None) -> ClaimResult:
         """atomically claim ``key``, or report the existing claim.
 
         backed by CAS create-if-absent, so the claimed/exists decision
@@ -236,6 +245,13 @@ class IdempotencyKeyStore:
 
         :param key: idempotency key to claim
         :ptype key: str
+        :param metadata: optional opaque bytes to attach at claim time
+            (e.g. a request-body hash so a caller receiving
+            ``status="exists"`` can detect the same key reused for a
+            different request) -- stored for the record's whole
+            lifetime, unlike ``result``/``error`` which only appear
+            after a terminal transition
+        :ptype metadata: bytes | None
         :return: claim outcome -- caller does the work only on ``"claimed"``
         :rtype: ClaimResult
         :raises threetears.nats.KvError: on a KV transport failure
@@ -243,7 +259,7 @@ class IdempotencyKeyStore:
         bucket = await self._ensure_bucket()
         now = datetime.now(UTC)
         fresh_record = IdempotencyRecord(
-            key=key, status="pending", result=None, error=None, date_claimed=now, date_completed=None
+            key=key, status="pending", result=None, error=None, metadata=metadata, date_claimed=now, date_completed=None
         )
         revision = await bucket.create(key=key, value=_encode_envelope(fresh_record))
         if revision is not None:
@@ -255,7 +271,7 @@ class IdempotencyKeyStore:
                 # other claimer's key expired via TTL in between) -- retry
                 # once, matching the "claim is atomic" contract rather than
                 # surfacing a transient inconsistency to the caller.
-                return await self.claim(key)
+                return await self.claim(key, metadata=metadata)
             existing_value, _ = entry
             result = ClaimResult(status="exists", record=_decode_envelope(existing_value))
         return result
@@ -332,6 +348,7 @@ class IdempotencyKeyStore:
                 status=status,
                 result=result,
                 error=error,
+                metadata=existing.metadata,  # preserve claim-time metadata through the terminal transition
                 date_claimed=existing.date_claimed,
                 date_completed=datetime.now(UTC),
             )
