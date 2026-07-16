@@ -126,6 +126,7 @@ class ScrapeDriver(ABC):
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
     ) -> RenderedPage:
         """Render *url* and return the resulting page.
 
@@ -170,6 +171,19 @@ class ScrapeDriver(ABC):
             capability, 2026-07-15); every other backend accepts and
             ignores it
         :ptype link_selector: str | None
+        :param seen_urls: document URLs the caller already has real data
+            for -- only meaningful to :class:`~threetears.scrape.drivers.
+            multi_document.MultiDocumentDriver` (document-dedup capability,
+            2026-07-16): a URL present here is skipped entirely (no fetch,
+            no OCR, no LLM extraction cost) rather than re-processed on
+            every poll. Mutated in place -- every URL this call successfully
+            fetches (whether or not it was already present) is added, so the
+            caller's own durable store (a growable set has no natural
+            "return value" otherwise) reflects the full up-to-date seen set
+            after the call returns. ``None`` disables the skip entirely
+            (matches every driver's pre-2026-07-16 behavior); every other
+            backend accepts and ignores it.
+        :ptype seen_urls: set[str] | None
         :return: the rendered page's HTML, status, final URL, timing, and
             (if requested) captured network calls
         :rtype: RenderedPage

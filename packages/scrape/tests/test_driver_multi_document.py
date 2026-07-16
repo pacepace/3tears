@@ -208,6 +208,74 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == links[:2]
 
+    async def test_seen_urls_none_fetches_every_document_unchanged(self):
+        """The default (seen_urls omitted) must match this driver's
+        pre-2026-07-16 behavior byte-for-byte -- every discovered document
+        (re-)fetched, no dedup."""
+        links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver()
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
+
+        await driver.render("https://example.gov/listing", link_selector="a")
+
+        assert fake_docs.fetched_urls == links
+
+    async def test_seen_urls_skips_already_seen_documents(self):
+        links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver()
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
+        seen = {"https://example.gov/a.pdf"}
+
+        page = await driver.render("https://example.gov/listing", link_selector="a", seen_urls=seen)
+
+        assert fake_docs.fetched_urls == ["https://example.gov/b.pdf"]
+        assert page.html.count('class="notice"') == 1
+
+    async def test_seen_urls_marks_successfully_fetched_documents(self):
+        links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver()
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
+        seen: set[str] = set()
+
+        await driver.render("https://example.gov/listing", link_selector="a", seen_urls=seen)
+
+        assert seen == set(links)
+
+    async def test_seen_urls_does_not_mark_a_failed_fetch(self):
+        """A document that fails to fetch must stay eligible for retry on
+        the next poll -- never silently skipped forever, same invariant
+        every checkpoint cursor in this codebase already holds."""
+        links = ["https://example.gov/good.pdf", "https://example.gov/bad.pdf"]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver(fail_urls={"https://example.gov/bad.pdf"})
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
+        seen: set[str] = set()
+
+        await driver.render("https://example.gov/listing", link_selector="a", seen_urls=seen)
+
+        assert seen == {"https://example.gov/good.pdf"}
+
+    async def test_seen_urls_filtered_before_max_documents_cap(self):
+        """A real bug shape this test guards against: if already-seen
+        documents were capped BEFORE filtering, a raw listing with more
+        already-seen entries than max_documents would starve genuinely new
+        documents sitting just past the cap."""
+        links = [f"https://example.gov/notice{i}.pdf" for i in range(3)]
+        client = _listing_client(_html_listing_handler(links))
+        fake_docs = _FakeDocumentDriver()
+        driver = MultiDocumentDriver(document_driver=fake_docs, client=client, max_documents=1)
+        # The first 2 (of 3) documents are already seen -- with a cap of 1,
+        # naive "cap first" ordering would consider only notice0 (seen,
+        # skipped) and fetch nothing; filter-first must still reach notice2.
+        seen = {"https://example.gov/notice0.pdf", "https://example.gov/notice1.pdf"}
+
+        await driver.render("https://example.gov/listing", link_selector="a", seen_urls=seen)
+
+        assert fake_docs.fetched_urls == ["https://example.gov/notice2.pdf"]
+
     async def test_listing_fetch_transport_failure_raises(self):
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)

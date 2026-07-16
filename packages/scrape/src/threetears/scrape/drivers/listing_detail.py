@@ -213,6 +213,7 @@ class ListingDetailDriver(ScrapeDriver):
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
     ) -> RenderedPage:
         """Fetch the listing at *url*, resolve each row's own detail page, merge, and return a synthetic table.
 

@@ -106,6 +106,7 @@ class NodriverDownloadDriver(ScrapeDriver):
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
     ) -> RenderedPage:
         """Download *url*'s real file bytes through the sidecar, then parse and convert them.
 

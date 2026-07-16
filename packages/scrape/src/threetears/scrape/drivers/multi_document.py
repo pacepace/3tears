@@ -60,6 +60,20 @@ driver's own ``data-was-ocr`` attribute) now routes to vision extraction
 :func:`~threetears.scrape.drivers.document._embed_ocr_page_images` already
 embedded); a born-digital document stays on the fast/cheap OCR-free text path,
 unchanged -- vision's real cost/latency is only paid where OCR was needed anyway.
+
+**Revision (2026-07-16): document-level dedup.** Every prior version
+re-fetched, re-OCR'd, and re-extracted every document ``render()`` discovered
+on EVERY call -- with no memory of documents already processed on a prior
+poll. For a real, continuously-polled target (WARN Act's daily cadence,
+this driver's one real consumer), that means paying the full fetch/OCR/LLM
+cost for the same historical documents indefinitely, not just once. `render`
+now accepts an optional ``seen_urls: set[str] | None`` (part of every
+driver's shared :meth:`~threetears.scrape.driver.ScrapeDriver.render`
+signature, accepted-and-ignored by every other backend, same convention as
+``link_selector``/``results_path``) -- a caller-owned, caller-persisted set
+this driver only reads from and mutates in place, never stores itself
+(keeping this module's own zero-domain-coupling design intact: it has no
+opinion on how or where the caller durably persists the set between calls).
 """
 
 from __future__ import annotations
@@ -171,6 +185,7 @@ class MultiDocumentDriver(ScrapeDriver):
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
     ) -> RenderedPage:
         """Fetch the listing at *url*, discover document URLs, fetch and combine up to *max_documents*.
 
@@ -195,6 +210,20 @@ class MultiDocumentDriver(ScrapeDriver):
         :ptype fragment_field: str | None
         :param link_selector: HTML mode's CSS selector for document ``<a href>`` elements
         :ptype link_selector: str | None
+        :param seen_urls: document URLs already fetched and extracted by a
+            prior call -- skipped entirely here (no HTTP fetch, no OCR, no
+            LLM extraction cost), rather than re-processed every poll
+            (document-dedup capability, 2026-07-16). Mutated in place: every
+            URL this call successfully fetches is added, whether or not it
+            was already present, so the caller's own durable store reflects
+            the full up-to-date seen set once this call returns. Applied
+            BEFORE the ``max_documents`` cap, not after -- a raw listing
+            that (briefly) exceeds ``max_documents`` entries would otherwise
+            let already-seen documents crowd out genuinely new ones sitting
+            just past the cap. ``None`` disables dedup entirely (every
+            discovered document is (re-)fetched, matching this driver's
+            pre-2026-07-16 behavior).
+        :ptype seen_urls: set[str] | None
         :return: one combined page -- each successfully fetched document's
             content wrapped in its own delimiting block
         :rtype: RenderedPage
@@ -239,8 +268,27 @@ class MultiDocumentDriver(ScrapeDriver):
                 raise MultiDocumentDriverError("invalid_json", f"response from {url} is not valid JSON: {exc}") from exc
             document_urls = _discover_links_json(data, results_path, fragment_field)
 
+        # Applied before the max_documents cap (see this method's own
+        # docstring): filtering to unseen URLs first, then capping, so a
+        # raw listing that (briefly) exceeds max_documents entries can't let
+        # already-seen documents crowd out genuinely new ones just past the
+        # cap. seen_urls=None keeps this driver's pre-2026-07-16 behavior
+        # (every discovered document (re-)fetched) byte-for-byte unchanged.
+        candidate_urls = (
+            [u for u in document_urls if u not in seen_urls][: self._max_documents]
+            if seen_urls is not None
+            else document_urls[: self._max_documents]
+        )
+        skipped_seen = len(document_urls[: self._max_documents]) - len(candidate_urls) if seen_urls is not None else 0
+        if skipped_seen:
+            log.debug(
+                "multi-document: skipped %d already-seen document(s)",
+                skipped_seen,
+                extra={"extra_data": {"listing_url": url}},
+            )
+
         bodies: list[str] = []
-        for doc_url in document_urls[: self._max_documents]:
+        for doc_url in candidate_urls:
             try:
                 page = await self._document_driver.render(doc_url, timeout=timeout)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others, mirrors _regenerate_row_recipe's own per-candidate resilience
@@ -249,6 +297,12 @@ class MultiDocumentDriver(ScrapeDriver):
                     extra={"extra_data": {"url": doc_url, "error": str(exc)}},
                 )
                 continue
+            if seen_urls is not None:
+                # Marked only on a successful fetch -- a failed fetch (above)
+                # must stay eligible for retry on the next poll, not get
+                # silently skipped forever (same invariant every checkpoint
+                # cursor in this codebase already holds).
+                seen_urls.add(doc_url)
             body_start = page.html.find("<body")
             body_open_end = page.html.find(">", body_start) + 1 if body_start != -1 else -1
             body_end = page.html.rfind("</body>")

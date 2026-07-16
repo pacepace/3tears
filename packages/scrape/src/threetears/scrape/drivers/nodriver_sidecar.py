@@ -72,6 +72,7 @@ class NodriverSidecarDriver(ScrapeDriver):
         results_path: str | None = None,
         fragment_field: str | None = None,
         link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
     ) -> RenderedPage:
         """Render *url* through the sidecar's ``POST /v1/render`` endpoint.
 
