@@ -1046,6 +1046,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         to a single uncontended L1 read-modify-write via :meth:`get` /
         :meth:`save_entity` / :meth:`delete`.
 
+        **deliberately NOT degrade-on-KvError, unlike its L1+L2+L3
+        siblings**: :meth:`_get_from_l2`/:meth:`_save_to_l2`/
+        :meth:`_delete_from_l2` catch :class:`KvError` from
+        :meth:`_ensure_kv` (bucket resolution) the same as from the
+        op itself, because L3 remains the durable source of truth
+        behind them -- an L2 outage there is a cache miss, not data
+        loss. this method has no such backstop: for the L1+L2-only
+        collections it targets (e.g. ``channels/presence``'s room
+        membership), L2 **is** the source of truth, so a bucket-open
+        failure here is a real write/read failure, not best-effort
+        cache noise, and MUST propagate rather than silently no-op a
+        membership change that never actually happened.
+
         :param entity_id: pk value (single-pk) or tuple of pk values in
             declared column order (composite-pk)
         :ptype entity_id: Any
@@ -1059,6 +1072,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: None
         :raises ConcurrentModificationError: when the retry budget is
             exhausted (a genuine livelock, never the common case)
+        :raises KvError: on any L2 transport failure, including
+            during bucket resolution -- intentionally not swallowed,
+            see the note above
         """
         self._set_span_table()
         kv = await self._ensure_kv()
