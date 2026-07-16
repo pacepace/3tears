@@ -63,6 +63,7 @@ from threetears.agent.skills.tools import (
     SkillInvokeInput,
     SkillListInput,
     SkillRegistryClient,
+    SkillReportOutcomeInput,
     SkillToolIntrospect,
     SkillUpdateInput,
     load_skill_create_tool,
@@ -71,6 +72,7 @@ from threetears.agent.skills.tools import (
     load_skill_introspect_tool,
     load_skill_invoke_tool,
     load_skill_list_tool,
+    load_skill_report_outcome_tool,
     load_skill_update_tool,
 )
 from threetears.agent.skills.types import (
@@ -106,6 +108,7 @@ __all__ = [
     "SkillListResponse",
     "SkillOutcome",
     "SkillRegistryClient",
+    "SkillReportOutcomeInput",
     "SkillResponse",
     "SkillSource",
     "SkillSummary",
@@ -121,6 +124,7 @@ __all__ = [
     "load_skill_introspect_tool",
     "load_skill_invoke_tool",
     "load_skill_list_tool",
+    "load_skill_report_outcome_tool",
     "load_skill_update_tool",
     "register",
     "render_skill_body_block",

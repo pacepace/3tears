@@ -46,6 +46,7 @@ from threetears.agent.skills.collections import (
     AgentSkillInvocationCollection,
 )
 from threetears.agent.skills.entities import AgentSkillEntity
+from threetears.agent.skills.types import SkillOutcome
 from threetears.observe import get_logger
 
 __all__ = [
@@ -60,6 +61,7 @@ __all__ = [
     "SkillInvokeInput",
     "SkillListInput",
     "SkillRegistryClient",
+    "SkillReportOutcomeInput",
     "SkillToolIntrospect",
     "SkillUpdateInput",
     "load_skill_create_tool",
@@ -68,6 +70,7 @@ __all__ = [
     "load_skill_introspect_tool",
     "load_skill_invoke_tool",
     "load_skill_list_tool",
+    "load_skill_report_outcome_tool",
     "load_skill_update_tool",
 ]
 
@@ -345,6 +348,18 @@ class SkillInvokeInput(BaseModel):
     rationale: str | None = Field(
         default=None,
         description="Optional one-line note recorded with the invocation.",
+    )
+
+
+class SkillReportOutcomeInput(BaseModel):
+    """Input schema for the ``skill_report_outcome`` tool."""
+
+    outcome: Literal["success", "failure"] = Field(
+        description="Whether the active skill's task succeeded or failed.",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Optional one-line note on why (surfaced in logs, not stored on the row in v1).",
     )
 
 
@@ -1516,6 +1531,123 @@ def load_skill_invoke_tool(
     )
 
     return [skill_invoke]
+
+
+# ---------------------------------------------------------------------------
+# skill_report_outcome
+# ---------------------------------------------------------------------------
+
+
+def load_skill_report_outcome_tool(
+    *,
+    agent_id: UUID,
+    conversation_id_resolver: ConversationIdResolver,
+    active_skill_probe: ActiveSkillProbe,
+    invocations_collection: AgentSkillInvocationCollection,
+    skills_collection: AgentSkillCollection,
+) -> list[BaseTool]:
+    """Build a ``skill_report_outcome`` tool for the active skill's invocation.
+
+    Replaces the retired ``[SUCCESS]``/``[FAILED]`` text-marker path: a tool
+    call never enters the visible response stream, so there is nothing to
+    scrub or leak-proof (unlike the marker, which required guarding every
+    tool-loop runner's live stream). Resolves the active invocation the same
+    way the consumer's post-LLM marker hook did -- the newest conversation
+    row matching the turn's active skill (serial per-conversation execution
+    makes "newest row" unambiguous within a turn) -- then records the
+    outcome on both the invocation row and the skill's aggregate counters.
+
+    :param agent_id: caller's agent UUID (partition column)
+    :ptype agent_id: UUID
+    :param conversation_id_resolver: callable returning the live conversation UUID
+    :ptype conversation_id_resolver: ConversationIdResolver
+    :param active_skill_probe: callable returning the active skill id for
+        the in-flight turn (or ``None``)
+    :ptype active_skill_probe: ActiveSkillProbe
+    :param invocations_collection: three-tier invocations collection
+    :ptype invocations_collection: AgentSkillInvocationCollection
+    :param skills_collection: three-tier skills collection
+    :ptype skills_collection: AgentSkillCollection
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+
+    @tool("skill_report_outcome", args_schema=SkillReportOutcomeInput)
+    async def skill_report_outcome(outcome: SkillOutcome, notes: str | None = None) -> str:
+        """Report whether the currently-active skill's task succeeded or failed."""
+        try:
+            active_skill_id = active_skill_probe()
+        except Exception as exc:
+            log.warning(
+                "skill_report_outcome active_skill_probe raised",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            return _tool_error("skill_report_outcome", f"state probe failed: {exc}")
+        if active_skill_id is None:
+            return _tool_error(
+                "skill_report_outcome",
+                "no skill is active this turn; call skill_invoke first",
+            )
+
+        try:
+            conversation_id = conversation_id_resolver()
+        except Exception as exc:
+            log.warning(
+                "skill_report_outcome conversation_id_resolver raised",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            return _tool_error(
+                "skill_report_outcome",
+                f"conversation_id_resolver raised {type(exc).__name__}: {exc}",
+            )
+        if conversation_id is None:
+            return _tool_error(
+                "skill_report_outcome",
+                "conversation_id_resolver returned None; cannot resolve invocation",
+            )
+
+        recent = await invocations_collection.list_for_conversation(
+            agent_id,
+            conversation_id,
+            limit=1,
+        )
+        if not recent or recent[0].skill_id != active_skill_id:
+            return _tool_error(
+                "skill_report_outcome",
+                "no active invocation found for this turn's skill; nothing to report",
+            )
+        invocation_id = recent[0].invocation_id
+
+        await invocations_collection.set_outcome(
+            agent_id,
+            invocation_id,
+            outcome=outcome,
+            source="agent_tool",
+        )
+        await skills_collection.increment_outcome_counts(agent_id, active_skill_id, outcome)
+
+        log_invocation_id = str(invocation_id)
+        log.info(
+            "skill_report_outcome fired",
+            extra={
+                "extra_data": {
+                    "skill_id": str(active_skill_id),
+                    "invocation_id": log_invocation_id,
+                    "outcome": outcome,
+                    "notes": notes,
+                }
+            },
+        )
+        return f"Recorded {outcome} for [skill:{active_skill_id}]."
+
+    skill_report_outcome.description = (
+        "Report whether the active skill's task succeeded or failed. Call this once you "
+        "know the outcome -- do NOT write [SUCCESS]/[FAILED] in your reply, this tool is "
+        "the only way outcomes get recorded.\n"
+        "Errors if no skill is active this turn."
+    )
+
+    return [skill_report_outcome]
 
 
 # ---------------------------------------------------------------------------
