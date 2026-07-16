@@ -4,6 +4,17 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.2 -- 2026-07-16
+
+**`skill_report_outcome` tool (`packages/agent/skills`), written 2026-07-13 but left
+unmerged on a feature branch until now -- metallm's own skill-outcome-reporting rework
+needs it to build.**
+
+- **`skill_report_outcome` tool + `load_skill_report_outcome_tool`
+  (`packages/agent/skills/src/threetears/agent/skills/tools.py`).** Lets an agent
+  self-report a skill invocation's success/failure via an explicit tool call, replacing
+  the retired `[SUCCESS]`/`[FAILED]` post-response text-marker convention.
+
 ## v0.17.1 -- 2026-07-16
 
 **Two additions that were written the same day as v0.17.0 but were left unmerged on

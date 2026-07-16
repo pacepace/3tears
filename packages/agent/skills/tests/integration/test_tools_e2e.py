@@ -41,6 +41,7 @@ from threetears.agent.skills.tools import (
     load_skill_introspect_tool,
     load_skill_invoke_tool,
     load_skill_list_tool,
+    load_skill_report_outcome_tool,
     load_skill_update_tool,
 )
 from threetears.conversations.migrations import register as register_conversations
@@ -520,6 +521,102 @@ class TestSkillInvokeIntegration:
         assert rows[0]["skill_id"] == skill_id
         assert rows[0]["invocation_source"] == "invoke"
         assert rows[0]["conversation_id"] == conversation_id
+
+
+class TestSkillReportOutcomeIntegration:
+    """``skill_report_outcome`` writes outcome + bumps skill counters over real pg."""
+
+    async def test_outcome_persisted_and_counters_bumped(
+        self,
+        pool_with_schema: asyncpg.Pool,
+    ) -> None:
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        conversation_id = _new_uuid()
+        skills, invocations = _build_collections(pool_with_schema)
+        registry = _FakeRegistry()
+        [create_tool] = load_skill_create_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=skills,
+            registry=registry,
+        )
+
+        active: dict[str, Any] = {"id": None}
+
+        def _probe() -> UUID | None:
+            return active["id"]
+
+        def _setter(sid: UUID) -> None:
+            active["id"] = sid
+
+        [invoke_tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=skills,
+            invocations_collection=invocations,
+            conversation_id_resolver=lambda: conversation_id,
+            active_skill_probe=_probe,
+            active_skill_setter=_setter,
+        )
+        [report_tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conversation_id,
+            active_skill_probe=_probe,
+            invocations_collection=invocations,
+            skills_collection=skills,
+        )
+
+        out = await create_tool.ainvoke(
+            {"name": "test-skill", "summary": "s", "body": "do this"},
+        )
+        skill_id = UUID(out.split("[skill:")[1].split("]")[0])
+        await invoke_tool.ainvoke({"skill_id": str(skill_id)})
+
+        report_out = await report_tool.ainvoke({"outcome": "success"})
+        assert f"[skill:{skill_id}]" in report_out
+        assert "success" in report_out
+
+        inv_rows = await pool_with_schema.fetch(
+            "SELECT skill_id, outcome, outcome_source FROM agent_skill_invocations WHERE agent_id = $1",
+            agent_id,
+        )
+        assert len(inv_rows) == 1
+        assert inv_rows[0]["skill_id"] == skill_id
+        assert inv_rows[0]["outcome"] == "success"
+        assert inv_rows[0]["outcome_source"] == "agent_tool"
+
+        skill_row = await pool_with_schema.fetchrow(
+            "SELECT success_count, failure_count FROM agent_skills WHERE agent_id = $1 AND skill_id = $2",
+            agent_id,
+            skill_id,
+        )
+        assert skill_row is not None
+        assert skill_row["success_count"] == 1
+        assert skill_row["failure_count"] == 0
+
+    async def test_no_active_skill_errors_without_writing(
+        self,
+        pool_with_schema: asyncpg.Pool,
+    ) -> None:
+        agent_id = _new_uuid()
+        conversation_id = _new_uuid()
+        skills, invocations = _build_collections(pool_with_schema)
+        [report_tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conversation_id,
+            active_skill_probe=lambda: None,
+            invocations_collection=invocations,
+            skills_collection=skills,
+        )
+        out = await report_tool.ainvoke({"outcome": "failure"})
+        assert "[TOOL ERROR]" in out
+
+        rows = await pool_with_schema.fetch(
+            "SELECT 1 FROM agent_skill_invocations WHERE agent_id = $1",
+            agent_id,
+        )
+        assert len(rows) == 0
 
 
 # --- skill_list UNION with tool-skill from registry ---

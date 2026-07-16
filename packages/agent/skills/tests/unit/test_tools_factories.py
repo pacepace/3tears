@@ -34,6 +34,7 @@ from threetears.agent.skills.tools import (
     load_skill_introspect_tool,
     load_skill_invoke_tool,
     load_skill_list_tool,
+    load_skill_report_outcome_tool,
     load_skill_update_tool,
 )
 
@@ -148,6 +149,23 @@ class _FakeSkillsCollection:
             count += 1
         return count
 
+    async def increment_outcome_counts(
+        self,
+        agent_id: UUID,
+        skill_id: UUID,
+        outcome: str,
+    ) -> None:
+        row = self.rows.get((agent_id, skill_id))
+        if row is None:
+            return
+        if outcome == "success":
+            row["success_count"] = row.get("success_count", 0) + 1
+        elif outcome == "failure":
+            row["failure_count"] = row.get("failure_count", 0) + 1
+            row["last_failure_at"] = datetime.now(UTC)
+        else:
+            raise ValueError(f"increment_outcome_counts: outcome must be 'success' or 'failure'; got {outcome!r}")
+
 
 # parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
 class _FakeInvocationsCollection:
@@ -170,6 +188,35 @@ class _FakeInvocationsCollection:
         invocation: AgentSkillInvocationEntity,
     ) -> None:
         await self.save_entity(invocation)
+
+    async def list_for_conversation(
+        self,
+        agent_id: UUID,
+        conversation_id: UUID,
+        *,
+        limit: int = 20,
+    ) -> list[AgentSkillInvocationEntity]:
+        matches = [
+            AgentSkillInvocationEntity(dict(row), is_new=False, collection=None)
+            for row in self.rows.values()
+            if row["agent_id"] == agent_id and row["conversation_id"] == conversation_id
+        ]
+        matches.sort(key=lambda e: e.invoked_at, reverse=True)
+        return matches[:limit]
+
+    async def set_outcome(
+        self,
+        agent_id: UUID,
+        invocation_id: UUID,
+        *,
+        outcome: str,
+        source: str,
+    ) -> None:
+        row = self.rows.get((agent_id, invocation_id))
+        if row is None:
+            return
+        row["outcome"] = outcome
+        row["outcome_source"] = source
 
     def latest(self) -> dict[str, Any] | None:
         if not self.rows:
@@ -921,6 +968,160 @@ class TestSkillInvoke:
         # assertion for the setter-first ordering fix.
         assert inv.latest() is None
         assert len(inv.rows) == 0
+
+
+class TestSkillReportOutcome:
+    async def test_happy_path_success(self) -> None:
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        conv_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+        state = _ActiveState()
+        [invoke_tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=inv,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            active_skill_setter=state.setter,
+        )
+        await invoke_tool.ainvoke({"skill_id": str(skill_id)})
+
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "success"})
+        assert f"[skill:{skill_id}]" in out
+        assert "success" in out
+        latest = inv.latest()
+        assert latest is not None
+        assert latest["outcome"] == "success"
+        assert latest["outcome_source"] == "agent_tool"
+        assert coll.rows[(agent_id, skill_id)]["success_count"] == 1
+        assert coll.rows[(agent_id, skill_id)]["failure_count"] == 0
+
+    async def test_happy_path_failure_with_notes(self) -> None:
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        conv_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+        state = _ActiveState()
+        [invoke_tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=inv,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            active_skill_setter=state.setter,
+        )
+        await invoke_tool.ainvoke({"skill_id": str(skill_id)})
+
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "failure", "notes": "target host unreachable"})
+        assert "failure" in out
+        assert coll.rows[(agent_id, skill_id)]["failure_count"] == 1
+        assert coll.rows[(agent_id, skill_id)]["success_count"] == 0
+        # notes are observability-only in v1 -- never written to the row
+        assert inv.latest()["notes"] is None
+
+    async def test_no_marker_leak_in_output(self) -> None:
+        """The whole point of a tool over a text marker: no [SUCCESS]/[FAILED] leaks."""
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        conv_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+        state = _ActiveState()
+        [invoke_tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=inv,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            active_skill_setter=state.setter,
+        )
+        await invoke_tool.ainvoke({"skill_id": str(skill_id)})
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=state.probe,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "success"})
+        assert "[SUCCESS]" not in out
+        assert "[FAILED]" not in out
+
+    async def test_no_active_skill_rejected(self) -> None:
+        agent_id = _new_uuid()
+        conv_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=lambda: None,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "success"})
+        assert "[TOOL ERROR]" in out
+        assert "no skill is active" in out
+
+    async def test_no_conversation_id_rejected(self) -> None:
+        agent_id = _new_uuid()
+        active_skill_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: None,
+            active_skill_probe=lambda: active_skill_id,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "success"})
+        assert "[TOOL ERROR]" in out
+        assert "conversation_id_resolver" in out
+
+    async def test_no_matching_invocation_rejected(self) -> None:
+        """The active-skill probe says a skill is active, but no invocation row
+        for it exists in this conversation (e.g. a wake-attach path that never
+        recorded one) -- the tool must not attribute the outcome to the wrong row.
+        """
+        agent_id = _new_uuid()
+        conv_id = _new_uuid()
+        active_skill_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        [tool] = load_skill_report_outcome_tool(
+            agent_id=agent_id,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=lambda: active_skill_id,
+            invocations_collection=inv,
+            skills_collection=coll,
+        )
+        out = await tool.ainvoke({"outcome": "success"})
+        assert "[TOOL ERROR]" in out
+        assert "no active invocation found" in out
 
 
 # --- skill_introspect ---

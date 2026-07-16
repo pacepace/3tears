@@ -630,11 +630,11 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
     ) -> None:
         """Bump ``success_count`` or ``failure_count`` for a single skill.
 
-        Called by the consumer's post-LLM hook after parsing the
-        ``[SUCCESS]`` / ``[FAILED]`` marker from the assistant's
-        response. ``last_failure_at`` is also stamped when ``outcome``
-        is ``'failure'`` so the catalog can surface "last failed N
-        hours ago" without scanning the invocation history.
+        Called by the ``skill_report_outcome`` tool handler (``tools.py``)
+        once the agent self-reports an outcome. ``last_failure_at`` is
+        also stamped when ``outcome`` is ``'failure'`` so the catalog can
+        surface "last failed N hours ago" without scanning the
+        invocation history.
 
         :param agent_id: partition column
         :ptype agent_id: UUID
@@ -988,11 +988,10 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         Idempotent: repeated calls with the same arguments produce the
         same row state.
 
-        Called by the consumer's post-LLM hook when a
-        ``[SUCCESS]`` / ``[FAILED]`` marker matches in the assistant
-        response. The shard does not pair this with an automatic
-        bump to the parent skill's ``success_count`` / ``failure_count``
-        because:
+        Called by the ``skill_report_outcome`` tool handler (``tools.py``)
+        once the agent self-reports an outcome. The shard does not pair
+        this with an automatic bump to the parent skill's
+        ``success_count`` / ``failure_count`` because:
 
         1. The caller already knows the parent ``skill_id`` from the
            invocation row (avoids the JOIN here).
