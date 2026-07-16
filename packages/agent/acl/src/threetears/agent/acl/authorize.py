@@ -557,7 +557,7 @@ async def authorize_from_claims(
                 "extra_data": {
                     "action": action,
                     "namespace_name": namespace_name,
-                    "user_id": str(user_id),
+                    "user_id": str(user_id),  # convert at border: structured logging (extra_data)
                     "sensitive_category": sensitive_category.value,
                 },
             },
