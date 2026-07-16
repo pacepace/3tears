@@ -1068,6 +1068,8 @@ def _fake_js_msg(*, data: bytes = b"answer", num_delivered: int = 1) -> Any:
 @pytest.mark.asyncio
 async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() -> None:
     """the durable consumer binds manual-ack with a bounded max_deliver config."""
+    from threetears.nats import JetStreamPushConsumer
+
     client, js = _client_with_js()
     subject = Subjects.channels_deliver("slack")
     cb = AsyncMock()
@@ -1081,7 +1083,17 @@ async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() ->
         stream="3tears-channels-deliver",
     )
 
-    assert handle == "sub-handle"
+    # the returned handle wraps the raw nats-py subscription rather than
+    # exposing it directly -- see JetStreamPushConsumer's docstring for
+    # why: the raw object is NOT compatible with NatsClient.unsubscribe()
+    # (a real bug this wrapping fixes; a caller following the pattern
+    # documented on subscribe()/unsubscribe() hit an AttributeError the
+    # first time it actually stopped a durable push consumer).
+    assert isinstance(handle, JetStreamPushConsumer)
+    assert handle.raw_subscription == "sub-handle"
+    assert handle.subject == subject
+    assert handle.durable == "slack-delivery"
+    assert handle.is_closed is False
     kwargs = js.subscribe.await_args.kwargs
     assert js.subscribe.await_args.args[0] == subject.path
     assert kwargs["durable"] == "slack-delivery"
@@ -1092,6 +1104,75 @@ async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() ->
     assert kwargs["config"].durable_name == "slack-delivery"
     # the cb is WRAPPED (not the raw cb) so the factory owns redelivery.
     assert kwargs["cb"] is not cb
+
+
+@pytest.mark.asyncio
+async def test_jetstream_push_consumer_stop_unsubscribes_raw_subscription() -> None:
+    """stop() drops the underlying nats-py subscription directly -- the fix's whole point.
+
+    regression test for the bug this shard fixes: jetstream_subscribe_durable()
+    used to return the raw nats-py subscription object directly, which callers
+    following subscribe()'s documented pattern passed to
+    NatsClient.unsubscribe() -- raising AttributeError, since that method
+    expects a Subscription (.is_closed / .mark_closed()), not the raw
+    object. JetStreamPushConsumer.stop() is the correct, documented
+    teardown path instead.
+    """
+    client, js = _client_with_js()
+    raw_sub = AsyncMock()
+    js.subscribe = AsyncMock(return_value=raw_sub)
+
+    handle = await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="slack-delivery",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+
+    await handle.stop()
+
+    raw_sub.unsubscribe.assert_awaited_once()
+    assert handle.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_jetstream_push_consumer_stop_is_idempotent() -> None:
+    """a second stop() call is a no-op, matching Subscription.unsubscribe()'s own contract."""
+    client, js = _client_with_js()
+    raw_sub = AsyncMock()
+    js.subscribe = AsyncMock(return_value=raw_sub)
+
+    handle = await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="slack-delivery",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+
+    await handle.stop()
+    await handle.stop()
+
+    raw_sub.unsubscribe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_jetstream_push_consumer_stop_swallows_raw_unsubscribe_failure() -> None:
+    """a raw nats-py unsubscribe failure is logged, not raised -- best-effort cleanup."""
+    client, js = _client_with_js()
+    raw_sub = AsyncMock()
+    raw_sub.unsubscribe = AsyncMock(side_effect=RuntimeError("connection already closed"))
+    js.subscribe = AsyncMock(return_value=raw_sub)
+
+    handle = await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="slack-delivery",
+        cb=AsyncMock(),
+        max_deliver=5,
+    )
+
+    await handle.stop()  # must not raise
+
+    assert handle.is_closed is True
 
 
 @pytest.mark.asyncio

@@ -20,9 +20,25 @@ def test_conversation_summarized_registered_in_shared_default_registry() -> None
     assert isinstance(parsed, ConversationSummarizedEvent)
     assert parsed.messages_summarized == 12
     assert parsed.summary_text == "they argued about kerning"
+    # Back-compat: a payload with no ``persisted`` key (every pre-existing
+    # producer/consumer) still parses, defaulting to the ephemeral case.
+    assert parsed.persisted is False
 
 
 def test_conversation_summarized_defaults() -> None:
     ev = ConversationSummarizedEvent()
     assert ev.messages_summarized == 0
     assert ev.summary_text is None
+    assert ev.persisted is False
+
+
+def test_conversation_summarized_persisted_true_for_durable_producer() -> None:
+    """The explicit, agent-chosen persist action sets ``persisted=True`` --
+    the one field distinguishing it from the auto-summarizer's ephemeral
+    in-context compaction, which must never set this True."""
+    parsed = default_registry.parse(
+        "conversation_summarized",
+        {"messages_summarized": 40, "summary_text": "a durable memory", "persisted": True},
+    )
+    assert isinstance(parsed, ConversationSummarizedEvent)
+    assert parsed.persisted is True

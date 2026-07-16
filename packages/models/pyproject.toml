@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.15.0"
+version = "0.17.1"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,7 +25,12 @@ dependencies = [
 # Claude Pro/Max SUBSCRIPTION as a chat model (the anthropic provider routes an OAuth `sk-ant-oat…`
 # token here instead of the HTTP API). Pulls langchain-claude-code → claude-agent-sdk; needs Node +
 # the Claude Code CLI on PATH at runtime. Imported lazily in providers/_claude_cli.py.
-claude-cli = ["langchain-claude-code>=0.1.0"]
+# 3tears-langgraph is here (not in the base dependencies) purely for its typed tool-event classes +
+# dispatch_event helper -- reused so a subscription-backed turn's tool calls surface through the
+# SAME event shape node-path tools already emit, with no new event vocabulary for consumers to
+# learn. Only the claude-cli path needs it; the rest of 3tears-models has no graph-orchestration
+# awareness and shouldn't gain one just for this.
+claude-cli = ["langchain-claude-code>=0.1.0", "3tears-langgraph"]
 voyageai = ["langchain-voyageai>=0.3"]
 whisper = ["httpx>=0.27"]
 image = ["httpx>=0.27"]
@@ -40,3 +45,4 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
+3tears-langgraph = { workspace = true }

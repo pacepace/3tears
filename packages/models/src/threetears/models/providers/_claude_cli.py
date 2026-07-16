@@ -20,16 +20,55 @@ Upstream bug worked around: the package's bound-tool wrapper invokes a LangChain
 ``tool._run(**args)`` path, which current langchain-core rejects ("missing ``config``"). We subclass
 and override that one method to call the public ``tool.ainvoke(args)`` instead, so a caller's OWN
 tools work (each tool call is one Agent-SDK turn). Filed upstream; the override is the local fix.
+
+Tool-status events (claude-max-convergence Chunk 7): ``ClaudeCodeChatModel._astream``/``_agenerate``
+only ever fire ``on_llm_new_token`` — the SDK subprocess's internal tool-calling loop is invisible to
+LangChain's own instrumentation (verified by reading the package source: ``astream_events`` never
+emits ``on_tool_start``/``on_tool_end`` for tools invoked this way). ``_wrap_langchain_tool``'s
+``wrapped`` closure is the one place with real-time visibility into each call, so it dispatches the
+SAME typed events node-path tools already emit (:mod:`threetears.langgraph.events`) around
+``tool.ainvoke`` -- a subscription-backed turn's tool-status chips render through the identical
+consumer-side code path a normal turn's do, no new event vocabulary needed downstream.
+
+Token-level streaming (post-Chunk-9 follow-up, see
+``.prawduct/artifacts/3tears-change-claude-max-token-streaming.md`` in metallm for the full
+sign-off): ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` -- which makes
+the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
+``content_block_delta``/``text_delta`` shape) -- but the method never handles ``StreamEvent`` at
+all, only the terminal, whole-block ``AssistantMessage``. Every delta is silently dropped, so a
+turn arrives as one or two large lumps instead of a real token stream. ``_astream`` is overridden
+here to consume ``StreamEvent`` text deltas as they arrive and yield each one immediately, tracked
+per content-block index so the terminal ``AssistantMessage`` never re-yields (and thereby doubles)
+text a delta already streamed. A turn that somehow gets no ``StreamEvent`` at all (older CLI build,
+future SDK regression) falls back to the base class's whole-message behavior for that block, so
+this is strictly additive -- never worse than today.
 """
 
 from __future__ import annotations
 
+import time
+from collections.abc import AsyncIterator
 from typing import Any, Callable
 
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
+from pydantic import Field
+
+from threetears.langgraph.events import (
+    ToolCompletedEvent,
+    ToolDispatchedEvent,
+    ToolStartedEvent,
+    dispatch_event,
+)
+from threetears.observe import get_logger
 
 __all__ = ["OAUTH_TOKEN_PREFIX", "is_subscription_token", "create_subscription_chat"]
+
+_logger = get_logger(__name__)
 
 #: A Claude subscription OAuth token (``claude setup-token``) starts with this; an API key does not.
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
@@ -44,6 +83,9 @@ _FORWARDED_KWARGS = frozenset(
         "permission_mode",
         "allowed_tools",
         "disallowed_tools",
+        "tools",  # see _SubscriptionChatModel.tools -- NOT a ClaudeCodeChatModel field,
+        # declared on our subclass below so it actually binds (a bare kwarg the base
+        # class doesn't declare is silently dropped by its `extra="ignore"` config).
         "cwd",
         "fallback_model",
         "max_budget_usd",
@@ -58,29 +100,188 @@ def is_subscription_token(credential: str) -> bool:
 
 def _subscription_model_cls() -> type:
     """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed (lazy import)."""
+    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent
     from claude_agent_sdk import tool as sdk_tool
     from langchain_claude_code import ClaudeCodeChatModel
 
-    class _SubscriptionChatModel(ClaudeCodeChatModel):  # type: ignore[misc]
-        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API."""
+    class _SubscriptionChatModel(ClaudeCodeChatModel):
+        """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API.
+
+        Also default-denies Claude Code's own built-in tool belt (Bash, Read, Write, Edit,
+        WebFetch, WebSearch, …) — see :attr:`tools`.
+        """
+
+        # ``ClaudeAgentOptions.tools`` gates whether ANY built-in tool is even available, fully
+        # independent of ``allowed_tools``/``disallowed_tools`` (which only gate auto-approval /
+        # removal of tools ``tools`` already made available). ``ClaudeCodeChatModel`` itself
+        # declares no ``tools`` field and silently drops an unknown constructor kwarg (its
+        # ``model_config`` is ``extra="ignore"``), so this MUST be declared here to bind at all.
+        # Defaults to ``[]`` (every built-in disabled, only LangChain-bound tools available) --
+        # default-deny rather than requiring every caller to remember to pass it, since a
+        # subscription-backed turn otherwise gets the model server-side Bash / filesystem /
+        # network access with zero caller-side gate.
+        tools: list[str] | None = Field(default_factory=list)
+
+        def _build_options(self, **overrides: Any) -> Any:
+            """Force ``ClaudeAgentOptions.tools`` from :attr:`tools` unless a call overrides it."""
+            overrides.setdefault("tools", self.tools)
+            return super()._build_options(**overrides)
 
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
             props = schema.get("properties", {})
             tmap = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
             param_types = {n: tmap.get(p.get("type", "string"), str) for n, p in props.items()}
 
+            async def _emit(event: Any) -> None:
+                # Best-effort: a broken event bus must never break tool
+                # execution or the turn. No `config` is threaded through --
+                # `dispatch_event` resolves the ambient RunnableConfig via
+                # langchain_core's own context propagation, same as any
+                # other custom-event dispatch not holding a config handle.
+                # Logged (not silently swallowed): ambient-config propagation
+                # across the SDK's subprocess-callback boundary is the one
+                # thing this chunk couldn't verify by reading source alone --
+                # a failure here is exactly the signal that verification needs.
+                try:
+                    await dispatch_event(event, config=None)
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- tool-status is observability, never load-bearing for the turn
+                    _logger.warning(
+                        "subscription tool-status event dispatch failed",
+                        extra={"extra_data": {"event_type": type(event).__name__, "error": str(exc)}},
+                    )
+
             @sdk_tool(tool.name, tool.description or "", param_types)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
+                await _emit(ToolDispatchedEvent(tool_name=tool.name))
+                await _emit(ToolStartedEvent(tool_name=tool.name, tool_args=args))
+                start = time.monotonic()
                 try:
                     result = await tool.ainvoke(args)  # public API (handles config/run_manager); was tool._run
                     captured = self._tool_results_var.get(None) if self._tool_results_var else None
                     if captured is not None:
                         captured.append({"name": tool.name, "args": args, "result": result})
+                    await _emit(
+                        ToolCompletedEvent(
+                            tool_name=tool.name,
+                            tool_status="completed",
+                            tool_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                    )
                     return {"content": [{"type": "text", "text": str(result)}]}
                 except Exception as exc:  # surfaced to the model as a tool error so its loop continues
+                    await _emit(
+                        ToolCompletedEvent(
+                            tool_name=tool.name,
+                            tool_status="failed",
+                            tool_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                    )
                     return {"content": [{"type": "text", "text": f"Error: {exc}"}], "is_error": True}
 
-            return wrapped
+            return wrapped  # type: ignore[return-value]  # @sdk_tool wraps `wrapped` into an SdkMcpTool,
+            # which the base class's own `_wrap_langchain_tool -> Callable[..., Any]` signature doesn't
+            # account for -- a stub gap in langchain-claude-code itself (pre-existing: this exact
+            # decorator-then-return shape is unchanged by this chunk's edit, only newly surfaced because
+            # 3tears-models isn't in CI's mypy invocation, so nothing here has been type-checked before).
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """Real token-level streaming: consumes the ``StreamEvent`` deltas the base
+            class already requests (``include_partial_messages=True``) but never reads.
+
+            Reimplements the base class's query/receive loop rather than wrapping it --
+            ``ClaudeCodeChatModel._astream`` has no seam to inject a new branch into an
+            already-running generator. Text deltas are yielded the moment they arrive,
+            tracked per content-block index (``StreamEvent.event["index"]``) so the
+            terminal ``AssistantMessage`` for a block whose text was already streamed is
+            not re-yielded (which would double it). A block that produces no
+            ``StreamEvent`` at all (older CLI build, future SDK regression) still gets
+            its text emitted whole from the ``AssistantMessage`` -- the fallback the base
+            class always used, so this is strictly additive.
+            """
+            config = kwargs.pop("_config", None)
+            prompt, system_prompt = self._convert_messages(messages)
+            if system_prompt and not self.system_prompt:
+                kwargs["system_prompt"] = system_prompt
+            kwargs["include_partial_messages"] = True
+            cfg = ensure_config(config) if config is not None else None
+            session_id = kwargs.pop("session_id", None) or kwargs.pop("resume", None)
+            if cfg:
+                session_id = session_id or cfg.get("configurable", {}).get("session_id")
+            options = self._build_options(**kwargs)
+            if session_id:
+                options.resume = session_id
+                options.continue_conversation = True
+
+            tool_calls_buffer: list[dict[str, Any]] = []
+            tool_results_buffer: list[dict[str, Any]] = []
+            # Content-block indices whose text has already been streamed via a
+            # StreamEvent delta THIS assistant message -- reset each time a new
+            # AssistantMessage boundary is crossed, matching the SDK's own framing
+            # (deltas for a message's blocks, then one AssistantMessage closing it).
+            streamed_block_indices: set[int] = set()
+
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+
+                async for msg in client.receive_response():
+                    if isinstance(msg, StreamEvent):
+                        event = msg.event or {}
+                        if event.get("type") != "content_block_delta":
+                            continue
+                        delta = event.get("delta") or {}
+                        if delta.get("type") != "text_delta":
+                            continue
+                        text = delta.get("text", "")
+                        if not text:
+                            continue
+                        block_index = event.get("index")
+                        if isinstance(block_index, int):
+                            streamed_block_indices.add(block_index)
+                        chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                        if run_manager:
+                            await run_manager.on_llm_new_token(text, chunk=chunk)
+                        yield chunk
+
+                    elif isinstance(msg, AssistantMessage):
+                        text, tool_calls, tool_results = self._parse_assistant_message(msg)
+                        # Fallback path only: if StreamEvent deltas already covered
+                        # this message's text (the common case), re-yielding it here
+                        # would double every character the client already received.
+                        if text and not streamed_block_indices:
+                            chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                            if run_manager:
+                                await run_manager.on_llm_new_token(text, chunk=chunk)
+                            yield chunk
+                        streamed_block_indices = set()
+                        tool_calls_buffer.extend(tool_calls)
+                        tool_results_buffer.extend(tool_results)
+
+                    elif isinstance(msg, ResultMessage):
+                        self._last_result = msg
+                        generation_info: dict[str, Any] = {
+                            "total_cost_usd": msg.total_cost_usd,
+                            "duration_ms": msg.duration_ms,
+                            "duration_api_ms": msg.duration_api_ms,
+                            "session_id": msg.session_id,
+                            "finish_reason": "stop" if not msg.is_error else "error",
+                        }
+                        if msg.usage:
+                            generation_info["usage"] = msg.usage
+                        if tool_calls_buffer:
+                            generation_info["internal_tool_calls"] = tool_calls_buffer
+                        if tool_results_buffer:
+                            generation_info["internal_tool_results"] = tool_results_buffer
+
+                        yield ChatGenerationChunk(
+                            message=AIMessageChunk(content="", chunk_position="last"),
+                            generation_info=generation_info,
+                        )
 
     return _SubscriptionChatModel
 
@@ -92,6 +293,11 @@ def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -
     package threads it into the SDK's per-subprocess ``ClaudeAgentOptions.env``, so concurrent models
     with different tokens never share process env (no global ``os.environ`` write, no cross-user race).
     HTTP-API kwargs the CLI backend cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
+
+    Claude Code's own built-in tool belt (Bash, Read, Write, Edit, WebFetch, WebSearch, …) is
+    active by default and independent of any LangChain tools bound via ``bind_tools()``. A caller
+    that wants the model to use ONLY its own bound tools should pass ``tools=[]`` — omitting it
+    keeps the full built-in preset available.
     """
     opts = {k: v for k, v in extra_kwargs.items() if k in _FORWARDED_KWARGS}
     model: BaseChatModel = _subscription_model_cls()(model=model_name, oauth_token=token, **opts)

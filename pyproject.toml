@@ -71,6 +71,11 @@ dev-dependencies = [
     "redshift-connector>=2.1",
     "snowflake-connector-python>=3.0",
     "google-cloud-bigquery>=3.0",
+    # property-based testing for structural/conformance checks (e.g. the EC
+    # jwk_thumbprint RFC 7638 conformance test in packages/core) where an
+    # example-based test can't cover the input space a spec makes claims
+    # about. was not previously a dependency here -- added for that test.
+    "hypothesis>=6.100",
 ]
 
 [tool.ruff]

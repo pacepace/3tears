@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from threetears.observe import get_logger
@@ -38,7 +38,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, NatsKvBucket
 
-__all__ = ["ReplayGuard"]
+__all__ = ["ReplayGuard", "RevocationGuard"]
 
 log = get_logger(__name__)
 
@@ -123,3 +123,155 @@ class ReplayGuard:
     def _key(nonce: str) -> str:
         """hash the nonce into a fixed-length, KV-safe key (also avoids storing the raw nonce)."""
         return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+class RevocationGuard:
+    """timestamped revocation entries in a shared, TTL'd KV bucket -- a sibling to
+    :class:`ReplayGuard`, not a replacement.
+
+    :meth:`ReplayGuard.record_unique` stores a presence-only sentinel: a bare "have I seen this
+    key" membership test is the right shape for a single-use nonce, and is also the right shape
+    for revoking one specific ``jti`` (a single token) or ``sid`` (a whole refresh-token family) --
+    "is *this exact* key on the denylist" needs no timestamp, so those two key shapes are recorded
+    with plain :class:`ReplayGuard` and this class is not involved.
+
+    A revoked ``sub`` (principal) or ``customer_id`` (tenant) entry is different in kind, not just
+    in name: the denylist check is NOT bare membership. A revocation recorded against a ``sub`` or
+    ``customer_id`` must block every session that STARTED BEFORE the revocation, while a session
+    that starts AFTER it is a legitimate new session and must be unaffected -- otherwise every
+    future login to a once-revoked principal or tenant would be permanently denylisted, which is
+    not what recovery/offboarding mean. So the entry has to carry a VALUE (the moment of
+    revocation), and the check compares that value against a caller-supplied moment, rather than
+    just testing presence. See ``data-model.md``'s "Revocation denylist entries":
+    ``session_started_at < revoked_at``.
+
+        guard = RevocationGuard(nats_client, bucket_name="revocations", ttl_seconds=...)
+        await guard.record_revocation("sub:<principal_id>", revoked_at=cutoff)
+        blocked = await guard.is_revoked_before("sub:<principal_id>", moment=session_started_at)
+    """
+
+    def __init__(self, nats_client: "NatsClient", *, bucket_name: str, ttl_seconds: int) -> None:
+        """configure the guard; defer bucket binding until the first record.
+
+        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`; the guard
+            opens its KV bucket through :meth:`NatsClient.kv_bucket`
+        :ptype nats_client: NatsClient
+        :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
+            bucket dedicated to revocation entries, distinct from any :class:`ReplayGuard` bucket
+            sharing the same process, so the two key shapes never collide
+        :ptype bucket_name: str
+        :param ttl_seconds: how long a recorded revocation is remembered. MUST be at least as long
+            as the longest session lifetime a revocation needs to outlive (a revocation entry that
+            expires before every session it denylists has naturally ended would fail OPEN). MUST be
+            positive: a non-positive TTL would mean entries never expire, growing the bucket without
+            bound
+        :ptype ttl_seconds: int
+        :raises ValueError: when ``ttl_seconds`` is not positive
+        """
+        if ttl_seconds <= 0:
+            raise ValueError(f"RevocationGuard ttl_seconds must be positive, got {ttl_seconds}")
+        self._client = nats_client
+        self._bucket_name = bucket_name
+        self._ttl = timedelta(seconds=ttl_seconds)
+        self._bucket: "NatsKvBucket | None" = None
+        self._bucket_lock = asyncio.Lock()
+
+    @property
+    def bucket_name(self) -> str:
+        """the configured bucket suffix.
+
+        :return: bucket name
+        :rtype: str
+        """
+        return self._bucket_name
+
+    async def record_revocation(self, key: str, *, revoked_at: datetime) -> None:
+        """record (or overwrite) the revoked-at timestamp for ``key``.
+
+        Unconditional write, not create-if-absent: a second revocation call for the same key (an
+        operator re-running tenant offboarding, or narrowing an earlier cutoff) replaces the
+        effective revocation moment with the new value rather than being rejected as a duplicate.
+
+        :param key: the denylist key -- e.g. ``f"sub:{principal_id}"`` or
+            ``f"customer_id:{customer_id}"``. Hashed into a fixed, KV-safe key before storage, so
+            any key format is accepted and the raw identifier is never stored as a KV key
+        :ptype key: str
+        :param revoked_at: the moment the key is considered revoked from. MUST be timezone-aware --
+            a naive datetime cannot be compared reliably against a caller-supplied moment that may
+            come from a different clock/offset assumption
+        :ptype revoked_at: datetime
+        :raises ValueError: when ``revoked_at`` is timezone-naive
+        :raises threetears.nats.KvError: on a KV transport failure
+        """
+        if revoked_at.tzinfo is None:
+            raise ValueError("RevocationGuard.record_revocation requires a timezone-aware revoked_at")
+        bucket = await self._ensure_bucket()
+        await bucket.put(key=self._key(key), value=revoked_at.isoformat().encode("utf-8"))
+
+    async def revoked_at(self, key: str) -> datetime | None:
+        """return the stored revocation timestamp for ``key``, or ``None`` if never revoked.
+
+        :param key: the denylist key to look up
+        :ptype key: str
+        :return: the recorded revocation moment, or ``None`` if ``key`` has no revocation entry
+        :rtype: datetime | None
+        :raises threetears.nats.KvError: on a KV transport failure
+        """
+        bucket = await self._ensure_bucket()
+        raw = await bucket.get(key=self._key(key))
+        if raw is None:
+            return None
+        return datetime.fromisoformat(raw.decode("utf-8"))
+
+    async def is_revoked_before(self, key: str, *, moment: datetime) -> bool:
+        """return whether ``key``'s recorded revocation denylists something that started at
+        ``moment``.
+
+        ``True`` iff a revocation is recorded for ``key`` AND ``moment < revoked_at`` -- the
+        ``session_started_at < revoked_at`` check from ``data-model.md``'s "Revocation denylist
+        entries": something that started BEFORE the revocation is always denylisted; something
+        that starts AT OR AFTER it is unaffected. Returns ``False`` (never raises) when ``key`` has
+        no revocation entry -- that is the legitimate "not revoked" case, not a failure; a KV
+        transport failure still propagates as :class:`~threetears.nats.KvError` and the caller MUST
+        treat that as deny (fail-closed on infrastructure failure, never on absence).
+
+        :param key: the denylist key to check
+        :ptype key: str
+        :param moment: the comparison timestamp (e.g. a session's ``session_started_at``). MUST be
+            timezone-aware, for the same reason as :meth:`record_revocation`'s ``revoked_at``
+        :ptype moment: datetime
+        :return: ``True`` if ``key`` is revoked as of ``moment``, ``False`` otherwise
+        :rtype: bool
+        :raises ValueError: when ``moment`` is timezone-naive
+        :raises threetears.nats.KvError: on a KV transport failure -- the caller MUST deny
+        """
+        if moment.tzinfo is None:
+            raise ValueError("RevocationGuard.is_revoked_before requires a timezone-aware moment")
+        stored = await self.revoked_at(key)
+        if stored is None:
+            return False
+        return moment < stored
+
+    async def _ensure_bucket(self) -> "NatsKvBucket":
+        """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
+        if self._bucket is not None:
+            return self._bucket
+        async with self._bucket_lock:
+            if self._bucket is None:
+                self._bucket = await self._client.kv_bucket(
+                    name=self._bucket_name,
+                    ttl=self._ttl,
+                    # file storage: a revocation entry is a security control, not a cache -- a
+                    # restart must not silently forget an active revocation (the same fail-open
+                    # concern ReplayGuard's bucket comment documents).
+                    storage="file",
+                    create_if_missing=True,
+                    history=1,
+                )
+                log.info("RevocationGuard bound bucket %s", self._bucket_name)
+        return self._bucket
+
+    @staticmethod
+    def _key(key: str) -> str:
+        """hash the denylist key into a fixed-length, KV-safe key (also avoids storing it raw)."""
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
