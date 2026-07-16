@@ -32,6 +32,7 @@ def _base_kwargs() -> dict[str, object]:
         "timestamp": datetime.now(UTC),
         "event_type": "workspace.fs_write",
         "actor_user_id": uuid7(),
+        "acting_as_principal_id": uuid7(),
         "calling_agent_id": uuid7(),
         "owner_agent_id": uuid7(),
         "customer_id": uuid7(),
@@ -64,6 +65,7 @@ def test_optional_identity_fields_default_none() -> None:
     )
 
     assert envelope.actor_user_id is None
+    assert envelope.acting_as_principal_id is None
     assert envelope.calling_agent_id is None
     assert envelope.owner_agent_id is None
     assert envelope.customer_id is None
@@ -72,6 +74,32 @@ def test_optional_identity_fields_default_none() -> None:
     assert envelope.conversation_id is None
     assert envelope.outcome == "success"
     assert envelope.details == {}
+
+
+def test_acting_as_principal_id_field_round_trips() -> None:
+    """dual-identity impersonation audit: acting_as_principal_id (the ADMIN)
+    is distinct from actor_user_id (the impersonation TARGET), and both
+    survive a JSON round trip independently."""
+    admin_id = uuid7()
+    target_id = uuid7()
+    envelope = AuditEvent(
+        id=uuid7(),
+        timestamp=datetime.now(UTC),
+        event_type="identity.impersonation.start",
+        actor_user_id=target_id,
+        acting_as_principal_id=admin_id,
+        action="start",
+        correlation_id=uuid7(),
+    )
+
+    assert envelope.actor_user_id == target_id
+    assert envelope.acting_as_principal_id == admin_id
+    assert envelope.actor_user_id != envelope.acting_as_principal_id
+
+    wire = envelope.model_dump_json()
+    decoded = AuditEvent.model_validate_json(wire)
+    assert decoded.acting_as_principal_id == admin_id
+    assert decoded.actor_user_id == target_id
 
 
 def test_conversation_id_field_round_trips() -> None:
