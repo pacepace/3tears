@@ -138,6 +138,20 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "precisely because the mappings are immutable). Its sibling engagement "
         "resolver deliberately has NO cache because scope IS mutable",
     ),
+    # -- agent-tools: ToolRelevanceIndex embedding cache --
+    (
+        "agent-tools/relevance.py",
+        "ToolRelevanceIndex",
+        "_cache",
+        "per-instance memo of tool-set-content-hash -> {tool_name: embedding "
+        "vector}, LRU-bounded (cache_size). Purely a performance optimization "
+        "over re-embedding an unchanged tool set — a cache miss (cold start, "
+        "eviction, or content-hash change from a live-discovered/admin-edited "
+        "tool) just re-embeds via the batch embed call, so correctness never "
+        "depends on a hit. No cross-instance coherence needed for the same "
+        "reason: a pod that misses just pays one extra embedding call, same "
+        "shape as the already-allowlisted HubObjectResolver._cache above",
+    ),
     # -- agent-tools: DynamicToolPod per-spec live-registration bookkeeping --
     (
         "agent-tools/dynamic_pod.py",

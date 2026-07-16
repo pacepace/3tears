@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-channels"
-version = "0.17.0"
+version = "0.17.1"
 description = "Unified message protocol for channel adapters in the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
