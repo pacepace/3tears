@@ -25,12 +25,12 @@ and most solve it partially.
 
 ## Design philosophy
 
-Nothing in `observe` activates itself. It follows the same "library
-instruments, host configures" principle as the rest of the platform:
-`observe` produces structured log records and spans, but the host decides
-where they go, at what level, and whether tracing is even installed. This
-keeps `observe` usable in a library that itself has no opinion on your
-logging infrastructure.
+Nothing in `observe` activates itself. It follows the same "no implicit
+connections; dependency injection only" principle as the rest of the
+platform: `observe` produces structured log records and spans, but the host
+decides where they go, at what level, and whether tracing is even
+installed. This keeps `observe` usable in a library that itself has no
+opinion on your logging infrastructure.
 
 ## When to adopt
 
