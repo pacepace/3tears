@@ -134,6 +134,21 @@ The word "source" does stretch to cover a thing you *act on* rather than draw fr
 stretched**: `api_import` is something you POST to, not something you source from. Devops is the same
 stretch, not a new one.
 
+**Kind count: ONE command kind, with a driver axis beneath it.** Not three. This mirrors the two-axis
+split the registry already has: `kind` says *what sort of source a row is*; `DataSourceType` says
+*which driver reaches it*, and is meaningful only for `kind='datasource'`. A command kind takes a
+driver axis of kubectl / aws / flyctl.
+
+The honesty test for that choice is whether the three CLIs share a shape. Their *semantics* differ —
+kubectl is verb-first (`kubectl delete deployment`), while aws and flyctl are noun-first
+(`aws ec2 terminate-instances`, `fly apps destroy`). But the **enforcement** shape does not care:
+model an invocation as `(binary, ordered token path, flags)` and all three fit —
+`[delete, deployment] + {-n, --dry-run}`, `[ec2, terminate-instances] + {--instance-ids}`,
+`[apps, destroy] + {-a}`. A constraint says *"this token path requires these flags"*, which is
+driver-agnostic; anything genuinely driver-specific dispatches on the driver axis. **If a concrete
+trap later proves the grammars cannot share one analyzer, that is the signal to split the kind — not
+a reason to pre-split it now** (design rule 4).
+
 **Naming — the full sweep.** `datasource_id` is not a name that is *about to* become wrong. **It is
 wrong now** (verified): `v014`'s FK is to `platform.datasources(id)` with **no kind constraint**, the
 hub's knowledge code applies no kind filter, and `agent-knowledge` never mentions `kind` at all. An
@@ -261,24 +276,20 @@ claims (D3) were wrong.
 
 ## Open
 
-- **One command kind, or three?** `CapabilitySourceKind` discriminates by *sort of thing*, with a
-  separate driver axis (`DataSourceType`) for *how to reach it* — meaningful only for
-  `kind='datasource'`. That precedent suggests **one** command-ish kind with a driver axis of
-  kubectl / aws / flyctl, rather than three kinds. It shapes the enforcement analyzer (one command
-  grammar or three) and the `Driver` question below. **Decide before adding any kind.**
 - **A real (smaller) coupling finding.** `agent-knowledge` reaches the registry by **raw inline SQL**
   (`collections.py:372,594`: `SELECT origin_datasource_id FROM datasources`) rather than through
   `threetears.datasources` — which already exposes `resolve_origin_datasource_id()`
   (`datasources/collections.py:443`) doing exactly that. So the KNW-77 widening is duplicated, and
   the cross-package coupling is invisible to the `dependency.missing` enforcement check
   (`docs/separate-concerns-decisions.md`), which only sees *imports*. Not a blocker; worth a shard.
-- **Does a command kind get a `Driver`?** `threetears.datasources.drivers` is a factory + extras over
-  SQL backends, and `Driver.fetch()` is SQL-shaped. A `kubectl` kind does not fit it. Either a
-  sibling execution abstraction in 3tears, or the product owns command execution outright. **Decide
-  before any devops build**; it does not block task-01–04.
-- **Is "capability source" right for a cluster?** A datasource sources data; an `api_import` sources
-  tools; a cluster is a thing you *act on*. Arguably still a capability source — but it stretches the
-  word, and the word is already load-bearing. **Ask before adding the kind.**
+- **What *is* the command driver?** D3 chose a driver axis, so something must be the driver — and it
+  is **not** a `Driver`. `Driver.fetch()` returns rows; a command executor returns an exit code plus
+  stdout/stderr. They are siblings, not subclasses. The open question is **where the sibling lives**:
+  the `threetears.datasources` precedent puts execution transport in 3tears (it owns the asyncpg /
+  redshift drivers) and leaves the *tool* to the product — which would put a command executor in
+  3tears too. That is the precedent-consistent answer, but it means 3tears grows shell-out execution.
+  **Deliberately not decided here** (design rule 4): decide it when a devops build is real, against a
+  concrete need. Blocks nothing in tasks 01–05.
 - **The command-side enforcement shape.** Deliberately not designed — design rule 4. When a concrete
   kubectl trap exists it lands as an `EntryEnforcement` sibling in core (inert) plus an analyzer in
   the product, mirroring the SQL flow.
