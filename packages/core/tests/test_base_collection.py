@@ -19,6 +19,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.nats.errors import KvError
 
 
 def _make_metadata() -> MetaData:
@@ -998,6 +999,70 @@ class TestL2KeyGrammarSafe:
         coll = StubCollection(registry, config_always)
         assert coll.l2_key("e1") == coll.l2_key("e1")
         assert coll.l2_key("cust:story:f.md") == coll.l2_key("cust:story:f.md")
+
+
+class TestL2BucketResolutionDegradesGracefully:
+    """_ensure_kv()'s KvError must degrade the same way a get/put/delete KvError does.
+
+    regression coverage for a bug where ``kv = await self._ensure_kv()`` sat
+    outside each method's ``try/except KvError`` block -- so a bucket-open
+    failure (e.g. right after a NATS outage begins, before this collection's
+    bucket handle has ever been resolved) propagated uncaught instead of
+    degrading to None/False like every other L2 transport failure, breaking
+    the "L2 is best-effort, L3 is source of truth" contract these methods'
+    own docstrings promise.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_from_l2_degrades_on_bucket_open_failure(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a KvError raised while first-opening the bucket degrades _get_from_l2 to None."""
+        nats = _make_nats_mock()
+        nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        result = await coll._get_from_l2("e1")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_save_to_l2_degrades_on_bucket_open_failure(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a KvError raised while first-opening the bucket degrades _save_to_l2 to False."""
+        nats = _make_nats_mock()
+        nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        result = await coll._save_to_l2("e1", {"id": "e1", "name": "Alice"})
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_from_l2_degrades_on_bucket_open_failure(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a KvError raised while first-opening the bucket degrades _delete_from_l2 to False."""
+        nats = _make_nats_mock()
+        nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        result = await coll._delete_from_l2("e1")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_non_kverror_from_bucket_open_still_propagates(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a genuine programming error in bucket resolution still propagates loudly."""
+        nats = _make_nats_mock()
+        nats.kv_bucket = AsyncMock(side_effect=TypeError("bad bucket name"))
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        with pytest.raises(TypeError):
+            await coll._get_from_l2("e1")
 
 
 # ---------------------------------------------------------------------------
