@@ -1,0 +1,6 @@
+# Vendored copy of the sibling 3tears-keda-autoscaling library, produced by
+# `helm dependency build` purely for this CI/local proof chart. Regenerable from
+# Chart.lock + the file:// dependency; not a deliberately vendored release artifact
+# (unlike ../../charts/keda-2.20.1.tgz, which IS committed, matching
+# 14-eng-ai-bot/k8s/helm/aibots's own convention for its vendored KEDA subchart).
+charts/*.tgz

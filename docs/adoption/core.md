@@ -36,11 +36,11 @@ L3 -- the source of truth -- then promotes into L1 and L2, then broadcasts a
 cross-pod invalidation. A miss at any tier falls through to the next: the
 stack degrades gracefully rather than failing.
 
-**The library instruments, the host configures.** Core never opens a
-connection or reads an environment variable on your behalf. You build the
-backing clients and own their lifecycle; core just uses them. L1 holds
-nothing durable -- restart the process and it's empty, rebuilt from L3.
-L3 is the only tier you cannot omit.
+**Core makes no connections; the host injects everything it needs to talk
+to.** Core never opens a connection or reads an environment variable on your
+behalf. You build the backing clients and own their lifecycle; core just
+uses them. L1 holds nothing durable -- restart the process and it's empty,
+rebuilt from L3. L3 is the only tier you cannot omit.
 
 `3tears-nats` is a hard package dependency of `3tears` -- `pip install
 3tears` always installs the NATS client library, whether or not you use it.

@@ -146,10 +146,13 @@ Whenever the package set changes, update `docs/adoption/README.md`:
 - "How to adopt" entry points, if a new package changes the minimal-install
   story for a common use case
 
-Do not touch the "What 3tears is," "Platform-wide design principles," or
-"Core mental model" sections unless the underlying platform philosophy has
-actually changed -- these are stable and should not churn on every package
-addition.
+Do not touch the "What 3tears is," "Platform-wide design principles," "Core
+mental model," "The problem it solves," or "Testing your integration"
+sections unless the underlying platform philosophy has actually changed --
+these are stable and should not churn on every package addition.
+
+"External references" is different: its content (which technologies get
+listed) is stable, but its links are not -- see the verification step below.
 
 ## 5. Verify before finishing
 
@@ -161,6 +164,13 @@ addition.
   `docs/adoption/` (other than `README.md` and `PROMPT.md`) corresponds to a
   real package.
 - No doc invents a design rationale that isn't traceable to source material.
+- Every link in README.md's "External references" table still resolves and
+  still points to the technology it claims to -- not a dead redirect, and
+  not a different (e.g. paid/enterprise) product than the one 3tears
+  actually composes with. Fetch each one live; do not assume a link
+  verified in a prior run still holds. External docs move and products get
+  discontinued or restructured faster than this repo does -- that's exactly
+  what happened to the MinIO link this table used to carry.
 - **A package's own README can be stale.** If a doc names a specific class,
   method, or hook (e.g. a middleware hook name, a builder function), verify
   it still exists in current `src/` -- don't just echo the package README.

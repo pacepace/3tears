@@ -1,0 +1,10 @@
+apiVersion: v2
+name: example-consumer
+description: Throwaway consumer chart proving 3tears-keda-autoscaling's threetears.scaledObject helper end-to-end. Not a real deployable -- CI proof only.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: 3tears-keda-autoscaling
+    version: "0.1.0"
+    repository: "file://../.."

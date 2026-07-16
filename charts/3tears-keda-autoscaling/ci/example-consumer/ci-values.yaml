@@ -1,0 +1,19 @@
+# Test overlay for the autoscaling worked example. Flips the two gates that render the
+# example ScaledObject, so `helm template` proves the `threetears.scaledObject` helper
+# end-to-end WITHOUT enabling autoscaling in any real environment overlay:
+#
+#   helm template ci/example-consumer -f ci/example-consumer/ci-values.yaml \
+#     --show-only templates/example-scaledobject.yaml
+#
+# Equivalent to:
+#   --set autoscaling.enabled=true --set exampleWorker.autoscaling.enabled=true
+#
+# This overlay does NOT set keda.install=true: the ScaledObject CRD object renders
+# independently of whether a consumer installs the KEDA operator (the recommended path
+# installs KEDA out of band -- see README.md).
+autoscaling:
+  enabled: true
+
+exampleWorker:
+  autoscaling:
+    enabled: true

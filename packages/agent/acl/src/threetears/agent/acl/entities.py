@@ -35,6 +35,7 @@ from threetears.core.entities.base import BaseEntity
 __all__ = [
     "GroupEntity",
     "GroupMemberEntity",
+    "ImpersonationGateEntity",
     "NamespaceEntity",
     "RoleAssignmentEntity",
     "RoleEntity",
@@ -282,3 +283,29 @@ class NamespaceEntity(BaseEntity):
         :rtype: Any
         """
         return self._row_id
+
+
+class ImpersonationGateEntity(BaseEntity):
+    """row in ``impersonation_gates`` -- the per-tenant admin act-as gate
+    (security-model.md's Impersonation paragraph: "the gate (per-tenant
+    on/off + optional TTL, request/grant audit trail) lives in agent-acl
+    -- RBAC policy, not IdP logic").
+
+    Single-column primary key (``customer_id``) -- one gate row per
+    tenant, mirroring :class:`RoleEntity`'s plain (non-composite) shape
+    rather than the ``row_scope``-partitioned shape
+    :class:`GroupEntity`/:class:`RoleAssignmentEntity`/:class:`NamespaceEntity`
+    use. There is no platform-scope gate to discriminate: impersonation is
+    inherently tenant-scoped (nothing in security-model.md describes a
+    platform-wide act-as), so the row_scope partition column those three
+    entities carry has no analog here.
+
+    fields: ``customer_id`` / ``status`` (``disabled`` | ``requested`` |
+    ``enabled``) / ``requested_at`` / ``requested_by`` / ``granted_at`` /
+    ``granted_by`` / ``ttl_seconds`` / ``expires_at`` / ``date_created`` /
+    ``date_updated``. See :class:`~threetears.agent.acl.collections.
+    ImpersonationGateCollection` for the state-transition + TTL-self-revert
+    read logic built on top of these columns.
+    """
+
+    primary_key_field: str = "customer_id"
