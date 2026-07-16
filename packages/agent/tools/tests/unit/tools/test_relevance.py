@@ -206,7 +206,9 @@ async def test_cache_invalidates_on_tool_added_or_removed() -> None:
 
 
 async def test_cache_is_bounded_lru() -> None:
-    embedder = _FakeEmbeddings({}, )
+    embedder = _FakeEmbeddings(
+        {},
+    )
     index = ToolRelevanceIndex(embedder=embedder, top_k=1, cache_size=2)
 
     # Three distinct tool sets (each > top_k so select() actually embeds),
@@ -363,9 +365,7 @@ async def test_tool_search_surfaces_tool_absent_from_initial_top_k() -> None:
         limit=1,
     )
 
-    result_text = await search_tool.ainvoke(
-        {"query": "send a message to the dev session"}
-    )
+    result_text = await search_tool.ainvoke({"query": "send a message to the dev session"})
 
     assert "session_send" in result_text
     assert len(hits) == 1

@@ -209,9 +209,7 @@ class ToolRelevanceIndex:
             self._cache.popitem(last=False)
         return embeddings
 
-    async def _rank(
-        self, tools: list[BaseTool], query: str
-    ) -> tuple[list[BaseTool], str | None]:
+    async def _rank(self, tools: list[BaseTool], query: str) -> tuple[list[BaseTool], str | None]:
         """Embed + rank; returns ``(ranked_tools, fallback_reason)``.
 
         ``fallback_reason`` is ``None`` on success. On any embedding failure
@@ -252,13 +250,10 @@ class ToolRelevanceIndex:
             return ToolSelectionResult(selected=list(tools))
 
         try:
-            ranked, fallback_reason = await asyncio.wait_for(
-                self._rank(tools, query), timeout=self._latency_ceiling_s
-            )
+            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
         except TimeoutError:
             _log.warning(
-                "tool-relevance selection exceeded latency ceiling; "
-                "falling back to full catalog",
+                "tool-relevance selection exceeded latency ceiling; falling back to full catalog",
                 extra={
                     "extra_data": {
                         "tool_count": len(tools),
@@ -266,14 +261,10 @@ class ToolRelevanceIndex:
                     }
                 },
             )
-            return ToolSelectionResult(
-                selected=list(tools), fallback_used=True, fallback_reason="latency_ceiling"
-            )
+            return ToolSelectionResult(selected=list(tools), fallback_used=True, fallback_reason="latency_ceiling")
 
         if fallback_reason is not None:
-            return ToolSelectionResult(
-                selected=list(tools), fallback_used=True, fallback_reason=fallback_reason
-            )
+            return ToolSelectionResult(selected=list(tools), fallback_used=True, fallback_reason=fallback_reason)
         return ToolSelectionResult(selected=ranked[: self._top_k])
 
     async def search(self, tools: list[BaseTool], query: str, limit: int = 5) -> list[BaseTool]:
@@ -303,9 +294,7 @@ class ToolRelevanceIndex:
         if not tools:
             return []
         try:
-            ranked, fallback_reason = await asyncio.wait_for(
-                self._rank(tools, query), timeout=self._latency_ceiling_s
-            )
+            ranked, fallback_reason = await asyncio.wait_for(self._rank(tools, query), timeout=self._latency_ceiling_s)
         except TimeoutError:
             _log.warning(
                 "tool-relevance search exceeded latency ceiling; returning no hits",
@@ -327,8 +316,7 @@ class _ToolSearchInput(BaseModel):
 
     query: str = Field(
         description=(
-            "Natural-language description of the tool you need, e.g. "
-            "'a tool to send a message to a dev agent session'"
+            "Natural-language description of the tool you need, e.g. 'a tool to send a message to a dev agent session'"
         ),
     )
 
