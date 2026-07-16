@@ -38,13 +38,16 @@ from __future__ import annotations
 
 import json as _json
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
+    ENUM_TYPE,
+    INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
     UUID_TYPE,
@@ -57,6 +60,7 @@ from threetears.observe import get_logger
 from threetears.agent.acl.entities import (
     GroupEntity,
     GroupMemberEntity,
+    ImpersonationGateEntity,
     NamespaceEntity,
     RoleAssignmentEntity,
     RoleEntity,
@@ -74,6 +78,8 @@ log = get_logger(__name__)
 __all__ = [
     "GroupCollection",
     "GroupMemberCollection",
+    "ImpersonationGateCollection",
+    "ImpersonationGateStatus",
     "NamespaceCollection",
     "RoleAssignmentCollection",
     "RoleCollection",
@@ -1789,3 +1795,270 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             if permitted:
                 result.append(entity)
         return result
+
+
+class ImpersonationGateStatus(StrEnum):
+    """``impersonation_gates.status`` -- build-plan.md Chunk 13 (identity-core
+    repo), security-model.md's Impersonation paragraph: "the gate (per-tenant
+    on/off + optional TTL, request/grant audit trail) lives in agent-acl".
+
+    ``DISABLED -> REQUESTED`` (a customer admin's request) ``-> ENABLED`` (a
+    platform-admin grant, optionally TTL'd). An ``ENABLED`` gate whose TTL has
+    elapsed reads back as ``DISABLED`` on the next read
+    (:meth:`ImpersonationGateCollection.get_effective_status`) without a
+    separate write -- test-specifications.md's "Flow: Admin impersonation"
+    Edge Case: "gate self-reverts after the TTL elapses".
+    """
+
+    DISABLED = "disabled"
+    REQUESTED = "requested"
+    ENABLED = "enabled"
+
+
+_IMPERSONATION_GATE_STATUS_VALUES: tuple[str, ...] = tuple(status.value for status in ImpersonationGateStatus)
+
+_IMPERSONATION_GATE_COLUMNS = (
+    "customer_id, status, requested_at, requested_by, granted_at, granted_by, "
+    "ttl_seconds, expires_at, date_created, date_updated"
+)
+
+
+class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity]):
+    """three-tier collection for ``impersonation_gates`` rows -- one row per
+    tenant, the per-tenant admin act-as gate (security-model.md's
+    Impersonation paragraph; entities.py's :class:`ImpersonationGateEntity`
+    docstring explains the single-PK shape).
+
+    Unlike :class:`GroupCollection`/:class:`RoleAssignmentCollection`, the
+    domain methods below (:meth:`get_effective_status`, :meth:`request_enable`,
+    :meth:`grant_enable`, :meth:`disable`) talk to :attr:`l3_pool` directly
+    with parameterized SQL rather than routing through the generic
+    :meth:`~threetears.core.collections.base.BaseCollection.save_entity`
+    three-tier CAS path -- mirrors :meth:`GroupCollection.find_by_id`'s /
+    :meth:`GroupCollection.get_by_managed_key`'s existing style (direct
+    ``l3_pool.fetchrow`` + :meth:`_coerce_row`) rather than inventing a new
+    persistence pattern. A security gate this is deliberately read live on
+    every check (no L1/L2 caching layer for gate reads) -- identity-core's
+    OWN `TenantAuthPolicyService` (the sibling per-tenant policy read in the
+    identity-core repo) makes the identical choice for the same reason: a
+    stale cached read of a security gate is a worse failure mode than one
+    extra round trip per check.
+    """
+
+    primary_key_column: str = "customer_id"
+    schema = TableSchema(
+        name="impersonation_gates",
+        primary_key="customer_id",
+        columns=[
+            Column("customer_id", UUID_TYPE),
+            Column(
+                "status",
+                ENUM_TYPE,
+                enum_type=_IMPERSONATION_GATE_STATUS_VALUES,
+                enum_name="impersonation_gate_status",
+                server_default=f"'{ImpersonationGateStatus.DISABLED.value}'",
+            ),
+            Column("requested_at", DATETIMETZ_TYPE, nullable=True),
+            Column("requested_by", UUID_TYPE, nullable=True),
+            Column("granted_at", DATETIMETZ_TYPE, nullable=True),
+            Column("granted_by", UUID_TYPE, nullable=True),
+            # NULL ttl_seconds/expires_at = an enabled gate with no TTL (stays
+            # enabled until explicitly disabled) -- security-model.md: "per-
+            # tenant on/off + OPTIONAL TTL".
+            Column("ttl_seconds", INT_TYPE, nullable=True),
+            Column("expires_at", DATETIMETZ_TYPE, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True, server_default="now()"),
+            Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
+        ],
+        cas_column="date_updated",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: ``"impersonation_gates"``
+        :rtype: str
+        """
+        return "impersonation_gates"
+
+    @property
+    def entity_class(self) -> type[ImpersonationGateEntity]:
+        """return entity class for this collection.
+
+        :return: :class:`ImpersonationGateEntity`
+        :rtype: type[ImpersonationGateEntity]
+        """
+        return ImpersonationGateEntity
+
+    async def get_effective_status(self, customer_id: UUID, *, now: datetime | None = None) -> ImpersonationGateStatus:
+        """Read the gate's current status, applying TTL self-revert.
+
+        No row on file reads as ``DISABLED`` (a tenant that has never
+        requested impersonation is gated off by default -- same "absent row
+        = the safe default" convention `identity_core/auth/policy.py`'s
+        `TenantAuthPolicyService.get` uses for `mfa_enforcement`). An
+        ``ENABLED`` row whose ``expires_at`` has passed reads back as
+        ``DISABLED`` without a separate write -- the write-back (so a
+        subsequent admin listing shows ``disabled`` rather than a stale
+        ``enabled`` row) is Hub-repo sweep-job work, out of this package's
+        scope; the read-time guarantee alone is what test-specifications.md's
+        Edge Case requires and is what every caller of this method actually
+        observes.
+
+        :param customer_id: tenant to check
+        :ptype customer_id: UUID
+        :param now: injectable clock for deterministic TTL-expiry tests;
+            defaults to the real current time
+        :ptype now: datetime | None
+        :return: the effective status
+        :rtype: ImpersonationGateStatus
+        """
+        if self.l3_pool is None:
+            return ImpersonationGateStatus.DISABLED
+        row = await self.l3_pool.fetchrow(
+            f"SELECT {_IMPERSONATION_GATE_COLUMNS} FROM impersonation_gates WHERE customer_id = $1",
+            customer_id,
+        )
+        if row is None:
+            return ImpersonationGateStatus.DISABLED
+        data = self._coerce_row(dict(row))
+        status = ImpersonationGateStatus(data["status"])
+        if status is ImpersonationGateStatus.ENABLED and data.get("expires_at") is not None:
+            current = now if now is not None else datetime.now(UTC)
+            if current >= data["expires_at"]:
+                return ImpersonationGateStatus.DISABLED
+        return status
+
+    async def request_enable(
+        self, customer_id: UUID, *, requested_by: UUID, now: datetime | None = None
+    ) -> ImpersonationGateEntity:
+        """Transition ``disabled -> requested`` -- a customer admin's request
+        for impersonation to be enabled on their tenant. Idempotent re-request
+        (already ``requested`` or ``enabled``) simply re-stamps
+        ``requested_at``/``requested_by`` rather than rejecting -- there is no
+        "double request" error state described anywhere in the artifacts.
+
+        :param customer_id: requesting tenant
+        :ptype customer_id: UUID
+        :param requested_by: the customer admin principal making the request
+        :ptype requested_by: UUID
+        :param now: injectable clock for deterministic tests
+        :ptype now: datetime | None
+        :return: the persisted gate row
+        :rtype: ImpersonationGateEntity
+        """
+        current = now if now is not None else datetime.now(UTC)
+        assert self.l3_pool is not None, "ImpersonationGateCollection requires an l3_pool"
+        row = await self.l3_pool.fetchrow(
+            f"""
+            INSERT INTO impersonation_gates (customer_id, status, requested_at, requested_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (customer_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    requested_at = EXCLUDED.requested_at,
+                    requested_by = EXCLUDED.requested_by,
+                    date_updated = now()
+            RETURNING {_IMPERSONATION_GATE_COLUMNS}
+            """,
+            customer_id,
+            ImpersonationGateStatus.REQUESTED.value,
+            current,
+            requested_by,
+        )
+        if row is None:
+            raise RuntimeError("impersonation_gates upsert (request_enable) returned no row")
+        data = self._coerce_row(dict(row))
+        return self.entity_class(data, is_new=False, collection=self)
+
+    async def grant_enable(
+        self,
+        customer_id: UUID,
+        *,
+        granted_by: UUID,
+        ttl_seconds: int | None,
+        now: datetime | None = None,
+    ) -> ImpersonationGateEntity:
+        """Transition ``requested -> enabled`` -- a platform admin's grant,
+        optionally TTL'd. Callable even absent a prior ``request_enable`` row
+        (a platform admin can pre-emptively enable a tenant without waiting
+        on a customer request) -- upserts rather than requiring a pre-existing
+        ``requested`` row, since no artifact describes "grant without a
+        pending request" as an error case.
+
+        :param customer_id: tenant to enable
+        :ptype customer_id: UUID
+        :param granted_by: the platform admin principal granting it
+        :ptype granted_by: UUID
+        :param ttl_seconds: gate auto-reverts to ``disabled`` this many
+            seconds after ``granted_at``; ``None`` = no auto-revert
+        :ptype ttl_seconds: int | None
+        :param now: injectable clock for deterministic tests
+        :ptype now: datetime | None
+        :return: the persisted gate row
+        :rtype: ImpersonationGateEntity
+        """
+        current = now if now is not None else datetime.now(UTC)
+        expires_at = current + timedelta(seconds=ttl_seconds) if ttl_seconds is not None else None
+        assert self.l3_pool is not None, "ImpersonationGateCollection requires an l3_pool"
+        row = await self.l3_pool.fetchrow(
+            f"""
+            INSERT INTO impersonation_gates (customer_id, status, granted_at, granted_by, ttl_seconds, expires_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (customer_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    granted_at = EXCLUDED.granted_at,
+                    granted_by = EXCLUDED.granted_by,
+                    ttl_seconds = EXCLUDED.ttl_seconds,
+                    expires_at = EXCLUDED.expires_at,
+                    date_updated = now()
+            RETURNING {_IMPERSONATION_GATE_COLUMNS}
+            """,
+            customer_id,
+            ImpersonationGateStatus.ENABLED.value,
+            current,
+            granted_by,
+            ttl_seconds,
+            expires_at,
+        )
+        if row is None:
+            raise RuntimeError("impersonation_gates upsert (grant_enable) returned no row")
+        data = self._coerce_row(dict(row))
+        return self.entity_class(data, is_new=False, collection=self)
+
+    async def disable(self, customer_id: UUID, *, now: datetime | None = None) -> ImpersonationGateEntity | None:
+        """Explicitly revoke -- ``* -> disabled``, from any prior status.
+
+        The mid-session revocation path test-specifications.md's Error Case
+        needs ("gate revoked mid-session stops the next refresh") calls this;
+        the caller (identity-core's `impersonation/session.py`) re-checks
+        :meth:`get_effective_status` on every refresh, so a revoke here is
+        visible on the very next refresh attempt, not just the next TTL
+        sweep.
+
+        :param customer_id: tenant to disable
+        :ptype customer_id: UUID
+        :param now: injectable clock for deterministic tests
+        :ptype now: datetime | None
+        :return: the updated row, or ``None`` if no gate row existed yet (a
+            no-op disable on a tenant that never had a gate row is not an
+            error -- the effective status was already ``disabled``)
+        :rtype: ImpersonationGateEntity | None
+        """
+        current = now if now is not None else datetime.now(UTC)
+        assert self.l3_pool is not None, "ImpersonationGateCollection requires an l3_pool"
+        row = await self.l3_pool.fetchrow(
+            f"""
+            UPDATE impersonation_gates
+               SET status = $2, date_updated = $3
+             WHERE customer_id = $1
+            RETURNING {_IMPERSONATION_GATE_COLUMNS}
+            """,
+            customer_id,
+            ImpersonationGateStatus.DISABLED.value,
+            current,
+        )
+        if row is None:
+            return None
+        data = self._coerce_row(dict(row))
+        return self.entity_class(data, is_new=False, collection=self)

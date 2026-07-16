@@ -8,10 +8,11 @@ parse them via the shared
 mutates on import.
 
 the only event defined here today is :class:`ConversationSummarizedEvent`,
-fired by the auto-summarizer when older messages have been compressed
-into a single in-context summary so the conversation can continue under
-its token budget. additional conversation-lifecycle events (renamed,
-archived, etc.) can register here as the surface grows.
+fired both by the auto-summarizer (compressing older messages into a
+single in-context summary so the conversation can continue under its
+token budget) and by an explicit, agent-invoked summarize-and-persist
+action. additional conversation-lifecycle events (renamed, archived,
+etc.) can register here as the surface grows.
 """
 
 from __future__ import annotations
@@ -24,29 +25,37 @@ __all__ = ["ConversationSummarizedEvent"]
 
 
 class ConversationSummarizedEvent(FrameworkEvent):
-    """fired when an auto-summarizer has compressed older messages.
+    """fired whenever a range of conversation messages has been summarized,
+    whether ephemerally (auto-compaction) or durably (an explicit persist
+    action).
 
-    the in-context summary becomes the only artifact of the older
-    messages for subsequent turns -- the originals stay in storage but
-    are no longer in the prompt. consumers typically surface a
-    "earlier messages summarized" affordance in the ui so the user
-    knows what happened.
+    consumers typically surface a "messages summarized" affordance in the
+    ui so the user knows what happened, regardless of which producer fired
+    it -- the two producers differ only in ``persisted``.
 
-    note: this event reports the auto-summarizer's in-context summary.
-    the v0.14.0 transcript-chunks ``conversation_summarize`` tool that
-    PERSISTS summaries as durable memory chunks is a separate concern
-    and dispatches its own event surface when it lands.
+    correction: an earlier revision of this docstring said the durable,
+    persisting producer "dispatches its own event surface when it lands" --
+    that never happened, and the two producers were never unified until now.
+    they share this one event type, distinguished by ``persisted``, rather
+    than the ui needing to know about two separate event shapes for what is,
+    from the user's perspective, the same kind of thing happening.
 
     :ivar messages_summarized: count of messages folded into the summary
     :ivar summary_text: the assembled summary text, or ``None`` when the
         producer did not surface the text (some auto-summarizer impls
         embed the summary directly into the next system message and do
         not surface it as a separate field)
+    :ivar persisted: ``True`` when the summary was written as a durable,
+        embedded, searchable memory (an explicit agent action); ``False``
+        for the auto-summarizer's ephemeral in-context-only compaction.
+        The auto-summarizer must NEVER set this ``True`` -- durable
+        persistence is exclusively an explicit, agent-chosen action.
     """
 
     type: Literal["conversation_summarized"] = "conversation_summarized"
     messages_summarized: int = 0
     summary_text: str | None = None
+    persisted: bool = False
 
 
 def _register_conversations_events(registry: object) -> None:
