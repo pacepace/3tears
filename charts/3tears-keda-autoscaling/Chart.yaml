@@ -1,0 +1,46 @@
+apiVersion: v2
+name: 3tears-keda-autoscaling
+description: Reusable KEDA ScaledObject Helm helper for 3tears consumers -- event-driven autoscaling (NATS-JetStream lag, cpu, prometheus, ...) via a trigger-agnostic named template, plus an opt-in vendored KEDA operator dependency.
+type: library
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: 3tears
+keywords:
+  - keda
+  - autoscaling
+  - nats-jetstream
+# KEDA is an OPT-IN prerequisite, never bundled runtime. It installs cluster-wide CRDs +
+# an operator, so a consumer of this library chart must not fight a cluster that already
+# runs a SHARED KEDA. The dependency is gated behind `global.keda.install` (default
+# false, set in a consuming chart's own values under the `global:` block): the
+# RECOMMENDED path is the one-line documented prereq
+# `helm install keda kedacore/keda -n keda --create-namespace` (see README.md); flip
+# `global.keda.install=true` only when a consumer wants to own the KEDA operator
+# lifecycle itself. With the flag false the subchart's templates render NOTHING, so the
+# vendored dependency is inert on a KEDA-less cluster.
+#
+# MUST be `global.keda.install`, not a bare `keda.install`: this dependency is declared
+# on the LIBRARY chart (this file), one level of subchart nesting below a consuming
+# chart -- a `condition:` path is evaluated against the values AS SEEN FROM the chart
+# that declares the dependency, so a bare `keda.install` set at a consuming chart's own
+# top level would never reach this scope (confirmed by hitting exactly this bug during
+# this chart's initial build: KEDA operator resources rendered by default with a bare
+# `keda.install` condition, since example-consumer's top-level `keda:` block never
+# propagated down into this library's nested scope). Helm's `global` values ARE passed
+# unmodified into every subchart at every nesting depth, which is the only reliable way
+# to gate a dependency declared two-or-more levels down from the values a consumer
+# actually edits.
+#
+# based on 14-eng-ai-bot/k8s/helm/aibots/Chart.yaml's own vendoring approach
+# (docs/resilience/scale-task-00-keda-chart-gate.md) -- same pinned version, same
+# vendored tgz, per 3tears-migration shard 19b's explicit instruction to reuse that
+# mechanism rather than invent a new one; the condition path itself had to change from
+# the Hub's bare `keda.install` to `global.keda.install` because the Hub declares this
+# dependency directly on its own top-level chart (zero nesting), not on a library a
+# consumer depends on (one level of nesting) -- see comment above.
+dependencies:
+  - name: keda
+    version: "2.20.1"
+    repository: https://kedacore.github.io/charts
+    condition: global.keda.install

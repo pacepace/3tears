@@ -112,6 +112,7 @@ __all__ = [
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "JetStreamPullConsumer",
+    "JetStreamPushConsumer",
     "NatsClient",
     "ReconnectCallback",
     "Subscription",
@@ -424,6 +425,99 @@ class Subscription:
             await self.dispatch_task
         except asyncio.CancelledError, Exception:  # noqa: BLE001
             pass
+        self._closed = True
+
+
+class JetStreamPushConsumer:
+    """opaque handle returned by :meth:`NatsClient.jetstream_subscribe_durable`.
+
+    fixes a type mismatch bug: :meth:`jetstream_subscribe_durable` used to
+    return nats-py's raw JetStream push-subscription object directly (see
+    ``js.subscribe(cb=...)``), which callers naturally tried to hand back
+    to :meth:`NatsClient.unsubscribe` — but that method expects a
+    :class:`Subscription` (``.is_closed`` / ``.mark_closed()``), which the
+    raw object does not have, raising ``AttributeError`` at teardown. every
+    caller following the pattern documented on :meth:`subscribe` (get a
+    handle, pass it to ``unsubscribe()``) hit this the first time they
+    actually stopped a durable push consumer.
+
+    this class is NOT a :class:`Subscription` and is NOT passed to
+    :meth:`NatsClient.unsubscribe` — call :meth:`stop` directly on the
+    handle instead, matching :class:`JetStreamPullConsumer`'s own
+    established pattern (each subscription style owns its own handle
+    type and teardown method, rather than force-fitting every style
+    through one generic ``Subscription``/``unsubscribe()`` pairing that
+    only truly fits the plain core-NATS manual-dispatch-loop case
+    :meth:`subscribe` uses). nats-py owns the push-subscription's
+    delivery loop internally once a callback is supplied to
+    ``js.subscribe(cb=...)``, so unlike :class:`Subscription` there is no
+    wrapper-owned ``dispatch_task`` to cancel here — :meth:`stop` only
+    needs to drop the raw nats-py subscription.
+
+    :param raw_subscription: underlying nats-py JetStream push subscription
+    :ptype raw_subscription: Any
+    :param subject: subject this subscription was registered against
+    :ptype subject: Subject
+    :param durable: durable consumer name (diagnostics)
+    :ptype durable: str
+    """
+
+    __slots__ = ("raw_subscription", "_subject", "_durable", "_closed")
+
+    def __init__(
+        self,
+        *,
+        raw_subscription: Any,
+        subject: Subject,
+        durable: str,
+    ) -> None:
+        self.raw_subscription = raw_subscription
+        self._subject = subject
+        self._durable = durable
+        self._closed = False
+
+    @property
+    def subject(self) -> Subject:
+        """subject this subscription was registered against.
+
+        :return: registered subject
+        :rtype: Subject
+        """
+        return self._subject
+
+    @property
+    def durable(self) -> str:
+        """durable consumer name this subscription was bound with.
+
+        :return: durable consumer name
+        :rtype: str
+        """
+        return self._durable
+
+    @property
+    def is_closed(self) -> bool:
+        """whether subscription has been dropped.
+
+        :return: True after :meth:`stop` has been called
+        :rtype: bool
+        """
+        return self._closed
+
+    async def stop(self) -> None:
+        """drop the underlying nats-py push subscription. idempotent.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        try:
+            await self.raw_subscription.unsubscribe()
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup, diagnostics only
+            log.warning(
+                "jetstream push consumer unsubscribe failed",
+                extra={"extra_data": {"subject": self._subject.path, "durable": self._durable, "error": str(exc)}},
+            )
         self._closed = True
 
 
@@ -1875,7 +1969,7 @@ class NatsClient:
         dead_letter_subject: Subject | None = None,
         ack_wait_seconds: float = 60.0,
         stream: str | None = None,
-    ) -> Any:
+    ) -> JetStreamPushConsumer:
         """create a durable push consumer with MANUAL ack + BOUNDED redelivery.
 
         the callback does the work and MUST ``await msg.ack()`` on success (or on
@@ -1912,8 +2006,10 @@ class NatsClient:
         :ptype ack_wait_seconds: float
         :param stream: backing stream name to bind the consumer to
         :ptype stream: str | None
-        :return: nats-py JetStream push subscription handle
-        :rtype: Any
+        :return: subscription handle -- call :meth:`JetStreamPushConsumer.stop`
+            directly on it to unsubscribe (NOT :meth:`NatsClient.unsubscribe`,
+            which expects a :class:`Subscription` instead)
+        :rtype: JetStreamPushConsumer
         :raises ValueError: when ``max_deliver`` < 1
         """
         if max_deliver < 1:
@@ -1964,7 +2060,7 @@ class NatsClient:
             max_deliver,
             dead_letter_subject.path if dead_letter_subject is not None else None,
         )
-        return sub
+        return JetStreamPushConsumer(raw_subscription=sub, subject=subject, durable=durable)
 
     async def _redeliver_or_deadletter(
         self,

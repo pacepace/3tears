@@ -1,0 +1,13 @@
+{{/*
+Worked example proving the reusable `threetears.scaledObject` helper (from the
+3tears-keda-autoscaling library chart, taken as a dependency in this chart's Chart.yaml)
+renders a valid KEDA ScaledObject with a nats-jetstream trigger. This is the TEMPLATE a
+real consuming chart copies: swap the `component` label and the `config` values path,
+and the whole ScaledObject falls out of the helper.
+
+It is dual-gated inside the helper on `autoscaling.enabled` AND
+`exampleWorker.autoscaling.enabled` -- both false in values.yaml -- so this renders
+NOTHING in a normal `helm template`. The test overlay `ci-values.yaml` flips both flags
+on to prove the render.
+*/}}
+{{- include "threetears.scaledObject" (dict "context" $ "component" "example-worker" "config" .Values.exampleWorker.autoscaling) }}
