@@ -118,23 +118,44 @@ scope_namespace_type="knowledge")` (`collections.py:346`, `:569`).
 visibility clause would have nothing to evaluate. A cluster must be a **registered capability-source
 row**, which is exactly what the existing registry provides.
 
-### D3 — Align the anchor to the existing generalization; do not invent a third name
-The registry's generalized entity is `CapabilitySourceEntity`. The knowledge anchor should say so:
-`datasource_id` → **`capability_source_id`**.
+### D3 — Devops is a new kind on the existing registry; rename the anchor **and the table** to match
+**Decided 2026-07-15 (user).**
 
-> **Open — vocabulary.** The registry *entity* is `CapabilitySourceEntity` but the *table* is still
-> `platform.datasources`, and the *package* is still `threetears.datasources`. Fork-1 generalized the
-> entity and left the table and package named after the original kind. So there are already two
-> names for one thing, and the anchor must pick one. Options: (a) `capability_source_id` — align to
-> the entity, accept the table/package staying stale; (b) leave `datasource_id` — align to the table,
-> accept the anchor staying stale; (c) rename table+package too — correct, much larger, and outside
-> this effort. **Needs a decision before task-01.** The first draft's `target_id` is rejected: a
-> third name for a thing that already has two.
+**Genus.** A devops target is a **capability source** — a new `CapabilitySourceKind` on the existing
+`platform.datasources` registry. **Not** a sibling registry.
 
-**No sibling anchors, whatever the name.** This repo already ran that experiment: `v012_playbooks.py:114-115`
-gave `playbook_entries` both `datasource_id` and `namespace_id` (both nullable); `v014` dropped
-`namespace_id` and made `datasource_id` NOT NULL. Adding `cluster_id` / `aws_account_id` re-makes a
-mistake this codebase already unmade — and is unnecessary, because `kind` already exists.
+The deciding argument is D2, and it is architectural rather than aesthetic: the anchor carries
+customer ownership through a **single required FK**, and that only works if there is **one** registry.
+A sibling registry forces knowledge to anchor into two — meaning either dual nullable anchor columns
+(precisely the `v012` pattern `v014` retracted) or a polymorphic `(kind, id)` anchor with no FK and no
+`ON DELETE RESTRICT`. Either one puts D2 under stress for a naming preference.
+
+The word "source" does stretch to cover a thing you *act on* rather than draw from — but **it already
+stretched**: `api_import` is something you POST to, not something you source from. Devops is the same
+stretch, not a new one.
+
+**Naming — the full sweep.** `datasource_id` is not a name that is *about to* become wrong. **It is
+wrong now** (verified): `v014`'s FK is to `platform.datasources(id)` with **no kind constraint**, the
+hub's knowledge code applies no kind filter, and `agent-knowledge` never mentions `kind` at all. An
+entry can already anchor to an `api_import` row today. So:
+
+- `playbook_entries.datasource_id` / `concepts.datasource_id` → **`capability_source_id`**
+- `platform.datasources` → **`platform.capability_sources`**
+
+One coherent wave, not a half-rename.
+
+Rejected: **leaving `datasource_id`** — it keeps live the exact lie that led the first draft of this
+document to invent a new anchor for devops, and it will mislead the next reader the same way.
+Rejected: **`target_id`** (the first draft's) — a third name for a thing that already has two.
+
+**Deliberately out of scope:** the package / import path `threetears.datasources`. Renaming a
+published PyPI distribution plus every consumer's import is a different cost class from a table
+rename, and it blocks nothing. **Recorded as known debt**, not scheduled.
+
+**No sibling anchors, whatever the name.** `v012_playbooks.py:114-115` gave `playbook_entries` both
+`datasource_id` and `namespace_id` (both nullable); `v014` dropped `namespace_id` and made
+`datasource_id` NOT NULL. Adding `cluster_id` / `aws_account_id` re-makes a mistake this codebase
+already unmade — and is unnecessary, because `kind` already exists.
 
 ### D4 — `EntrySnapshot.namespace_id` is a corpse; remove it
 `merge.py:174` declares it; the hub dropped the column in `v014`; **nothing in any of the three repos
@@ -240,8 +261,11 @@ claims (D3) were wrong.
 
 ## Open
 
-- **Anchor vocabulary** — `capability_source_id` vs `datasource_id` vs renaming the table/package.
-  See D3. **Blocks task-01.**
+- **One command kind, or three?** `CapabilitySourceKind` discriminates by *sort of thing*, with a
+  separate driver axis (`DataSourceType`) for *how to reach it* — meaningful only for
+  `kind='datasource'`. That precedent suggests **one** command-ish kind with a driver axis of
+  kubectl / aws / flyctl, rather than three kinds. It shapes the enforcement analyzer (one command
+  grammar or three) and the `Driver` question below. **Decide before adding any kind.**
 - **A real (smaller) coupling finding.** `agent-knowledge` reaches the registry by **raw inline SQL**
   (`collections.py:372,594`: `SELECT origin_datasource_id FROM datasources`) rather than through
   `threetears.datasources` — which already exposes `resolve_origin_datasource_id()`
@@ -263,11 +287,18 @@ claims (D3) were wrong.
 
 | shard | scope | status |
 |---|---|---|
-| `knowledge-generalization-task-01-target-anchor.md` | anchor rename; delete `namespace_id` | DRAFT — blocked on D3 vocabulary only |
+| `knowledge-generalization-task-01-capability-source-anchor.md` | `datasource_id` → `capability_source_id`; delete `namespace_id` | READY |
 | `knowledge-generalization-task-02-binding-vocabulary.md` | `sql_fragment` / `datasource_table_*` / `build_table_ref` | READY |
 | `knowledge-generalization-task-03-render-layer.md` | product vocabulary; runbook + injected-block audiences | READY |
 | `knowledge-generalization-task-04-composition.md` | `steps`, leaf/composite, all-or-nothing budget, cycles | DEFERRED |
+| `knowledge-generalization-task-05-registry-table-rename.md` | `platform.datasources` → `platform.capability_sources` | READY |
 
-Task-01 and task-02 are cross-repo renames and should land in one wave with the hub call-site updates
-(design rule 3). Task-04 is designed but **not scheduled**; it is captured so task-01's anchor
-decisions are made knowing it is coming — they do not foreclose it.
+**Wave 1 — tasks 01, 02, 05 together.** All three are cross-repo renames; landing them separately
+means three breaking changes to the hub instead of one (design rule 3). Task-05 is split out from
+task-01 only because its blast radius is different — it touches every consumer of the registry table,
+not just knowledge — not because it lands separately.
+
+**Independent — task 03.** Touches rendering, not the serving SQL. Can start any time.
+
+**Not scheduled — task 04.** Designed so task-01's anchor decisions are made knowing it is coming;
+they do not foreclose it (see D10/D11).

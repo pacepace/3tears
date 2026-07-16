@@ -42,7 +42,7 @@ The SQL pack reproduces today's strings **byte-for-byte** — that is the regres
 
 The `target_kind` question the design doc leaves Open resolves here: the renderer is the first thing
 that genuinely needs to know the kind, because it picks the pack. A turn is scoped to one target
-today (`knowledge_target_id` on `configurable`), so the pack is arguably a per-turn input, not a
+today (`knowledge_capability_source_id` on `configurable`, per task-01), so the pack is arguably a per-turn input, not a
 per-row one — but that filter is **optional** (`None` returns every visible entry), so a turn *can*
 span targets and therefore kinds. Decide here: either scope a turn to one kind, or carry `target_kind`
 on the row and render per-kind sections. **Do not push it back to core.**

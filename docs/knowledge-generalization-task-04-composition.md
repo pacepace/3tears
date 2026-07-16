@@ -105,7 +105,7 @@ someone writes "the chain's step resolves through its chain", in a file called `
 
 ## Why the anchor still works (task-01 does not foreclose this)
 
-`target_id` stays **single and required** for every entry, composite included — it is the RBAC carrier
+`capability_source_id` stays **single and required** for every entry, composite included — it is the RBAC carrier
 (D2), and a composite has an owner like anything else. Cross-target composition is handled by the
 step-ref visibility rule above, not by relaxing the anchor. The two decisions compose; task-01 needs
 no change when this lands.
