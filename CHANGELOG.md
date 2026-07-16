@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.1 -- 2026-07-16
+
+**Two additions that were written the same day as v0.17.0 but were left unmerged on
+feature branches and missed that release. Both land here instead.**
+
+- **`ToolRelevanceIndex` + the `tool_search` meta-tool (`packages/agent/tools`,
+  `relevance.py`).** Embeds and ranks a tool catalog against the current turn's query,
+  returning the top-k most relevant tools with an LRU cache keyed on the catalog
+  identity; a `tool_search` `BaseTool` wrapper lets a model reach anything filtered out
+  of the initial top-k on demand. Falls back to the full, unfiltered catalog on any
+  embedding failure or when ranking exceeds a configurable latency ceiling -- a
+  degraded turn is never worse than today's full-catalog behavior. This is the
+  platform primitive metallm's own dynamic tool-relevance selection consumes.
+- **`acting_as_principal_id` on `AuditEvent`** (`packages/agent/audit`, `envelope.py`).
+  `14-eng-ai-bot-identity`'s impersonation flow (`identity.impersonation.start`/`stop`)
+  needs to record both the impersonation TARGET (`actor_user_id`, whose session it is)
+  and the ADMIN actually driving it. Previously that producer carried the admin
+  identity in `details["acting_as_principal_id"]` -- works on the wire, but isn't a
+  typed, Hub-queryable column. Additive only: optional, defaults to `None`, every
+  existing producer unaffected.
+
 ## v0.17.0 -- 2026-07-15
 
 **Support for `14-eng-ai-bot-identity`, the platform's new NATS-native multi-tenant
