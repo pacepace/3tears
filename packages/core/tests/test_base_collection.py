@@ -1010,47 +1010,58 @@ class TestL2BucketResolutionDegradesGracefully:
     bucket handle has ever been resolved) propagated uncaught instead of
     degrading to None/False like every other L2 transport failure, breaking
     the "L2 is best-effort, L3 is source of truth" contract these methods'
-    own docstrings promise.
+    own docstrings promise. exercised through the public API (get/save_entity/
+    delete), not the private _get_from_l2/_save_to_l2/_delete_from_l2 hooks,
+    matching this suite's existing convention (cleanup 2A-4f drove test
+    assertions on tier storage through the public API; 2A-4m-final zeroed
+    SLF001 across the workspace).
     """
 
     @pytest.mark.asyncio
-    async def test_get_from_l2_degrades_on_bucket_open_failure(
+    async def test_get_degrades_on_bucket_open_failure(
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
-        """a KvError raised while first-opening the bucket degrades _get_from_l2 to None."""
+        """L1 miss + L2 bucket-open KvError still resolves via L3 fallback."""
         nats = _make_nats_mock()
         nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
-        coll = StubCollection(registry, config_always, nats_client=nats)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
-        result = await coll._get_from_l2("e1")
+        entity = await coll.get("e1")
 
-        assert result is None
+        assert entity is not None
+        assert entity.name == "Alice"
 
     @pytest.mark.asyncio
-    async def test_save_to_l2_degrades_on_bucket_open_failure(
+    async def test_save_entity_degrades_on_bucket_open_failure(
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
-        """a KvError raised while first-opening the bucket degrades _save_to_l2 to False."""
+        """L2 bucket-open KvError during save still durably writes to L3."""
         nats = _make_nats_mock()
         nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
-        coll = StubCollection(registry, config_always, nats_client=nats)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
-        result = await coll._save_to_l2("e1", {"id": "e1", "name": "Alice"})
+        entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
+        await coll.save_entity(entity)
 
-        assert result is False
+        assert "e1" in l3_rows
+        assert entity.is_dirty is False
 
     @pytest.mark.asyncio
-    async def test_delete_from_l2_degrades_on_bucket_open_failure(
+    async def test_delete_degrades_on_bucket_open_failure(
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
-        """a KvError raised while first-opening the bucket degrades _delete_from_l2 to False."""
+        """L2 bucket-open KvError during delete still durably removes from L3."""
         nats = _make_nats_mock()
         nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
-        coll = StubCollection(registry, config_always, nats_client=nats)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
-        result = await coll._delete_from_l2("e1")
+        result = await coll.delete("e1")
 
-        assert result is False
+        assert result is True
+        assert "e1" not in l3_rows
 
     @pytest.mark.asyncio
     async def test_non_kverror_from_bucket_open_still_propagates(
@@ -1059,10 +1070,11 @@ class TestL2BucketResolutionDegradesGracefully:
         """a genuine programming error in bucket resolution still propagates loudly."""
         nats = _make_nats_mock()
         nats.kv_bucket = AsyncMock(side_effect=TypeError("bad bucket name"))
-        coll = StubCollection(registry, config_always, nats_client=nats)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         with pytest.raises(TypeError):
-            await coll._get_from_l2("e1")
+            await coll.get("e1")
 
 
 # ---------------------------------------------------------------------------
