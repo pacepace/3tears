@@ -28,8 +28,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import jwt
+from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from jwt.algorithms import OKPAlgorithm
+from jwt.algorithms import ECAlgorithm, OKPAlgorithm
 
 __all__ = [
     "IdentityClaims",
@@ -323,24 +324,41 @@ def canonical_call_hash(tool_name: str, arguments: Mapping[str, Any], correlatio
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
 
 
-def jwk_thumbprint(public_key: Ed25519PublicKey) -> str:
-    """RFC 7638 JWK thumbprint (SHA-256, base64url, unpadded) of an Ed25519 public key.
+def jwk_thumbprint(public_key: Ed25519PublicKey | EllipticCurvePublicKey) -> str:
+    """RFC 7638 JWK thumbprint (SHA-256, base64url, unpadded) of an Ed25519 or EC public key.
 
-    The stable identifier for a holder/signing key: the Hub puts it in a token's ``cnf`` claim and
-    the proxy recomputes it from a proof-of-possession proof's inline key to confirm the caller
-    holds the bound key. Both sides MUST compute it through this one function so they always agree.
+    The stable identifier for a holder/signing key: a token's ``cnf`` claim carries it, and a
+    verifier recomputes it from a proof-of-possession proof's (or a DPoP proof's) inline key to
+    confirm the caller holds the bound key. Both sides MUST compute it through this one function
+    so they always agree.
 
-    :param public_key: the Ed25519 public key to fingerprint
-    :ptype public_key: Ed25519PublicKey
+    RFC 7638 SS3.2 specifies a DIFFERENT required-member set per key type -- OKP (Ed25519) is
+    ``crv, kty, x``; EC (P-256/P-384/P-521/secp256k1) is ``crv, kty, x, y``, because an EC public
+    key carries both coordinates while an OKP key carries only ``x``. Using the wrong member set
+    for a key's actual type would silently produce a thumbprint that does not match what a
+    spec-conformant peer computes. The Ed25519 branch below is BYTE-IDENTICAL to this function's
+    pre-EC-support behavior -- callers already relying on it (Hub tokens' ``cnf``, proof-of-
+    possession key binding) see no change.
+
+    :param public_key: the Ed25519 or EC public key to fingerprint
+    :ptype public_key: Ed25519PublicKey | EllipticCurvePublicKey
     :return: the base64url thumbprint
     :rtype: str
     """
-    jwk = OKPAlgorithm.to_jwk(public_key, as_dict=True)
-    canonical = json.dumps(
-        {"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"]},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    if isinstance(public_key, EllipticCurvePublicKey):
+        ec_jwk = ECAlgorithm.to_jwk(public_key, as_dict=True)
+        canonical = json.dumps(
+            {"crv": ec_jwk["crv"], "kty": ec_jwk["kty"], "x": ec_jwk["x"], "y": ec_jwk["y"]},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    else:
+        okp_jwk = OKPAlgorithm.to_jwk(public_key, as_dict=True)
+        canonical = json.dumps(
+            {"crv": okp_jwk["crv"], "kty": okp_jwk["kty"], "x": okp_jwk["x"]},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     digest = hashlib.sha256(canonical.encode("utf-8")).digest()
     # str(bytes, "ascii"), not .decode() -- see canonical_call_hash (alg-pinning enforcement).
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")

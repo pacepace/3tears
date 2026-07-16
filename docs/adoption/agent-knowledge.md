@@ -31,6 +31,20 @@ because the two halves are conceptually separate -- read this alongside
 `agent-identity`'s contrast: knowledge is a scope-layered shadow-merge, not
 a temporal version history.
 
+Knowledge is **anchored**, not tagged: every entry and concept binds to a
+required capability-source id ([`datasources`](datasources.md)), and that
+row's `customer_id` is what carries RBAC into the visibility clause. The
+anchor is the ownership carrier, which is why it is single and required.
+
+> **Vocabulary in flight.** The governance machinery here is domain-neutral,
+> but some core field names still carry the SQL vocabulary of the layer's
+> first consumer (`sql_fragment`, `datasource_table_ref`, and the
+> `datasource_id` anchor), and the injected prompt text says "before writing
+> SQL". Breaking renames are planned so a second kind of capability source
+> (devops: kubectl / aws / flyctl) can use the same layer. See
+> [`../knowledge-generalization-design.md`](../knowledge-generalization-design.md)
+> before building against these names.
+
 ## When to adopt
 
 Any LangGraph agent that needs governed, scope-aware knowledge injected

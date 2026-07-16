@@ -29,6 +29,8 @@ on; they do not re-implement the lookup or the evaluator call.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -43,11 +45,28 @@ from threetears.observe import get_logger, traced
 
 __all__ = [
     "AccessDenied",
+    "ClaimsForAuthorization",
+    "ExternalAudienceNotSupported",
+    "ImpersonationCategory",
     "NamespaceNotFound",
     "authorize",
+    "authorize_from_claims",
     "authorize_on_entity",
     "authorize_with_trail",
 ]
+
+# The literal value `authorize_from_claims` deny-lists against -- matches
+# `UserTokenClaims.act_reason`'s value space in the identity-core repo's
+# `identity_core/tokens/claims.py` exactly (docs/design.md: "`act_reason`
+# (optional): `impersonation` or `delegation`"). Duplicated here rather than
+# imported: identity-core depends on this package, never the reverse, and a
+# platform token's `act_reason` string is effectively a small, stable wire
+# vocabulary rather than a type this package should own. A value mismatch
+# between the two repos fails closed (the overlay simply never triggers,
+# same "no compile-time check across this boundary" posture
+# `identity_core/rbac_rpc.py`'s module docstring already documents for the
+# claim-grant subject strings), never silently misapplies.
+_IMPERSONATION_ACT_REASON = "impersonation"
 
 log = get_logger(__name__)
 
@@ -113,6 +132,85 @@ class NamespaceNotFound(AccessDenied):
     backwards-compatible: every namespace-not-found is still an
     access denial.
     """
+
+
+class ExternalAudienceNotSupported(AccessDenied):
+    """raised by :func:`authorize_from_claims` when the caller's claims are
+    not internal-audience.
+
+    security-model.md's Authorization section: "`authorize_from_claims`
+    resolves `sub` to a real `principal_id` correctly only on internal-
+    audience tokens. Doesn't bite v1 (RBAC-checking traffic is entirely
+    internal-audience...) but is a real open item before external-audience
+    tokens can ever reach an RBAC check -- track it as a launch blocker for
+    any external-audience-token feature, not something to discover at
+    integration time." Fails closed here rather than silently resolving
+    `sub` (a pairwise/opaque id on an external-audience token, per
+    docs/design.md's Claims table) against a `principal_id`-keyed group
+    membership that will simply never match -- a loud, typed refusal is
+    easier to diagnose at integration time than a decision that always
+    happens to come back "denied" for the wrong reason.
+    """
+
+
+class ImpersonationCategory(StrEnum):
+    """The fixed, non-tenant-configurable deny-list category set --
+    security-model.md's Impersonation paragraph names these six categories
+    verbatim: "credential, passkey, and MFA management; account deletion;
+    API-key mint/rotate for the target; email change; RBAC grant changes;
+    audit editing."
+
+    Every member is unconditionally deny-listed under impersonation --
+    :func:`authorize_from_claims` denies whenever ``act_reason ==
+    "impersonation"`` and the caller names ANY category (there is no
+    partial/tenant-configurable subset, per security-model.md: "a fixed,
+    non-tenant-configurable category set").
+
+    The identity-core repo defines the SAME six string values independently
+    in its own `identity_core/auth/step_up.py` (shared taxonomy: "Same fixed
+    taxonomy as the impersonation deny-list, enforced by freshness instead
+    of subtraction" -- docs/design.md's Step-Up Re-Authentication section) --
+    identity-core's own self-service endpoints never call this cross-repo
+    function directly (they check `act_reason` locally, per security-model.md's
+    "second, independent enforcement point"), so there is no import
+    dependency to share the enum through; the string values are the actual
+    shared contract, mirroring the existing `IdentitySubjects`/Hub-subject
+    duplication precedent (`identity_core/rbac_rpc.py`'s module docstring).
+    """
+
+    CREDENTIAL_PASSKEY_MFA_MANAGEMENT = "credential_passkey_mfa_management"
+    ACCOUNT_DELETION = "account_deletion"
+    APIKEY_MINT_ROTATE_FOR_TARGET = "apikey_mint_rotate_for_target"
+    EMAIL_CHANGE = "email_change"
+    RBAC_GRANT_CHANGE = "rbac_grant_change"
+    AUDIT_EDITING = "audit_editing"
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimsForAuthorization:
+    """The minimal shape :func:`authorize_from_claims` needs off an ALREADY-
+    VERIFIED token. This package never verifies a token itself (signature/
+    issuer/audience/expiry checking is each consuming app's own concern --
+    identity-core's is `identity_core/tokens/sign.py`'s `verify_user_token`);
+    the caller reads these fields off its own verified claims object and
+    passes them here.
+
+    :ivar sub: the token's `sub` claim -- on an internal-audience token this
+        is the real `principal_id` (str, converted to `UUID` internally);
+        MUST NOT be passed from an external-audience token (see
+        `is_internal_audience`)
+    :ivar is_internal_audience: whether the token this claims object came
+        from is internal-audience. `authorize_from_claims` raises
+        :class:`ExternalAudienceNotSupported` when `False` -- see that
+        exception's docstring.
+    :ivar act_reason: the token's `act_reason` claim (`"impersonation"`,
+        `"delegation"`, or `None`) -- only `"impersonation"` triggers the
+        deny-list overlay; `"delegation"` and `None` are unaffected.
+    """
+
+    sub: str
+    is_internal_audience: bool
+    act_reason: str | None = None
 
 
 @traced
@@ -358,6 +456,130 @@ async def authorize_with_trail(
         namespace_name=namespace_name,
     )
     return result, ns_entity
+
+
+@traced
+async def authorize_from_claims(
+    *,
+    namespace_collection: Any,
+    namespace_name: str,
+    action: str,
+    claims: ClaimsForAuthorization,
+    cache: AclCache,
+    sensitive_category: ImpersonationCategory | None = None,
+) -> EvaluationResult:
+    """claims-aware authorization primitive -- the impersonation deny-list
+    entry point.
+
+    security-model.md's Impersonation paragraph: "Applied via a new
+    claims-aware `authorize_from_claims` entry point that takes a verified
+    token directly (the existing `authorize()` signature has no path for
+    `act_reason` to reach it at all)." This wraps :func:`authorize` with
+    exactly two additions the plain `user_id`/`agent_id` signature cannot
+    express:
+
+    1. resolves the caller identity from a verified token's claims
+       (`claims.sub`) rather than a caller-supplied `user_id`, so the
+       identity checked is provably the token's own subject -- refusing
+       outright (:class:`ExternalAudienceNotSupported`) on a non-internal-
+       audience token rather than silently resolving `sub` against the
+       wrong identity space (see that exception's docstring).
+    2. applies the impersonation deny-list overlay: when
+       ``claims.act_reason == "impersonation"`` AND the caller names a
+       `sensitive_category` (:class:`ImpersonationCategory`), the action is
+       denied UNCONDITIONALLY -- before the underlying `authorize()` call
+       even runs -- regardless of what the target's own permissions would
+       otherwise allow. Every other combination (ordinary `act_reason=None`
+       traffic, `act_reason="delegation"`, or an impersonation session
+       requesting a NON-sensitive action) defers entirely to the ordinary
+       `authorize()` evaluation.
+
+    Callers that already have `sensitive_category=None` traffic and no
+    `act_reason` to thread through get byte-identical behavior to calling
+    :func:`authorize` directly with `user_id=UUID(claims.sub)` -- this
+    function is additive, not a second evaluation path with its own bugs to
+    diverge from `authorize`'s.
+
+    :param namespace_collection: same as :func:`authorize`
+    :ptype namespace_collection: Any
+    :param namespace_name: same as :func:`authorize`
+    :ptype namespace_name: str
+    :param action: same as :func:`authorize`
+    :ptype action: str
+    :param claims: the caller's verified-token claims (see
+        :class:`ClaimsForAuthorization`)
+    :ptype claims: ClaimsForAuthorization
+    :param cache: same as :func:`authorize`
+    :ptype cache: AclCache
+    :param sensitive_category: which deny-list category `action` belongs
+        to, or ``None`` if it belongs to none -- the caller (a resource-
+        specific wrapper one layer up, which already knows its own action
+        vocabulary) makes this determination; this package has no way to
+        infer it from the bare `action` string alone since that vocabulary
+        is app-specific
+    :ptype sensitive_category: ImpersonationCategory | None
+    :return: full evaluation result on allow
+    :rtype: EvaluationResult
+    :raises ExternalAudienceNotSupported: `claims.is_internal_audience` is
+        `False`
+    :raises AccessDenied: `claims.act_reason == "impersonation"` and
+        `sensitive_category` is set (reason ``"impersonation_deny_list"``),
+        or the underlying :func:`authorize` call denies
+    :raises NamespaceNotFound: `namespace_collection.get_by_name` returns
+        `None` for `namespace_name`
+    """
+    if not claims.is_internal_audience:
+        log.warning(
+            "authorize_from_claims: external-audience token rejected",
+            extra={"extra_data": {"action": action, "namespace_name": namespace_name}},
+        )
+        raise ExternalAudienceNotSupported(
+            "authorize_from_claims: external-audience tokens are not supported "
+            "(sub cannot be resolved to a real principal_id)",
+            action=action,
+            namespace_name=namespace_name,
+            reason="external_audience_not_supported",
+        )
+    try:
+        user_id = UUID(claims.sub)
+    except ValueError:
+        raise AccessDenied(
+            f"authorize_from_claims: claims.sub {claims.sub!r} is not a valid principal id",
+            action=action,
+            namespace_name=namespace_name,
+            reason="invalid_sub",
+        ) from None
+
+    if claims.act_reason == _IMPERSONATION_ACT_REASON and sensitive_category is not None:
+        log.info(
+            "authorize_from_claims: denied by impersonation deny-list",
+            extra={
+                "extra_data": {
+                    "action": action,
+                    "namespace_name": namespace_name,
+                    "user_id": str(user_id),  # convert at border: structured logging (extra_data)
+                    "sensitive_category": sensitive_category.value,
+                },
+            },
+        )
+        raise AccessDenied(
+            f"access denied: {action} on namespace {namespace_name} is deny-listed "
+            f"under impersonation (category {sensitive_category.value})",
+            action=action,
+            namespace_name=namespace_name,
+            user_id=user_id,
+            agent_id=None,
+            reason="impersonation_deny_list",
+        )
+
+    return await authorize(
+        namespace_collection=namespace_collection,
+        namespace_name=namespace_name,
+        action=action,
+        user_id=user_id,
+        agent_id=None,
+        cache=cache,
+    )
 
 
 # evaluate_decision is intentionally not re-exported here; callers

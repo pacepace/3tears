@@ -29,14 +29,32 @@ emits ``on_tool_start``/``on_tool_end`` for tools invoked this way). ``_wrap_lan
 SAME typed events node-path tools already emit (:mod:`threetears.langgraph.events`) around
 ``tool.ainvoke`` -- a subscription-backed turn's tool-status chips render through the identical
 consumer-side code path a normal turn's do, no new event vocabulary needed downstream.
+
+Token-level streaming (post-Chunk-9 follow-up, see
+``.prawduct/artifacts/3tears-change-claude-max-token-streaming.md`` in metallm for the full
+sign-off): ``ClaudeCodeChatModel._astream`` sets ``include_partial_messages=True`` -- which makes
+the Agent SDK subprocess actually emit granular ``StreamEvent`` deltas (the raw Anthropic
+``content_block_delta``/``text_delta`` shape) -- but the method never handles ``StreamEvent`` at
+all, only the terminal, whole-block ``AssistantMessage``. Every delta is silently dropped, so a
+turn arrives as one or two large lumps instead of a real token stream. ``_astream`` is overridden
+here to consume ``StreamEvent`` text deltas as they arrive and yield each one immediately, tracked
+per content-block index so the terminal ``AssistantMessage`` never re-yields (and thereby doubles)
+text a delta already streamed. A turn that somehow gets no ``StreamEvent`` at all (older CLI build,
+future SDK regression) falls back to the base class's whole-message behavior for that block, so
+this is strictly additive -- never worse than today.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Callable
 
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
 from pydantic import Field
 
@@ -82,6 +100,7 @@ def is_subscription_token(credential: str) -> bool:
 
 def _subscription_model_cls() -> type:
     """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed (lazy import)."""
+    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent
     from claude_agent_sdk import tool as sdk_tool
     from langchain_claude_code import ClaudeCodeChatModel
 
@@ -164,6 +183,105 @@ def _subscription_model_cls() -> type:
             # account for -- a stub gap in langchain-claude-code itself (pre-existing: this exact
             # decorator-then-return shape is unchanged by this chunk's edit, only newly surfaced because
             # 3tears-models isn't in CI's mypy invocation, so nothing here has been type-checked before).
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """Real token-level streaming: consumes the ``StreamEvent`` deltas the base
+            class already requests (``include_partial_messages=True``) but never reads.
+
+            Reimplements the base class's query/receive loop rather than wrapping it --
+            ``ClaudeCodeChatModel._astream`` has no seam to inject a new branch into an
+            already-running generator. Text deltas are yielded the moment they arrive,
+            tracked per content-block index (``StreamEvent.event["index"]``) so the
+            terminal ``AssistantMessage`` for a block whose text was already streamed is
+            not re-yielded (which would double it). A block that produces no
+            ``StreamEvent`` at all (older CLI build, future SDK regression) still gets
+            its text emitted whole from the ``AssistantMessage`` -- the fallback the base
+            class always used, so this is strictly additive.
+            """
+            config = kwargs.pop("_config", None)
+            prompt, system_prompt = self._convert_messages(messages)
+            if system_prompt and not self.system_prompt:
+                kwargs["system_prompt"] = system_prompt
+            kwargs["include_partial_messages"] = True
+            cfg = ensure_config(config) if config is not None else None
+            session_id = kwargs.pop("session_id", None) or kwargs.pop("resume", None)
+            if cfg:
+                session_id = session_id or cfg.get("configurable", {}).get("session_id")
+            options = self._build_options(**kwargs)
+            if session_id:
+                options.resume = session_id
+                options.continue_conversation = True
+
+            tool_calls_buffer: list[dict[str, Any]] = []
+            tool_results_buffer: list[dict[str, Any]] = []
+            # Content-block indices whose text has already been streamed via a
+            # StreamEvent delta THIS assistant message -- reset each time a new
+            # AssistantMessage boundary is crossed, matching the SDK's own framing
+            # (deltas for a message's blocks, then one AssistantMessage closing it).
+            streamed_block_indices: set[int] = set()
+
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(prompt)
+
+                async for msg in client.receive_response():
+                    if isinstance(msg, StreamEvent):
+                        event = msg.event or {}
+                        if event.get("type") != "content_block_delta":
+                            continue
+                        delta = event.get("delta") or {}
+                        if delta.get("type") != "text_delta":
+                            continue
+                        text = delta.get("text", "")
+                        if not text:
+                            continue
+                        block_index = event.get("index")
+                        if isinstance(block_index, int):
+                            streamed_block_indices.add(block_index)
+                        chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                        if run_manager:
+                            await run_manager.on_llm_new_token(text, chunk=chunk)
+                        yield chunk
+
+                    elif isinstance(msg, AssistantMessage):
+                        text, tool_calls, tool_results = self._parse_assistant_message(msg)
+                        # Fallback path only: if StreamEvent deltas already covered
+                        # this message's text (the common case), re-yielding it here
+                        # would double every character the client already received.
+                        if text and not streamed_block_indices:
+                            chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                            if run_manager:
+                                await run_manager.on_llm_new_token(text, chunk=chunk)
+                            yield chunk
+                        streamed_block_indices = set()
+                        tool_calls_buffer.extend(tool_calls)
+                        tool_results_buffer.extend(tool_results)
+
+                    elif isinstance(msg, ResultMessage):
+                        self._last_result = msg
+                        generation_info: dict[str, Any] = {
+                            "total_cost_usd": msg.total_cost_usd,
+                            "duration_ms": msg.duration_ms,
+                            "duration_api_ms": msg.duration_api_ms,
+                            "session_id": msg.session_id,
+                            "finish_reason": "stop" if not msg.is_error else "error",
+                        }
+                        if msg.usage:
+                            generation_info["usage"] = msg.usage
+                        if tool_calls_buffer:
+                            generation_info["internal_tool_calls"] = tool_calls_buffer
+                        if tool_results_buffer:
+                            generation_info["internal_tool_results"] = tool_results_buffer
+
+                        yield ChatGenerationChunk(
+                            message=AIMessageChunk(content="", chunk_position="last"),
+                            generation_info=generation_info,
+                        )
 
     return _SubscriptionChatModel
 
