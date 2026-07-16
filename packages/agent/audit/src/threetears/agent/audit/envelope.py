@@ -44,6 +44,17 @@ identity axes on the envelope:
 
 - ``actor_user_id`` -- the human (or service account) whose action
   triggered the event; the load-bearing "who did this?" field.
+- ``acting_as_principal_id`` -- when ``actor_user_id`` is impersonating
+  another principal (an admin acting-as a user, act_reason="impersonation"
+  on the presented token), the ADMIN's own id -- ``actor_user_id`` stays
+  the TARGET being acted on, so a dual-identity audit event answers both
+  "whose session is this" and "who is really driving it" without either
+  identity overwriting the other. ``None`` for every non-impersonation
+  event (the overwhelming majority). Added for 14-eng-ai-bot-identity's
+  impersonation audit (identity.impersonation.start/stop) -- prior to this
+  field, that producer had no typed column for the admin identity and
+  carried it in ``details`` instead, which works on the wire but isn't a
+  Hub-queryable column.
 - ``calling_agent_id`` -- the agent whose pod ran the tool. equal to
   ``owner_agent_id`` for owner-path calls; differs under cross-agent
   sharing.
@@ -96,6 +107,10 @@ class AuditEvent(BaseModel):
     :param actor_user_id: human / service-account actor; ``None`` for
         system-triggered events (e.g. scheduled retention)
     :ptype actor_user_id: UUID | None
+    :param acting_as_principal_id: when ``actor_user_id`` is impersonating
+        another principal, the ADMIN's own id (``actor_user_id`` stays the
+        impersonation TARGET). ``None`` for every non-impersonation event
+    :ptype acting_as_principal_id: UUID | None
     :param calling_agent_id: agent whose pod ran the tool; ``None`` for
         events emitted from the hub directly (e.g. rbac admin endpoints)
     :ptype calling_agent_id: UUID | None
@@ -155,6 +170,7 @@ class AuditEvent(BaseModel):
     timestamp: datetime
     event_type: str
     actor_user_id: UUID | None = None
+    acting_as_principal_id: UUID | None = None
     calling_agent_id: UUID | None = None
     owner_agent_id: UUID | None = None
     customer_id: UUID | None = None

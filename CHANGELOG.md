@@ -4,6 +4,40 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.0 -- 2026-07-15
+
+**Support for `14-eng-ai-bot-identity`, the platform's new NATS-native multi-tenant
+identity broker.** Four additions to `packages/core` and `packages/agent/acl`, built and
+landed across identity-core's own build (chunks 03/05/13), consumed there via a
+temporary local-path override while this release was pending:
+
+- **`jwk_thumbprint()` (`packages/core`, `security/identity_token.py`) now accepts
+  `EllipticCurvePublicKey`, not just Ed25519.** Extends the RFC 7638 thumbprint to the
+  EC required-member set (`crv`, `kty`, `x`, `y`, via PyJWT's `ECAlgorithm.to_jwk`) --
+  needed for DPoP proof validation binding a P-256 client key. The existing Ed25519
+  branch is unchanged, verified byte-identical against a pinned vector.
+- **`RevocationGuard` (`packages/core`, `coordination/replay_guard.py`), a new sibling to
+  `ReplayGuard`.** Where `ReplayGuard.record_unique`'s presence-only sentinel fits a
+  single-use nonce or an exact `jti`/`sid` revocation, a `sub` (principal) or
+  `customer_id` (tenant) revocation needs a value comparison, not membership: record a
+  `revoked_at` timestamp per key, then `is_revoked_before(key, moment=...)`. Fail-closed
+  on KV transport failure, same durability posture as `ReplayGuard`.
+- **`WindowedCounter` (`packages/core`, `coordination/windowed_counter.py`), a new
+  generic throttle primitive.** A windowed attempt counter over a NATS JetStream KV
+  bucket (`record_attempt`/`count`/`is_over_threshold`) for a "how many times in the
+  last N seconds" shape neither `ReplayGuard` nor `RevocationGuard` express. Fail-open
+  vs. fail-closed is a constructor-level caller choice (`fail_open: bool`, default
+  `False`), since a throttle counter doesn't always sit on a hard security boundary.
+- **`authorize_from_claims` + the impersonation gate schema (`packages/agent/acl`).** A
+  claims-aware authorization entry point layering an impersonation deny-list overlay
+  on top of the existing `authorize()`: denies unconditionally when
+  `act_reason == "impersonation"` and the caller names a sensitive
+  `ImpersonationCategory`, otherwise defers as normal. `ImpersonationGateCollection`/
+  `ImpersonationGateEntity` add the per-tenant `disabled|requested|enabled` + TTL gate
+  schema, with read-time TTL self-revert. Real Hub-side wiring (a live NATS responder
+  persisting this collection against Postgres) is not part of this release --
+  identity-core's own test suite proves the wire contract against a local fake double.
+
 ## v0.16.1 -- 2026-07-15
 
 **Real token-level streaming for the Claude Max subscription backend.** `ClaudeCodeChatModel._astream`
