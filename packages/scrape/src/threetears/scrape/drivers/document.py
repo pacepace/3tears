@@ -2,16 +2,14 @@
 LaTeX targets, reusing 3tears' own published document reader instead of
 reinventing one.
 
-**Design (2026-07-14, document reader integration):** ``threetears.agent.
-tools.document.parse_document`` turns a document's bytes into clean
-markdown -- and, critically, turns any table it finds (a PDF table, a DOCX
-table, an XLSX sheet) into a GitHub-flavored markdown pipe-table. That's
-close enough in shape to an HTML ``<table>`` that converting it into one
-lets a document target flow through the *exact same* AI eval loop
-(``extraction.py``/``eval_loop.py``, CSS-selector-based candidate
-generation and structural validation) that every HTML-page target already
-uses -- zero new extraction/validation code, per the user's own framing
-("we go through that same scraper loop for improving and testing it").
+``threetears.agent.tools.document.parse_document`` turns a document's bytes
+into clean markdown -- and, critically, turns any table it finds (a PDF
+table, a DOCX table, an XLSX sheet) into a GitHub-flavored markdown
+pipe-table. That's close enough in shape to an HTML ``<table>`` that
+converting it into one lets a document target flow through the *exact
+same* AI eval loop (``extraction.py``/``eval_loop.py``, CSS-selector-based
+candidate generation and structural validation) that every HTML-page
+target already uses -- zero new extraction/validation code needed.
 ``wait_for``/``nav_steps``/``capture_network`` are accepted for
 ``ScrapeDriver`` interface conformance but are no-ops here: this is a plain
 HTTP GET of a static file, no browser, no JS, nothing to wait for or click.
@@ -28,21 +26,25 @@ from typing import NamedTuple
 from urllib.parse import urlparse
 
 import httpx
-from threetears.agent.tools.document import OcrConfig, detect_mime_from_filename, parse_document, render_pdf_pages_to_images
+from threetears.agent.tools.document import (
+    DocumentSection,
+    OcrConfig,
+    detect_mime_from_filename,
+    parse_document,
+    render_pdf_pages_to_images,
+)
 from threetears.observe import get_logger
 
 from ..driver import NavStep, RenderedPage, ScrapeDriver
 from ..extraction import OCR_PAGE_IMAGE_CLASS
 
-__all__ = ["DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
+__all__ = ["OCR_PAGE_IMAGE_CLASS", "DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
 
-#: Same fix, same reason as ApiDriver's own _DEFAULT_USER_AGENT (Michigan's Sitecore
-#: XA API, 2026-07-14): live-found across multiple state WARN-notice document hosts
-#: (2026-07-15) -- a plain httpx client's default User-Agent gets a flat 403/401 from
-#: the CDN/WAF in front of the endpoint (Kentucky's kyworks.ky.gov among others); a
-#: genuine browser UA passes cleanly. Only applied to a client this driver constructs
-#: itself -- an injected *client* (test injection, or a caller with its own header
-#: policy) is used exactly as given.
+#: Same fix, same reason as ApiDriver's own _DEFAULT_USER_AGENT: a plain httpx
+#: client's default User-Agent gets a flat 403/401 from the CDN/WAF in front of
+#: some document hosts; a genuine browser UA passes cleanly. Only applied to a
+#: client this driver constructs itself -- an injected *client* (test injection,
+#: or a caller with its own header policy) is used exactly as given.
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
@@ -166,7 +168,7 @@ async def parse_document_bytes_to_html(
     )
     if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
         raise DocumentDriverError("parse_failed", result.text)
-    html = document_text_to_html(result.text)
+    html = document_text_to_html(result.text, result.sections)
     if result.was_ocr or force_images:
         html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")
     return ParsedDocumentHtml(html=html, was_ocr=result.was_ocr)
@@ -221,23 +223,44 @@ def _table_to_html(header: list[str], rows: list[list[str]]) -> str:
     return f"<table>{thead}{tbody}</table>"
 
 
-def document_text_to_html(text: str) -> str:
+def _known_headings_by_text(sections: list[DocumentSection] | None) -> dict[str, int]:
+    """Map each section's exact heading text to its heading level.
+
+    Some parsers (e.g. the PDF path's font-size heuristic) compute real
+    headings into ``DocumentResult.sections`` without emitting markdown
+    ``#`` syntax in ``.text`` -- this recovers that structure.
+
+    :param sections: ``DocumentResult.sections``, or ``None``.
+    :ptype sections: list[DocumentSection] | None
+    :return: heading text (stripped) -> level (1-6, clamped defensively).
+    :rtype: dict[str, int]
+    """
+    return {
+        section.heading.strip(): max(1, min(6, section.level or 1))
+        for section in (sections or [])
+        if section.heading and section.heading.strip()
+    }
+
+
+def document_text_to_html(text: str, sections: list[DocumentSection] | None = None) -> str:
     """Convert a parsed document's markdown text into synthetic HTML.
 
-    Every GFM-style pipe-table block (a header row, a ``| --- | --- |``
-    separator, then body rows) becomes a real ``<table>`` -- the eval loop's
-    existing CSS-selector-based candidate generation/validation runs on this
-    completely unmodified, exactly as it would on a real HTML page's table.
-    Headings (``#`` through ``######``) become ``<h1>``-``<h6>``; every other
-    non-blank line becomes a ``<p>`` -- not critical for extraction accuracy
-    (documents with no table have nothing selector-shaped to extract from
-    either way), just keeps the synthetic page well-formed.
+    Every GFM-style pipe-table block becomes a real ``<table>``. A line
+    becomes ``<h1>``-``<h6>`` when it matches markdown ``#`` syntax OR
+    exactly matches a heading already identified in ``sections`` (see
+    :func:`_known_headings_by_text` -- some source formats signal headings
+    one way, some the other). Every other non-blank line becomes a ``<p>``.
 
     :param text: a ``DocumentResult.text`` value (clean markdown)
     :ptype text: str
+    :param sections: the same result's ``DocumentResult.sections``, when
+        available. Optional and backward-compatible: omitted or ``None``
+        preserves markdown-``#``-only heading detection.
+    :ptype sections: list[DocumentSection] | None
     :return: a minimal ``<html><body>...</body></html>`` document
     :rtype: str
     """
+    known_headings = _known_headings_by_text(sections)
     lines = _merge_broken_pipe_rows(text.split("\n"))
     parts: list[str] = []
     i = 0
@@ -259,6 +282,9 @@ def document_text_to_html(text: str) -> str:
             if heading_match:
                 level = len(heading_match.group(1))
                 parts.append(f"<h{level}>{html_lib.escape(heading_match.group(2))}</h{level}>")
+            elif stripped in known_headings:
+                level = known_headings[stripped]
+                parts.append(f"<h{level}>{html_lib.escape(stripped)}</h{level}>")
             else:
                 parts.append(f"<p>{html_lib.escape(stripped)}</p>")
         i += 1
