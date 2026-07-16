@@ -56,7 +56,13 @@ class NodriverDownloadDriver(ScrapeDriver):
     """``ScrapeDriver`` backed by the sidecar's browser-forced-download endpoint."""
 
     def __init__(
-        self, base_url: str, *, client: httpx.AsyncClient | None = None, ocr_config: OcrConfig | None = None
+        self,
+        base_url: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        ocr_config: OcrConfig | None = None,
+        force_images: bool = False,
+        merge_wrapped_table_rows: bool = False,
     ) -> None:
         """
         :param base_url: the sidecar's base URL (e.g. ``"http://localhost:8088"``),
@@ -68,10 +74,21 @@ class NodriverDownloadDriver(ScrapeDriver):
         :param ocr_config: OCR fallback config for scanned PDF pages, passed
             straight through to ``parse_document``
         :ptype ocr_config: OcrConfig | None
+        :param force_images: embed page images even for a born-digital
+            (non-OCR'd) document -- see ``document.py``'s
+            ``parse_document_bytes_to_html`` docstring (scrape-task-07)
+        :ptype force_images: bool
+        :param merge_wrapped_table_rows: stitch a PDF table's wrapped-cell
+            continuation rows back onto their parent record -- see
+            ``document.py``'s ``parse_document_bytes_to_html`` docstring
+            (scrape-task-07 follow-up). Off by default.
+        :ptype merge_wrapped_table_rows: bool
         """
         self._base_url = base_url.rstrip("/")
         self._client = client
         self._ocr_config = ocr_config
+        self._force_images = force_images
+        self._merge_wrapped_table_rows = merge_wrapped_table_rows
 
     @property
     def name(self) -> str:
@@ -150,7 +167,12 @@ class NodriverDownloadDriver(ScrapeDriver):
         data = response.json()
         file_bytes = base64.b64decode(data["content_base64"])
         parsed = await parse_document_bytes_to_html(
-            file_bytes, content_type=data["content_type"], filename=data["filename"], ocr_config=self._ocr_config
+            file_bytes,
+            content_type=data["content_type"],
+            filename=data["filename"],
+            ocr_config=self._ocr_config,
+            force_images=self._force_images,
+            merge_wrapped_table_rows=self._merge_wrapped_table_rows,
         )
         return RenderedPage(
             html=parsed.html,

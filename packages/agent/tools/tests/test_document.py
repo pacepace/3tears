@@ -13,6 +13,8 @@ from threetears.agent.tools.document import (
     DocumentResult,
     OcrConfig,
     ParseDocumentInput,
+    _extract_pdf_tables,
+    _merge_wrapped_table_rows,
     _ocr_page,
     create_parse_document_tool,
     detect_mime_from_filename,
@@ -391,3 +393,183 @@ class TestParseDocumentInput:
         inp = ParseDocumentInput(content_base64="abc", filename="test.pdf")
         assert inp.content_base64 == "abc"
         assert inp.filename == "test.pdf"
+
+
+# -- _merge_wrapped_table_rows / _extract_pdf_tables --------------------------
+# scrape-task-07 follow-up (2026-07-16): find_tables() gets column boundaries
+# right, but a long-text cell that word-wraps inside one logical PDF table row
+# becomes its OWN separate row in table.extract()'s output -- live-found against
+# Mississippi's real quarterly WARN Act PDF, confirmed before/after against the
+# real file (git-stashed the fix, re-ran, saw the fragmented rows this fixes).
+
+
+class TestMergeWrappedTableRows:
+    def test_a_table_with_no_wrapped_cells_round_trips_unchanged(self):
+        rows = [
+            ["Date", "Employer", "Count"],
+            ["1/1/2026", "Acme Corp", "42"],
+            ["2/2/2026", "Beta LLC", "7"],
+        ]
+        assert _merge_wrapped_table_rows(rows) == rows
+
+    def test_a_continuation_row_with_empty_first_column_merges_into_the_row_above(self):
+        rows = [
+            ["Date of Notice", "Company", "NAICS Description"],
+            ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General"],
+            ["", "", "Medical and"],
+            ["", "", "Surgical Hospital"],
+            ["2/20/2026", "Stanley Black & Decker", "333991 – Power Tools"],
+        ]
+        result = _merge_wrapped_table_rows(rows)
+        assert result == [
+            ["Date of Notice", "Company", "NAICS Description"],
+            ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General Medical and Surgical Hospital"],
+            ["2/20/2026", "Stanley Black & Decker", "333991 – Power Tools"],
+        ]
+
+    def test_multiple_wrapped_columns_on_the_same_continuation_row_all_merge(self):
+        rows = [
+            ["Date of Notice", "Company", "Event Number", "Reason"],
+            ["4/17/2026", "Aramark Services, Inc", "RR-MS-", "WARN – Due"],
+            ["", "", "2025-0020", "Businesses Circumstances"],
+        ]
+        result = _merge_wrapped_table_rows(rows)
+        assert result == [
+            ["Date of Notice", "Company", "Event Number", "Reason"],
+            ["4/17/2026", "Aramark Services, Inc", "RR-MS- 2025-0020", "WARN – Due Businesses Circumstances"],
+        ]
+
+    def test_none_cells_are_treated_the_same_as_empty_strings(self):
+        rows = [
+            ["Date", "Company", "Notes"],
+            ["1/1/2026", "Acme Corp", "first part"],
+            [None, None, "second part"],
+        ]
+        result = _merge_wrapped_table_rows(rows)
+        assert result == [
+            ["Date", "Company", "Notes"],
+            ["1/1/2026", "Acme Corp", "first part second part"],
+        ]
+
+    def test_header_row_is_never_merged_even_if_its_own_first_cell_is_empty(self):
+        rows = [["", "Company"], ["1/1/2026", "Acme Corp"]]
+        assert _merge_wrapped_table_rows(rows) == rows
+
+    def test_first_data_row_is_never_merged_even_if_its_own_first_cell_is_empty(self):
+        """No parent row exists yet for the very first data row to merge into --
+        treated as a normal (if malformed) row rather than silently dropped."""
+        rows = [["Date", "Company"], ["", "Orphan Row"]]
+        assert _merge_wrapped_table_rows(rows) == [["Date", "Company"], ["", "Orphan Row"]]
+
+    def test_header_and_first_row_protection_holds_when_the_merge_loop_actually_runs(self):
+        """The two tests above only exercise the len(rows)<=2 short-circuit --
+        this one has a genuine continuation row present, forcing the merge loop
+        itself to run, and still proves the header is untouched and row 1 (also
+        empty-first-cell) is not treated as a continuation of the header."""
+        rows = [
+            ["", "Company"],  # header, deliberately blank first cell too
+            ["", "Orphan Row"],  # first DATA row -- no parent to merge into
+            ["1/1/2026", "Acme Corp", "fragment one"],
+            ["", "", "fragment two"],
+        ]
+        result = _merge_wrapped_table_rows(rows)
+        assert result[0] == ["", "Company"]  # header untouched
+        assert result[1] == ["", "Orphan Row"]  # not silently merged into the header
+        assert result[2] == ["1/1/2026", "Acme Corp", "fragment one fragment two"]
+
+    def test_header_plus_one_data_row_is_a_no_op_short_circuit(self):
+        rows = [["Date", "Company"], ["1/1/2026", "Acme Corp"]]
+        assert _merge_wrapped_table_rows(rows) == rows
+
+    def test_empty_rows_list_is_a_no_op(self):
+        assert _merge_wrapped_table_rows([]) == []
+
+    def test_does_not_mutate_the_caller_supplied_rows(self):
+        rows = [
+            ["Date", "Company"],
+            ["1/1/2026", "Acme"],
+            ["", "Corp"],
+        ]
+        original = [list(r) for r in rows]
+        _merge_wrapped_table_rows(rows)
+        assert rows == original
+
+    def test_a_continuation_column_wider_than_the_parent_row_does_not_crash(self, caplog):
+        """An independent review flagged the original version of this test as
+        constructing exactly this scenario but never checking what happened to
+        the out-of-bounds cell -- it was silently dropped with no trace. Fixed
+        function now logs the drop; this test asserts BOTH that the in-bounds
+        merge still succeeds and that the drop is observable, not silent."""
+        rows = [
+            ["Date", "Company"],
+            ["1/1/2026", "Acme"],
+            ["", "extra", "wildly out of bounds"],
+        ]
+        with caplog.at_level("DEBUG"):
+            result = _merge_wrapped_table_rows(rows)
+        assert result[1] == ["1/1/2026", "Acme extra"]
+        assert not any("wildly out of bounds" in str(row) for row in result)
+        assert "wildly out of bounds" in caplog.text
+
+
+class _FakeExtractedTable:
+    def __init__(self, rows: list[list[Any]]) -> None:
+        self._rows = rows
+
+    def extract(self) -> list[list[Any]]:
+        return self._rows
+
+
+class _FakeTables:
+    def __init__(self, tables: list[_FakeExtractedTable]) -> None:
+        self.tables = tables
+
+
+class _FakePage:
+    def __init__(self, tables: list[_FakeExtractedTable]) -> None:
+        self._tables = tables
+
+    def find_tables(self) -> _FakeTables:
+        return _FakeTables(self._tables)
+
+
+class TestExtractPdfTables:
+    def test_no_tables_found_returns_empty_string(self):
+        assert _extract_pdf_tables(_FakePage([])) == ""
+
+    def _wrapped_page(self) -> _FakePage:
+        return _FakePage(
+            [
+                _FakeExtractedTable(
+                    [
+                        ["Date of Notice", "Company", "NAICS Description"],
+                        ["4/14/2026", "Greenwood Leflore Hospital", "622110 – General"],
+                        ["", "", "Medical and Surgical Hospital"],
+                    ]
+                )
+            ]
+        )
+
+    def test_wrapped_rows_are_merged_when_opted_in(self):
+        md = _extract_pdf_tables(self._wrapped_page(), merge_wrapped_rows=True)
+        assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General Medical and Surgical Hospital |" in md
+        # the continuation fragment must never appear as its own markdown row
+        assert "|  |  | Medical and Surgical Hospital |" not in md
+
+    def test_wrapped_rows_are_left_unmerged_by_default(self):
+        """merge_wrapped_rows defaults False -- an independent review correctly
+        flagged the merge heuristic as unsafe to apply unconditionally to every
+        document-backed target sharing this general-purpose tool (a table with a
+        legitimately blank first column on an independent row would get silently
+        fused into its neighbor). Only a caller that already knows its own table
+        needs this opts in."""
+        md = _extract_pdf_tables(self._wrapped_page())
+        assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in md
+        assert "|  |  | Medical and Surgical Hospital |" in md
+
+    def test_a_table_extraction_exception_degrades_to_empty_string(self):
+        class _RaisingPage:
+            def find_tables(self):
+                raise RuntimeError("boom")
+
+        assert _extract_pdf_tables(_RaisingPage()) == ""

@@ -23,6 +23,8 @@ from threetears.models import LlmPurpose
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import (
     _JudgeVerdict,
+    _MultiRowJudgeVerdict,
+    _judge_multi_row_extraction,
     _judge_one_document_extraction,
     run_eval_loop,
     run_eval_loop_multi_row,
@@ -1303,6 +1305,274 @@ class TestRunEvalLoopMultiRowVisionRouting:
         assert extraction.structured_fields == {"records": []}
 
 
+class TestRunEvalLoopMultiRowVisionStrategy:
+    """Mocks at the extract_page_images / extract_multi_row_fields_from_images /
+    _judge_multi_row_extraction function boundary, same mocking-pattern-evolution
+    lesson as TestRunEvalLoopMultiRowPerDocumentStrategy -- these tests exercise
+    multi_row_vision's own ROUTING/aggregation/validation_status logic; extraction's
+    and the judge's own internals get their own dedicated unit tests below and in
+    test_extraction.py."""
+
+    async def test_all_records_confirmed_is_validated(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [
+            {"employer": "Acme Corp", "affected_count": 42},
+            {"employer": "Beta LLC", "affected_count": 7},
+        ]
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value={0, 1})),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant, extract_page_images is mocked</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "validated"
+        assert extraction.structured_fields == {"records": records}
+        assert extraction.extraction_recipe_id == "warn_act_nv"
+
+    async def test_some_records_rejected_is_needs_review_not_silently_validated(self):
+        """The real teeth of the multi-row grounding requirement: a 17-row table
+        that's 15/17 right must never look identical to a 17/17 clean pass."""
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [
+            {"employer": "Acme Corp", "affected_count": 42},
+            {"employer": "Wrong Row", "affected_count": 999},
+            {"employer": "Beta LLC", "affected_count": 7},
+        ]
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value={0, 2})),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "needs_review"
+        assert extraction.structured_fields == {
+            "records": [
+                {"employer": "Acme Corp", "affected_count": 42},
+                {"employer": "Beta LLC", "affected_count": 7},
+            ]
+        }
+        # the rejected row is dropped, never persisted as if it were correct
+        assert {"employer": "Wrong Row", "affected_count": 999} not in extraction.structured_fields["records"]
+
+    async def test_zero_records_confirmed_is_failed(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [{"employer": "Acme Corp", "affected_count": 42}]
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", AsyncMock(return_value=set())),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "failed"
+        assert extraction.structured_fields == {"records": []}
+
+    async def test_no_page_images_fails_without_calling_extraction_or_judge(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        extract_mock = AsyncMock()
+        judge_mock = AsyncMock()
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: []),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", extract_mock),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>no images here</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "failed"
+        extract_mock.assert_not_called()
+        judge_mock.assert_not_called()
+
+    async def test_no_page_images_still_persists_a_recipe_bumping_the_failure_counter(self):
+        """Independent-review finding: the zero-images early return skipped
+        _save_recipe entirely, contradicting this strategy's own claim to persist
+        a marker recipe for the same operational-observability reason per_document
+        does (consecutive_validation_failures must advance on every real failure,
+        not just extraction/judge failures downstream of a successful image find)."""
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+
+        with patch.object(eval_loop_module, "extract_page_images", lambda html: []):
+            await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>no images here</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        recipe = await recipe_collection.get("warn_act_nv")
+        assert recipe is not None
+        assert recipe.consecutive_validation_failures == 1
+
+    async def test_a_record_missing_a_required_field_is_dropped_before_spending_a_judge_call(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [
+            {"employer": "Acme Corp", "affected_count": 42},
+            {"employer": "Incomplete Row"},  # missing affected_count
+        ]
+        judge_mock = AsyncMock(return_value={0})
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "validated"
+        assert extraction.structured_fields == {"records": [{"employer": "Acme Corp", "affected_count": 42}]}
+        # only the one complete record was ever handed to the judge
+        judge_mock.assert_awaited_once()
+        assert judge_mock.await_args.args[1] == [{"employer": "Acme Corp", "affected_count": 42}]
+
+    async def test_extraction_returning_none_is_failed_not_a_crash(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        judge_mock = AsyncMock()
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=None)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", judge_mock),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "failed"
+        judge_mock.assert_not_called()
+
+    async def test_a_hanging_extraction_call_is_bounded(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+
+        async def hanging_extraction(images, schema, *, api_key):
+            await asyncio.sleep(1)
+            raise AssertionError("should have been cancelled by the outer deadline")
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", hanging_extraction),
+            patch.object(eval_loop_module, "_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS", 0.05),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "failed"
+
+    async def test_a_hanging_judge_call_is_bounded_and_treats_all_records_as_unconfirmed(self):
+        import threetears.scrape.eval_loop as eval_loop_module
+
+        recipe_collection, extraction_collection = _collections()
+        records = [{"employer": "Acme Corp", "affected_count": 42}]
+
+        async def hanging_judge(images, records, schema, *, api_key):
+            await asyncio.sleep(1)
+            raise AssertionError("should have been cancelled by the outer deadline")
+
+        with (
+            patch.object(eval_loop_module, "extract_page_images", lambda html: [b"page-0"]),
+            patch.object(eval_loop_module, "extract_multi_row_fields_from_images", AsyncMock(return_value=records)),
+            patch.object(eval_loop_module, "_judge_multi_row_extraction", hanging_judge),
+            patch.object(eval_loop_module, "_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS", 0.05),
+        ):
+            extraction = await run_eval_loop_multi_row(
+                "warn_act_nv",
+                "<html><body>irrelevant</body></html>",
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipe_collection,
+                extraction_collection=extraction_collection,
+                api_key="k",
+                strategy_type="multi_row_vision",
+            )
+
+        assert extraction.validation_status == "failed"
+        assert extraction.structured_fields == {"records": []}
+
+
 # ===========================================================================
 # _judge_one_document_extraction -- per_document's own grounding check (scrape-task-06)
 # ===========================================================================
@@ -1377,3 +1647,83 @@ class TestJudgeOneDocumentExtraction:
         [message] = call.args[0]
         image_blocks = [block for block in message.content if block.get("type") == "image_url"]
         assert len(image_blocks) == 1
+
+
+# ===========================================================================
+# _judge_multi_row_extraction -- multi_row_vision's own grounding check (scrape-task-07)
+# ===========================================================================
+
+_MULTI_ROW_RECORDS = [
+    {"employer": "Acme Corp", "affected_count": 42},
+    {"employer": "Beta LLC", "affected_count": 7},
+]
+
+
+class TestJudgeMultiRowExtraction:
+    async def test_confirmed_indices_are_returned_as_a_set(self):
+        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="both rows match")
+        fake_model, ainvoke_mock = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await _judge_multi_row_extraction(
+                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
+            )
+        assert result == {0, 1}
+        assert ainvoke_mock.await_count == 1
+
+    async def test_a_subset_of_records_confirmed(self):
+        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0], reasoning="row 1 bled into row 0's count")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await _judge_multi_row_extraction(
+                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
+            )
+        assert result == {0}
+
+    async def test_out_of_range_indices_are_filtered_out_fail_closed(self):
+        """A hallucinated index (the judge names a record that doesn't exist) must
+        never crash the caller or silently pass through as a confirmed record."""
+        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 99], reasoning="oops")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await _judge_multi_row_extraction(
+                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
+            )
+        assert result == {0}
+
+    async def test_total_judge_failure_returns_empty_set_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await _judge_multi_row_extraction(
+                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
+            )
+        assert result == set()
+
+    async def test_empty_records_returns_empty_set_without_calling_the_model(self):
+        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
+            result = await _judge_multi_row_extraction([b"fake-png"], [], _SCHEMA, api_key="k")
+        assert result == set()
+        create_model.assert_not_called()
+
+    async def test_always_uses_the_vision_model_and_provider(self):
+        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0], reasoning="ok")
+        fake_model, _ = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
+        assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
+        assert create_model.call_args.kwargs["provider"] == "openrouter"
+
+    async def test_judge_prompt_includes_every_image_in_one_call(self):
+        verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="ok")
+        fake_model, ainvoke_mock = _fake_structured_model(verdict)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            await _judge_multi_row_extraction(
+                [b"page-0", b"page-1"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
+            )
+        assert ainvoke_mock.await_count == 1
+        [call] = ainvoke_mock.await_args_list
+        [message] = call.args[0]
+        image_blocks = [block for block in message.content if block.get("type") == "image_url"]
+        assert len(image_blocks) == 2

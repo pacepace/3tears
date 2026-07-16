@@ -176,6 +176,56 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert "Scanned letter text" in result.html
         assert OCR_PAGE_IMAGE_CLASS not in result.html
 
+    async def test_force_images_embeds_pages_even_when_was_ocr_is_false(self, monkeypatch):
+        """scrape-task-07: a born-digital PDF (Nevada's real master WARN table) can
+        still need a vision read -- its own table STRUCTURE, not scan quality,
+        defeats text-based extraction, so was_ocr alone can't gate this."""
+        fake_result = DocumentResult(text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [b"page0-png-bytes"]
+        )
+
+        result = await parse_document_bytes_to_html(
+            b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf", force_images=True
+        )
+
+        assert result.was_ocr is False  # unaffected -- force_images doesn't lie about what parse_document found
+        assert f'class="{OCR_PAGE_IMAGE_CLASS}"' in result.html
+
+    async def test_force_images_false_is_the_default_and_embeds_nothing_for_a_non_ocr_document(self, monkeypatch):
+        fake_result = DocumentResult(text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        render_mock = AsyncMock()
+        monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", render_mock)
+
+        result = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert OCR_PAGE_IMAGE_CLASS not in result.html
+        render_mock.assert_not_called()
+
+    async def test_merge_wrapped_table_rows_is_forwarded_to_parse_document(self, monkeypatch):
+        """scrape-task-07 follow-up: opt-in, not folded into a default-True
+        change for every document-backed target -- forwarded explicitly."""
+        fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
+        parse_mock = AsyncMock(return_value=fake_result)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", parse_mock)
+
+        await parse_document_bytes_to_html(
+            b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf", merge_wrapped_table_rows=True
+        )
+
+        assert parse_mock.call_args.kwargs["merge_wrapped_table_rows"] is True
+
+    async def test_merge_wrapped_table_rows_false_is_the_default(self, monkeypatch):
+        fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
+        parse_mock = AsyncMock(return_value=fake_result)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", parse_mock)
+
+        await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
+
+        assert parse_mock.call_args.kwargs["merge_wrapped_table_rows"] is False
+
 
 # ===========================================================================
 # DocumentDriver
@@ -282,7 +332,7 @@ class TestDocumentDriver:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         driver = DocumentDriver(client=client)
 
-        async def fake_parse_document(data, mime_type, filename, ocr_config=None):
+        async def fake_parse_document(data, mime_type, filename, ocr_config=None, *, merge_wrapped_table_rows=False):
             captured["data"] = data
             captured["mime_type"] = mime_type
             captured["filename"] = filename
@@ -370,6 +420,35 @@ class TestDocumentDriver:
         page = await driver.render("https://example.gov/warn.pdf")
 
         assert page.was_ocr is True
+        await client.aclose()
+
+    async def test_force_images_constructor_flag_is_threaded_through_to_the_parse_call(self, monkeypatch):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
+        driver = DocumentDriver(client=client, force_images=True)
+
+        fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [b"page0-png-bytes"]
+        )
+
+        page = await driver.render("https://example.gov/warn.pdf")
+
+        assert page.was_ocr is False
+        assert f'class="{OCR_PAGE_IMAGE_CLASS}"' in page.html
+        await client.aclose()
+
+    async def test_merge_wrapped_table_rows_constructor_flag_is_threaded_through_to_the_parse_call(self, monkeypatch):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
+        driver = DocumentDriver(client=client, merge_wrapped_table_rows=True)
+
+        fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
+        parse_mock = AsyncMock(return_value=fake_result)
+        monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", parse_mock)
+
+        await driver.render("https://example.gov/warn.pdf")
+
+        assert parse_mock.call_args.kwargs["merge_wrapped_table_rows"] is True
         await client.aclose()
 
     async def test_render_accepts_and_ignores_wait_for_and_nav_steps(self, monkeypatch):

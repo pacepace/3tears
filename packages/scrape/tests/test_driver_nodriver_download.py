@@ -115,6 +115,8 @@ class TestNodriverDownloadDriver:
             content_type="application/pdf",
             filename="WARN-Notice.pdf",
             ocr_config=None,
+            force_images=False,
+            merge_wrapped_table_rows=False,
         )
         await client.aclose()
 

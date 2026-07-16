@@ -128,11 +128,19 @@ async def parse_document(
     mime_type: str,
     filename: str | None = None,
     ocr_config: OcrConfig | None = None,
+    *,
+    merge_wrapped_table_rows: bool = False,
 ) -> DocumentResult:
     """Parse document bytes into markdown.
 
     Dispatches to format-specific parsers based on MIME type.
     Falls back to filename extension detection if MIME type is unknown.
+
+    :param merge_wrapped_table_rows: for PDFs only, opt in to
+        :func:`_merge_wrapped_table_rows`'s continuation-row stitching -- see
+        :func:`_extract_pdf_tables`'s own *merge_wrapped_rows* docstring for why
+        this defaults off. No-op for every other document format.
+    :ptype merge_wrapped_table_rows: bool
     """
     parser_key = _MIME_PARSERS.get(mime_type)
 
@@ -163,6 +171,8 @@ async def parse_document(
 
     parser_fn = parsers[parser_key]
     ocr = ocr_config or OcrConfig()
+    if parser_key == "pdf":
+        return await asyncio.to_thread(_parse_pdf, data, filename, ocr, merge_wrapped_table_rows)
     return await asyncio.to_thread(parser_fn, data, filename, ocr)
 
 
@@ -173,6 +183,7 @@ def _parse_pdf(
     data: bytes,
     filename: str | None = None,
     ocr: OcrConfig = OcrConfig(),
+    merge_wrapped_table_rows: bool = False,
 ) -> DocumentResult:
     """Parse PDF using PyMuPDF with OCR fallback for scanned pages."""
     try:
@@ -203,7 +214,7 @@ def _parse_pdf(
                         was_ocr = True
 
                 # Try to extract tables
-                tables_md = _extract_pdf_tables(page)
+                tables_md = _extract_pdf_tables(page, merge_wrapped_rows=merge_wrapped_table_rows)
 
                 # Font-size heuristic for headings
                 page_sections = _extract_pdf_headings(page, text, page_num + 1)
@@ -255,8 +266,83 @@ def _parse_pdf(
         )
 
 
-def _extract_pdf_tables(page: Any) -> str:
-    """Extract tables from a PDF page as markdown."""
+def _merge_wrapped_table_rows(rows: list[list[Any]]) -> list[list[Any]]:
+    """Stitch a PyMuPDF ``find_tables()`` continuation row back onto its parent record.
+
+    Live-found (scrape-task-07 follow-up, Mississippi's real quarterly WARN Act PDF):
+    ``find_tables()`` gets a table's column boundaries genuinely right, but when a
+    long-text cell (a NAICS code description, a free-text "Reason/Comments" column)
+    word-wraps across multiple lines *within one logical row* in the source PDF,
+    ``table.extract()`` emits each wrapped line as its OWN separate row -- one real
+    record ends up split across up to 7 physical rows, only the first of which
+    carries the record's other column values (Date/Company/Type/Count); every
+    following row has those columns empty and only a fragment of the wrapped
+    column's text.
+
+    A row is treated as a continuation of the row immediately above it when its
+    OWN first column (*rows[i][0]*, e.g. "Date of Notice") is empty/whitespace.
+    **Not safe as a blanket default** -- an independent review correctly flagged
+    that a table whose first column is LEGITIMATELY blank on some genuinely
+    separate record (a grouped layout: one date/company shown once, several real
+    distinct line-items below it) would get silently fused into its neighbor,
+    trading visible fragmentation for invisible corruption, worse than the bug
+    this fixes. Confirmed only against Mississippi's own real table -- callers
+    opt in explicitly (see :func:`_extract_pdf_tables`'s own *merge_wrapped_rows*
+    parameter) rather than this becoming an unconditional change for every
+    document-backed target sharing this general-purpose tool (same "don't make a
+    one-target finding a global default" lesson as this same module's own
+    ``OcrConfig.psm`` and ``force_images``, scrape-task-05/07).
+
+    Continuation cells are appended (space-joined, mirroring ``threetears.scrape.
+    drivers.document._merge_broken_pipe_rows``'s own word-wrap rejoin) onto the
+    parent row's SAME column position; a continuation row's own first column
+    (always empty by definition) contributes nothing. A continuation row wider
+    than its parent has its excess cells logged and dropped, not silently lost
+    with no trace -- a malformed-input edge case, not one seen in the real data
+    this was verified against.
+
+    Deliberately conservative: the header row (*rows[0]*) and the first data row
+    (*rows[1]*, which has no prior row to merge into even if its own first column
+    happens to be empty) are never merged into anything.
+
+    :param rows: ``table.extract()``'s raw row list, header first
+    :ptype rows: list[list[Any]]
+    :return: the same rows with any continuation rows merged into their parent,
+        header and structure otherwise unchanged; never mutates *rows* or any
+        row within it
+    :rtype: list[list[Any]]
+    """
+    if len(rows) <= 2:  # header + at most one data row -- nothing to merge
+        return rows
+    merged = [list(rows[0]), list(rows[1])]  # copy every row -- never touch the caller's own lists
+    for row in rows[2:]:
+        is_continuation = not (row and str(row[0] or "").strip())
+        if is_continuation:
+            parent = merged[-1]
+            for i, cell in enumerate(row):
+                if i == 0 or not cell:
+                    continue
+                if i >= len(parent):
+                    log.debug("PDF table row-merge: dropping out-of-bounds continuation cell %r at index %d", cell, i)
+                    continue
+                parent_cell = str(parent[i]) if parent[i] else ""
+                fragment = str(cell).strip()
+                parent[i] = f"{parent_cell} {fragment}".strip() if parent_cell else fragment
+        else:
+            merged.append(list(row))
+    return merged
+
+
+def _extract_pdf_tables(page: Any, *, merge_wrapped_rows: bool = False) -> str:
+    """Extract tables from a PDF page as markdown.
+
+    :param merge_wrapped_rows: opt in to :func:`_merge_wrapped_table_rows`'s
+        continuation-row stitching -- off by default, since that heuristic is
+        confirmed safe only for the one real table it was built against (see its
+        own docstring) and this function is shared by every document-backed
+        target, not scoped to any one of them.
+    :ptype merge_wrapped_rows: bool
+    """
     try:
         tables = page.find_tables()
         if not tables or not tables.tables:
@@ -267,6 +353,8 @@ def _extract_pdf_tables(page: Any) -> str:
             rows = table.extract()
             if not rows:
                 continue
+            if merge_wrapped_rows:
+                rows = _merge_wrapped_table_rows(rows)
             # Build markdown table
             header = rows[0]
             header_line = "| " + " | ".join(str(c) if c else "" for c in header) + " |"
@@ -278,7 +366,11 @@ def _extract_pdf_tables(page: Any) -> str:
             parts.append("\n".join([header_line, sep_line] + body_lines))
 
         return "\n\n".join(parts)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- honest-empty
+        # contract: a table-extraction failure must never fail the whole document
+        # parse; the plain (tableless) text this feeds into is still usable on its
+        # own, same posture as this module's other PDF-page-rendering fallbacks.
+        log.debug("PDF table extraction failed: %s", exc)
         return ""
 
 

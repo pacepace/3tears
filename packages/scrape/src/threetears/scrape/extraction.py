@@ -46,6 +46,8 @@ __all__ = [
     "extract_fields_directly",
     "extract_fields_directly_chunked",
     "extract_fields_from_images",
+    "extract_multi_row_fields_from_images",
+    "extract_page_images",
     "generate_candidates",
     "generate_regex_candidates",
     "generate_regex_row_candidates",
@@ -987,6 +989,33 @@ def split_notice_documents(html: str) -> list[NoticeDocument]:
     return documents
 
 
+def extract_page_images(html: str) -> list[bytes]:
+    """Decode every embedded page image directly out of *html*, in page order.
+
+    The ``"multi_row_vision"`` StrategyType's own counterpart to
+    :func:`split_notice_documents` -- a ``multi_row_vision`` target's page is ONE
+    document (a single PDF with many records inside it, e.g. Nevada's master WARN
+    table), rendered through the plain :class:`~threetears.scrape.drivers.
+    document.DocumentDriver` (``force_images=True``), not
+    :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver`'s
+    per-notice ``<div class="notice">`` wrapping -- so there's no per-document
+    split to do, just every ``<img class="ocr-page-image">`` tag in the whole page.
+
+    :param html: the rendered page's full HTML (see :data:`OCR_PAGE_IMAGE_CLASS`)
+    :ptype html: str
+    :return: one page image per embedded ``<img>`` tag, in document order
+    :rtype: list[bytes]
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    images: list[bytes] = []
+    for img_tag in soup.select(f"img.{OCR_PAGE_IMAGE_CLASS}"):
+        src = str(img_tag.get("src", ""))
+        _prefix, _sep, encoded = src.partition("base64,")
+        if _sep:
+            images.append(base64.b64decode(encoded))
+    return images
+
+
 #: Every regex candidate is compiled with these flags -- MULTILINE so ``^``/
 #: ``$`` anchor to line boundaries (a text-block record's own natural unit),
 #: DOTALL so ``.`` can span a record's own internal line breaks (a company
@@ -1653,3 +1682,135 @@ async def extract_fields_from_images(
     if result is None:
         return None
     return _coerce_direct_extraction_result(result, schema)
+
+
+# ===========================================================================
+# extract_multi_row_fields_from_images -- multi-row vision extraction (scrape-task-07)
+# ===========================================================================
+
+#: A multi-row vision call reads the same page image(s) as :func:`extract_fields_from_images`
+#: but must produce output proportional to the row count (Nevada's real master WARN PDF:
+#: 17 records, 8 fields each) rather than one record's worth -- wider than
+#: :data:`_VISION_TIMEOUT_SECONDS` to give that larger response real room before a retry fires.
+_MULTI_ROW_VISION_TIMEOUT_SECONDS = 120
+
+
+def _build_multi_row_vision_model(schema: FieldSchema) -> type[BaseModel]:
+    """Wrap :func:`_build_direct_extraction_model`'s one-record model in a ``records: list[...]``
+    envelope -- the multi-row counterpart to a single ``DirectExtractionFields`` response."""
+    record_cls = _build_direct_extraction_model(schema)
+    return create_model(
+        "MultiRowExtractionFields",
+        records=(
+            list[record_cls],  # type: ignore[valid-type]
+            PydanticField(description="every record found in the table, top to bottom, in the order they appear"),
+        ),
+    )
+
+
+def _build_multi_row_vision_extraction_prompt(schema: FieldSchema) -> str:
+    field_lines = "\n".join(f"- {name} ({expected.__name__})" for name, expected in schema.items())
+    return (
+        "This is one or more page images of a SINGLE table containing MANY records (e.g. a "
+        "state's master list of WARN Act notices) -- not one record, find EVERY row in the "
+        "table. Extract the following fields for EACH row directly from what you see in the "
+        "image(s):\n\n"
+        f"{field_lines}\n\n"
+        "Return one record per row, in the same top-to-bottom order the rows appear in the "
+        "table. Do not skip a row, do not merge two rows into one, and do not invent a row "
+        "that isn't there. Return each field's raw value exactly as it appears (do not "
+        "reformat dates or numbers). If a field is genuinely not present, illegible, or "
+        "redacted for a given row, return null for that row's value rather than guessing a "
+        "plausible-looking one."
+    )
+
+
+def _is_plausible_multi_row_extraction(candidate: BaseModel) -> bool:
+    """``is_acceptable`` predicate for :func:`extract_multi_row_fields_from_images`'s retry
+    call -- every record must individually pass :func:`_is_plausible_direct_extraction`'s
+    same sanity ceiling (see that function's own docstring for the live-observed failure
+    mode this catches), and there must be at least one record at all."""
+    records = candidate.model_dump().get("records", [])
+    if not records:
+        return False
+    return all(
+        not isinstance(value, str) or len(value) <= _MAX_PLAUSIBLE_FIELD_LENGTH
+        for record in records
+        for value in record.values()
+    )
+
+
+async def extract_multi_row_fields_from_images(
+    images: list[bytes],
+    schema: FieldSchema,
+    *,
+    model_id: str = DEFAULT_VISION_MODEL_ID,
+    provider: str = _VISION_PROVIDER,
+    api_key: str,
+    attempts: int = _EXTRACTION_ATTEMPTS,
+    backoff_seconds: float = _EXTRACTION_BACKOFF_SECONDS,
+) -> list[dict[str, Any]] | None:
+    """Ask a vision-capable LLM to extract EVERY record from a table shown in page images.
+
+    The multi-row counterpart to :func:`extract_fields_from_images` -- for a target whose
+    single PDF holds many records in one table (not one document = one record, the
+    ``"per_document"`` StrategyType's own assumption), used when the table's own structure
+    genuinely defeats text-based table extraction. Live-verified against Nevada's real
+    master WARN PDF (scrape-task-07): ``find_tables()``'s default ``"lines"`` strategy finds
+    only the header (the entire 17-row dataset silently dropped), its ``"text"`` strategy
+    mis-splits words/columns (a URL broken mid-string) -- a genuine structural defeat, not a
+    scan-quality one (the source PDF is born-digital, has a real text layer). Mississippi's
+    superficially similar "multi-row PDF" does NOT need this: its ``find_tables()`` already
+    gets correct column boundaries, its own problem (wrapped continuation rows) is a plain
+    text-based row-merge fix, filed separately -- proof the two states needed opposite fixes
+    despite looking alike, not that "multi-row table" implies vision.
+
+    :param images: one or more PNG-encoded page images of the SAME table, in page order
+    :ptype images: list[bytes]
+    :param schema: field_name -> expected Python type, applied to every row
+    :ptype schema: FieldSchema
+    :param model_id: the vision-capable model to invoke
+    :ptype model_id: str
+    :param provider: explicit provider override forwarded to ``create_chat_model``
+    :ptype provider: str
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param attempts: bounded retry count for transient failures
+    :ptype attempts: int
+    :param backoff_seconds: base backoff between retries (multiplied by attempt number)
+    :ptype backoff_seconds: float
+    :return: one field_name -> coerced value dict per record found, in table order (same
+        partial-per-record contract as :func:`extract_fields_directly`); ``None`` when
+        *images* is empty or every attempt failed (never raises)
+    :rtype: list[dict[str, Any]] | None
+    """
+    if not images:
+        return None
+
+    from langchain_core.messages import HumanMessage
+    from threetears.models import format_vision_content
+
+    content: list[Any] = []
+    for image_bytes in images:
+        content.extend(format_vision_content(image_bytes, "image/png", "")[:-1])
+    content.append({"type": "text", "text": _build_multi_row_vision_extraction_prompt(schema)})
+
+    model_cls = _build_multi_row_vision_model(schema)
+    result = await bounded_retry_structured_call(
+        [HumanMessage(content=content)],
+        model_cls,
+        model_id=model_id,
+        api_key=api_key,
+        provider=provider,
+        purpose=LlmPurpose.EXTRACTION,
+        temperature=0.1,
+        timeout=_MULTI_ROW_VISION_TIMEOUT_SECONDS,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape multi-row vision extraction",
+        degraded_to="no extraction",
+        is_acceptable=_is_plausible_multi_row_extraction,
+    )
+    if result is None:
+        return None
+    return [_coerce_direct_extraction_result(record, schema) for record in getattr(result, "records", [])]

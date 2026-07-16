@@ -104,7 +104,13 @@ def _embed_ocr_page_images(pdf_data: bytes) -> str:
 
 
 async def parse_document_bytes_to_html(
-    data: bytes, *, content_type: str, filename: str, ocr_config: OcrConfig | None = None
+    data: bytes,
+    *,
+    content_type: str,
+    filename: str,
+    ocr_config: OcrConfig | None = None,
+    force_images: bool = False,
+    merge_wrapped_table_rows: bool = False,
 ) -> ParsedDocumentHtml:
     """Parse raw document bytes into synthetic HTML -- the shared core of ``DocumentDriver``.
 
@@ -125,19 +131,43 @@ async def parse_document_bytes_to_html(
     :param ocr_config: OCR fallback config for scanned PDF pages, passed
         straight through to ``parse_document``
     :ptype ocr_config: OcrConfig | None
+    :param force_images: embed page images even when ``parse_document`` didn't
+        need OCR (scrape-task-07: a born-digital PDF can still defeat table-
+        structure extraction -- Nevada's real master WARN PDF has a genuine text
+        layer, ``was_ocr`` comes back ``False``, but its dense 8-column table
+        still needs a vision read because ``find_tables()`` is defeated both by
+        its default strategy (finds only the header) and its text strategy
+        (mis-splits words/columns). The failure here is table STRUCTURE, not
+        scan quality, so it can't be detected from ``was_ocr`` alone -- callers
+        that already know a target needs a vision read (via explicit
+        ``multi_row_vision`` strategy config, not auto-detection) opt in directly.
+    :ptype force_images: bool
+    :param merge_wrapped_table_rows: for a PDF, opt in to
+        ``threetears.agent.tools.document._merge_wrapped_table_rows``'s
+        continuation-row stitching (scrape-task-07 follow-up: a long-text cell
+        that word-wraps inside one logical PDF table row becomes its own separate
+        row in PyMuPDF's own output, splitting one record across several rows --
+        Mississippi's real quarterly WARN PDF). Off by default, same "confirmed
+        safe for one target, not a blanket default for every document-backed
+        target sharing this tool" posture as *force_images* -- callers that
+        already know a target needs it opt in directly.
+    :ptype merge_wrapped_table_rows: bool
     :return: synthetic ``<html><body>...</body></html>`` content plus whether OCR
-        was needed (scrape-task-06: when ``True``, the leading pages' own rendered
-        images are ALSO embedded as base64 ``<img>`` tags inside that same HTML,
-        for a vision-based extraction path to use)
+        was needed (scrape-task-06: when ``True``, or when *force_images* is set,
+        the leading pages' own rendered images are ALSO embedded as base64
+        ``<img>`` tags inside that same HTML, for a vision-based extraction path
+        to use)
     :rtype: ParsedDocumentHtml
     :raises DocumentDriverError: the parser couldn't handle this document
     """
     mime_type = content_type or (detect_mime_from_filename(filename) or "")
-    result = await parse_document(data, mime_type, filename, ocr_config=ocr_config)
+    result = await parse_document(
+        data, mime_type, filename, ocr_config=ocr_config, merge_wrapped_table_rows=merge_wrapped_table_rows
+    )
     if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
         raise DocumentDriverError("parse_failed", result.text)
     html = document_text_to_html(result.text)
-    if result.was_ocr:
+    if result.was_ocr or force_images:
         html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")
     return ParsedDocumentHtml(html=html, was_ocr=result.was_ocr)
 
@@ -245,7 +275,14 @@ class DocumentDriver(ScrapeDriver):
     handle.
     """
 
-    def __init__(self, *, client: httpx.AsyncClient | None = None, ocr_config: OcrConfig | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: httpx.AsyncClient | None = None,
+        ocr_config: OcrConfig | None = None,
+        force_images: bool = False,
+        merge_wrapped_table_rows: bool = False,
+    ) -> None:
         """
         :param client: an already-constructed httpx client to reuse (test
             injection); a fresh one is created per call when omitted.
@@ -253,9 +290,21 @@ class DocumentDriver(ScrapeDriver):
         :param ocr_config: OCR fallback config for scanned PDF pages, passed
             straight through to ``parse_document``.
         :ptype ocr_config: OcrConfig | None
+        :param force_images: embed page images even for a born-digital
+            (non-OCR'd) document -- see :func:`parse_document_bytes_to_html`'s
+            own docstring (scrape-task-07: a real target, e.g. Nevada's WARN
+            master PDF, needs a vision read despite having a genuine text layer).
+        :ptype force_images: bool
+        :param merge_wrapped_table_rows: stitch a PDF table's wrapped-cell
+            continuation rows back onto their parent record -- see
+            :func:`parse_document_bytes_to_html`'s own docstring (scrape-task-07
+            follow-up, Mississippi's real quarterly WARN PDF). Off by default.
+        :ptype merge_wrapped_table_rows: bool
         """
         self._client = client
         self._ocr_config = ocr_config
+        self._force_images = force_images
+        self._merge_wrapped_table_rows = merge_wrapped_table_rows
 
     @property
     def name(self) -> str:
@@ -326,7 +375,12 @@ class DocumentDriver(ScrapeDriver):
         filename = PurePosixPath(urlparse(str(response.url)).path).name or "document"
         content_type = response.headers.get("content-type", "").split(";")[0].strip()
         parsed = await parse_document_bytes_to_html(
-            response.content, content_type=content_type, filename=filename, ocr_config=self._ocr_config
+            response.content,
+            content_type=content_type,
+            filename=filename,
+            ocr_config=self._ocr_config,
+            force_images=self._force_images,
+            merge_wrapped_table_rows=self._merge_wrapped_table_rows,
         )
         return RenderedPage(
             html=parsed.html,

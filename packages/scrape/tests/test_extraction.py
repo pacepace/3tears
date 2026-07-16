@@ -34,6 +34,8 @@ from threetears.scrape.extraction import (
     extract_fields_directly,
     extract_fields_directly_chunked,
     extract_fields_from_images,
+    extract_multi_row_fields_from_images,
+    extract_page_images,
     generate_candidates,
     generate_regex_candidates,
     generate_regex_row_candidates,
@@ -1112,4 +1114,119 @@ class TestExtractFieldsFromImages:
         ):
             result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp", "affected_count": 42}
+        assert ainvoke_mock.await_count == 2
+
+
+# ===========================================================================
+# extract_page_images
+# ===========================================================================
+
+
+class TestExtractPageImages:
+    def test_no_images_returns_empty_list(self):
+        assert extract_page_images("<html><body><p>no images here</p></body></html>") == []
+
+    def test_decodes_every_embedded_page_image_in_order(self):
+        import base64
+
+        b64_a = base64.b64encode(b"page-a-png-bytes").decode("ascii")
+        b64_b = base64.b64encode(b"page-b-png-bytes").decode("ascii")
+        html = (
+            "<html><body>"
+            f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="0" src="data:image/png;base64,{b64_a}">'
+            f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="1" src="data:image/png;base64,{b64_b}">'
+            "</body></html>"
+        )
+        assert extract_page_images(html) == [b"page-a-png-bytes", b"page-b-png-bytes"]
+
+    def test_no_notice_div_wrapper_needed_unlike_split_notice_documents(self):
+        # multi_row_vision targets render through the plain DocumentDriver (one
+        # document, no MultiDocumentDriver per-notice wrapping) -- images embedded
+        # directly in <body>, not inside a div.notice, must still be found.
+        import base64
+
+        b64 = base64.b64encode(b"solo-page").decode("ascii")
+        html = f'<html><body><img class="{OCR_PAGE_IMAGE_CLASS}" src="data:image/png;base64,{b64}"></body></html>'
+        assert extract_page_images(html) == [b"solo-page"]
+
+
+# ===========================================================================
+# extract_multi_row_fields_from_images
+# ===========================================================================
+
+
+class TestExtractMultiRowFieldsFromImages:
+    async def test_empty_images_returns_none_without_calling_the_model(self):
+        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
+            result = await extract_multi_row_fields_from_images([], _SCHEMA_DIRECT, api_key="k")
+        assert result is None
+        create_model.assert_not_called()
+
+    async def test_success_returns_one_record_per_row_in_order(self):
+        rows = {
+            "records": [
+                {"employer": "Acme Corp", "affected_count": "42"},
+                {"employer": "Beta LLC", "affected_count": "7"},
+                {"employer": "Gamma Inc", "affected_count": "3"},
+            ]
+        }
+        fake_model, ainvoke_mock = _fake_structured_model(rows)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
+            result = await extract_multi_row_fields_from_images([b"fake-png-page-0"], _SCHEMA_DIRECT, api_key="k")
+        assert result == [
+            {"employer": "Acme Corp", "affected_count": 42},
+            {"employer": "Beta LLC", "affected_count": 7},
+            {"employer": "Gamma Inc", "affected_count": 3},
+        ]
+        assert ainvoke_mock.await_count == 1
+        assert create_model.call_args.kwargs["provider"] == "openrouter"
+
+    async def test_multiple_images_are_all_included_in_one_call(self):
+        rows = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
+        fake_model, ainvoke_mock = _fake_structured_model(rows)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            await extract_multi_row_fields_from_images([b"page-0", b"page-1"], _SCHEMA_DIRECT, api_key="k")
+        [call] = ainvoke_mock.await_args_list
+        [message] = call.args[0]
+        image_blocks = [block for block in message.content if block.get("type") == "image_url"]
+        assert len(image_blocks) == 2
+
+    async def test_a_null_field_on_one_row_is_simply_absent_from_that_records_dict(self):
+        rows = {"records": [{"employer": "Acme Corp", "affected_count": None}]}
+        fake_model, _ = _fake_structured_model(rows)
+        with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+            result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result == [{"employer": "Acme Corp"}]
+
+    async def test_zero_records_is_a_retry_worthy_result_not_silently_accepted(self):
+        empty = {"records": []}
+        good = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
+        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[empty, good])
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result == [{"employer": "Acme Corp", "affected_count": 1}]
+        assert ainvoke_mock.await_count == 2
+
+    async def test_total_llm_failure_returns_none_not_a_crash(self):
+        fake_model, _ = _fake_structured_model(side_effect=RuntimeError("boom"))
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result is None
+
+    async def test_an_implausibly_long_field_value_on_any_row_triggers_a_retry(self):
+        garbage = {"records": [{"employer": "x" * 5000, "affected_count": "1"}]}
+        good = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
+        fake_model, ainvoke_mock = _fake_structured_model(side_effect=[garbage, good])
+        with (
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
+            patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
+        ):
+            result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
+        assert result == [{"employer": "Acme Corp", "affected_count": 1}]
         assert ainvoke_mock.await_count == 2

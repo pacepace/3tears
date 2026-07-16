@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
@@ -39,6 +39,8 @@ from .extraction import (
     _VISION_PROVIDER,
     extract_fields_directly_chunked,
     extract_fields_from_images,
+    extract_multi_row_fields_from_images,
+    extract_page_images,
     generate_candidates,
     generate_regex_candidates,
     generate_regex_row_candidates,
@@ -57,17 +59,27 @@ __all__ = ["DEFAULT_JUDGE_MODEL_ID", "StrategyType", "run_eval_loop", "run_eval_
 
 #: Which extraction-strategy shape a target's page needs -- "css" (an HTML
 #: table, the original v1 shape), "regex" (a text-block/prose listing with
-#: no table structure at all, added 2026-07-14), or "per_document" (a
+#: no table structure at all, added 2026-07-14), "per_document" (a
 #: MultiDocumentDriver-combined page whose documents are each independently
 #: worded -- e.g. one employer's own freeform letter per notice -- sharing
 #: no boilerplate any single cached pattern could generalize across; added
 #: scrape-task-05, 2026-07-15, live-verified against West Virginia's real
-#: WARN letters after a regex-strategy attempt matched only 1 of 10). A
-#: per-call flag mirroring how ``multi_row`` already works, not read from
-#: the stored recipe -- a target's own page shape doesn't change between
-#: calls, so the caller (``ScrapeTarget.extraction_strategy_type``) is the
-#: source of truth.
-StrategyType = Literal["css", "regex", "per_document"]
+#: WARN letters after a regex-strategy attempt matched only 1 of 10), or
+#: "multi_row_vision" (a single born-digital PDF whose own table structure
+#: defeats text-based table extraction -- e.g. Nevada's real master WARN
+#: PDF, where ``find_tables()`` finds only the header one way and mis-splits
+#: columns the other -- needs a vision read of the whole table at once;
+#: added scrape-task-07, 2026-07-15, explicitly chosen per-target in config,
+#: never auto-detected by shape: Mississippi's superficially similar
+#: "multi-row PDF" needs the OPPOSITE fix, a plain row-merge on its own
+#: already-working text-based extraction, proof shape alone doesn't decide
+#: this). A per-call flag mirroring how ``multi_row`` already works, not
+#: read from the stored recipe -- a target's own page shape doesn't change
+#: between calls, so the caller (``ScrapeTarget.extraction_strategy_type``)
+#: is the source of truth.
+StrategyType = Literal["css", "regex", "per_document", "multi_row_vision"]
+
+T = TypeVar("T", bound=BaseModel)
 
 log = get_logger(__name__)
 
@@ -100,6 +112,12 @@ DEFAULT_CANDIDATE_COUNT = 3
 #: margin, while still keeping one truly-hung document from blocking an entire
 #: poll of N documents indefinitely.
 _PER_DOCUMENT_TIMEOUT_SECONDS = 90
+
+#: Same hang-mitigation posture as :data:`_PER_DOCUMENT_TIMEOUT_SECONDS`, but wider --
+#: a multi-row vision extraction/judge call reasons over a whole table's worth of
+#: records in one call (Nevada's real master WARN PDF: 17 records), not one document's,
+#: so a well-behaved call legitimately takes longer.
+_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS = 150
 
 
 class _JudgeVerdict(BaseModel):
@@ -137,27 +155,33 @@ def _build_judge_prompt(html: str, survivors: list[dict[str, Any]], schema: Fiel
 async def _judge(
     prompt_or_messages: str | list[Any],
     *,
+    response_model: type[T],
     model_id: str,
     api_key: str,
     provider: str | None = None,
     attempts: int = _JUDGE_ATTEMPTS,
     backoff_seconds: float = _JUDGE_BACKOFF_SECONDS,
     log_label: str,
-) -> _JudgeVerdict | None:
+) -> T | None:
     """The one shared judge call every judge use in this module funnels through --
-    structured-output :class:`_JudgeVerdict`, retried on transient failure, never
-    raises. Callers vary only in how *prompt_or_messages* was built (a plain text
-    prompt for css/regex candidate comparison against real page HTML; a multimodal
-    message list for a vision-grounded per_document confirmation against real page
-    images -- ``bounded_retry_structured_call``'s own ``prompt`` parameter already
-    accepts either shape) and *log_label*. Previously ``_judge_candidates`` and
+    structured-output response, retried on transient failure, never raises. Callers
+    vary in how *prompt_or_messages* was built (a plain text prompt for css/regex
+    candidate comparison against real page HTML; a multimodal message list for a
+    vision-grounded per_document/multi_row confirmation against real page images --
+    ``bounded_retry_structured_call``'s own ``prompt`` parameter already accepts
+    either shape), *log_label*, and -- since scrape-task-07 -- *response_model*
+    (:class:`_JudgeVerdict`'s single-winner shape for css/regex/per_document; the
+    multi-row judge passes :class:`_MultiRowJudgeVerdict` instead, since "which ONE
+    candidate wins" doesn't fit "which of these N independent records are each
+    individually correct" -- required explicitly, not defaulted, so mypy can infer
+    *T* precisely at each call site). Previously ``_judge_candidates`` and
     ``_judge_row_candidates`` each called ``bounded_retry_structured_call`` directly
     with near-identical arguments (scrape-task-06's own per-document grounding
     check made that duplication worth closing, not adding a third copy of it).
     """
     return await bounded_retry_structured_call(
         prompt_or_messages,
-        _JudgeVerdict,
+        response_model,
         model_id=model_id,
         api_key=api_key,
         provider=provider,
@@ -190,7 +214,13 @@ async def _judge_candidates(
     """
     prompt = _build_judge_prompt(html, survivors, schema)
     return await _judge(
-        prompt, model_id=model_id, api_key=api_key, attempts=attempts, backoff_seconds=backoff_seconds, log_label="scrape judge"
+        prompt,
+        response_model=_JudgeVerdict,
+        model_id=model_id,
+        api_key=api_key,
+        attempts=attempts,
+        backoff_seconds=backoff_seconds,
+        log_label="scrape judge",
     )
 
 
@@ -651,6 +681,7 @@ async def _judge_row_candidates(
     prompt = _build_row_judge_prompt(html, survivors, schema)
     return await _judge(
         prompt,
+        response_model=_JudgeVerdict,
         model_id=model_id,
         api_key=api_key,
         attempts=attempts,
@@ -755,12 +786,117 @@ async def _judge_one_document_extraction(
         provider = None
     verdict = await _judge(
         prompt_or_messages,
+        response_model=_JudgeVerdict,
         model_id=model_id,
         api_key=api_key,
         provider=provider,
         log_label="scrape per-document judge",
     )
     return verdict is not None and verdict.winning_candidate_index == 0
+
+
+class _MultiRowJudgeVerdict(BaseModel):
+    """Forced response shape for the multi-row grounding-judge call.
+
+    Deliberately NOT :class:`_JudgeVerdict` -- a multi-row table read isn't "pick the
+    one best candidate among several," it's "independently confirm or reject EACH of
+    these N already-extracted records against the same source image(s)." A single
+    ``winning_candidate_index`` can't express "records 0, 2, and 5 are right but 1, 3,
+    4 are wrong" -- this shape can.
+    """
+
+    confirmed_record_indices: list[int] = PydanticField(
+        description=(
+            "0-based indices, into the given records list, of every record that is fully "
+            "and correctly grounded in the source image(s) -- every field matches what the "
+            "image(s) actually show, no row bled into its neighbor, no column misaligned. "
+            "Omit the index of any record with even one wrong, hallucinated, or misaligned "
+            "field. Empty list if none of the records are fully correct."
+        )
+    )
+    reasoning: str = PydanticField(
+        description="one-sentence justification per rejected record citing what's wrong, or confirming all are correct"
+    )
+
+
+def _build_multi_row_judge_content(images: list[bytes], records: list[dict[str, Any]], schema: FieldSchema) -> list[Any]:
+    from threetears.models import format_vision_content
+
+    field_lines = ", ".join(schema.keys())
+    record_lines = "\n".join(f"[{i}] {record}" for i, record in enumerate(records))
+    content: list[Any] = []
+    for image_bytes in images:
+        content.extend(format_vision_content(image_bytes, "image/png", "")[:-1])
+    content.append(
+        {
+            "type": "text",
+            "text": (
+                "You are judging a set of already-extracted records against a table shown in "
+                "these page image(s). Each record was extracted from one row of the table. "
+                f"Fields: {field_lines}.\n\n"
+                f"Extracted records (index: field->value):\n{record_lines}\n\n"
+                "For EACH record, compare it against the actual row it should correspond to in "
+                "the image(s). A record is correct only if every one of its field values "
+                "genuinely matches that row -- watch specifically for a row bleeding into its "
+                "neighbor (a value from the row above or below), a count or date shifted by one "
+                "column, or a value invented that isn't in the table at all. Return the indices "
+                "of every record that is fully and correctly grounded; omit any record with even "
+                "one wrong field."
+            ),
+        }
+    )
+    return content
+
+
+async def _judge_multi_row_extraction(
+    images: list[bytes],
+    records: list[dict[str, Any]],
+    schema: FieldSchema,
+    *,
+    api_key: str,
+) -> set[int]:
+    """Confirms (or rejects) EACH of *records* against the same source page image(s), in
+    ONE judge call -- the ``"multi_row_vision"`` StrategyType's own grounding check.
+
+    Batched into a single call deliberately (not N per-record calls): a table read
+    returning many records has many independent ways to be confidently wrong (a row
+    bled into its neighbor, a count misaligned by one column), and completeness is not
+    correctness -- but N separate judge calls would multiply the LLM cost by the row
+    count on every poll. Always uses the vision model/provider (unlike
+    :func:`_judge_one_document_extraction`, there is no born-digital-text branch here --
+    a ``multi_row_vision`` target is explicitly chosen because its table structure
+    defeats text-based extraction in the first place, so there is no reliable text
+    source to judge against either).
+
+    :param images: the same page image(s) the extraction itself was read from
+    :ptype images: list[bytes]
+    :param records: every already-coerced, already-complete record extracted from *images*
+    :ptype records: list[dict[str, Any]]
+    :param schema: field_name -> expected Python type
+    :ptype schema: FieldSchema
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :return: the 0-based indices of *records* the judge explicitly confirmed -- empty on
+        total judge failure (fail-closed: an unconfirmable record is dropped, never kept
+        just because judging itself failed)
+    :rtype: set[int]
+    """
+    if not records:
+        return set()
+    content = _build_multi_row_judge_content(images, records, schema)
+    from langchain_core.messages import HumanMessage
+
+    verdict = await _judge(
+        [HumanMessage(content=content)],
+        response_model=_MultiRowJudgeVerdict,
+        model_id=DEFAULT_VISION_MODEL_ID,
+        api_key=api_key,
+        provider=_VISION_PROVIDER,
+        log_label="scrape multi-row judge",
+    )
+    if verdict is None:
+        return set()
+    return {i for i in verdict.confirmed_record_indices if 0 <= i < len(records)}
 
 
 async def _reuse_row_recipe(
@@ -1188,6 +1324,152 @@ async def _run_per_document_extraction(
     )
 
 
+async def _run_multi_row_vision_extraction(
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    source_url: str,
+    *,
+    recipe_collection: ScrapeRecipeCollection,
+    extraction_collection: ScrapeExtractionCollection,
+    api_key: str,
+) -> ScrapeExtraction:
+    """``"multi_row_vision"`` StrategyType: one page, one table, read once via vision,
+    every record grounded against the same source image(s) before counting as real.
+
+    Like :func:`_run_per_document_extraction`, there is no cached selector pattern to
+    reuse -- ``find_tables()`` (the text-based table extraction every other multi-row
+    strategy could fall back on) is exactly what this StrategyType exists because it
+    fails for this target's own real table (see :func:`~threetears.scrape.extraction.
+    extract_multi_row_fields_from_images`'s own docstring for the live evidence). Still
+    persists a marker ``ScrapeRecipe`` for the same operational-observability reason
+    per_document does.
+
+    **Partial-confidence ``validation_status``, unlike per_document's binary validated/
+    failed:** per_document extracts one record per document, so there's no "some right,
+    some wrong" middle state to represent -- it's validated if any document's record
+    survived judging, failed otherwise. A single multi-row table read can PARTIALLY
+    succeed (say, 15 of 17 rows judge-confirmed, 2 rejected) -- persisting only the
+    confirmed rows (never a rejected one, matching every other strategy's fail-closed
+    contract) but marking the whole extraction ``"needs_review"`` rather than silently
+    ``"validated"`` when it isn't complete, a real, human-checkable signal a 17-row
+    table can genuinely produce that a 1-record document can't.
+    """
+    images = extract_page_images(html)
+    if not images:
+        log.warning(
+            "scrape multi-row vision extraction: no page images found for target %s",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
+        now = datetime.now(UTC)
+        existing_recipe = await recipe_collection.get(target_id)
+        await _save_recipe(
+            recipe_collection,
+            target_id=target_id,
+            extraction_strategy={"strategy": "multi_row_vision"},
+            won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
+            last_validated_at=now,
+            consecutive_validation_failures=(existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1),
+        )
+        return await _persist_extraction(
+            extraction_collection,
+            target_id=target_id,
+            source_url=source_url,
+            structured_fields={"records": []},
+            validation_status="failed",
+            extraction_recipe_id=None,
+        )
+
+    try:
+        extracted_records = await asyncio.wait_for(
+            extract_multi_row_fields_from_images(images, schema, api_key=api_key),
+            timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        log.warning(
+            "scrape multi-row vision extraction: extraction hung past %ss for target %s",
+            _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
+        extracted_records = None
+
+    # All-or-nothing-per-record, same philosophy as every other strategy: a record
+    # only counts if EVERY schema field was found and coerced.
+    complete_records = [record for record in (extracted_records or []) if set(record) == set(schema)]
+
+    if not complete_records:
+        now = datetime.now(UTC)
+        existing_recipe = await recipe_collection.get(target_id)
+        await _save_recipe(
+            recipe_collection,
+            target_id=target_id,
+            extraction_strategy={"strategy": "multi_row_vision"},
+            won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
+            last_validated_at=now,
+            consecutive_validation_failures=(existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1),
+        )
+        return await _persist_extraction(
+            extraction_collection,
+            target_id=target_id,
+            source_url=source_url,
+            structured_fields={"records": []},
+            validation_status="failed",
+            extraction_recipe_id=None,
+        )
+
+    try:
+        confirmed_indices = await asyncio.wait_for(
+            _judge_multi_row_extraction(images, complete_records, schema, api_key=api_key),
+            timeout=_MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        log.warning(
+            "scrape multi-row vision extraction: judge hung past %ss for target %s, treating all as unconfirmed",
+            _MULTI_ROW_EXTRACTION_TIMEOUT_SECONDS,
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
+        confirmed_indices = set()
+
+    confirmed_records = [record for i, record in enumerate(complete_records) if i in confirmed_indices]
+
+    now = datetime.now(UTC)
+    existing_recipe = await recipe_collection.get(target_id)
+    await _save_recipe(
+        recipe_collection,
+        target_id=target_id,
+        extraction_strategy={"strategy": "multi_row_vision"},
+        won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
+        last_validated_at=now,
+        consecutive_validation_failures=(
+            0 if confirmed_records else (existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1)
+        ),
+    )
+    log.info(
+        "scrape multi-row vision extraction: target=%s extracted=%d confirmed=%d",
+        target_id,
+        len(complete_records),
+        len(confirmed_records),
+        extra={"extra_data": {"target_id": target_id}},
+    )
+    if not confirmed_records:
+        validation_status = "failed"
+    elif len(confirmed_records) == len(complete_records):
+        validation_status = "validated"
+    else:
+        validation_status = "needs_review"
+    return await _persist_extraction(
+        extraction_collection,
+        target_id=target_id,
+        source_url=source_url,
+        structured_fields={"records": confirmed_records},
+        validation_status=validation_status,
+        extraction_recipe_id=target_id if confirmed_records else None,
+    )
+
+
 async def run_eval_loop_multi_row(
     target_id: str,
     html: str,
@@ -1236,9 +1518,12 @@ async def run_eval_loop_multi_row(
     :ptype judge_model_id: str
     :param strategy_type: ``"css"`` (row/field CSS selectors), ``"regex"``
         (a single pattern matched repeatedly via ``re.finditer`` against the
-        page's plain text, one match per record), or ``"per_document"`` (no
+        page's plain text, one match per record), ``"per_document"`` (no
         cached pattern at all -- a fresh LLM extraction call per document,
-        every poll; see :data:`StrategyType`'s own comment for why)
+        every poll), or ``"multi_row_vision"`` (a single PDF whose own table
+        structure defeats text-based extraction -- a vision read of the
+        whole table, every record grounded before counting; see
+        :data:`StrategyType`'s own comment for why)
     :ptype strategy_type: StrategyType
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
@@ -1254,6 +1539,16 @@ async def run_eval_loop_multi_row(
             api_key=api_key,
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
+        )
+    if strategy_type == "multi_row_vision":
+        return await _run_multi_row_vision_extraction(
+            html,
+            schema,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            api_key=api_key,
         )
     reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
