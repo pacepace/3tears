@@ -2,7 +2,7 @@
 #
 # Build context: this repo (3tears) root.
 #
-#     docker build -f docker/Dockerfile -t ghcr.io/pacepace/threetears-base:v0.5.0 .
+#     docker build -f docker/Dockerfile -t "$REGISTRY/threetears-base:$VERSION" .
 #
 # In the platform layout this image is built via Docker Bake; see the
 # top-level docker-bake.hcl one directory up.
