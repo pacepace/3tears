@@ -13,7 +13,8 @@ The contract this pins:
   never claimed;
 - get() returns None for an unknown key, and the current record
   otherwise;
-- the bucket is opened with the configured TTL.
+- the bucket is opened with the configured TTL, and with file storage
+  (not memory) so claims survive a NATS restart within the ttl window.
 """
 
 from __future__ import annotations
@@ -248,6 +249,23 @@ class TestBucketConfiguration:
         await store.claim("x")
         kwargs = spy_client.kv_bucket.call_args.kwargs
         assert kwargs["ttl"] == timedelta(hours=6)
+
+    @pytest.mark.asyncio
+    async def test_bucket_opened_with_file_storage(self) -> None:
+        bucket = AsyncMock()
+        bucket.create = AsyncMock(return_value=1)
+        spy_client = AsyncMock()
+        spy_client.kv_bucket = AsyncMock(return_value=bucket)
+        store = IdempotencyKeyStore(spy_client, bucket_name="b")
+        await store.claim("x")
+        kwargs = spy_client.kv_bucket.call_args.kwargs
+        # file storage (not the default "memory") so a claim survives a NATS restart for
+        # the whole ttl window -- same reasoning as ReplayGuard (test_replay_guard.py's
+        # test_bucket_opened_with_the_accept_window_ttl): with memory storage a restart
+        # wipes the bucket and self-heal recreates it empty, so a caller retrying an
+        # already-completed/failed operation would get status="claimed" again and redo
+        # the work.
+        assert kwargs["storage"] == "file"
 
     @pytest.mark.asyncio
     async def test_default_ttl_is_24_hours(self) -> None:

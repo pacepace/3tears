@@ -369,7 +369,15 @@ class IdempotencyKeyStore:
                 self._bucket = await self._client.kv_bucket(
                     name=self._bucket_name,
                     ttl=self._ttl,
-                    storage="memory",
+                    # file storage (NOT the default "memory"): a claim must survive a NATS
+                    # restart for the whole ttl window, same reasoning as ReplayGuard's identical
+                    # choice (replay_guard.py). with memory storage a restart wipes the bucket, and
+                    # NatsKvBucket's self-heal would recreate it EMPTY -- a caller retrying an
+                    # already-"completed"/"failed" operation would then get status="claimed" again
+                    # and redo the work, exactly the double-processing this primitive exists to
+                    # prevent. file storage rebinds the intact on-disk bucket instead, so recorded
+                    # claims/results persist within their ttl across a normal restart.
+                    storage="file",
                     create_if_missing=True,
                     history=1,
                 )
