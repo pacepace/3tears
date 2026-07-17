@@ -132,6 +132,19 @@ class NameMangledToolProxy(BaseTool):
         )
         self._delegate = delegate
 
+    @property
+    def canonical_name(self) -> str:
+        """the delegate's un-mangled, dotted canonical name.
+
+        Public accessor so callers who substitute proxies ahead of a chat model's own
+        ``bind_tools`` (e.g. :mod:`threetears.models.providers._claude_cli`) can report the
+        canonical name to their own observability/tracking, without reaching into ``_delegate``.
+
+        :return: canonical dotted tool name
+        :rtype: str
+        """
+        return self._delegate.name
+
     async def _arun(self, *args: Any, **kwargs: Any) -> Any:
         """forward async execution to the delegate's ``_arun``.
 

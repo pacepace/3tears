@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.3 -- 2026-07-16
+
+**Fix: 3tears builtin tool calls (`web_search`, `calculator`, ...) were silently denied under a
+Claude Max subscription turn** -- "Claude requested permissions to use ... but you haven't granted
+it yet", with nothing logged anywhere, while the same tool worked fine on every other backend
+(found live, prod conversation `019f6cf5-073a-7b50-bd44-721efb0c7b90`).
+
+- **`_SubscriptionChatModel.bind_tools`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
+  Every 3tears builtin's canonical name is dotted (`threetears.web_search`, per
+  `BaseAgentTool.mcp_name()`). The base class's own `bind_tools` already tries to auto-approve
+  bound tools by deriving `allowed_tools` from each tool's raw dotted name, but the SDK/CLI
+  normalizes dots out of tool identities on the wire, so that entry never matched what it was
+  meant to auto-approve -- every real call needed (and never got) interactive approval. Every
+  other provider wrapper (`anthropic.py`, `openrouter.py`) already applies the same dot-to-underscore
+  translation for the identical Anthropic tool-name constraint, but the subscription backend never
+  got it. `bind_tools` now substitutes each dotted tool for a `NameMangledToolProxy` before the
+  base class derives `allowed_tools`, so the entry matches exactly. Also adds
+  `NameMangledToolProxy.canonical_name`, a public accessor for the delegate's un-mangled name.
+
+**Fix: L2 bucket-resolution failures on first open were not degrading like every other L2
+transport failure.** `BaseCollection._get_from_l2`/`_save_to_l2`/`_delete_from_l2`
+(`packages/core/src/threetears/core/collections/base.py`) already caught `KvError` narrowly around
+the `kv.get`/`put`/`delete` call, but the preceding `_ensure_kv()` bucket-resolution call sat
+outside that try block -- a regression from an earlier change that split bucket resolution out of
+the get/put/delete calls without widening the catch to cover the new call site. When a KV bucket
+had never been opened yet (e.g. right after a NATS outage begins) and `_ensure_kv()` raised
+`KvError` on the first open attempt, the exception propagated uncaught instead of degrading,
+breaking `save_entity()`'s documented "L2 is best-effort, L3 is source of truth" contract for any
+collection whose bucket was not already warm. The catch now covers bucket resolution too.
+
 ## v0.17.2 -- 2026-07-16
 
 **`skill_report_outcome` tool (`packages/agent/skills`), written 2026-07-13 but left

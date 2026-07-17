@@ -42,21 +42,43 @@ per content-block index so the terminal ``AssistantMessage`` never re-yields (an
 text a delta already streamed. A turn that somehow gets no ``StreamEvent`` at all (older CLI build,
 future SDK regression) falls back to the base class's whole-message behavior for that block, so
 this is strictly additive -- never worse than today.
+
+Tool-name mangling (found live: every real call to a bound 3tears builtin tool -- e.g.
+``threetears.web_search`` -- was silently denied under a subscription turn: "Claude requested
+permissions to use ... but you haven't granted it yet", with nothing logged anywhere, while the
+SAME tool worked fine on every other backend). Canonical 3tears tool names are dotted
+(``threetears.web_search``, per ``BaseAgentTool.mcp_name()``); every other provider wrapper
+(``anthropic.py``, ``openrouter.py``) mixes in ``NameTranslatingChatMixin`` because Anthropic's own
+tool-name validator rejects the dot (``^[a-zA-Z0-9_-]{1,128}$``) -- but ``create_anthropic_chat``
+routes an OAuth token straight to :func:`create_subscription_chat` BEFORE that mixin is applied, so
+this backend never got the same treatment. The SDK/CLI's own ``bind_tools`` already tries to
+auto-approve bound tools by deriving ``allowed_tools`` from each tool's raw ``.name``, but that
+entry never matched the underscored identity the CLI normalizes tool calls to -- so the
+auto-approval it was already attempting silently failed to match, and every call needed (and never
+got) interactive approval. ``bind_tools`` here substitutes each dotted tool for a
+``NameMangledToolProxy`` (:func:`~threetears.models.tool_name_translation.build_name_translation`,
+the same translation the other providers apply) BEFORE the base class ever sees it, so the
+``allowed_tools`` entry it derives matches exactly. Dispatch is unaffected (the proxy delegates
+``_arun``/``_run`` straight through); event emission resolves the proxy's delegate to keep
+tool-status events on the canonical dotted name metallm's own tracking expects.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, Callable
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
 from pydantic import Field
+
+from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
 
 from threetears.langgraph.events import (
     ToolCompletedEvent,
@@ -127,6 +149,40 @@ def _subscription_model_cls() -> type:
             overrides.setdefault("tools", self.tools)
             return super()._build_options(**overrides)
 
+        def bind_tools(  # type: ignore[override] # narrows the supertype's Sequence[dict | type |
+            # Callable | BaseTool] to Sequence[BaseTool] -- every real caller (metallm's own tool
+            # loop) only ever binds BaseTool instances; the base class's own bind_tools makes the
+            # same assumption in its body (`lc_tool.name` on each entry), so the wider supertype
+            # signature is already unused in practice, not a contract this override narrows away.
+            self,
+            tools: Sequence[BaseTool],
+            *,
+            tool_choice: str | dict[str, Any] | None = None,
+            **kwargs: Any,
+        ) -> Runnable[Any, Any]:
+            """Mangle dotted tool names BEFORE the base class derives ``allowed_tools`` from them.
+
+            Found live: every 3tears builtin's canonical name is dotted (``threetears.web_search``,
+            per ``BaseAgentTool.mcp_name()``). The base class's own ``bind_tools`` already tries to
+            auto-approve bound tools -- it builds ``allowed_tools = [f"mcp__langchain-tools__{name}"
+            for name in tool_names]`` from each tool's raw ``.name`` -- but the SDK/CLI normalizes
+            dots out of tool identities on the wire, so an entry built from the dotted name never
+            matches the underscored identity the CLI actually checks against. Every real call to a
+            dotted tool was silently denied: "Claude requested permissions to use ... but you
+            haven't granted it yet" -- with no exception and nothing logged, because the denial
+            happens inside the SDK/CLI boundary before any of our instrumented code ever runs.
+
+            Substituting each dotted tool for a :class:`NameMangledToolProxy` here (the SAME
+            translation :mod:`threetears.models.providers.anthropic` /
+            :mod:`threetears.models.providers.openrouter` already apply for the identical
+            ``^[a-zA-Z0-9_-]{1,128}$`` constraint on the direct-API path) means the base class's
+            ``tool_names.append(lc_tool.name)`` sees the already-mangled name, so the
+            ``allowed_tools`` entry it derives matches exactly what the CLI normalizes tool calls
+            to. Dotless tools pass through unchanged (see :func:`build_name_translation`).
+            """
+            wire_tools, _reverse_map = build_name_translation(list(tools))
+            return super().bind_tools(wire_tools, tool_choice=tool_choice, **kwargs)
+
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
             props = schema.get("properties", {})
             tmap = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
@@ -150,19 +206,27 @@ def _subscription_model_cls() -> type:
                         extra={"extra_data": {"event_type": type(event).__name__, "error": str(exc)}},
                     )
 
+            # `tool` may already be a `NameMangledToolProxy` by the time it reaches here (see
+            # `bind_tools` below) -- its `.name` is the wire-mangled form, which is exactly what
+            # `@sdk_tool` must register under so it matches the `allowed_tools` entry the base
+            # class's own `bind_tools` derives from the SAME `.name`. Event emission, however,
+            # must report the CANONICAL dotted name metallm's own tool-status tracking expects --
+            # resolved through the proxy's `canonical_name` accessor when `tool` is a proxy.
+            canonical_name = tool.canonical_name if isinstance(tool, NameMangledToolProxy) else tool.name
+
             @sdk_tool(tool.name, tool.description or "", param_types)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
-                await _emit(ToolDispatchedEvent(tool_name=tool.name))
-                await _emit(ToolStartedEvent(tool_name=tool.name, tool_args=args))
+                await _emit(ToolDispatchedEvent(tool_name=canonical_name))
+                await _emit(ToolStartedEvent(tool_name=canonical_name, tool_args=args))
                 start = time.monotonic()
                 try:
                     result = await tool.ainvoke(args)  # public API (handles config/run_manager); was tool._run
                     captured = self._tool_results_var.get(None) if self._tool_results_var else None
                     if captured is not None:
-                        captured.append({"name": tool.name, "args": args, "result": result})
+                        captured.append({"name": canonical_name, "args": args, "result": result})
                     await _emit(
                         ToolCompletedEvent(
-                            tool_name=tool.name,
+                            tool_name=canonical_name,
                             tool_status="completed",
                             tool_duration_ms=int((time.monotonic() - start) * 1000),
                         )
@@ -171,7 +235,7 @@ def _subscription_model_cls() -> type:
                 except Exception as exc:  # surfaced to the model as a tool error so its loop continues
                     await _emit(
                         ToolCompletedEvent(
-                            tool_name=tool.name,
+                            tool_name=canonical_name,
                             tool_status="failed",
                             tool_duration_ms=int((time.monotonic() - start) * 1000),
                         )
