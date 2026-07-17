@@ -319,7 +319,9 @@ def metered(
     def decorator(fn: F) -> F:
         metric_name = name or f"{fn.__module__}.{fn.__qualname__}"
         calls_counter = counter(f"{metric_name}_calls", description=f"calls to {metric_name}", label_names=("status",))
-        duration_histogram = histogram(f"{metric_name}_duration_seconds", description=f"duration of {metric_name} in seconds")
+        duration_histogram = histogram(
+            f"{metric_name}_duration_seconds", description=f"duration of {metric_name} in seconds"
+        )
 
         if inspect.iscoroutinefunction(fn):
 
