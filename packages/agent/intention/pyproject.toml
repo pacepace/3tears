@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-intention"
-version = "0.17.2"
+version = "0.17.3"
 description = "Standing-wants corpus for LLM agents -- intention lifecycle, salience decay, embedding dedup, and private deliberation tools"
 readme = "README.md"
 requires-python = ">=3.14"
