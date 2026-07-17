@@ -61,6 +61,35 @@ the same translation the other providers apply) BEFORE the base class ever sees 
 ``allowed_tools`` entry it derives matches exactly. Dispatch is unaffected (the proxy delegates
 ``_arun``/``_run`` straight through); event emission resolves the proxy's delegate to keep
 tool-status events on the canonical dotted name metallm's own tracking expects.
+
+Optional-parameter schema mistyping AND false-required advertising (found live: a bound tool's
+``list``-typed parameter -- e.g. ``memory_search``'s ``ids: list[str] | None`` -- arrived at the
+tool handler as the literal string ``"[]"`` instead of an empty list, failing pydantic validation
+("Input should be a valid list") every time the model tried to pass it; separately, EVERY optional
+filter on that same tool -- ``date_after``, ``date_before``, ``alias``, ... -- arrived populated
+with an empty string on every call instead of being omitted, degrading search quality). Two
+compounding root causes, both from how ``_wrap_langchain_tool`` used to hand ``@sdk_tool`` a bare
+``{param_name: python_type}`` mapping instead of a full JSON Schema:
+
+1. For an ``X | None`` field, pydantic's ``model_json_schema()`` renders
+   ``anyOf: [{type: X}, {type: null}]`` with NO top-level ``type`` key on that property -- the
+   base package's own schema-to-``param_types`` conversion (and our prior copy of it) did a bare
+   ``prop.get("type", "string")``, which found nothing and silently defaulted EVERY optional
+   parameter to ``string``. The SDK then advertised that parameter to the model as a string, so
+   the model dutifully stringified whatever it meant to send (a list became ``"[]"``).
+2. ``claude_agent_sdk.create_sdk_mcp_server``'s own schema builder, when handed that bare
+   ``{name: type}`` mapping (rather than an already-``{"type": "object", "properties": ...}``-shaped
+   dict), marks **every** key ``required`` (``"required": list(properties.keys())``) with no regard
+   for which fields the original tool schema actually required. The model was then forced to invent
+   a value for every optional filter on every call -- hence the empty-string placeholders.
+
+``_wrap_langchain_tool`` now builds the full ``{"type": "object", "properties": ..., "required":
+...}`` schema itself: each property keeps (or gains, resolved from ``anyOf``/``oneOf``) a definite
+top-level ``type``, and ``required`` is copied verbatim from the original tool schema's own
+``required`` list -- not synthesized from "every key present". Handing the SDK an
+already-full-shaped schema also makes it skip its own required-everything path entirely (verified
+by reading ``create_sdk_mcp_server``'s ``_build_schema``: it returns a dict verbatim, unmodified,
+whenever ``"type"`` and ``"properties"`` are already top-level keys).
 """
 
 from __future__ import annotations
@@ -185,8 +214,31 @@ def _subscription_model_cls() -> type:
 
         def _wrap_langchain_tool(self, tool: BaseTool, schema: dict[str, Any]) -> Callable[..., Any]:
             props = schema.get("properties", {})
-            tmap = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
-            param_types = {n: tmap.get(p.get("type", "string"), str) for n, p in props.items()}
+
+            def _resolve_property(prop: dict[str, Any]) -> dict[str, Any]:
+                """Resolve ``prop`` to a JSON Schema property with a definite top-level ``type``,
+                unwrapping the ``anyOf``/``oneOf`` shape pydantic emits for an ``X | None`` field
+                (no top-level ``type`` key there -- see the "Optional-parameter schema mistyping"
+                note in this module's docstring)."""
+                if "type" in prop:
+                    return prop
+                for branch in prop.get("anyOf") or prop.get("oneOf") or ():
+                    branch_type = branch.get("type")
+                    if branch_type and branch_type != "null":
+                        resolved = dict(branch)
+                        if "description" in prop:
+                            resolved.setdefault("description", prop["description"])
+                        return resolved
+                return {"type": "string"}
+
+            # A full JSON Schema (not a bare {name: python_type} map) so the SDK's own schema
+            # builder uses it verbatim, INCLUDING our `required` list -- rather than its fallback
+            # path, which marks every key required regardless of the source tool's actual schema.
+            input_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": {n: _resolve_property(p) for n, p in props.items()},
+                "required": schema.get("required", []),
+            }
 
             async def _emit(event: Any) -> None:
                 # Best-effort: a broken event bus must never break tool
@@ -214,7 +266,7 @@ def _subscription_model_cls() -> type:
             # resolved through the proxy's `canonical_name` accessor when `tool` is a proxy.
             canonical_name = tool.canonical_name if isinstance(tool, NameMangledToolProxy) else tool.name
 
-            @sdk_tool(tool.name, tool.description or "", param_types)
+            @sdk_tool(tool.name, tool.description or "", input_schema)
             async def wrapped(args: dict[str, Any]) -> dict[str, Any]:
                 await _emit(ToolDispatchedEvent(tool_name=canonical_name))
                 await _emit(ToolStartedEvent(tool_name=canonical_name, tool_args=args))

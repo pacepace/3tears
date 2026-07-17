@@ -13,7 +13,7 @@ import inspect
 import time
 from typing import Any, Callable, TypeVar, overload
 
-__all__ = ["traced"]
+__all__ = ["set_span_attribute", "traced"]
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -116,6 +116,48 @@ def _inject_context_attrs(span: Any) -> None:
 
     for key, value in get_context().items():
         span.set_attribute(f"ctx.{key}", value)
+
+
+# ---------------------------------------------------------------------------
+# public: attach arbitrary attributes to the currently active span
+# ---------------------------------------------------------------------------
+
+
+def set_span_attribute(key: str, value: Any) -> None:
+    """Set an attribute on the currently active OpenTelemetry span, if any.
+
+    Safe to call from inside (or outside) a :func:`traced` function: a
+    pure no-op when OpenTelemetry is not installed or there is no
+    currently recording span, matching :func:`traced`'s own zero-cost-
+    when-absent contract. Lets application code attach result-derived or
+    business-specific attributes to the current span -- values only known
+    after a function's body has run, which a decorator alone can never
+    see -- without importing ``opentelemetry`` directly.
+
+    Same value-safety rules as :func:`traced`'s own argument recording:
+    sensitive-looking keys (``password``, ``token``, ``secret``, etc.)
+    are silently dropped, and long strings are truncated.
+
+    :param key: span attribute key
+    :ptype key: str
+    :param value: attribute value; strings/ints/floats/bools are recorded
+        as-is (strings truncated past 256 chars), UUID-like objects
+        (anything with a ``.hex`` attribute) are recorded as ``str()``,
+        anything else is silently dropped
+    :ptype value: Any
+    :return: none
+    :rtype: None
+    """
+    if not _check_otel():
+        return
+
+    from opentelemetry import trace
+
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+
+    _set_safe_attr(span, key, key, value)
 
 
 # ---------------------------------------------------------------------------

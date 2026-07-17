@@ -209,3 +209,100 @@ class TestDottedToolNamePermissionFix:
         assert dispatched.tool_name == "threetears.web_search"
         assert started.tool_name == "threetears.web_search"
         assert completed.tool_name == "threetears.web_search"
+
+
+class TestOptionalParameterSchemaFix:
+    """Live-observed bug, two compounding root causes on the same bound tool
+    (``memory_search``'s real schema, lifted from
+    ``MemorySearchInput.model_json_schema()`` in ``threetears.agent.memory.tools``):
+
+    1. A ``list``-typed Optional parameter (``ids: list[str] | None``) arrived at the handler as
+       the literal string ``"[]"``, failing pydantic validation ("Input should be a valid list")
+       every time the model tried to pass it. Pydantic renders an ``X | None`` field as
+       ``anyOf: [{type: X}, {type: null}]`` with no top-level ``type`` key, and the naive
+       ``prop.get("type", "string")`` conversion used to default every such field to ``string``.
+    2. Every OTHER optional filter (``alias``, ...) arrived populated with an empty string on
+       every call instead of being omitted. ``claude_agent_sdk.create_sdk_mcp_server``'s own
+       schema builder marks every key in a bare ``{name: type}`` map as ``required`` -- forcing
+       the model to invent a value for filters it had nothing to fill in. The fix now hands the
+       SDK a full ``{"type": "object", "properties": ..., "required": [...]}`` schema so its
+       required-everything fallback never triggers.
+    """
+
+    _MEMORY_SEARCH_LIKE_SCHEMA = {
+        "properties": {
+            "query": {"type": "string"},
+            "ids": {
+                "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
+                "default": None,
+            },
+            "limit": {"type": "integer", "default": 10},
+            "alias": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+        },
+        "required": ["query"],
+    }
+
+    def test_optional_list_parameter_resolves_to_array_not_string(self) -> None:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+        )
+        assert sdk_tool.input_schema["properties"]["ids"]["type"] == "array"
+
+    def test_optional_string_parameter_still_resolves_to_string(self) -> None:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+        )
+        assert sdk_tool.input_schema["properties"]["alias"]["type"] == "string"
+
+    def test_plain_typed_parameters_are_unaffected(self) -> None:
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+        )
+        assert sdk_tool.input_schema["properties"]["query"]["type"] == "string"
+        assert sdk_tool.input_schema["properties"]["limit"]["type"] == "integer"
+
+    def test_only_the_genuinely_required_field_is_marked_required(self) -> None:
+        """The SDK's own required-everything fallback must never trigger: ``ids``/``limit``/
+        ``alias`` all have defaults in the source schema and must NOT appear in ``required``,
+        even though they're present in ``properties``."""
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+        )
+        assert sdk_tool.input_schema["required"] == ["query"]
+
+    async def test_final_advertised_schema_survives_create_sdk_mcp_server_unmodified(self) -> None:
+        """End-to-end: create_sdk_mcp_server's own schema builder must pass our full schema
+        through VERBATIM (its required-everything fallback only fires for a bare {name: type}
+        map) -- this is what the model actually sees when a turn starts."""
+        from claude_agent_sdk import create_sdk_mcp_server
+        from mcp.types import ListToolsRequest
+
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+            _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+        )
+        server = create_sdk_mcp_server("test", tools=[sdk_tool])
+        handler = server["instance"].request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list"))
+
+        advertised = result.root.tools[0].inputSchema
+        assert advertised["required"] == ["query"]
+        assert advertised["properties"]["ids"]["type"] == "array"
+
+    async def test_optional_list_arg_still_reaches_the_handler_as_a_list(self) -> None:
+        """End-to-end: the fix is about the ADVERTISED schema; a real list arg must still pass
+        through the handler unmangled once the model sends one correctly."""
+        model = create_subscription_chat(DEFAULT_CHAT_MODEL, "sk-ant-oat01-faketokenfortest")
+        with patch(
+            "threetears.models.providers._claude_cli.dispatch_event",
+            AsyncMock(),
+        ):
+            sdk_tool = model._wrap_langchain_tool(  # noqa: SLF001 -- the method under test  # type: ignore[attr-defined]
+                _EchoTool(), self._MEMORY_SEARCH_LIKE_SCHEMA
+            )
+            result = await sdk_tool.handler({"query": "cats", "ids": ["a", "b"]})
+        assert result["content"][0]["text"] == "echo:{'query': 'cats', 'ids': ['a', 'b']}"
