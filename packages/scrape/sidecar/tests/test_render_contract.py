@@ -516,6 +516,49 @@ class TestNetworkCapture:
             )
         assert r.json()["network_calls"] == []
 
+    async def test_xssi_prefixed_json_body_is_captured(self, client: httpx.AsyncClient):
+        """A real API's anti-JSON-hijacking prefix (e.g. Google's own internal
+        APIs, live-verified 2026-07-17) must not cause a genuinely JSON-shaped
+        response to be dropped as "not JSON-shaped" -- the prefix is stripped
+        only for the shape check; the captured body stays the original,
+        unmodified bytes a real caller would need to parse it correctly."""
+        prefixed_body = ")]}'\n{\"widgets\": [{\"id\": \"TIMESERIES\", \"token\": \"abc\"}]}"
+        tab = _FakeTab(
+            html="<html></html>",
+            url="https://example.gov",
+            network_calls_to_fire=[
+                {"request_id": "r1", "url": "https://trends.google.com/trends/api/explore", "body": prefixed_body}
+            ],
+        )
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={"url": "https://example.gov", "timeout": 5.0, "wait_for": None, "capture_network": True},
+            )
+        calls = r.json()["network_calls"]
+        assert len(calls) == 1
+        assert calls[0]["body"] == prefixed_body  # original bytes, prefix intact
+
+    async def test_genuinely_non_json_body_still_dropped_after_prefix_stripping(self, client: httpx.AsyncClient):
+        """A body that merely starts with the XSSI prefix but isn't actually
+        JSON-shaped underneath it must still be dropped -- the fix strips a
+        known prefix before the shape check, it does not loosen the check itself."""
+        tab = _FakeTab(
+            html="<html></html>",
+            url="https://example.gov",
+            network_calls_to_fire=[
+                {"request_id": "r1", "url": "https://example.gov/api/frag", "body": ")]}'\n<div>not json</div>"}
+            ],
+        )
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={"url": "https://example.gov", "timeout": 5.0, "wait_for": None, "capture_network": True},
+            )
+        assert r.json()["network_calls"] == []
+
     async def test_non_xhr_fetch_resource_type_is_not_captured(self, client: httpx.AsyncClient):
         tab = _FakeTab(
             html="<html></html>",

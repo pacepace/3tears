@@ -282,6 +282,14 @@ async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: f
 #: the "backend API" a page is calling for its data.
 _API_RESOURCE_TYPES = frozenset({uc.cdp.network.ResourceType.XHR, uc.cdp.network.ResourceType.FETCH})
 
+#: Anti-JSON-hijacking prefixes real APIs prepend before the actual JSON body
+#: (the response is deliberately not valid JSON/JS on its own until stripped,
+#: a defense against a cross-origin <script> tag executing it) -- e.g. Google's
+#: own internal APIs (Trends' explore/widgetdata endpoints, live-verified
+#: 2026-07-17). Stripped before the JSON-shape check below so a real API using
+#: this standard convention isn't silently dropped as "not JSON-shaped."
+_JSON_HIJACK_PREFIXES: tuple[str, ...] = (")]}'",)
+
 
 async def _render(
     url: str,
@@ -411,8 +419,16 @@ async def _render(
                 if is_base64 or len(body) > _MAX_NETWORK_BODY_BYTES:
                     continue
                 stripped = body.lstrip()
+                for prefix in _JSON_HIJACK_PREFIXES:
+                    if stripped.startswith(prefix):
+                        stripped = stripped[len(prefix):].lstrip()
+                        break
                 if not (stripped.startswith("{") or stripped.startswith("[")):
                     continue  # not JSON-shaped -- not a useful "backend API" signal
+                # `body` (the original, un-stripped response) is what's stored below --
+                # a caller parsing a known API's real response needs the real bytes it
+                # would have received directly, prefix included, not this function's own
+                # internal shape-detection view of it.
                 network_calls.append(
                     {
                         "url": req_meta["url"],
