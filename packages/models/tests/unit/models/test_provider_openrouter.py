@@ -150,11 +150,19 @@ class TestBuildNameTranslation:
 
     @pytest.mark.asyncio
     async def test_proxy_arun_delegates_to_original(self) -> None:
-        """Calling the proxy's ``_arun`` runs the dotted-named original."""
+        """Invoking the proxy runs the dotted-named original.
+
+        Via ``ainvoke`` (the real calling convention), not ``_arun`` directly -- ``_arun`` is an
+        internal protocol method LangChain's own ``arun``/``ainvoke`` machinery calls with a
+        ``config`` it supplies; calling it directly bypasses that and is not how any real caller
+        (production or test) invokes a tool. See ``tool_name_translation``'s "config propagation
+        bug" docstring section and ``test_tool_name_translation.py``'s
+        ``TestConfigPropagationToDelegate`` for the live bug this shape used to mask.
+        """
         tool = _DottedTool()
         wire_tools, _ = build_name_translation([tool])
         proxy = wire_tools[0]
-        result = await proxy._arun(expression="1+1")
+        result = await proxy.ainvoke({"expression": "1+1"})
         assert result == "ok"
         assert tool.invoked_with == [{"expression": "1+1"}]
 
