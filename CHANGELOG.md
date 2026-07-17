@@ -23,6 +23,17 @@ it yet", with nothing logged anywhere, while the same tool worked fine on every 
   base class derives `allowed_tools`, so the entry matches exactly. Also adds
   `NameMangledToolProxy.canonical_name`, a public accessor for the delegate's un-mangled name.
 
+**Fix: L2 bucket-resolution failures on first open were not degrading like every other L2
+transport failure.** `BaseCollection._get_from_l2`/`_save_to_l2`/`_delete_from_l2`
+(`packages/core/src/threetears/core/collections/base.py`) already caught `KvError` narrowly around
+the `kv.get`/`put`/`delete` call, but the preceding `_ensure_kv()` bucket-resolution call sat
+outside that try block -- a regression from an earlier change that split bucket resolution out of
+the get/put/delete calls without widening the catch to cover the new call site. When a KV bucket
+had never been opened yet (e.g. right after a NATS outage begins) and `_ensure_kv()` raised
+`KvError` on the first open attempt, the exception propagated uncaught instead of degrading,
+breaking `save_entity()`'s documented "L2 is best-effort, L3 is source of truth" contract for any
+collection whose bucket was not already warm. The catch now covers bucket resolution too.
+
 ## v0.17.2 -- 2026-07-16
 
 **`skill_report_outcome` tool (`packages/agent/skills`), written 2026-07-13 but left
