@@ -4,6 +4,25 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.3 -- 2026-07-16
+
+**Fix: 3tears builtin tool calls (`web_search`, `calculator`, ...) were silently denied under a
+Claude Max subscription turn** -- "Claude requested permissions to use ... but you haven't granted
+it yet", with nothing logged anywhere, while the same tool worked fine on every other backend
+(found live, prod conversation `019f6cf5-073a-7b50-bd44-721efb0c7b90`).
+
+- **`_SubscriptionChatModel.bind_tools`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
+  Every 3tears builtin's canonical name is dotted (`threetears.web_search`, per
+  `BaseAgentTool.mcp_name()`). The base class's own `bind_tools` already tries to auto-approve
+  bound tools by deriving `allowed_tools` from each tool's raw dotted name, but the SDK/CLI
+  normalizes dots out of tool identities on the wire, so that entry never matched what it was
+  meant to auto-approve -- every real call needed (and never got) interactive approval. Every
+  other provider wrapper (`anthropic.py`, `openrouter.py`) already applies the same dot-to-underscore
+  translation for the identical Anthropic tool-name constraint, but the subscription backend never
+  got it. `bind_tools` now substitutes each dotted tool for a `NameMangledToolProxy` before the
+  base class derives `allowed_tools`, so the entry matches exactly. Also adds
+  `NameMangledToolProxy.canonical_name`, a public accessor for the delegate's un-mangled name.
+
 ## v0.17.2 -- 2026-07-16
 
 **`skill_report_outcome` tool (`packages/agent/skills`), written 2026-07-13 but left
