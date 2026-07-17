@@ -87,7 +87,7 @@ Zero jurisdiction-specific Python exists anywhere in this package. In faidh's WA
 | `url` | what to fetch |
 | `driver_backend` | which of 5 `ScrapeDriver` implementations renders it |
 | `wait_for` | CSS selector to settle on (async-loading pages) |
-| `nav_steps` | ordered click/fill/wait_for/wait_ms/scroll_into_view actions (search-form-gated or lazy-render pages) |
+| `nav_steps` | ordered click/fill/wait_for/wait_ms/scroll_into_view/scroll_page/evaluate actions (search-form-gated, lazy-render, or in-page-JS-state targets) |
 | `timeout_seconds` | per-target render budget |
 | `field_schema` | field name → Python type, e.g. `{"employer": str, "county": str}` |
 | `extraction_strategy_type` | `"css"` or `"regex"` |

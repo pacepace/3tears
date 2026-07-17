@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 
@@ -24,7 +24,7 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 #: drive a search form, click into a result page, or page through a listing,
 #: without the core needing to know anything about what's being searched for
 #: (multi-step navigation, 2026-07-14).
-NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page"]
+NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page", "evaluate"]
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,13 @@ class NavStep:
       ``None``. Needs no target-specific selector at all -- the selector-free
       sibling of ``scroll_into_view``, for a target whose real lazy-loading
       container isn't known/guessable up front.
+    - ``evaluate``: run the JS expression in *value* in the page's own
+      context and record its (JSON-serializable) return value onto
+      :attr:`RenderedPage.eval_results`, in step order -- ground truth read
+      of a page's own client-side state (a controller method's real return
+      value, a computed property) instead of guessing what a request body or
+      DOM structure would produce. General-purpose: any target whose real
+      answer lives in in-page JS state, not just one target's app framework.
     """
 
     action: NavStepAction
@@ -112,6 +119,11 @@ class RenderedPage:
     #: need vision-based extraction rather than the faster/cheaper text path --
     #: see ``eval_loop._run_per_document_extraction``.
     was_ocr: bool = False
+    #: One entry per ``NavStep(action="evaluate", ...)`` in the caller's
+    #: ``nav_steps``, in step order -- each entry is that step's JS
+    #: expression's own (JSON-serializable) return value. Empty when no
+    #: ``evaluate`` step ran.
+    eval_results: list[Any] = field(default_factory=list)
 
 
 class ScrapeDriver(ABC):
@@ -155,12 +167,13 @@ class ScrapeDriver(ABC):
         :param capture_network: when true, capture every XHR/fetch call
             whose response body looks like JSON (see :class:`NetworkCall`)
         :ptype capture_network: bool
-        :param nav_steps: ordered browser actions (click/fill/wait_for/wait_ms)
-            executed after the initial navigation to *url* and before
-            *wait_for*'s settle-wait -- drives the browser to a page not
-            reachable by a bare ``render(url)`` call (a search form, a second
-            page in a listing); ``None``/empty means no interaction beyond
-            plain navigation
+        :param nav_steps: ordered browser actions (see :class:`NavStep` for
+            the full action set) executed after the initial navigation to
+            *url* and before *wait_for*'s settle-wait -- drives the browser
+            to a page not reachable by a bare ``render(url)`` call (a search
+            form, a second page in a listing), or reads back the page's own
+            JS state (``evaluate``); ``None``/empty means no interaction
+            beyond plain navigation
         :ptype nav_steps: list[NavStep] | None
         :param results_path: dotted JSON path to the list of per-record
             objects in a JSON API response (e.g. ``"Results"``) -- only
@@ -198,8 +211,9 @@ class ScrapeDriver(ABC):
             (matches every driver's pre-2026-07-16 behavior); every other
             backend accepts and ignores it.
         :ptype seen_urls: set[str] | None
-        :return: the rendered page's HTML, status, final URL, timing, and
-            (if requested) captured network calls
+        :return: the rendered page's HTML, status, final URL, timing, (if
+            requested) captured network calls, and any ``evaluate`` step
+            results
         :rtype: RenderedPage
         :raises Exception: a backend-specific error (its own ``code``/
             ``message`` shape) when a nav step can't be executed -- e.g. a

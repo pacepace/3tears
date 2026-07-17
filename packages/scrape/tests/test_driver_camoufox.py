@@ -50,6 +50,8 @@ class _FakeCamoufoxPage:
         click_exc=None,
         fill_exc=None,
         scroll_into_view_exc=None,
+        evaluate_returns=None,
+        evaluate_exc=None,
         html="<html>ok</html>",
         url=None,
         network_responses=None,
@@ -61,6 +63,8 @@ class _FakeCamoufoxPage:
         self._click_exc = click_exc
         self._fill_exc = fill_exc
         self._scroll_into_view_exc = scroll_into_view_exc
+        self._evaluate_returns = list(evaluate_returns) if evaluate_returns is not None else []
+        self._evaluate_exc = evaluate_exc
         self._html = html
         self.url = url or "https://example.gov/final"
         self.viewport_size = viewport_size or {"width": 1920, "height": 1080}
@@ -71,6 +75,7 @@ class _FakeCamoufoxPage:
         self.wait_for_timeout_calls: list[int] = []
         self.scroll_into_view_calls: list[dict] = []
         self.wheel_calls: list[dict] = []
+        self.evaluate_calls: list[str] = []
         self.mouse = _FakeCamoufoxMouse(wheel_calls=self.wheel_calls)
         self.closed = False
         # Simulates the responses Playwright would have fired via page.on("response", ...)
@@ -109,6 +114,12 @@ class _FakeCamoufoxPage:
         return _FakeCamoufoxLocator(
             selector, scroll_into_view_calls=self.scroll_into_view_calls, scroll_into_view_exc=self._scroll_into_view_exc
         )
+
+    async def evaluate(self, expression):
+        self.evaluate_calls.append(expression)
+        if self._evaluate_exc is not None:
+            raise self._evaluate_exc
+        return self._evaluate_returns.pop(0) if self._evaluate_returns else None
 
     async def content(self):
         return self._html
@@ -465,6 +476,45 @@ class TestCamoufoxDriverNavSteps:
 
         assert exc_info.value.code == "nav_step_failed"
         assert page.wheel_calls == []
+
+    async def test_evaluate_step_runs_the_expression_and_records_the_result(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_returns=[{"foo": "bar"}])
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        result = await driver.render(
+            "https://example.gov", nav_steps=[NavStep(action="evaluate", value="({foo: 'bar'})")]
+        )
+
+        assert page.evaluate_calls == ["({foo: 'bar'})"]
+        assert result.eval_results == [{"foo": "bar"}]
+
+    async def test_evaluate_step_records_each_step_result_in_order(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_returns=[1, 2])
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        result = await driver.render(
+            "https://example.gov",
+            nav_steps=[NavStep(action="evaluate", value="1"), NavStep(action="evaluate", value="2")],
+        )
+
+        assert result.eval_results == [1, 2]
+
+    async def test_no_evaluate_steps_leaves_eval_results_empty(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        result = await driver.render("https://example.gov")
+
+        assert result.eval_results == []
+
+    async def test_evaluate_step_js_exception_raises_nav_step_failed(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), evaluate_exc=PlaywrightError("boom"))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        with pytest.raises(CamoufoxDriverError) as exc_info:
+            await driver.render("https://example.gov", nav_steps=[NavStep(action="evaluate", value="throw 1")])
+
+        assert exc_info.value.code == "nav_step_failed"
 
     async def test_wait_ms_step_sleeps_for_the_given_duration(self):
         page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))

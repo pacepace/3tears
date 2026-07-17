@@ -63,6 +63,8 @@ class _FakeTab:
         network_calls_to_fire: list[dict] | None = None,
         findable_selectors: set[str] | None = None,
         select_protocol_exceptions: int = 0,
+        evaluate_returns: list | None = None,
+        evaluate_exc: Exception | None = None,
     ) -> None:
         self._html = html
         self.url = url
@@ -96,6 +98,12 @@ class _FakeTab:
         # succeeding -- simulates a resolved element/document going stale
         # mid-sequence, decremented on every call regardless of selector.
         self._select_protocol_exceptions_remaining = select_protocol_exceptions
+        # evaluate() capability: a queue of return values, one per real call
+        # (None returned once exhausted); evaluate_exc, if set, is raised on
+        # every call instead.
+        self._evaluate_returns = list(evaluate_returns) if evaluate_returns is not None else []
+        self._evaluate_exc = evaluate_exc
+        self.evaluate_calls: list[str] = []
 
     async def send(self, cmd: object):
         self.sent.append(cmd)
@@ -238,6 +246,12 @@ class _FakeTab:
 
     async def scroll_down(self, amount: int = 25) -> None:
         self.scroll_down_calls.append(amount)
+
+    async def evaluate(self, expression: str, return_by_value: bool = True):
+        self.evaluate_calls.append(expression)
+        if self._evaluate_exc is not None:
+            raise self._evaluate_exc
+        return self._evaluate_returns.pop(0) if self._evaluate_returns else None
 
     async def get_content(self) -> str:
         return self._html
@@ -743,6 +757,66 @@ class TestNavSteps:
                     "timeout": 5.0,
                     "wait_for": None,
                     "nav_steps": [{"action": "scroll_page", "value": "not-a-number"}],
+                },
+            )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "nav_step_failed"
+
+    async def test_evaluate_step_runs_the_expression_and_records_the_result(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov", evaluate_returns=[{"foo": "bar"}])
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "evaluate", "value": "({foo: 'bar'})"}],
+                },
+            )
+        assert r.status_code == 200
+        assert tab.evaluate_calls == ["({foo: 'bar'})"]
+        assert r.json()["eval_results"] == [{"foo": "bar"}]
+
+    async def test_evaluate_step_records_each_step_result_in_order(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov", evaluate_returns=[1, 2])
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [
+                        {"action": "evaluate", "value": "1"},
+                        {"action": "evaluate", "value": "2"},
+                    ],
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["eval_results"] == [1, 2]
+
+    async def test_no_evaluate_steps_leaves_eval_results_empty(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov")
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post("/v1/render", json={"url": "https://example.gov", "timeout": 5.0, "wait_for": None})
+        assert r.status_code == 200
+        assert r.json()["eval_results"] == []
+
+    async def test_evaluate_step_protocol_exception_returns_422_nav_step_failed(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov", evaluate_exc=ProtocolException("gone"))
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "evaluate", "value": "1"}],
                 },
             )
         assert r.status_code == 422

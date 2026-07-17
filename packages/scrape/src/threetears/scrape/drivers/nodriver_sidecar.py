@@ -98,7 +98,7 @@ class NodriverSidecarDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
-        :return: the rendered page
+        :return: the rendered page, including any ``evaluate`` step results
         :rtype: RenderedPage
         :raises NodriverSidecarError: on a sidecar-reported error (4xx/5xx
             with the documented error body, including a nav step that
@@ -144,4 +144,5 @@ class NodriverSidecarDriver(ScrapeDriver):
             final_url=data["final_url"],
             timing_ms=data["timing_ms"],
             network_calls=[NetworkCall(**call) for call in data.get("network_calls", [])],
+            eval_results=data.get("eval_results", []),
         )

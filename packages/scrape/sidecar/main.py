@@ -149,6 +149,9 @@ class RenderResponse(BaseModel):
     final_url: str
     timing_ms: float
     network_calls: list[NetworkCall] = []
+    #: One entry per real ``evaluate`` nav step, in step order -- see
+    #: ``threetears.scrape.driver.NavStep``'s own docstring.
+    eval_results: list[Any] = []
 
 
 class DownloadRequest(BaseModel):
@@ -185,6 +188,7 @@ class _RenderResult(NamedTuple):
     final_url: str
     status: int
     network_calls: list[dict[str, Any]]
+    eval_results: list[Any]
 
 
 class NavStepError(Exception):
@@ -262,7 +266,9 @@ async def _select_with_retry(tab: Any, selector: str, timeout: float, action: st
     return el
 
 
-async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: float) -> None:
+async def _execute_nav_steps(
+    tab: Any, nav_steps: list[NavStepModel], timeout: float, eval_results: list[Any]
+) -> None:
     """Drive *tab* through *nav_steps* in order, before the caller's own settle-wait.
 
     Each step gets the full outer *timeout* to find its selector, matching
@@ -270,6 +276,11 @@ async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: f
     than apportioning a shared budget across steps, and a nav step search is
     the same class of "wait for a real page to respond" operation ``wait_for``
     already gets the full timeout for.
+
+    *eval_results* is mutated in place -- one entry appended per real
+    ``evaluate`` step, matching ``ScrapeDriver.render``'s own ``seen_urls``
+    mutate-in-place precedent for a per-call accumulator that isn't this
+    function's own return value.
     """
     for i, step in enumerate(nav_steps):
         if step.action == "wait_ms":
@@ -281,6 +292,12 @@ async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: f
             except ValueError as exc:
                 raise NavStepError(i, step.action, f"value {step.value!r} is not an int percentage") from exc
             await tab.scroll_down(amount)
+            continue
+        if step.action == "evaluate":
+            try:
+                eval_results.append(await tab.evaluate(step.value or "", return_by_value=True))
+            except ProtocolException as exc:
+                raise NavStepError(i, step.action, str(exc)) from exc
             continue
         if step.action not in ("click", "fill", "wait_for", "scroll_into_view"):
             raise NavStepError(i, step.action, f"unsupported action {step.action!r}")
@@ -352,6 +369,7 @@ async def _render(
     pending_requests: dict[Any, dict[str, Any]] = {}
     pending_responses: dict[Any, dict[str, Any]] = {}
     finished_request_ids: list[Any] = []
+    eval_results: list[Any] = []
 
     def _capture_response(event: uc.cdp.network.ResponseReceived) -> None:
         # Overwrites on every matching event rather than keeping only the
@@ -395,7 +413,7 @@ async def _render(
             # earlier in the sequence (before ANY interaction, not only before
             # get_content()).
             await tab.sleep(1.0)
-            await _execute_nav_steps(tab, nav_steps, timeout)
+            await _execute_nav_steps(tab, nav_steps, timeout, eval_results)
         if wait_for:
             # _select_with_retry (not a bare tab.select()): the same stale-CDP-
             # node race nav_steps hit live also reproduced here, against this
@@ -480,7 +498,9 @@ async def _render(
     # from, redirects included, with no dependency on that internal tracking.
     status = last_response.get("status", 200)
     final_url = last_response.get("url") or url
-    return _RenderResult(html=html, final_url=final_url, status=status, network_calls=network_calls)
+    return _RenderResult(
+        html=html, final_url=final_url, status=status, network_calls=network_calls, eval_results=eval_results
+    )
 
 
 class DownloadError(Exception):
@@ -683,6 +703,7 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         final_url=result.final_url,
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
+        eval_results=result.eval_results,
     )
 
 

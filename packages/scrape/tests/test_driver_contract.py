@@ -19,6 +19,8 @@ assertion doesn't apply to it the same way).
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -30,11 +32,26 @@ _PAGE_HTML = "<html><body>contract test page</body></html>"
 _PAGE_STATUS = 200
 _PAGE_FINAL_URL = "https://example.gov/contract-page"
 
+#: A deliberately generic marker value (not Google/Trends-shaped) both fake
+#: backends return for an ``evaluate`` step -- the "would this help a
+#: different, unrelated target" gaming test's own return value.
+_CONTRACT_EVAL_RESULT = {"generic": "capability", "not": "google-specific"}
+
 
 def _nodriver_backend() -> ScrapeDriver:
     def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        nav_steps = payload.get("nav_steps") or []
+        eval_results = [_CONTRACT_EVAL_RESULT for step in nav_steps if step.get("action") == "evaluate"]
         return httpx.Response(
-            200, json={"html": _PAGE_HTML, "status": _PAGE_STATUS, "final_url": _PAGE_FINAL_URL, "timing_ms": 12.3}
+            200,
+            json={
+                "html": _PAGE_HTML,
+                "status": _PAGE_STATUS,
+                "final_url": _PAGE_FINAL_URL,
+                "timing_ms": 12.3,
+                "eval_results": eval_results,
+            },
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -69,6 +86,9 @@ class _ContractFakePage:
 
     async def wait_for_timeout(self, ms):
         pass
+
+    async def evaluate(self, expression):
+        return _CONTRACT_EVAL_RESULT
 
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Response (only .status, the only attribute CamoufoxDriver reads)
@@ -113,6 +133,7 @@ class TestScrapeDriverContract:
         assert isinstance(page.final_url, str)
         assert isinstance(page.timing_ms, float)
         assert isinstance(page.network_calls, list)
+        assert isinstance(page.eval_results, list)
 
     @pytest.mark.parametrize("make_driver", _BACKENDS)
     async def test_render_returns_the_backend_supplied_content(self, make_driver):
@@ -161,3 +182,19 @@ class TestScrapeDriverContract:
         )
 
         assert page.html == _PAGE_HTML
+
+    @pytest.mark.parametrize("make_driver", _BACKENDS)
+    async def test_evaluate_step_is_a_general_capability_not_google_specific(self, make_driver):
+        """Gaming test: runs a plain JS expression against a synthetic
+        contract-test page (https://example.gov/contract-page) wholly
+        unrelated to Google/Trends. If ``evaluate`` only worked there, it
+        would be a Trends fix wearing a general name, not a real platform
+        capability -- see threetears.scrape.driver.NavStep's own docstring."""
+        driver = make_driver()
+
+        page = await driver.render(
+            "https://example.gov/contract-page",
+            nav_steps=[NavStep(action="evaluate", value="1 + 1")],
+        )
+
+        assert page.eval_results == [_CONTRACT_EVAL_RESULT]

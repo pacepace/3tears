@@ -136,8 +136,8 @@ class CamoufoxDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
-        :return: the rendered page's HTML, status, final URL, timing, and
-            (if requested) captured network calls
+        :return: the rendered page's HTML, status, final URL, timing, (if
+            requested) captured network calls, and any ``evaluate`` step results
         :rtype: RenderedPage
         :raises CamoufoxDriverError: on navigation timeout/failure, a
             *wait_for* selector that never appears within *timeout*, or a
@@ -172,8 +172,9 @@ class CamoufoxDriver(ScrapeDriver):
                 log.warning("camoufox navigation failed", extra={"extra_data": {"url": url, "error": str(exc)}})
                 raise CamoufoxDriverError("navigation_failed", str(exc)) from exc
 
+            eval_results: list[Any] = []
             if nav_steps:
-                await self._execute_nav_steps(page, nav_steps, timeout_ms)
+                await self._execute_nav_steps(page, nav_steps, timeout_ms, eval_results)
 
             if wait_for is not None:
                 try:
@@ -214,12 +215,15 @@ class CamoufoxDriver(ScrapeDriver):
                 final_url=page.url,
                 timing_ms=(time.monotonic() - start) * 1000,
                 network_calls=network_calls,
+                eval_results=eval_results,
             )
         finally:
             await page.close()
         return result
 
-    async def _execute_nav_steps(self, page: Any, nav_steps: list[NavStep], timeout_ms: float) -> None:
+    async def _execute_nav_steps(
+        self, page: Any, nav_steps: list[NavStep], timeout_ms: float, eval_results: list[Any]
+    ) -> None:
         """Drive *page* through *nav_steps* in order, before *wait_for*'s settle-wait.
 
         Playwright's own ``click``/``fill``/``wait_for_selector`` already
@@ -227,6 +231,10 @@ class CamoufoxDriver(ScrapeDriver):
         actionable) before acting -- the same "wait for a real page to
         respond" semantics the nodriver sidecar's ``tab.select()`` retry loop
         provides, no extra polling needed here.
+
+        *eval_results* is mutated in place -- one entry appended per real
+        ``evaluate`` step, matching the nodriver sidecar's own
+        ``_execute_nav_steps`` precedent.
         """
         for i, step in enumerate(nav_steps):
             try:
@@ -249,9 +257,23 @@ class CamoufoxDriver(ScrapeDriver):
                         ) from exc
                     viewport = page.viewport_size or {"height": 1080}
                     await page.mouse.wheel(0, viewport["height"] * (amount / 100))
+                elif step.action == "evaluate":
+                    # Playwright raises a real PlaywrightError for a JS-side
+                    # exception inside the evaluated expression (unlike the
+                    # nodriver sidecar's tab.evaluate(), which returns CDP
+                    # ExceptionDetails as the value instead of raising) --
+                    # caught by this method's own except clauses below, same
+                    # as every other step's real failure.
+                    eval_results.append(await page.evaluate(step.value or ""))
                 else:
                     raise CamoufoxDriverError("nav_step_failed", f"nav_step[{i}] unsupported action {step.action!r}")
             except PlaywrightTimeoutError as exc:
+                log.warning(
+                    "camoufox nav step failed",
+                    extra={"extra_data": {"step": i, "action": step.action, "selector": step.selector}},
+                )
+                raise CamoufoxDriverError("nav_step_failed", f"nav_step[{i}] ({step.action}): {exc}") from exc
+            except PlaywrightError as exc:
                 log.warning(
                     "camoufox nav step failed",
                     extra={"extra_data": {"step": i, "action": step.action, "selector": step.selector}},
