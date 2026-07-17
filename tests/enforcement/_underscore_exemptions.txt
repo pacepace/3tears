@@ -54,6 +54,24 @@ packages/observe/tests/test_tracing.py:49:_otel_available
 packages/observe/tests/test_tracing.py:178:_otel_available
 # rationale: test forces module-level _otel_available to False to exercise the async-traced-decorator passthrough branch when OTel reports unavailable.
 packages/observe/tests/test_tracing.py:189:_otel_available
+# rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
+packages/observe/tests/test_metrics.py:19:_prometheus_available
+# rationale: fixture restores module-level _prometheus_available cache between tests so import-order does not leak patched state. mirrors _otel_available's own exemption above.
+packages/observe/tests/test_metrics.py:21:_prometheus_available
+# rationale: test resets module-level _prometheus_available sentinel to None to force the first-call cache-population path through _check_prometheus().
+packages/observe/tests/test_metrics.py:30:_prometheus_available
+# rationale: test resets module-level _prometheus_available sentinel to None so the next _check_prometheus() call populates the cache under test observation.
+packages/observe/tests/test_metrics.py:38:_prometheus_available
+# rationale: test asserts module-level _prometheus_available is no longer None after _check_prometheus() runs -- pins the memoization invariant.
+packages/observe/tests/test_metrics.py:40:_prometheus_available
+# rationale: test captures the cached module-level _prometheus_available value to compare identity across repeated _check_prometheus() calls.
+packages/observe/tests/test_metrics.py:41:_prometheus_available
+# rationale: test asserts the module-level _prometheus_available cache value is stable across repeated _check_prometheus() calls (identity check).
+packages/observe/tests/test_metrics.py:43:_prometheus_available
+# rationale: test forces module-level _prometheus_available to False to exercise the metered-decorator passthrough branch when prometheus_client reports unavailable.
+packages/observe/tests/test_metrics.py:116:_prometheus_available
+# rationale: test forces module-level _prometheus_available to False to exercise the async-metered-decorator passthrough branch when prometheus_client reports unavailable.
+packages/observe/tests/test_metrics.py:127:_prometheus_available
 # rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
 packages/core/tests/test_duckdb_backend.py:55:_HAS_DUCKDB
 # rationale: test monkeypatches module-level _HAS_DUCKDB to False to force DuckDBBackend.__init__()'s ImportError branch without uninstalling the optional duckdb extra.

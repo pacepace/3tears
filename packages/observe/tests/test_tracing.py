@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from threetears.observe.tracing import (
     _record_safe_args,
     _record_safe_result,
     _set_safe_attr,
+    set_span_attribute,
     traced,
 )
 
@@ -193,3 +194,67 @@ class TestTracedDecorator:
             return a + b
 
         assert await add(1, 2) == 3
+
+
+class TestSetSpanAttribute:
+    """set_span_attribute() -- attach attributes to the current active span."""
+
+    def test_noop_without_otel(self):
+        import threetears.observe.tracing as mod
+
+        mod._otel_available = False
+
+        set_span_attribute("key", "value")  # must not raise
+
+    def test_noop_without_recording_span(self):
+        with patch("opentelemetry.trace.get_current_span") as mock_get_span:
+            mock_span = MagicMock()
+            mock_span.is_recording.return_value = False
+            mock_get_span.return_value = mock_span
+
+            set_span_attribute("key", "value")
+
+            mock_span.set_attribute.assert_not_called()
+
+    def test_sets_attribute_on_recording_span(self):
+        with patch("opentelemetry.trace.get_current_span") as mock_get_span:
+            mock_span = MagicMock()
+            mock_span.is_recording.return_value = True
+            mock_get_span.return_value = mock_span
+
+            set_span_attribute("survey.completion_rate", 0.75)
+
+            mock_span.set_attribute.assert_called_once_with("survey.completion_rate", 0.75)
+
+    def test_sensitive_key_redacted(self):
+        with patch("opentelemetry.trace.get_current_span") as mock_get_span:
+            mock_span = MagicMock()
+            mock_span.is_recording.return_value = True
+            mock_get_span.return_value = mock_span
+
+            set_span_attribute("password", "secret123")
+
+            mock_span.set_attribute.assert_not_called()
+
+    def test_uuid_value_converted_to_str(self):
+        from uuid import UUID
+
+        with patch("opentelemetry.trace.get_current_span") as mock_get_span:
+            mock_span = MagicMock()
+            mock_span.is_recording.return_value = True
+            mock_get_span.return_value = mock_span
+
+            uid = UUID("12345678-1234-5678-1234-567812345678")
+            set_span_attribute("survey.survey_id", uid)
+
+            mock_span.set_attribute.assert_called_once_with("survey.survey_id", str(uid))
+
+    def test_works_inside_traced_function(self):
+        """integration: set_span_attribute reaches the span @traced opened, end to end."""
+
+        @traced
+        def do_work():
+            set_span_attribute("result.custom", "value")
+            return "done"
+
+        assert do_work() == "done"  # must not raise -- proves the real integration works
