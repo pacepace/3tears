@@ -22,11 +22,11 @@ set -euo pipefail
 #      "X.Y.Z"` line (5 files today: core, langgraph, observe,
 #      agent/memory, agent/tools).
 #   3. `docker-bake.hcl` `variable "VERSION" { default = "vX.Y.Z" }`.
-#   4. `docker-bake.hcl` hardcoded image refs `:vX.Y.Z` on the
-#      threetears-base / aibots-base / aibots-hub / aibots-admin /
-#      aibots-schema target lines (used by buildx for the contexts
-#      and ARG defaults so the in-flight base target stays linked
-#      to the consumer build).
+#   4. `docker-bake.hcl` any hardcoded image refs `:vX.Y.Z`. Image tags,
+#      contexts keys, and base-image ARGs now interpolate `${VERSION}`
+#      (and `${REGISTRY}`), so in practice there are none to rewrite -- the
+#      step stays as a defensive guard that catches a literal version if one
+#      is ever reintroduced.
 #   5. `uv.lock` refresh via `uv lock` (skip with --no-lock).
 #
 # What this script DOES NOT touch (deliberately, because they need
