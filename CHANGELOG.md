@@ -4,6 +4,38 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.4 -- 2026-07-16
+
+**Fix: every optional tool parameter was advertised to a Claude Max subscription turn as a
+required string** -- `memory_search`'s `ids` (`list[str] | None`) arrived at the handler as the
+literal string `"[]"`, failing pydantic validation on every call; every OTHER optional filter
+(`date_after`, `date_before`, `alias`, ...) arrived populated with an empty-string placeholder
+instead of being omitted, degrading `conversation_search`/`chunk_search` results (found live,
+same prod conversation as v0.17.3, `019f6cf5-073a-7b50-bd44-721efb0c7b90`).
+
+- **`_SubscriptionChatModel._wrap_langchain_tool`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
+  Pydantic renders an `X | None` field as `anyOf: [{type: X}, {type: null}]` with no top-level
+  `type` key; the schema-to-SDK conversion's naive `prop.get("type", "string")` silently defaulted
+  every such field to `string`. Separately, handing the SDK a bare `{name: type}` map (rather than
+  a full JSON Schema) makes its own schema builder mark every key `required`, forcing the model to
+  invent placeholder values for filters it had nothing to fill in. `_wrap_langchain_tool` now
+  builds the full `{type: object, properties, required}` schema itself, resolving each property's
+  real type and copying `required` verbatim from the source tool schema.
+
+**Fix: `NameMangledToolProxy` never forwarded `config` to a delegate that requires it** -- a real
+3tears builtin tool (a `StructuredTool` built by `to_langchain_tool`, e.g. `threetears.calculator`)
+raised `TypeError: StructuredTool._arun() missing 1 required keyword-only argument: 'config'` the
+instant it was actually invoked through this proxy, on EVERY provider that uses it (`anthropic.py`,
+`openrouter.py`, and the Claude Max subscription backend) -- not a claude-cli-specific bug, a
+pre-existing gap in shared name-translation infrastructure, found live testing the fixes above.
+
+- **`NameMangledToolProxy._arun`/`_run`** (`packages/models/src/threetears/models/tool_name_translation.py`).
+  `BaseTool.arun`/`run` only forward `config` to `_arun`/`_run` when that method's OWN signature
+  declares a `RunnableConfig`-typed parameter -- the proxy never declared one, so it never received
+  a `config` to forward, and its body called the delegate's `_arun`/`_run` directly with none. Fixed
+  by declaring `config`/`run_manager` on the proxy's own methods (so the caller's introspection
+  finds and supplies them), then forwarding to the delegate only if its own signature wants them.
+
 ## v0.17.3 -- 2026-07-16
 
 **Fix: 3tears builtin tool calls (`web_search`, `calculator`, ...) were silently denied under a
