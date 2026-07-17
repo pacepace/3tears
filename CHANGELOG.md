@@ -4,6 +4,68 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.3 -- 2026-07-16
+
+**Fix: 3tears builtin tool calls (`web_search`, `calculator`, ...) were silently denied under a
+Claude Max subscription turn** -- "Claude requested permissions to use ... but you haven't granted
+it yet", with nothing logged anywhere, while the same tool worked fine on every other backend
+(found live, prod conversation `019f6cf5-073a-7b50-bd44-721efb0c7b90`).
+
+- **`_SubscriptionChatModel.bind_tools`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
+  Every 3tears builtin's canonical name is dotted (`threetears.web_search`, per
+  `BaseAgentTool.mcp_name()`). The base class's own `bind_tools` already tries to auto-approve
+  bound tools by deriving `allowed_tools` from each tool's raw dotted name, but the SDK/CLI
+  normalizes dots out of tool identities on the wire, so that entry never matched what it was
+  meant to auto-approve -- every real call needed (and never got) interactive approval. Every
+  other provider wrapper (`anthropic.py`, `openrouter.py`) already applies the same dot-to-underscore
+  translation for the identical Anthropic tool-name constraint, but the subscription backend never
+  got it. `bind_tools` now substitutes each dotted tool for a `NameMangledToolProxy` before the
+  base class derives `allowed_tools`, so the entry matches exactly. Also adds
+  `NameMangledToolProxy.canonical_name`, a public accessor for the delegate's un-mangled name.
+
+**Fix: L2 bucket-resolution failures on first open were not degrading like every other L2
+transport failure.** `BaseCollection._get_from_l2`/`_save_to_l2`/`_delete_from_l2`
+(`packages/core/src/threetears/core/collections/base.py`) already caught `KvError` narrowly around
+the `kv.get`/`put`/`delete` call, but the preceding `_ensure_kv()` bucket-resolution call sat
+outside that try block -- a regression from an earlier change that split bucket resolution out of
+the get/put/delete calls without widening the catch to cover the new call site. When a KV bucket
+had never been opened yet (e.g. right after a NATS outage begins) and `_ensure_kv()` raised
+`KvError` on the first open attempt, the exception propagated uncaught instead of degrading,
+breaking `save_entity()`'s documented "L2 is best-effort, L3 is source of truth" contract for any
+collection whose bucket was not already warm. The catch now covers bucket resolution too.
+
+## v0.17.2 -- 2026-07-16
+
+**`skill_report_outcome` tool (`packages/agent/skills`), written 2026-07-13 but left
+unmerged on a feature branch until now -- metallm's own skill-outcome-reporting rework
+needs it to build.**
+
+- **`skill_report_outcome` tool + `load_skill_report_outcome_tool`
+  (`packages/agent/skills/src/threetears/agent/skills/tools.py`).** Lets an agent
+  self-report a skill invocation's success/failure via an explicit tool call, replacing
+  the retired `[SUCCESS]`/`[FAILED]` post-response text-marker convention.
+
+## v0.17.1 -- 2026-07-16
+
+**Two additions that were written the same day as v0.17.0 but were left unmerged on
+feature branches and missed that release. Both land here instead.**
+
+- **`ToolRelevanceIndex` + the `tool_search` meta-tool (`packages/agent/tools`,
+  `relevance.py`).** Embeds and ranks a tool catalog against the current turn's query,
+  returning the top-k most relevant tools with an LRU cache keyed on the catalog
+  identity; a `tool_search` `BaseTool` wrapper lets a model reach anything filtered out
+  of the initial top-k on demand. Falls back to the full, unfiltered catalog on any
+  embedding failure or when ranking exceeds a configurable latency ceiling -- a
+  degraded turn is never worse than today's full-catalog behavior. This is the
+  platform primitive metallm's own dynamic tool-relevance selection consumes.
+- **`acting_as_principal_id` on `AuditEvent`** (`packages/agent/audit`, `envelope.py`).
+  `14-eng-ai-bot-identity`'s impersonation flow (`identity.impersonation.start`/`stop`)
+  needs to record both the impersonation TARGET (`actor_user_id`, whose session it is)
+  and the ADMIN actually driving it. Previously that producer carried the admin
+  identity in `details["acting_as_principal_id"]` -- works on the wire, but isn't a
+  typed, Hub-queryable column. Additive only: optional, defaults to `None`, every
+  existing producer unaffected.
+
 ## v0.17.0 -- 2026-07-15
 
 **Support for `14-eng-ai-bot-identity`, the platform's new NATS-native multi-tenant
