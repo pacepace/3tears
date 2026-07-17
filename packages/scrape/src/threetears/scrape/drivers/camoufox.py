@@ -47,6 +47,10 @@ _API_RESOURCE_TYPES = frozenset({"xhr", "fetch"})
 _MAX_NETWORK_CALLS = 30
 _MAX_NETWORK_BODY_BYTES = 500_000
 
+#: Matches the nodriver sidecar's own default for a ``scroll_page`` step with
+#: no *value* -- a quarter of the viewport height.
+_DEFAULT_SCROLL_PAGE_AMOUNT = 25
+
 
 class CamoufoxDriverError(Exception):
     """Raised when a Camoufox render fails.
@@ -234,6 +238,17 @@ class CamoufoxDriver(ScrapeDriver):
                     await page.wait_for_selector(step.selector, timeout=timeout_ms)
                 elif step.action == "wait_ms":
                     await page.wait_for_timeout(step.ms or 0)
+                elif step.action == "scroll_into_view":
+                    await page.locator(step.selector).scroll_into_view_if_needed(timeout=timeout_ms)
+                elif step.action == "scroll_page":
+                    try:
+                        amount = int(step.value) if step.value else _DEFAULT_SCROLL_PAGE_AMOUNT
+                    except ValueError as exc:
+                        raise CamoufoxDriverError(
+                            "nav_step_failed", f"nav_step[{i}] (scroll_page): value {step.value!r} is not an int percentage"
+                        ) from exc
+                    viewport = page.viewport_size or {"height": 1080}
+                    await page.mouse.wheel(0, viewport["height"] * (amount / 100))
                 else:
                     raise CamoufoxDriverError("nav_step_failed", f"nav_step[{i}] unsupported action {step.action!r}")
             except PlaywrightTimeoutError as exc:

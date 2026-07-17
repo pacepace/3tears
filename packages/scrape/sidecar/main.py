@@ -107,7 +107,7 @@ class NavStepModel(BaseModel):
     """One browser action, wire shape -- mirrors ``threetears.scrape.driver.NavStep``.
 
     Multi-step navigation capability (2026-07-14): see that dataclass's
-    docstring for the four supported actions and why they're driven
+    docstring for the supported actions and why they're driven
     deterministically (per-target config) rather than LLM-decided per fetch.
     """
 
@@ -219,13 +219,19 @@ class NavStepError(Exception):
 _NAV_STEP_RETRY_ATTEMPTS = 3
 _NAV_STEP_RETRY_DELAY_SECONDS = 0.5
 
+#: nodriver's own ``Tab.scroll_down`` default (25 == a quarter of the
+#: viewport height) -- used when a ``scroll_page`` step doesn't specify
+#: *value*.
+_DEFAULT_SCROLL_PAGE_AMOUNT = 25
+
 
 async def _select_with_retry(tab: Any, selector: str, timeout: float, action: str, value: str | None = None) -> Any:
     """Find *selector*, then perform *action* (``"click"``/``"fill"``/
-    ``"wait_for"``) on the result -- retrying the whole find-then-act
-    sequence from scratch (a fresh ``tab.select()`` re-queries the live DOM)
-    when a stale CDP node id is hit mid-sequence. See the module-level
-    comment above for the live reproduction this is built from.
+    ``"wait_for"``/``"scroll_into_view"``) on the result -- retrying the
+    whole find-then-act sequence from scratch (a fresh ``tab.select()``
+    re-queries the live DOM) when a stale CDP node id is hit mid-sequence.
+    See the module-level comment above for the live reproduction this is
+    built from.
 
     :raises ProtocolException: if every retry attempt still hits the race
     :return: the found element, or ``None`` if *selector* never appeared
@@ -242,6 +248,8 @@ async def _select_with_retry(tab: Any, selector: str, timeout: float, action: st
                 elif action == "fill":
                     await el.clear_input()
                     await el.send_keys(value or "")
+                elif action == "scroll_into_view":
+                    await el.scroll_into_view()
                 # "wait_for": nothing further to do once the element is found
             last_exc = None
             break
@@ -267,7 +275,14 @@ async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: f
         if step.action == "wait_ms":
             await tab.sleep((step.ms or 0) / 1000)
             continue
-        if step.action not in ("click", "fill", "wait_for"):
+        if step.action == "scroll_page":
+            try:
+                amount = int(step.value) if step.value is not None else _DEFAULT_SCROLL_PAGE_AMOUNT
+            except ValueError as exc:
+                raise NavStepError(i, step.action, f"value {step.value!r} is not an int percentage") from exc
+            await tab.scroll_down(amount)
+            continue
+        if step.action not in ("click", "fill", "wait_for", "scroll_into_view"):
             raise NavStepError(i, step.action, f"unsupported action {step.action!r}")
         try:
             el = await _select_with_retry(tab, step.selector, timeout, step.action, step.value)

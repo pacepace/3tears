@@ -23,13 +23,15 @@ from nodriver.core.connection import ProtocolException
 
 
 class _FakeElement:
-    """Nav-steps (2026-07-14): fakes nodriver's ``Element`` (click/clear_input/send_keys)."""
+    """Nav-steps (2026-07-14): fakes nodriver's ``Element``
+    (click/clear_input/send_keys/scroll_into_view)."""
 
     def __init__(self, selector: str) -> None:
         self.selector = selector
         self.clicked = False
         self.cleared = False
         self.sent_keys: str | None = None
+        self.scrolled_into_view = False
 
     async def click(self) -> None:
         self.clicked = True
@@ -39,6 +41,9 @@ class _FakeElement:
 
     async def send_keys(self, text: str) -> None:
         self.sent_keys = text
+
+    async def scroll_into_view(self) -> None:
+        self.scrolled_into_view = True
 
 
 class _FakeTab:
@@ -85,6 +90,7 @@ class _FakeTab:
         self._findable_selectors = findable_selectors
         self.select_calls: list[str] = []
         self.sleep_calls: list[float] = []
+        self.scroll_down_calls: list[int] = []
         # _select_with_retry (2026-07-14, live-reproduced stale-CDP-node race):
         # how many of the next select() calls raise ProtocolException before
         # succeeding -- simulates a resolved element/document going stale
@@ -229,6 +235,9 @@ class _FakeTab:
     async def sleep(self, t: float) -> None:
         self.slept = t
         self.sleep_calls.append(t)
+
+    async def scroll_down(self, amount: int = 25) -> None:
+        self.scroll_down_calls.append(amount)
 
     async def get_content(self) -> str:
         return self._html
@@ -673,6 +682,71 @@ class TestNavSteps:
             )
         assert r.status_code == 200
         assert tab.select_calls == [".results"]
+
+    async def test_scroll_into_view_step_selects_and_scrolls(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov", findable_selectors={"#chart"})
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "scroll_into_view", "selector": "#chart"}],
+                },
+            )
+        assert r.status_code == 200
+        assert tab.select_calls == ["#chart"]
+
+    async def test_scroll_page_step_scrolls_with_the_given_amount(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov")
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "scroll_page", "value": "50"}],
+                },
+            )
+        assert r.status_code == 200
+        assert tab.scroll_down_calls == [50]
+        assert tab.select_calls == []  # no selector needed at all
+
+    async def test_scroll_page_step_uses_the_default_amount_when_value_omitted(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov")
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "scroll_page"}],
+                },
+            )
+        assert r.status_code == 200
+        assert tab.scroll_down_calls == [main._DEFAULT_SCROLL_PAGE_AMOUNT]
+
+    async def test_scroll_page_step_non_int_value_returns_422_nav_step_failed(self, client: httpx.AsyncClient):
+        tab = _FakeTab(html="<html></html>", url="https://example.gov")
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={
+                    "url": "https://example.gov",
+                    "timeout": 5.0,
+                    "wait_for": None,
+                    "nav_steps": [{"action": "scroll_page", "value": "not-a-number"}],
+                },
+            )
+        assert r.status_code == 422
+        assert r.json()["error"]["code"] == "nav_step_failed"
 
     async def test_wait_ms_step_sleeps_the_given_duration(self, client: httpx.AsyncClient):
         tab = _FakeTab(html="<html></html>", url="https://example.gov")

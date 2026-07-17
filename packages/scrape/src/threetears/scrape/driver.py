@@ -24,7 +24,7 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 #: drive a search form, click into a result page, or page through a listing,
 #: without the core needing to know anything about what's being searched for
 #: (multi-step navigation, 2026-07-14).
-NavStepAction = Literal["click", "fill", "wait_for", "wait_ms"]
+NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page"]
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,20 @@ class NavStep:
       steps, e.g. after a click that triggers an async page update).
     - ``wait_ms``: a fixed delay, for a step with no reliable selector to
       wait on instead.
+    - ``scroll_into_view``: wait for *selector* to appear, then scroll it
+      into the viewport -- some widgets defer their own data fetch until
+      they're actually visible on screen (an ``IntersectionObserver``-style
+      lazy-render gate), not merely present in the DOM the way ``wait_for``
+      already checks. Added because two real capture attempts against Google
+      Trends' own TIMESERIES widget, which only waited and never scrolled,
+      never observed that widget's data call fire at all (2026-07-17).
+    - ``scroll_page``: scroll the whole page down by *value* percent of the
+      viewport height (a real synthesized scroll gesture, not a DOM API call
+      -- some lazy-render triggers watch real scroll/wheel events, not just
+      element visibility), or a driver-chosen default when *value* is
+      ``None``. Needs no target-specific selector at all -- the selector-free
+      sibling of ``scroll_into_view``, for a target whose real lazy-loading
+      container isn't known/guessable up front.
     """
 
     action: NavStepAction

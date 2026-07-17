@@ -17,7 +17,29 @@ from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.camoufox import CamoufoxDriver, CamoufoxDriverError
 
 
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Page (only goto/wait_for_selector/click/fill/wait_for_timeout/content/url/close/on, the only surface CamoufoxDriver calls)
+# parity-exempt: hand-rolled subset stub of Playwright's third-party Locator (only scroll_into_view_if_needed, the only surface CamoufoxDriver calls)
+class _FakeCamoufoxLocator:
+    def __init__(self, selector: str, *, scroll_into_view_calls: list[dict], scroll_into_view_exc=None) -> None:
+        self._selector = selector
+        self._scroll_into_view_calls = scroll_into_view_calls
+        self._scroll_into_view_exc = scroll_into_view_exc
+
+    async def scroll_into_view_if_needed(self, *, timeout=None):
+        self._scroll_into_view_calls.append({"selector": self._selector, "timeout": timeout})
+        if self._scroll_into_view_exc is not None:
+            raise self._scroll_into_view_exc
+
+
+# parity-exempt: hand-rolled subset stub of Playwright's third-party Mouse (only wheel, the only surface CamoufoxDriver calls)
+class _FakeCamoufoxMouse:
+    def __init__(self, *, wheel_calls: list[dict]) -> None:
+        self._wheel_calls = wheel_calls
+
+    async def wheel(self, delta_x, delta_y):
+        self._wheel_calls.append({"delta_x": delta_x, "delta_y": delta_y})
+
+
+# parity-exempt: hand-rolled subset stub of Playwright's third-party Page (only goto/wait_for_selector/click/fill/wait_for_timeout/locator/mouse/viewport_size/content/url/close/on, the only surface CamoufoxDriver calls)
 class _FakeCamoufoxPage:
     def __init__(
         self,
@@ -27,22 +49,29 @@ class _FakeCamoufoxPage:
         wait_for_exc=None,
         click_exc=None,
         fill_exc=None,
+        scroll_into_view_exc=None,
         html="<html>ok</html>",
         url=None,
         network_responses=None,
+        viewport_size=None,
     ):
         self._goto_result = goto_result
         self._goto_exc = goto_exc
         self._wait_for_exc = wait_for_exc
         self._click_exc = click_exc
         self._fill_exc = fill_exc
+        self._scroll_into_view_exc = scroll_into_view_exc
         self._html = html
         self.url = url or "https://example.gov/final"
+        self.viewport_size = viewport_size or {"width": 1920, "height": 1080}
         self.goto_calls: list[dict] = []
         self.wait_for_calls: list[dict] = []
         self.click_calls: list[dict] = []
         self.fill_calls: list[dict] = []
         self.wait_for_timeout_calls: list[int] = []
+        self.scroll_into_view_calls: list[dict] = []
+        self.wheel_calls: list[dict] = []
+        self.mouse = _FakeCamoufoxMouse(wheel_calls=self.wheel_calls)
         self.closed = False
         # Simulates the responses Playwright would have fired via page.on("response", ...)
         # during navigation -- goto() replays these into the registered handler.
@@ -75,6 +104,11 @@ class _FakeCamoufoxPage:
 
     async def wait_for_timeout(self, ms):
         self.wait_for_timeout_calls.append(ms)
+
+    def locator(self, selector):
+        return _FakeCamoufoxLocator(
+            selector, scroll_into_view_calls=self.scroll_into_view_calls, scroll_into_view_exc=self._scroll_into_view_exc
+        )
 
     async def content(self):
         return self._html
@@ -372,6 +406,7 @@ class TestCamoufoxDriverNavSteps:
         assert page.click_calls == []
         assert page.fill_calls == []
         assert page.wait_for_timeout_calls == []
+        assert page.scroll_into_view_calls == []
 
     async def test_click_step_clicks_the_selector(self):
         page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
@@ -396,6 +431,40 @@ class TestCamoufoxDriverNavSteps:
         await driver.render("https://example.gov", nav_steps=[NavStep(action="wait_for", selector=".results")])
 
         assert page.wait_for_calls == [{"selector": ".results", "timeout": 30.0 * 1000}]
+
+    async def test_scroll_into_view_step_scrolls_the_selector(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_into_view", selector="#chart")])
+
+        assert page.scroll_into_view_calls == [{"selector": "#chart", "timeout": 30.0 * 1000}]
+
+    async def test_scroll_page_step_scrolls_by_percent_of_viewport_height(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page", value="50")])
+
+        assert page.wheel_calls == [{"delta_x": 0, "delta_y": 500.0}]
+
+    async def test_scroll_page_step_uses_the_default_amount_when_value_omitted(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200), viewport_size={"width": 1920, "height": 1000})
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page")])
+
+        assert page.wheel_calls == [{"delta_x": 0, "delta_y": 250.0}]
+
+    async def test_scroll_page_step_non_int_value_raises_nav_step_failed(self):
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        with pytest.raises(CamoufoxDriverError) as exc_info:
+            await driver.render("https://example.gov", nav_steps=[NavStep(action="scroll_page", value="not-a-number")])
+
+        assert exc_info.value.code == "nav_step_failed"
+        assert page.wheel_calls == []
 
     async def test_wait_ms_step_sleeps_for_the_given_duration(self):
         page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
@@ -449,6 +518,19 @@ class TestCamoufoxDriverNavSteps:
 
         with pytest.raises(CamoufoxDriverError) as exc_info:
             await driver.render("https://example.gov", nav_steps=[NavStep(action="wait_for", selector="#missing")])
+
+        assert exc_info.value.code == "nav_step_failed"
+
+    async def test_scroll_into_view_step_selector_never_appearing_raises_nav_step_failed(self):
+        page = _FakeCamoufoxPage(
+            goto_result=_FakeCamoufoxResponse(200), scroll_into_view_exc=PlaywrightTimeoutError("gone")
+        )
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        with pytest.raises(CamoufoxDriverError) as exc_info:
+            await driver.render(
+                "https://example.gov", nav_steps=[NavStep(action="scroll_into_view", selector="#missing")]
+            )
 
         assert exc_info.value.code == "nav_step_failed"
 

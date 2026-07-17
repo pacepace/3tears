@@ -157,7 +157,7 @@ class ScrapeTool(TearsTool):
                         "description": (
                             "ordered browser actions driving the page to its real content before "
                             "extraction (a search form, a second page in a listing) -- each item is "
-                            '{"action": "click"|"fill"|"wait_for"|"wait_ms", "selector": str, '
+                            '{"action": "click"|"fill"|"wait_for"|"wait_ms"|"scroll_into_view", "selector": str, '
                             '"value": str, "ms": int} (fields other than action are optional per '
                             "action type). Ignored by driver_backend='document'."
                         ),
