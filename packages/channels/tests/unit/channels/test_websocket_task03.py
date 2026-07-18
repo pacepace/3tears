@@ -739,6 +739,48 @@ class TestFrameDispatchIsCrashSafe:
 
 
 # ============================================================
+# the chat-message safety net: a router failure on the plain (non-typed)
+# ``message`` path must NOT crash the socket either
+# ============================================================
+
+
+class _BoomRouter:
+    """router whose route_inbound always raises, to prove the chat path survives it."""
+
+    async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
+        raise RuntimeError("kaboom from the chat router")
+
+
+class TestChatMessageDispatchIsCrashSafe:
+    """an unexpected exception from the chat router -> error frame, socket survives.
+
+    regression test: before this fix, the ``msg_type == "message"`` branch of
+    ``_message_loop`` had no equivalent of ``TestFrameDispatchIsCrashSafe``'s
+    per-frame safety net -- ``router.route_inbound`` raising (e.g. an unknown
+    target agent) propagated all the way out of the message loop and crashed
+    the whole ASGI connection (1011) instead of degrading gracefully like every
+    typed frame already does.
+    """
+
+    @pytest.mark.asyncio
+    async def test_router_exception_on_chat_message_does_not_crash_socket(self) -> None:
+        """a chat router that raises -> one error frame, loop keeps serving the next message."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        msgs = [
+            json.dumps({"type": "message", "content": "hi"}),
+            json.dumps({"type": "unknown-x"}),
+        ]
+        ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 2, "the chat router's raise should error AND the later frame still serve"
+        assert ws.close_code != 1011, "an unhandled router exception must not surface as an ASGI internal error"
+
+
+# ============================================================
 # membership gate: editor.op / transient require a prior join
 # ============================================================
 
