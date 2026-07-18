@@ -372,6 +372,40 @@ async def test_tool_search_surfaces_tool_absent_from_initial_top_k() -> None:
     assert [t.name for t in hits[0]] == ["session_send"]
 
 
+async def test_tool_search_hit_message_matches_next_round_description() -> None:
+    """Live prod bug (metallm conv 019f6cf5-073a-7b50-bd44-721efb0c7b90): the
+    tool's own DESCRIPTION correctly says hits become callable "starting your
+    NEXT reply", but the hit return text used to say "now available to call"
+    -- a direct contradiction the model reads immediately after invoking the
+    tool, mid-round. That drove the model to attempt the tool right away, in
+    the SAME round, and bounce off "No such tool available" (no caller can
+    compose a hit into the bound set before the next round boundary -- see
+    ``on_hit``'s docstring). The return text must never claim immediacy the
+    caller cannot deliver.
+    """
+    tools = _catalog(3)
+    session_send = _make_tool("session_send", "send a message to a dev agent session")
+    full_catalog = tools + [session_send]
+    vectors = {_tool_text(t): [0.0, 1.0] for t in tools}
+    vectors[_tool_text(session_send)] = [1.0, 0.0]
+    vectors["send a message"] = [1.0, 0.0]
+    embedder = _FakeEmbeddings(vectors)
+    index = ToolRelevanceIndex(embedder=embedder, top_k=3)
+
+    search_tool = create_tool_search_tool(
+        index=index,
+        full_catalog_provider=lambda: full_catalog,
+        on_hit=lambda _matches: None,
+        limit=1,
+    )
+
+    result_text = await search_tool.ainvoke({"query": "send a message"})
+
+    assert "now available to call" not in result_text
+    assert "NEXT reply" in result_text
+    assert "session_send" in result_text
+
+
 async def test_tool_search_reports_no_match_without_calling_on_hit() -> None:
     tools = _catalog(3)
     embedder = _FakeEmbeddings({}, raise_on_documents=True)  # forces search() -> []
