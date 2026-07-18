@@ -7,30 +7,55 @@ packages (bumped in lock-step).
 ## v0.17.7 -- 2026-07-18
 
 **Fix: a bound tool's LangGraph HITL interrupt was silently swallowed by the Claude
-subscription-CLI backend** -- a confirm-mode write tool (the LangGraph "pause and wait for a
-human" pattern: the tool body calls `langgraph.types.interrupt(...)`, which raises
-`GraphInterrupt`) worked correctly on every direct-API chat backend, but under the
-subscription/CLI backend (`create_subscription_chat`, selected when the credential is a Claude
-Max/Pro OAuth token rather than an API key) the interrupt never reached the graph. Found live: a
-consuming product's write tool staged an edit, the model said "the tool call was interrupted and
-requires approval" -- but nothing was actually staged, no confirmation step was ever reached, and
-the graph completed the turn as if the tool had simply failed.
+subscription-CLI backend, and could not simply be re-raised** -- a confirm-mode write tool (the
+LangGraph "pause and wait for a human" pattern: the tool body calls
+`langgraph.types.interrupt(...)`, which raises `GraphInterrupt`) worked correctly on every
+direct-API chat backend, but under the subscription/CLI backend (`create_subscription_chat`,
+selected when the credential is a Claude Max/Pro OAuth token rather than an API key) the interrupt
+never reached the graph. Found live: a consuming product's write tool staged an edit, the model
+said "the tool call was interrupted and requires approval" -- but nothing was actually staged, no
+confirmation step was ever reached, and the graph completed the turn as if the tool had simply
+failed.
 
-Root cause: `_wrap_langchain_tool`'s `wrapped()` closure (the in-process handler the CLI
-subprocess's own internal tool-calling loop invokes directly, bypassing LangGraph's own ToolNode)
-caught `except Exception` around the tool dispatch with no exclusion for `GraphBubbleUp` --
-`GraphInterrupt` is a plain `Exception` subclass, so it was caught, logged as observability, and
-turned into a fake `{"content": "Error: ...", "is_error": True}` tool result the model then
-paraphrased as an apology. Every other tool-calling path (LangGraph's own `ToolNode`, and a
-caller's own tool-call middleware) already excludes this exception family from its broad catches
-for exactly this reason; this backend's bound-tool wrapper was the one place that didn't.
+Two independent layers were swallowing the exception, not one:
 
-- **`_wrap_langchain_tool`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
-  `wrapped()` now re-raises `GraphBubbleUp` untouched before the generic `except Exception`
-  fallback, so a bound tool's interrupt propagates out of the handler exactly like it does on
-  every other backend. Regression tests: `TestGraphInterruptPropagation` in
-  `packages/models/tests/unit/models/test_claude_cli_tool_events.py` (confirmed to fail without
-  the fix, reproducing the exact swallowed-interrupt shape).
+1. `_wrap_langchain_tool`'s `wrapped()` closure (the in-process handler the CLI subprocess's own
+   internal tool-calling loop invokes directly, bypassing LangGraph's own `ToolNode`) caught
+   `except Exception` around the tool dispatch with no exclusion for `GraphBubbleUp` --
+   `GraphInterrupt` is a plain `Exception` subclass.
+2. Even with (1) fixed to re-raise, the *third-party* `mcp` package's own `Server.call_tool`
+   request handler (`mcp/server/lowlevel/server.py`, not ours) *also* catches every exception
+   unconditionally and converts it to a normal `CallToolResult(isError=True, ...)` -- confirmed
+   directly against that dispatch path, not just by reading its source. No exception of any kind
+   can survive that boundary, so simply re-raising harder was never going to work.
+
+The fix therefore **captures** the interrupt at the point it occurs (`wrapped()`, the only code
+with real-time visibility into the call) instead of trying to propagate it through a boundary that
+cannot carry it, and **replays** it from a point that genuinely sits inside LangGraph's own call
+stack (`_astream`/`_agenerate`, once the underlying CLI turn completes). Resuming needed its own
+mechanism too: this backend has no separate LangGraph "tools" node to replay in isolation (the
+whole decide-and-call round-trip lives inside ONE model call), so a resume means calling the model
+again from scratch, and a plain `Command(resume=...)` never edits the conversation history -- a
+resume-hint message is now appended (via LangGraph's own `__pregel_resuming` configurable flag,
+read without disturbing `interrupt()`'s own resolution) asking the model to retry the exact same
+tool call, whose own `interrupt()` then resolves normally via LangGraph's ordinary resume-value
+matching.
+
+- **`_wrap_langchain_tool`/`_astream`/`_agenerate`**
+  (`packages/models/src/threetears/models/providers/_claude_cli.py`). `wrapped()` now captures a
+  caught `GraphInterrupt` into `_captured_interrupts_var` (a `ContextVar`, matching this class's
+  existing `_tool_results_var` pattern) and reports a benign, non-error result instead of trying to
+  propagate; both `_astream` and `_agenerate` set that var fresh per call, append a resume-hint
+  message via `_messages_with_resume_hint`/`_is_resume_replay`, and re-raise a combined
+  `GraphInterrupt` once the underlying CLI turn completes if anything was captured.
+- **`ToolCompletedEvent.tool_status`** (`packages/langgraph/src/threetears/langgraph/events.py`)
+  gains a third, honestly-labeled value, `'interrupted'`, alongside `'completed'`/`'failed'` -- an
+  interrupt is not a tool failure.
+- Regression tests: `TestGraphInterruptCapture` in `test_claude_cli_tool_events.py` proves the
+  handler-level capture in isolation; `test_claude_cli_interrupt_resume.py` drives a REAL compiled
+  LangGraph graph (only the Claude Agent SDK subprocess is faked) through a full pause -> resume
+  round trip for both an accepted and a rejected decision, proving the tool's own `interrupt()`
+  call genuinely resolves on replay -- not just that the graph pauses.
 
 ## v0.17.6 -- 2026-07-17
 
