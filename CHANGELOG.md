@@ -4,6 +4,34 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.7 -- 2026-07-18
+
+**Fix: a bound tool's LangGraph HITL interrupt was silently swallowed by the Claude
+subscription-CLI backend** -- a confirm-mode write tool (the LangGraph "pause and wait for a
+human" pattern: the tool body calls `langgraph.types.interrupt(...)`, which raises
+`GraphInterrupt`) worked correctly on every direct-API chat backend, but under the
+subscription/CLI backend (`create_subscription_chat`, selected when the credential is a Claude
+Max/Pro OAuth token rather than an API key) the interrupt never reached the graph. Found live: a
+consuming product's write tool staged an edit, the model said "the tool call was interrupted and
+requires approval" -- but nothing was actually staged, no confirmation step was ever reached, and
+the graph completed the turn as if the tool had simply failed.
+
+Root cause: `_wrap_langchain_tool`'s `wrapped()` closure (the in-process handler the CLI
+subprocess's own internal tool-calling loop invokes directly, bypassing LangGraph's own ToolNode)
+caught `except Exception` around the tool dispatch with no exclusion for `GraphBubbleUp` --
+`GraphInterrupt` is a plain `Exception` subclass, so it was caught, logged as observability, and
+turned into a fake `{"content": "Error: ...", "is_error": True}` tool result the model then
+paraphrased as an apology. Every other tool-calling path (LangGraph's own `ToolNode`, and a
+caller's own tool-call middleware) already excludes this exception family from its broad catches
+for exactly this reason; this backend's bound-tool wrapper was the one place that didn't.
+
+- **`_wrap_langchain_tool`** (`packages/models/src/threetears/models/providers/_claude_cli.py`).
+  `wrapped()` now re-raises `GraphBubbleUp` untouched before the generic `except Exception`
+  fallback, so a bound tool's interrupt propagates out of the handler exactly like it does on
+  every other backend. Regression tests: `TestGraphInterruptPropagation` in
+  `packages/models/tests/unit/models/test_claude_cli_tool_events.py` (confirmed to fail without
+  the fix, reproducing the exact swallowed-interrupt shape).
+
 ## v0.17.6 -- 2026-07-17
 
 **Fix: an empty or malformed chat message over WebSocket could crash the whole connection** --

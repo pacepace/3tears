@@ -105,6 +105,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp
 from pydantic import Field
 
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
@@ -284,6 +285,16 @@ def _subscription_model_cls() -> type:
                         )
                     )
                     return {"content": [{"type": "text", "text": str(result)}]}
+                except GraphBubbleUp:
+                    # LangGraph HITL control flow (interrupt()/Command et al.), NOT a tool failure --
+                    # a caller's tool pausing the graph for human confirmation must propagate exactly
+                    # like every other tool-calling path (see the base ToolNode / scriob's own
+                    # ToolErrorMiddleware), never get reported to the model as a fake tool error. Found
+                    # live: a bound tool calling `langgraph.types.interrupt(...)` was silently turned
+                    # into a "the tool failed" reply the model then paraphrased as an apology, while the
+                    # graph never actually paused -- no interrupt state was ever recorded, so a caller
+                    # relying on a HITL confirm step never got one.
+                    raise
                 except Exception as exc:  # surfaced to the model as a tool error so its loop continues
                     await _emit(
                         ToolCompletedEvent(

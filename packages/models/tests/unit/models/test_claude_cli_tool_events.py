@@ -18,6 +18,8 @@ from langchain_core.tools import BaseTool
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
+from langgraph.errors import GraphInterrupt
+
 from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.providers._claude_cli import create_subscription_chat
 
@@ -46,6 +48,21 @@ class _FailingTool(BaseTool):
 
     async def _arun(self, **kwargs: Any) -> str:
         raise RuntimeError("boom")
+
+
+class _InterruptingTool(BaseTool):
+    """A :class:`BaseTool` that raises :class:`GraphInterrupt` -- exactly what
+    ``langgraph.types.interrupt(...)`` does from inside a bound tool's body (the HITL
+    confirm-mode pattern). This is graph control flow, NOT a tool failure."""
+
+    name: str = "stage_a_write"
+    description: str = "stages a write behind a HITL interrupt"
+
+    def _run(self, **kwargs: Any) -> str:
+        raise GraphInterrupt()
+
+    async def _arun(self, **kwargs: Any) -> str:
+        raise GraphInterrupt()
 
 
 class _DottedNameTool(BaseTool):
@@ -152,6 +169,43 @@ class TestSubscriptionToolEvents:
         assert mock_logger.warning.call_count == 3  # dispatched + started + completed all fail
         first_call = mock_logger.warning.call_args_list[0]
         assert "event bus is down" in first_call.kwargs["extra"]["extra_data"]["error"]
+
+
+class TestGraphInterruptPropagation:
+    """Live-observed bug: a bound tool calling ``langgraph.types.interrupt(...)`` (the HITL
+    confirm-mode pattern every LangGraph write-tool convention relies on) raises
+    :class:`~langgraph.errors.GraphInterrupt`, a subclass of plain :class:`Exception`. The
+    wrapper's tool-failure ``except Exception`` used to catch it too, turning "pause the graph
+    and wait for a human" into a fake ``{"content": ..., "is_error": True}`` tool-error reply the
+    model then paraphrased as an apology -- while the graph never actually paused, so no HITL
+    confirmation step was ever reached (confirmed live via scriob's ``run_turn``: the turn
+    completed with ``is_pending=False`` instead of pausing). A confirm-mode write tool MUST
+    propagate its interrupt through this backend exactly like every other tool-calling path
+    (LangGraph's own ``ToolNode``, and callers' own tool-call middleware already exclude
+    ``GraphBubbleUp`` from their broad catches for the same reason)."""
+
+    async def test_graph_interrupt_propagates_out_of_the_handler_uncaught(self) -> None:
+        handler = _wrapped_handler(_InterruptingTool())
+        with pytest.raises(GraphInterrupt):
+            await handler({})
+
+    async def test_no_failed_completed_event_is_dispatched_for_an_interrupt(self) -> None:
+        """An interrupt is not a tool failure -- it must never emit the same
+        ``ToolCompletedEvent(tool_status="failed")`` a genuine tool error does."""
+        with patch(
+            "threetears.models.providers._claude_cli.dispatch_event",
+            AsyncMock(),
+        ) as mock_dispatch:
+            handler = _wrapped_handler(_InterruptingTool())
+            with pytest.raises(GraphInterrupt):
+                await handler({})
+
+        statuses = [
+            call.args[0].tool_status
+            for call in mock_dispatch.await_args_list
+            if call.args[0].__class__.__name__ == "ToolCompletedEvent"
+        ]
+        assert "failed" not in statuses
 
 
 class TestDottedToolNamePermissionFix:

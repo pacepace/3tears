@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-observe"
-version = "0.17.6"
+version = "0.17.7"
 description = "Structured logging, tracing, and OpenTelemetry setup for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
