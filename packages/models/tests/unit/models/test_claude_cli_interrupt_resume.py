@@ -23,7 +23,6 @@ from typing import Any, TypedDict
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -32,11 +31,17 @@ from langgraph.graph.message import add_messages
 from langgraph.types import Command, Interrupt, interrupt
 from typing_extensions import Annotated
 
+# MUST come before any `claude_agent_sdk`/`langchain_claude_code` import (module-level or not) --
+# CI's default install doesn't include the optional `claude-cli` extra, so those modules are
+# absent there; a hard `from claude_agent_sdk import ...` above this line would fail collection
+# outright instead of skipping gracefully.
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
-from threetears.models import DEFAULT_CHAT_MODEL
-from threetears.models.providers._claude_cli import create_subscription_chat
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock  # noqa: E402
+
+from threetears.models import DEFAULT_CHAT_MODEL  # noqa: E402
+from threetears.models.providers._claude_cli import create_subscription_chat  # noqa: E402
 
 
 def _tripwire_init(self: Any, *_args: Any, **_kwargs: Any) -> None:
