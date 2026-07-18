@@ -562,10 +562,23 @@ class WebSocketHandler:
                 user_locale=user_locale if isinstance(user_locale, str) and user_locale else None,
             )
 
-            if is_streaming:
-                await self._route_streaming(websocket, channel_message)
-            else:
-                await self._route_standard(websocket, channel_message)
+            try:
+                if is_streaming:
+                    await self._route_streaming(websocket, channel_message)
+                else:
+                    await self._route_standard(websocket, channel_message)
+            except Exception:  # prawduct:allow prawduct/broad-except -- per-message safety net: the
+                # chat ``message`` path lacked the same protection the typed cross-pod frame path
+                # already has (see the ``_route_frame`` call above) -- a router failure (an unknown
+                # target agent, a downstream dispatch error) must NEVER crash the whole socket; an
+                # unanticipated error becomes one error frame + a log and the connection keeps
+                # serving, matching design T3-D2's "never a silent drop, never a dead connection"
+                # posture for every message shape, not just typed frames.
+                log.exception(
+                    "chat message routing raised; surfacing an error and keeping the socket alive",
+                    extra={"extra_data": {"user_id": user_id}},
+                )
+                await websocket.send_text(json.dumps({"type": "error", "message": "internal error handling message"}))
 
     async def _route_standard(self, websocket: Any, message: ChannelMessage) -> None:
         """route message through standard (non-streaming) router.

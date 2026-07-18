@@ -4,6 +4,29 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.6 -- 2026-07-17
+
+**Fix: an empty or malformed chat message over WebSocket could crash the whole connection** --
+the typed cross-pod frame path (`join`/`leave`/`editor.op`/the transient `cursor`/`typing`/
+`presence` types) already wraps every dispatch in a per-frame safety net: a handler exception
+becomes one error frame and the socket keeps serving. The plain chat `message` path, dispatched
+just above that safety net in the same loop, had no equivalent -- a router failure (e.g. an
+unknown target agent, any downstream dispatch error) propagated all the way out of the message
+loop uncaught, and the ASGI framework closed the connection with a 1011 internal-error code
+instead of degrading gracefully. Found auditing a consuming product's integration test suite,
+where a `test_empty_content_ignored`-style test had never actually exercised this path before
+(it always failed earlier, at connect/auth) until an unrelated auth fix let it reach here for
+the first time.
+
+- **`WebSocketHandler._message_loop`** (`packages/channels/src/threetears/channels/websocket.py`).
+  The `if is_streaming: ... else: ...` chat dispatch is now wrapped in the same
+  `except Exception` safety net the typed-frame branch already has: log the failure, send
+  `{"type": "error", "message": "internal error handling message"}`, and keep the loop running
+  for the next message -- matching design T3-D2's "never a silent drop, never a dead connection"
+  posture for every message shape, not just typed frames. Regression test:
+  `TestChatMessageDispatchIsCrashSafe::test_router_exception_on_chat_message_does_not_crash_socket`
+  in `packages/channels/tests/unit/channels/test_websocket_task03.py`.
+
 ## v0.17.5 -- 2026-07-17
 
 **Fix: `tool_search`'s own hit message contradicted its own description** -- the tool's
