@@ -53,6 +53,22 @@ Each package has its own `pyproject.toml`, `src/`, and `tests/`.
 
 The `threetears/` and `threetears/agent/` directories must **never** have `__init__.py` files. Only leaf packages (`threetears/core/`, `threetears/agent/memory/`, and every other leaf) get `__init__.py`. This is required for implicit namespace packages to work when packages are installed independently.
 
+## Git / PR Workflow
+
+- **NEVER squash-merge, ever.** Every PR merge — feature→develop, develop→main,
+  any of them — MUST use a real merge commit (`gh pr merge --merge`). Never
+  `--squash`, never `--rebase`. Squashing collapses commit history and can
+  silently drop or corrupt file content relative to what the branch actually
+  contained, with no diff-review step catching it before or after. If a PR
+  needs cleaner history, fix it on the branch before merging (interactive
+  rebase there is fine) — never let the merge step itself do the squashing.
+- Never force-push anything, ever (no `--force`, no `--force-with-lease`);
+  restructure via a new branch + new PR instead.
+- Feature-branch all medium+ work; merge order respects PR stacking.
+- Releases: bump version → PR into develop → PR develop into main (no
+  version bump on that second PR) → tag from main. Don't cut a release
+  tag on a plain develop→main sync that isn't meant to ship a release.
+
 ## Conventions
 
 - Build backend: hatchling
