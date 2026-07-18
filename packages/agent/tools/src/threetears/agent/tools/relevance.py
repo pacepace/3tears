@@ -377,7 +377,19 @@ def create_tool_search_tool(
             },
         )
         lines = [f"- {t.name}: {t.description or ''}" for t in matches]
-        return "Found the following tools, now available to call:\n" + "\n".join(lines)
+        # Live prod evidence (metallm conv 019f6cf5-073a-7b50-bd44-721efb0c7b90):
+        # this tool's own DESCRIPTION correctly says hits become callable
+        # "starting your NEXT reply", but this return string used to say "now
+        # available to call" -- a direct contradiction the model reads
+        # immediately after invoking the tool, mid-round. That's what drove
+        # the model to attempt the newly-found tool right away, in the SAME
+        # round, and bounce off "No such tool available": the caller (e.g.
+        # metallm's tool-loop) can only compose a hit into the bound set at
+        # the next round boundary (see ``on_hit`` docstring above), never
+        # sooner -- no caller can make a tool available mid-round. Wording
+        # here must match the description's honest framing, not promise
+        # immediacy the caller cannot deliver.
+        return "Found the following tools, callable starting your NEXT reply (not this one):\n" + "\n".join(lines)
 
     return StructuredTool.from_function(
         coroutine=_search,
