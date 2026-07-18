@@ -90,21 +90,64 @@ top-level ``type``, and ``required`` is copied verbatim from the original tool s
 already-full-shaped schema also makes it skip its own required-everything path entirely (verified
 by reading ``create_sdk_mcp_server``'s ``_build_schema``: it returns a dict verbatim, unmodified,
 whenever ``"type"`` and ``"properties"`` are already top-level keys).
+
+LangGraph HITL interrupts survive this backend's MCP boundary (found live: a bound tool calling
+``langgraph.types.interrupt(...)`` -- the standard confirm-mode "pause the graph and wait for a
+human" pattern -- never actually paused anything under this backend; the model just reported the
+tool as having failed). Two layers were swallowing the resulting ``GraphInterrupt``:
+
+1. This module's own ``wrapped()`` closure had a bare ``except Exception``, and
+   ``GraphInterrupt`` is a plain ``Exception`` subclass.
+2. Even with that fixed, the ``mcp`` package's OWN ``Server.call_tool`` request handler
+   (``mcp/server/lowlevel/server.py``, third-party, not ours) *also* catches every exception
+   unconditionally and converts it to a normal ``CallToolResult(isError=True, ...)`` -- verified
+   directly against the real ``mcp`` dispatch path, not just by reading its source. No exception
+   of any kind can survive that boundary; re-raising harder inside ``wrapped()`` alone cannot fix
+   this.
+
+Because of (2), the interrupt cannot be *propagated* through the tool-call boundary at all -- it
+has to be **captured** at the point it occurs (inside ``wrapped()``, the only code with real-time
+visibility into the call, same rationale as the tool-status events above) and **replayed** from a
+point that genuinely sits inside LangGraph's own call stack. ``_captured_interrupts_var`` (a
+``ContextVar``, matching this class's existing ``_tool_results_var`` pattern -- a plain instance
+attribute would race across concurrent turns sharing a model instance) holds whatever
+``GraphInterrupt``s a turn's tool calls raised; both ``_astream`` and ``_agenerate`` set it fresh
+per invocation and, once the underlying CLI turn completes, re-raise a combined ``GraphInterrupt``
+if anything was captured -- from directly inside the model's own method, which DOES sit inside the
+LangGraph agent node's call stack, so the graph genuinely pauses and checkpoints this time.
+
+Resuming is the other half: this backend has no separate LangGraph "tools" node to replay in
+isolation (unlike the native, non-CLI tool-calling path) -- the whole decide-and-call round-trip
+lives inside ONE model call, so a resume means calling the model again from scratch, and a plain
+``Command(resume=...)`` never touches ``messages`` -- the replayed conversation looks identical to
+the interrupted attempt, with nothing telling the model a decision was made.
+``_messages_with_resume_hint`` reads LangGraph's own ``__pregel_resuming`` configurable flag (via
+``_is_resume_replay`` -- a pure signal, never ``interrupt()``'s own scratchpad ``.resume`` list,
+which starts empty even on a genuine resume and would give the wrong answer) and, when this call
+is a resume replay, appends one explicit synthetic human turn asking the model to retry the exact
+same tool call -- it doesn't need the actual decision value, only the tool does. The underlying
+CLI session is continued (``options.resume``/``continue_conversation``, already wired) so the
+model has full context of what it just attempted. On that retry, the tool's OWN
+``interrupt()`` call resolves via LangGraph's normal resume-value matching (positional, not tied to
+which physical call site raised it) and the tool completes for real -- no capture, no replay,
+this time.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator, Sequence
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, BaseMessage
-from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.messages import AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from pydantic import Field
 
 from threetears.models.tool_name_translation import NameMangledToolProxy, build_name_translation
@@ -147,6 +190,67 @@ _FORWARDED_KWARGS = frozenset(
 def is_subscription_token(credential: str) -> bool:
     """True when ``credential`` is a Claude subscription OAuth token (vs an API key)."""
     return credential.startswith(OAUTH_TOKEN_PREFIX)
+
+
+#: Interrupts a bound tool raised THIS turn, captured because the ``mcp`` package's own
+#: ``call_tool`` dispatch swallows any exception unconditionally (see the module docstring's
+#: "LangGraph HITL interrupts" section) -- a ``ContextVar`` (not a plain instance attribute)
+#: because a model instance can serve concurrent turns; each turn gets its own isolated list via
+#: ``.set([])``/``.reset(token)`` around the call, mirroring this class's existing
+#: ``_tool_results_var`` pattern.
+_captured_interrupts_var: ContextVar[list[Any] | None] = ContextVar("_claude_cli_captured_interrupts", default=None)
+
+
+def _is_resume_replay() -> bool:
+    """Whether THIS call is a resume replay -- a real ``Command(resume=...)`` was submitted for
+    this node's task -- read via LangGraph's own ``__pregel_resuming`` configurable flag.
+
+    This is deliberately NOT the scratchpad's ``.resume`` list ``langgraph.types.interrupt()``
+    itself consults: that list starts EMPTY even on a genuine resume and is populated lazily, one
+    value at a time, exactly as each ``interrupt()`` call in the task consumes its own entry --
+    peeking at it here (an earlier version of this function did) tells you nothing about whether a
+    resume is in progress. ``__pregel_resuming`` is a pure signal, not a value -- reading it never
+    disturbs ``interrupt()``'s own resolution, and this function doesn't need the actual decision
+    value anyway (see :func:`_messages_with_resume_hint`).
+
+    Returns ``False`` when there is no ambient graph config at all (the model invoked directly,
+    outside any LangGraph run), or LangGraph's internal shape doesn't match what this reads --
+    fully defensive, since this touches an underscore-prefixed LangGraph internal a future release
+    could change; degrading to "not a resume" (send the prompt unchanged) is always the safe
+    fallback here, never a crash.
+    """
+    try:
+        from langgraph._internal._constants import CONFIG_KEY_RESUMING
+        from langgraph.config import get_config
+
+        resuming = bool(get_config()["configurable"].get(CONFIG_KEY_RESUMING))
+    except Exception:  # the internals above may not exist/match in a future LangGraph release
+        resuming = False
+    return resuming
+
+
+def _messages_with_resume_hint(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Append a synthetic human turn describing a pending HITL decision, when this call is a
+    resume replay for an interrupt this backend captured (see the module docstring). This backend
+    has no separate LangGraph "tools" node to replay in isolation -- the whole decide-and-call
+    round-trip lives inside ONE model call -- so resuming means calling the model again from
+    scratch, and a plain ``Command(resume=...)`` never edits ``messages``: the conversation history
+    looks identical to the interrupted attempt, with nothing signalling a decision was made.
+
+    The hint deliberately does not carry the actual decision value -- the model doesn't need it,
+    only the tool does (via its own ``interrupt()`` call resolving normally on retry); the model's
+    only job is to make the SAME call again.
+
+    A no-op (returns ``messages`` unchanged) when this is not a resume replay.
+    """
+    if not _is_resume_replay():
+        return messages
+    hint = (
+        "A pending action awaiting human confirmation has just been decided. Immediately retry "
+        "the exact same tool call you were making, with the exact same arguments -- the tool "
+        "itself will act correctly on the recorded decision."
+    )
+    return [*messages, HumanMessage(content=hint)]
 
 
 def _subscription_model_cls() -> type:
@@ -284,6 +388,44 @@ def _subscription_model_cls() -> type:
                         )
                     )
                     return {"content": [{"type": "text", "text": str(result)}]}
+                except GraphInterrupt as exc:
+                    # LangGraph HITL control flow (interrupt()), NOT a tool failure -- but re-raising
+                    # here is pointless: the `mcp` package's OWN call_tool dispatch (third-party, not
+                    # ours) ALSO catches every exception unconditionally and turns it into a normal
+                    # CallToolResult, no matter what we do at this layer (verified directly against
+                    # the real `mcp` dispatch, not just by reading its source). So we capture it
+                    # instead -- stash its payload where `_astream`/`_agenerate` (which DO sit inside
+                    # LangGraph's own call stack) will find and re-raise it once this call returns --
+                    # and report a benign, non-error result so the CLI subprocess's own turn winds
+                    # down cleanly rather than crashing. See the module docstring for the full design.
+                    bucket = _captured_interrupts_var.get()
+                    if bucket is not None:
+                        # GraphInterrupt carries its `interrupts` sequence as its sole positional
+                        # arg (`GraphInterrupt(interrupts: Sequence[Interrupt] = ())`) -- it has no
+                        # named attribute for it, just the plain exception `.args` tuple.
+                        bucket.extend(exc.args[0] if exc.args else ())
+                    await _emit(
+                        ToolCompletedEvent(
+                            tool_name=canonical_name,
+                            tool_status="interrupted",
+                            tool_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                    )
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "This action is awaiting a human confirmation decision.",
+                            }
+                        ]
+                    }
+                except GraphBubbleUp:
+                    # Some OTHER LangGraph control-flow signal (not a value-carrying interrupt) --
+                    # there is nothing to capture-and-replay for these (no `.interrupts` payload), so
+                    # this can only attempt to propagate as before (still swallowed by the `mcp`
+                    # layer either way) rather than pretend to handle a shape `interrupt()` never
+                    # produces.
+                    raise
                 except Exception as exc:  # surfaced to the model as a tool error so its loop continues
                     await _emit(
                         ToolCompletedEvent(
@@ -319,85 +461,124 @@ def _subscription_model_cls() -> type:
             ``StreamEvent`` at all (older CLI build, future SDK regression) still gets
             its text emitted whole from the ``AssistantMessage`` -- the fallback the base
             class always used, so this is strictly additive.
+
+            Also owns the interrupt capture/replay half of the module docstring's "LangGraph HITL
+            interrupts" design: a resume-hint message is appended when this call is a replay
+            (:func:`_messages_with_resume_hint`), and once the underlying CLI turn completes, any
+            interrupt a bound tool raised (captured via :data:`_captured_interrupts_var` -- the
+            ``mcp`` boundary swallows a raised one before it ever reaches here) is re-raised from
+            THIS point, which genuinely sits inside LangGraph's own call stack.
             """
-            config = kwargs.pop("_config", None)
-            prompt, system_prompt = self._convert_messages(messages)
-            if system_prompt and not self.system_prompt:
-                kwargs["system_prompt"] = system_prompt
-            kwargs["include_partial_messages"] = True
-            cfg = ensure_config(config) if config is not None else None
-            session_id = kwargs.pop("session_id", None) or kwargs.pop("resume", None)
-            if cfg:
-                session_id = session_id or cfg.get("configurable", {}).get("session_id")
-            options = self._build_options(**kwargs)
-            if session_id:
-                options.resume = session_id
-                options.continue_conversation = True
+            messages = _messages_with_resume_hint(messages)
+            interrupt_token = _captured_interrupts_var.set([])
+            try:
+                config = kwargs.pop("_config", None)
+                prompt, system_prompt = self._convert_messages(messages)
+                if system_prompt and not self.system_prompt:
+                    kwargs["system_prompt"] = system_prompt
+                kwargs["include_partial_messages"] = True
+                cfg = ensure_config(config) if config is not None else None
+                session_id = kwargs.pop("session_id", None) or kwargs.pop("resume", None)
+                if cfg:
+                    session_id = session_id or cfg.get("configurable", {}).get("session_id")
+                options = self._build_options(**kwargs)
+                if session_id:
+                    options.resume = session_id
+                    options.continue_conversation = True
 
-            tool_calls_buffer: list[dict[str, Any]] = []
-            tool_results_buffer: list[dict[str, Any]] = []
-            # Content-block indices whose text has already been streamed via a
-            # StreamEvent delta THIS assistant message -- reset each time a new
-            # AssistantMessage boundary is crossed, matching the SDK's own framing
-            # (deltas for a message's blocks, then one AssistantMessage closing it).
-            streamed_block_indices: set[int] = set()
+                tool_calls_buffer: list[dict[str, Any]] = []
+                tool_results_buffer: list[dict[str, Any]] = []
+                # Content-block indices whose text has already been streamed via a
+                # StreamEvent delta THIS assistant message -- reset each time a new
+                # AssistantMessage boundary is crossed, matching the SDK's own framing
+                # (deltas for a message's blocks, then one AssistantMessage closing it).
+                streamed_block_indices: set[int] = set()
 
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(prompt)
+                async with ClaudeSDKClient(options=options) as client:
+                    await client.query(prompt)
 
-                async for msg in client.receive_response():
-                    if isinstance(msg, StreamEvent):
-                        event = msg.event or {}
-                        if event.get("type") != "content_block_delta":
-                            continue
-                        delta = event.get("delta") or {}
-                        if delta.get("type") != "text_delta":
-                            continue
-                        text = delta.get("text", "")
-                        if not text:
-                            continue
-                        block_index = event.get("index")
-                        if isinstance(block_index, int):
-                            streamed_block_indices.add(block_index)
-                        chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
-                        if run_manager:
-                            await run_manager.on_llm_new_token(text, chunk=chunk)
-                        yield chunk
-
-                    elif isinstance(msg, AssistantMessage):
-                        text, tool_calls, tool_results = self._parse_assistant_message(msg)
-                        # Fallback path only: if StreamEvent deltas already covered
-                        # this message's text (the common case), re-yielding it here
-                        # would double every character the client already received.
-                        if text and not streamed_block_indices:
+                    async for msg in client.receive_response():
+                        if isinstance(msg, StreamEvent):
+                            event = msg.event or {}
+                            if event.get("type") != "content_block_delta":
+                                continue
+                            delta = event.get("delta") or {}
+                            if delta.get("type") != "text_delta":
+                                continue
+                            text = delta.get("text", "")
+                            if not text:
+                                continue
+                            block_index = event.get("index")
+                            if isinstance(block_index, int):
+                                streamed_block_indices.add(block_index)
                             chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
                             if run_manager:
                                 await run_manager.on_llm_new_token(text, chunk=chunk)
                             yield chunk
-                        streamed_block_indices = set()
-                        tool_calls_buffer.extend(tool_calls)
-                        tool_results_buffer.extend(tool_results)
 
-                    elif isinstance(msg, ResultMessage):
-                        self._last_result = msg
-                        generation_info: dict[str, Any] = {
-                            "total_cost_usd": msg.total_cost_usd,
-                            "duration_ms": msg.duration_ms,
-                            "duration_api_ms": msg.duration_api_ms,
-                            "session_id": msg.session_id,
-                            "finish_reason": "stop" if not msg.is_error else "error",
-                        }
-                        if msg.usage:
-                            generation_info["usage"] = msg.usage
-                        if tool_calls_buffer:
-                            generation_info["internal_tool_calls"] = tool_calls_buffer
-                        if tool_results_buffer:
-                            generation_info["internal_tool_results"] = tool_results_buffer
+                        elif isinstance(msg, AssistantMessage):
+                            text, tool_calls, tool_results = self._parse_assistant_message(msg)
+                            # Fallback path only: if StreamEvent deltas already covered
+                            # this message's text (the common case), re-yielding it here
+                            # would double every character the client already received.
+                            if text and not streamed_block_indices:
+                                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                                if run_manager:
+                                    await run_manager.on_llm_new_token(text, chunk=chunk)
+                                yield chunk
+                            streamed_block_indices = set()
+                            tool_calls_buffer.extend(tool_calls)
+                            tool_results_buffer.extend(tool_results)
 
-                        yield ChatGenerationChunk(
-                            message=AIMessageChunk(content="", chunk_position="last"),
-                            generation_info=generation_info,
-                        )
+                        elif isinstance(msg, ResultMessage):
+                            self._last_result = msg
+                            generation_info: dict[str, Any] = {
+                                "total_cost_usd": msg.total_cost_usd,
+                                "duration_ms": msg.duration_ms,
+                                "duration_api_ms": msg.duration_api_ms,
+                                "session_id": msg.session_id,
+                                "finish_reason": "stop" if not msg.is_error else "error",
+                            }
+                            if msg.usage:
+                                generation_info["usage"] = msg.usage
+                            if tool_calls_buffer:
+                                generation_info["internal_tool_calls"] = tool_calls_buffer
+                            if tool_results_buffer:
+                                generation_info["internal_tool_results"] = tool_results_buffer
+
+                            yield ChatGenerationChunk(
+                                message=AIMessageChunk(content="", chunk_position="last"),
+                                generation_info=generation_info,
+                            )
+            finally:
+                captured_interrupts = _captured_interrupts_var.get() or []
+                _captured_interrupts_var.reset(interrupt_token)
+            if captured_interrupts:
+                raise GraphInterrupt(tuple(captured_interrupts))
+
+        async def _agenerate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            """Non-streaming twin of :meth:`_astream`'s interrupt capture/replay (see its docstring
+            and the module docstring). The base class's ``_agenerate``/``_aquery`` drive the SAME
+            MCP-bridged tool dispatch (:meth:`_wrap_langchain_tool`), so a captured interrupt has to
+            be raised here too -- otherwise the non-streaming (HTTP route) turn path never pauses
+            while the streaming (WS) path does.
+            """
+            messages = _messages_with_resume_hint(messages)
+            interrupt_token = _captured_interrupts_var.set([])
+            try:
+                result = await super()._agenerate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            finally:
+                captured_interrupts = _captured_interrupts_var.get() or []
+                _captured_interrupts_var.reset(interrupt_token)
+            if captured_interrupts:
+                raise GraphInterrupt(tuple(captured_interrupts))
+            return result
 
     return _SubscriptionChatModel
 

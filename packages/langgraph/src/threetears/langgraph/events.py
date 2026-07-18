@@ -133,12 +133,13 @@ class ToolStartedEvent(FrameworkEvent):
 class ToolCompletedEvent(FrameworkEvent):
     """fired when a tool function has finished executing.
 
-    fires regardless of success or failure -- ``tool_status`` carries
-    the outcome discriminator. ui consumers typically use this to
-    render the tool's final-state indicator (a checkmark or an x).
+    fires regardless of outcome -- ``tool_status`` carries the discriminator. ui consumers
+    typically use this to render the tool's final-state indicator (a checkmark, an x, or a
+    pending/paused affordance).
 
     :ivar tool_name: name of the tool that ran
-    :ivar tool_status: ``'completed'`` or ``'failed'``
+    :ivar tool_status: ``'completed'``, ``'failed'``, or ``'interrupted'`` (the tool raised a
+        LangGraph HITL interrupt -- not a failure, the graph is pausing for a human decision)
     :ivar tool_duration_ms: wall-clock execution time in milliseconds
     """
 
