@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-identity"
-version = "0.17.6"
+version = "0.17.7"
 description = "Versioned identity blocks for LLM agents -- self-evolution via a linear version chain with propose/consent/apply, rationale, and rollback"
 readme = "README.md"
 requires-python = ">=3.14"

@@ -18,7 +18,10 @@ from langchain_core.tools import BaseTool
 pytest.importorskip("langchain_claude_code")
 pytest.importorskip("claude_agent_sdk")
 
+from langgraph.errors import GraphInterrupt
+
 from threetears.models import DEFAULT_CHAT_MODEL
+from threetears.models.providers import _claude_cli as claude_cli
 from threetears.models.providers._claude_cli import create_subscription_chat
 
 
@@ -46,6 +49,30 @@ class _FailingTool(BaseTool):
 
     async def _arun(self, **kwargs: Any) -> str:
         raise RuntimeError("boom")
+
+
+def _fake_graph_interrupt(payload: Any = None) -> GraphInterrupt:
+    """A :class:`GraphInterrupt` carrying one real :class:`Interrupt`, shaped like what
+    ``langgraph.types.interrupt(value)`` actually raises (``Interrupt.from_ns`` needs an ambient
+    graph config this standalone test has none of, so this builds the ``Interrupt`` directly)."""
+    from langgraph.types import Interrupt
+
+    return GraphInterrupt((Interrupt(value=payload or {"tool": "stage_a_write"}, id="test-interrupt-1"),))
+
+
+class _InterruptingTool(BaseTool):
+    """A :class:`BaseTool` that raises :class:`GraphInterrupt` -- exactly what
+    ``langgraph.types.interrupt(...)`` does from inside a bound tool's body (the HITL
+    confirm-mode pattern). This is graph control flow, NOT a tool failure."""
+
+    name: str = "stage_a_write"
+    description: str = "stages a write behind a HITL interrupt"
+
+    def _run(self, **kwargs: Any) -> str:
+        raise _fake_graph_interrupt()
+
+    async def _arun(self, **kwargs: Any) -> str:
+        raise _fake_graph_interrupt()
 
 
 class _DottedNameTool(BaseTool):
@@ -152,6 +179,69 @@ class TestSubscriptionToolEvents:
         assert mock_logger.warning.call_count == 3  # dispatched + started + completed all fail
         first_call = mock_logger.warning.call_args_list[0]
         assert "event bus is down" in first_call.kwargs["extra"]["extra_data"]["error"]
+
+
+class TestGraphInterruptCapture:
+    """Live-observed bug: a bound tool calling ``langgraph.types.interrupt(...)`` (the HITL
+    confirm-mode pattern every LangGraph write-tool convention relies on) raises
+    :class:`~langgraph.errors.GraphInterrupt`, a subclass of plain :class:`Exception`. The
+    wrapper's tool-failure ``except Exception`` used to catch it too, turning "pause the graph
+    and wait for a human" into a fake ``{"content": ..., "is_error": True}`` tool-error reply the
+    model then paraphrased as an apology -- while the graph never actually paused (confirmed live
+    via scriob's ``run_turn``: the turn completed with ``is_pending=False`` instead of pausing).
+
+    Re-raising the interrupt from THIS handler alone is not the fix, though: the real ``mcp``
+    package's own ``call_tool`` dispatch (third-party, not ours) ALSO catches every exception
+    unconditionally and converts it to a normal ``CallToolResult`` -- verified directly against
+    that dispatch path (see :mod:`threetears.models.providers._claude_cli`'s module docstring). No
+    exception can survive that boundary, so the fix captures the interrupt here instead (into
+    :data:`~threetears.models.providers._claude_cli._captured_interrupts_var`) and reports a
+    benign, non-raising result -- :mod:`test_claude_cli_interrupt_resume` covers the other half:
+    ``_astream``/``_agenerate`` re-raising it from a point that genuinely sits inside LangGraph's
+    call stack, and the resume/replay path."""
+
+    async def test_handler_does_not_raise_and_reports_a_benign_non_error_result(self) -> None:
+        handler = _wrapped_handler(_InterruptingTool())
+        result = await handler({})
+        assert "is_error" not in result
+        assert "confirmation" in result["content"][0]["text"].lower()
+
+    async def test_handler_captures_the_interrupt_into_the_active_bucket(self) -> None:
+        token = claude_cli._captured_interrupts_var.set([])  # noqa: SLF001 -- the state under test
+        try:
+            handler = _wrapped_handler(_InterruptingTool())
+            await handler({})
+            captured = claude_cli._captured_interrupts_var.get()  # noqa: SLF001
+        finally:
+            claude_cli._captured_interrupts_var.reset(token)  # noqa: SLF001
+        assert captured is not None
+        assert len(captured) == 1
+
+    async def test_nothing_is_captured_when_no_bucket_is_active(self) -> None:
+        """Outside any `_astream`/`_agenerate` call (the contextvar at its default `None`), the
+        handler must still behave safely -- no bucket to append to, no crash."""
+        assert claude_cli._captured_interrupts_var.get() is None  # noqa: SLF001
+        handler = _wrapped_handler(_InterruptingTool())
+        result = await handler({})  # must not raise
+        assert "is_error" not in result
+
+    async def test_no_failed_completed_event_is_dispatched_for_an_interrupt(self) -> None:
+        """An interrupt is not a tool failure -- it must never emit the same
+        ``ToolCompletedEvent(tool_status="failed")`` a genuine tool error does; it gets its own
+        honestly-labeled status instead."""
+        with patch(
+            "threetears.models.providers._claude_cli.dispatch_event",
+            AsyncMock(),
+        ) as mock_dispatch:
+            handler = _wrapped_handler(_InterruptingTool())
+            await handler({})
+
+        statuses = [
+            call.args[0].tool_status
+            for call in mock_dispatch.await_args_list
+            if call.args[0].__class__.__name__ == "ToolCompletedEvent"
+        ]
+        assert statuses == ["interrupted"]
 
 
 class TestDottedToolNamePermissionFix:
