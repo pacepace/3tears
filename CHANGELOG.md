@@ -4,6 +4,30 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.5 -- 2026-07-17
+
+**Fix: `tool_search`'s own hit message contradicted its own description** -- the tool's
+DESCRIPTION correctly told the model a hit becomes callable starting its NEXT reply, but the
+text returned immediately after a hit said the tool was "now available to call" -- a direct
+contradiction read mid-round, before any caller has had a chance to compose the hit into its
+bound tool set. This drove a calling model to immediately retry the newly-found tool in the same
+round and bounce off "No such tool available" (found live, metallm prod conv
+`019f6cf5-073a-7b50-bd44-721efb0c7b90`).
+
+- **`create_tool_search_tool`** (`packages/agent/tools/src/threetears/agent/tools/relevance.py`).
+  No caller can make a tool available before the next round boundary -- that's a hard
+  architectural floor (a model completion already in flight is committed to whatever tool
+  schema it was sent with), not something any caller can work around. This is a wording fix
+  only: the hit-message return string now matches the description instead of promising
+  immediacy no caller can deliver.
+
+**Docs: codified the never-squash-merge convention directly in `CLAUDE.md`.** The
+merge_commit-only convention was already followed in practice, but was never written down
+anywhere read at session start; a squash merge earlier in this cycle silently diverged `main`'s
+file content from a source branch until it was caught and corrected. Added an explicit
+"Git / PR Workflow" section (never squash-merge, never force-push, release sequencing) so this
+stays a checked rule, not tribal knowledge.
+
 ## v0.17.4 -- 2026-07-16
 
 **Fix: every optional tool parameter was advertised to a Claude Max subscription turn as a
