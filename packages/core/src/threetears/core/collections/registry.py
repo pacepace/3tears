@@ -257,6 +257,22 @@ class CollectionRegistry:
             l1 = self.get_l1_backend(message.table)
             if l1 is None:
                 return
+            if hasattr(l1, "has_table") and not l1.has_table(message.table):
+                # this pod's L1 backend was never initialize()'d with this
+                # table's schema -- its OWN collections never touch it
+                # locally, so there is nothing to evict. Same "unknown
+                # receipts are expected during partial rollouts" treatment
+                # as the `collection is None` case above: without this
+                # check, `l1.delete_by_id` below raises straight through
+                # (sqlite3.OperationalError: no such table / DuckDB's
+                # equivalent CatalogException) on every single broadcast
+                # for a table this pod doesn't cache, which is the common
+                # case for any agent that doesn't use every framework
+                # feature (e.g. a security-scanning agent hearing knowledge-
+                # subsystem invalidations for `concepts`/`playbook_entries`
+                # it never reads). `hasattr` guards backends (or test
+                # doubles) that predate this method.
+                return
 
             pk_cols = collection.primary_key_columns
             if len(message.ids) != len(pk_cols):
