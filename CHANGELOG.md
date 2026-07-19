@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
-## v0.17.9 -- 2026-07-19
+## v0.17.8 -- 2026-07-19
 
 **Fix: a pod's L1 cache-invalidation listener crashed on every broadcast for a table it never
 locally caches** -- `CollectionRegistry._on_invalidation` already had an early-return for a
@@ -27,8 +27,6 @@ case already gets, extended to the one-level-deeper "registered but never locall
 Prevents the error at the source rather than catching a backend-specific exception after the fact
 (SQLite and DuckDB raise different exception types for "no such table", and the base module is
 deliberately kept free of a hard DuckDB import since that backend is optional).
-
-## v0.17.8 -- 2026-07-18
 
 **Fix: the WebSocket per-message/per-frame crash-safety nets could themselves crash the
 connection against an already-dead socket** -- `8950bae` (v0.17.6) wrapped the chat-message
