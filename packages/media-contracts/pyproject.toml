@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-media-contracts"
-version = "0.17.9"
+version = "0.17.8"
 description = "Dependency-free media capability contracts shared by 3tears providers and tools"
 readme = "README.md"
 requires-python = ">=3.14"
