@@ -305,6 +305,41 @@ class TestInvalidationSignalContract:
         assert "e1" in pod_a
 
     @pytest.mark.asyncio
+    async def test_invalidation_for_a_registered_table_never_initialized_in_l1_is_ignored(
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+    ) -> None:
+        """A REGISTERED Collection (unlike `test_invalidation_for_unknown_table_is_ignored`
+        above) whose table this pod's L1 backend was never `initialize()`-d with must be
+        ignored too, not raise. Reproduces a real bug: a pod that registers a Collection
+        for a table it never actually caches locally (e.g. any agent pod hearing a
+        knowledge-subsystem broadcast for `concepts`/`playbook_entries` it never reads)
+        used to crash the subscribe callback with `sqlite3.OperationalError: no such
+        table` on every single invalidation for that table -- `self._collections.get()`
+        found the Collection (so the `unknown table` early-return above never fired), but
+        `l1.delete_by_id` still targeted a table that was never `CREATE TABLE`'d in this
+        L1 instance."""
+        pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
+
+        class _OtherTableStubCollection(StubCollection):
+            @property
+            def table_name(self) -> str:
+                return "other_table"
+
+        # registered (so `_collections.get("other_table")` succeeds -- unlike the
+        # `nonexistent_table` case above), but this pod's L1 (initialized only with
+        # `_make_metadata()`'s `test_entities` table, via `_make_pod`) was never told
+        # about `other_table` at all.
+        _OtherTableStubCollection(reg_a, config_always, nats_client=shared_nats, l3_rows=shared_pg)
+
+        await reg_a.start_invalidation_listener(shared_nats)
+
+        # must not raise
+        await shared_nats.publish(
+            subject=Subjects.cache_invalidate(),
+            message=CacheInvalidationMessage(table="other_table", ids=["e1"]),
+        )
+
+    @pytest.mark.asyncio
     async def test_invalidation_for_missing_entity_is_safe(
         self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
     ) -> None:
