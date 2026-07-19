@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-workspace"
-version = "0.17.8"
+version = "0.17.9"
 description = "workspace primitives for 3tears agents: workspace entities, sandbox, format handlers, tools"
 readme = "README.md"
 requires-python = ">=3.14"
