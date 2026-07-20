@@ -40,6 +40,7 @@ __all__ = [
     "FieldSchema",
     "RowValidationResult",
     "ValidationResult",
+    "apply_row_recipe",
     "discover_candidates",
     "discover_row_candidates",
     "DEFAULT_VISION_MODEL_ID",
@@ -361,6 +362,88 @@ def validate_row_candidate(html: str, strategy: dict[str, Any], schema: FieldSch
     return RowValidationResult(
         valid=len(records_out) > 0, records=records_out, total_rows_matched=len(row_elements), errors=errors
     )
+
+
+def apply_row_recipe(html: str, strategy: dict[str, Any]) -> list[dict[str, str | None]]:
+    """Replay an already-proven row recipe over *html*, returning raw text per field.
+
+    The non-scoring counterpart to :func:`validate_row_candidate`, for callers
+    replaying a strategy the eval loop has ALREADY validated against a fresh
+    copy of the page. Identical structural walk -- parse under ``html.parser``
+    (the parser the recipe was authored and validated against; ``:nth-child``
+    can resolve differently across parsers on malformed tables, and lxml
+    synthesizes ``<tbody>`` where the source has none), match each record with
+    ``row_selector``, then apply each field's selector RELATIVE to its row.
+
+    Three deliberate divergences from :func:`validate_row_candidate`, all
+    following from "the recipe is already proven, and the caller wants the
+    text, not a verdict":
+
+    - **No schema, no coercion.** Every value comes back as source text or
+      ``None``. A bronze load keeps source text verbatim and defers type
+      assertions to a later contract, so coercing here would be a lossy
+      transform the caller has to undo -- and a leading-zero identifier or a
+      currency string would not survive the round trip.
+    - **Partial rows survive.** :func:`validate_row_candidate` drops a row
+      when any field fails, because it is SCORING selectors and a
+      half-matching row is evidence against the candidate. Here a real record
+      with one blank optional cell must not vanish, so a missing or empty
+      cell is ``None`` and the row stays.
+    - **A bad selector raises.** :func:`validate_row_candidate` treats
+      invalid CSS as "matched nothing" (see :func:`_select_one_safe`) because
+      it scores LLM-PROPOSED selectors never guaranteed to be valid. A recipe
+      reaching this function already cleared that gate, so invalid CSS here
+      means a corrupt or hand-edited recipe -- failing loud with the
+      offending field beats silently nulling an entire column.
+
+    Only an all-empty row is skipped: a spacer or header element the
+    ``row_selector`` still matched carries no addressable data, and emitting
+    it as an all-``None`` record would invent a row the page does not have.
+
+    An empty return is data, not an error -- the row selector matching
+    nothing (a restructured page, a stale recipe) is a condition only the
+    caller can weigh, so it is reported as ``[]`` rather than raised.
+
+    :param html: the rendered page's full HTML
+    :ptype html: str
+    :param strategy: ``{"row_selector": str, "field_selectors": dict[str, str]}``
+    :ptype strategy: dict[str, Any]
+    :return: one dict per non-empty matched row, keyed by ``field_selectors``
+        in declaration order, values being collapsed source text or ``None``
+    :rtype: list[dict[str, str | None]]
+    :raises ValueError: *strategy* lacks ``row_selector`` or ``field_selectors``,
+        or either contains syntactically invalid CSS
+    """
+    row_selector = strategy.get("row_selector")
+    field_selectors = strategy.get("field_selectors") or {}
+    if not row_selector:
+        raise ValueError("apply_row_recipe: strategy has no row_selector")
+    if not field_selectors:
+        raise ValueError("apply_row_recipe: strategy has no field_selectors")
+
+    soup = BeautifulSoup(html, "html.parser")
+    try:
+        row_elements = soup.select(row_selector)
+    except SelectorSyntaxError as exc:
+        raise ValueError(f"apply_row_recipe: invalid row_selector {row_selector!r}: {exc}") from exc
+
+    records: list[dict[str, str | None]] = []
+    for row_element in row_elements:
+        record: dict[str, str | None] = {}
+        row_has_value = False
+        for field_name, selector in field_selectors.items():
+            try:
+                element = row_element.select_one(selector)
+            except SelectorSyntaxError as exc:
+                raise ValueError(
+                    f"apply_row_recipe: invalid field_selector {selector!r} for field {field_name!r}: {exc}"
+                ) from exc
+            text = _normalize_whitespace_text(element.get_text(" ", strip=True)) if element is not None else ""
+            record[field_name] = text or None
+            row_has_value = row_has_value or bool(text)
+        if row_has_value:
+            records.append(record)
+    return records
 
 
 class _CandidateStrategy(BaseModel):
