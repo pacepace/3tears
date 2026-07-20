@@ -8,6 +8,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from threetears.scrape.extraction import (
     NOTICE_DOCUMENT_CLASS,
     OCR_PAGE_IMAGE_CLASS,
@@ -29,6 +30,7 @@ from threetears.scrape.extraction import (
     _RegexCandidateStrategyList,
     _RowCandidateStrategy,
     _RowCandidateStrategyList,
+    apply_row_recipe,
     discover_candidates,
     discover_row_candidates,
     extract_fields_directly,
@@ -334,6 +336,95 @@ class TestValidateRowCandidate:
         assert result.records == []
         assert result.total_rows_matched == 0
         assert result.errors == []
+
+
+# ===========================================================================
+# apply_row_recipe
+# ===========================================================================
+
+
+_EMPTY_ROW_PAGE_HTML = """
+<html><body>
+<table><tbody>
+  <tr><td class="employer">ZeniMax</td><td class="county">Cockeysville</td></tr>
+  <tr><td class="employer">   </td><td class="county"></td></tr>
+</tbody></table>
+</body></html>
+"""
+
+
+class TestApplyRowRecipe:
+    #: The recipe the eval loop would have authored against `_ROWS_PAGE_HTML`.
+    STRATEGY = {
+        "row_selector": "tbody tr",
+        "field_selectors": {"employer": "td.employer", "affected_count": "td.count", "county": "td.county"},
+    }
+
+    def test_returns_source_text_never_coerced_types(self):
+        # The same page `validate_row_candidate` parses into int 1234 / 2500 comes
+        # back here as the source's own text -- bronze keeps "1,234" and "2.5K"
+        # verbatim so a later contract, not this walk, decides what they mean.
+        records = apply_row_recipe(_ROWS_PAGE_HTML, self.STRATEGY)
+        assert records[0] == {"employer": "Dejana Truck", "affected_count": "1,234", "county": "Baltimore"}
+        assert records[1] == {"employer": "ZeniMax", "affected_count": "2.5K", "county": "Cockeysville"}
+
+    def test_partial_row_is_kept_where_the_scorer_drops_it(self):
+        # THE divergence this function exists for. Row 3 has an empty employer and a
+        # non-numeric count, so `validate_row_candidate` excludes it entirely; a bronze
+        # load must keep the real, addressable "Spacer Row" county rather than lose it.
+        records = apply_row_recipe(_ROWS_PAGE_HTML, self.STRATEGY)
+        assert len(records) == 3
+        assert records[2] == {"employer": None, "affected_count": "bad", "county": "Spacer Row"}
+
+    def test_missing_cell_is_none_not_a_dropped_field(self):
+        strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer", "absent": ".nope"}}
+        records = apply_row_recipe(_ROWS_PAGE_HTML, strategy)
+        assert all("absent" in r for r in records)  # the key is always present, keeping rows rectangular
+        assert {r["absent"] for r in records} == {None}
+
+    def test_all_empty_row_is_skipped(self):
+        strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer", "county": "td.county"}}
+        records = apply_row_recipe(_EMPTY_ROW_PAGE_HTML, strategy)
+        assert records == [{"employer": "ZeniMax", "county": "Cockeysville"}]
+
+    def test_whitespace_collapsed_like_the_scorer(self):
+        records = apply_row_recipe(_ROWS_PAGE_HTML, self.STRATEGY)
+        assert records[0]["employer"] == "Dejana Truck"  # not "Dejana    Truck"
+
+    def test_field_order_follows_declaration_not_the_dom(self):
+        strategy = {
+            "row_selector": "tbody tr",
+            "field_selectors": {"county": "td.county", "employer": "td.employer"},
+        }
+        records = apply_row_recipe(_ROWS_PAGE_HTML, strategy)
+        assert list(records[0]) == ["county", "employer"]
+
+    def test_row_selector_matching_nothing_returns_empty_not_an_error(self):
+        # An empty result is data the caller weighs (stale recipe? restructured page?),
+        # not a failure this function can adjudicate.
+        strategy = {"row_selector": ".does-not-exist", "field_selectors": {"employer": "td.employer"}}
+        assert apply_row_recipe(_ROWS_PAGE_HTML, strategy) == []
+
+    def test_invalid_row_selector_raises_rather_than_matching_nothing(self):
+        # Opposite of `validate_row_candidate`, which degrades an invalid selector to
+        # "matched nothing" because it scores unproven LLM proposals. A recipe here is
+        # already proven, so invalid CSS means corruption and must not read as no data.
+        strategy = {"row_selector": "tr:eq(0)", "field_selectors": {"employer": "td.employer"}}
+        with pytest.raises(ValueError, match="invalid row_selector"):
+            apply_row_recipe(_ROWS_PAGE_HTML, strategy)
+
+    def test_invalid_field_selector_raises_naming_the_field(self):
+        strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td:eq(0)"}}
+        with pytest.raises(ValueError, match="'employer'"):
+            apply_row_recipe(_ROWS_PAGE_HTML, strategy)
+
+    def test_missing_row_selector_raises(self):
+        with pytest.raises(ValueError, match="no row_selector"):
+            apply_row_recipe(_ROWS_PAGE_HTML, {"field_selectors": {"employer": "td.employer"}})
+
+    def test_missing_field_selectors_raises(self):
+        with pytest.raises(ValueError, match="no field_selectors"):
+            apply_row_recipe(_ROWS_PAGE_HTML, {"row_selector": "tbody tr"})
 
 
 # ===========================================================================
