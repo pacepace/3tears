@@ -11,6 +11,7 @@ import os
 from threetears.agent.tools.bootstrap import ToolServerBootstrap
 from threetears.agent.tools.server import ToolServer
 from threetears.core.security import IdentityMinter
+from threetears.core.security.secret_refs import resolve_secret
 from threetears.observe import get_logger
 
 __all__ = [
@@ -224,23 +225,29 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
         Ed25519 key (``kid`` = ``THREETEARS_TOOL_POD_ID``, issuer =
         ``THREETEARS_TOOL_POD_CONNECT_ISSUER``) and presents it to NATS AND on its registration
         manifest. this is the auth-callout path -- the CALLER (this entrypoint) builds the minter;
-        ``ToolServer`` stays issuer-agnostic. there is NO static-credential fallback: a pod with no
-        ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY`` FAILS LOUD rather than connect unauthenticated
-        (a deploy without the key is a config error that must crash startup, never register ZERO
-        tools on an anonymous connect).
+        ``ToolServer`` stays issuer-agnostic. the key itself is never read directly:
+        ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF`` is a ``scheme://locator`` reference
+        (:mod:`threetears.core.security.secret_refs`), resolved here. there is NO static-credential
+        fallback: a pod with no signing-key ref FAILS LOUD rather than connect unauthenticated (a
+        deploy without one is a config error that must crash startup, never register ZERO tools on
+        an anonymous connect).
 
         :return: configured ToolServer presenting a self-minted identity token
         :rtype: ToolServer
-        :raises ValueError: when ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY`` (or, downstream, its
-            required companion vars) is missing
+        :raises ValueError: when ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF`` (or, downstream,
+            its required companion vars) is missing
+        :raises threetears.core.security.secret_refs.SecretResolutionError: when the ref is
+            malformed or cannot be resolved
         """
-        identity_signing_key = os.environ.get("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY") or None
-        if identity_signing_key is None:
+        identity_signing_key_ref = os.environ.get("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF") or None
+        if identity_signing_key_ref is None:
             raise ValueError(
-                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is required: the built-in tool pod "
-                "self-mints its NATS connect + registration identity from a per-pod Ed25519 key; "
-                "there is no static-credential fallback (v0.14.1 per-key cutover)"
+                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is required: the built-in tool pod "
+                "self-mints its NATS connect + registration identity from a per-pod Ed25519 key "
+                "(referenced, never the raw key, via a scheme://locator); there is no "
+                "static-credential fallback (v0.14.1 per-key cutover)"
             )
+        identity_signing_key = resolve_secret(identity_signing_key_ref).get_secret_value()
         nats_url = os.environ.get("THREETEARS_NATS_URL", "nats://localhost:4222")
         namespace = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
         pod_id = os.environ.get("THREETEARS_TOOL_POD_ID") or None
@@ -274,13 +281,13 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
         """
         if not pod_id:
             raise ValueError(
-                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is set but THREETEARS_TOOL_POD_ID is "
+                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is set but THREETEARS_TOOL_POD_ID is "
                 "missing (the minter kid must be the pod id)"
             )
         issuer = os.environ.get("THREETEARS_TOOL_POD_CONNECT_ISSUER") or None
         if not issuer:
             raise ValueError(
-                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is set but "
+                "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is set but "
                 "THREETEARS_TOOL_POD_CONNECT_ISSUER is missing (the issuer the Hub verifier pins)"
             )
         customer_id = os.environ.get("THREETEARS_TOOL_POD_CUSTOMER_ID") or _PLATFORM_CUSTOMER_SENTINEL
