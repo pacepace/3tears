@@ -128,7 +128,7 @@ class _FakeCamoufoxRequest:
         self.method = method
 
 
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Response used for network-capture (only .request/.status/.url/.text()/.all_headers(), the only surface CamoufoxDriver's capture_network path reads)
+# parity-exempt: hand-rolled subset stub of Playwright's third-party Response used for network-capture (only .request/.status/.url/.text()/.body()/.all_headers(), the only surface CamoufoxDriver's capture_network path reads)
 class _FakeCamoufoxNetworkResponse:
     def __init__(
         self,
@@ -152,7 +152,14 @@ class _FakeCamoufoxNetworkResponse:
     async def text(self):
         if self._text_exc is not None:
             raise self._text_exc
+        if isinstance(self._body, bytes):
+            return self._body.decode()  # mirrors Playwright: UTF-8 only, raises UnicodeDecodeError
         return self._body
+
+    async def body(self):
+        if isinstance(self._body, bytes):
+            return self._body
+        return self._body.encode()
 
     async def all_headers(self):
         if self._headers_exc is not None:
@@ -362,6 +369,48 @@ class TestCamoufoxDriverNetworkCapture:
 
         assert len(result.network_calls) == 1
         assert result.network_calls[0].url == "https://example.gov/api/good"
+
+    async def test_a_non_utf8_body_is_recovered_rather_than_aborting_the_render(self):
+        # Response.text() decodes as UTF-8 unconditionally, and UnicodeDecodeError is a ValueError,
+        # not a PlaywrightError -- so a cp1252 body escaped the per-response guard and killed the
+        # whole render, discarding every other captured call on the page. Observed live against two
+        # state disclosure portals whose JSON carries an 0xA9 copyright sign.
+        cp1252_json = '{"agency": "Dept \xa9 2025", "ok": true}'.encode("cp1252")
+        page = _FakeCamoufoxPage(
+            goto_result=_FakeCamoufoxResponse(200),
+            network_responses=[
+                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/latin", body=cp1252_json),
+                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+            ],
+        )
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        result = await driver.render("https://example.gov", capture_network=True)
+
+        # Both calls survive, and the mis-encoded one is decoded rather than dropped.
+        assert [c.url for c in result.network_calls] == [
+            "https://example.gov/api/latin",
+            "https://example.gov/api/good",
+        ]
+        assert "Dept \xa9 2025" in result.network_calls[0].body
+
+    async def test_an_undecodable_body_is_skipped_without_dropping_other_calls(self):
+        # The floor beneath the recovery above: a body no candidate encoding reads must be skipped
+        # like any other unusable response, never crash the render and never be silently mojibaked
+        # into plausible-looking but corrupted values.
+        undecodable = b'{"x": \x81\x8d\x8f}'  # unmapped in cp1252, invalid in UTF-8
+        page = _FakeCamoufoxPage(
+            goto_result=_FakeCamoufoxResponse(200),
+            network_responses=[
+                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/broken", body=undecodable),
+                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/good", body='{"ok": true}'),
+            ],
+        )
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        result = await driver.render("https://example.gov", capture_network=True)
+
+        assert [c.url for c in result.network_calls] == ["https://example.gov/api/good"]
 
     async def test_a_failed_headers_fetch_does_not_drop_other_captured_calls(self):
         page = _FakeCamoufoxPage(

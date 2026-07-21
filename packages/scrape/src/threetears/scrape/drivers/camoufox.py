@@ -47,9 +47,35 @@ _API_RESOURCE_TYPES = frozenset({"xhr", "fetch"})
 _MAX_NETWORK_CALLS = 30
 _MAX_NETWORK_BODY_BYTES = 500_000
 
+#: Encodings tried, in order, when a captured body is not valid UTF-8. cp1252 is the practical
+#: second guess for western-language public-sector APIs (its 0xA9 is the copyright sign that turns
+#: up in agency footers and boilerplate). Deliberately does NOT end in a never-failing codec such as
+#: latin-1: silently mojibaking a body would hand downstream shape-detection corrupted field values
+#: that look valid, which is worse than skipping one unreadable response.
+_BODY_FALLBACK_ENCODINGS = ("cp1252",)
+
 #: Matches the nodriver sidecar's own default for a ``scroll_page`` step with
 #: no *value* -- a quarter of the viewport height.
 _DEFAULT_SCROLL_PAGE_AMOUNT = 25
+
+
+def _decode_captured_body(raw: bytes) -> str | None:
+    """Decode a captured response body that is not valid UTF-8, or ``None`` if no candidate reads it.
+
+    Only reached after ``Response.text()`` -- which assumes UTF-8 -- has already failed, so UTF-8 is
+    not retried here.
+
+    :param raw: the response's raw bytes
+    :ptype raw: bytes
+    :return: the decoded body, or ``None`` when every candidate encoding fails
+    :rtype: str | None
+    """
+    for encoding in _BODY_FALLBACK_ENCODINGS:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError, LookupError:
+            continue
+    return None
 
 
 class CamoufoxDriverError(Exception):
@@ -189,7 +215,19 @@ class CamoufoxDriver(ScrapeDriver):
             network_calls = []
             for resp in captured_responses[:_MAX_NETWORK_CALLS]:
                 try:
-                    body = await resp.text()
+                    try:
+                        body = await resp.text()
+                    except UnicodeDecodeError:
+                        # Playwright's Response.text() decodes as UTF-8 unconditionally. JSON is
+                        # required to be UTF-8 (RFC 8259), but real government APIs serve cp1252
+                        # anyway -- and UnicodeDecodeError is a ValueError, NOT a PlaywrightError,
+                        # so it escaped this loop's per-response guard and aborted the ENTIRE render:
+                        # one mis-encoded response discarded every other captured call on the page.
+                        # Re-read the raw bytes and decode them tolerantly instead of losing the page.
+                        body = _decode_captured_body(await resp.body())
+                        if body is None:
+                            log.debug("camoufox network capture: undecodable body for %s -- skipped", resp.url)
+                            continue
                     if len(body) > _MAX_NETWORK_BODY_BYTES:
                         continue
                     stripped = body.lstrip()
