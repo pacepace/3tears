@@ -1,0 +1,418 @@
+"""DocumentDriver -- ``ScrapeDriver`` backend for PDF/DOCX/XLSX/TXT/Markdown/
+LaTeX targets, reusing 3tears' own published document reader instead of
+reinventing one.
+
+``threetears.agent.tools.document.parse_document`` turns a document's bytes
+into clean markdown -- and, critically, turns any table it finds (a PDF
+table, a DOCX table, an XLSX sheet) into a GitHub-flavored markdown
+pipe-table. That's close enough in shape to an HTML ``<table>`` that
+converting it into one lets a document target flow through the *exact
+same* AI eval loop (``extraction.py``/``eval_loop.py``, CSS-selector-based
+candidate generation and structural validation) that every HTML-page
+target already uses -- zero new extraction/validation code needed.
+``wait_for``/``nav_steps``/``capture_network`` are accepted for
+``ScrapeDriver`` interface conformance but are no-ops here: this is a plain
+HTTP GET of a static file, no browser, no JS, nothing to wait for or click.
+"""
+
+from __future__ import annotations
+
+import base64
+import html as html_lib
+import re
+import time
+from pathlib import PurePosixPath
+from typing import NamedTuple
+from urllib.parse import urlparse
+
+import httpx
+from threetears.agent.tools.document import (
+    DocumentSection,
+    OcrConfig,
+    detect_mime_from_filename,
+    parse_document,
+    render_pdf_pages_to_images,
+)
+from threetears.observe import get_logger
+
+from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..extraction import OCR_PAGE_IMAGE_CLASS
+
+__all__ = ["OCR_PAGE_IMAGE_CLASS", "DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
+
+#: Same fix, same reason as ApiDriver's own _DEFAULT_USER_AGENT: a plain httpx
+#: client's default User-Agent gets a flat 403/401 from the CDN/WAF in front of
+#: some document hosts; a genuine browser UA passes cleanly. Only applied to a
+#: client this driver constructs itself -- an injected *client* (test injection,
+#: or a caller with its own header policy) is used exactly as given.
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+log = get_logger(__name__)
+
+#: GitHub-flavored markdown pipe-table shape -- exactly what parse_document's
+#: own PDF/DOCX/XLSX table extractors emit (see that module's
+#: _extract_pdf_tables/_docx_table_to_markdown/_parse_xlsx). Tolerant of
+#: alignment colons in the separator row (`:---`, `---:`, `:---:`), which
+#: CommonMark-flavored table generators commonly emit.
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
+
+class DocumentDriverError(Exception):
+    """Raised when a document fetch or parse fails.
+
+    Mirrors ``NodriverSidecarError``/``CamoufoxDriverError``'s ``code``/
+    ``message`` shape.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+class ParsedDocumentHtml(NamedTuple):
+    """Return shape of :func:`parse_document_bytes_to_html`."""
+
+    html: str
+    was_ocr: bool
+
+
+def _embed_ocr_page_images(pdf_data: bytes) -> str:
+    """Render *pdf_data*'s leading pages and embed each as a base64 ``<img>`` tag.
+
+    scrape-task-06: OCR'd text alone has proven unreliable for some real scanned
+    WARN Act notices (a numeric table column either dropped by Tesseract's own
+    layout analysis or genuinely too scan-degraded to recover -- see
+    scrape-task-05's own findings). Embedding the rendered page images directly in
+    the returned HTML -- reusing the SAME html-as-transport-channel
+    :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
+    uses to combine documents -- lets a vision-capable extraction path read them
+    later, without a second network fetch and without widening ``RenderedPage``
+    beyond the one ``was_ocr`` flag. A no-op (returns ``""``) if page rendering
+    itself fails; the plain OCR'd text this gets appended to is still usable on
+    its own, so a rendering failure here must never fail the whole parse.
+    """
+    images = render_pdf_pages_to_images(pdf_data)
+    tags = [
+        f'<img class="{OCR_PAGE_IMAGE_CLASS}" data-page="{i}" '
+        f'src="data:image/png;base64,{base64.b64encode(image).decode("ascii")}">'
+        for i, image in enumerate(images)
+    ]
+    return "\n".join(tags)
+
+
+async def parse_document_bytes_to_html(
+    data: bytes,
+    *,
+    content_type: str,
+    filename: str,
+    ocr_config: OcrConfig | None = None,
+    force_images: bool = False,
+    merge_wrapped_table_rows: bool = False,
+) -> ParsedDocumentHtml:
+    """Parse raw document bytes into synthetic HTML -- the shared core of ``DocumentDriver``.
+
+    Extracted (scrape-task-04, 2026-07-15) so :class:`~threetears.scrape.drivers.
+    nodriver_download.NodriverDownloadDriver` -- which gets document bytes from a
+    real browser's forced download rather than a plain HTTP GET -- reuses this
+    exact parse-and-convert step instead of a second copy of it. ``DocumentDriver.
+    render`` itself now just fetches bytes and delegates here.
+
+    :param data: the document's raw bytes
+    :ptype data: bytes
+    :param content_type: the source's declared content-type (``parse_document``
+        falls back to filename-extension detection itself when this isn't one
+        it recognizes -- passing it verbatim, even empty, is enough)
+    :ptype content_type: str
+    :param filename: the document's filename (drives extension-based MIME fallback)
+    :ptype filename: str
+    :param ocr_config: OCR fallback config for scanned PDF pages, passed
+        straight through to ``parse_document``
+    :ptype ocr_config: OcrConfig | None
+    :param force_images: embed page images even when ``parse_document`` didn't
+        need OCR (scrape-task-07: a born-digital PDF can still defeat table-
+        structure extraction -- Nevada's real master WARN PDF has a genuine text
+        layer, ``was_ocr`` comes back ``False``, but its dense 8-column table
+        still needs a vision read because ``find_tables()`` is defeated both by
+        its default strategy (finds only the header) and its text strategy
+        (mis-splits words/columns). The failure here is table STRUCTURE, not
+        scan quality, so it can't be detected from ``was_ocr`` alone -- callers
+        that already know a target needs a vision read (via explicit
+        ``multi_row_vision`` strategy config, not auto-detection) opt in directly.
+    :ptype force_images: bool
+    :param merge_wrapped_table_rows: for a PDF, opt in to
+        ``threetears.agent.tools.document._merge_wrapped_table_rows``'s
+        continuation-row stitching (scrape-task-07 follow-up: a long-text cell
+        that word-wraps inside one logical PDF table row becomes its own separate
+        row in PyMuPDF's own output, splitting one record across several rows --
+        Mississippi's real quarterly WARN PDF). Off by default, same "confirmed
+        safe for one target, not a blanket default for every document-backed
+        target sharing this tool" posture as *force_images* -- callers that
+        already know a target needs it opt in directly.
+    :ptype merge_wrapped_table_rows: bool
+    :return: synthetic ``<html><body>...</body></html>`` content plus whether OCR
+        was needed (scrape-task-06: when ``True``, or when *force_images* is set,
+        the leading pages' own rendered images are ALSO embedded as base64
+        ``<img>`` tags inside that same HTML, for a vision-based extraction path
+        to use)
+    :rtype: ParsedDocumentHtml
+    :raises DocumentDriverError: the parser couldn't handle this document
+    """
+    mime_type = content_type or (detect_mime_from_filename(filename) or "")
+    result = await parse_document(
+        data, mime_type, filename, ocr_config=ocr_config, merge_wrapped_table_rows=merge_wrapped_table_rows
+    )
+    if result.text.startswith("[Unsupported document type:") or result.text.startswith("[Parsing failed:"):
+        raise DocumentDriverError("parse_failed", result.text)
+    html = document_text_to_html(result.text, result.sections)
+    if result.was_ocr or force_images:
+        html = html.replace("</body></html>", _embed_ocr_page_images(data) + "</body></html>")
+    return ParsedDocumentHtml(html=html, was_ocr=result.was_ocr)
+
+
+def _merge_broken_pipe_rows(lines: list[str]) -> list[str]:
+    """Rejoin a table row a source cell's own embedded newline split across
+    physical lines.
+
+    Live-found (2026-07-14, California's real WARN Excel file): a header
+    cell like "Notice Date" word-wraps inside its own XLSX cell, and
+    ``parse_document``'s markdown rendering preserves that literal newline
+    -- splitting one logical pipe-table row (``"| County/Parish | Notice
+    Date | ... |"``) across several physical lines (``"| County/Parish |
+    Notice"``, then ``"Date | ..."``), none of which alone starts AND ends
+    with ``|``. Undetected, the whole row (and the table it belongs to)
+    silently degrades to plain ``<p>`` paragraphs instead of a real
+    ``<table>`` -- wrong, not just incomplete. A line that starts with
+    ``|`` but doesn't end with one is treated as unterminated and merged
+    (space-joined) with following lines until it closes.
+    """
+    merged: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+        if stripped.startswith("|") and not stripped.endswith("|"):
+            accumulated = stripped
+            i += 1
+            while i < n and not accumulated.endswith("|"):
+                accumulated = f"{accumulated} {lines[i].strip()}"
+                i += 1
+            merged.append(accumulated)
+        else:
+            merged.append(lines[i])
+            i += 1
+    return merged
+
+
+def _split_table_row(line: str) -> list[str]:
+    inner = line.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [cell.strip() for cell in inner.split("|")]
+
+
+def _table_to_html(header: list[str], rows: list[list[str]]) -> str:
+    thead = "<tr>" + "".join(f"<th>{html_lib.escape(cell)}</th>" for cell in header) + "</tr>"
+    tbody = "".join("<tr>" + "".join(f"<td>{html_lib.escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
+    return f"<table>{thead}{tbody}</table>"
+
+
+def _known_headings_by_text(sections: list[DocumentSection] | None) -> dict[str, int]:
+    """Map each section's exact heading text to its heading level.
+
+    Some parsers (e.g. the PDF path's font-size heuristic) compute real
+    headings into ``DocumentResult.sections`` without emitting markdown
+    ``#`` syntax in ``.text`` -- this recovers that structure.
+
+    :param sections: ``DocumentResult.sections``, or ``None``.
+    :ptype sections: list[DocumentSection] | None
+    :return: heading text (stripped) -> level (1-6, clamped defensively).
+    :rtype: dict[str, int]
+    """
+    return {
+        section.heading.strip(): max(1, min(6, section.level or 1))
+        for section in (sections or [])
+        if section.heading and section.heading.strip()
+    }
+
+
+def document_text_to_html(text: str, sections: list[DocumentSection] | None = None) -> str:
+    """Convert a parsed document's markdown text into synthetic HTML.
+
+    Every GFM-style pipe-table block becomes a real ``<table>``. A line
+    becomes ``<h1>``-``<h6>`` when it matches markdown ``#`` syntax OR
+    exactly matches a heading already identified in ``sections`` (see
+    :func:`_known_headings_by_text` -- some source formats signal headings
+    one way, some the other). Every other non-blank line becomes a ``<p>``.
+
+    :param text: a ``DocumentResult.text`` value (clean markdown)
+    :ptype text: str
+    :param sections: the same result's ``DocumentResult.sections``, when
+        available. Optional and backward-compatible: omitted or ``None``
+        preserves markdown-``#``-only heading detection.
+    :ptype sections: list[DocumentSection] | None
+    :return: a minimal ``<html><body>...</body></html>`` document
+    :rtype: str
+    """
+    known_headings = _known_headings_by_text(sections)
+    lines = _merge_broken_pipe_rows(text.split("\n"))
+    parts: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if _TABLE_ROW_RE.match(line) and i + 1 < n and _TABLE_SEP_RE.match(lines[i + 1]):
+            header = _split_table_row(line)
+            i += 2  # skip header + separator rows
+            rows: list[list[str]] = []
+            while i < n and _TABLE_ROW_RE.match(lines[i]):
+                rows.append(_split_table_row(lines[i]))
+                i += 1
+            parts.append(_table_to_html(header, rows))
+            continue
+        stripped = line.strip()
+        if stripped:
+            heading_match = _HEADING_RE.match(stripped)
+            if heading_match:
+                level = len(heading_match.group(1))
+                parts.append(f"<h{level}>{html_lib.escape(heading_match.group(2))}</h{level}>")
+            elif stripped in known_headings:
+                level = known_headings[stripped]
+                parts.append(f"<h{level}>{html_lib.escape(stripped)}</h{level}>")
+            else:
+                parts.append(f"<p>{html_lib.escape(stripped)}</p>")
+        i += 1
+    return "<html><body>" + "\n".join(parts) + "</body></html>"
+
+
+class DocumentDriver(ScrapeDriver):
+    """``ScrapeDriver`` backed by 3tears' document reader.
+
+    Fetches *url*'s raw bytes over plain HTTP (no browser -- a document
+    target is a static file, not a page needing JS rendering), parses it via
+    ``threetears.agent.tools.document.parse_document``, and converts the
+    result to synthetic HTML the rest of the pipeline already knows how to
+    handle.
+    """
+
+    def __init__(
+        self,
+        *,
+        client: httpx.AsyncClient | None = None,
+        ocr_config: OcrConfig | None = None,
+        force_images: bool = False,
+        merge_wrapped_table_rows: bool = False,
+    ) -> None:
+        """
+        :param client: an already-constructed httpx client to reuse (test
+            injection); a fresh one is created per call when omitted.
+        :ptype client: httpx.AsyncClient | None
+        :param ocr_config: OCR fallback config for scanned PDF pages, passed
+            straight through to ``parse_document``.
+        :ptype ocr_config: OcrConfig | None
+        :param force_images: embed page images even for a born-digital
+            (non-OCR'd) document -- see :func:`parse_document_bytes_to_html`'s
+            own docstring (scrape-task-07: a real target, e.g. Nevada's WARN
+            master PDF, needs a vision read despite having a genuine text layer).
+        :ptype force_images: bool
+        :param merge_wrapped_table_rows: stitch a PDF table's wrapped-cell
+            continuation rows back onto their parent record -- see
+            :func:`parse_document_bytes_to_html`'s own docstring (scrape-task-07
+            follow-up, Mississippi's real quarterly WARN PDF). Off by default.
+        :ptype merge_wrapped_table_rows: bool
+        """
+        self._client = client
+        self._ocr_config = ocr_config
+        self._force_images = force_images
+        self._merge_wrapped_table_rows = merge_wrapped_table_rows
+
+    @property
+    def name(self) -> str:
+        """Stable string key for this driver."""
+        return "document"
+
+    async def render(
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        wait_for: str | None = None,
+        capture_network: bool = False,
+        nav_steps: list[NavStep] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+    ) -> RenderedPage:
+        """Fetch and parse the document at *url*.
+
+        :param url: the document's direct download URL
+        :ptype url: str
+        :param timeout: seconds to wait for the HTTP fetch before failing
+        :ptype timeout: float
+        :param wait_for: accepted for interface conformance; not applicable
+            (no browser, nothing to wait for)
+        :ptype wait_for: str | None
+        :param capture_network: accepted for interface conformance; not
+            applicable (a single plain HTTP GET, not a rendered page)
+        :ptype capture_network: bool
+        :param nav_steps: accepted for interface conformance; not applicable
+            (no browser to drive)
+        :ptype nav_steps: list[NavStep] | None
+        :param results_path: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.api.ApiDriver` uses it)
+        :ptype results_path: str | None
+        :param fragment_field: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.api.ApiDriver` uses it)
+        :ptype fragment_field: str | None
+        :param link_selector: accepted for interface conformance; not
+            applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
+        :ptype link_selector: str | None
+        :return: the parsed document's content as synthetic HTML
+        :rtype: RenderedPage
+        :raises DocumentDriverError: on a transport failure, a non-2xx HTTP
+            response, or a document the parser couldn't handle
+        """
+        start = time.monotonic()
+        client = self._client
+        owns_client = client is None
+        if client is None:
+            client = httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+            )
+        try:
+            try:
+                response = await client.get(url)
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                log.warning("document driver transport failure", extra={"extra_data": {"url": url, "error": str(exc)}})
+                raise DocumentDriverError("transport", str(exc)) from exc
+        finally:
+            if owns_client:
+                await client.aclose()
+
+        if response.status_code >= 400:
+            raise DocumentDriverError("fetch_failed", f"HTTP {response.status_code} fetching {url}")
+
+        filename = PurePosixPath(urlparse(str(response.url)).path).name or "document"
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+        parsed = await parse_document_bytes_to_html(
+            response.content,
+            content_type=content_type,
+            filename=filename,
+            ocr_config=self._ocr_config,
+            force_images=self._force_images,
+            merge_wrapped_table_rows=self._merge_wrapped_table_rows,
+        )
+        return RenderedPage(
+            html=parsed.html,
+            status=response.status_code,
+            final_url=str(response.url),
+            timing_ms=(time.monotonic() - start) * 1000,
+            was_ocr=parsed.was_ocr,
+        )
