@@ -90,7 +90,7 @@ from ..driver import NavStep, RenderedPage, ScrapeDriver
 from ..extraction import NOTICE_DOCUMENT_CLASS
 from .api import ApiDriverError, _resolve_path
 
-__all__ = ["MultiDocumentDriver", "MultiDocumentDriverError"]
+__all__ = ["MultiDocumentDriver", "MultiDocumentDriverError", "discover_links"]
 
 log = get_logger(__name__)
 
@@ -119,8 +119,26 @@ class MultiDocumentDriverError(Exception):
         super().__init__(f"{code}: {message}")
 
 
-def _discover_links_html(html: str, base_url: str, link_selector: str) -> list[str]:
-    """Resolve every ``link_selector``-matching ``<a href>`` on a listing page to an absolute URL."""
+def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
+    """Resolve every ``link_selector``-matching ``<a href>`` on a listing page to an absolute URL.
+
+    A listing/index page carries links to the documents (or detail pages) a crawl then fetches.
+    ``link_selector`` is a CSS selector for the anchors to follow; each matched ``href`` is resolved
+    against ``base_url`` (typically the listing's own URL) so relative and absolute hrefs both come
+    back absolute, in document order. Parsing uses ``html.parser`` (the same parser the extraction
+    eval loop is authored against, so selectors resolve consistently). Ordering, de-duplication, host
+    policy, and any pattern filtering are the caller's to apply — this returns the raw resolved set so
+    each consumer can weigh them (a crawl inventory, a multi-document driver) without a baked-in policy.
+
+    :param html: the listing page's HTML
+    :ptype html: str
+    :param base_url: the URL to resolve relative hrefs against (usually the listing's own URL)
+    :ptype base_url: str
+    :param link_selector: a CSS selector for the anchors to follow
+    :ptype link_selector: str
+    :return: every matched href resolved to an absolute URL, in document order
+    :rtype: list[str]
+    """
     soup = BeautifulSoup(html, "html.parser")
     urls: list[str] = []
     for tag in soup.select(link_selector):
@@ -128,6 +146,11 @@ def _discover_links_html(html: str, base_url: str, link_selector: str) -> list[s
         if href:
             urls.append(urljoin(base_url, str(href)))
     return urls
+
+
+#: Backwards-compatible private alias — the function was internal (``_discover_links_html``) before it
+#: was promoted to public :func:`discover_links`; kept so any in-tree reference keeps resolving.
+_discover_links_html = discover_links
 
 
 def _discover_links_json(data: Any, results_path: str, fragment_field: str) -> list[str]:
@@ -259,7 +282,7 @@ class MultiDocumentDriver(ScrapeDriver):
 
         if html_mode:
             assert link_selector is not None  # narrowed by html_mode above
-            document_urls = _discover_links_html(response.text, str(response.url), link_selector)
+            document_urls = discover_links(response.text, str(response.url), link_selector)
         else:
             assert results_path is not None and fragment_field is not None  # narrowed by json_mode above
             try:
