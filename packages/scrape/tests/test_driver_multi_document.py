@@ -48,7 +48,9 @@ def _listing_client(handler) -> httpx.AsyncClient:
 
 
 def _html_listing_handler(links: list[str]):
-    body = "<html><body><ul>" + "".join(f'<li><a href="{link}">notice</a></li>' for link in links) + "</ul></body></html>"
+    body = (
+        "<html><body><ul>" + "".join(f'<li><a href="{link}">notice</a></li>' for link in links) + "</ul></body></html>"
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=body.encode())
@@ -77,9 +79,7 @@ class TestMultiDocumentDriver:
             document_driver=_FakeDocumentDriver(), client=_listing_client(lambda r: httpx.Response(200, content=b"[]"))
         )
         with pytest.raises(MultiDocumentDriverError) as exc_info:
-            await driver.render(
-                "https://example.gov/listing", link_selector="a", results_path="", fragment_field="url"
-            )
+            await driver.render("https://example.gov/listing", link_selector="a", results_path="", fragment_field="url")
         assert exc_info.value.code == "missing_config"
 
     async def test_html_mode_discovers_and_fetches_each_document(self):

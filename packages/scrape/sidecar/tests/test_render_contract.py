@@ -22,6 +22,7 @@ import pytest
 from nodriver.core.connection import ProtocolException
 
 
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Element (only click/clear_input/send_keys/scroll_into_view, the only surface nav-steps drive); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeElement:
     """Nav-steps (2026-07-14): fakes nodriver's ``Element``
     (click/clear_input/send_keys/scroll_into_view)."""
@@ -46,6 +47,7 @@ class _FakeElement:
         self.scrolled_into_view = True
 
 
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Tab (only the CDP surface _render uses: .target.target_id/send()/add_handler()/remove_handler()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeTab:
     """SCR-7L4M: also fakes the CDP surface ``_render`` uses to capture the
     real HTTP status -- ``.target.target_id``, ``.send()``, ``.add_handler()``/
@@ -260,6 +262,7 @@ class _FakeTab:
         self.closed = True
 
 
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Browser (only get()/stop(), the only surface the render path calls); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeBrowser:
     def __init__(
         self,
@@ -545,7 +548,7 @@ class TestNetworkCapture:
         response to be dropped as "not JSON-shaped" -- the prefix is stripped
         only for the shape check; the captured body stays the original,
         unmodified bytes a real caller would need to parse it correctly."""
-        prefixed_body = ")]}'\n{\"widgets\": [{\"id\": \"TIMESERIES\", \"token\": \"abc\"}]}"
+        prefixed_body = ')]}\'\n{"widgets": [{"id": "TIMESERIES", "token": "abc"}]}'
         tab = _FakeTab(
             html="<html></html>",
             url="https://example.gov",
@@ -1043,6 +1046,7 @@ class TestWarmUp:
 # ===========================================================================
 
 
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Tab for the download path (only .target/send()/close()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeDownloadTab:
     """A tab created within an isolated browser context for a download request."""
 
@@ -1065,6 +1069,7 @@ class _FakeDownloadTab:
         self.closed = True
 
 
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Browser for the download path (only the isolated-context surface _download/_create_isolated_tab use); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeDownloadBrowser:
     """Fakes the subset of nodriver's ``Browser`` surface ``_download``/``_create_isolated_tab`` use.
 

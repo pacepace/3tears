@@ -219,7 +219,9 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert f"data:image/png;base64,{base64.b64encode(b'page1-png-bytes').decode('ascii')}" in result.html
         assert result.html.strip().endswith("</html>")  # embedded before the closing tag, still well-formed
 
-    async def test_was_ocr_true_but_image_rendering_fails_still_returns_the_text_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_was_ocr_true_but_image_rendering_fails_still_returns_the_text_html(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A rendering failure must never take down an otherwise-usable OCR'd
         text result -- render_pdf_pages_to_images's own honest-empty-list
         contract (see its docstring) means zero <img> tags get embedded,
@@ -238,7 +240,9 @@ class TestParseDocumentBytesToHtmlOcrImages:
         """scrape-task-07: a born-digital PDF (Nevada's real master WARN table) can
         still need a vision read -- its own table STRUCTURE, not scan quality,
         defeats text-based extraction, so was_ocr alone can't gate this."""
-        fake_result = DocumentResult(text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False)
+        fake_result = DocumentResult(
+            text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False
+        )
         monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
         monkeypatch.setattr(
             "threetears.scrape.drivers.document.render_pdf_pages_to_images", lambda data: [b"page0-png-bytes"]
@@ -251,8 +255,12 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert result.was_ocr is False  # unaffected -- force_images doesn't lie about what parse_document found
         assert f'class="{OCR_PAGE_IMAGE_CLASS}"' in result.html
 
-    async def test_force_images_false_is_the_default_and_embeds_nothing_for_a_non_ocr_document(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_result = DocumentResult(text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False)
+    async def test_force_images_false_is_the_default_and_embeds_nothing_for_a_non_ocr_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_result = DocumentResult(
+            text="Born-digital table text", title=None, page_count=1, word_count=3, was_ocr=False
+        )
         monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
         render_mock = AsyncMock()
         monkeypatch.setattr("threetears.scrape.drivers.document.render_pdf_pages_to_images", render_mock)
@@ -262,7 +270,9 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert OCR_PAGE_IMAGE_CLASS not in result.html
         render_mock.assert_not_called()
 
-    async def test_merge_wrapped_table_rows_is_forwarded_to_parse_document(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_merge_wrapped_table_rows_is_forwarded_to_parse_document(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """scrape-task-07 follow-up: opt-in, not folded into a default-True
         change for every document-backed target -- forwarded explicitly."""
         fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
@@ -325,7 +335,9 @@ class TestDocumentDriver:
         driver = DocumentDriver()
         assert driver.name == "document"
 
-    async def test_a_default_constructed_client_gets_the_browser_user_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_default_constructed_client_gets_the_browser_user_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A plain httpx client's default User-Agent gets a flat 403/401 from the
         CDN/WAF in front of some document hosts -- same fix, same reason as
         ApiDriver's own."""
@@ -354,7 +366,9 @@ class TestDocumentDriver:
         assert captured["constructor_headers"] == {"User-Agent": expected_ua}
         assert captured["user_agent"] == expected_ua
 
-    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The default browser User-Agent only applies to a client this driver constructs
         itself -- an injected client's own header policy (or lack of one) must be left alone."""
         captured: dict[str, object] = {}
@@ -459,7 +473,9 @@ class TestDocumentDriver:
         assert exc_info.value.code == "fetch_failed"
         await client.aclose()
 
-    async def test_render_raises_when_parse_document_reports_unsupported_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_render_raises_when_parse_document_reports_unsupported_type(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(_xlsx_response_handler(content_type="application/octet-stream"))
         )
@@ -480,7 +496,9 @@ class TestDocumentDriver:
         assert exc_info.value.code == "parse_failed"
         await client.aclose()
 
-    async def test_render_raises_when_parse_document_reports_a_parsing_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_render_raises_when_parse_document_reports_a_parsing_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
         driver = DocumentDriver(client=client)
 
@@ -508,7 +526,9 @@ class TestDocumentDriver:
         assert page.was_ocr is True
         await client.aclose()
 
-    async def test_force_images_constructor_flag_is_threaded_through_to_the_parse_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_force_images_constructor_flag_is_threaded_through_to_the_parse_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
         driver = DocumentDriver(client=client, force_images=True)
 
@@ -524,7 +544,9 @@ class TestDocumentDriver:
         assert f'class="{OCR_PAGE_IMAGE_CLASS}"' in page.html
         await client.aclose()
 
-    async def test_merge_wrapped_table_rows_constructor_flag_is_threaded_through_to_the_parse_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_merge_wrapped_table_rows_constructor_flag_is_threaded_through_to_the_parse_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_xlsx_response_handler()))
         driver = DocumentDriver(client=client, merge_wrapped_table_rows=True)
 

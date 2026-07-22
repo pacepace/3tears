@@ -112,7 +112,9 @@ class _FakeCamoufoxPage:
 
     def locator(self, selector):
         return _FakeCamoufoxLocator(
-            selector, scroll_into_view_calls=self.scroll_into_view_calls, scroll_into_view_exc=self._scroll_into_view_exc
+            selector,
+            scroll_into_view_calls=self.scroll_into_view_calls,
+            scroll_into_view_exc=self._scroll_into_view_exc,
         )
 
     async def evaluate(self, expression):

@@ -757,7 +757,9 @@ def _build_row_discovery_prompt(html: str, n: int) -> str:
     )
 
 
-def _fields_matching_any_row(html: str, row_selector: str, fields: list[_DiscoveredFieldProposal]) -> list[_DiscoveredFieldProposal]:
+def _fields_matching_any_row(
+    html: str, row_selector: str, fields: list[_DiscoveredFieldProposal]
+) -> list[_DiscoveredFieldProposal]:
     """Which of *fields* extract a real, type-parsing value from at least one row.
 
     ``validate_row_candidate`` is all-or-nothing PER RECORD (a row counts
@@ -791,7 +793,7 @@ def _fields_matching_any_row(html: str, row_selector: str, fields: list[_Discove
                 continue
             try:
                 _coerce_field_value(text, expected_type)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
             survivors.append(proposal)
             break
@@ -1588,7 +1590,7 @@ def _coerce_direct_extraction_result(result: BaseModel, schema: FieldSchema) -> 
             continue
         try:
             extracted[name] = _coerce_field_value(normalized, expected_type)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             continue
     return extracted
 
@@ -1648,7 +1650,12 @@ async def extract_fields_directly_chunked(
     chunk_results = await asyncio.gather(
         *(
             extract_fields_directly(
-                text, chunk_schema, model_id=model_id, api_key=api_key, attempts=attempts, backoff_seconds=backoff_seconds
+                text,
+                chunk_schema,
+                model_id=model_id,
+                api_key=api_key,
+                attempts=attempts,
+                backoff_seconds=backoff_seconds,
             )
             for chunk_schema in chunks
         )

@@ -92,7 +92,8 @@ def _resolve_path(data: Any, path: str) -> list[Any]:
     if path == "":
         if not isinstance(data, list):
             raise ApiDriverError(
-                "bad_results_path", f"empty results_path expects the response root to be a list (got {type(data).__name__})"
+                "bad_results_path",
+                f"empty results_path expects the response root to be a list (got {type(data).__name__})",
             )
         return data
     current: Any = data

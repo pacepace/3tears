@@ -62,7 +62,9 @@ class _FakeDriver:
         )
 
 
-def _call(url: str, body: str, *, method: str = "GET", status: int = 200, content_type: str = "application/json") -> NetworkCall:
+def _call(
+    url: str, body: str, *, method: str = "GET", status: int = 200, content_type: str = "application/json"
+) -> NetworkCall:
     return NetworkCall(url=url, method=method, status=status, content_type=content_type, body=body)
 
 
@@ -83,7 +85,7 @@ class TestParseBodyShape:
         this test's prefix is deliberately a different, made-up string from any
         real vendor's, proving the skip-to-first-brace logic doesn't hardcode
         Google's own )]}' string anywhere."""
-        assert _parse_body_shape(")]}'\nSOME_OTHER_PREFIX{\"a\": 1}") == {"a": 1}
+        assert _parse_body_shape(')]}\'\nSOME_OTHER_PREFIX{"a": 1}') == {"a": 1}
 
     def test_non_json_body_returns_none(self) -> None:
         assert _parse_body_shape("<html>not json</html>") is None

@@ -201,7 +201,13 @@ select = ["SLF"]
 "packages/scrape/sidecar/tests/test_render_contract.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# ``packages/scrape/sidecar`` is a separate deployable with its own
+# ``pyproject.toml``/venv and its own AGPL-isolated dependency set
+# (``nodriver``), deliberately NOT a member of this workspace. Its tests
+# run in that sidecar's own CI, so the workspace sweep has to skip the
+# tree -- collecting it here fails at import on a ``nodriver`` that the
+# workspace venv will never install.
+addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
 # Multiple packages carry a same-named ``tests`` package (e.g.
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode
