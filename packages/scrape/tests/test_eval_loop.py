@@ -932,7 +932,11 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         recipe_collection, extraction_collection = _collections()
 
         async def fake_extract(text, schema, *, model_id, api_key):
-            return {"employer": "Acme Corp", "affected_count": 42} if "Acme" in text else {"employer": "Beta LLC", "affected_count": 7}
+            return (
+                {"employer": "Acme Corp", "affected_count": 42}
+                if "Acme" in text
+                else {"employer": "Beta LLC", "affected_count": 7}
+            )
 
         judge_mock = AsyncMock(return_value=True)
 
@@ -1123,7 +1127,10 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
                 # Simulates the live-reproduced hang -- asyncio.wait_for's outer
                 # deadline cancels this mid-sleep; it never returns on its own.
                 await asyncio.sleep(1)
-            return {"employer": "Beta LLC", "affected_count": 7}  # already-coerced, extract_fields_directly's own contract
+            return {
+                "employer": "Beta LLC",
+                "affected_count": 7,
+            }  # already-coerced, extract_fields_directly's own contract
 
         with (
             patch.object(eval_loop_module, "extract_fields_directly_chunked", fake_extract_chunked),
@@ -1156,7 +1163,9 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         with (
             patch.object(
-                eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp", "affected_count": 42})
+                eval_loop_module,
+                "extract_fields_directly_chunked",
+                AsyncMock(return_value={"employer": "Acme Corp", "affected_count": 42}),
             ),
             patch.object(eval_loop_module, "_judge_one_document_extraction", hanging_judge),
             patch.object(eval_loop_module, "_PER_DOCUMENT_TIMEOUT_SECONDS", 0.05),
@@ -1182,7 +1191,9 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
         with (
-            patch.object(eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp"})),
+            patch.object(
+                eval_loop_module, "extract_fields_directly_chunked", AsyncMock(return_value={"employer": "Acme Corp"})
+            ),
             patch.object(eval_loop_module, "_judge_one_document_extraction", AsyncMock(return_value=True)),
         ):
             await run_eval_loop_multi_row(
@@ -1664,9 +1675,7 @@ class TestJudgeMultiRowExtraction:
         verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="both rows match")
         fake_model, ainvoke_mock = _fake_structured_model(verdict)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction(
-                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
-            )
+            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert result == {0, 1}
         assert ainvoke_mock.await_count == 1
 
@@ -1674,9 +1683,7 @@ class TestJudgeMultiRowExtraction:
         verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0], reasoning="row 1 bled into row 0's count")
         fake_model, _ = _fake_structured_model(verdict)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction(
-                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
-            )
+            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert result == {0}
 
     async def test_out_of_range_indices_are_filtered_out_fail_closed(self):
@@ -1685,9 +1692,7 @@ class TestJudgeMultiRowExtraction:
         verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 99], reasoning="oops")
         fake_model, _ = _fake_structured_model(verdict)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            result = await _judge_multi_row_extraction(
-                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
-            )
+            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert result == {0}
 
     async def test_total_judge_failure_returns_empty_set_not_a_crash(self):
@@ -1696,9 +1701,7 @@ class TestJudgeMultiRowExtraction:
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
             patch("threetears.scrape.llm_retry.asyncio.sleep", AsyncMock()),
         ):
-            result = await _judge_multi_row_extraction(
-                [b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
-            )
+            result = await _judge_multi_row_extraction([b"fake-png-page-0"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert result == set()
 
     async def test_empty_records_returns_empty_set_without_calling_the_model(self):
@@ -1719,9 +1722,7 @@ class TestJudgeMultiRowExtraction:
         verdict = _MultiRowJudgeVerdict(confirmed_record_indices=[0, 1], reasoning="ok")
         fake_model, ainvoke_mock = _fake_structured_model(verdict)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
-            await _judge_multi_row_extraction(
-                [b"page-0", b"page-1"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k"
-            )
+            await _judge_multi_row_extraction([b"page-0", b"page-1"], _MULTI_ROW_RECORDS, _SCHEMA, api_key="k")
         assert ainvoke_mock.await_count == 1
         [call] = ainvoke_mock.await_args_list
         [message] = call.args[0]

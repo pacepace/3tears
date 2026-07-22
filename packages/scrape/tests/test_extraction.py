@@ -712,11 +712,17 @@ class TestDiscoverCandidates:
 
     async def test_most_fields_validated_wins_no_judge(self):
         worse = _DiscoveredCandidate(
-            fields=[_DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x")]
+            fields=[
+                _DiscoveredFieldProposal(
+                    name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
+                )
+            ]
         )
         better = _DiscoveredCandidate(
             fields=[
-                _DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x"),
+                _DiscoveredFieldProposal(
+                    name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
+                ),
                 _DiscoveredFieldProposal(name="count", type_name="int", selector="td.count", sample_value_hint="42"),
             ]
         )
@@ -730,7 +736,9 @@ class TestDiscoverCandidates:
         parsed = _DiscoveredCandidateList(
             candidates=[
                 _DiscoveredCandidate(
-                    fields=[_DiscoveredFieldProposal(name="ghost", type_name="str", selector=".nope", sample_value_hint="?")]
+                    fields=[
+                        _DiscoveredFieldProposal(name="ghost", type_name="str", selector=".nope", sample_value_hint="?")
+                    ]
                 )
             ]
         )
@@ -796,7 +804,11 @@ class TestDiscoverRowCandidates:
             candidates=[
                 _DiscoveredRowCandidate(
                     row_selector="tbody tr",
-                    fields=[_DiscoveredFieldProposal(name="bad", type_name="str", selector="td:eq(0)", sample_value_hint="x")],
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="bad", type_name="str", selector="td:eq(0)", sample_value_hint="x"
+                        )
+                    ],
                 ),
                 _DiscoveredRowCandidate(
                     row_selector="tbody tr",
@@ -831,8 +843,12 @@ class TestDiscoverRowCandidates:
                 _DiscoveredRowCandidate(
                     row_selector="tbody tr",
                     fields=[
-                        _DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x"),
-                        _DiscoveredFieldProposal(name="county", type_name="str", selector="td.county", sample_value_hint="x"),
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
+                        ),
+                        _DiscoveredFieldProposal(
+                            name="county", type_name="str", selector="td.county", sample_value_hint="x"
+                        ),
                     ],
                 )
             ]
@@ -852,7 +868,9 @@ class TestDiscoverRowCandidates:
                         _DiscoveredFieldProposal(
                             name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
                         ),
-                        _DiscoveredFieldProposal(name="ghost", type_name="str", selector=".nope", sample_value_hint="?"),
+                        _DiscoveredFieldProposal(
+                            name="ghost", type_name="str", selector=".nope", sample_value_hint="?"
+                        ),
                     ],
                 )
             ]
@@ -868,7 +886,11 @@ class TestDiscoverRowCandidates:
             candidates=[
                 _DiscoveredRowCandidate(
                     row_selector=".does-not-exist",
-                    fields=[_DiscoveredFieldProposal(name="employer", type_name="str", selector="td.employer", sample_value_hint="x")],
+                    fields=[
+                        _DiscoveredFieldProposal(
+                            name="employer", type_name="str", selector="td.employer", sample_value_hint="x"
+                        )
+                    ],
                 )
             ]
         )

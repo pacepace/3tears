@@ -291,7 +291,8 @@ class CamoufoxDriver(ScrapeDriver):
                         amount = int(step.value) if step.value else _DEFAULT_SCROLL_PAGE_AMOUNT
                     except ValueError as exc:
                         raise CamoufoxDriverError(
-                            "nav_step_failed", f"nav_step[{i}] (scroll_page): value {step.value!r} is not an int percentage"
+                            "nav_step_failed",
+                            f"nav_step[{i}] (scroll_page): value {step.value!r} is not an int percentage",
                         ) from exc
                     viewport = page.viewport_size or {"height": 1080}
                     await page.mouse.wheel(0, viewport["height"] * (amount / 100))

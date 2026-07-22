@@ -188,9 +188,7 @@ class TestNodriverDownloadDriver:
         async def failing_parse(*args, **kwargs):
             raise DocumentDriverError("parse_failed", "[Parsing failed: corrupt pdf]")
 
-        monkeypatch.setattr(
-            "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html", failing_parse
-        )
+        monkeypatch.setattr("threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html", failing_parse)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         driver = NodriverDownloadDriver("http://sidecar.test", client=client)
@@ -203,7 +201,9 @@ class TestNodriverDownloadDriver:
 
     async def test_render_raises_on_sidecar_error_body(self):
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(504, json={"error": {"code": "download_timeout", "message": "download timed out after 30.0s"}})
+            return httpx.Response(
+                504, json={"error": {"code": "download_timeout", "message": "download timed out after 30.0s"}}
+            )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         driver = NodriverDownloadDriver("http://sidecar.test", client=client)

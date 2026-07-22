@@ -160,7 +160,10 @@ class TestExtractSearchQueries:
         assert _extract_search_queries(calls, "threetears.web_search") == []
 
     def test_no_search_calls_returns_empty(self):
-        assert _extract_search_queries([{"name": "threetears.web_fetch", "args": {"url": "x"}}], "threetears.web_search") == []
+        assert (
+            _extract_search_queries([{"name": "threetears.web_fetch", "args": {"url": "x"}}], "threetears.web_search")
+            == []
+        )
 
 
 # ===========================================================================
@@ -184,7 +187,10 @@ class TestFindTargetPage:
     async def test_converged_and_verified_candidate(self):
         loop_model, _ = _fake_tool_chat_model(_text_response("https://example.gov/warn is the page."))
         candidate = _CandidatePage(
-            url="https://example.gov/warn", driver_backend_guess="nodriver", wait_for_guess=None, summary="the real WARN page"
+            url="https://example.gov/warn",
+            driver_backend_guess="nodriver",
+            wait_for_guess=None,
+            summary="the real WARN page",
         )
         with (
             patch("threetears.scrape.page_finder.create_chat_model", return_value=loop_model),
@@ -229,7 +235,10 @@ class TestFindTargetPage:
     async def test_verification_fails_and_guess_unverifiable_defaults_to_nodriver(self):
         loop_model, _ = _fake_tool_chat_model(_text_response("https://example.gov/dashboard is the page."))
         candidate = _CandidatePage(
-            url="https://example.gov/dashboard", driver_backend_guess="camoufox", wait_for_guess=None, summary="a JS dashboard"
+            url="https://example.gov/dashboard",
+            driver_backend_guess="camoufox",
+            wait_for_guess=None,
+            summary="a JS dashboard",
         )
         with (
             patch("threetears.scrape.page_finder.create_chat_model", return_value=loop_model),
@@ -270,13 +279,20 @@ class TestFindTargetPage:
         # made; simulate that shape directly rather than re-driving the real round loop (already
         # covered by packages/agent/tools/tests/test_executor.py -- not this module's job to retest).
         exhausted_loop_result = SimpleNamespace(
-            output="", rounds_used=3, tool_calls_made=[{"name": "threetears.web_search", "args": {"query": "Ohio WARN"}}],
+            output="",
+            rounds_used=3,
+            tool_calls_made=[{"name": "threetears.web_search", "args": {"query": "Ohio WARN"}}],
             error="max rounds exhausted",
         )
         with patch("threetears.scrape.page_finder.ToolExecutor") as executor_cls:
             executor_cls.return_value.invoke_with_tools = AsyncMock(return_value=exhausted_loop_result)
-            with patch("threetears.scrape.page_finder.create_chat_model", return_value=SimpleNamespace(bind_tools=lambda t: None)):
-                result = await find_target_page("Ohio WARN notices", api_key="k", searxng_url="http://searx.local", max_turns=3)
+            with patch(
+                "threetears.scrape.page_finder.create_chat_model",
+                return_value=SimpleNamespace(bind_tools=lambda t: None),
+            ):
+                result = await find_target_page(
+                    "Ohio WARN notices", api_key="k", searxng_url="http://searx.local", max_turns=3
+                )
 
         assert result.verified is False
         assert result.turns_used == 3

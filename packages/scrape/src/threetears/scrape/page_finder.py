@@ -64,12 +64,15 @@ class _CandidatePage(BaseModel):
 
     url: str = PydanticField(description="the URL of the page the agent concluded is correct")
     driver_backend_guess: str | None = PydanticField(
-        default=None, description="the agent's own guess at nodriver/document/api/camoufox/network_capture, if it has one"
+        default=None,
+        description="the agent's own guess at nodriver/document/api/camoufox/network_capture, if it has one",
     )
     wait_for_guess: str | None = PydanticField(
         default=None, description="a CSS selector the agent believes the page needs to settle on, if any"
     )
-    summary: str = PydanticField(description="one or two sentences on what the page contains and why it's the right one")
+    summary: str = PydanticField(
+        description="one or two sentences on what the page contains and why it's the right one"
+    )
 
 
 @dataclass
@@ -172,7 +175,9 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
             body = response.json()
         except ValueError:
             body = None
-        has_list = isinstance(body, list) or (isinstance(body, dict) and any(isinstance(v, list) for v in body.values()))
+        has_list = isinstance(body, list) or (
+            isinstance(body, dict) and any(isinstance(v, list) for v in body.values())
+        )
         if has_list:
             return True, "api", "response is JSON containing a list -- looks like a real API"
 
