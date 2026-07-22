@@ -323,3 +323,30 @@ class TestMultiDocumentDriver:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         )
         await client.aclose()
+
+
+class TestDiscoverLinks:
+    """The promoted public :func:`discover_links` — the pure listing-page link walk."""
+
+    def test_resolves_relative_and_absolute_hrefs_in_document_order(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links
+
+        html = (
+            '<a class="doc" href="/files/a.pdf">A</a>'
+            '<a class="nav" href="/home">skip</a>'
+            '<a class="doc" href="https://cdn.example/b.pdf">B</a>'
+        )
+        urls = discover_links(html, base_url="https://gov.example/list", link_selector="a.doc")
+        assert urls == ["https://gov.example/files/a.pdf", "https://cdn.example/b.pdf"]
+
+    def test_selector_scopes_which_anchors_are_followed(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links
+
+        html = '<a href="/x.pdf">no class</a><a class="doc" href="/y.pdf">yes</a>'
+        assert discover_links(html, base_url="https://h", link_selector="a.doc") == ["https://h/y.pdf"]
+
+    def test_anchor_without_href_is_skipped(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links
+
+        html = '<a class="doc">no href</a><a class="doc" href="/z.pdf">z</a>'
+        assert discover_links(html, base_url="https://h", link_selector="a.doc") == ["https://h/z.pdf"]
