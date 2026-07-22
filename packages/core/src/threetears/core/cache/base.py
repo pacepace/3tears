@@ -129,3 +129,19 @@ class L1Backend(Protocol):
     def is_initialized(self) -> bool:
         """Return True if the backend has been initialized."""
         ...
+
+    def has_table(self, table: str) -> bool:
+        """Return True if ``table`` was registered via ``initialize()``.
+
+        A pod's L1 backend is only ever initialized with the tables its OWN
+        collections were created for (``collection_factory.create_dynamic_collection``
+        calls ``initialize()`` per-table, lazily, the first time a Collection for
+        that table is instantiated) -- a pod that never touches a given table's
+        Collection locally never has it in its L1 cache at all, which is expected,
+        not an error: a cross-pod cache-invalidation broadcast (``threetears.
+        cache.invalidate``) is heard by EVERY pod regardless of which tables each
+        one actually caches. Callers use this to skip a table their L1 backend was
+        never told about, the same "unknown receipts are expected" treatment
+        already given to an unrecognized ``Collection`` entirely.
+        """
+        ...

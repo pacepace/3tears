@@ -781,6 +781,228 @@ class TestChatMessageDispatchIsCrashSafe:
 
 
 # ============================================================
+# the safety net's OWN send must survive a dead socket: every best-effort
+# notification/error send in the message loop and its dispatch tree must
+# degrade quietly, not crash, when the socket died between the triggering
+# read and the reply (the exact disconnect-mid-turn window a long-running
+# frame handler runs in). regression for the prod crash: 8950bae's own new
+# error-frame send (now one of many sites here) had no such guard.
+# ============================================================
+
+
+class _DeadSendWebSocket(MockWebSocket):
+    """a socket whose ``send_text`` raises on every call AFTER the initial ``connected`` frame.
+
+    Lets ``handle_connection`` proceed past accept/auth normally (so a test can drive real
+    message-loop behavior), then simulates the client having vanished for every reply the
+    handler tries to send afterward -- the exact shape of a dead-socket-mid-turn disconnect.
+    Tracks every call attempted (``send_attempts``), even though each one raises, so a test can
+    assert how many replies were ATTEMPTED, not just that none crashed the loop.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.send_attempts = 0
+
+    async def send_text(self, data: str) -> None:
+        self.send_attempts += 1
+        if not self.sent:
+            await super().send_text(data)
+            return
+        raise RuntimeError("simulated dead socket: send failed")
+
+
+class TestMessageLoopSurvivesDeadSocketOnReply:
+    """every early-loop guard reply must degrade quietly against an already-dead socket."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad_message",
+        [
+            pytest.param("x" * 100_000, id="message-too-large"),
+            pytest.param("not json", id="invalid-json"),
+            pytest.param(json.dumps({"no-type": "here"}), id="invalid-frame"),
+        ],
+    )
+    async def test_guard_reply_failure_does_not_crash_the_loop(self, bad_message: str) -> None:
+        """a guard-rejected message whose error reply fails to send -> loop still serves the next one."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        msgs = [bad_message, json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2, "both the failed guard reply and the later message reply must be ATTEMPTED"
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_reply_failure_does_not_crash_the_loop(self) -> None:
+        """the rate-limit guard's reply failing must not crash the loop either (separate window/counter path)."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, config={"rate_limit_messages": 1})
+        msgs = [json.dumps({"type": "message", "content": "one"})] * 3
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 3
+
+
+class TestFrameDispatchSurvivesDeadSocketOnErrorNotify:
+    """the typed-frame safety net's OWN error-frame send must survive a dead socket."""
+
+    @pytest.mark.asyncio
+    async def test_app_handler_exception_notify_failure_does_not_crash_socket(self) -> None:
+        """an app handler raises, AND the resulting error-frame send also fails -> loop still survives."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _boom(frame: Frame, **_: Any) -> None:
+            raise RuntimeError("kaboom from the app handler")
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise -- this is the exact prod crash shape
+
+        assert ws.send_attempts >= 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_frame_type_notify_failure_does_not_crash_socket(self) -> None:
+        """the ``_route_frame`` fallback's own error send failing must not crash the socket."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+        msgs = [json.dumps({"type": "no-such-type"}), json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2
+
+    @pytest.mark.asyncio
+    async def test_app_handler_raw_send_callback_failure_propagates_and_does_not_crash_socket(self) -> None:
+        """an app handler's OWN ``send(...)`` call against a dead socket, uncaught by the handler
+        itself, must still degrade gracefully via the outer per-frame safety net -- proving the
+        raw (unwrapped) ``send`` callback handed to app handlers is connection-safe even when the
+        handler does not guard its own send calls (design note on the app-handler dispatch site:
+        the callback is deliberately raw so a handler CAN observe a failed send itself, e.g. to
+        stop its own work early; this proves the worst case -- a handler that does not -- still
+        can't crash the connection)."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _uses_raw_send(frame: Frame, *, send: Any, **_: Any) -> None:
+            await send(json.dumps({"type": "app-reply"}))  # not wrapped in its own try/except
+
+        handler = WebSocketHandler(
+            router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _uses_raw_send}
+        )
+        msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2
+
+
+class TestChatMessageDispatchSurvivesDeadSocketOnErrorNotify:
+    """regression for the actual observed prod crash: 8950bae's own new error-frame send
+    (the chat-message safety net) had no guard against an already-dead socket -- this is the
+    exact unhandled exception seen in the.ranch's logs during a disconnect-mid-turn window."""
+
+    @pytest.mark.asyncio
+    async def test_chat_router_exception_notify_failure_does_not_crash_socket(self) -> None:
+        """the chat router raises, AND the resulting error-frame send ALSO fails -> socket survives."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        handler = WebSocketHandler(router=_BoomRouter(), auth_validator=_valid_auth)
+        msgs = [json.dumps({"type": "message", "content": "hi"}), json.dumps({"type": "message", "content": "again"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise -- this is THE prod crash shape
+
+        assert ws.send_attempts >= 2
+
+
+class TestNestedRoomHandlerSendsSurviveDeadSocket:
+    """error replies deep in the typed-frame dispatch tree (join/editor.op/transient/authz)
+    must all degrade quietly against a dead socket -- not just the two outer safety nets."""
+
+    @pytest.mark.asyncio
+    async def test_join_without_room_reply_failure_does_not_crash_socket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        handler, _state, _fanout, _recorded = _room_seam_handler(monkeypatch)
+        msgs = [json.dumps({"type": "join"}), json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2
+
+    @pytest.mark.asyncio
+    async def test_editor_op_without_join_reply_failure_does_not_crash_socket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler, _state, _fanout, _recorded = _room_seam_handler(monkeypatch, op_handler=_FakeOpHandler(start=0))
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        room = "cust:story:main:scene.md"
+        msgs = [
+            json.dumps({"type": "editor.op", "room": room, "payload": "op"}),
+            json.dumps({"type": "message", "content": "hi"}),
+        ]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2
+
+    @pytest.mark.asyncio
+    async def test_transient_frame_without_join_reply_failure_does_not_crash_socket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler, _state, _fanout, _recorded = _room_seam_handler(monkeypatch)
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+        room = "cust:story:main:scene.md"
+        msgs = [
+            json.dumps({"type": "cursor", "room": room, "payload": "{}"}),
+            json.dumps({"type": "message", "content": "hi"}),
+        ]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert ws.send_attempts >= 2
+
+
+class TestReplaySendSurvivesDeadSocket:
+    """the resume/replay tail's per-payload send must degrade quietly against a dead socket,
+    and stop attempting further payloads once the socket is known dead (not send N more times
+    into a wire that already failed once -- best-effort, not best-effort-repeated-forever)."""
+
+    @pytest.mark.asyncio
+    async def test_resume_replay_failure_does_not_crash_and_stops_early(self) -> None:
+        from threetears.channels.websocket import WebSocketHandler
+
+        yielded = 0
+
+        async def _replay(room_id: str, from_seq: int) -> Any:
+            nonlocal yielded
+            for seq in range(from_seq + 1, from_seq + 4):  # would yield 3 payloads if fully consumed
+                yielded += 1
+                yield json.dumps({"type": "editor.op", "room": room_id, "seq": seq})
+
+        handler = WebSocketHandler(
+            router=_EchoRouter(),
+            auth_validator=_valid_auth,
+            replay_source=_replay,  # type: ignore[arg-type]
+        )
+        room = "cust:story:main:scene.md"
+        resume = json.dumps({"type": "resume", "room": room, "seq": 7})
+        msgs = [resume, json.dumps({"type": "message", "content": "hi"})]
+        ws = _DeadSendWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        attempts_before = ws.send_attempts
+        await handler.handle_connection(ws)  # must NOT raise
+
+        assert yielded == 1, "the replay loop should stop consuming the source after its first failed send"
+        # exactly one send attempt for the (failed) replay payload; the connection then keeps
+        # serving the next message (proven by the later message's own send attempt(s) happening
+        # too, not just the connection staying alive with no further activity).
+        assert ws.send_attempts > attempts_before + 1, "the connection must keep serving after the replay send fails"
+
+
+# ============================================================
 # membership gate: editor.op / transient require a prior join
 # ============================================================
 

@@ -337,6 +337,11 @@ class DuckDBBackend:
         """Return True if the backend has been initialized."""
         return self._initialized
 
+    def has_table(self, table: str) -> bool:
+        """Return True if ``table`` was registered via ``initialize()`` (see
+        :meth:`~threetears.core.cache.base.L1Backend.has_table`)."""
+        return table in self._schema_info
+
     def _generate_create_table(self, table: Any) -> str:
         """Generate DuckDB CREATE TABLE from SQLAlchemy table."""
         pk_cols = [col.name for col in table.columns if col.primary_key]

@@ -4,6 +4,54 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.8 -- 2026-07-19
+
+**Fix: a pod's L1 cache-invalidation listener crashed on every broadcast for a table it never
+locally caches** -- `CollectionRegistry._on_invalidation` already had an early-return for a
+`message.table` with no registered `Collection` at all ("unknown-table receipts are expected
+during partial rollouts"). This was the same class of expected-not-error case one level deeper:
+a pod CAN have a `Collection` registered for a table (so that early-return never fires) while its
+own L1 backend (`SQLiteBackend`/`DuckDBBackend`) was never `initialize()`'d with that specific
+table's schema -- `collection_factory.create_dynamic_collection` only calls `initialize()` lazily,
+per table, the first time that table's Collection is actually instantiated locally, and a
+cross-pod invalidation broadcast (`threetears.cache.invalidate`) is heard by EVERY pod regardless
+of which tables each one actually caches. Observed live: any agent pod that never touches the
+knowledge subsystem's `concepts`/`playbook_entries` tables crashed its own NATS subscribe callback
+with `sqlite3.OperationalError: no such table` (or DuckDB's equivalent) on every single write any
+OTHER pod made to those tables.
+
+Added `L1Backend.has_table(table)` (both backends already track this via their existing
+`_schema_info` dict, so the check is free) and consult it in `_on_invalidation` before calling
+`delete_by_id` -- the same "unknown receipts are expected" treatment the unregistered-Collection
+case already gets, extended to the one-level-deeper "registered but never locally cached" case.
+Prevents the error at the source rather than catching a backend-specific exception after the fact
+(SQLite and DuckDB raise different exception types for "no such table", and the base module is
+deliberately kept free of a hard DuckDB import since that backend is optional).
+
+**Fix: the WebSocket per-message/per-frame crash-safety nets could themselves crash the
+connection against an already-dead socket** -- `8950bae` (v0.17.6) wrapped the chat-message
+dispatch in a safety net so a router failure degrades to one error frame instead of crashing the
+socket, matching the typed cross-pod frame path's existing per-frame net. Neither net's own
+error-frame *send* was itself guarded: if the socket had ALREADY died (a client disconnect
+racing an in-flight dispatch -- the exact window a long-running turn/handler runs in), the
+notification send raised, uncaught, and the ASGI framework closed the connection with an
+unhandled-exception crash instead of degrading gracefully. Observed live: a chat WebSocket
+connection crashed during a client-disconnect window, in an error-frame send that only exists
+because of the v0.17.6 fix.
+
+Audited every best-effort notification/error-frame send in `WebSocketHandler._message_loop` and
+its full typed-frame dispatch tree (`_route_frame`, `_authorize`, `_handle_join`,
+`_handle_editor_op`, `_handle_transient`, `_handle_resume`/`_stream_replay`, plus the legacy
+chat-message path) -- not just the two outer safety nets -- and routed every one through a new
+`_safe_send` helper (try/except, log-and-drop on failure, mirroring the pre-existing
+`_close_with_error` pattern). The resume/replay tail additionally now stops attempting further
+payloads the moment one send fails, rather than retrying into a wire already known dead. Two
+send sites are deliberately left unguarded, with an inline comment explaining why: the very
+first "connected" frame on a freshly-accepted socket (nothing to degrade gracefully from yet),
+and `_route_standard`/`_route_streaming`'s own response/token sends (already covered by their
+surrounding safety net, so a failure there gets ONE well-logged notification attempt rather than
+a second, less-specific one).
+
 ## v0.17.7 -- 2026-07-18
 
 **Fix: a bound tool's LangGraph HITL interrupt was silently swallowed by the Claude
