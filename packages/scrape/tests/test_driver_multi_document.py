@@ -350,3 +350,53 @@ class TestDiscoverLinks:
 
         html = '<a class="doc">no href</a><a class="doc" href="/z.pdf">z</a>'
         assert discover_links(html, base_url="https://h", link_selector="a.doc") == ["https://h/z.pdf"]
+
+    def test_discover_links_is_the_url_projection_of_the_labeled_walk(self) -> None:
+        # discover_links delegates to discover_links_labeled — same URLs, anchor text dropped. Pins the
+        # promised backward-compatible behavior so the delegation can never drift from the URL-only set.
+        from threetears.scrape.drivers.multi_document import discover_links, discover_links_labeled
+
+        html = '<a class="doc" href="/a.pdf">A</a><a class="doc" href="https://cdn.example/b.pdf">B</a>'
+        labeled = discover_links_labeled(html, base_url="https://h/list", link_selector="a.doc")
+        assert discover_links(html, base_url="https://h/list", link_selector="a.doc") == [u for u, _ in labeled]
+
+
+class TestDiscoverLinksLabeled:
+    """:func:`discover_links_labeled` — the same walk, carrying each anchor's visible text."""
+
+    def test_carries_anchor_text_alongside_the_resolved_url(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = (
+            '<a class="doc" href="/nov.pdf">November 2024 schedule</a>'
+            '<a class="nav" href="/home">skip</a>'
+            '<a class="doc" href="https://cdn.example/dec.pdf">December 2024 schedule</a>'
+        )
+        assert discover_links_labeled(html, base_url="https://gov.example/list", link_selector="a.doc") == [
+            ("https://gov.example/nov.pdf", "November 2024 schedule"),
+            ("https://cdn.example/dec.pdf", "December 2024 schedule"),
+        ]
+
+    def test_anchor_text_is_whitespace_collapsed_and_gathers_nested_tags(self) -> None:
+        # Real listings wrap the label in spans / add newlines & indentation; the label is normalized to
+        # a single clean line, and text from nested elements is gathered (an icon <span> + the month name).
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = '<a class="doc" href="/m.pdf">\n  <span>March</span>   2025\n  schedule\n</a>'
+        assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == [
+            ("https://h/m.pdf", "March 2025 schedule")
+        ]
+
+    def test_anchor_with_no_text_yields_an_empty_label_not_a_skip(self) -> None:
+        # An image-only link still resolves to a URL; its label is "" (the caller decides what a missing
+        # label means), never a dropped entry.
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = '<a class="doc" href="/scan.pdf"><img src="/thumb.png"></a>'
+        assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == [("https://h/scan.pdf", "")]
+
+    def test_anchor_without_href_is_skipped(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = '<a class="doc">no href</a><a class="doc" href="/z.pdf">z</a>'
+        assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == [("https://h/z.pdf", "z")]
