@@ -90,7 +90,7 @@ from ..driver import NavStep, RenderedPage, ScrapeDriver
 from ..extraction import NOTICE_DOCUMENT_CLASS
 from .api import ApiDriverError, _resolve_path
 
-__all__ = ["MultiDocumentDriver", "MultiDocumentDriverError", "discover_links"]
+__all__ = ["MultiDocumentDriver", "MultiDocumentDriverError", "discover_links", "discover_links_labeled"]
 
 log = get_logger(__name__)
 
@@ -119,6 +119,36 @@ class MultiDocumentDriverError(Exception):
         super().__init__(f"{code}: {message}")
 
 
+def discover_links_labeled(html: str, base_url: str, link_selector: str) -> list[tuple[str, str]]:
+    """Resolve every ``link_selector``-matching ``<a href>`` to ``(absolute_url, anchor_text)``.
+
+    The label-carrying sibling of :func:`discover_links`: the identical selector walk, but each entry
+    also carries the anchor's **visible text** (whitespace-collapsed to a single line; ``""`` when the
+    anchor has no text, e.g. an image-only link). A listing's anchor text is often the only
+    human-readable name a linked document has ("November 2024 schedule"), and it is discarded the moment
+    the page is re-parsed — so a caller that wants it (per-document provenance, a labeled inventory) must
+    capture it on the same walk that resolves the URL. Ordering, de-duplication, host policy, and pattern
+    filtering remain the caller's, exactly as for :func:`discover_links`.
+
+    :param html: the listing page's HTML
+    :ptype html: str
+    :param base_url: the URL to resolve relative hrefs against (usually the listing's own URL)
+    :ptype base_url: str
+    :param link_selector: a CSS selector for the anchors to follow
+    :ptype link_selector: str
+    :return: ``(resolved_absolute_url, anchor_text)`` for every matched href, in document order
+    :rtype: list[tuple[str, str]]
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    labeled: list[tuple[str, str]] = []
+    for tag in soup.select(link_selector):
+        href = tag.get("href")
+        if href:
+            label = " ".join(tag.get_text().split())
+            labeled.append((urljoin(base_url, str(href)), label))
+    return labeled
+
+
 def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     """Resolve every ``link_selector``-matching ``<a href>`` on a listing page to an absolute URL.
 
@@ -130,6 +160,9 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     policy, and any pattern filtering are the caller's to apply — this returns the raw resolved set so
     each consumer can weigh them (a crawl inventory, a multi-document driver) without a baked-in policy.
 
+    The URL-only projection of :func:`discover_links_labeled` (same walk; anchor text dropped) — a caller
+    that also needs each anchor's text calls that variant instead.
+
     :param html: the listing page's HTML
     :ptype html: str
     :param base_url: the URL to resolve relative hrefs against (usually the listing's own URL)
@@ -139,13 +172,7 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     :return: every matched href resolved to an absolute URL, in document order
     :rtype: list[str]
     """
-    soup = BeautifulSoup(html, "html.parser")
-    urls: list[str] = []
-    for tag in soup.select(link_selector):
-        href = tag.get("href")
-        if href:
-            urls.append(urljoin(base_url, str(href)))
-    return urls
+    return [url for url, _label in discover_links_labeled(html, base_url, link_selector)]
 
 
 #: Backwards-compatible private alias — the function was internal (``_discover_links_html``) before it
