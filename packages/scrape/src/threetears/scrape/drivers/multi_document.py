@@ -293,12 +293,16 @@ class MultiDocumentDriver(ScrapeDriver):
         client = self._client
         owns_client = client is None
         if client is None:
-            client = httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT})
+            client = httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+            )
         try:
             try:
                 response = await client.get(url)
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                log.warning("multi-document listing fetch failed", extra={"extra_data": {"url": url, "error": str(exc)}})
+                log.warning(
+                    "multi-document listing fetch failed", extra={"extra_data": {"url": url, "error": str(exc)}}
+                )
                 raise MultiDocumentDriverError("transport", str(exc)) from exc
         finally:
             if owns_client:

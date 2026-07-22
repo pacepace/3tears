@@ -819,7 +819,9 @@ class _MultiRowJudgeVerdict(BaseModel):
     )
 
 
-def _build_multi_row_judge_content(images: list[bytes], records: list[dict[str, Any]], schema: FieldSchema) -> list[Any]:
+def _build_multi_row_judge_content(
+    images: list[bytes], records: list[dict[str, Any]], schema: FieldSchema
+) -> list[Any]:
     from threetears.models import format_vision_content
 
     field_lines = ", ".join(schema.keys())
@@ -1279,7 +1281,9 @@ async def _run_per_document_extraction(
             return None
         try:
             confirmed = await asyncio.wait_for(
-                _judge_one_document_extraction(document, extracted, schema, api_key=api_key, judge_model_id=judge_model_id),
+                _judge_one_document_extraction(
+                    document, extracted, schema, api_key=api_key, judge_model_id=judge_model_id
+                ),
                 timeout=_PER_DOCUMENT_TIMEOUT_SECONDS,
             )
         except TimeoutError:
@@ -1292,7 +1296,9 @@ async def _run_per_document_extraction(
         return extracted if confirmed else None
 
     records = [
-        extracted for extracted in await asyncio.gather(*(_extract_one(document) for document in documents)) if extracted is not None
+        extracted
+        for extracted in await asyncio.gather(*(_extract_one(document) for document in documents))
+        if extracted is not None
     ]
 
     now = datetime.now(UTC)
@@ -1370,7 +1376,9 @@ async def _run_multi_row_vision_extraction(
             extraction_strategy={"strategy": "multi_row_vision"},
             won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
             last_validated_at=now,
-            consecutive_validation_failures=(existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1),
+            consecutive_validation_failures=(
+                existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1
+            ),
         )
         return await _persist_extraction(
             extraction_collection,
@@ -1408,7 +1416,9 @@ async def _run_multi_row_vision_extraction(
             extraction_strategy={"strategy": "multi_row_vision"},
             won_at=existing_recipe.won_at if existing_recipe is not None and existing_recipe.won_at else now,
             last_validated_at=now,
-            consecutive_validation_failures=(existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1),
+            consecutive_validation_failures=(
+                existing_recipe.consecutive_validation_failures + 1 if existing_recipe else 1
+            ),
         )
         return await _persist_extraction(
             extraction_collection,

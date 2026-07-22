@@ -108,6 +108,7 @@ class TestOcrPage:
 # extra, not installed in this package's own default test env.
 
 
+# parity-exempt: hand-rolled subset stub of PIL's third-party Image (only save(), the only surface render_pdf_pages_to_images calls)
 class _FakePILImage:
     def __init__(self, label: str) -> None:
         self.label = label
@@ -512,6 +513,7 @@ class TestMergeWrappedTableRows:
         assert "wildly out of bounds" in caplog.text
 
 
+# parity-exempt: hand-rolled subset stub of pdfplumber's third-party Table (only extract(), the only method the table-merge path calls)
 class _FakeExtractedTable:
     def __init__(self, rows: list[list[Any]]) -> None:
         self._rows = rows
@@ -520,11 +522,13 @@ class _FakeExtractedTable:
         return self._rows
 
 
+# parity-exempt: hand-rolled subset stub of pdfplumber's third-party TableFinder (only the .tables attribute, the only surface read)
 class _FakeTables:
     def __init__(self, tables: list[_FakeExtractedTable]) -> None:
         self.tables = tables
 
 
+# parity-exempt: hand-rolled subset stub of pdfplumber's third-party Page (only find_tables(), the only method the table-merge path calls)
 class _FakePage:
     def __init__(self, tables: list[_FakeExtractedTable]) -> None:
         self._tables = tables

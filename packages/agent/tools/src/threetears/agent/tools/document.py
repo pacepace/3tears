@@ -499,7 +499,9 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | 
 _DEFAULT_MAX_VISION_PAGES = 3
 
 
-def render_pdf_pages_to_images(pdf_data: bytes, *, dpi: int = 150, max_pages: int = _DEFAULT_MAX_VISION_PAGES) -> list[bytes]:
+def render_pdf_pages_to_images(
+    pdf_data: bytes, *, dpi: int = 150, max_pages: int = _DEFAULT_MAX_VISION_PAGES
+) -> list[bytes]:
     """Render a PDF's first *max_pages* pages to PNG image bytes, one per page.
 
     Shared by :mod:`threetears.scrape.drivers.document`'s vision-extraction path

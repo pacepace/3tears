@@ -170,6 +170,8 @@ async def capture_request_shape(
     )
     log.info(
         "capture_request_shape: url=%s status=%s calls_captured=%d",
-        url, page.status, len(calls),
+        url,
+        page.status,
+        len(calls),
     )
     return RequestShapeResult(page_status=page.status, final_url=page.final_url, calls=calls)

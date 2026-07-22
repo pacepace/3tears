@@ -131,7 +131,9 @@ class TestListingDetailDriver:
 
         def handler(request: httpx.Request) -> httpx.Response:
             if str(request.url).endswith("/notices/1"):
-                return httpx.Response(200, content=_detail_html(notice_date="Jun 2, 2026", affected_count="42").encode())
+                return httpx.Response(
+                    200, content=_detail_html(notice_date="Jun 2, 2026", affected_count="42").encode()
+                )
             return httpx.Response(200, content=listing.encode())
 
         driver = _driver(handler)

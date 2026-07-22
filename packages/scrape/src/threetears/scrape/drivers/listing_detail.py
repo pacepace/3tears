@@ -242,12 +242,16 @@ class ListingDetailDriver(ScrapeDriver):
         client = self._client
         owns_client = client is None
         if client is None:
-            client = httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT})
+            client = httpx.AsyncClient(
+                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+            )
         try:
             try:
                 listing_response = await client.get(url)
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                log.warning("listing_detail: listing fetch failed", extra={"extra_data": {"url": url, "error": str(exc)}})
+                log.warning(
+                    "listing_detail: listing fetch failed", extra={"extra_data": {"url": url, "error": str(exc)}}
+                )
                 raise ListingDetailDriverError("transport", str(exc)) from exc
             if listing_response.status_code >= 400:
                 raise ListingDetailDriverError(

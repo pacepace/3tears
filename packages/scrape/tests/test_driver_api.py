@@ -126,7 +126,9 @@ class TestApiDriver:
         # fragment_field=None is a deliberate mode switch, not a missing-config error --
         # each record's own keys become a synthetic <table> row instead (Texas's real
         # Socrata WARN endpoint, 2026-07-15).
-        body = {"Results": [{"employer": "Acme Corp", "county": "Travis"}, {"employer": "Beta Inc", "county": "Dallas"}]}
+        body = {
+            "Results": [{"employer": "Acme Corp", "county": "Travis"}, {"employer": "Beta Inc", "county": "Dallas"}]
+        }
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
 

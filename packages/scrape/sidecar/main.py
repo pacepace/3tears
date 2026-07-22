@@ -266,9 +266,7 @@ async def _select_with_retry(tab: Any, selector: str, timeout: float, action: st
     return el
 
 
-async def _execute_nav_steps(
-    tab: Any, nav_steps: list[NavStepModel], timeout: float, eval_results: list[Any]
-) -> None:
+async def _execute_nav_steps(tab: Any, nav_steps: list[NavStepModel], timeout: float, eval_results: list[Any]) -> None:
     """Drive *tab* through *nav_steps* in order, before the caller's own settle-wait.
 
     Each step gets the full outer *timeout* to find its selector, matching
@@ -454,7 +452,7 @@ async def _render(
                 stripped = body.lstrip()
                 for prefix in _JSON_HIJACK_PREFIXES:
                     if stripped.startswith(prefix):
-                        stripped = stripped[len(prefix):].lstrip()
+                        stripped = stripped[len(prefix) :].lstrip()
                         break
                 if not (stripped.startswith("{") or stripped.startswith("[")):
                     continue  # not JSON-shaped -- not a useful "backend API" signal
@@ -574,7 +572,9 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
     tab, context_id = await _create_isolated_tab(_browser, "about:blank")
     try:
         await _browser.send(
-            uc.cdp.browser.set_download_behavior(behavior="allow", browser_context_id=context_id, download_path=download_dir)
+            uc.cdp.browser.set_download_behavior(
+                behavior="allow", browser_context_id=context_id, download_path=download_dir
+            )
         )
         await tab.send(uc.cdp.page.navigate(url))
         deadline = time.monotonic() + timeout
@@ -719,7 +719,10 @@ async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
         result = await asyncio.wait_for(_download(req.url, timeout=req.timeout), timeout=req.timeout)
     except (TimeoutError, DownloadError) as exc:
         return JSONResponse(
-            status_code=504, content={"error": {"code": "download_timeout", "message": str(exc) or f"download timed out after {req.timeout}s"}}
+            status_code=504,
+            content={
+                "error": {"code": "download_timeout", "message": str(exc) or f"download timed out after {req.timeout}s"}
+            },
         )
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- driver crash surface must not take the sidecar process down; reported to the caller, never swallowed
         return JSONResponse(status_code=502, content={"error": {"code": "driver_crash", "message": str(exc)}})
