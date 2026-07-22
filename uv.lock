@@ -835,7 +835,7 @@ provides-extras = ["prometheus"]
 
 [[package]]
 name = "3tears-scrape"
-version = "0.16.0"
+version = "0.17.8"
 source = { editable = "packages/scrape" }
 dependencies = [
     { name = "3tears" },

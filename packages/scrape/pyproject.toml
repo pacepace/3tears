@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scrape"
-version = "0.16.0"
+version = "0.17.8"
 description = "AI-driven, self-healing web scraping: pluggable render backends + LLM-proposed extraction candidates validated and judged against real page content, never hand-rolled per-site parsers"
 readme = "README.md"
 requires-python = ">=3.14"
