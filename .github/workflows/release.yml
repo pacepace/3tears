@@ -10,7 +10,47 @@ permissions:
   contents: read
 
 jobs:
+  # A release tag must point at a commit that is CONTAINED IN main. This is
+  # the cheapest job in the workflow and gates everything else because it
+  # catches the one failure that is unfixable after the fact: publishing to
+  # PyPI from a commit main does not have.
+  #
+  # That happened with v0.17.8 -- tagged from develop, published, and main
+  # was left at 0.17.7 for days while PyPI served 0.17.8. Nothing in the
+  # pipeline objected, because every other check (lockstep verify, lint,
+  # typecheck, tests) passes just as happily on develop as on main. The
+  # documented order in CLAUDE.md (bump -> PR into develop -> PR develop
+  # into main -> tag FROM main) was the only thing standing between the
+  # repo and that state, and prose does not fail a build.
+  #
+  # `git merge-base --is-ancestor` is deliberate: main carries the
+  # develop -> main merge commits that develop itself never sees, so main is
+  # not an ancestor of a develop commit. Asking the question the other way --
+  # is the TAG contained in main -- is the property that actually matters
+  # and is true for any correctly-cut release.
+  tag-on-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Tag must be on main
+        run: |
+          TAG_SHA="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          git fetch --quiet origin main
+          if git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "OK: ${GITHUB_REF#refs/tags/} ($TAG_SHA) is contained in main."
+          else
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} points at $TAG_SHA, which is NOT contained in main."
+            echo "Releases are cut FROM main (see CLAUDE.md). Merge the release PR into main first,"
+            echo "then re-tag that merge commit. Publishing from a commit main lacks is not"
+            echo "reversible once the artifacts are on PyPI."
+            exit 1
+          fi
+
   check:
+    needs: tag-on-main
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -69,6 +109,29 @@ jobs:
         # strips at build time, so each wheel ships real PyPI Requires-Dist
         # (e.g. 3tears -> 3tears-observe, 3tears-nats), not workspace paths.
         run: uv build --all-packages --out-dir dist/
+
+      # 3tears-scrape is a workspace member (so it builds, and holds the
+      # lockstep version like every sibling) but is NOT yet released. Drop
+      # its artifacts before anything downstream can see them: the upload
+      # feeds BOTH the PyPI publish and the GitHub release, so removing them
+      # here is what keeps an unreleased package out of both.
+      #
+      # 3tears-scrape does not exist on PyPI, which means it also has no
+      # trusted-publisher entry -- an upload including it would be rejected
+      # AFTER the manual approval gate, mid-publish, with some projects
+      # already uploaded.
+      #
+      # REMOVE THIS STEP as an explicit, deliberate step of the 0.18.0
+      # release, which is when scrape ships. That release also needs a
+      # PyPI *pending* trusted publisher created first (repo pacepace/3tears,
+      # workflow release.yml, environment pypi) -- a new project cannot be
+      # created by an upload alone -- and it counts against PyPI's
+      # 4-new-projects-per-24h cap.
+      - name: Withhold unreleased packages (3tears-scrape -- ships at 0.18.0)
+        run: |
+          rm -fv dist/3tears_scrape-* dist/3tears-scrape-*
+          echo "Publishing:"
+          ls -1 dist/
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
