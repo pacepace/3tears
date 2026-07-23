@@ -336,6 +336,108 @@ async def test_subscribe_max_in_flight_invalid() -> None:
         )
 
 
+def _concurrency_probe() -> tuple[Any, Any, Any, Any, Any]:
+    """shared harness for the max_in_flight tests: a handler that parks at a barrier so the
+    number of *simultaneously in-flight* callbacks is observable.
+
+    :return: (handler, started, done, release, peak_getter) — ``started``/``done`` are
+        semaphores released on callback entry/exit, ``release`` an event the callbacks await,
+        and ``peak_getter()`` returns the max concurrency observed so far.
+    """
+    started = asyncio.Semaphore(0)
+    done = asyncio.Semaphore(0)
+    release = asyncio.Event()
+    state = {"concurrent": 0, "peak": 0}
+
+    async def handler(_msg: IncomingMessage) -> None:
+        state["concurrent"] += 1
+        state["peak"] = max(state["peak"], state["concurrent"])
+        started.release()
+        await release.wait()
+        state["concurrent"] -= 1
+        done.release()
+
+    return handler, started, done, release, lambda: state["peak"]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_runs_callbacks_concurrently() -> None:
+    """max_in_flight lets up to N callbacks run at once instead of one-at-a-time.
+
+    Regression guard: the cap used to wrap an awaited call (``async with semaphore: await
+    _dispatch_one``), holding the slot for the callback's whole duration, so it serialized
+    every message despite max_in_flight. This asserts three callbacks are actually in flight
+    together — it fails against that serial implementation.
+    """
+    client, fake = _make_client()
+    handler, started, done, release, peak = _concurrency_probe()
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=3)
+    raw = fake.subscribed[-1][2]
+    for _ in range(3):
+        await raw.queue.put(_FakeMsg(data=b"{}"))
+
+    for _ in range(3):  # all three reach the barrier concurrently
+        await asyncio.wait_for(started.acquire(), timeout=2.0)
+    assert peak() == 3
+
+    release.set()
+    for _ in range(3):
+        await asyncio.wait_for(done.acquire(), timeout=2.0)
+    await raw.queue.put(None)
+    await sub.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_bounds_concurrency() -> None:
+    """max_in_flight caps simultaneous callbacks — never more than N, even with more queued."""
+    client, fake = _make_client()
+    handler, started, done, release, peak = _concurrency_probe()
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=2)
+    raw = fake.subscribed[-1][2]
+    for _ in range(5):
+        await raw.queue.put(_FakeMsg(data=b"{}"))
+
+    for _ in range(2):  # exactly two may start before any completes
+        await asyncio.wait_for(started.acquire(), timeout=2.0)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(started.acquire(), timeout=0.2)
+    assert peak() == 2
+
+    release.set()
+    for _ in range(5):
+        await asyncio.wait_for(done.acquire(), timeout=2.0)
+    assert peak() == 2  # cap held across the whole run
+    await raw.queue.put(None)
+    await sub.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_serial_when_max_in_flight_unset() -> None:
+    """Without max_in_flight, callbacks stay strictly serial (in-order) — the default that
+    subscribers relying on ordering depend on is unchanged by the concurrency path."""
+    client, fake = _make_client()
+    handler, started, done, release, peak = _concurrency_probe()
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)  # no max_in_flight
+    raw = fake.subscribed[-1][2]
+    for _ in range(2):
+        await raw.queue.put(_FakeMsg(data=b"{}"))
+
+    await asyncio.wait_for(started.acquire(), timeout=2.0)
+    with pytest.raises(asyncio.TimeoutError):  # second must not start until the first finishes
+        await asyncio.wait_for(started.acquire(), timeout=0.2)
+    assert peak() == 1
+
+    release.set()
+    for _ in range(2):
+        await asyncio.wait_for(done.acquire(), timeout=2.0)
+    assert peak() == 1
+    await raw.queue.put(None)
+    await sub.unsubscribe()
+
+
 @pytest.mark.asyncio
 async def test_request_typed_round_trip() -> None:
     """request encodes message, decodes response into declared type."""

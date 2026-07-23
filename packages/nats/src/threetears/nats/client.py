@@ -1618,17 +1618,40 @@ class NatsClient:
                 if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
 
+        inflight: set[asyncio.Task[None]] = set()
+
+        async def _run_bounded(msg: "_NatsMsg") -> None:
+            """process one message under the concurrency cap, freeing the slot when done."""
+            try:
+                await _dispatch_one(msg)
+            finally:
+                assert semaphore is not None  # only spawned on the bounded (max_in_flight) path
+                semaphore.release()
+
         async def _dispatch() -> None:
             """drive subscription message loop."""
             try:
                 async for msg in raw_sub.messages:
                     if semaphore is None:
+                        # serial default (max_in_flight unset): one callback at a time, preserving
+                        # in-order processing for subscribers that rely on it.
                         await _dispatch_one(msg)
                     else:
-                        async with semaphore:
-                            await _dispatch_one(msg)
+                        # bounded concurrency: keep at most ``max_in_flight`` callbacks in flight.
+                        # Acquire a slot BEFORE accepting the next message so the loop back-pressures
+                        # at the cap, then run the callback as its OWN task (freeing its slot on
+                        # completion). Awaiting the callback here instead would serialize every
+                        # message despite the cap — the bug this cap was meant to avoid.
+                        await semaphore.acquire()
+                        task = asyncio.create_task(_run_bounded(msg))
+                        inflight.add(task)
+                        task.add_done_callback(inflight.discard)
             except asyncio.CancelledError:
-                # graceful unsubscribe path
+                # unsubscribe cancels this dispatch task; cancel the in-flight callback tasks too so
+                # they are not orphaned — mirroring the serial path, where the single in-flight await
+                # is cancelled together with the loop.
+                for task in list(inflight):
+                    task.cancel()
                 raise
             except Exception as exc:  # noqa: BLE001 — diag only
                 log.error(
