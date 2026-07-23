@@ -81,6 +81,50 @@ class TestOpenRouterCapabilityRegistration:
         assert caps.min_cacheable_tokens == 0
         assert caps.cache_ttl_seconds == 0
 
+    def test_deepseek_v4_flash_registered(self) -> None:
+        """``deepseek/deepseek-v4-flash`` resolves to openrouter chat capabilities.
+
+        Unlike the two entries above it is ``MEDIUM``, not ``LARGE`` -- it is the
+        cheap/fast sibling (roughly 3x cheaper input and 6x cheaper output per
+        token than deepseek-chat-v3-0324) despite a much larger context window.
+        """
+        caps = get_capabilities("deepseek/deepseek-v4-flash")
+        assert caps is not None
+        assert caps.provider_name == OPENROUTER_PROVIDER_NAME
+        assert caps.model_type == ModelType.CHAT
+        assert caps.model_tier == ModelTier.MEDIUM
+        assert caps.requires_alternating_roles is True
+
+    def test_deepseek_v4_flash_cache_fields(self) -> None:
+        """``deepseek/deepseek-v4-flash`` carries auto-cache fields.
+
+        These four fields are the reason the entry exists: a model absent from
+        the registry falls back to ``_NO_CACHE_CAPABILITIES`` in
+        :mod:`threetears.langgraph.caching`, which reports both cache flags
+        ``False`` -- so prompt caching silently does not happen. Registering the
+        model is what makes the openai-auto-cache path apply to it.
+        """
+        caps = get_capabilities("deepseek/deepseek-v4-flash")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is True
+        assert caps.min_cacheable_tokens == 0
+        assert caps.cache_ttl_seconds == 0
+
+    def test_deepseek_v4_flash_context_and_modality(self) -> None:
+        """``deepseek/deepseek-v4-flash`` declares its 1M context and text-only input.
+
+        Both were confirmed against OpenRouter's live models endpoint when the
+        entry was added; the sibling entries understate their own context windows,
+        so this pins the accurate value against future copy-paste drift.
+        """
+        caps = get_capabilities("deepseek/deepseek-v4-flash")
+        assert caps is not None
+        assert caps.context_window == 1_048_576
+        assert caps.supports_vision is False
+        assert caps.supports_streaming is True
+        assert caps.supports_tools is True
+
 
 # -- name translation --------------------------------------------------------
 
