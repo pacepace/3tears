@@ -171,6 +171,39 @@ _OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
     ),
+    "deepseek/deepseek-v4-flash": ModelCapabilities(
+        model_name="deepseek/deepseek-v4-flash",
+        provider_name=OPENROUTER_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        # "Flash" branding + real OpenRouter pricing confirms this is the cheap/fast
+        # sibling of the deepseek-chat-v3-0324 entry above (~3-6x cheaper per token
+        # despite a much larger context window) -- MEDIUM, not LARGE (verified
+        # 2026-07-23 via GET https://openrouter.ai/api/v1/models).
+        model_tier=ModelTier.MEDIUM,
+        model_status=ModelStatus.ACTIVE,
+        context_window=1_048_576,
+        # OpenRouter's models endpoint reports top_provider.max_completion_tokens
+        # as null for this id (no explicit cap published) -- 8_192 mirrors the
+        # conservative default used for the other DeepSeek entries above rather
+        # than an inferred true ceiling.
+        max_output_tokens=8_192,
+        supports_streaming=True,
+        # Confirmed via the live models endpoint: "tools", "tool_choice", and
+        # "structured_outputs" are all in this id's supported_parameters.
+        supports_tools=True,
+        # Confirmed: architecture.input_modalities is text-only for this id.
+        supports_vision=False,
+        # Not independently verified for this id -- inherited from the same
+        # vendor-family requirement on the deepseek-chat-v3-0324/deepseek-r1
+        # entries above.
+        requires_alternating_roles=True,
+        supports_anthropic_cache_control=False,
+        # Confirmed: the live pricing block includes a real "input_cache_read"
+        # rate for this id, same auto-cache signal as deepseek-chat-v3-0324.
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
+    ),
 }
 
 
