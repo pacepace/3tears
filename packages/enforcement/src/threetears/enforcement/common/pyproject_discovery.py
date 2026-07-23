@@ -19,6 +19,16 @@ parsing pyproject.toml files for the three shapes actually used in the
 raising :class:`PyprojectError` on unsupported shapes is intentional —
 the alternative is silently skipping a real path dep, which would let
 the consumer drift out of sync with what the walker enforces.
+
+**git worktrees.** the walk deliberately stops at the FIRST checkout of
+any given repository, keyed on
+:func:`threetears.enforcement.common.git_layout.repo_identity`. reaching
+a second checkout of a repo already in the graph is not a path-dep worth
+following: it is the same source tree at a different revision, and
+admitting it hands every module in that repo two candidate files, which
+turns cross-package resolution ambiguous and makes walkers report
+phantom violations. since ``repo_root`` is visited first, the checkout
+the caller is actually working in always wins.
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from threetears.enforcement.common.git_layout import repo_identity
 from threetears.enforcement.common.repo_layout import find_local_src_roots
 
 __all__ = [
@@ -46,8 +57,10 @@ def discover_src_roots(repo_root: Path) -> tuple[Path, ...]:
     starts with :func:`find_local_src_roots(repo_root) <threetears.enforcement.common.repo_layout.find_local_src_roots>`,
     then transitively follows path-deps to every reachable target,
     accumulating each target's local src roots. cycle-safe (visited set
-    keyed by resolved absolute path). returns the deduplicated union
-    sorted by path string for stable report output.
+    keyed by resolved absolute path). a path-dep landing on a second
+    checkout of an already-visited git repository is skipped -- see the
+    module docstring's "git worktrees" note. returns the deduplicated
+    union sorted by path string for stable report output.
 
     :param repo_root: absolute repo root path containing ``pyproject.toml``
     :ptype repo_root: Path
@@ -61,11 +74,17 @@ def discover_src_roots(repo_root: Path) -> tuple[Path, ...]:
         raise PyprojectError("discover_src_roots requires Python 3.11+ (tomllib stdlib)")
     visited: set[Path] = set()
     roots: set[Path] = set()
-    _visit(repo_root.resolve(), visited, roots)
+    claimed_repos: dict[Path, Path] = {}
+    _visit(repo_root.resolve(), visited, roots, claimed_repos)
     return tuple(sorted(roots))
 
 
-def _visit(target: Path, visited: set[Path], roots: set[Path]) -> None:
+def _visit(
+    target: Path,
+    visited: set[Path],
+    roots: set[Path],
+    claimed_repos: dict[Path, Path],
+) -> None:
     """recurse into ``target`` accumulating src roots into ``roots``.
 
     :param target: directory whose ``pyproject.toml`` to read
@@ -74,11 +93,18 @@ def _visit(target: Path, visited: set[Path], roots: set[Path]) -> None:
     :ptype visited: set[Path]
     :param roots: accumulator of discovered src-root paths
     :ptype roots: set[Path]
+    :param claimed_repos: common-git-dir -> the checkout root that first
+        claimed it, so a rival checkout of the same repository can be
+        recognised and skipped
+    :ptype claimed_repos: dict[Path, Path]
     :raises PyprojectError: see :func:`discover_src_roots`
     """
     if target in visited:
         return
     visited.add(target)
+
+    if _is_rival_checkout(target, claimed_repos):
+        return
 
     if not target.is_dir():
         raise PyprojectError(f"path-dep target is not a directory: {target}")
@@ -92,7 +118,38 @@ def _visit(target: Path, visited: set[Path], roots: set[Path]) -> None:
     data = _load_toml(pyproject)
 
     for dep_path in _collect_path_deps(target, data, pyproject):
-        _visit(dep_path.resolve(), visited, roots)
+        _visit(dep_path.resolve(), visited, roots, claimed_repos)
+
+
+def _is_rival_checkout(target: Path, claimed_repos: dict[Path, Path]) -> bool:
+    """report whether ``target`` is a second checkout of a claimed repo.
+
+    claims ``target``'s repository on first sight, so the earliest
+    checkout reached (always ``repo_root``, the caller's own working
+    copy) is the one that wins. a directory nested INSIDE an already-
+    claimed checkout -- a uv workspace member, say -- reports the same
+    checkout root and is therefore never a rival. a target outside any
+    git checkout has no identity and is always admitted, preserving the
+    behaviour of non-git consumers exactly.
+
+    :param target: resolved candidate directory
+    :ptype target: Path
+    :param claimed_repos: common-git-dir -> claiming checkout root
+    :ptype claimed_repos: dict[Path, Path]
+    :return: ``True`` when ``target`` belongs to a repository already
+        claimed by a DIFFERENT checkout
+    :rtype: bool
+    """
+    identity = repo_identity(target)
+    result = False
+    if identity is not None:
+        common_git_dir, worktree_root = identity
+        claimant = claimed_repos.get(common_git_dir)
+        if claimant is None:
+            claimed_repos[common_git_dir] = worktree_root
+        elif claimant != worktree_root:
+            result = True
+    return result
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
