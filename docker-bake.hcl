@@ -40,7 +40,7 @@ variable "VERSION" {
   # without any per-Dockerfile string to keep in sync. The Dockerfile ARG
   # defaults are now neutral standalone-build fallbacks only -- bake always
   # injects the resolved value via ``args``.
-  default = "v0.17.7"
+  default = "v0.17.8"
 }
 
 # Registry namespace every image is tagged under and every base image is
@@ -229,5 +229,26 @@ target "identity" {
   tags = [
     "${REGISTRY}/aibots-identity:${VERSION}",
     "${REGISTRY}/aibots-identity:latest",
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# 3tears-scrape's nodriver sidecar (AGPL-3.0 isolation boundary)
+# ---------------------------------------------------------------------------
+
+# Standalone, genuinely separate-process HTTP wrapper around nodriver
+# (AGPL-3.0) -- never imported as a Python library by 3tears-scrape (MIT).
+# In-repo context (unlike the cross-repo consumer targets above), its own
+# base image (python:3.12-slim-bookworm, not threetears-base/aibots-base),
+# not wired into any group by default -- opt in explicitly, the same way
+# `admin` is, since not every 3tears-scrape consumer needs the sidecar
+# backend (CamoufoxDriver is a fully in-process alternative).
+target "nodriver-sidecar" {
+  inherits   = ["common"]
+  context    = "packages/scrape/sidecar"
+  dockerfile = "Dockerfile"
+  tags = [
+    "${REGISTRY}/nodriver-sidecar:${VERSION}",
+    "${REGISTRY}/nodriver-sidecar:latest",
   ]
 }

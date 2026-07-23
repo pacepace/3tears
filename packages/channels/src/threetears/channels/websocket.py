@@ -69,6 +69,38 @@ _TRANSIENT_FRAME_TYPES = frozenset({"cursor", "typing", "presence"})
 _BUILTIN_FRAME_TYPES = frozenset({"message", "join", "leave", "editor.op", "resume", *_TRANSIENT_FRAME_TYPES})
 
 
+async def _safe_send(websocket: Any, payload: str, *, context: str) -> bool:
+    """best-effort send: log and drop on failure, never raise.
+
+    Every notification/error-frame send in the message loop and its typed-frame dispatch tree is
+    best-effort by design (T3-D2's "never a silent drop, never a dead connection" posture for the
+    CONNECTION) -- but the notification send ITSELF can fail too, when the socket died in the
+    window between the triggering read and this reply (the exact shape of a disconnect-mid-turn
+    client). That failure must degrade quietly, not crash the caller -- mirrors
+    :meth:`WebSocketHandler._close_with_error`'s existing swallow-and-log pattern, generalized to
+    every call site that needs it instead of just the auth-failure path.
+
+    :param websocket: the live socket
+    :ptype websocket: Any
+    :param payload: the JSON/frame payload to send
+    :ptype payload: str
+    :param context: a short label identifying the call site, for the log
+    :ptype context: str
+    :return: ``True`` if the send succeeded, ``False`` if it failed (logged, swallowed)
+    :rtype: bool
+    """
+    ok = True
+    try:
+        await websocket.send_text(payload)
+    except Exception:  # prawduct:allow prawduct/broad-except -- best-effort notification send: a dead socket must not crash the caller (the message loop or a nested frame handler), which continues or degrades on its own terms
+        log.debug(
+            "best-effort send failed; socket likely gone",
+            extra={"extra_data": {"context": context}},
+        )
+        ok = False
+    return ok
+
+
 @runtime_checkable
 class WebSocketProtocol(Protocol):
     """protocol defining websocket interface accepted by handler.
@@ -360,6 +392,12 @@ class WebSocketHandler:
         # frame). lives only here + the task-01 synchronized socket map.
         connection_id = str(uuid7())
 
+        # deliberately NOT routed through ``_safe_send`` (crash-safety audit note): this is the
+        # very first send on a freshly-accepted, freshly-authenticated socket -- a failure here
+        # means the connection is broken in some fundamental way before any bookkeeping
+        # (registry, room_state) has been touched, so letting it propagate to the ASGI-level
+        # caller and end connection setup outright is correct; there is nothing to degrade
+        # gracefully FROM yet.
         await websocket.send_text(json.dumps({"type": "connected", "user_id": user_id}))
 
         # legacy chat bookkeeping (the live ``user_id → socket`` handle map).
@@ -479,7 +517,11 @@ class WebSocketHandler:
                 break
 
             if len(raw) > self.max_message_size:
-                await websocket.send_text(json.dumps({"type": "error", "message": "message too large"}))
+                await _safe_send(
+                    websocket,
+                    json.dumps({"type": "error", "message": "message too large"}),
+                    context="message-too-large",
+                )
                 continue
 
             now = time.monotonic()
@@ -488,7 +530,11 @@ class WebSocketHandler:
                 rate_message_count = 0
             rate_message_count += 1
             if rate_message_count > self.rate_limit_messages:
-                await websocket.send_text(json.dumps({"type": "error", "message": "rate limit exceeded"}))
+                await _safe_send(
+                    websocket,
+                    json.dumps({"type": "error", "message": "rate limit exceeded"}),
+                    context="rate-limit-exceeded",
+                )
                 continue
 
             try:
@@ -498,7 +544,9 @@ class WebSocketHandler:
                     "received non-JSON websocket message from user %s",
                     user_id,
                 )
-                await websocket.send_text(json.dumps({"type": "error", "message": "invalid json"}))
+                await _safe_send(
+                    websocket, json.dumps({"type": "error", "message": "invalid json"}), context="invalid-json"
+                )
                 continue
 
             # the chat ``message`` path is preserved verbatim: it reads ``data``
@@ -514,7 +562,9 @@ class WebSocketHandler:
                     # valid JSON but not a well-formed frame (e.g. no ``type``):
                     # an ``error`` frame, never a silent drop (design T3-D2).
                     log.warning("received malformed websocket frame from user %s", user_id)
-                    await websocket.send_text(json.dumps({"type": "error", "message": "invalid frame"}))
+                    await _safe_send(
+                        websocket, json.dumps({"type": "error", "message": "invalid frame"}), context="invalid-frame"
+                    )
                     continue
                 try:
                     await self._route_frame(
@@ -530,7 +580,9 @@ class WebSocketHandler:
                         "frame handler raised; surfacing an error and keeping the socket alive",
                         extra={"extra_data": {"user_id": user_id, "frame_type": frame.type}},
                     )
-                    await websocket.send_text(Frame.error("internal error handling frame"))
+                    await _safe_send(
+                        websocket, Frame.error("internal error handling frame"), context="route-frame-except"
+                    )
                 continue
 
             content = data.get("content", "")
@@ -578,10 +630,22 @@ class WebSocketHandler:
                     "chat message routing raised; surfacing an error and keeping the socket alive",
                     extra={"extra_data": {"user_id": user_id}},
                 )
-                await websocket.send_text(json.dumps({"type": "error", "message": "internal error handling message"}))
+                await _safe_send(
+                    websocket,
+                    json.dumps({"type": "error", "message": "internal error handling message"}),
+                    context="chat-message-route-except",
+                )
 
     async def _route_standard(self, websocket: Any, message: ChannelMessage) -> None:
         """route message through standard (non-streaming) router.
+
+        deliberately NOT routed through ``_safe_send`` (crash-safety audit note): this and
+        ``_route_streaming``'s payload sends below are called from ``_message_loop``'s
+        ``msg_type == "message"`` branch, already wrapped end-to-end in that branch's own
+        ``except Exception`` safety net -- a failure here propagates to that ONE outer catch
+        (now itself ``_safe_send``-guarded), which logs with full chat-router context and
+        attempts exactly one error notification, rather than each of THESE sends separately
+        attempting a second, less-informative notification of their own.
 
         :param websocket: websocket connection to send response to
         :ptype websocket: Any
@@ -679,6 +743,16 @@ class WebSocketHandler:
         elif frame.type in self._frame_handlers:
             # app-registered frame type (e.g. scriob ``commit``): hand it the
             # frame + identity + a reply ``send``; the app owns its own authz.
+            #
+            # deliberately the RAW ``websocket.send_text``, not ``_safe_send`` (crash-safety
+            # audit note, third exception): an app handler may need to OBSERVE a send failure
+            # itself -- e.g. a long-running streamed handler that treats "the transport just
+            # died" as a signal to stop its own work early, not just a fire-and-forget notify.
+            # Wrapping it here would silently swallow that signal before the app ever sees it.
+            # Worst case (a handler that does NOT itself guard its ``send`` calls) is still
+            # connection-safe: any exception the handler doesn't catch propagates to THIS
+            # method's own caller in ``_message_loop`` (the per-frame safety net, already
+            # ``_safe_send``-guarded), so a crash still cannot reach the connection level.
             await self._frame_handlers[frame.type](
                 frame,
                 user_id=user_id,
@@ -687,7 +761,7 @@ class WebSocketHandler:
                 send=websocket.send_text,
             )
         else:
-            await websocket.send_text(Frame.error(f"unknown frame type: {frame.type}"))
+            await _safe_send(websocket, Frame.error(f"unknown frame type: {frame.type}"), context="unknown-frame-type")
 
     async def _authorize(self, websocket: Any, room_id: str, action: str, user_id: str) -> bool:
         """run an ``agent-acl`` gate for ``action`` on ``room_id``'s namespace.
@@ -720,7 +794,7 @@ class WebSocketHandler:
         try:
             principal = UUID(user_id) if user_id else None
         except ValueError:
-            await websocket.send_text(Frame.error(f"access denied: {action}"))
+            await _safe_send(websocket, Frame.error(f"access denied: {action}"), context="authorize-bad-principal")
             return False
         ns_entity = await self._ns_resolver(room_id)
         try:
@@ -732,7 +806,7 @@ class WebSocketHandler:
                 cache=self._acl_cache,
             )
         except AccessDenied:
-            await websocket.send_text(Frame.error(f"access denied: {action}"))
+            await _safe_send(websocket, Frame.error(f"access denied: {action}"), context="authorize-denied")
             return False
         return True
 
@@ -765,7 +839,7 @@ class WebSocketHandler:
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
-            await websocket.send_text(Frame.error("join requires a room"))
+            await _safe_send(websocket, Frame.error("join requires a room"), context="join-no-room")
             return
         if not await self._authorize(websocket, room_id, self._join_action, user_id):
             return
@@ -818,17 +892,19 @@ class WebSocketHandler:
         """
         room_id = frame.room
         if room_id is None:
-            await websocket.send_text(Frame.error("editor.op requires a room"))
+            await _safe_send(websocket, Frame.error("editor.op requires a room"), context="editor-op-no-room")
             return
         if self._room_fanout is None or self._op_handler is None:
-            await websocket.send_text(Frame.error("editor.op is not supported on this connection"))
+            await _safe_send(
+                websocket, Frame.error("editor.op is not supported on this connection"), context="editor-op-unsupported"
+            )
             return
         if room_id not in joined_rooms:
             # editing a room requires having joined it: the author needs its
             # pod subscribed to receive its own op back (the OT ack), and a
             # member is the authorization-clean unit. fail explicitly rather
             # than silently appending an op whose ack the author never sees.
-            await websocket.send_text(Frame.error("not joined to room"))
+            await _safe_send(websocket, Frame.error("not joined to room"), context="editor-op-not-joined")
             return
         if not await self._authorize(websocket, room_id, self._write_action, user_id):
             return
@@ -837,7 +913,7 @@ class WebSocketHandler:
         except OpRejected as rejected:
             # recoverable (e.g. an op-log CAS miss — the client is behind):
             # tell the sender, do NOT broadcast, keep the socket alive.
-            await websocket.send_text(Frame.error(rejected.message))
+            await _safe_send(websocket, Frame.error(rejected.message), context="editor-op-rejected")
             return
         op_frame = Frame(type="editor.op", room=room_id, payload=frame.payload, seq=result.seq)
         # broadcast to ALL members (no exclude): the author needs its own op
@@ -867,10 +943,10 @@ class WebSocketHandler:
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
-            await websocket.send_text(Frame.error(f"{frame.type} requires a room"))
+            await _safe_send(websocket, Frame.error(f"{frame.type} requires a room"), context="transient-no-room")
             return
         if room_id not in joined_rooms:
-            await websocket.send_text(Frame.error("not joined to room"))
+            await _safe_send(websocket, Frame.error("not joined to room"), context="transient-not-joined")
             return
         if not await self._authorize(websocket, room_id, self._write_action, user_id):
             return
@@ -937,13 +1013,16 @@ class WebSocketHandler:
             return
         try:
             async for payload in self._replay_source(room_id, from_seq):
-                await websocket.send_text(payload)
+                # stop replaying the moment a send fails -- the socket is dead, so attempting the
+                # rest of the tail is pointless (best-effort, not best-effort-repeated-forever).
+                if not await _safe_send(websocket, payload, context="replay-payload"):
+                    return
         except Exception:  # prawduct:allow prawduct/broad-except -- resume is best-effort: a replay-source error surfaces as one error frame and the socket stays live (the client can re-resume) rather than crashing the connection
             log.warning(
                 "resume replay failed; continuing live",
                 extra={"extra_data": {"room_id": room_id, "from_seq": from_seq}},
             )
-            await websocket.send_text(Frame.error("resume failed"))
+            await _safe_send(websocket, Frame.error("resume failed"), context="replay-source-except")
 
     async def _close_with_error(self, websocket: Any, error_message: str) -> None:
         """send error message and close websocket connection.

@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.acl import (
+    INTERNAL_AUDIENCE,
     AccessDenied,
     AclCache,
     ClaimsForAuthorization,
@@ -246,3 +247,78 @@ class TestAuthorizeFromClaimsInvalidSub:
                 cache=cache,
             )
         assert exc_info.value.reason == "invalid_sub"
+
+
+class TestClaimsFromVerifiedClaims:
+    """`ClaimsForAuthorization.from_verified_claims` derives
+    `is_internal_audience` from the token's own `aud` rather than trusting the
+    caller to assert it.
+
+    `is_internal_audience` decides whether `sub` may be treated as a real
+    internal principal id, so the derivation failing closed is the point: every
+    audience that is not exactly the internal one -- unknown, external, or
+    absent -- must yield `False` and be refused downstream.
+    """
+
+    def test_internal_audience_derives_true(self) -> None:
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(uuid4()), aud=INTERNAL_AUDIENCE)
+        assert claims.is_internal_audience is True
+
+    @pytest.mark.parametrize("aud", ["aibots:external", "some-other-service", ""])
+    def test_non_internal_audience_derives_false(self, aud: str) -> None:
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(uuid4()), aud=aud)
+        assert claims.is_internal_audience is False
+
+    def test_absent_audience_derives_false(self) -> None:
+        """A token predating the `aud` claim is NOT assumed internal here. This
+        is the authorization boundary, not the authentication one -- a
+        token-verifying consumer may need to tolerate a missing `aud` during
+        rollout, but treating an unlabelled token as internal at THIS point
+        would hand an unvouched-for subject to RBAC."""
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(uuid4()), aud=None)
+        assert claims.is_internal_audience is False
+
+    def test_act_reason_passes_through(self) -> None:
+        claims = ClaimsForAuthorization.from_verified_claims(
+            sub=str(uuid4()), aud=INTERNAL_AUDIENCE, act_reason="impersonation"
+        )
+        assert claims.act_reason == "impersonation"
+
+    def test_act_reason_defaults_to_none(self) -> None:
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(uuid4()), aud=INTERNAL_AUDIENCE)
+        assert claims.act_reason is None
+
+    @pytest.mark.asyncio
+    async def test_derived_external_audience_is_refused_end_to_end(self) -> None:
+        """The derivation and the refusal compose: an external `aud` string in,
+        `ExternalAudienceNotSupported` out, with no caller-asserted boolean
+        anywhere in between."""
+        user = uuid4()
+        ns_collection, cache, _ns = _setup(user_id=user)
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(user), aud="aibots:external")
+
+        with pytest.raises(ExternalAudienceNotSupported):
+            await authorize_from_claims(
+                namespace_collection=ns_collection,
+                namespace_name="memories.test",
+                action="read",
+                claims=claims,
+                cache=cache,
+            )
+
+    @pytest.mark.asyncio
+    async def test_derived_internal_audience_is_allowed_end_to_end(self) -> None:
+        """The mirror case, so the test above cannot pass merely because the
+        derivation returns False for everything."""
+        user = uuid4()
+        ns_collection, cache, _ns = _setup(user_id=user)
+        claims = ClaimsForAuthorization.from_verified_claims(sub=str(user), aud=INTERNAL_AUDIENCE)
+
+        result = await authorize_from_claims(
+            namespace_collection=ns_collection,
+            namespace_name="memories.test",
+            action="read",
+            claims=claims,
+            cache=cache,
+        )
+        assert result is not None
