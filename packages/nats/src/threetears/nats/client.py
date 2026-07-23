@@ -409,7 +409,8 @@ class Subscription:
         integration tests with no handle to the parent client at
         teardown time) from re-plumbing the client just to release a
         subscription. idempotent: a second call after the first is a
-        no-op.
+        no-op. like :meth:`NatsClient.unsubscribe`, this waits —
+        unbounded — for in-flight callbacks to finish unwinding.
 
         :return: nothing
         :rtype: None
@@ -1118,7 +1119,16 @@ class NatsClient:
         underlying nats-py client (waits for in-flight messages to
         process), and closes. idempotent — second call is a no-op.
 
-        :param drain_timeout: max time to wait for drain
+        ``drain_timeout`` bounds the nats-py drain only. The
+        unsubscribe pass that runs first joins each subscription's
+        in-flight callbacks and is **unbounded**: a callback that
+        suppresses :class:`asyncio.CancelledError`, or whose cleanup
+        blocks, stalls shutdown for as long as it takes. That is the
+        cost of not tearing the connection out from under a callback
+        mid-reply; handlers are expected to honour cancellation
+        promptly.
+
+        :param drain_timeout: max time to wait for the nats-py drain (does not cover the unsubscribe pass)
         :ptype drain_timeout: timedelta
         :return: nothing
         :rtype: None
@@ -1452,13 +1462,26 @@ class NatsClient:
         read ``msg.reply_subject`` and respond via
         :meth:`publish_reply`.
 
+        **ordering.** left unset (the default), ``max_in_flight`` gives
+        strictly serial, in-order dispatch: one callback runs to
+        completion before the next message is taken. **Setting it trades
+        that ordering guarantee away** — capped callbacks run
+        concurrently and may complete in any order. Only set it when the
+        handler is safe to interleave with itself.
+
+        In particular, a shared subscription carrying *stateful* traffic
+        keyed by some id (a conversation, an entity, an owned key) needs
+        its own per-key serialization on top: concurrent callbacks for
+        the same key race each other's read-modify-write and lazy-create
+        paths. Stateless one-shot handlers have no such hazard.
+
         :param subject: subject (point or wildcard pattern) to subscribe on
         :ptype subject: Subject
         :param cb: async callback receiving :class:`IncomingMessage` envelope
         :ptype cb: RawMessageCallback
         :param queue: optional queue group; messages on the subject load-balance across all subscribers in the same queue
         :ptype queue: str | None
-        :param max_in_flight: optional concurrency cap for in-flight callbacks (per-subscription)
+        :param max_in_flight: optional cap on concurrently-running callbacks (per-subscription); unset means serial + in-order, set means concurrent + unordered (see **ordering** above)
         :ptype max_in_flight: int | None
         :param deadletter_on_failure: when True (default) callback exceptions republish to ``{ns}.deadletter.{subject}``
         :ptype deadletter_on_failure: bool
@@ -1505,7 +1528,8 @@ class NatsClient:
         :ptype message_type: type[_T]
         :param queue: optional queue group
         :ptype queue: str | None
-        :param max_in_flight: optional concurrency cap
+        :param max_in_flight: optional cap on concurrently-running callbacks; unset means
+            serial + in-order, set means concurrent + unordered (see :meth:`subscribe`)
         :ptype max_in_flight: int | None
         :param deadletter_on_failure: when True (default) validation + callback exceptions deadletter
         :ptype deadletter_on_failure: bool
@@ -1549,7 +1573,8 @@ class NatsClient:
         :ptype message_type: type[BaseModel] | None
         :param queue: optional queue group
         :ptype queue: str | None
-        :param max_in_flight: optional concurrency cap
+        :param max_in_flight: optional cap on concurrently-running callbacks; unset means
+            serial + in-order, set means concurrent + unordered (see :meth:`subscribe`)
         :ptype max_in_flight: int | None
         :param deadletter_on_failure: deadletter on callback exception
         :ptype deadletter_on_failure: bool
@@ -1618,52 +1643,80 @@ class NatsClient:
                 if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
 
-        inflight: set[asyncio.Task[None]] = set()
+        def _log_loop_crash(exc: BaseException) -> None:
+            """record a dispatch-loop failure with the originating error's own type."""
+            log.error(
+                "subscription dispatch loop crashed",
+                extra={
+                    "extra_data": {
+                        "subject": subject.path,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    }
+                },
+            )
 
-        async def _run_bounded(msg: "_NatsMsg") -> None:
+        async def _run_bounded(msg: "_NatsMsg", slot: asyncio.Semaphore) -> None:
             """process one message under the concurrency cap, freeing the slot when done."""
             try:
                 await _dispatch_one(msg)
             finally:
-                assert semaphore is not None  # only spawned on the bounded (max_in_flight) path
-                semaphore.release()
+                slot.release()
+
+        async def _dispatch_serial() -> None:
+            """serial default (max_in_flight unset): one callback at a time.
+
+            preserves in-order processing for subscribers that rely on it, and keeps the
+            single in-flight callback inside this task so cancelling the dispatch task
+            cancels the callback with it.
+            """
+            async for msg in raw_sub.messages:
+                await _dispatch_one(msg)
+
+        async def _dispatch_bounded(slots: asyncio.Semaphore) -> None:
+            """bounded concurrency: keep at most ``max_in_flight`` callbacks in flight.
+
+            each callback runs as its OWN task, so several progress at once; awaiting the
+            callback inline here instead would serialize every message despite the cap.
+            a slot is acquired before spawning, so once the cap is reached the loop parks
+            here (holding at most one already-received message) and back-pressures.
+
+            the task group owns the callback tasks' lifetime: leaving the block awaits
+            them on normal loop exit (the subscription's message stream ending), and
+            cancels *and awaits* them when unsubscribe cancels this task. without that
+            join, a callback could still be mid-flight after ``unsubscribe`` returned and
+            find the connection drained out from under it.
+            """
+            async with asyncio.TaskGroup() as group:
+                try:
+                    async for msg in raw_sub.messages:
+                        await slots.acquire()
+                        # _dispatch_one never lets an Exception escape, so a sibling callback
+                        # can never trip the group's cancel-all-on-child-error semantics.
+                        group.create_task(_run_bounded(msg, slots))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — diag only
+                    # log INSIDE the group. an exception allowed to escape into
+                    # TaskGroup.__aexit__ is re-raised wrapped in an ExceptionGroup, so the
+                    # outer handler would only ever record error_type=ExceptionGroup and lose
+                    # the transport error's real type and message. swallowing it here also
+                    # lets the group join the already-running callbacks on the way out
+                    # instead of abandoning them.
+                    _log_loop_crash(exc)
 
         async def _dispatch() -> None:
             """drive subscription message loop."""
             try:
-                async for msg in raw_sub.messages:
-                    if semaphore is None:
-                        # serial default (max_in_flight unset): one callback at a time, preserving
-                        # in-order processing for subscribers that rely on it.
-                        await _dispatch_one(msg)
-                    else:
-                        # bounded concurrency: keep at most ``max_in_flight`` callbacks in flight.
-                        # Acquire a slot BEFORE accepting the next message so the loop back-pressures
-                        # at the cap, then run the callback as its OWN task (freeing its slot on
-                        # completion). Awaiting the callback here instead would serialize every
-                        # message despite the cap — the bug this cap was meant to avoid.
-                        await semaphore.acquire()
-                        task = asyncio.create_task(_run_bounded(msg))
-                        inflight.add(task)
-                        task.add_done_callback(inflight.discard)
+                if semaphore is None:
+                    await _dispatch_serial()
+                else:
+                    await _dispatch_bounded(semaphore)
             except asyncio.CancelledError:
-                # unsubscribe cancels this dispatch task; cancel the in-flight callback tasks too so
-                # they are not orphaned — mirroring the serial path, where the single in-flight await
-                # is cancelled together with the loop.
-                for task in list(inflight):
-                    task.cancel()
+                # graceful unsubscribe path
                 raise
             except Exception as exc:  # noqa: BLE001 — diag only
-                log.error(
-                    "subscription dispatch loop crashed",
-                    extra={
-                        "extra_data": {
-                            "subject": subject.path,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        }
-                    },
-                )
+                _log_loop_crash(exc)
 
         dispatch_task = asyncio.create_task(
             _dispatch(),
@@ -1695,6 +1748,12 @@ class NatsClient:
         """drop a subscription.
 
         idempotent — second call is a no-op.
+
+        cancels the dispatch task and waits for it, so every in-flight
+        callback has finished unwinding by the time this returns — the
+        caller can then close the connection without cutting a callback
+        off mid-reply. the wait is **unbounded**; a handler that
+        suppresses :class:`asyncio.CancelledError` blocks here.
 
         :param sub: subscription handle returned by :meth:`subscribe`
         :ptype sub: Subscription

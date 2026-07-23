@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -35,6 +36,17 @@ from threetears.nats import (
 # ---------------------------------------------------------------------------
 
 
+class _StreamBoom:
+    """queue sentinel making :class:`_FakeSubscription` fail mid-stream.
+
+    distinct from the ``None`` end-of-stream sentinel: this models the message iterator
+    raising (transport dropped, nats-py internal error) rather than ending cleanly.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
 class _FakeSubscription:
     """fake nats-py subscription with an asyncio.Queue-backed message stream."""
 
@@ -52,6 +64,8 @@ class _FakeSubscription:
                 msg = await self.queue.get()
                 if msg is None:
                     return
+                if isinstance(msg, _StreamBoom):
+                    raise RuntimeError(msg.message)
                 yield msg
 
         return _gen()
@@ -435,6 +449,136 @@ async def test_subscribe_serial_when_max_in_flight_unset() -> None:
         await asyncio.wait_for(done.acquire(), timeout=2.0)
     assert peak() == 1
     await raw.queue.put(None)
+    await sub.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_joins_callbacks_when_stream_ends() -> None:
+    """the dispatch loop ending normally waits for its in-flight callbacks.
+
+    Regression guard: the message stream can end on its own (server-side unsubscribe,
+    connection drain) rather than by cancellation. Cleaning up in-flight callbacks only on
+    the cancellation path left them running unowned — the loop task finished, so the later
+    ``unsubscribe`` cancelled an already-completed task and never reached them.
+    """
+    client, fake = _make_client()
+    release = asyncio.Event()
+    entered = asyncio.Semaphore(0)
+    finished = False
+
+    async def handler(_msg: IncomingMessage) -> None:
+        nonlocal finished
+        entered.release()
+        await release.wait()
+        finished = True
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=2)
+    raw = fake.subscribed[-1][2]
+    await raw.queue.put(_FakeMsg(data=b"{}"))
+    await asyncio.wait_for(entered.acquire(), timeout=2.0)
+
+    await raw.queue.put(None)  # stream ends while the callback is still in flight
+    await asyncio.sleep(0)
+    assert not sub.dispatch_task.done(), "loop must not finish while a callback is in flight"
+
+    release.set()
+    await asyncio.wait_for(sub.dispatch_task, timeout=2.0)
+    assert finished
+    await sub.unsubscribe()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_unsubscribe_awaits_inflight_cancellation() -> None:
+    """unsubscribe does not return until cancelled callbacks have finished unwinding.
+
+    Regression guard: firing ``task.cancel()`` without joining let ``unsubscribe`` — and so
+    :meth:`NatsClient.shutdown`, which unsubscribes and then drains the connection — return
+    while a callback was still running its cleanup, pulling the connection out from under an
+    in-flight reply. The serial path always joined its callback via the dispatch task.
+    """
+    client, fake = _make_client()
+    entered = asyncio.Semaphore(0)
+    cleanup_done = False
+
+    async def handler(_msg: IncomingMessage) -> None:
+        nonlocal cleanup_done
+        entered.release()
+        try:
+            await asyncio.Event().wait()  # park until cancelled
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)  # cleanup work that must be allowed to finish
+            cleanup_done = True
+            raise
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=2)
+    raw = fake.subscribed[-1][2]
+    await raw.queue.put(_FakeMsg(data=b"{}"))
+    await asyncio.wait_for(entered.acquire(), timeout=2.0)
+
+    await asyncio.wait_for(sub.unsubscribe(), timeout=2.0)
+    assert cleanup_done, "unsubscribe returned before the in-flight callback finished unwinding"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_unsubscribe_joins_every_sibling() -> None:
+    """all concurrently-parked callbacks are unwound before unsubscribe returns, not just one.
+
+    The cap's whole point is several callbacks in flight at once, so the teardown join has to
+    cover the full set — a partial join would leave siblings running against a closing
+    connection exactly when it matters most.
+    """
+    client, fake = _make_client()
+    entered = asyncio.Semaphore(0)
+    unwound: list[int] = []
+
+    async def handler(_msg: IncomingMessage) -> None:
+        entered.release()
+        try:
+            await asyncio.Event().wait()  # park until cancelled
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.02)  # cleanup work that must be allowed to finish
+            unwound.append(1)
+            raise
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=3)
+    raw = fake.subscribed[-1][2]
+    for _ in range(3):
+        await raw.queue.put(_FakeMsg(data=b"{}"))
+    for _ in range(3):
+        await asyncio.wait_for(entered.acquire(), timeout=2.0)
+
+    await asyncio.wait_for(sub.unsubscribe(), timeout=2.0)
+    assert len(unwound) == 3, f"only {len(unwound)}/3 callbacks finished unwinding"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_loop_crash_logs_real_error_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a message-stream failure is logged with its own error type, not a wrapper's.
+
+    Regression guard: the bounded path runs inside an ``asyncio.TaskGroup``, and an exception
+    allowed to escape into ``TaskGroup.__aexit__`` comes back wrapped in an ``ExceptionGroup``
+    — which would reduce every transport failure in the log to ``error_type=ExceptionGroup``
+    with the real message buried.
+    """
+    client, fake = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        return None
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler, max_in_flight=2)
+    raw = fake.subscribed[-1][2]
+
+    with caplog.at_level(logging.ERROR):
+        await raw.queue.put(_StreamBoom("nats transport went away"))
+        await asyncio.wait_for(sub.dispatch_task, timeout=2.0)
+
+    crashes = [rec for rec in caplog.records if rec.message == "subscription dispatch loop crashed"]
+    assert len(crashes) == 1
+    logged = crashes[0].extra_data  # type: ignore[attr-defined]
+    assert logged["error_type"] == "RuntimeError"
+    assert "nats transport went away" in logged["error"]
     await sub.unsubscribe()
 
 
