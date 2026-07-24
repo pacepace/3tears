@@ -70,7 +70,7 @@ from nats.errors import (
     TimeoutError as _NatsTimeoutError,
 )
 from pydantic import BaseModel, ValidationError
-from threetears.observe import get_logger
+from threetears.observe import get_logger, representative_exception
 
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
@@ -1644,14 +1644,21 @@ class NatsClient:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
 
         def _log_loop_crash(exc: BaseException) -> None:
-            """record a dispatch-loop failure with the originating error's own type."""
+            """record a dispatch-loop failure with the originating error's own type.
+
+            unwraps a ``BaseExceptionGroup`` first: an exception that escapes
+            into ``TaskGroup.__aexit__`` (the bounded-dispatch path) arrives
+            here wrapped, and logging the wrapper's type would name
+            ``ExceptionGroup`` instead of the real transport fault.
+            """
+            underlying = representative_exception(exc)
             log.error(
                 "subscription dispatch loop crashed",
                 extra={
                     "extra_data": {
                         "subject": subject.path,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
+                        "error_type": type(underlying).__name__,
+                        "error": str(underlying),
                     }
                 },
             )

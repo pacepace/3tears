@@ -18,6 +18,7 @@ from threetears.observe.logging import (
     get_context,
     get_logger,
     path_strip_prefixes,
+    representative_exception,
     set_context,
 )
 
@@ -340,3 +341,27 @@ class TestConfigureLogging:
             assert root.level == logging.WARNING
         finally:
             root.handlers = original_handlers
+
+
+class TestRepresentativeException:
+    """representative_exception unwraps a BaseExceptionGroup to its real fault."""
+
+    def test_plain_exception_passes_through(self):
+        boom = RuntimeError("real fault")
+        assert representative_exception(boom) is boom
+
+    def test_single_leaf_group_is_unwrapped(self):
+        boom = ValueError("real fault")
+        group = BaseExceptionGroup("wrapped", [boom])
+        assert representative_exception(group) is boom
+
+    def test_nested_group_is_descended_to_the_leaf(self):
+        boom = KeyError("real fault")
+        nested = BaseExceptionGroup("outer", [BaseExceptionGroup("inner", [boom])])
+        assert representative_exception(nested) is boom
+
+    def test_first_branch_is_chosen_for_a_multi_leaf_group(self):
+        first = RuntimeError("first")
+        second = ValueError("second")
+        group = BaseExceptionGroup("two", [first, second])
+        assert representative_exception(group) is first
