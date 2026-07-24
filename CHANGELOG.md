@@ -4,6 +4,22 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.18.0 -- 2026-07-24
+
+**Feature: `timestamptz` column type (`threetears.core.data`)** -- the declarable
+column-type closed set gains `timestamptz` alongside the existing naive `timestamp`.
+Until now a product could only declare naive `TIMESTAMP` columns, which forced any
+platform layer that speaks timezone-aware datetimes end to end (the datasource broker,
+whose deserialization binds aware-UTC) to either coerce or break on product writes.
+A product can now declare `column_type="timestamptz"` and get:
+
+- DDL: `build_create_table_sql` renders `TIMESTAMPTZ` (`sql_builder._COLUMN_TYPE_MAP`).
+- L1 cache: `collection_factory` maps it to a timezone-aware `DateTime(timezone=True)`
+  and to the Python `datetime` field type, so aware datetimes round-trip through L2.
+
+`timestamp` (naive) is unchanged and remains valid; the two are distinct DDL types.
+This is additive -- existing declarations keep their exact behavior.
+
 ## v0.17.9 -- 2026-07-23
 
 **Feature: provider-native structured output (`threetears.models.providers`)** -- every provider

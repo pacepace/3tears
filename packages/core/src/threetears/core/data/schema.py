@@ -26,6 +26,7 @@ _ALLOWED_COLUMN_TYPES = frozenset(
         "bigint",
         "boolean",
         "timestamp",
+        "timestamptz",
         "uuid",
         "jsonb",
         "decimal",
