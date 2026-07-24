@@ -49,7 +49,7 @@ Where a sibling FK depends on `id` alone (the FK contract pre-dates the partitio
 
 1. accept the partition column as a parameter (positional or keyword-only), so the SQL generator can include the partition predicate naturally; OR
 2. be decorated with `@spans_partitions`, declaring "this method deliberately fans out across partition values supplied as a tuple"; OR
-3. appear in `cls._partition_exempt_methods` — a narrow allowlist for genuine framework overrides where the partition is implicit (e.g. `count_total` on a per-pod operational metric).
+3. appear in `cls.partition_exempt_methods` — a narrow allowlist for genuine framework overrides where the partition is implicit (e.g. `count_total` on a per-pod operational metric).
 
 A subclass that violates the guard fails at import time with `PartitionEnforcementError`. There is no runtime fallback. The bug surfaces during CI before any cross-partition leak can ship. Source: `packages/core/src/threetears/core/collections/schema_backed.py:610` (`PartitionEnforcementError`), `:631` (`spans_partitions`), `:784` (`SchemaBackedCollection.__init_subclass__`). Commit `2ac0bdd`.
 
@@ -100,7 +100,7 @@ The deferral is documented at `_DEFERRED_TABLES` in the walker, with each entry 
 - `PartitionEnforcementError` — raised at class-definition time. Source: `packages/core/src/threetears/core/collections/schema_backed.py:610`.
 - `@spans_partitions` decorator — call-time guard requiring tuple-shape, non-empty fan-out argument. Source: `packages/core/src/threetears/core/collections/schema_backed.py:631`.
 - `SchemaBackedCollection.__init_subclass__` — class-definition-time guard. Source: `packages/core/src/threetears/core/collections/schema_backed.py:784`.
-- `_partition_exempt_methods: ClassVar[frozenset[str]]` — narrow allowlist for framework overrides. Source: `packages/core/src/threetears/core/collections/schema_backed.py:782`.
+- `partition_exempt_methods: ClassVar[frozenset[str]]` — narrow allowlist for framework overrides. Source: `packages/core/src/threetears/core/collections/schema_backed.py:782`.
 
 12 unit tests cover schema validation (5), subclass enforcement (4), and decorator call-time guards (3).
 
@@ -133,7 +133,7 @@ Note: the commit-by-commit walker counts are non-monotonic because each conversi
 These are **rejected on code review**, specific to this shard's lessons:
 
 - **Adding a `partition=True` column without the `__init_subclass__` guard.** The guard is `SchemaBackedCollection.__init_subclass__`. If a Collection's schema declares a partition column but the Collection does not inherit `SchemaBackedCollection`, the guard does not fire. Every partitioned Collection must inherit `SchemaBackedCollection` (not bare `BaseCollection`).
-- **Adding `_partition_exempt_methods` entries with rationales like "internal helper" or "tests need this."** The exemption set is a last resort with **specific** rationales. The first two resolution paths are: (1) add the partition column to the signature; (2) decorate with `@spans_partitions`. A test that needs cross-partition access is testing the cross-partition retrieval surface and should call the `@spans_partitions` method.
+- **Adding `partition_exempt_methods` entries with rationales like "internal helper" or "tests need this."** The exemption set is a last resort with **specific** rationales. The first two resolution paths are: (1) add the partition column to the signature; (2) decorate with `@spans_partitions`. A test that needs cross-partition access is testing the cross-partition retrieval surface and should call the `@spans_partitions` method.
 - **Translating `tuple[UUID, ...]` to `list[UUID]` inside the Collection method "to make `ANY($1::uuid[])` work."** asyncpg accepts both; `list(agent_ids)` at the SQL boundary is the right place to coerce. The tuple-shape contract on the API is what matters.
 - **Walking the partition-column AST walker into a new mode without a self-test.** When `collections-task-03` adds a hub-side walker, the hub walker carries its own `_PARTITIONED_TABLES` and inherits the same heuristics. The walker file's tests assert on the discovery list shape; new partition tables come with a discovery-list assertion update in the same commit.
 - **Dropping the partition column from a SQL literal "because the caller knows what partition they're in."** Future callers will not. The partition predicate is structural defense, not redundancy. The walker's heuristic is deliberately literal-match — silencing it by spelling the partition column in a tautological predicate (`row_scope = row_scope`) is a code-review reject.
