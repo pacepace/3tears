@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-knowledge"
-version = "0.17.8"
+version = "0.17.9"
 description = "Governed-knowledge retrieval + injection for LLM agents -- concepts, playbook entries, three-scope shadow merge, and before_model middleware"
 readme = "README.md"
 requires-python = ">=3.14"
