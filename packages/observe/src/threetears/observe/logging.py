@@ -37,6 +37,7 @@ __all__ = [
     "get_context",
     "get_logger",
     "path_strip_prefixes",
+    "representative_exception",
     "set_context",
 ]
 
@@ -79,6 +80,29 @@ def clear_context() -> None:
 def get_context() -> dict[str, str]:
     """Return a copy of the current context dict."""
     return _log_context.get().copy()
+
+
+def representative_exception(exc: BaseException) -> BaseException:
+    """Unwrap a (possibly nested) exception group to a representative leaf.
+
+    ``asyncio.TaskGroup.__aexit__`` re-raises a child task's failure wrapped in
+    a :class:`BaseExceptionGroup`, so a caller that logs ``type(exc).__name__``
+    records ``ExceptionGroup`` -- the wrapper -- and loses the real fault's type
+    and message. Call this at a log site that may receive a group so the logged
+    ``error_type`` names the actual error. Descends the first branch of each
+    nested group to the underlying leaf; a non-group exception is returned
+    unchanged. The first leaf is representative for the common case where a
+    ``TaskGroup``'s cancel-all-on-first-error semantics leave a single genuine
+    failure.
+
+    :param exc: the caught exception, possibly a ``BaseExceptionGroup``
+    :ptype exc: BaseException
+    :return: the underlying leaf exception (or ``exc`` when not a group)
+    :rtype: BaseException
+    """
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc
 
 
 # ---------------------------------------------------------------------------

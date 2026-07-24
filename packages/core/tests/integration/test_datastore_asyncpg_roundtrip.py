@@ -180,3 +180,58 @@ class TestVectorRoundTrip:
         cached = l1_backend.select_by_id(table, "e1")
         assert cached is not None
         assert cached["embedding"] == [0.1, 0.2, 0.3]
+
+
+class TestTimestamptzRoundTrip:
+    """timestamptz columns provision as TIMESTAMPTZ and keep tz-awareness."""
+
+    async def test_aware_datetime_round_trips_and_ddl_is_timestamptz(
+        self, store: DataStore, pg_pool: asyncpg.Pool
+    ) -> None:
+        """a timestamptz column provisions aware and round-trips aware.
+
+        writes an aware datetime, evicts L1, re-promotes from L3 through the
+        raw pool, and asserts the value comes back timezone-aware (asyncpg's
+        TIMESTAMPTZ decoder returns aware datetimes; a naive TIMESTAMP column
+        would return naive). also asserts the provisioned DDL types: the
+        timestamptz column is ``timestamp with time zone`` and the naive
+        timestamp column is ``timestamp without time zone``.
+        """
+        from datetime import datetime, timezone
+
+        # date_scheduled is a plain declared column (not one of the framework
+        # auto-stamped date_created/date_updated fields), so the explicit value
+        # written below survives round-trip unchanged.
+        schema_name = _unique("events")
+        events = await store.create_table(
+            TableDef(
+                name=schema_name,
+                columns=[
+                    ColumnDef(name="id", column_type="text", primary_key=True),
+                    ColumnDef(name="date_scheduled", column_type="timestamptz"),
+                    ColumnDef(name="date_naive", column_type="timestamp"),
+                ],
+            )
+        )
+
+        aware = datetime(2026, 7, 24, 20, 24, 4, tzinfo=timezone.utc)
+        entity = events.create({"id": "e1", "date_scheduled": aware, "date_naive": None})
+        await entity.save()
+
+        await events.invalidate_cache("e1")
+        refreshed = await events.get("e1")
+        assert refreshed is not None
+        got = refreshed.date_scheduled
+        assert isinstance(got, datetime)
+        assert got.tzinfo is not None
+        assert got == aware
+
+        # the provisioned columns carry the declared awareness
+        rows = await pg_pool.fetch(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE table_name = $1 AND column_name IN ('date_scheduled', 'date_naive')",
+            schema_name,
+        )
+        types = {r["column_name"]: r["data_type"] for r in rows}
+        assert types["date_scheduled"] == "timestamp with time zone"
+        assert types["date_naive"] == "timestamp without time zone"

@@ -39,6 +39,7 @@ from threetears.observe.logging import (
     configure_third_party_logging,
     get_context,
     get_logger,
+    representative_exception,
     set_context,
 )
 from threetears.observe.metrics import counter, gauge, histogram, metered
@@ -60,6 +61,7 @@ __all__ = [
     "get_logger",
     "histogram",
     "metered",
+    "representative_exception",
     "set_context",
     "set_span_attribute",
     "retry_with_backoff",

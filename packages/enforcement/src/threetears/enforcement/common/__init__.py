@@ -21,6 +21,10 @@ from threetears.enforcement.common.pyproject_discovery import (
     discover_src_roots,
     PyprojectError,
 )
+from threetears.enforcement.common.git_layout import (
+    find_worktree_root,
+    repo_identity,
+)
 from threetears.enforcement.common.inheritance import (
     ClassBaseGraph,
     collect_class_base_graph,
@@ -62,6 +66,7 @@ __all__ = [
     "extract_base_names",
     "find_local_src_roots",
     "find_repo_root",
+    "find_worktree_root",
     "is_logger_call",
     "is_private_name",
     "is_suppress_call",
@@ -69,6 +74,7 @@ __all__ = [
     "parse_exemptions_with_rationale",
     "parse_python_file",
     "relative_posix_path",
+    "repo_identity",
     "resolve_mode",
     "transitively_subclasses_any",
 ]
