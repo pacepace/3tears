@@ -280,3 +280,88 @@ class TestRealPyprojectShapesRoundTrip:
             pytest.skip(f"3tears repo root not at expected location: {threetears}")
         roots = discover_src_roots(threetears)
         assert any(r.name == "src" for r in roots)
+
+
+class TestGitWorktreeDedupe:
+    """a worktree must not pull its own repo's OTHER checkout into the graph.
+
+    reproduces the real failure: developing repo A in a git worktree,
+    where A path-deps to sibling repo B and B path-deps back to A's
+    ORIGINAL checkout. without dedupe the discovered roots contain two
+    copies of A's package tree, module resolution goes ambiguous, and
+    walkers report phantom violations in files nobody touched.
+    """
+
+    def _make_main_checkout(self, root: Path, pyproject_text: str) -> Path:
+        """build a path-dep repo shaped like an ordinary git checkout."""
+        _make_repo(root, pyproject_text)
+        (root / ".git").mkdir()
+        return root
+
+    def _make_worktree_of(self, root: Path, main_checkout: Path, name: str) -> Path:
+        """build a git-worktree-shaped sibling copy of ``main_checkout``."""
+        _make_repo(root, (main_checkout / "pyproject.toml").read_text())
+        worktree_gitdir = main_checkout / ".git" / "worktrees" / name
+        worktree_gitdir.mkdir(parents=True)
+        (worktree_gitdir / "commondir").write_text("../..\n")
+        (root / ".git").write_text(f"gitdir: {worktree_gitdir}\n")
+        return root
+
+    def test_other_checkout_of_same_repo_is_skipped(self, tmp_path: Path) -> None:
+        """the worktree's own src root wins; the original checkout's is dropped."""
+        hub = self._make_main_checkout(
+            tmp_path / "hub",
+            '[project]\nname = "hub"\n[tool.uv.sources]\nsdk = {path = "../sdk"}\n',
+        )
+        self._make_main_checkout(
+            tmp_path / "sdk",
+            '[project]\nname = "sdk"\n[tool.uv.sources]\nhub = {path = "../hub"}\n',
+        )
+        hub_worktree = self._make_worktree_of(tmp_path / "hub-feature", hub, "hub-feature")
+
+        roots = discover_src_roots(hub_worktree)
+
+        assert (hub_worktree / "src").resolve() in roots
+        assert (hub / "src").resolve() not in roots
+        assert (tmp_path / "sdk" / "src").resolve() in roots
+
+    def test_genuinely_separate_repos_both_kept(self, tmp_path: Path) -> None:
+        """dedupe keys on repo identity, never on package or directory name."""
+        self._make_main_checkout(tmp_path / "core", '[project]\nname = "core"\n')
+        consumer = self._make_main_checkout(
+            tmp_path / "consumer",
+            '[project]\nname = "consumer"\n[tool.uv.sources]\ncore = {path = "../core"}\n',
+        )
+        roots = discover_src_roots(consumer)
+        assert (tmp_path / "core" / "src").resolve() in roots
+        assert (consumer / "src").resolve() in roots
+
+    def test_workspace_members_of_one_repo_all_kept(self, tmp_path: Path) -> None:
+        """members share the repo's identity, so none may be deduped away.
+
+        3tears' own ``packages/*`` all live in ONE git repo; a dedupe
+        keyed on identity alone would keep the workspace root and drop
+        every member.
+        """
+        workspace = self._make_main_checkout(
+            tmp_path / "ws",
+            '[project]\nname = "ws"\n[tool.uv.workspace]\nmembers = ["packages/*"]\n',
+        )
+        _make_repo(workspace / "packages" / "alpha", '[project]\nname = "alpha"\n')
+        _make_repo(workspace / "packages" / "beta", '[project]\nname = "beta"\n')
+
+        roots = discover_src_roots(workspace)
+
+        assert (workspace / "packages" / "alpha" / "src").resolve() in roots
+        assert (workspace / "packages" / "beta" / "src").resolve() in roots
+
+    def test_non_git_directories_are_unaffected(self, tmp_path: Path) -> None:
+        """without any ``.git`` marker the walk behaves exactly as before."""
+        target = _make_repo(tmp_path / "core", '[project]\nname = "core"\n')
+        consumer = _make_repo(
+            tmp_path / "consumer",
+            '[project]\nname = "consumer"\n[tool.uv.sources]\ncore = {path = "../core"}\n',
+        )
+        roots = discover_src_roots(consumer)
+        assert (target / "src").resolve() in roots
+        assert (consumer / "src").resolve() in roots

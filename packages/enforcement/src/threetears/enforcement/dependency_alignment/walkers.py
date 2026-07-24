@@ -326,9 +326,15 @@ def _collect_all_imports(
                 for child in group:
                     visit(child, is_shielded)
             return
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.stmt):
-                visit(child, is_shielded)
+        # distinct name from the ``child`` bound by the branches above:
+        # those iterate ``list[ast.stmt]`` bodies, whereas
+        # ``iter_child_nodes`` yields the wider ``ast.AST``. reusing the
+        # name would rebind an already-narrowed local to a supertype,
+        # which mypy rejects even though the isinstance guard below makes
+        # it correct at runtime.
+        for descendant in ast.iter_child_nodes(node):
+            if isinstance(descendant, ast.stmt):
+                visit(descendant, is_shielded)
 
     for stmt in tree.body:
         visit(stmt, False)
