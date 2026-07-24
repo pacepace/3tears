@@ -474,7 +474,7 @@ class TestPartitionEnforcementSubclass:
         assert _SpansCollection.schema.partition_column == "agent_id"
 
     def test_partition_exempt_methods_allowlist(self) -> None:
-        """``_partition_exempt_methods`` allowlist is honored."""
+        """``partition_exempt_methods`` allowlist is honored."""
 
         class _ExemptCollection(SchemaBackedCollection[_PartitionedEntity]):
             primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
@@ -487,7 +487,7 @@ class TestPartitionEnforcementSubclass:
                 ],
             )
             # rationale: per-pod operational summary for monitoring
-            _partition_exempt_methods = frozenset({"count_total"})
+            partition_exempt_methods = frozenset({"count_total"})
 
             @property
             def table_name(self) -> str:

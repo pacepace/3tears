@@ -165,7 +165,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
-    _partition_exempt_methods = frozenset(
+    partition_exempt_methods = frozenset(
         {
             "list_by_customer",
             "list_all",
@@ -474,7 +474,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("group_id", "id")
-    _partition_exempt_methods = frozenset(
+    partition_exempt_methods = frozenset(
         {
             "load_for_user",
             "load_for_agent",
@@ -841,7 +841,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "assignment_id")
-    _partition_exempt_methods = frozenset(
+    partition_exempt_methods = frozenset(
         {
             "load_for_groups",
             "ensure_group_role_assignment",
@@ -1262,7 +1262,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
-    _partition_exempt_methods = frozenset(
+    partition_exempt_methods = frozenset(
         {
             "delete_from_store",
             "save_entity",
