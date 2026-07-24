@@ -20,6 +20,7 @@
 #   docker buildx bake hub               # hub consumer image
 #   docker buildx bake admin             # admin agent consumer image
 #   docker buildx bake schema            # schema agent consumer image
+#   docker buildx bake identity          # identity-core/identity-edge consumer image
 #   docker buildx bake all               # everything
 #
 # The cross-target `contexts` wiring (target:threetears-base, target:aibots-base)
@@ -39,7 +40,7 @@ variable "VERSION" {
   # without any per-Dockerfile string to keep in sync. The Dockerfile ARG
   # defaults are now neutral standalone-build fallbacks only -- bake always
   # injects the resolved value via ``args``.
-  default = "v0.17.8"
+  default = "v0.17.9"
 }
 
 # Registry namespace every image is tagged under and every base image is
@@ -77,6 +78,10 @@ group "default" {
   # otherwise-unnecessary clone and produces a "context not found" bake
   # error for anyone following the documented prerequisites. opt into
   # building admin via the explicit `admin` target or the `all` group.
+  # identity is excluded for the identical reason: its context lives in
+  # the separate 14-eng-ai-bot-identity sibling repo, also not one of the
+  # documented prerequisites -- opt in via the explicit `identity` target
+  # or the `all` group.
   targets = ["threetears-base", "aibots-base", "hub", "schema", "agent"]
 }
 
@@ -85,14 +90,15 @@ group "base" {
 }
 
 group "consumers" {
-  # every consumer image; requires the admin repo as a sibling
-  targets = ["hub", "admin", "schema", "agent"]
+  # every consumer image; requires the admin and identity repos as siblings
+  targets = ["hub", "admin", "schema", "agent", "identity"]
 }
 
 group "all" {
-  # everything (bases + every consumer); requires the admin repo as a
-  # sibling. invoke explicitly when you want admin built locally
-  targets = ["threetears-base", "aibots-base", "hub", "admin", "schema", "agent"]
+  # everything (bases + every consumer); requires the admin and identity
+  # repos as siblings. invoke explicitly when you want admin/identity built
+  # locally
+  targets = ["threetears-base", "aibots-base", "hub", "admin", "schema", "agent", "identity"]
 }
 
 # ---------------------------------------------------------------------------
@@ -205,5 +211,44 @@ target "agent" {
   tags = [
     "${REGISTRY}/aibots-agent:${VERSION}",
     "${REGISTRY}/aibots-agent:latest",
+  ]
+}
+
+# identity-core (NATS-native RPC service) + identity-edge (thin HTTP relay), two
+# processes from one image (CMD defaults to identity-core; override to identity-edge
+# at deploy time). Unlike every other consumer target above, this one does NOT consume
+# aibots-base: its own Dockerfile's docstring documents that this repo is deliberately
+# NOT part of the 3tears/docker-bake.hcl shared-base-image pipeline -- its dependencies
+# resolve entirely from published PyPI packages (plain registry pins, no
+# [tool.uv.sources] path override), so a plain standalone python base image is
+# sufficient. No `contexts`/`args` block, therefore -- there is no aibots-base to wire in.
+target "identity" {
+  inherits   = ["common"]
+  context    = "../14-eng-ai-bot-identity"
+  dockerfile = "Dockerfile"
+  tags = [
+    "${REGISTRY}/aibots-identity:${VERSION}",
+    "${REGISTRY}/aibots-identity:latest",
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# 3tears-scrape's nodriver sidecar (AGPL-3.0 isolation boundary)
+# ---------------------------------------------------------------------------
+
+# Standalone, genuinely separate-process HTTP wrapper around nodriver
+# (AGPL-3.0) -- never imported as a Python library by 3tears-scrape (MIT).
+# In-repo context (unlike the cross-repo consumer targets above), its own
+# base image (python:3.12-slim-bookworm, not threetears-base/aibots-base),
+# not wired into any group by default -- opt in explicitly, the same way
+# `admin` is, since not every 3tears-scrape consumer needs the sidecar
+# backend (CamoufoxDriver is a fully in-process alternative).
+target "nodriver-sidecar" {
+  inherits   = ["common"]
+  context    = "packages/scrape/sidecar"
+  dockerfile = "Dockerfile"
+  tags = [
+    "${REGISTRY}/nodriver-sidecar:${VERSION}",
+    "${REGISTRY}/nodriver-sidecar:latest",
   ]
 }

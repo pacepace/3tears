@@ -12,6 +12,7 @@ plus the fail-loud guards on a partial identity config.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,6 +36,19 @@ def _signing_key_pem() -> str:
     ).decode("utf-8")
 
 
+def _set_signing_key_ref(monkeypatch: pytest.MonkeyPatch, pem: str) -> None:
+    """provision THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF to resolve to ``pem``.
+
+    the entrypoint reads a secret REFERENCE (``threetears.core.security.secret_refs``), never the
+    raw key: publish ``pem`` under a private carrier var and point a plain ``env://`` ref at it.
+    """
+    monkeypatch.setenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_TEST_RAW", pem)
+    monkeypatch.setenv(
+        "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF",
+        "env://THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_TEST_RAW",
+    )
+
+
 @pytest.mark.asyncio
 async def test_identity_path_hands_toolserver_a_verifiable_token(
     monkeypatch: pytest.MonkeyPatch,
@@ -42,7 +56,7 @@ async def test_identity_path_hands_toolserver_a_verifiable_token(
     """with the signing key + pod id + issuer set, ToolServer gets an auth_token that mints a
     JWT verifiable against the pod's public JWKS (issuer + kid = pod id), and NO static creds."""
     pem = _signing_key_pem()
-    monkeypatch.setenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY", pem)
+    _set_signing_key_ref(monkeypatch, pem)
     monkeypatch.setenv("THREETEARS_TOOL_POD_ID", _POD_ID)
     monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
     monkeypatch.delenv("THREETEARS_TOOL_POD_CUSTOMER_ID", raising=False)
@@ -67,21 +81,54 @@ async def test_identity_path_hands_toolserver_a_verifiable_token(
 
 
 @pytest.mark.asyncio
+async def test_identity_path_resolves_a_k8s_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF also resolves a k8s:// mounted-Secret ref.
+
+    mirrors the ``env://`` / ``k8s://`` coverage pattern in
+    ``3tears/packages/datasources/tests/unit/test_secrets.py``.
+    """
+    pem = _signing_key_pem()
+    secret_dir = tmp_path / "secrets"
+    (secret_dir / "builtin-tool-pod").mkdir(parents=True)
+    (secret_dir / "builtin-tool-pod" / "identity-signing-key").write_text(pem, encoding="utf-8")
+    monkeypatch.setenv("THREETEARS_DATASOURCE_SECRETS_DIR", str(secret_dir))
+    monkeypatch.setenv(
+        "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF",
+        "k8s://builtin-tool-pod/identity-signing-key",
+    )
+    monkeypatch.setenv("THREETEARS_TOOL_POD_ID", _POD_ID)
+    monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
+    monkeypatch.delenv("THREETEARS_TOOL_POD_CUSTOMER_ID", raising=False)
+
+    with patch("threetears.agent.tools.serve.ToolServer") as tool_server_cls:
+        tool_server_cls.return_value = MagicMock()
+        await _BuiltinToolBootstrap("builtin").build_server()
+
+    provider = tool_server_cls.call_args.kwargs["auth_token"]
+    verifying_jwks = IdentityMinter.from_pem(pem, kid=_POD_ID, issuer=_ISSUER).jwks()
+    claims = verify_identity_token(provider(), jwks=verifying_jwks, issuer=_ISSUER)
+    assert claims.sub == _POD_ID
+
+
+@pytest.mark.asyncio
 async def test_missing_signing_key_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     """no signing key -> crash startup (the static-credential fallback was deleted, v0.14.1)."""
-    monkeypatch.delenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF", raising=False)
     # even with a static user/password present, there is NO fallback -- per-key is mandatory.
     monkeypatch.setenv("THREETEARS_NATS_USER", "tooling")
     monkeypatch.setenv("THREETEARS_NATS_PASSWORD", "secret")
 
-    with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY is required"):
+    with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is required"):
         await _BuiltinToolBootstrap("builtin").build_server()
 
 
 @pytest.mark.asyncio
 async def test_identity_key_without_pod_id_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     """a signing key with no pod id is a partial config -> crash (never silent fallback)."""
-    monkeypatch.setenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY", _signing_key_pem())
+    _set_signing_key_ref(monkeypatch, _signing_key_pem())
     monkeypatch.delenv("THREETEARS_TOOL_POD_ID", raising=False)
     monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
 
@@ -92,7 +139,7 @@ async def test_identity_key_without_pod_id_fails_loud(monkeypatch: pytest.Monkey
 @pytest.mark.asyncio
 async def test_identity_key_without_issuer_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
     """a signing key with no connect issuer is a partial config -> crash."""
-    monkeypatch.setenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY", _signing_key_pem())
+    _set_signing_key_ref(monkeypatch, _signing_key_pem())
     monkeypatch.setenv("THREETEARS_TOOL_POD_ID", _POD_ID)
     monkeypatch.delenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", raising=False)
 

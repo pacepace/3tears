@@ -73,6 +73,7 @@ from threetears.agent.acl.audit_vocabulary import (
     RbacEventType,
 )
 from threetears.agent.acl.authorize import (
+    INTERNAL_AUDIENCE,
     AccessDenied,
     ClaimsForAuthorization,
     ExternalAudienceNotSupported,
@@ -156,6 +157,7 @@ from threetears.agent.acl.types import (
 )
 
 __all__ = [
+    "INTERNAL_AUDIENCE",
     "AccessDenied",
     "AclCache",
     "ActorMembershipEntry",

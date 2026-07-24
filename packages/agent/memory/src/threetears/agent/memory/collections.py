@@ -3477,7 +3477,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     # before this override runs. exempting the framework override
     # keeps the partition contract on the read surface
     # (``find_by_conversation``) without weakening the static guard.
-    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"save_to_store"})
+    partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"save_to_store"})
     # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``
     # to match prod (prod ``information_schema`` confirms the default).
     # ``date_created`` is also immutable per the standard 3tears

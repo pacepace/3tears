@@ -44,6 +44,7 @@ from threetears.agent.acl.types import (
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "INTERNAL_AUDIENCE",
     "AccessDenied",
     "ClaimsForAuthorization",
     "ExternalAudienceNotSupported",
@@ -67,6 +68,21 @@ __all__ = [
 # `identity_core/rbac_rpc.py`'s module docstring already documents for the
 # claim-grant subject strings), never silently misapplies.
 _IMPERSONATION_ACT_REASON = "impersonation"
+
+# The `aud` claim value denoting a token minted for a consumer INSIDE the
+# platform trust boundary -- the only audience whose `sub` is a real internal
+# `principal_id`. Duplicated from identity-core's own `TokenAudience.INTERNAL`
+# for the identical reason `_IMPERSONATION_ACT_REASON` above is: identity-core
+# depends on this package, never the reverse, and this is a small, stable wire
+# vocabulary rather than a type this package should own. A value mismatch
+# between the two repos fails CLOSED here too -- an unrecognized audience
+# yields `is_internal_audience=False` and `authorize_from_claims` refuses,
+# rather than admitting a token it cannot vouch for.
+#
+# Public (unlike `_IMPERSONATION_ACT_REASON`) because consuming apps building
+# a `ClaimsForAuthorization` need to name the same value; exported so they do
+# not each hardcode the string.
+INTERNAL_AUDIENCE = "aibots:internal"
 
 log = get_logger(__name__)
 
@@ -211,6 +227,40 @@ class ClaimsForAuthorization:
     sub: str
     is_internal_audience: bool
     act_reason: str | None = None
+
+    @classmethod
+    def from_verified_claims(
+        cls, *, sub: str, aud: str | None, act_reason: str | None = None
+    ) -> ClaimsForAuthorization:
+        """Build from a verified token's own claims, deriving
+        `is_internal_audience` from `aud` instead of having the caller assert it.
+
+        Prefer this over the plain constructor. `is_internal_audience` decides
+        whether `sub` may be treated as a real internal `principal_id`, so a
+        caller that computes the boolean itself is one typo away from handing an
+        external token's subject to RBAC as though it were internal. Passing the
+        `aud` claim through and deriving here makes the token itself the
+        authority, which is the property `authorize_from_claims`'s
+        :class:`ExternalAudienceNotSupported` guard assumes it already has.
+
+        Fails CLOSED: any `aud` that is not exactly :data:`INTERNAL_AUDIENCE` --
+        including `None`, for a token predating the claim -- yields
+        `is_internal_audience=False`, and `authorize_from_claims` then refuses.
+        Deliberately NOT tolerant of a missing `aud` the way a token-verifying
+        consumer may need to be during rollout: this is the authorization
+        boundary rather than the authentication one, and treating an unlabelled
+        token as internal here is precisely the mistake worth making impossible.
+
+        :param sub: the token's `sub` claim
+        :ptype sub: str
+        :param aud: the token's `aud` claim, or `None` when absent
+        :ptype aud: str | None
+        :param act_reason: the token's `act_reason` claim
+        :ptype act_reason: str | None
+        :return: claims with `is_internal_audience` derived from `aud`
+        :rtype: ClaimsForAuthorization
+        """
+        return cls(sub=sub, is_internal_audience=aud == INTERNAL_AUDIENCE, act_reason=act_reason)
 
 
 @traced

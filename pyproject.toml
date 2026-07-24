@@ -184,9 +184,30 @@ select = ["SLF"]
 # OTel ``_TRACER_PROVIDER_SET_ONCE._done`` escape as test_tracking.py above.
 # paired entry lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/tests/unit/models/test_tracking_dimensions.py" = ["SLF001"]
+# ScrapeCollection's in-memory L3 fallback (self._rows) has no public
+# accessor -- tests assert directly on it to prove writes/deletes reach
+# the fallback store when no real L3 pool is configured, the exact shape
+# every other 3tears collection's own unit tests use for the same
+# assertion. No paired _underscore_exemptions.txt entry: the custom
+# underscore_access enforcement walker only flags base-class method
+# shadowing, not test-fixture attribute access, so this ruff-only ignore
+# doesn't need one.
+"packages/scrape/tests/test_collections.py" = ["SLF001"]
+# The sidecar's own module-level globals (_browser/_ready) and its
+# lazy-warmup hook (_warm_up) have no public accessor -- tests directly
+# set/read them to drive cold-start/warm-start/retry scenarios without a
+# real Chromium launch. Same no-paired-exemptions-entry reasoning as
+# test_collections.py above.
+"packages/scrape/sidecar/tests/test_render_contract.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
-addopts = "--import-mode=importlib"
+# ``packages/scrape/sidecar`` is a separate deployable with its own
+# ``pyproject.toml``/venv and its own AGPL-isolated dependency set
+# (``nodriver``), deliberately NOT a member of this workspace. Its tests
+# run in that sidecar's own CI, so the workspace sweep has to skip the
+# tree -- collecting it here fails at import on a ``nodriver`` that the
+# workspace venv will never install.
+addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
 # Multiple packages carry a same-named ``tests`` package (e.g.
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode
@@ -245,6 +266,7 @@ mypy_path = [
     "packages/langgraph/src",
     "packages/registry/src",
     "packages/scheduled-jobs/src",
+    "packages/scrape/src",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
@@ -269,6 +291,7 @@ files = [
     "packages/langgraph/src",
     "packages/registry/src",
     "packages/scheduled-jobs/src",
+    "packages/scrape/src",
 ]
 exclude = [
     "^packages/[^/]+/tests/",
@@ -309,6 +332,8 @@ module = [
     "freezegun.*",
     "nkeys",
     "nkeys.*",
+    "yaml",
+    "yaml.*",
 ]
 ignore_missing_imports = true
 
@@ -332,5 +357,8 @@ disable_error_code = ["import-untyped"]
 module = [
     "threetears.channels.slack",
     "threetears.channels.discord",
+    # camoufox ships no py.typed/stubs -- AsyncCamoufox() itself is an
+    # untyped call.
+    "threetears.scrape.drivers.camoufox",
 ]
 disable_error_code = ["no-untyped-call"]

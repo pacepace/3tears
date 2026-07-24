@@ -17,7 +17,11 @@ set -euo pipefail
 # string lives somewhere else, add it here OR the release workflow's
 # pre-flight check will fail):
 #
-#   1. Every `packages/*/pyproject.toml` `^version = "X.Y.Z"` line.
+#   1. Every WORKSPACE MEMBER's `pyproject.toml` `^version = "X.Y.Z"`
+#      line -- `packages/*` and `packages/agent/*`, per the globs in the
+#      root pyproject's [tool.uv.workspace]. A pyproject.toml nested
+#      deeper (packages/scrape/sidecar) belongs to a separate deployable
+#      with its own version and is deliberately NOT in lockstep.
 #   2. Every `packages/*/tests/test_smoke.py` `assert __version__ ==
 #      "X.Y.Z"` line (5 files today: core, langgraph, observe,
 #      agent/memory, agent/tools).
@@ -49,6 +53,23 @@ _sed_i() {
     else
         sed -i '' "$@"
     fi
+}
+
+_member_pyprojects() {
+    # Every WORKSPACE MEMBER's pyproject.toml, and only those. The two
+    # finds mirror the two globs in the root pyproject's
+    # [tool.uv.workspace] members exactly: `packages/*` and
+    # `packages/agent/*`. Both are depth-limited, so a pyproject.toml
+    # nested any deeper is not a member and is not ours to touch.
+    #
+    # packages/scrape/sidecar is why this matters. It is a separate
+    # deployable with its own pyproject.toml, its own venv, its own
+    # AGPL-isolated dependency set, and its own independent version
+    # (0.1.0) that has no business moving in lockstep with the
+    # workspace. A bare `find packages -name pyproject.toml` swept it
+    # in and made --verify fail on a file that was never in scope.
+    find "$REPO_ROOT/packages" -maxdepth 2 -name pyproject.toml -type f
+    find "$REPO_ROOT/packages/agent" -maxdepth 2 -name pyproject.toml -type f
 }
 
 _usage() {
@@ -122,7 +143,7 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
             echo "  MISMATCH $REL: expected $NEW, got $V" >&2
             MISMATCH=1
         fi
-    done < <(find "$REPO_ROOT/packages" -name pyproject.toml -type f)
+    done < <(_member_pyprojects)
 
     # 2. test_smoke.py __version__ assertions.
     #
@@ -210,7 +231,7 @@ while IFS= read -r FILE; do
     _sed_i -E "s/^version = \"$OTHER\"\$/version = \"$NEW\"/" "$FILE"
     echo "  updated $REL ($OTHER -> $NEW)"
     PYPROJECT_UPDATED=$((PYPROJECT_UPDATED + 1))
-done < <(find "$REPO_ROOT/packages" -name pyproject.toml -type f)
+done < <(_member_pyprojects)
 
 # 2. test_smoke.py __version__ assertions. Replace any value (the
 # files might have been at a different prior version than the

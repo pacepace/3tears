@@ -3,6 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [develop]
+  # The merged develop head, not just the pre-merge PR ref. A PR check runs
+  # against a throwaway merge ref whose SHA nobody keeps, so the commit that
+  # actually lands on develop carries no status of its own. Stamping it here
+  # is what lets the develop -> main release PR -- whose head IS that same
+  # commit -- be gated on an already-computed result instead of re-running
+  # the identical suite.
+  push:
+    branches: [develop]
 
 jobs:
   check:

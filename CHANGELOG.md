@@ -4,6 +4,54 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.17.9 -- 2026-07-23
+
+**Feature: provider-native structured output (`threetears.models.providers`)** -- every provider
+spells "return json matching this schema" differently: Anthropic takes `output_config`, OpenRouter
+a top-level `response_format` plus a `provider` routing block, OpenAI the same `response_format`
+nested under `extra_body` (a top-level one makes `ChatOpenAI` switch to `completions.parse()` and,
+when streaming, to the beta streaming client -- both break callers that need a raw `AIMessage` and
+a working token stream). That is the same class of wire quirk as the tool-name dot restriction the
+name-translation mixin already hides, so it is owned in the provider layer rather than by every
+consumer.
+
+`structured_output_kwargs(provider_type, json_schema, *, name, strict)` dispatches to the right
+per-provider builder and returns bind KWARGS rather than a bound model -- callers frequently apply
+structured output to a model that is already a `bind_tools` `RunnableBinding`, which exposes
+`.bind(**kwargs)` but none of the provider wrapper's own methods. A provider type with no
+translation raises `StructuredOutputUnsupportedError` instead of returning empty kwargs: silently
+dropping the directive lets the model answer in prose, which is the exact failure structured output
+exists to prevent.
+
+**Every builder rejects a malformed schema LOCALLY, before any provider call**, as
+`StructuredOutputSchemaError`. Both error types derive from `StructuredOutputError` so a consumer
+can catch every caller-error kind in one clause -- the distinction that matters downstream is not
+WHICH way the request was wrong but that the request, not the provider, was at fault. These
+failures never reach the network, so a consumer that lets one fall through to a generic handler
+reads a local rejection as an unreachable provider and any circuit breaker keyed on that verdict
+takes the provider out of service for every caller over one caller's bad schema.
+
+On the Anthropic path that means translating `transform_schema`'s bare builtins (`AssertionError`
+from its `assert_never`, plus `ValueError` / `AttributeError` / `TypeError` / `RecursionError`) --
+an `AssertionError` in particular reads as an internal invariant failure, not a caller error. The
+verbatim-embedding builders (openrouter, openai) had no validating step of their own and the
+providers do not supply one: verified live against openrouter -> `google/gemini-2.5-flash`,
+`{"type": "not_a_real_json_type"}` came back as the bare string `"Dublin"` and
+`{"type": "object", "properties": "oops"}` came back as `{}`, both as SUCCESSFUL completions. They
+now call `ensure_valid_json_schema`, which checks json-schema VALIDITY only -- deliberately not any
+provider's additional subset rules (e.g. OpenAI strict mode's `additionalProperties: false`), since
+enforcing one provider's policy would reject schemas that provider accepts today and would rot the
+moment the policy moves. Adds `jsonschema` as a direct dependency of `3tears-models`.
+
+**Refactor: `SchemaBackedCollection._partition_exempt_methods` is now
+`partition_exempt_methods`** -- the base class instructs subclasses to extend it, which makes it
+public API, not an implementation detail. Every subclass across `agent/acl`, `agent/memory`,
+`conversations` (and downstream in the hub) was reading a leading-underscore name across a class
+boundary, each site carrying a `noqa: SLF001` and an enforcement exemption to say so. **Breaking
+for any subclass that overrides it**: rename the attribute. No back-compat alias -- a subclass that
+keeps the old name would silently inherit an unextended allowlist, so it breaks loudly at the
+attribute name instead.
+
 ## v0.17.8 -- 2026-07-19
 
 **Fix: a pod's L1 cache-invalidation listener crashed on every broadcast for a table it never

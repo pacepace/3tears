@@ -16,17 +16,24 @@ incoming ``tool_calls``. The wrapper is a thin binding of the shared
 :class:`~threetears.models.providers._name_translation_mixin.NameTranslatingChatMixin`
 (identical hooks across the OpenAI / OpenRouter / Anthropic wrappers).
 Application code never sees the wire form.
+
+Structured output is the same class of wire quirk:
+:func:`openai_structured_output_kwargs` builds the OpenAI-native
+directive so no consumer has to know the provider's spelling of "return
+json matching this schema". Dispatch across providers lives in
+:mod:`threetears.models.providers.structured_output`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+from threetears.models.providers.structured_output import ensure_valid_json_schema
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -36,10 +43,75 @@ __all__ = [
     "OPENAI_PROVIDER_NAME",
     "create_openai_chat",
     "create_openai_embedding",
+    "openai_structured_output_kwargs",
 ]
 
 
 OPENAI_PROVIDER_NAME = "openai"
+
+
+def openai_structured_output_kwargs(
+    json_schema: dict[str, Any],
+    *,
+    name: str = "response",
+    strict: bool = True,
+) -> dict[str, Any]:
+    """builds the OpenAI-native structured-output bind kwargs.
+
+    The directive rides ``extra_body`` rather than a top-level
+    ``response_format``, and that choice is load-bearing. ``ChatOpenAI``
+    branches on ``"response_format" in payload``: ``_generate`` then
+    routes to ``client.chat.completions.parse()`` and ``_stream`` POPS
+    ``stream`` from the payload and switches to
+    ``beta.chat.completions.stream()``. Both break callers that need a raw
+    ``AIMessage`` and a working token stream. ``extra_body`` is a
+    first-class ``ChatOpenAI`` pass-through param: its contents are merged
+    into the request JSON body by the OpenAI SDK, so the wire request is
+    identical while the payload key langchain branches on is absent and
+    the plain ``.create()`` path is preserved.
+
+    OpenRouter's ``provider`` routing block is deliberately NOT emitted
+    here -- it is an OpenRouter extension with no OpenAI equivalent.
+
+    The schema is embedded verbatim, with no traversal that could reject
+    it, so it is checked locally first by
+    :func:`~threetears.models.providers.structured_output.ensure_valid_json_schema`.
+    Sending an incoherent schema to an OpenAI-compatible endpoint gets
+    either a 400 (an outcome a consumer's classifier can misread as a
+    provider fault) or -- as observed live on the sibling OpenRouter
+    path -- a SUCCESSFUL completion carrying a degenerate shape, which is
+    worse: a caller typo becomes indistinguishable from a real answer.
+
+    Returns bind KWARGS rather than a bound model on purpose: the caller
+    may be applying this to a model that is already a ``bind_tools``
+    ``RunnableBinding``, which exposes ``.bind(**kwargs)`` but none of the
+    wrapper class's own methods.
+
+    :param json_schema: json-schema the response must satisfy
+    :ptype json_schema: dict[str, Any]
+    :param name: schema name reported to the provider
+    :ptype name: str
+    :param strict: whether the provider must enforce the schema exactly
+    :ptype strict: bool
+    :return: kwargs to pass to ``model.bind(**kwargs)``
+    :rtype: dict[str, Any]
+    :raises StructuredOutputSchemaError: when json_schema is not a valid
+        json-schema
+    """
+    ensure_valid_json_schema(json_schema, provider_type=OPENAI_PROVIDER_NAME)
+
+    return {
+        "extra_body": {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": name,
+                    "schema": json_schema,
+                    "strict": strict,
+                },
+            },
+        },
+    }
 
 
 def _build_translating_chat_class() -> type[ChatOpenAI]:
