@@ -19,17 +19,24 @@ sees the wire form. The translation is keyed by the dotted -> underscored
 mapping built at ``bind_tools`` time, so it round-trips losslessly even
 for tools whose names contain underscores already (e.g.
 ``threetears.web_search`` -> ``threetears_web_search`` and back).
+
+Structured output is the same class of wire quirk:
+:func:`openrouter_structured_output_kwargs` builds the OpenRouter-native
+directive so no consumer has to know the provider's spelling of "return
+json matching this schema". Dispatch across providers lives in
+:mod:`threetears.models.providers.structured_output`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+from threetears.models.providers.structured_output import ensure_valid_json_schema
 
 if TYPE_CHECKING:
     from langchain_openrouter import ChatOpenRouter
@@ -37,10 +44,70 @@ if TYPE_CHECKING:
 __all__ = [
     "OPENROUTER_PROVIDER_NAME",
     "create_openrouter_chat",
+    "openrouter_structured_output_kwargs",
 ]
 
 
 OPENROUTER_PROVIDER_NAME = "openrouter"
+
+
+def openrouter_structured_output_kwargs(
+    json_schema: dict[str, Any],
+    *,
+    name: str = "response",
+    strict: bool = True,
+) -> dict[str, Any]:
+    """builds the OpenRouter-native structured-output bind kwargs.
+
+    ``ChatOpenRouter`` merges bound kwargs straight into the OpenRouter
+    SDK's ``chat.send(...)`` call, which accepts ``response_format`` and
+    ``provider`` as top-level request params -- so the OpenAI-shaped
+    ``response_format`` block goes on directly, no ``extra_body`` nesting.
+
+    ``provider={"require_parameters": True}`` is not optional: it is what
+    makes OpenRouter REJECT the request when the routed upstream model
+    cannot honour ``response_format``. Without it OpenRouter silently
+    drops the unsupported param and the model returns prose, which is the
+    exact failure structured output exists to prevent.
+
+    ``require_parameters`` guards only whether the routed model CAN honour
+    ``response_format``; it says nothing about the schema being coherent.
+    OpenRouter accepts a malformed schema and answers successfully (a
+    live ``google/gemini-2.5-flash`` call with ``{"type": "object",
+    "properties": "oops"}`` returned ``{}``), so the schema is checked
+    locally by :func:`~threetears.models.providers.structured_output.ensure_valid_json_schema`
+    before it is embedded -- otherwise a caller typo is indistinguishable
+    from a real answer.
+
+    Returns bind KWARGS rather than a bound model on purpose: the caller
+    may be applying this to a model that is already a ``bind_tools``
+    ``RunnableBinding``, which exposes ``.bind(**kwargs)`` but none of the
+    wrapper class's own methods.
+
+    :param json_schema: json-schema the response must satisfy
+    :ptype json_schema: dict[str, Any]
+    :param name: schema name reported to the provider
+    :ptype name: str
+    :param strict: whether the provider must enforce the schema exactly
+    :ptype strict: bool
+    :return: kwargs to pass to ``model.bind(**kwargs)``
+    :rtype: dict[str, Any]
+    :raises StructuredOutputSchemaError: when json_schema is not a valid
+        json-schema
+    """
+    ensure_valid_json_schema(json_schema, provider_type=OPENROUTER_PROVIDER_NAME)
+
+    return {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": name,
+                "schema": json_schema,
+                "strict": strict,
+            },
+        },
+        "provider": {"require_parameters": True},
+    }
 
 
 def _build_translating_chat_class() -> type[ChatOpenRouter]:

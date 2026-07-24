@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.17.8"
+version = "0.17.9"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -16,6 +16,17 @@ dependencies = [
     "3tears-observe",
     "pydantic>=2.0",
     "langchain-core>=0.3",
+    # direct dependency, not just transitive-via-langchain-anthropic: the
+    # anthropic structured-output builder imports `anthropic.transform_schema`
+    # (0.116 is the floor that ships it) to pre-transform the json-schema
+    # before it is bound as a verbatim `output_config`.
+    "anthropic>=0.116",
+    # direct dependency, not just transitive-via-langchain: the openrouter /
+    # openai structured-output builders embed the caller's schema verbatim,
+    # so `jsonschema.Draft202012Validator.check_schema` is what rejects a
+    # malformed schema locally instead of shipping it to a provider that
+    # answers successfully with a degenerate shape.
+    "jsonschema>=4.26",
     "langchain-anthropic>=1.4",
     "langchain-openai>=1.1",
     "langchain-openrouter>=0.1",

@@ -105,7 +105,7 @@ definition time — that every public method on the subclass either:
 2. **is decorated with `@spans_partitions`**, declaring "this method
    deliberately fans out across multiple partition values supplied as
    a tuple", OR
-3. **is listed in `_partition_exempt_methods`** with a documented
+3. **is listed in `partition_exempt_methods`** with a documented
    rationale (a narrow allowlist for genuine framework overrides).
 
 A subclass that violates the guard fails at import time with
@@ -337,7 +337,7 @@ These are **rejected on code review**:
 - **Dropping the partition column from the SQL "because the caller
   knows what partition they're in."** Future callers will not. The
   partition predicate is structural defense, not redundancy.
-- **Adding `_partition_exempt_methods` entries with rationales like
+- **Adding `partition_exempt_methods` entries with rationales like
   "internal helper" or "tests need this."** Exemptions are last-resort
   with **specific** rationales. The first two resolution paths are:
   (1) add the partition column to the signature; (2) decorate with

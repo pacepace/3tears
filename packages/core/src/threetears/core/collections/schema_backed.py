@@ -520,7 +520,7 @@ class Column:
         public read / write method must either accept the partition
         column as a required argument, be decorated
         ``@spans_partitions`` to opt into multi-partition reads, or
-        be allowlisted via ``_partition_exempt_methods`` with an
+        be allowlisted via ``partition_exempt_methods`` with an
         explicit rationale -- protects against the cross-partition
         bleed class of bug
     :cvar nullable: when ``True``, missing values default to ``None``;
@@ -1087,7 +1087,7 @@ class PartitionEnforcementError(TypeError):
 
     resolution: add the partition column to the method signature, mark
     the method with ``@spans_partitions``, or list it in
-    ``cls._partition_exempt_methods`` with a ``# rationale: ...``
+    ``cls.partition_exempt_methods`` with a ``# rationale: ...``
     inline comment. blanket exemptions ("internal helper", "tests need
     this") are rejected by code review.
     """
@@ -1297,7 +1297,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     2. be decorated with :func:`spans_partitions` -- the caller is
        deliberately fanning out across an authorized set of
        partition values supplied as a tuple.
-    3. appear in :attr:`_partition_exempt_methods` -- a narrow,
+    3. appear in :attr:`partition_exempt_methods` -- a narrow,
        audited allowlist for methods that legitimately span every
        partition (e.g. ``count_total`` on a per-pod operational
        summary).
@@ -1306,11 +1306,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     time with :class:`PartitionEnforcementError`. resolution priority:
     (1) add the partition column to the method signature; (2) decorate
     with :func:`spans_partitions`; (3) extend
-    :attr:`_partition_exempt_methods` with a documented rationale.
+    :attr:`partition_exempt_methods` with a documented rationale.
+
+    :cvar partition_exempt_methods: public subclass extension point --
+        names of public methods on this collection that legitimately
+        span every partition and are therefore excused from the
+        partition-column guard. subclasses extend it by declaring
+        their own frozenset (union the base's value to inherit its
+        entries), each addition carrying a specific rationale
+        comment; blanket rationales are rejected by code review
     """
 
     schema: ClassVar[TableSchema]
-    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
+    partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
     # lazily-built (underlying_pool, SqlL3Backend) cache for the case where a raw
     # transport is assigned directly to ``l3_pool`` (registry not in play); keeps the
     # on-demand wrapper stable across CRUD calls. ``None`` until first wrap.
@@ -1324,7 +1332,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         async method that is not inherited from the framework must
         either accept the partition column as a parameter, be
         decorated with :func:`spans_partitions`, or be listed in
-        :attr:`_partition_exempt_methods`.
+        :attr:`partition_exempt_methods`.
 
         framework-level methods inherited from
         :class:`BaseCollection` / :class:`SchemaBackedCollection`
@@ -1347,7 +1355,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         partition_column = schema.partition_column
         if partition_column is None:
             return None
-        exempt = cls._partition_exempt_methods
+        exempt = cls.partition_exempt_methods
         violations: list[str] = []
         for name, member in cls.__dict__.items():
             if not callable(member):
@@ -1368,9 +1376,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"{cls.__name__}: schema declares partition column "
                 f"{partition_column!r}; method(s) {violations!r} neither "
                 f"accept it nor opt into @spans_partitions, and are not "
-                f"in _partition_exempt_methods. add the partition "
+                f"in partition_exempt_methods. add the partition "
                 f"column to the signature, decorate the method with "
-                f"@spans_partitions, or extend _partition_exempt_methods "
+                f"@spans_partitions, or extend partition_exempt_methods "
                 f"with a documented rationale.",
             )
         return None

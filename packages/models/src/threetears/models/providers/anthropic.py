@@ -18,17 +18,24 @@ of the shared
 that translates dot-to-underscore on outgoing tool specs / history and
 underscore-to-dot on incoming ``tool_calls``. Application code never sees
 the wire form.
+
+Structured output is the same class of wire quirk:
+:func:`anthropic_structured_output_kwargs` builds the Anthropic-native
+directive so no consumer has to know the provider's spelling of "return
+json matching this schema". Dispatch across providers lives in
+:mod:`threetears.models.providers.structured_output`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
+from threetears.models.providers.structured_output import StructuredOutputSchemaError
 
 if TYPE_CHECKING:
     from langchain_anthropic import ChatAnthropic
@@ -36,6 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ANTHROPIC_PROVIDER_NAME",
+    "anthropic_structured_output_kwargs",
     "create_anthropic_chat",
     "strip_v1_suffix",
 ]
@@ -60,6 +68,102 @@ def strip_v1_suffix(url: str) -> str:
     if url.endswith("/v1/"):
         return url[:-4]
     return url
+
+
+def anthropic_structured_output_kwargs(
+    json_schema: dict[str, Any],
+    *,
+    name: str = "response",
+    strict: bool = True,
+) -> dict[str, Any]:
+    """builds the Anthropic-native structured-output bind kwargs.
+
+    Anthropic spells the directive ``output_config={"format": {"type":
+    "json_schema", "schema": ...}}``. A directly-bound ``output_config``
+    is forwarded verbatim to the Anthropic SDK ``messages.create``, so
+    the schema is pre-transformed through :func:`anthropic.transform_schema`
+    -- that is what enforces the API's json-schema limits (e.g. injecting
+    ``additionalProperties: false``) instead of failing at request time.
+
+    Returns bind KWARGS rather than a bound model on purpose: the caller
+    may be applying this to a model that is already a ``bind_tools``
+    ``RunnableBinding``, which exposes ``.bind(**kwargs)`` but none of the
+    wrapper class's own methods.
+
+    ``name`` and ``strict`` are accepted for signature parity across the
+    per-provider builders and are unused here: Anthropic's format block
+    has no name field, and the schema constraint is always strict (the
+    ``additionalProperties: false`` that ``transform_schema`` injects).
+
+    ``transform_schema`` validates LOCALLY, before any API call, and
+    signals rejection with bare builtin exceptions rather than a typed
+    SDK error, so a malformed schema is translated here into
+    :class:`~threetears.models.providers.structured_output.StructuredOutputSchemaError`.
+    Left bare, the raise is unclassifiable by callers -- an
+    ``AssertionError`` in particular reads as an internal invariant
+    failure, so a consumer's error classifier routes it to its
+    provider-unavailable branch and a circuit breaker keyed on that
+    verdict takes the provider out of service for every caller over one
+    caller's bad schema.
+
+    Note on ``python -O``: the ``AssertionError`` here is NOT stripped
+    under ``-O``. It comes from :func:`typing.assert_never`, which ends in
+    an explicit ``raise AssertionError(...)`` statement rather than an
+    ``assert`` statement, and only the latter is elided by ``-O``; the
+    transform module contains no ``assert`` statement at all. This wrap is
+    therefore load-bearing under every interpreter flag. Were that ever to
+    change, the degradation is still safe: the untranslated schema would
+    reach the provider, the provider would answer with its own 400, and a
+    consumer's error classifier maps that to a bad-request verdict rather
+    than an outage -- so the schema is rejected either way and the circuit
+    breaker stays untouched either way.
+
+    :param json_schema: json-schema the response must satisfy
+    :ptype json_schema: dict[str, Any]
+    :param name: schema name (unused by Anthropic; present for parity)
+    :ptype name: str
+    :param strict: strict-schema flag (unused by Anthropic; present for parity)
+    :ptype strict: bool
+    :return: kwargs to pass to ``model.bind(**kwargs)``
+    :rtype: dict[str, Any]
+    :raises StructuredOutputSchemaError: when json_schema cannot be
+        translated into Anthropic's structured-output schema form
+    """
+    # imported inside the function so the module-scope import stays
+    # metadata-only: threetears.models eagerly imports this module to
+    # populate the capability registry and must not require any provider
+    # SDK to be installed for that side-effect import to succeed.
+    from anthropic import transform_schema
+
+    try:
+        transformed = transform_schema(json_schema)
+    except (AssertionError, ValueError, AttributeError, TypeError, RecursionError) as exc:
+        # the exact tuple anthropic.lib._parse._transform.transform_schema
+        # raises on caller-supplied schema data, each verified against a
+        # malformed schema: AssertionError from the assert_never on an
+        # unrecognized "type"; ValueError when no type/anyOf/oneOf/allOf
+        # is present; AttributeError from .items() when "properties" or
+        # "$defs" is not a mapping; TypeError from the {**schema} unpack
+        # when a nested property/item value is not a mapping or when the
+        # schema itself is not a mapping; RecursionError because the
+        # transform recurses once per nesting level with no depth guard,
+        # so caller json nested past the interpreter frame limit exhausts
+        # the stack (reachable well inside what json.loads accepts).
+        # Deliberately explicit rather than a broad catch so a genuine
+        # defect in this module still surfaces as itself.
+        raise StructuredOutputSchemaError(
+            "supplied json schema was rejected by anthropic structured-output "
+            f"translation: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return {
+        "output_config": {
+            "format": {
+                "type": "json_schema",
+                "schema": transformed,
+            },
+        },
+    }
 
 
 def _build_translating_chat_class() -> type[ChatAnthropic]:

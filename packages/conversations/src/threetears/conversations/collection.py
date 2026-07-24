@@ -90,7 +90,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # pre-constructed ``ConversationWriteBuffer``; it neither reads
     # nor writes table rows, so the partition-column gate has nothing
     # to enforce.
-    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset(
+    partition_exempt_methods: ClassVar[frozenset[str]] = frozenset(
         {"attach_write_buffer"},
     )
     # v0.8.0 hygiene enrichment: ``search_vector`` (TSVECTOR,
