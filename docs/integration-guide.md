@@ -408,7 +408,10 @@ Validated Pydantic models:
 
 - **`ColumnDef`**: `name`, `column_type`, `nullable=True`, `default=None`,
   `primary_key=False`, `vector_dim=None`. Allowed `column_type`: `text`, `integer`,
-  `bigint`, `boolean`, `timestamp`, `uuid`, `jsonb`, `decimal`, `bytea`, `vector`.
+  `bigint`, `boolean`, `timestamp`, `timestamptz`, `uuid`, `jsonb`, `decimal`,
+  `bytea`, `vector`. `timestamp` is naive (`TIMESTAMP`); `timestamptz` is
+  timezone-aware (`TIMESTAMPTZ`, stored aware-UTC), for datetimes that flow
+  through a timezone-aware layer such as the datasource broker.
   A `vector` column **requires** `vector_dim` (a positive int, the pgvector
   dimension) and `vector_dim` is only valid on a `vector` column — both are validated
   at construction. It renders `VECTOR(<dim>)` DDL, binds with a `::vector` cast on

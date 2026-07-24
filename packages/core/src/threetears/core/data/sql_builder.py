@@ -23,6 +23,7 @@ _COLUMN_TYPE_MAP: dict[str, str] = {
     "bigint": "BIGINT",
     "boolean": "BOOLEAN",
     "timestamp": "TIMESTAMP",
+    "timestamptz": "TIMESTAMPTZ",
     "uuid": "UUID",
     "jsonb": "JSONB",
     "decimal": "DECIMAL",

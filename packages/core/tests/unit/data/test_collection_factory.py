@@ -308,3 +308,40 @@ class TestVectorColumns:
         restored = collection.deserialize(payload)
 
         assert restored["embedding"] == [0.1, 0.2, 0.3]
+
+
+def _events_table() -> TableDef:
+    return TableDef(
+        name="events",
+        columns=[
+            ColumnDef(name="id", column_type="text", primary_key=True),
+            ColumnDef(name="date_created", column_type="timestamptz"),
+        ],
+    )
+
+
+class TestTimestamptzColumns:
+    """timestamptz columns work through the dynamic-collection path."""
+
+    def test_timestamptz_deserializes_to_datetime(self) -> None:
+        """an ISO string round-trips through L2 back to a datetime object.
+
+        proves the ``timestamptz`` -> ``datetime`` field-type entry: the L2
+        deserialize path reads it as a datetime, not a bare string.
+        """
+        from datetime import datetime
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=FakeAsyncpgPool())
+        collection = create_dynamic_collection(
+            table_def=_events_table(),
+            registry=registry,
+            config=DefaultCoreConfig(collection_flush="ALWAYS"),
+        )
+
+        aware = datetime.fromisoformat("2026-07-24T20:24:04+00:00")
+        payload = collection.serialize({"id": "e1", "date_created": aware})
+        restored = collection.deserialize(payload)
+
+        assert isinstance(restored["date_created"], datetime)
+        assert restored["date_created"] == aware

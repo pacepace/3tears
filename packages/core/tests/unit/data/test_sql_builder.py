@@ -35,3 +35,36 @@ class TestVectorDdl:
 
         assert "id UUID" in sql
         assert "name TEXT" in sql
+
+
+class TestTimestampDdl:
+    """``timestamp`` and ``timestamptz`` render as distinct DDL types."""
+
+    def test_timestamptz_renders_timestamptz(self) -> None:
+        """a ``timestamptz`` column renders as ``TIMESTAMPTZ``."""
+        table = TableDef(
+            name="events",
+            columns=[
+                ColumnDef(name="id", column_type="uuid", primary_key=True),
+                ColumnDef(name="date_created", column_type="timestamptz"),
+            ],
+        )
+
+        sql = build_create_table_sql(table)
+
+        assert "date_created TIMESTAMPTZ" in sql
+
+    def test_timestamp_and_timestamptz_are_distinct(self) -> None:
+        """a naive ``timestamp`` column does not render as ``TIMESTAMPTZ``."""
+        table = TableDef(
+            name="events",
+            columns=[
+                ColumnDef(name="id", column_type="uuid", primary_key=True),
+                ColumnDef(name="date_naive", column_type="timestamp"),
+            ],
+        )
+
+        sql = build_create_table_sql(table)
+
+        assert "date_naive TIMESTAMP" in sql
+        assert "TIMESTAMPTZ" not in sql
