@@ -462,6 +462,12 @@ async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTarg
 
     with patch.object(health, "save_to_store", side_effect=_capture):
         await record_validated_fetch(health, target_id="warn_cas", html=_PAGE)
+        # Captured BETWEEN the two merges: read afterwards, this is the timestamp the
+        # second merge WROTE, not the one it fenced on, and the comparison passes for the
+        # wrong reason.
+        between = await health.get("warn_cas")
+        assert between is not None
+        expected_fence = getattr(between, "original_date_updated", None)
         entity = await record_validated_fetch(health, target_id="warn_cas", html=_PAGE)
 
     assert len(fences) == 2, "save_to_store was not reached twice"
@@ -475,4 +481,12 @@ async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTarg
         "asyncpg cannot compare that against a TIMESTAMPTZ column"
     )
     assert isinstance(fence, datetime), f"the fence was {fence!r}, so the update would not be fenced at all"
+    # The VALUE matters, not just the type: any fresh datetime satisfies the checks above
+    # while fencing on the wrong row entirely, and the in-memory store ignores
+    # original_timestamp, so nothing else on this path would notice. It must be the
+    # date_updated of the row the second merge actually read.
+    assert fence == expected_fence, (
+        "the fence is not the timestamp of the row that was read, so the compare-and-swap "
+        "is guarding against a different version than the one this write was based on"
+    )
     assert entity.content_fingerprint == content_fingerprint(_PAGE)

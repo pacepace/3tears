@@ -683,9 +683,13 @@ class ScrapeCollection(BaseCollection[EntityT]):
         when one is written BACK: an update fences on the row's own ``date_updated`` as an
         optimistic lock, rendered as ``WHERE date_updated = $n`` against ``TIMESTAMPTZ``,
         and a string bound there fails at the asyncpg border. Every read-modify-write path
-        in this package is exposed to it (``enrichment.add_enrichment_notes`` and the
-        health fingerprint merge both do ``to_dict()`` then save), which is why the fix
-        belongs here rather than in each of them.
+        Every read-modify-write path in this package is exposed, though not identically.
+        :func:`~threetears.scrape.enrichment.enrich_extraction` rebuilds its row through
+        ``create()``, so it binds no fence at all and would instead have failed on
+        ``retrieved_at`` going into the upsert's VALUES as a string. The health fingerprint
+        merge rebuilds as an existing entity and so fails on the fence itself, where its own
+        non-fatal handling would have swallowed it. Both are repaired by fixing the read,
+        which is why this belongs here rather than in each writer.
 
         A value that does not parse is left exactly as found rather than nulled: losing a
         timestamp silently is worse than carrying a malformed one to a border that will

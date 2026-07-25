@@ -38,9 +38,12 @@ against a `serialize` that writes `default=str`, so a row read through L2 differ
 from the identical row read through L1 or L3. Invisible while such a row is only read, since
 the entity accessors already parsed on the way out. Not invisible when one is written back:
 an update fences on the row's own `date_updated` as an optimistic lock against a TIMESTAMPTZ
-column, and a string bound there fails at the asyncpg border. `enrichment.add_enrichment_notes`
-would have raised; the new health merge would have had that failure swallowed by its own
-non-fatal handling and quietly stopped updating fingerprints. Each collection declares its
+column, and a string bound there fails at the asyncpg border. Both read-modify-write paths in
+the package were exposed, by different routes: `enrichment.enrich_extraction` rebuilds its row
+through `create()`, so it binds no fence and would have failed on `retrieved_at` entering the
+upsert's VALUES as a string; the new health merge rebuilds as an existing entity and fails on
+the fence itself, where its own non-fatal handling would have swallowed the error and quietly
+stopped updating fingerprints. Each collection declares its
 `datetime_columns`, and a test asserts those match the TIMESTAMPTZ columns the migrations
 create, in both directions. A caller that was reading these fields off the raw row dict and
 expecting a string will now get a `datetime`; one using the entity accessors sees no change.
