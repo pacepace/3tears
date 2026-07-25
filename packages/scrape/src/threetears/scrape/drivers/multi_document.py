@@ -126,7 +126,7 @@ def discover_links_labeled(html: str, base_url: str, link_selector: str) -> list
     also carries the anchor's **visible text** (whitespace-collapsed to a single line; ``""`` when the
     anchor has no text, e.g. an image-only link). A listing's anchor text is often the only
     human-readable name a linked document has ("November 2024 schedule"), and it is discarded the moment
-    the page is re-parsed — so a caller that wants it (per-document provenance, a labeled inventory) must
+    the page is re-parsed -- so a caller that wants it (per-document provenance, a labeled inventory) must
     capture it on the same walk that resolves the URL. Ordering, de-duplication, host policy, and pattern
     filtering remain the caller's, exactly as for :func:`discover_links`.
 
@@ -157,10 +157,10 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     against ``base_url`` (typically the listing's own URL) so relative and absolute hrefs both come
     back absolute, in document order. Parsing uses ``html.parser`` (the same parser the extraction
     eval loop is authored against, so selectors resolve consistently). Ordering, de-duplication, host
-    policy, and any pattern filtering are the caller's to apply — this returns the raw resolved set so
+    policy, and any pattern filtering are the caller's to apply -- this returns the raw resolved set so
     each consumer can weigh them (a crawl inventory, a multi-document driver) without a baked-in policy.
 
-    The URL-only projection of :func:`discover_links_labeled` (same walk; anchor text dropped) — a caller
+    The URL-only projection of :func:`discover_links_labeled` (same walk; anchor text dropped) -- a caller
     that also needs each anchor's text calls that variant instead.
 
     :param html: the listing page's HTML
@@ -175,7 +175,7 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     return [url for url, _label in discover_links_labeled(html, base_url, link_selector)]
 
 
-#: Backwards-compatible private alias — the function was internal (``_discover_links_html``) before it
+#: Backwards-compatible private alias -- the function was internal (``_discover_links_html``) before it
 #: was promoted to public :func:`discover_links`; kept so any in-tree reference keeps resolving.
 _discover_links_html = discover_links
 

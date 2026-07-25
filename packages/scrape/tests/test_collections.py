@@ -1,11 +1,11 @@
 """Tests for ScrapeTarget / ScrapeRecipe / ScrapeExtraction collections' L3 wiring.
 
 Covers both storage tiers: the in-memory ``self._rows`` fallback (no L3 pool
-configured — the shape every other scrape unit test already exercises) and
+configured -- the shape every other scrape unit test already exercises) and
 the real ``DurableStore`` branch added so scrape's collections are
 multi-pod-safe (mirrors ``faidh.db.collection.FaidhCollection``'s existing
 pattern). ``FakeDurableStore`` below is a pure in-memory stand-in for the
-``threetears.core.backends.protocol.DurableStore`` protocol — no real
+``threetears.core.backends.protocol.DurableStore`` protocol -- no real
 database involved; the live, real-Postgres proof lives in
 ``tests/e2e/test_scrape_collections_persistence_live.py``.
 """

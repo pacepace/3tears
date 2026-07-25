@@ -2,11 +2,11 @@
 
 Given a rendered page and a caller-supplied field schema, an LLM proposes N
 candidate CSS-selector extraction strategies (``{field_name: css_selector}``
-— re-executable against a fresh page without another LLM call, unlike a
+-- re-executable against a fresh page without another LLM call, unlike a
 generated-code strategy). Each candidate is validated structurally: does its
 selector match something, and does the matched text parse as the field's
 declared type. Domain-agnostic: this module never hardcodes what a field
-means (no WARN-Act-shaped assumptions) — the field schema is supplied by the
+means (no WARN-Act-shaped assumptions) -- the field schema is supplied by the
 caller (a consuming application's own plugin), never stored in the core's own
 data model. That split is why onboarding a new site is a config addition: the
 caller owns what to look for, this module owns whether what came back is

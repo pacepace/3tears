@@ -72,7 +72,7 @@ flowchart TD
     K --> L[NATS subject: arbitrary_signals]
     L --> M[Downstream: scoreboard, retrospect, ...]
 
-    F -.-> N[(Postgres:<br/>scrape_targets / scrape_recipes /<br/>scrape_extractions — provenance)]
+    F -.-> N[(Postgres:<br/>scrape_targets / scrape_recipes /<br/>scrape_extractions -- provenance)]
 ```
 
 Two Postgres-writing paths run **in parallel, not sequentially**:
@@ -103,7 +103,7 @@ The core (`driver.py`, `extraction.py`, `eval_loop.py`, `collections.py`) never 
 
 ```mermaid
 flowchart LR
-    subgraph Fetch["Axis 1 — driver_backend (drivers/)"]
+    subgraph Fetch["Axis 1 -- driver_backend (drivers/)"]
         D1[nodriver_sidecar<br/>headless Chromium, sidecar]
         D2[camoufox<br/>in-process stealth Firefox]
         D3[document<br/>PDF/DOCX/XLSX/CSV → parse_document]
@@ -114,9 +114,9 @@ flowchart LR
         D8[nodriver_download<br/>bot-challenged document<br/>via sidecar forced download]
     end
     subgraph Converge["Everything converges here"]
-        R[RenderedPage.html<br/>real or synthetic — identical downstream]
+        R[RenderedPage.html<br/>real or synthetic -- identical downstream]
     end
-    subgraph Extract["Axis 2 — extraction_strategy_type"]
+    subgraph Extract["Axis 2 -- extraction_strategy_type"]
         S1[css<br/>real/synthesized table → LLM proposes selectors]
         S2[regex<br/>prose text block → LLM proposes named-group patterns]
         S3[per_document<br/>no shared template → fresh extraction<br/>per document, no cached recipe]
@@ -148,9 +148,9 @@ In faidh's WARN Act consumer, every one of the ~24 onboarded states is one confi
 ```mermaid
 flowchart TD
     Core["This package<br/>driver.py / extraction.py / eval_loop.py / collections.py"]
-    T02["find_target_page() — shipped<br/>page_finder.py<br/>outputs a ScrapeTarget-shaped guess<br/>(URL + driver_backend, verified flag)<br/>docs/scrape-task-02-page-finder-agent.md"]
-    T03["discover_candidates() / discover_row_candidates() — shipped<br/>extraction.py<br/>schema OUT instead of schema IN<br/>docs/scrape-task-03-schema-discovery-mode.md"]
-    T04["capture_request_shape() — shipped<br/>request_shape_finder.py<br/>real captured request shapes<br/>for in-session XHR targets"]
+    T02["find_target_page() -- shipped<br/>page_finder.py<br/>outputs a ScrapeTarget-shaped guess<br/>(URL + driver_backend, verified flag)<br/>docs/scrape-task-02-page-finder-agent.md"]
+    T03["discover_candidates() / discover_row_candidates() -- shipped<br/>extraction.py<br/>schema OUT instead of schema IN<br/>docs/scrape-task-03-schema-discovery-mode.md"]
+    T04["capture_request_shape() -- shipped<br/>request_shape_finder.py<br/>real captured request shapes<br/>for in-session XHR targets"]
     Core -.plain data in/out, no hidden state.-> T02
     Core -.plain data in/out, no hidden state.-> T03
     Core -.plain data in/out, no hidden state.-> T04
@@ -189,19 +189,19 @@ packages/scrape/src/threetears/scrape/
 ├── migrations.py               v001-v009, PACKAGE_NAME="3tears_scrape"
 ├── target_source.py            TargetSource ABC, YamlTargetSource, CollectionTargetSource,
 │                              StaticTargetSource, bootstrap_targets()
-├── page_finder.py              find_target_page() — bounded-turn search/fetch research agent
-├── request_shape_finder.py     capture_request_shape() — real captured XHR/fetch shapes
-├── forms.py                    parse_form()/build_form_post() — browser-free postback replay
-├── tool.py                     ScrapeTool — ad-hoc single-call MCP entry point
+├── page_finder.py              find_target_page() -- bounded-turn search/fetch research agent
+├── request_shape_finder.py     capture_request_shape() -- real captured XHR/fetch shapes
+├── forms.py                    parse_form()/build_form_post() -- browser-free postback replay
+├── tool.py                     ScrapeTool -- ad-hoc single-call MCP entry point
 ├── enrichment.py                secondary free-form LLM notes pass (separate from structured_fields)
-└── llm_retry.py                 bounded_retry_structured_call() — shared by extraction.py + eval_loop.py
+└── llm_retry.py                 bounded_retry_structured_call() -- shared by extraction.py + eval_loop.py
 
 Example consumer (faidh repo, not part of this package):
-faidh/src/faidh/intake/plugins/warn_act.py               WarnActPlugin — the ONLY place WARN-domain meaning exists
+faidh/src/faidh/intake/plugins/warn_act.py               WarnActPlugin -- the ONLY place WARN-domain meaning exists
 faidh/src/faidh/intake/plugins/seeds/warn_act_targets.yaml   the ScrapeTarget config rows
 faidh/src/faidh/intake/runner.py                          publish_observations(), publish_arbitrary_signals(), poll_scrape_targets()
-faidh/src/faidh/intake/plugins/__init__.py                PluginBase.collect() — persist-then-yield template method
-faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/Collection — the actual Postgres sink
+faidh/src/faidh/intake/plugins/__init__.py                PluginBase.collect() -- persist-then-yield template method
+faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/Collection -- the actual Postgres sink
 ```
 
 **Call chain, one live poll cycle (faidh's WARN Act consumer):** `runner.publish_observations()` → `WarnActPlugin.collect()` (inherited `PluginBase`) → `WarnActPlugin._produce()` → resolves `self._drivers[target.driver_backend]` → `driver.render(...)` → `run_eval_loop_multi_row(...)` (or `run_eval_loop` if `multi_row=False`) → `_reuse_row_recipe`/`_regenerate_row_recipe` (or `_regex_` variants) → `_persist_extraction()` writes `scrape_extractions` → back in `_produce()`, each record becomes an `ArbitrarySignalEntity` → `collect()`'s `save_entity()` writes `faidh_arbitrary_signals` → `publish_arbitrary_signals()` re-drives `collect()` and publishes each yielded entity to `arbitrary_signals()` on NATS.

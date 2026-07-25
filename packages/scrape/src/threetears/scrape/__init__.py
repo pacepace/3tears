@@ -1,4 +1,4 @@
-"""3tears-scrape — general-purpose, AI-native scraping platform component.
+"""3tears-scrape -- general-purpose, AI-native scraping platform component.
 
 Originally built inside a forecasting application (faidh) as
 ``src/faidh/scrape/`` and lifted out into this package on 2026-07-15. It was

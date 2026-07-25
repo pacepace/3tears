@@ -1,6 +1,6 @@
 """Tests for deterministic HTML form parsing + postback serialization (``threetears.scrape.forms``).
 
-Pure and hermetic — every test feeds markup and asserts on the parsed form / serialized body, no
+Pure and hermetic -- every test feeds markup and asserts on the parsed form / serialized body, no
 network and no browser. Covers the ASP.NET WebForms archetype (a ``__VIEWSTATE`` form) and the general
 mechanics (default "successful controls", submit-control listing, action resolution, override policy).
 """

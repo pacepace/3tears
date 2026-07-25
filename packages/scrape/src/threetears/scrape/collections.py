@@ -1,12 +1,12 @@
-"""ScrapeTarget / ScrapeRecipe / ScrapeExtraction — domain-agnostic 3tears-scrape core.
+"""ScrapeTarget / ScrapeRecipe / ScrapeExtraction -- domain-agnostic 3tears-scrape core.
 
 Subclasses ``threetears.core.collections.base.BaseCollection`` directly,
-rather than any consuming application's own collection base class — the
+rather than any consuming application's own collection base class -- the
 discipline that let this module move out of the application it was written
 in as a plain directory move rather than a disentangling exercise.
 
 ``BaseCollection`` provides the full three-tier (L1/L2/L3) cache machinery,
-subscript access, CAS-mutate, and invalidation-publish for free — a
+subscript access, CAS-mutate, and invalidation-publish for free -- a
 subclass only has to implement ``table_name``, ``entity_class``, and the
 five storage-tier primitives (``fetch_from_store``, ``save_to_store``,
 ``delete_from_store``, ``serialize``, ``deserialize``). It does **not**
@@ -14,12 +14,12 @@ provide an in-memory L3 fallback of its own; that convenience was an
 application-side addition (a ``self._rows`` dict, plus registry/config
 resolution from process-wide application state), which this package cannot
 import. ``ScrapeCollection`` below re-implements the same shape locally,
-minus the process-wide default resolution — callers must pass
+minus the process-wide default resolution -- callers must pass
 ``registry``/``config`` explicitly. L3 is a real asyncpg pool
 (``threetears.core.backends.protocol.DurableStore``-conforming) once
 ``threetears.scrape.migrations.apply_migrations()`` has run and the registry
 carries an ``l3_pool``; otherwise CRUD falls back to the in-memory
-``self._rows`` dict for the process lifetime — this fallback is why unit
+``self._rows`` dict for the process lifetime -- this fallback is why unit
 tests never need a real database, but it is NOT multi-pod-safe (each pod
 gets its own dict), which is the whole reason the L3 branch below exists.
 """
@@ -67,7 +67,7 @@ def _parse_dt(raw: Any) -> datetime | None:
 
     L2 (NATS KV) round-trips every value through JSON, which stringifies
     ``datetime`` on write (see :meth:`ScrapeCollection.serialize`) but does
-    not parse it back on read — so a value read through L2 arrives as a
+    not parse it back on read -- so a value read through L2 arrives as a
     string even though the in-memory L3 fallback keeps it as a native
     ``datetime``.
     """
@@ -196,7 +196,7 @@ class ScrapeTarget(BaseEntity):
         document behind a bot challenge a plain HTTP client can't pass).
 
         Deliberately a plain string rather than an enum: the set of backends
-        a given deployment has wired up is the caller's business — a
+        a given deployment has wired up is the caller's business -- a
         consumer that never installs the sidecar shouldn't be forced to
         carry a symbol for it.
         """
@@ -208,7 +208,7 @@ class ScrapeTarget(BaseEntity):
 
         Resolution against a real rate-limit strategy happens in the
         consuming application's own scheduling code, which is exactly why
-        this is a plain string rather than a strategy instance — typing it
+        this is a plain string rather than a strategy instance -- typing it
         as one would force this package to import the scheduler's own
         vocabulary, and the core has no opinion about how a key maps to a
         policy.
@@ -226,7 +226,7 @@ class ScrapeTarget(BaseEntity):
 
         Selects which eval loop the caller's polling code runs:
         ``run_eval_loop_multi_row`` when ``True``, ``run_eval_loop`` (the
-        original single-record path) when ``False`` (the default — preserves
+        original single-record path) when ``False`` (the default -- preserves
         every pre-existing target's behavior). Domain-agnostic: this is a
         statement about page shape, not about what the records mean, which
         is why it belongs on the core entity rather than in the consumer's
@@ -405,7 +405,7 @@ class ScrapeRecipe(BaseEntity):
 
 
 class ScrapeExtraction(BaseEntity):
-    """One row per fetch — the actual output.
+    """One row per fetch -- the actual output.
 
     Every field the eval loop or the enrichment pass populates defaults to
     an explicit "not yet" value rather than being assumed present. That is

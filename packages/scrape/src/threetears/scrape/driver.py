@@ -1,6 +1,6 @@
-"""ScrapeDriver — pure-Python ABC for pluggable browser-rendering backends.
+"""ScrapeDriver -- pure-Python ABC for pluggable browser-rendering backends.
 
-Zero non-stdlib imports — the discipline that let this module (and
+Zero non-stdlib imports -- the discipline that let this module (and
 ``drivers/``) move out of the application it was first written in as a plain
 directory move, with no changes to driver code at all.
 
@@ -8,8 +8,8 @@ Deliberately excludes anything backend-specific (no CDP handles, no
 Firefox-specific objects): a driver takes a URL and returns a
 ``RenderedPage`` carrying only plain data. This genericness is what keeps
 the nodriver sidecar boundary "arm's length" under FSF's own aggregation
-test — the two processes exchange plain data over a documented HTTP
-contract and neither is built around the other's internals — not merely a
+test -- the two processes exchange plain data over a documented HTTP
+contract and neither is built around the other's internals -- not merely a
 style preference. See ``docs/scrape-lift-design.md`` (D4) for why that
 isolation is treated as structural rather than maintainer-dependent.
 """
@@ -133,7 +133,7 @@ class ScrapeDriver(ABC):
     """Abstract base for pluggable browser-rendering backends.
 
     Implementations render a URL and return the resulting page as plain
-    data (:class:`RenderedPage`) — no backend-specific handles leak across
+    data (:class:`RenderedPage`) -- no backend-specific handles leak across
     this boundary, so callers can swap backends without caring which one
     rendered the page.
     """
