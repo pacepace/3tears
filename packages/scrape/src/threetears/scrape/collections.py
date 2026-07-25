@@ -490,7 +490,14 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def validation_status(self) -> str:
-        """``"validated"`` | ``"needs_review"`` | ``"failed"``; defaults to ``"needs_review"``."""
+        """``"validated"`` | ``"needs_review"`` | ``"failed"`` | ``"blocked"``; defaults to ``"needs_review"``.
+
+        ``"blocked"`` is the one that does not mean "extraction went wrong". It means the
+        page never arrived: a bot wall or human-verification interstitial stood where the
+        content should be, so no records exist to have got right or wrong, and the target's
+        extraction strategy is not implicated. A consumer counting it as a failed extraction
+        will over-count failures for a target that is merely walled.
+        """
         return str(self._get_raw("validation_status", "needs_review"))
 
 

@@ -20,16 +20,57 @@ health exists for targets that never had a recipe: one blocked before it ever ex
 successfully has real health and no strategy, and giving it a strategy-less recipe row
 would need a guard so the reuse path never mistook that empty strategy for a real one.
 
-This release populates one column. `content_fingerprint` is a digest of the page's
-readable text, stamped whenever an extraction validates, and it is the comparison value
-that will let a redesigned page be told apart from an unchanged one. Fingerprinting text
-rather than markup is deliberate: a site that reformats its template has not changed what
-it says, and a fingerprint that flipped on that would claim the site changed on every
-deploy the site makes. The remaining columns are created now because the shape is settled
-and one `CREATE` beats three `ALTER`s against a table this young.
+`content_fingerprint` is a digest of the page's readable text, stamped whenever an
+extraction validates, and it is the comparison value that lets a redesigned page be told
+apart from an unchanged one. Fingerprinting text rather than markup is deliberate: a site
+that reformats its template has not changed what it says, and a fingerprint that flipped on
+that would claim the site changed on every deploy the site makes. The circuit, backoff and
+sealed-session columns are created now because the shape is settled and one `CREATE` beats
+several `ALTER`s against a table this young.
 
 `run_eval_loop` and `run_eval_loop_multi_row` take an optional `health_collection`;
 omitted, as every existing caller omits it, nothing is written and nothing else differs.
+
+**Feature: a failed page is classified before it is acted on (`threetears.scrape`)** -- the
+fix for the recipe destruction described above. When a stored strategy stops matching, the
+eval loop now asks what the page actually is before deciding what the failure meant, and
+routes on the answer: a bot wall leaves the recipe byte-identical and persists an extraction
+with the new `validation_status` value `"blocked"`; a page that genuinely changed regenerates
+on the **first** failure instead of the third; anything else keeps today's behaviour exactly.
+
+Detection is a question, not a marker list. Matching a vendor's current interstitial markup
+is a hand-written parser for one page as it looks this week, and vendors reword these pages,
+so a fixture set captured today specifies nothing about tomorrow -- and the rot is silent in
+the worst direction, a stale marker meaning a blocked page is read as "the site changed" and
+its recipe burned. New `threetears.scrape.challenge` holds the verdict model and the prompt;
+it contains no vendor string, so a wall it has never seen classifies on meaning.
+
+Cost, stated honestly rather than as a slogan. Classification is never the first question
+asked. A page whose readable text is identical to the one the strategy last validated
+against provably has not changed and provably is not a new wall, so it counts the failure for
+zero model calls, exactly as today. A page already classified reuses its verdict from the new
+`classified_fingerprint` / `classified_verdict` / `classified_evidence` columns, so a target
+walled for a week costs one classification rather than seven. Only a page that is both
+different and unseen costs a call -- one, in exchange for the entire candidate-generation
+round a blocked target burns today, and for regenerating two polls sooner when the site
+really did change. A cached `"changed"` verdict also records that regeneration has already
+been tried against that exact page, which is what stops an unlearnable page burning a
+candidate round every poll.
+
+Both entry points take an optional `page_status` (real evidence for the classifier, though
+rarely decisive since most walls return 200) and `classifier_model_id`. A classifier that
+cannot answer degrades to precisely today's behaviour: an unanswerable question is never
+more destructive than not having asked one.
+
+The four recipe-reuse paths were restructured into pure validators plus one shared commit,
+and the four "no structurally valid candidates" branches into one shared helper, so the
+classification hook exists once per family rather than eight times. The regex strategies were
+not an afterthought here -- a regex target behind a wall loses its recipe exactly as a CSS one
+does, and hooking only the two paths originally named would have left that intact.
+
+`v010` gained the three `classified_*` columns rather than a `v011` adding them, since the
+table had not shipped and no database outside a test container had run it. A local database
+that already applied `v010` will not pick them up and should be dropped.
 
 **Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
 `datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents

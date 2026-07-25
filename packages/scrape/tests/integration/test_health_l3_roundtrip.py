@@ -30,7 +30,12 @@ import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
-from threetears.scrape.health import ScrapeTargetHealthCollection, content_fingerprint, record_validated_fetch
+from threetears.scrape.health import (
+    ScrapeTargetHealthCollection,
+    content_fingerprint,
+    record_classification,
+    record_validated_fetch,
+)
 from threetears.scrape.migrations import apply_migrations
 
 pytestmark = pytest.mark.integration
@@ -93,6 +98,9 @@ async def test_every_health_field_round_trips_through_real_postgres(
             "blocked_until": blocked_at + timedelta(hours=6),
             "last_blocked_at": blocked_at,
             "last_block_kind": "interstitial",
+            "classified_fingerprint": "b" * 64,
+            "classified_verdict": "blocked",
+            "classified_evidence": "the page asks the visitor to verify a browser",
             "session_state_sealed": "sealed-ciphertext-token",
             "session_state_expires_at": blocked_at + timedelta(days=1),
         }
@@ -107,6 +115,9 @@ async def test_every_health_field_round_trips_through_real_postgres(
     assert stored.consecutive_fetch_failures == 3
     assert stored.circuit_state == "open"
     assert stored.last_block_kind == "interstitial"
+    assert stored.classified_fingerprint == "b" * 64
+    assert stored.classified_verdict == "blocked"
+    assert stored.classified_evidence == "the page asks the visitor to verify a browser"
     assert stored.session_state_sealed == "sealed-ciphertext-token"
     assert stored.last_blocked_at == blocked_at
     assert stored.blocked_until == blocked_at + timedelta(hours=6)
@@ -183,3 +194,48 @@ async def test_a_second_success_merges_rather_than_replacing(health: ScrapeTarge
     assert stored.last_block_kind == "interstitial"
     # And the row's creation time is not reset by a later fetch.
     assert stored.date_created == created_at
+
+
+async def test_a_blocked_verdict_and_a_later_success_coexist_on_one_row(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """The two writers touch the same row through the same merge, against a real schema.
+
+    Worth its own integration test rather than trusting the in-memory one: these are two
+    separate read-modify-writes against a row that already exists, so both take the fenced
+    update path where a real database can disagree with a dict. It also pins that the
+    verdict cache and the reference fingerprint are genuinely different columns -- if they
+    ever collapsed into one, a recovery would erase the block record or a block would
+    poison the comparison page, and both would pass an in-memory check that only reads
+    back what it wrote.
+    """
+    target_id = _target("warn_wall")
+    page = "<html><body><h1>Checking your browser</h1></body></html>"
+
+    await record_classification(
+        health,
+        target_id=target_id,
+        fingerprint=content_fingerprint(page),
+        kind="blocked",
+        evidence="the page asks the visitor to verify a browser",
+    )
+
+    await health.invalidate_cache(target_id)
+    blocked = await health.get(target_id)
+    assert blocked is not None
+    assert blocked.classified_fingerprint == content_fingerprint(page)
+    assert blocked.classified_verdict == "blocked"
+    assert blocked.last_blocked_at is not None
+    assert blocked.content_fingerprint is None, "a wall must never become the reference page"
+
+    recovered_page = "<html><body><table><tr><td>Acme Corp</td></tr></table></body></html>"
+    await record_validated_fetch(health, target_id=target_id, html=recovered_page)
+
+    await health.invalidate_cache(target_id)
+    stored = await health.get(target_id)
+    assert stored is not None
+    assert stored.content_fingerprint == content_fingerprint(recovered_page)
+    # The block record survives the fetch that proves the target recovered, which is the
+    # moment that history is most worth having.
+    assert stored.classified_verdict == "blocked"
+    assert stored.last_blocked_at is not None

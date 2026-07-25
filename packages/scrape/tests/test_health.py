@@ -16,13 +16,15 @@ for behaviour but structurally cannot catch a missing DDL column -- that check l
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
+from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
@@ -214,24 +216,39 @@ async def test_a_failed_reuse_stamps_nothing(
     This is the assertion that matters most in the file. Stamping here would poison the
     comparison the fingerprint exists for: the next failure would diff against a
     fingerprint taken from a broken read and conclude the page had changed.
+
+    The classifier is faked out because a reuse failure now asks it what the page was, and
+    an unfaked call here would reach for the network and then retry itself through half a
+    minute of backoff. It answers ``content`` -- our selectors are simply wrong -- which is
+    the route that leaves today's behaviour untouched, so the assertion below is about the
+    fingerprint and nothing else. The row it DOES write is the verdict cache, which is why
+    this checks ``content_fingerprint`` rather than the row's existence.
     """
     await _seed_working_recipe(
         recipes, "warn_oh", {"row_selector": "table tr.nonexistent", "field_selectors": {"employer": "td.nope"}}
     )
-
-    result = await run_eval_loop_multi_row(
-        "warn_oh",
-        _PAGE,
-        "https://example.gov/warn",
-        {"employer": str},
-        recipe_collection=recipes,
-        extraction_collection=extractions,
-        api_key="unused-no-llm-call-below-the-failure-threshold",
-        health_collection=health,
+    verdict = PageVerdict(kind="content", evidence="the listing is present", confidence="high")
+    fake_model = SimpleNamespace(
+        with_structured_output=lambda _schema, **_kw: SimpleNamespace(ainvoke=AsyncMock(return_value=verdict))
     )
 
+    with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
+        result = await run_eval_loop_multi_row(
+            "warn_oh",
+            _PAGE,
+            "https://example.gov/warn",
+            {"employer": str},
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            api_key="k",
+            health_collection=health,
+        )
+
     assert result.validation_status == "failed"
-    assert await health.get("warn_oh") is None
+    stored = await health.get("warn_oh")
+    assert stored is not None, "the verdict cache should have been written"
+    assert stored.content_fingerprint is None, "a page we could not read must never become the reference page"
+    assert stored.fingerprint_updated_at is None
 
 
 async def test_omitting_the_health_collection_changes_nothing(

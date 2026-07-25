@@ -138,11 +138,37 @@ extraction call already use. New module `challenge.py` holds the prompt, the ver
 the routing; nothing about it is vendor-specific, so a wall it has never seen classifies on
 meaning rather than markup.
 
-**Cost: this is not an added call.** It replaces a blind regeneration we were already paying for.
-On the reuse-failure path it runs *instead of* proceeding toward candidate generation, and
-regeneration only follows if the verdict says the page actually changed. A blocked target
-currently costs a full candidate-generation-plus-judge round; under this design it costs one
-classification and no regeneration at all -- strictly cheaper than today.
+**Cost, stated as a ledger rather than a slogan.** An earlier draft claimed "this is not an
+added call". That does not survive contact with the actual paths, so the honest version:
+
+| Situation | Today | Under this design |
+|---|---|---|
+| Recipe validates | 0 | 0 |
+| Reuse fails, page identical to the last validated one | 0 | 0, the fingerprint comparison is free and settles it |
+| Reuse fails, page differs, first time | 0 | **1** (the classification) |
+| Reuse fails, page differs, later polls | 0 | 0, cached verdict |
+| Blocked target, over the polls it takes to cross the threshold | a full candidate-generation-plus-judge round, and a destroyed recipe | 1 classification, ever, and the recipe intact |
+| Genuinely changed target | generation+judge on the third failing poll | 1 classification + generation+judge on the *first* |
+
+So one classification is genuinely added at the moment a target's page first stops matching, and
+it buys back the entire regeneration round on every blocked target plus two polls of latency on
+every changed one. That is the trade, and it is worth making. Claiming it is free is not.
+
+**Three checks, cheapest first, and only the last one costs anything.** Classification is never
+the first question asked on a failure:
+
+1. **Is this page identical to the one the recipe last validated against?** (`content_fingerprint`.)
+   If so, the page provably has not changed and provably is not a new wall, because a wall would
+   have different content. Count the failure exactly as today and spend nothing. This is the free
+   path, and it is the common one.
+2. **Have we already classified this exact page?** (`classified_fingerprint`.) If so, reuse that
+   verdict.
+3. **Otherwise, ask.** One classification call, cached against the fingerprint of the page it judged.
+
+A cache hit is also the answer to "we already regenerated against this page and it did not
+stick": a repeat `changed` verdict for the same fingerprint routes to counting the failure, not
+to regenerating again. Without that, an unlearnable page would burn a generation round every
+single poll, which is strictly worse than the three-poll cadence it replaced.
 
 **The fingerprint stops it repeating.** The verdict is stored with the fingerprint of the page it
 judged (§2). Same fingerprint next poll, same verdict, no call. A target walled for a week costs
@@ -184,7 +210,19 @@ A new `ScrapeTargetHealth` entity carries:
 | `circuit_state` | `closed` / `open` / `half_open`, the `CircuitBreaker` vocabulary |
 | `blocked_until` | when the next probe is permitted |
 | `last_blocked_at`, `last_block_kind` | evidence for the operator and for tuning detection |
+| `classified_fingerprint`, `classified_verdict`, `classified_evidence` | the verdict cache: which page was last classified, what it was judged to be, and why |
 | `session_state_sealed`, `session_state_expires_at` | §4 |
+
+The three `classified_*` columns are what makes "same fingerprint next poll, same verdict, no
+call" implementable. They cannot be folded into `content_fingerprint`, which answers a
+different question: `content_fingerprint` is the page as it looked when extraction last
+*succeeded*, and is the comparison value for "has the site changed". A classification is
+always asked about a page that just *failed*, so storing it in the same column would destroy
+the only reference the comparison has.
+
+A cached verdict also means "we have already acted on this exact page", which is what stops a
+`changed` verdict regenerating on every subsequent poll after a regeneration that did not
+stick. See §1's routing.
 
 **Decided: its own entity, not the recipe row.** `ScrapeTargetHealth` / `ScrapeTargetHealthCollection`,
 keyed by `target_id`, table `scrape_target_health`, alongside the existing three. The columns above
@@ -328,7 +366,7 @@ is the whole integration surface with the queue.
 ## Files to create / modify
 
 **Create**
-- `packages/scrape/src/threetears/scrape/challenge.py` -- `detect_challenge`, `ChallengeSignal`
+- `packages/scrape/src/threetears/scrape/challenge.py` -- `PageVerdict`, `classify_failed_page`
 - `packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate
 - `packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine
 - `packages/scrape/sidecar/hitl.py` -- session endpoints, VNC lifecycle

@@ -211,8 +211,15 @@ async def v010_create_scrape_target_health(store: DataStore) -> None:
     first real write.
 
     The block/circuit/session columns are created here rather than added later: the shape
-    is already settled, and one CREATE beats three ALTERs against a table this young. The
-    code that writes them lands with the failure-classification and backoff work.
+    is already settled, and one CREATE beats several ALTERs against a table this young. The
+    code that writes them lands with the backoff and human-in-the-loop work.
+
+    The three ``classified_*`` columns joined this CREATE after the table was first written,
+    on that same reasoning, while the branch introducing it was still unmerged and unpushed
+    and no database outside a throwaway test container had ever run it. Anyone who did run
+    an earlier form of this migration locally will not pick them up, because the version is
+    already recorded as applied; drop that database and let it re-run. Once this ships, the
+    same change would have to be an ALTER in a later version instead.
     """
     await store.execute("""
         CREATE TABLE IF NOT EXISTS scrape_target_health (
@@ -224,6 +231,9 @@ async def v010_create_scrape_target_health(store: DataStore) -> None:
             blocked_until               TIMESTAMPTZ,
             last_blocked_at             TIMESTAMPTZ,
             last_block_kind             TEXT,
+            classified_fingerprint      TEXT,
+            classified_verdict          TEXT,
+            classified_evidence         TEXT,
             session_state_sealed        TEXT,
             session_state_expires_at    TIMESTAMPTZ,
             date_created                TIMESTAMPTZ,

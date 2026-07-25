@@ -23,11 +23,11 @@ adding a guard so the reuse path never mistakes that empty strategy for a real o
 separate row makes the situation simply not arise -- health with no recipe is a health row
 and no recipe row, which is an honest description of what is true.
 
-This module writes only :attr:`ScrapeTargetHealth.content_fingerprint`, on a validated
-fetch. The remaining columns are declared here, and their table created in one migration,
-because the shape is already designed and a single DDL beats three ALTERs against the same
-young table; the code that populates them lands with the failure-classification and
-backoff work that needs them.
+This module writes the fingerprint of a validated page, and the cached verdict about a page
+that failed. The circuit, backoff and sealed-session columns are declared here, and their
+table created in one migration, because the shape is already designed and a single DDL beats
+several ALTERs against the same young table; the code that populates them lands with the
+backoff and human-in-the-loop work that needs them.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ __all__ = [
     "ScrapeTargetHealth",
     "ScrapeTargetHealthCollection",
     "content_fingerprint",
+    "record_classification",
     "record_validated_fetch",
 ]
 
@@ -140,6 +141,43 @@ class ScrapeTargetHealth(BaseEntity):
         return result
 
     @property
+    def classified_fingerprint(self) -> str | None:
+        """Digest of the last page a classification was asked about; ``None`` until one is.
+
+        Deliberately NOT :attr:`content_fingerprint`, which answers a different question.
+        That one is the page as it looked when extraction last *succeeded*, and is the
+        reference for "has the site changed". A classification is only ever asked about a
+        page that just *failed*, so storing it in the same column would overwrite the only
+        reference the comparison has, with a page that is by definition not it.
+        """
+        result: str | None = self._get_raw("classified_fingerprint", None)
+        return result
+
+    @property
+    def classified_verdict(self) -> str | None:
+        """What the page at :attr:`classified_fingerprint` was judged to be; ``None`` if never.
+
+        One of ``challenge.PageVerdictKind``'s values. Read back when the same page is seen
+        again, which is what keeps a target walled for a week costing one classification
+        rather than one per poll. It also records that we have already acted on that exact
+        page, so a repeated "changed" verdict stops regenerating against a page we have
+        demonstrably already failed to learn.
+        """
+        result: str | None = self._get_raw("classified_verdict", None)
+        return result
+
+    @property
+    def classified_evidence(self) -> str | None:
+        """Why that verdict was reached, in the classifier's own words; ``None`` if never.
+
+        Carried forward onto every extraction the cached verdict produces, so an operator
+        looking at a blocked row a week later sees what the page actually said rather than
+        just a label.
+        """
+        result: str | None = self._get_raw("classified_evidence", None)
+        return result
+
+    @property
     def session_state_sealed(self) -> str | None:
         """A human-cleared browser session's cookies and storage, sealed at rest; ``None`` if none.
 
@@ -182,6 +220,49 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         return ScrapeTargetHealth
 
 
+async def _merge_health(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+    changes: dict[str, Any],
+) -> ScrapeTargetHealth:
+    """Apply *changes* onto *target_id*'s existing health row, creating one if there is none.
+
+    The one read-modify-write in this module, shared by every writer, because getting it
+    wrong is subtle in two ways that a second copy would eventually get wrong differently.
+
+    Merging rather than replacing: each writer owns a few columns and knows nothing about
+    the rest, so a write that replaced the row would have a success erase the block history
+    that proves the target recovered.
+
+    Building an existing row as NOT new, rather than through ``create()``:
+    ``BaseCollection.save_entity`` stamps ``date_created`` only for a new entity and fences
+    the write with the entity's own ``original_date_updated``. Re-creating an existing row
+    would both reset its creation time on every write and skip the compare-and-swap that
+    keeps two pods from clobbering each other.
+
+    :param health_collection: this target's health store
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target whose health is being updated
+    :ptype target_id: str
+    :param changes: column -> new value, applied over whatever is already stored
+    :ptype changes: dict[str, Any]
+    :return: the persisted health row
+    :rtype: ScrapeTargetHealth
+    """
+    existing = await health_collection.get(target_id)
+    data: dict[str, Any] = dict(existing.to_dict()) if existing is not None else {"target_id": target_id}
+    data.update(changes)
+
+    entity = (
+        health_collection.create(data)
+        if existing is None
+        else ScrapeTargetHealth(data, is_new=False, collection=health_collection)
+    )
+    await health_collection.save_entity(entity)
+    return entity
+
+
 async def record_validated_fetch(
     health_collection: ScrapeTargetHealthCollection,
     *,
@@ -196,9 +277,6 @@ async def record_validated_fetch(
     outcome would be a fingerprint of a page we did not successfully read, which is the
     opposite of the comparison value this is for.
 
-    Merges onto whatever health the target already has rather than replacing it: the
-    failure and circuit columns describe a different concern and must survive a success.
-
     :param health_collection: this target's health store
     :ptype health_collection: ScrapeTargetHealthCollection
     :param target_id: the target that just validated
@@ -208,19 +286,61 @@ async def record_validated_fetch(
     :return: the persisted health row
     :rtype: ScrapeTargetHealth
     """
-    existing = await health_collection.get(target_id)
-    data: dict[str, Any] = dict(existing.to_dict()) if existing is not None else {"target_id": target_id}
-    data["content_fingerprint"] = content_fingerprint(html)
-    data["fingerprint_updated_at"] = datetime.now(UTC)
+    return await _merge_health(
+        health_collection,
+        target_id=target_id,
+        changes={
+            "content_fingerprint": content_fingerprint(html),
+            "fingerprint_updated_at": datetime.now(UTC),
+        },
+    )
 
-    if existing is None:
-        entity = health_collection.create(data)
-    else:
-        # Built as NOT new, rather than through create(): BaseCollection.save_entity stamps
-        # date_created only for a new entity and fences the write with the entity's own
-        # original_date_updated, so re-creating an existing row would both reset its
-        # creation time on every successful fetch and skip the compare-and-swap that keeps
-        # concurrent pods from clobbering each other.
-        entity = ScrapeTargetHealth(data, is_new=False, collection=health_collection)
-    await health_collection.save_entity(entity)
-    return entity
+
+async def record_classification(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+    fingerprint: str,
+    kind: str,
+    evidence: str,
+) -> ScrapeTargetHealth:
+    """Remember that the page digesting to *fingerprint* was judged to be *kind*.
+
+    Two jobs in one write. It is the verdict cache, so seeing the same page again costs a
+    row read instead of a model call. It is also the record that we have already ACTED on
+    that page, which is what stops a ``"changed"`` verdict regenerating on every poll after
+    a regeneration that did not stick.
+
+    A ``"blocked"`` verdict additionally stamps :attr:`ScrapeTargetHealth.last_blocked_at`.
+    It deliberately leaves :attr:`ScrapeTargetHealth.last_block_kind` alone: that column
+    means which KIND of wall was seen, and this classifier deliberately has no vendor
+    taxonomy to put in it -- writing the literal string ``"blocked"`` there would fill a
+    column meant to distinguish walls with a value that never distinguishes anything. The
+    classifier's own account of the page goes to ``classified_evidence`` instead, where it
+    is read back.
+
+    Nothing here touches ``consecutive_fetch_failures`` or ``circuit_state``: those are a
+    counter and a state machine that need a recovery rule as much as a failure rule, and
+    half of that pair landing here would leave a counter that only ever climbs.
+
+    :param health_collection: this target's health store
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target whose page was classified
+    :ptype target_id: str
+    :param fingerprint: digest of the page that was classified, from :func:`content_fingerprint`
+    :ptype fingerprint: str
+    :param kind: the verdict, one of ``challenge.PageVerdictKind``'s values
+    :ptype kind: str
+    :param evidence: why that verdict was reached, in the classifier's own words
+    :ptype evidence: str
+    :return: the persisted health row
+    :rtype: ScrapeTargetHealth
+    """
+    changes: dict[str, Any] = {
+        "classified_fingerprint": fingerprint,
+        "classified_verdict": kind,
+        "classified_evidence": evidence,
+    }
+    if kind == "blocked":
+        changes["last_blocked_at"] = datetime.now(UTC)
+    return await _merge_health(health_collection, target_id=target_id, changes=changes)

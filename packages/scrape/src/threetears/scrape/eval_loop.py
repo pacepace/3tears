@@ -19,16 +19,24 @@ call on every poll instead (:func:`_run_per_document_extraction`).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, get_args
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
+from .challenge import DEFAULT_CLASSIFIER_MODEL_ID, PageVerdictKind, classify_failed_page
 from .collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipe, ScrapeRecipeCollection
-from .health import ScrapeTargetHealthCollection, record_validated_fetch
+from .health import (
+    ScrapeTargetHealthCollection,
+    content_fingerprint,
+    record_classification,
+    record_validated_fetch,
+)
 from .extraction import (
     DEFAULT_EXTRACTION_MODEL_ID,
     DEFAULT_VISION_MODEL_ID,
@@ -311,51 +319,374 @@ async def _save_recipe(
     await recipe_collection.save_entity(recipe_entity)
 
 
-async def _reuse_recipe(
+@dataclass(frozen=True)
+class _ReuseCheck:
+    """What re-running a stored strategy against a freshly fetched page produced.
+
+    Deliberately carries no decision. Each strategy shape knows how to run its own stored
+    strategy and nothing else; what a miss MEANS -- a transient blip, a redesign, a wall --
+    is one question with one answer, and it is answered in one place
+    (:func:`_run_reuse_cycle`) rather than four times over.
+    """
+
+    valid: bool
+    records: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _FailureVerdict:
+    """What a page that failed extraction turned out to be.
+
+    Distinct from :class:`~threetears.scrape.challenge.PageVerdict`, which is what a model
+    returns. This is what the eval loop knows, and it may have come from a cached row rather
+    than from a call just made.
+
+    *from_cache* is not bookkeeping -- it changes what a verdict MEANS. A fresh ``"changed"``
+    is new evidence and calls for regeneration. A cached ``"changed"`` says we already
+    regenerated against this exact page and it did not stick, so regenerating again would
+    burn a candidate round on every poll, for a page we have demonstrably failed to learn.
+    A ``"blocked"`` verdict is unaffected either way, because blocked describes a state
+    rather than an action outstanding.
+    """
+
+    kind: PageVerdictKind
+    evidence: str
+    from_cache: bool
+
+
+#: Values :attr:`~threetears.scrape.health.ScrapeTargetHealth.classified_verdict` is allowed
+#: to hold, derived from the Literal rather than restated, so a new verdict kind cannot be
+#: added without this accepting it. A stored value outside the set is treated as no cached
+#: verdict at all: it is either data from a version that meant something different, or
+#: corruption, and re-asking is cheap while acting on a value we cannot interpret is not.
+_KNOWN_VERDICT_KINDS: frozenset[str] = frozenset(get_args(PageVerdictKind))
+
+
+def _check_reuse(
     existing_recipe: ScrapeRecipe,
     html: str,
     schema: FieldSchema,
+    target_id: str,
+) -> _ReuseCheck:
+    """Re-run *existing_recipe*'s CSS selectors against a freshly fetched page. Pure.
+
+    *target_id* is unused here and taken anyway: all four checks share one signature so
+    :func:`_run_reuse_cycle` can hold any of them, and the two multi-row shapes log against
+    the target.
+    """
+    validation = validate_candidate(html, existing_recipe.extraction_strategy.get("selectors", {}), schema)
+    return _ReuseCheck(valid=validation.valid, records=[validation.extracted])
+
+
+async def _commit_reuse(
+    existing_recipe: ScrapeRecipe,
+    check: _ReuseCheck,
     target_id: str,
     source_url: str,
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
 ) -> ScrapeExtraction:
-    """Validate *existing_recipe* against a freshly fetched page; keep it either way.
+    """Persist the outcome of re-running a stored strategy; keep the recipe either way.
 
-    Below the failure threshold the recipe is never abandoned on a single
-    miss (transient-failure tolerance) -- only the failure counter moves.
+    Below the failure threshold the recipe is never abandoned on a single miss
+    (transient-failure tolerance) -- only the failure counter moves. Shared by all four
+    strategy shapes because all four did exactly this, character for character apart from
+    the record list, and a fifth copy is how one of them ends up counting differently from
+    the others.
     """
-    strategy = existing_recipe.extraction_strategy.get("selectors", {})
-    validation = validate_candidate(html, strategy, schema)
     now = datetime.now(UTC)
-    if validation.valid:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=now,
-            consecutive_validation_failures=0,
-        )
-        validation_status = "validated"
-    else:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=existing_recipe.last_validated_at or now,
-            consecutive_validation_failures=existing_recipe.consecutive_validation_failures + 1,
-        )
-        validation_status = "failed"
+    await _save_recipe(
+        recipe_collection,
+        target_id=target_id,
+        extraction_strategy=existing_recipe.extraction_strategy,
+        won_at=existing_recipe.won_at or now,
+        last_validated_at=now if check.valid else (existing_recipe.last_validated_at or now),
+        consecutive_validation_failures=0 if check.valid else existing_recipe.consecutive_validation_failures + 1,
+    )
     return await _persist_extraction(
         extraction_collection,
         target_id=target_id,
         source_url=source_url,
-        structured_fields={"records": [validation.extracted]},
-        validation_status=validation_status,
+        structured_fields={"records": check.records},
+        validation_status="validated" if check.valid else "failed",
         extraction_recipe_id=target_id,
+    )
+
+
+async def _commit_blocked(
+    verdict: _FailureVerdict,
+    target_id: str,
+    source_url: str,
+    *,
+    extraction_collection: ScrapeExtractionCollection,
+) -> ScrapeExtraction:
+    """Record that we never received the content, and touch nothing else.
+
+    The absence of a ``_save_recipe`` call here is the entire fix, not an omission. A page
+    we were walled off from says nothing about whether the stored strategy still works, so
+    incrementing its failure counter -- which is what happens today -- marches a perfectly
+    good recipe toward being discarded and replaced by whatever selectors best fit a
+    challenge page. The recipe row is left byte-identical, which also means a target blocked
+    before it ever won a recipe stays a target with no recipe rather than acquiring an empty
+    one.
+
+    No records are persisted either. There were none; a wall has no data on it, and writing
+    an empty extraction with a status that says so is the honest description.
+    """
+    log.warning(
+        "scrape eval loop: target %s appears to be behind a wall (%s); recipe left untouched",
+        target_id,
+        verdict.evidence,
+        extra={"extra_data": {"target_id": target_id, "page_verdict": verdict.kind}},
+    )
+    return await _persist_extraction(
+        extraction_collection,
+        target_id=target_id,
+        source_url=source_url,
+        structured_fields={"records": []},
+        validation_status="blocked",
+        extraction_recipe_id=None,
+        field_confidences={"page_verdict": verdict.kind, "page_verdict_evidence": verdict.evidence},
+    )
+
+
+async def _resolve_failure_verdict(
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    *,
+    health_collection: ScrapeTargetHealthCollection | None,
+    api_key: str,
+    classifier_model_id: str,
+    page_status: int | None,
+) -> _FailureVerdict | None:
+    """Work out what a page that just failed extraction actually is. Cheapest question first.
+
+    Three checks, and only the last one costs a model call:
+
+    1. **Is this the page the recipe last validated against?** If the fingerprint matches,
+       the page provably has not changed, and provably is not a new wall either, because a
+       wall would not digest to the same content. Nothing to ask. This is the common case on
+       a transient miss and it stays exactly as cheap as it is today.
+    2. **Have we already asked about this exact page?** A cached verdict answers for free. A
+       target walled for a week therefore costs one classification, not one per poll. It
+       also records that we have already ACTED on this page, which is what stops a
+       ``"changed"`` verdict regenerating on every poll after a regeneration that did not
+       stick.
+    3. **Otherwise ask**, once, and cache the answer against the page it was about.
+
+    ``None`` means "no opinion", and every caller must treat it as exactly today's
+    behaviour. It is returned when there is no health store to consult, when the page is
+    unchanged, and when the classifier could not answer -- an unanswerable question must
+    never be more destructive than not having asked one.
+
+    :param html: the page extraction just failed against
+    :ptype html: str
+    :param schema: field_name -> expected Python type, the fields we were looking for
+    :ptype schema: FieldSchema
+    :param target_id: the target this fetch belongs to
+    :ptype target_id: str
+    :param health_collection: the health store, or ``None`` for a caller that has not opted in
+    :ptype health_collection: ScrapeTargetHealthCollection | None
+    :param api_key: OpenRouter API key
+    :ptype api_key: str
+    :param classifier_model_id: model for the classification call
+    :ptype classifier_model_id: str
+    :param page_status: the HTTP status the page came back with, when the caller knows it
+    :ptype page_status: int | None
+    :return: the verdict, or ``None`` for no opinion
+    :rtype: _FailureVerdict | None
+    """
+    if health_collection is None:
+        return None
+
+    fingerprint = content_fingerprint(html)
+    try:
+        health = await health_collection.get(target_id)
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+        # Health is a diagnostic aid. A store that cannot be read must degrade this target to
+        # the behaviour it had before health existed, not turn every poll into a hard
+        # failure. Logged with its traceback, never silenced.
+        log.exception(
+            "scrape health: could not read health for target %s; classifying nothing",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
+        return None
+
+    if health is not None:
+        if health.content_fingerprint == fingerprint:
+            return None
+        cached = health.classified_verdict
+        if health.classified_fingerprint == fingerprint and cached in _KNOWN_VERDICT_KINDS:
+            log.info(
+                "scrape page classifier: reusing the cached %s verdict for target %s, no model call",
+                cached,
+                target_id,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            # Narrowed by the membership test above, which is why it is a membership test
+            # against the Literal's own values rather than a cast.
+            return _FailureVerdict(
+                kind=cached,  # type: ignore[arg-type]
+                evidence=health.classified_evidence or "",
+                from_cache=True,
+            )
+
+    verdict = await classify_failed_page(
+        html,
+        schema,
+        api_key=api_key,
+        model_id=classifier_model_id,
+        page_status=page_status,
+    )
+    if verdict is None:
+        return None
+
+    try:
+        await record_classification(
+            health_collection,
+            target_id=target_id,
+            fingerprint=fingerprint,
+            kind=verdict.kind,
+            evidence=verdict.evidence,
+        )
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+        # The verdict is already in hand and routing on it is strictly better than not. All
+        # that is lost is the cache, so the next poll asks again. Same reasoning as the
+        # fingerprint stamp: bookkeeping must not cost a real result.
+        log.exception(
+            "scrape health: could not cache the page verdict for target %s; routing on it anyway",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
+    return _FailureVerdict(kind=verdict.kind, evidence=verdict.evidence, from_cache=False)
+
+
+async def _run_reuse_cycle(
+    existing_recipe: ScrapeRecipe,
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    source_url: str,
+    *,
+    check_fn: Callable[[ScrapeRecipe, str, FieldSchema, str], _ReuseCheck],
+    regenerate: Callable[[], Awaitable[ScrapeExtraction]],
+    recipe_collection: ScrapeRecipeCollection,
+    extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
+    api_key: str,
+    classifier_model_id: str,
+    page_status: int | None,
+) -> ScrapeExtraction:
+    """Re-run a stored strategy, and decide what its failure meant before acting on it.
+
+    The one place a reuse miss is interpreted, for every strategy shape. Three genuinely
+    different situations used to share one response -- count the failure and, three polls
+    later, throw the recipe away -- which is what let a bot wall destroy a working recipe.
+    They are separated here:
+
+    - **blocked**: we never received the content. The recipe is untouched.
+    - **changed, newly**: the page really is different, so waiting two more polls to act on
+      evidence we already have is pure latency. Regenerate now.
+    - **changed, but read from the cache**: we already regenerated against this exact page
+      and it did not stick. Regenerating again would spend a candidate round on every poll
+      for a page we have demonstrably failed to learn -- strictly worse than the three-poll
+      cadence this replaced -- so it falls through and counts the failure instead.
+    - **anything else, or no opinion at all**: today's behaviour, unchanged. Count the
+      failure and let the threshold decide, which is the right response to "our selectors
+      are wrong" and the safe response to "we could not tell".
+    """
+    check = check_fn(existing_recipe, html, schema, target_id)
+    if check.valid:
+        return await _commit_reuse(
+            existing_recipe,
+            check,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+        )
+
+    verdict = await _resolve_failure_verdict(
+        html,
+        schema,
+        target_id,
+        health_collection=health_collection,
+        api_key=api_key,
+        classifier_model_id=classifier_model_id,
+        page_status=page_status,
+    )
+    if verdict is not None:
+        if verdict.kind == "blocked":
+            return await _commit_blocked(verdict, target_id, source_url, extraction_collection=extraction_collection)
+        if verdict.kind == "changed" and not verdict.from_cache:
+            log.info(
+                "scrape eval loop: target %s's page changed (%s); regenerating now rather than counting to the threshold",
+                target_id,
+                verdict.evidence,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            return await regenerate()
+
+    return await _commit_reuse(
+        existing_recipe,
+        check,
+        target_id,
+        source_url,
+        recipe_collection=recipe_collection,
+        extraction_collection=extraction_collection,
+    )
+
+
+async def _persist_no_survivors(
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    source_url: str,
+    *,
+    log_label: str,
+    proposed: int,
+    extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
+    api_key: str,
+    classifier_model_id: str,
+    page_status: int | None,
+) -> ScrapeExtraction:
+    """Regeneration proposed candidates and none of them structurally matched the page.
+
+    Shared by all four regeneration shapes. The classification matters here for a case the
+    reuse path cannot reach: a target that has never had a working recipe, walled from the
+    first fetch. Without this it would fail identically forever and nothing would ever mark
+    it as needing a human. Only ``blocked`` changes anything -- a ``changed`` verdict has
+    nowhere left to route, since regenerating is exactly what just failed.
+    """
+    log.warning(
+        "%s: no structurally-valid candidates for target %s (%d proposed)",
+        log_label,
+        target_id,
+        proposed,
+        extra={"extra_data": {"target_id": target_id}},
+    )
+    verdict = await _resolve_failure_verdict(
+        html,
+        schema,
+        target_id,
+        health_collection=health_collection,
+        api_key=api_key,
+        classifier_model_id=classifier_model_id,
+        page_status=page_status,
+    )
+    if verdict is not None and verdict.kind == "blocked":
+        return await _commit_blocked(verdict, target_id, source_url, extraction_collection=extraction_collection)
+    return await _persist_extraction(
+        extraction_collection,
+        target_id=target_id,
+        source_url=source_url,
+        structured_fields={"records": []},
+        validation_status="failed",
+        extraction_recipe_id=None,
     )
 
 
@@ -367,10 +698,13 @@ async def _regenerate_recipe(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
     api_key: str,
     candidate_count: int,
     extraction_model_id: str,
     judge_model_id: str,
+    classifier_model_id: str,
+    page_status: int | None,
 ) -> ScrapeExtraction:
     """No healthy recipe exists: generate fresh candidates and consult the LLM judge."""
     candidates = await generate_candidates(
@@ -384,19 +718,18 @@ async def _regenerate_recipe(
     ]
 
     if not survivors:
-        log.warning(
-            "scrape eval loop: no structurally-valid candidates for target %s (%d proposed)",
+        result = await _persist_no_survivors(
+            html,
+            schema,
             target_id,
-            len(candidates),
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        result = await _persist_extraction(
-            extraction_collection,
-            target_id=target_id,
-            source_url=source_url,
-            structured_fields={"records": []},
-            validation_status="failed",
-            extraction_recipe_id=None,
+            source_url,
+            log_label="scrape eval loop",
+            proposed=len(candidates),
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
         verdict = await _judge_candidates(
@@ -447,53 +780,17 @@ async def _regenerate_recipe(
     return result
 
 
-async def _reuse_regex_recipe(
+def _check_regex_reuse(
     existing_recipe: ScrapeRecipe,
     html: str,
     schema: FieldSchema,
     target_id: str,
-    source_url: str,
-    *,
-    recipe_collection: ScrapeRecipeCollection,
-    extraction_collection: ScrapeExtractionCollection,
-) -> ScrapeExtraction:
-    """Regex counterpart to :func:`_reuse_recipe` -- text-block strategy shape.
-
-    Same transient-failure tolerance: below the failure threshold the
-    recipe is never abandoned on a single miss.
-    """
-    pattern = existing_recipe.extraction_strategy.get("pattern", "")
-    text = html_to_text(html)
-    validation = validate_regex_candidate(text, pattern, schema)
-    now = datetime.now(UTC)
-    if validation.valid:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=now,
-            consecutive_validation_failures=0,
-        )
-        validation_status = "validated"
-    else:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=existing_recipe.last_validated_at or now,
-            consecutive_validation_failures=existing_recipe.consecutive_validation_failures + 1,
-        )
-        validation_status = "failed"
-    return await _persist_extraction(
-        extraction_collection,
-        target_id=target_id,
-        source_url=source_url,
-        structured_fields={"records": [validation.extracted]},
-        validation_status=validation_status,
-        extraction_recipe_id=target_id,
+) -> _ReuseCheck:
+    """Regex counterpart to :func:`_check_reuse` -- text-block strategy shape. Pure."""
+    validation = validate_regex_candidate(
+        html_to_text(html), existing_recipe.extraction_strategy.get("pattern", ""), schema
     )
+    return _ReuseCheck(valid=validation.valid, records=[validation.extracted])
 
 
 async def _regenerate_regex_recipe(
@@ -504,10 +801,13 @@ async def _regenerate_regex_recipe(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
     api_key: str,
     candidate_count: int,
     extraction_model_id: str,
     judge_model_id: str,
+    classifier_model_id: str,
+    page_status: int | None,
 ) -> ScrapeExtraction:
     """Regex counterpart to :func:`_regenerate_recipe`.
 
@@ -528,19 +828,18 @@ async def _regenerate_regex_recipe(
     ]
 
     if not survivors:
-        log.warning(
-            "scrape regex eval loop: no structurally-valid candidates for target %s (%d proposed)",
+        result = await _persist_no_survivors(
+            html,
+            schema,
             target_id,
-            len(candidates),
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        result = await _persist_extraction(
-            extraction_collection,
-            target_id=target_id,
-            source_url=source_url,
-            structured_fields={"records": []},
-            validation_status="failed",
-            extraction_recipe_id=None,
+            source_url,
+            log_label="scrape regex eval loop",
+            proposed=len(candidates),
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
         verdict = await _judge_candidates(
@@ -600,14 +899,22 @@ async def run_eval_loop(
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
     extraction_model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
     judge_model_id: str = DEFAULT_JUDGE_MODEL_ID,
+    classifier_model_id: str = DEFAULT_CLASSIFIER_MODEL_ID,
     strategy_type: StrategyType = "css",
     health_collection: ScrapeTargetHealthCollection | None = None,
+    page_status: int | None = None,
 ) -> ScrapeExtraction:
     """Run one fetch through the eval loop and persist a ``ScrapeExtraction`` row.
 
     Reuses *target_id*'s existing recipe (no LLM call) while it's healthy;
     once ``consecutive_validation_failures`` crosses *failure_threshold*,
     regenerates candidates and consults the LLM judge for a new winner.
+
+    When *health_collection* is supplied, a failure is interpreted before it is acted on:
+    a page that turns out to be a bot wall leaves the recipe byte-identical instead of
+    marching it toward the threshold, and a page that really did change regenerates on the
+    first failure rather than the third. Omitting it keeps the pre-existing behaviour
+    exactly, including spending no model call on any reuse failure.
 
     :param target_id: the target this fetch belongs to
     :ptype target_id: str
@@ -632,42 +939,65 @@ async def run_eval_loop(
     :ptype extraction_model_id: str
     :param judge_model_id: model for the candidate-comparison judge
     :ptype judge_model_id: str
+    :param classifier_model_id: model for the "what is this page" call made when
+        extraction fails and *health_collection* is supplied
+    :ptype classifier_model_id: str
     :param strategy_type: ``"css"`` (an HTML table, CSS-selector candidates)
         or ``"regex"`` (a text-block/prose listing, regex-pattern
         candidates against the page's plain text) -- a per-target config
         value, the page's own shape, not something the eval loop infers
     :ptype strategy_type: StrategyType
+    :param health_collection: this target's fetch-health store; ``None`` opts out of
+        fingerprinting and failure classification entirely
+    :ptype health_collection: ScrapeTargetHealthCollection | None
+    :param page_status: the HTTP status the page came back with, when the caller knows
+        it -- real evidence for the classifier, though rarely decisive on its own since
+        most walls return 200
+    :ptype page_status: int | None
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]``
         holds a single-element list -- the same shape :func:`run_eval_loop_multi_row`
         uses, just always exactly one record)
     :rtype: ScrapeExtraction
     """
-    reuse_fn = _reuse_regex_recipe if strategy_type == "regex" else _reuse_recipe
+    check_fn = _check_regex_reuse if strategy_type == "regex" else _check_reuse
     regenerate_fn = _regenerate_regex_recipe if strategy_type == "regex" else _regenerate_recipe
+
+    async def _regenerate() -> ScrapeExtraction:
+        return await regenerate_fn(
+            html,
+            schema,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            candidate_count=candidate_count,
+            extraction_model_id=extraction_model_id,
+            judge_model_id=judge_model_id,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
+        )
+
     existing_recipe = await recipe_collection.get(target_id)
     if existing_recipe is not None and existing_recipe.consecutive_validation_failures < failure_threshold:
-        result = await reuse_fn(
+        result = await _run_reuse_cycle(
             existing_recipe,
             html,
             schema,
             target_id,
             source_url,
+            check_fn=check_fn,
+            regenerate=_regenerate,
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
-        result = await regenerate_fn(
-            html,
-            schema,
-            target_id,
-            source_url,
-            recipe_collection=recipe_collection,
-            extraction_collection=extraction_collection,
-            api_key=api_key,
-            candidate_count=candidate_count,
-            extraction_model_id=extraction_model_id,
-            judge_model_id=judge_model_id,
-        )
+        result = await _regenerate()
     await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result
 
@@ -944,43 +1274,14 @@ async def _judge_multi_row_extraction(
     return {i for i in verdict.confirmed_record_indices if 0 <= i < len(records)}
 
 
-async def _reuse_row_recipe(
+def _check_row_reuse(
     existing_recipe: ScrapeRecipe,
     html: str,
     schema: FieldSchema,
     target_id: str,
-    source_url: str,
-    *,
-    recipe_collection: ScrapeRecipeCollection,
-    extraction_collection: ScrapeExtractionCollection,
-) -> ScrapeExtraction:
-    """Validate *existing_recipe* against a freshly fetched page; keep it either way.
-
-    Same transient-failure tolerance as :func:`_reuse_recipe`: below the
-    failure threshold the recipe is never abandoned on a single miss.
-    """
+) -> _ReuseCheck:
+    """Multi-row counterpart to :func:`_check_reuse`. Pure apart from its own log line."""
     validation = validate_row_candidate(html, existing_recipe.extraction_strategy, schema)
-    now = datetime.now(UTC)
-    if validation.valid:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=now,
-            consecutive_validation_failures=0,
-        )
-        validation_status = "validated"
-    else:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=existing_recipe.last_validated_at or now,
-            consecutive_validation_failures=existing_recipe.consecutive_validation_failures + 1,
-        )
-        validation_status = "failed"
     log.info(
         "scrape row recipe reuse: target=%s records_captured=%d rows_matched=%d",
         target_id,
@@ -988,14 +1289,7 @@ async def _reuse_row_recipe(
         validation.total_rows_matched,
         extra={"extra_data": {"target_id": target_id}},
     )
-    return await _persist_extraction(
-        extraction_collection,
-        target_id=target_id,
-        source_url=source_url,
-        structured_fields={"records": validation.records},
-        validation_status=validation_status,
-        extraction_recipe_id=target_id,
-    )
+    return _ReuseCheck(valid=validation.valid, records=validation.records)
 
 
 async def _regenerate_row_recipe(
@@ -1006,10 +1300,13 @@ async def _regenerate_row_recipe(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
     api_key: str,
     candidate_count: int,
     extraction_model_id: str,
     judge_model_id: str,
+    classifier_model_id: str,
+    page_status: int | None,
 ) -> ScrapeExtraction:
     """No healthy recipe exists: generate fresh row candidates and consult the LLM judge."""
     candidates = await generate_row_candidates(
@@ -1023,19 +1320,18 @@ async def _regenerate_row_recipe(
     ]
 
     if not survivors:
-        log.warning(
-            "scrape row eval loop: no structurally-valid row candidates for target %s (%d proposed)",
+        result = await _persist_no_survivors(
+            html,
+            schema,
             target_id,
-            len(candidates),
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        result = await _persist_extraction(
-            extraction_collection,
-            target_id=target_id,
-            source_url=source_url,
-            structured_fields={"records": []},
-            validation_status="failed",
-            extraction_recipe_id=None,
+            source_url,
+            log_label="scrape row eval loop",
+            proposed=len(candidates),
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
         verdict = await _judge_row_candidates(
@@ -1087,45 +1383,16 @@ async def _regenerate_row_recipe(
     return result
 
 
-async def _reuse_regex_row_recipe(
+def _check_regex_row_reuse(
     existing_recipe: ScrapeRecipe,
     html: str,
     schema: FieldSchema,
     target_id: str,
-    source_url: str,
-    *,
-    recipe_collection: ScrapeRecipeCollection,
-    extraction_collection: ScrapeExtractionCollection,
-) -> ScrapeExtraction:
-    """Regex counterpart to :func:`_reuse_row_recipe` -- text-block strategy shape.
-
-    Same transient-failure tolerance: below the failure threshold the
-    recipe is never abandoned on a single miss.
-    """
-    pattern = existing_recipe.extraction_strategy.get("pattern", "")
-    text = html_to_text(html)
-    validation = validate_regex_row_candidate(text, pattern, schema)
-    now = datetime.now(UTC)
-    if validation.valid:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=now,
-            consecutive_validation_failures=0,
-        )
-        validation_status = "validated"
-    else:
-        await _save_recipe(
-            recipe_collection,
-            target_id=target_id,
-            extraction_strategy=existing_recipe.extraction_strategy,
-            won_at=existing_recipe.won_at or now,
-            last_validated_at=existing_recipe.last_validated_at or now,
-            consecutive_validation_failures=existing_recipe.consecutive_validation_failures + 1,
-        )
-        validation_status = "failed"
+) -> _ReuseCheck:
+    """Regex counterpart to :func:`_check_row_reuse` -- text-block strategy shape."""
+    validation = validate_regex_row_candidate(
+        html_to_text(html), existing_recipe.extraction_strategy.get("pattern", ""), schema
+    )
     log.info(
         "scrape regex row recipe reuse: target=%s records_captured=%d matches=%d",
         target_id,
@@ -1133,14 +1400,7 @@ async def _reuse_regex_row_recipe(
         validation.total_rows_matched,
         extra={"extra_data": {"target_id": target_id}},
     )
-    return await _persist_extraction(
-        extraction_collection,
-        target_id=target_id,
-        source_url=source_url,
-        structured_fields={"records": validation.records},
-        validation_status=validation_status,
-        extraction_recipe_id=target_id,
-    )
+    return _ReuseCheck(valid=validation.valid, records=validation.records)
 
 
 async def _regenerate_regex_row_recipe(
@@ -1151,10 +1411,13 @@ async def _regenerate_regex_row_recipe(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
     api_key: str,
     candidate_count: int,
     extraction_model_id: str,
     judge_model_id: str,
+    classifier_model_id: str,
+    page_status: int | None,
 ) -> ScrapeExtraction:
     """Regex counterpart to :func:`_regenerate_row_recipe`.
 
@@ -1172,19 +1435,18 @@ async def _regenerate_regex_row_recipe(
     ]
 
     if not survivors:
-        log.warning(
-            "scrape regex row eval loop: no structurally-valid row candidates for target %s (%d proposed)",
+        result = await _persist_no_survivors(
+            html,
+            schema,
             target_id,
-            len(candidates),
-            extra={"extra_data": {"target_id": target_id}},
-        )
-        result = await _persist_extraction(
-            extraction_collection,
-            target_id=target_id,
-            source_url=source_url,
-            structured_fields={"records": []},
-            validation_status="failed",
-            extraction_recipe_id=None,
+            source_url,
+            log_label="scrape regex row eval loop",
+            proposed=len(candidates),
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
         verdict = await _judge_row_candidates(
@@ -1536,8 +1798,10 @@ async def run_eval_loop_multi_row(
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
     extraction_model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
     judge_model_id: str = DEFAULT_JUDGE_MODEL_ID,
+    classifier_model_id: str = DEFAULT_CLASSIFIER_MODEL_ID,
     strategy_type: StrategyType = "css",
     health_collection: ScrapeTargetHealthCollection | None = None,
+    page_status: int | None = None,
 ) -> ScrapeExtraction:
     """Run one fetch through the multi-row eval loop and persist a ``ScrapeExtraction`` row.
 
@@ -1579,6 +1843,14 @@ async def run_eval_loop_multi_row(
         whole table, every record grounded before counting; see
         :data:`StrategyType`'s own comment for why)
     :ptype strategy_type: StrategyType
+    :param classifier_model_id: model for the "what is this page" call made when
+        extraction fails and *health_collection* is supplied
+    :ptype classifier_model_id: str
+    :param health_collection: this target's fetch-health store; ``None`` opts out of
+        fingerprinting and failure classification entirely
+    :ptype health_collection: ScrapeTargetHealthCollection | None
+    :param page_status: the HTTP status the page came back with, when the caller knows it
+    :ptype page_status: int | None
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     """
@@ -1618,12 +1890,15 @@ async def run_eval_loop_multi_row(
             source_url,
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
+            health_collection=health_collection,
             api_key=api_key,
             candidate_count=candidate_count,
             failure_threshold=failure_threshold,
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
+            classifier_model_id=classifier_model_id,
             strategy_type=strategy_type,
+            page_status=page_status,
         )
     await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result
@@ -1637,12 +1912,15 @@ async def _run_row_strategy(
     *,
     recipe_collection: ScrapeRecipeCollection,
     extraction_collection: ScrapeExtractionCollection,
+    health_collection: ScrapeTargetHealthCollection | None,
     api_key: str,
     candidate_count: int,
     failure_threshold: int,
     extraction_model_id: str,
     judge_model_id: str,
+    classifier_model_id: str,
     strategy_type: StrategyType,
+    page_status: int | None,
 ) -> ScrapeExtraction:
     """The cached-recipe cycle for the ``css`` and ``regex`` row strategies.
 
@@ -1650,30 +1928,43 @@ async def _run_row_strategy(
     strategies with one exit, rather than a mix of early returns and inline logic that a
     later strategy could be appended to without picking up the shared post-processing.
     """
-    reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
+    check_fn = _check_regex_row_reuse if strategy_type == "regex" else _check_row_reuse
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
+
+    async def _regenerate() -> ScrapeExtraction:
+        return await regenerate_fn(
+            html,
+            schema,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            candidate_count=candidate_count,
+            extraction_model_id=extraction_model_id,
+            judge_model_id=judge_model_id,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
+        )
+
     existing_recipe = await recipe_collection.get(target_id)
     if existing_recipe is not None and existing_recipe.consecutive_validation_failures < failure_threshold:
-        result = await reuse_fn(
+        result = await _run_reuse_cycle(
             existing_recipe,
             html,
             schema,
             target_id,
             source_url,
+            check_fn=check_fn,
+            regenerate=_regenerate,
             recipe_collection=recipe_collection,
             extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            api_key=api_key,
+            classifier_model_id=classifier_model_id,
+            page_status=page_status,
         )
     else:
-        result = await regenerate_fn(
-            html,
-            schema,
-            target_id,
-            source_url,
-            recipe_collection=recipe_collection,
-            extraction_collection=extraction_collection,
-            api_key=api_key,
-            candidate_count=candidate_count,
-            extraction_model_id=extraction_model_id,
-            judge_model_id=judge_model_id,
-        )
+        result = await _regenerate()
     return result
