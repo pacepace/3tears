@@ -767,3 +767,104 @@ async def test_a_stored_verdict_nobody_recognises_is_re_asked_not_acted_on(
 
     assert requested == [PageVerdict]
     assert result.validation_status == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# The one behaviour the four-into-one strategy collapse could have changed quietly
+# ---------------------------------------------------------------------------
+
+
+async def test_an_unconfirmed_single_record_surfaces_the_first_survivor(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """A single-record shape must still surface survivors[0] when the judge confirms nothing.
+
+    The four regeneration bodies were collapsed into one, and the two shapes disagreed about
+    "best survivor": the row shapes picked the candidate capturing the most records, the
+    single-record shapes took the first proposed. The shared body uses max-by-record-count
+    for both, which is only equivalent because every single-record survivor holds exactly one
+    record and ``max`` returns the FIRST maximal element.
+
+    That equivalence is an argument, and arguments rot. This pins it with two survivors whose
+    order is the only thing distinguishing them, so a later switch to (say) ``sorted(...)[-1]``
+    or a max that returned the last maximal element fails here rather than silently changing
+    which extraction a human reviews.
+    """
+    recipes, extractions, health = collections
+    # The two candidates must extract DIFFERENT values or this test cannot tell them apart.
+    # The first version of it used a page with a single cell, so both candidates returned
+    # "Acme Corp" and it passed against a deliberately broken tie-break.
+    two_cells = (
+        "<html><body><table><tr>"
+        '<td class="employer">Acme Corp</td><td class="alt">Beta LLC</td>'
+        "</tr></table></body></html>"
+    )
+    both_valid = _CandidateStrategyList(
+        candidates=[
+            _CandidateStrategy(selectors={"employer": "td.employer"}),
+            _CandidateStrategy(selectors={"employer": "td.alt"}),
+        ]
+    )
+    no_winner = _JudgeVerdict(winning_candidate_index=None, reasoning="cannot confirm either")
+
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model",
+        side_effect=fake_models({_CandidateStrategyList: both_valid, _JudgeVerdict: no_winner}),
+    ):
+        result = await run_eval_loop(
+            "warn_tie",
+            two_cells,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            health_collection=health,
+            api_key="k",
+        )
+
+    assert result.validation_status == "needs_review"
+    assert await recipes.get("warn_tie") is None, "an unconfirmed candidate must never be crowned"
+    assert result.structured_fields == {"records": [{"employer": "Acme Corp"}]}
+
+
+async def test_an_unconfirmed_row_set_still_surfaces_the_richest_survivor(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """And the row shape must still prefer record count over proposal order.
+
+    The other half of the same collapse: here "best" genuinely means most rows captured, and
+    the richer candidate is deliberately proposed SECOND so that falling back to "first
+    proposed" fails this test.
+    """
+    recipes, extractions, health = collections
+    page = (
+        "<html><body><table>"
+        '<tr class="r"><td class="employer">Acme Corp</td></tr>'
+        '<tr class="r"><td class="employer">Beta LLC</td></tr>'
+        "</table></body></html>"
+    )
+    thin_then_rich = _RowCandidateStrategyList(
+        candidates=[
+            _RowCandidateStrategy(row_selector="tr:first-child", field_selectors={"employer": "td.employer"}),
+            _RowCandidateStrategy(row_selector="tr.r", field_selectors={"employer": "td.employer"}),
+        ]
+    )
+    no_winner = _JudgeVerdict(winning_candidate_index=None, reasoning="cannot confirm either")
+
+    with patch(
+        "threetears.scrape.llm_retry.create_chat_model",
+        side_effect=fake_models({_RowCandidateStrategyList: thin_then_rich, _JudgeVerdict: no_winner}),
+    ):
+        result = await run_eval_loop_multi_row(
+            "warn_rows_tie",
+            page,
+            "https://example.gov/warn",
+            _SCHEMA,
+            recipe_collection=recipes,
+            extraction_collection=extractions,
+            health_collection=health,
+            api_key="k",
+        )
+
+    assert result.validation_status == "needs_review"
+    assert result.structured_fields == {"records": [{"employer": "Acme Corp"}, {"employer": "Beta LLC"}]}

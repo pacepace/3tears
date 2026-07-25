@@ -215,11 +215,13 @@ async def v010_create_scrape_target_health(store: DataStore) -> None:
     code that writes them lands with the backoff and human-in-the-loop work.
 
     The three ``classified_*`` columns joined this CREATE after the table was first written,
-    on that same reasoning, while the branch introducing it was still unmerged and unpushed
-    and no database outside a throwaway test container had ever run it. Anyone who did run
-    an earlier form of this migration locally will not pick them up, because the version is
-    already recorded as applied; drop that database and let it re-run. Once this ships, the
-    same change would have to be an ALTER in a later version instead.
+    on that same reasoning, while the branch introducing it was still unmerged and unpushed.
+    That was checked rather than assumed: no ``scrape_*`` table and no ``3tears_scrape`` row
+    existed in any local database, because the only thing that has ever run this migration
+    is the integration suite's throwaway container. A database that HAD applied an earlier
+    form of v010 would not pick the new columns up, since the version is already recorded as
+    applied, and would need dropping. Once this ships, the same change has to be an ALTER in
+    a later version instead.
     """
     await store.execute("""
         CREATE TABLE IF NOT EXISTS scrape_target_health (

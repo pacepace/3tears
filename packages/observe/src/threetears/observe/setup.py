@@ -249,13 +249,19 @@ def shutdown_telemetry() -> None:
         _log_handler = None
 
     if _log_provider is not None:
+        # Both catches are deliberately silent, which is the one case where silence is
+        # right: this IS the logging subsystem being torn down, and its handler has just
+        # been detached from the root logger above. Anything raised here has nowhere left
+        # to be reported -- a log call would either vanish or re-enter the provider being
+        # shut down -- and a failed flush must not stop the shutdown that follows it, or
+        # prevent ``init_telemetry()`` being called again.
         try:
             _log_provider.force_flush(timeout_millis=2000)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see above
             pass
         try:
-            _log_provider.shutdown()  # type: ignore[no-untyped-call]
-        except Exception:
+            _log_provider.shutdown()
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see above
             pass
         _log_provider = None
 

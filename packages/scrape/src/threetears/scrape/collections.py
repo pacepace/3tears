@@ -594,7 +594,7 @@ class ScrapeCollection(BaseCollection[EntityT]):
         outcome this guard exists to avoid.
         """
         cls = type(self)
-        warned = getattr(cls, "_in_memory_l3_warned_tables", frozenset())
+        warned: frozenset[str] = getattr(cls, "_in_memory_l3_warned_tables", frozenset())
         if self.table_name in warned:
             return
         # Rebuild-and-replace rather than mutate in place. No await sits between the read

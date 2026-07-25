@@ -83,8 +83,39 @@ not an afterthought here -- a regex target behind a wall loses its recipe exactl
 does, and hooking only the two paths originally named would have left that intact.
 
 `v010` gained the three `classified_*` columns rather than a `v011` adding them, since the
-table had not shipped and no database outside a test container had run it. A local database
-that already applied `v010` will not pick them up and should be dropped.
+table had not shipped and no database outside a test container had run it -- verified, not
+assumed: no `scrape_*` table and no `3tears_scrape` migration row existed in any local
+database. A database that HAD applied an earlier `v010` would not pick the columns up, since
+the version is already recorded as applied, and would need dropping.
+
+**The four cached-recipe strategies are now one implementation.** CSS or regex, single record
+or many rows, used to be eight functions: a reuse checker and a ~90-line regeneration body
+apiece, differing only in which generator and validator they called and how they wrapped a
+winning candidate. Adding the classification hook meant touching all of them, which is what
+made the duplication expensive rather than untidy. They are now a `_StrategyShape` record of
+the genuine differences plus one shared reuse cycle and one shared regeneration body -- 197
+lines lighter, and a fifth shape would inherit the classification routing, the judging and
+the persistence by construction.
+
+One behaviour needed care and is pinned by two tests: the row shapes surfaced the survivor
+capturing the most records when the judge confirmed nothing, while the single-record shapes
+took the first proposed. The shared body uses max-by-record-count for both, which is only
+equivalent because every single-record survivor holds exactly one record and `max` returns
+the first maximal element. Both tests fail if that rule is changed in either direction.
+
+**Tooling: the typecheck gate now covers every package that passes it.** `scripts/typecheck.sh`
+went from 13 mypy targets over 315 files to 22 over 449, adding `scrape` plus `nats`,
+`observe`, `registry`, `epoch`, `scheduled-jobs`, `enforcement`, `agent.acl` and
+`agent.audit`. Four pre-existing errors are fixed rather than silenced: an unannotated
+`frozenset` and an optional decode bound onto a `str` in scrape, an `Any` return and a stale
+`type: ignore` in observe. Two bare `except: pass` in observe's telemetry shutdown gained the
+waiver pragma and the reason they are genuinely silent -- that path is the logging subsystem
+being torn down, with its handler already detached, so it has nowhere left to report to.
+
+Five packages still fail strict mypy and are deliberately still absent, with their counts
+recorded in the script beside the list: `models` 116, `conversations` 10, `agent.workspace` 8,
+`langgraph` 6, `mcp` 4. Listing a package before it passes would turn the gate red for
+everyone, which is how a not-yet-checked package becomes a permanently skipped one.
 
 **Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
 `datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents
