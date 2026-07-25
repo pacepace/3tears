@@ -113,7 +113,29 @@ class ScrapeTool(TearsTool):
         return "1.0.0"
 
     def mcp_schema(self) -> MCPToolDefinition:
-        """Return the MCP tool definition."""
+        """Return the MCP tool definition.
+
+        **Deliberately narrower than the full backend/strategy set.**
+        ``driver_backend`` offers only ``nodriver``/``camoufox``/``document``
+        of the eight this package ships, and ``strategy_type`` only
+        ``css``/``regex`` of ``eval_loop.StrategyType``'s four. The omissions
+        are not oversights: each excluded option needs per-target
+        configuration this flat, single-call input schema has nowhere to
+        carry, and offering it would advertise a backend that fails at
+        runtime. ``api`` and ``multi_document``'s JSON discovery mode need
+        ``api_results_path``/``api_fragment_field``; ``multi_document``'s HTML
+        mode needs ``link_selector``; ``multi_document``,
+        ``network_capture``, and ``nodriver_download`` each need an inner
+        driver injected at construction rather than named in a call;
+        ``listing_detail`` needs a base URL plus a pacing policy for its
+        per-row detail fetches. ``per_document`` and ``multi_row_vision``
+        are only meaningful against pages those excluded drivers produce.
+        The three backends and two strategies that remain are exactly the
+        ones fully specified by a URL and a field schema -- which is the
+        whole contract of an ad-hoc, no-pre-configuration call. A target
+        needing more than that is a real ``ScrapeTarget``, seeded through
+        ``target_source.bootstrap_targets()``, not an MCP one-off.
+        """
         return MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
