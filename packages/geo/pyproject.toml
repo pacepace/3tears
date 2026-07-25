@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-geo"
+version = "0.18.0"
+description = "Slippy-map tile geometry: WKB decoding, zoom bands, and MVT encoding in application code (no PostGIS)"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears",
+    "3tears-observe",
+    # Geometry math in application code, not in SQL: YugabyteDB ships no
+    # postgis extension, so there is no ST_Intersects / ST_Simplify /
+    # ST_AsMVT to call. shapely does what those would have done.
+    "shapely>=2.0",
+    # MVT encoding, replacing ST_AsMVT for the same reason.
+    "mapbox-vector-tile>=2.1",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-observe = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.geo"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+# no [tool.pytest.ini_options] block: pytest's rootdir detection picks the
+# closest pyproject with that block, so a per-package one would hide the
+# workspace conftest.py and unregister the canonical pytest_plugins line.
+# inherit from the workspace instead.

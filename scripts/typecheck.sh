@@ -12,7 +12,7 @@ cd "$REPO_ROOT"
 #
 # This is the SINGLE SOURCE OF TRUTH for the mypy target set: CI calls this
 # script (see .github/workflows/ci.yml) so the two can never drift apart.
-MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/langgraph/src:packages/media-contracts/src:packages/object-store/src:packages/backup/src \
+MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/langgraph/src:packages/media-contracts/src:packages/object-store/src:packages/backup/src:packages/geo/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
@@ -28,4 +28,5 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.media.contracts \
         -p threetears.object_store \
         -p threetears.backup \
+        -p threetears.geo \
         "$@"
