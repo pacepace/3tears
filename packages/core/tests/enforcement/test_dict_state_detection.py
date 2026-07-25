@@ -57,6 +57,17 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "per-collection backend overrides, IS the infrastructure",
     ),
     (
+        "core/collections/derived.py",
+        "DerivedCollection",
+        "_inflight",
+        "live asyncio.Lock handles, one per key being derived — bound to a "
+        "single event loop and non-serializable, so they cannot live in an "
+        "L1/L2/L3 backend by construction. cross-POD single-flight is a "
+        "separate mechanism and does use NATS (nats_distributed_lock); this "
+        "map is only the in-process half, and entries are dropped as soon as "
+        "nobody holds or awaits a key",
+    ),
+    (
         "core/task_registry.py",
         "KeyedTaskRegistry",
         "_tasks",
