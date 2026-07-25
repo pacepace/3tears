@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-enforcement"
-version = "0.19.0"
+version = "0.19.1"
 description = "Static-analysis enforcement scanners for the 3tears ecosystem (cache primitive contract, underscore-access discipline, codebase conventions, etc.)"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.5.0",
+    "3tears>=0.19.0,<0.20.0",
 ]
 
 [project.optional-dependencies]

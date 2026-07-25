@@ -121,6 +121,39 @@ A recovery is the exception, since closing the circuit cannot retract a booking 
 wake-up is a whole poll including its eval loop, not a bare fetch. Accepted rather than
 solved, because a cancel seam costs every implementer a second method to save one poll per
 recovery of a target that is healthy by then.
+## v0.19.1 -- 2026-07-25
+
+**Every intra-family dependency is now version-bounded.** The packages release in
+lockstep but declared each other with no bound at all -- 84 bare entries such as
+`"3tears-observe"` across 25 packages. Each is now `>=0.19.0,<0.20.0`.
+
+Unbounded siblings let pip resolve a MIXED family, which fails in two ways that
+are both very expensive to diagnose:
+
+- **A mixed install builds clean and breaks at runtime.** pip paired
+  `3tears-object-store` 0.18.0 with an otherwise-0.19.0 family in a consumer
+  image; 0.18.0 predates `build_object_key`'s `path=` parameter.
+- **Resolution explodes and blames the wrong package.** Across ~17 published
+  versions and ~25 mutually-unbounded packages, pip backtracks the cross-product
+  and reports `ResolutionImpossible` against whichever node it was holding. One
+  such failure named `3tears-agent-tools` as having "no matching distributions
+  available" while that package was entirely innocent -- the real cause was a
+  stale `protobuf` pin in a consumer's constraints file, three levels away.
+
+Bounding makes a mixed family unresolvable rather than merely unlikely, and
+collapses the search space so pip names the package that actually conflicts.
+
+Also corrected five bounds that existed but had gone stale -- `registry`
+admitting `3tears-agent-acl>=0.1.0` and `3tears-agent-tools>=0.5.0`,
+`enforcement` admitting `3tears>=0.5.0`, `datasources` admitting
+`3tears>=0.9.1,<1.0`, and `channels` admitting `3tears-agent-wake>=0.9.0`. Those
+are worse than unbounded, because they look deliberate.
+
+`tests/enforcement/test_intra_family_version_bounds.py` now enforces both halves:
+no sibling may be unbounded, and no bound may name a line other than the
+declaring package's own.
+
+**Consumers should pin the whole family to `0.19.1` exactly.**
 
 ## v0.19.0 -- 2026-07-25
 
