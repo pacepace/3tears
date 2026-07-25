@@ -1,6 +1,6 @@
 """Unit tests for threetears.scrape.extraction -- structural validation and
-candidate generation (mocking approach mirrors tests/unit/test_query_agent_matching.py's
-create_chat_model mocking pattern).
+candidate generation. Every LLM call is mocked at ``create_chat_model``, so
+nothing here reaches a real model or a real network.
 """
 
 from __future__ import annotations
@@ -1041,7 +1041,7 @@ class TestExtractFieldsDirectly:
         assert result == {"employer": "Acme Corp", "affected_count": 42}
 
     async def test_an_implausibly_long_field_value_triggers_a_retry_not_a_silent_accept(self):
-        """Live-reproduced (scrape-task-05): the model can echo its entire prompt into
+        """Live-reproduced against a real document: the model can echo its entire prompt into
         one field's value instead of a clean answer -- since every field is plain str,
         that garbage still type-validates, so only is_acceptable's own length sanity
         check can catch it and force a retry."""
@@ -1103,7 +1103,7 @@ _SCHEMA_FOUR_FIELDS = {"employer": str, "notice_date": str, "effective_date": st
 
 
 class TestExtractFieldsDirectlyChunked:
-    """Live-verified (scrape-task-05): asking for fewer fields per call is
+    """Live-verified against real documents: asking for fewer fields per call is
     measurably more reliable than one call for everything -- see
     _DEFAULT_FIELDS_PER_CALL's own comment. create_chat_model's call ORDER matches
     chunk order deterministically (each chunk's own create_chat_model() call is a
@@ -1165,7 +1165,7 @@ class TestExtractFieldsDirectlyChunked:
 
 
 # ===========================================================================
-# extract_fields_from_images -- vision extraction path (scrape-task-06)
+# extract_fields_from_images -- vision extraction path
 # ===========================================================================
 
 

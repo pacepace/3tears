@@ -42,7 +42,8 @@ a different, unrelated target of the same class (an authenticated in-session
 XHR/fetch API)? If any line here only makes sense for one real target, it
 does not belong in this file.
 
-Zero faidh imports (matches ``page_finder.py``'s own discipline).
+Every real dependency (the driver, the URL, the nav steps) is passed in by
+the caller -- matching ``page_finder.py``'s own discipline.
 """
 
 from __future__ import annotations

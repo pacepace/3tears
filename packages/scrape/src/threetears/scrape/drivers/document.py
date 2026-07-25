@@ -84,10 +84,10 @@ class ParsedDocumentHtml(NamedTuple):
 def _embed_ocr_page_images(pdf_data: bytes) -> str:
     """Render *pdf_data*'s leading pages and embed each as a base64 ``<img>`` tag.
 
-    scrape-task-06: OCR'd text alone has proven unreliable for some real scanned
-    WARN Act notices (a numeric table column either dropped by Tesseract's own
-    layout analysis or genuinely too scan-degraded to recover -- see
-    scrape-task-05's own findings). Embedding the rendered page images directly in
+    OCR'd text alone has proven unreliable for some real scanned WARN Act
+    notices (a numeric table column either dropped by Tesseract's own layout
+    analysis or genuinely too scan-degraded to recover -- live-verified on
+    real West Virginia notices). Embedding the rendered page images directly in
     the returned HTML -- reusing the SAME html-as-transport-channel
     :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` already
     uses to combine documents -- lets a vision-capable extraction path read them
@@ -134,7 +134,7 @@ async def parse_document_bytes_to_html(
         straight through to ``parse_document``
     :ptype ocr_config: OcrConfig | None
     :param force_images: embed page images even when ``parse_document`` didn't
-        need OCR (scrape-task-07: a born-digital PDF can still defeat table-
+        need OCR (a born-digital PDF can still defeat table-
         structure extraction -- Nevada's real master WARN PDF has a genuine text
         layer, ``was_ocr`` comes back ``False``, but its dense 8-column table
         still needs a vision read because ``find_tables()`` is defeated both by
@@ -146,7 +146,7 @@ async def parse_document_bytes_to_html(
     :ptype force_images: bool
     :param merge_wrapped_table_rows: for a PDF, opt in to
         ``threetears.agent.tools.document._merge_wrapped_table_rows``'s
-        continuation-row stitching (scrape-task-07 follow-up: a long-text cell
+        continuation-row stitching (a long-text cell
         that word-wraps inside one logical PDF table row becomes its own separate
         row in PyMuPDF's own output, splitting one record across several rows --
         Mississippi's real quarterly WARN PDF). Off by default, same "confirmed
@@ -155,7 +155,7 @@ async def parse_document_bytes_to_html(
         already know a target needs it opt in directly.
     :ptype merge_wrapped_table_rows: bool
     :return: synthetic ``<html><body>...</body></html>`` content plus whether OCR
-        was needed (scrape-task-06: when ``True``, or when *force_images* is set,
+        was needed: when ``True``, or when *force_images* is set,
         the leading pages' own rendered images are ALSO embedded as base64
         ``<img>`` tags inside that same HTML, for a vision-based extraction path
         to use)
@@ -318,13 +318,13 @@ class DocumentDriver(ScrapeDriver):
         :ptype ocr_config: OcrConfig | None
         :param force_images: embed page images even for a born-digital
             (non-OCR'd) document -- see :func:`parse_document_bytes_to_html`'s
-            own docstring (scrape-task-07: a real target, e.g. Nevada's WARN
-            master PDF, needs a vision read despite having a genuine text layer).
+            own docstring (a real target, e.g. Nevada's WARN master PDF, needs
+            a vision read despite having a genuine text layer).
         :ptype force_images: bool
         :param merge_wrapped_table_rows: stitch a PDF table's wrapped-cell
             continuation rows back onto their parent record -- see
-            :func:`parse_document_bytes_to_html`'s own docstring (scrape-task-07
-            follow-up, Mississippi's real quarterly WARN PDF). Off by default.
+            :func:`parse_document_bytes_to_html`'s own docstring (Mississippi's
+            real quarterly WARN PDF). Off by default.
         :ptype merge_wrapped_table_rows: bool
         """
         self._client = client

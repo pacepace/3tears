@@ -1,28 +1,25 @@
-"""ScrapeTarget / ScrapeRecipe / ScrapeExtraction — domain-agnostic 3tears-scrape core.
+"""ScrapeTarget / ScrapeRecipe / ScrapeExtraction -- domain-agnostic 3tears-scrape core.
 
-Subclasses ``threetears.core.collections.base.BaseCollection`` directly —
-**not** ``faidh.db.collection.FaidhCollection`` — to preserve the
-zero-faidh-imports discipline that makes lifting this into 3tears later a
-directory move, not a disentangling exercise (mirrors
-``src/faidh/intake/rate_limit/strategy.py``'s existing precedent).
+Subclasses ``threetears.core.collections.base.BaseCollection`` directly,
+rather than any consuming application's own collection base class -- the
+discipline that let this module move out of the application it was written
+in as a plain directory move rather than a disentangling exercise.
 
-verify-api finding (Chunk 1 Done-when step 0, reading
-``threetears.core.collections.base.BaseCollection`` source directly):
 ``BaseCollection`` provides the full three-tier (L1/L2/L3) cache machinery,
-subscript access, CAS-mutate, and invalidation-publish for free — a
+subscript access, CAS-mutate, and invalidation-publish for free -- a
 subclass only has to implement ``table_name``, ``entity_class``, and the
 five storage-tier primitives (``fetch_from_store``, ``save_to_store``,
 ``delete_from_store``, ``serialize``, ``deserialize``). It does **not**
-provide an in-memory L3 fallback of its own; that convenience is
-``FaidhCollection``'s addition (its ``self._rows`` dict, wired through
-``faidh.store.get_registry()``/``get_config()`` defaults), which this
-module cannot import. ``ScrapeCollection`` below re-implements the same
-shape locally, without the faidh.store default resolution — callers must
-pass ``registry``/``config`` explicitly. L3 is a real asyncpg pool
+provide an in-memory L3 fallback of its own; that convenience was an
+application-side addition (a ``self._rows`` dict, plus registry/config
+resolution from process-wide application state), which this package cannot
+import. ``ScrapeCollection`` below re-implements the same shape locally,
+minus the process-wide default resolution -- callers must pass
+``registry``/``config`` explicitly. L3 is a real asyncpg pool
 (``threetears.core.backends.protocol.DurableStore``-conforming) once
 ``threetears.scrape.migrations.apply_migrations()`` has run and the registry
 carries an ``l3_pool``; otherwise CRUD falls back to the in-memory
-``self._rows`` dict for the process lifetime — this fallback is why unit
+``self._rows`` dict for the process lifetime -- this fallback is why unit
 tests never need a real database, but it is NOT multi-pod-safe (each pod
 gets its own dict), which is the whole reason the L3 branch below exists.
 """
@@ -32,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.collections.base import (
@@ -70,9 +67,9 @@ def _parse_dt(raw: Any) -> datetime | None:
 
     L2 (NATS KV) round-trips every value through JSON, which stringifies
     ``datetime`` on write (see :meth:`ScrapeCollection.serialize`) but does
-    not parse it back on read — so a value read through L2 arrives as a
+    not parse it back on read -- so a value read through L2 arrives as a
     string even though the in-memory L3 fallback keeps it as a native
-    ``datetime``. Mirrors ``faidh.intake.signals.collections._observation_ts``.
+    ``datetime``.
     """
     if isinstance(raw, str) and raw:
         try:
@@ -182,35 +179,58 @@ class ScrapeTarget(BaseEntity):
 
     @property
     def driver_backend(self) -> str:
-        """Which ``ScrapeDriver`` backend renders this target: ``"nodriver"`` | ``"camoufox"``."""
+        """Which ``ScrapeDriver`` backend renders this target.
+
+        One of eight, resolved by the caller (this entity stores the string
+        and never constructs a driver itself): ``"nodriver"`` (headless
+        Chromium via the HTTP sidecar), ``"camoufox"`` (in-process stealth
+        Firefox), ``"document"`` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX parsed into
+        synthetic HTML), ``"api"`` (a stateless JSON GET, needing
+        :attr:`api_results_path`/:attr:`api_fragment_field`),
+        ``"network_capture"`` (an authenticated in-session XHR captured
+        during a real browser render), ``"multi_document"`` (a listing whose
+        links each point at one whole document, needing
+        :attr:`link_selector` or the ``api_*`` pair), ``"listing_detail"``
+        (a listing table whose rows link to per-record detail pages that
+        must be merged back into the row), and ``"nodriver_download"`` (a
+        document behind a bot challenge a plain HTTP client can't pass).
+
+        Deliberately a plain string rather than an enum: the set of backends
+        a given deployment has wired up is the caller's business -- a
+        consumer that never installs the sidecar shouldn't be forced to
+        carry a symbol for it.
+        """
         return str(self._get_raw("driver_backend", "nodriver"))
 
     @property
     def rate_limit_key(self) -> str:
         """Opaque string key; the core stores and passes it through but never resolves it.
 
-        Resolution against ``FAIDH_RATE_LIMIT_STRATEGIES`` happens in
-        faidh-side scheduling code (Chunk 4), which is exactly why this is
-        a plain string rather than a ``RateLimitStrategy`` instance — that
-        would force a faidh import here.
+        Resolution against a real rate-limit strategy happens in the
+        consuming application's own scheduling code, which is exactly why
+        this is a plain string rather than a strategy instance -- typing it
+        as one would force this package to import the scheduler's own
+        vocabulary, and the core has no opinion about how a key maps to a
+        policy.
         """
         return str(self._get_raw("rate_limit_key", ""))
 
     @property
     def cadence(self) -> str:
-        """How often this target is re-fetched; interpreted by the scheduling layer (Chunk 4)."""
+        """How often this target is re-fetched; interpreted by the caller's scheduling layer, never here."""
         return str(self._get_raw("cadence", ""))
 
     @property
     def multi_row(self) -> bool:
         """Whether this target's page holds many records (a table/listing) rather than one.
 
-        Selects which eval loop ``poll_scrape_targets`` (Chunk 4) runs:
+        Selects which eval loop the caller's polling code runs:
         ``run_eval_loop_multi_row`` when ``True``, ``run_eval_loop`` (the
-        original single-record path) when ``False`` (the default — preserves
+        original single-record path) when ``False`` (the default -- preserves
         every pre-existing target's behavior). Domain-agnostic: this is a
-        statement about page shape, not about what the records mean, so it
-        belongs on the core entity rather than in faidh-side scheduling code.
+        statement about page shape, not about what the records mean, which
+        is why it belongs on the core entity rather than in the consumer's
+        scheduling code.
         """
         return bool(self._get_raw("multi_row", False))
 
@@ -234,19 +254,18 @@ class ScrapeTarget(BaseEntity):
     @property
     def field_schema(self) -> FieldSchema:
         """field_name -> expected Python type, for the eval loop's candidate
-        generation and structural validation (Chunk 02's design).
+        generation and structural validation.
 
-        Carried on the target itself (not a separate caller-supplied dict,
-        as originally decided in Chunk 02) so one config entry -- a YAML
-        row, a database row -- fully describes both how to fetch a target
-        and what to extract from it; consolidated on direct instruction once
-        target/schema config needed to round-trip through YAML and a
-        database (a two-dict shape can drift, and did require its own
-        ``set(WARN_ACT_SCHEMAS) == set(WARN_ACT_TARGETS)`` test to guard
-        against it). Still domain-agnostic: the core never interprets what
-        a field NAME means, only its declared type -- see this module's own
-        docstring and Chunk 02's "the domain-agnostic core never hardcodes
-        what a field means" note, which this does not violate.
+        Carried on the target itself rather than passed alongside it as a
+        separate caller-supplied dict, so one config entry -- a YAML row, a
+        database row -- fully describes both how to fetch a target and what
+        to extract from it. The two-dict shape came first and did not
+        survive contact with persistence: once target config had to
+        round-trip through YAML and a database, the schema dict and the
+        target dict could drift out of sync, and keeping them aligned needed
+        its own dedicated "same key set in both" test. Still domain-
+        agnostic: the core never interprets what a field NAME means, only
+        its declared type.
         """
         return decode_field_schema(self._get_raw("field_schema"))
 
@@ -268,20 +287,29 @@ class ScrapeTarget(BaseEntity):
 
     @property
     def extraction_strategy_type(self) -> str:
-        """Which extraction-strategy shape the eval loop should propose: ``"css"`` or ``"regex"``.
+        """Which extraction-strategy shape the eval loop should propose.
 
-        Passed straight through to ``run_eval_loop``/``run_eval_loop_multi_row(...,
-        strategy_type=...)`` -- ``"css"`` (the default) preserves every
-        pre-existing target's behavior (CSS-selector candidates against an
-        HTML table). ``"regex"`` is for a page whose real content is prose/
-        list text with no ``<table>`` structure at all (Pennsylvania's real
-        WARN page, the concrete driver -- Chunk 12 rejected it outright since
-        the CSS-selector candidate generator had no strategy shape to even
-        attempt a candidate in). A statement about page shape, the same
-        category as ``multi_row``/``wait_for`` -- the eval loop's own AI-
-        driven extraction still runs unmodified, just proposing regex
-        patterns instead of selectors (regex/text-block extraction,
-        2026-07-14).
+        One of ``eval_loop.StrategyType``'s four values, passed straight
+        through to ``run_eval_loop``/``run_eval_loop_multi_row(...,
+        strategy_type=...)``: ``"css"`` (the default, preserving every
+        pre-existing target's behavior -- CSS-selector candidates against an
+        HTML table), ``"regex"`` (a page whose real content is prose/list
+        text with no ``<table>`` structure at all -- Pennsylvania's real WARN
+        page was rejected outright by the CSS candidate generator, which had
+        no strategy shape it could even attempt a candidate in),
+        ``"per_document"`` (independently-worded documents sharing no
+        template, where no single cached pattern can generalize), and
+        ``"multi_row_vision"`` (a table whose own structure defeats
+        text-based table extraction, needing a vision read of the whole
+        table at once).
+
+        A statement about page shape, the same category as
+        ``multi_row``/``wait_for`` -- the eval loop's own AI-driven
+        extraction still runs unmodified, just proposing a different kind of
+        candidate. Explicitly chosen per target in config and never
+        auto-detected: see ``eval_loop.StrategyType``'s own docstring for the
+        live case where two superficially identical page shapes needed
+        opposite strategies.
         """
         return str(self._get_raw("extraction_strategy_type", "css"))
 
@@ -356,7 +384,7 @@ class ScrapeRecipe(BaseEntity):
 
     @property
     def extraction_strategy(self) -> dict[str, Any]:
-        """The winning candidate's strategy; shape decided by the eval loop (Chunk 2), not this schema."""
+        """The winning candidate's strategy; its shape is the eval loop's business, not this schema's."""
         result: dict[str, Any] = _decode_json_field(self._get_raw("extraction_strategy"), {})
         return result
 
@@ -372,17 +400,19 @@ class ScrapeRecipe(BaseEntity):
 
     @property
     def consecutive_validation_failures(self) -> int:
-        """Crossing a threshold re-triggers candidate generation (Chunk 2)."""
+        """Crossing ``eval_loop.DEFAULT_FAILURE_THRESHOLD`` re-triggers candidate generation."""
         return int(self._get_raw("consecutive_validation_failures", 0))
 
 
 class ScrapeExtraction(BaseEntity):
-    """One row per fetch — the actual output.
+    """One row per fetch -- the actual output.
 
-    Chunk 1 writes this row before the eval loop (Chunk 2) or enrichment
-    pass (Chunk 3) exist, via a naive hardcoded-selector extraction that
-    proves the fetch/persist path — so every eval-loop-and-later field
-    defaults to its pre-eval-loop value rather than being assumed present.
+    Every field the eval loop or the enrichment pass populates defaults to
+    an explicit "not yet" value rather than being assumed present. That is
+    not just build-order residue: a row can still be written by a caller
+    that runs neither pass (the fetch/persist path works on its own), and a
+    consumer must be able to tell "no recipe produced this" from "a recipe
+    produced this and found nothing."
     """
 
     primary_key_field: str = "id"
@@ -426,7 +456,7 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def extraction_recipe_id(self) -> str | None:
-        """Which recipe produced this row; ``None`` for Chunk 1's pre-eval-loop rows."""
+        """Which recipe produced this row; ``None`` when no eval-loop recipe was involved."""
         result: str | None = self._get_raw("extraction_recipe_id")
         return result
 
@@ -442,19 +472,19 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def structured_fields(self) -> dict[str, Any]:
-        """The winning candidate's output; Chunk 1's naive extraction's output."""
+        """The winning candidate's extracted values -- the row's actual payload."""
         result: dict[str, Any] = _decode_json_field(self._get_raw("structured_fields"), {})
         return result
 
     @property
     def field_confidences(self) -> dict[str, Any] | None:
-        """Per-field validation notes from the eval loop; ``None`` until Chunk 2."""
+        """Per-field validation notes from the eval loop; ``None`` when it never ran."""
         result: dict[str, Any] | None = _decode_json_field(self._get_raw("field_confidences"), None)
         return result
 
     @property
     def enrichment_notes(self) -> dict[str, Any] | None:
-        """The secondary LLM pass's free-form findings; ``None`` until Chunk 3."""
+        """The secondary LLM pass's free-form findings; ``None`` when enrichment never ran."""
         result: dict[str, Any] | None = _decode_json_field(self._get_raw("enrichment_notes"), None)
         return result
 
@@ -465,12 +495,19 @@ class ScrapeExtraction(BaseEntity):
 
 
 class ScrapeCollection(BaseCollection[EntityT]):
-    """Three-tier collection base with an in-memory L3 fallback, built without faidh imports.
+    """Three-tier collection base with an in-memory L3 fallback, depending on nothing outside 3tears.
 
-    The scrape-local mirror of ``faidh.db.collection.FaidhCollection`` —
-    see this module's docstring for why the fallback is re-implemented
-    here rather than inherited.
+    See this module's docstring for why the fallback is re-implemented here
+    rather than inherited from the application-side base class it mirrors.
     """
+
+    #: Tables already warned about in :meth:`_warn_in_memory_l3`, so a
+    #: consumer that rebuilds collections per poll cycle still gets one
+    #: warning rather than one per cycle. Each subclass gets its own set via
+    #: the ``cls._in_memory_l3_warned_tables = ...`` assignment in that
+    #: method; declared here so the attribute is typed and present on the
+    #: base. Mirrors ``BaseCollection._missing_nats_warned_tables``.
+    _in_memory_l3_warned_tables: ClassVar[set[str]] = set()
 
     def __init__(
         self,
@@ -479,9 +516,9 @@ class ScrapeCollection(BaseCollection[EntityT]):
         nats_client: Any = NATS_CLIENT_FROM_REGISTRY,
     ) -> None:
         """
-        :param registry: the process-wide ``CollectionRegistry``; unlike
-            ``FaidhCollection`` this has no faidh-side default to resolve
-            from, so callers must supply it explicitly.
+        :param registry: the process-wide ``CollectionRegistry``; this class
+            has no application-wide default to resolve one from, so callers
+            must supply it explicitly.
         :ptype registry: CollectionRegistry
         :param config: the process-wide ``CoreConfig``; same no-default
             reasoning as ``registry``.
@@ -499,20 +536,65 @@ class ScrapeCollection(BaseCollection[EntityT]):
     def _durable_store(self) -> DurableStore | None:
         """Narrow ``self.l3_pool`` to the structured ``DurableStore`` surface this class actually uses.
 
-        Mirrors ``faidh.db.collection.FaidhCollection._durable_store`` exactly
-        — see that docstring for why the cast is safe (every real backend the
-        registry wires conforms to ``DurableStore``, by the registry's own
-        ``_as_l3_backend`` design).
+        The cast is safe because every real backend the registry wires
+        conforms to ``DurableStore`` by the registry's own ``_as_l3_backend``
+        design; ``l3_pool`` is typed loosely only because the registry has no
+        way to prove that statically.
+
+        Returning ``None`` is what selects the in-memory fallback in all four
+        store primitives, so this is also the one place that can observe the
+        fallback being taken at all -- hence the warning below.
         """
         if self.l3_pool is None:
+            self._warn_in_memory_l3()
             return None
         return cast(DurableStore, self.l3_pool)
+
+    def _warn_in_memory_l3(self) -> None:
+        """Warn once per table that this collection's L3 is a process-local dict, not a database.
+
+        The in-memory fallback is deliberate and every unit test in this
+        package legitimately depends on it, so this is a warning and never an
+        exception. But silence here has a real cost that has already been
+        paid once: the fallback ignores schema entirely, so an entity field
+        with no matching DDL column round-trips through ``self._rows``
+        perfectly and only fails against a real pool. ``link_selector``
+        shipped that way (see ``migrations.v009_target_link_selector``). A
+        process that believes it is durably persisting scrape state, but is
+        not, should say so out loud rather than look identical to one that
+        is.
+
+        Mirrors ``BaseCollection._warn_missing_nats_client_once`` exactly,
+        including its class-level-set-keyed-on-``table_name`` mechanism: same
+        problem (a process-wide wiring gap worth surfacing once, on a path hot
+        enough that per-call logging would be filtered out as noise), so the
+        same shape rather than a second one. Keying on the class and table
+        rather than on the instance is the part that matters here: nothing in
+        this package constructs these collections, so a consumer is free to
+        build a fresh one per poll cycle, and a per-instance flag would
+        quietly degrade "warn once" into "warn every cycle" -- the exact
+        outcome this guard exists to avoid.
+        """
+        cls = type(self)
+        warned: set[str] = getattr(cls, "_in_memory_l3_warned_tables", None) or set()
+        if self.table_name in warned:
+            return
+        warned.add(self.table_name)
+        cls._in_memory_l3_warned_tables = warned
+        log.warning(
+            "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
+            "Rows will NOT survive process restart and are NOT shared across pods, and this path "
+            "ignores the table schema entirely, so a missing DDL column cannot fail here. "
+            "Wire an l3_pool on the CollectionRegistry (and run threetears.scrape.migrations."
+            "apply_migrations) for real durability.",
+            type(self).__name__,
+            self.table_name,
+        )
 
     def _single_pk_column(self) -> str:
         """Return ``primary_key_column`` as a plain string.
 
         No scrape collection declares a composite (tuple) primary key.
-        Mirrors ``faidh.db.collection.FaidhCollection._single_pk_column``.
 
         :raises ValueError: if ``primary_key_column`` is a composite (tuple) key.
         """

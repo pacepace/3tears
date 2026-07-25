@@ -1,10 +1,10 @@
-"""Unit tests for CamoufoxDriver (Chunk 6 -- second ScrapeDriver backend).
+"""Unit tests for CamoufoxDriver, the second ScrapeDriver backend.
 
 All tests are fully mocked/in-memory -- no real browser launch, no camoufox
-binary download. The real, live browser proof lives in
-tests/integration/test_scrape_camoufox_live.py. The generic,
+binary download, and no live-browser suite ships with this package (that
+needs a real Camoufox binary on the machine running it). The generic,
 backend-agnostic ScrapeDriver contract (shared with NodriverSidecarDriver)
-lives in tests/scrape/test_driver_contract.py, not here.
+lives in test_driver_contract.py, not here.
 """
 
 from __future__ import annotations
@@ -248,7 +248,7 @@ class TestCamoufoxDriverRender:
         assert page.wait_for_calls == []
 
     async def test_render_new_page_per_call_never_reused(self):
-        """Chunk 1's own lesson: never reuse the same tab across requests."""
+        """The sidecar backend's own hard-won lesson: never reuse a tab across requests."""
         pages = [_FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200)) for _ in range(2)]
         browser = _FakeCamoufoxBrowser(pages)
         driver = CamoufoxDriver(browser=browser)
