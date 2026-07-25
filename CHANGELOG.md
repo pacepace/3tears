@@ -4,6 +4,32 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.19.2 -- 2026-07-25
+
+**Image builds use uv, not pip.** `threetears-base` installed with pip and every
+consumer image inherited that. The platform has been uv-only everywhere else
+since the beginning; the Dockerfiles were the last holdout, and that is exactly
+where it hurt. pip backtracks across the cross-product of every published version
+when a dependency graph is under-constrained, then reports `ResolutionImpossible`
+against whichever node it happened to be holding rather than the package actually
+in conflict. One such message named an innocent, correctly-installed package and
+cost most of a day. uv resolved the identical set in seconds and named the real
+conflict.
+
+The uv binary is copied into the **runtime** image, not just the wheel builder,
+so every downstream consumer installs into the shared venv with the same resolver
+instead of drifting back to pip.
+
+Consumers can now render `uv.lock` at build time with `uv export --frozen` and
+retire hand-frozen constraints files entirely.
+
+**`bump-version.sh` moves the intra-family bounds.** v0.19.1 bounded every
+sibling dependency to its own minor line, but the bump script did not know about
+those bounds. Releasing 0.20.0 would have left every package at 0.20.0 while
+requiring siblings `<0.20.0` — a family that excludes itself, unresolvable the
+moment anyone installed it. Both the bump path and `--verify` now handle bounds,
+so a stale-bound release fails pre-flight instead of shipping.
+
 ## v0.19.1 -- 2026-07-25
 
 **Every intra-family dependency is now version-bounded.** The packages release in
