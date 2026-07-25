@@ -71,9 +71,15 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
     #: rather than passing a different ttl into the shared one.
     build_lock_bucket: ClassVar[str] = "derived-build-locks"
 
-    #: grace given to a peer pod that holds the build lock before deriving
-    #: locally anyway. bounded deliberately -- see :meth:`_await_peer_derivation`.
-    peer_grace_seconds: ClassVar[float] = 0.25
+    #: total time a pod that lost the build lock waits for the winner's result
+    #: before deriving locally. must be on the scale of a derivation, since a
+    #: budget shorter than one guarantees every loser duplicates the winner's
+    #: work -- see :meth:`_await_peer_derivation`.
+    peer_wait_seconds: ClassVar[float] = 5.0
+
+    #: how often the loser re-reads the durable tier while waiting. short, so
+    #: a fast peer releases the waiter promptly.
+    peer_poll_interval: ClassVar[float] = 0.1
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -230,27 +236,33 @@ class DerivedCollection(BaseCollection[EntityT], Generic[EntityT]):
             return await self._await_peer_derivation(key)
 
     async def _await_peer_derivation(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
-        """give a peer pod's in-progress derivation one grace period, then derive.
+        """wait for a peer pod's in-progress derivation, then derive if it never lands.
 
-        a single bounded wait rather than a poll loop. the grace exists because
-        the common case is a peer that is merely a moment ahead of us, and
-        re-reading once is far cheaper than duplicating an expensive
-        derivation. when the value still is not there, deriving locally is the
-        correct trade: a peer that died mid-build holds its lock until the KV
-        TTL expires, and no caller should inherit that latency. the cost of
-        being wrong is one duplicated compute; the cost of waiting on a dead
-        peer is a stalled request.
+        a **bounded retry**, not a background pump: it re-reads the durable
+        tier at :data:`peer_poll_interval` until either the value appears or
+        :data:`peer_wait_seconds` is spent. the budget has to be on the scale
+        of a derivation, because a derivation is expensive by definition -- if
+        it were cheap there would be nothing to cache and no lock to contend
+        for. an earlier revision waited a single sub-second grace, which meant
+        every loser duplicated the winner's work: the exact stampede the
+        cross-pod lock exists to prevent, reintroduced underneath it. that bug
+        was invisible to unit tests, which pass ``nats_client=None`` and never
+        take the lock at all.
 
-        subclasses whose derivations are unusually cheap or unusually expensive
-        can override :data:`peer_grace_seconds` to shift that trade.
+        deriving locally after the budget expires is the deliberate trade. a
+        peer that died mid-build holds its lock until the KV TTL expires
+        (60s by default), and no caller should inherit that latency. one
+        duplicated compute costs CPU; waiting on a dead peer stalls a request.
         """
-        await asyncio.sleep(self.peer_grace_seconds)
-        existing = await self.load_derived(key)
-        if existing is not None:
-            return existing
+        attempts = max(1, int(self.peer_wait_seconds / self.peer_poll_interval))
+        for _ in range(attempts):
+            await asyncio.sleep(self.peer_poll_interval)
+            existing = await self.load_derived(key)
+            if existing is not None:
+                return existing
         log.warning(
             "derived value did not land from peer pod within %.2fs, deriving locally: table=%s key=%s",
-            self.peer_grace_seconds,
+            self.peer_wait_seconds,
             self.table_name,
             key,
         )

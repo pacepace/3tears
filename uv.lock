@@ -611,6 +611,7 @@ name = "3tears-geo"
 version = "0.18.0"
 source = { editable = "packages/geo" }
 dependencies = [
+    { name = "3tears" },
     { name = "3tears-observe" },
     { name = "mapbox-vector-tile" },
     { name = "shapely" },
@@ -618,6 +619,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears", editable = "packages/core" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "mapbox-vector-tile", specifier = ">=2.1" },
     { name = "shapely", specifier = ">=2.0" },
