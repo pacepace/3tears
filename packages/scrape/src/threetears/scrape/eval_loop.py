@@ -1582,10 +1582,12 @@ async def run_eval_loop_multi_row(
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     """
-    # Single exit below, deliberately: these two strategies used to `return` here, which
-    # put them past the fingerprint stamp at the end of this function even though both can
-    # persist a validated extraction. Assigning and falling through means a strategy added
-    # later is covered by construction rather than by remembering.
+    # One exit, deliberately. These two strategies used to `return` here, which put them
+    # past the fingerprint stamp below even though both can persist a validated
+    # extraction. Assigning and falling through to a single stamp-then-return means a
+    # strategy added later is covered by construction rather than by remembering, which
+    # is the property this needs: the first version of this feature claimed that coverage
+    # while two strategies quietly lacked it.
     if strategy_type == "per_document":
         result = await _run_per_document_extraction(
             html,
@@ -1598,9 +1600,7 @@ async def run_eval_loop_multi_row(
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
         )
-        await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
-        return result
-    if strategy_type == "multi_row_vision":
+    elif strategy_type == "multi_row_vision":
         result = await _run_multi_row_vision_extraction(
             html,
             schema,
@@ -1610,8 +1610,46 @@ async def run_eval_loop_multi_row(
             extraction_collection=extraction_collection,
             api_key=api_key,
         )
-        await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
-        return result
+    else:
+        result = await _run_row_strategy(
+            html,
+            schema,
+            target_id,
+            source_url,
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            api_key=api_key,
+            candidate_count=candidate_count,
+            failure_threshold=failure_threshold,
+            extraction_model_id=extraction_model_id,
+            judge_model_id=judge_model_id,
+            strategy_type=strategy_type,
+        )
+    await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
+    return result
+
+
+async def _run_row_strategy(
+    html: str,
+    schema: FieldSchema,
+    target_id: str,
+    source_url: str,
+    *,
+    recipe_collection: ScrapeRecipeCollection,
+    extraction_collection: ScrapeExtractionCollection,
+    api_key: str,
+    candidate_count: int,
+    failure_threshold: int,
+    extraction_model_id: str,
+    judge_model_id: str,
+    strategy_type: StrategyType,
+) -> ScrapeExtraction:
+    """The cached-recipe cycle for the ``css`` and ``regex`` row strategies.
+
+    Split out of :func:`run_eval_loop_multi_row` so that function is a flat choice between
+    strategies with one exit, rather than a mix of early returns and inline logic that a
+    later strategy could be appended to without picking up the shared post-processing.
+    """
     reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
     existing_recipe = await recipe_collection.get(target_id)
@@ -1638,5 +1676,4 @@ async def run_eval_loop_multi_row(
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
         )
-    await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result

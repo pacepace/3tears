@@ -15,6 +15,7 @@ for behaviour but structurally cannot catch a missing DDL column -- that check l
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
+    ScrapeTargetHealth,
     ScrapeTargetHealthCollection,
     content_fingerprint,
     record_validated_fetch,
@@ -372,3 +374,56 @@ async def test_the_vision_strategies_also_stamp(
         stored = await health.get(target_id)
         assert stored is not None, f"{strategy_type} returned validated but stamped no fingerprint"
         assert stored.content_fingerprint == content_fingerprint(_PAGE)
+
+
+async def test_a_row_hydrated_from_l2_merges_with_real_datetimes(health: ScrapeTargetHealthCollection) -> None:
+    """An L2-sourced row carries ISO-string timestamps and must not be written back as strings.
+
+    ``ScrapeCollection`` serializes to JSON with ``default=str`` and deserializes with a
+    plain ``json.loads``, so a row that came through L2 has strings where L1 and L3 have
+    ``datetime``. Writing that back fences the update on ``date_updated`` as an optimistic
+    lock against a ``TIMESTAMPTZ`` column, which a string cannot satisfy. Since a
+    health-write failure is deliberately non-fatal, the visible symptom would be nothing at
+    all: fingerprints would quietly stop updating for those targets, feeding a stale
+    comparison value to the change detection this column exists to serve.
+
+    Asserts on the fence value handed TO the write, which is the only place the bug is
+    observable. Two things erase the evidence afterwards: the entity's own accessors parse
+    on read, and ``save_entity`` reassigns ``original_date_updated`` from the freshly
+    stamped ``date_updated`` once the write succeeds. An earlier version of this test
+    checked both of those and passed whether or not the fix was present.
+    """
+    seeded = health.create({"target_id": "warn_l2", "consecutive_fetch_failures": 1})
+    await health.save_entity(seeded)
+
+    # Exactly what a read through L2 produces: every timestamp an ISO string. Detached from
+    # the collection deliberately, since ``to_dict()`` on an attached entity reads the row
+    # back out of cache and would hand back the native datetimes stored there.
+    hydrated = {
+        "target_id": "warn_l2",
+        "consecutive_fetch_failures": 1,
+        "date_created": "2026-07-25T03:00:00+00:00",
+        "date_updated": "2026-07-25T03:10:00+00:00",
+        "last_blocked_at": "2026-07-25T03:30:00+00:00",
+    }
+
+    fences: list[Any] = []
+    original_save = health.save_to_store
+
+    async def _capture(data: dict[str, Any], original_timestamp: Any = None, **kwargs: Any) -> int:
+        fences.append(original_timestamp)
+        return await original_save(data, original_timestamp, **kwargs)
+
+    with (
+        patch.object(health, "get", return_value=ScrapeTargetHealth(hydrated, is_new=False)),
+        patch.object(health, "save_to_store", side_effect=_capture),
+    ):
+        entity = await record_validated_fetch(health, target_id="warn_l2", html=_PAGE)
+
+    assert fences, "save_to_store was never reached"
+    assert not isinstance(fences[0], str), (
+        f"the optimistic-lock fence was bound as a string ({fences[0]!r}); "
+        "asyncpg cannot compare that against a TIMESTAMPTZ column"
+    )
+    assert isinstance(fences[0], datetime)
+    assert entity.content_fingerprint == content_fingerprint(_PAGE)
