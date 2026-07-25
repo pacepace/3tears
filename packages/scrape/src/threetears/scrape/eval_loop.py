@@ -49,6 +49,7 @@ from .extraction import (
     MAX_HTML_CHARS_IN_PROMPT,
     FieldSchema,
     NoticeDocument,
+    RowValidationResult,
     _VISION_PROVIDER,
     extract_fields_directly_chunked,
     extract_fields_from_images,
@@ -64,6 +65,7 @@ from .extraction import (
     validate_candidate,
     validate_regex_candidate,
     validate_regex_row_candidate,
+    ValidationResult,
     validate_row_candidate,
 )
 from .llm_retry import bounded_retry_structured_call
@@ -392,9 +394,14 @@ class _StrategyShape:
     #: Ask the model for *n* candidate strategies of this shape.
     generate: Callable[..., Awaitable[list[Any]]]
     #: Run one candidate against the source and report what it structurally yielded.
-    validate: Callable[[str, Any, FieldSchema], Any]
+    #: The two result types are genuinely different -- ``ValidationResult`` carries one
+    #: ``extracted`` dict, ``RowValidationResult`` carries a ``records`` list and a row
+    #: count -- so the union is named rather than erased to ``Any``. Erasing it here
+    #: would have removed the one place a mismatched shape could be caught statically,
+    #: at exactly the seam every strategy now funnels through.
+    validate: Callable[[str, Any, FieldSchema], ValidationResult | RowValidationResult]
     #: Pull the records out of a validation. One element for a single-record shape.
-    records: Callable[[Any], list[dict[str, Any]]]
+    records: Callable[[ValidationResult | RowValidationResult], list[dict[str, Any]]]
     #: Wrap a winning candidate into the ``extraction_strategy`` dict stored on the recipe.
     as_strategy: Callable[[Any], dict[str, Any]]
     #: Read a stored ``extraction_strategy`` back into a candidate. Inverse of *as_strategy*.
@@ -403,8 +410,6 @@ class _StrategyShape:
     judge: Callable[..., Awaitable[_JudgeVerdict | None]]
     #: Shape each survivor's records into what *judge* expects for this strategy.
     judge_payload: Callable[[list[dict[str, Any]]], Any]
-    #: Whether a reuse attempt logs its row counts. Only the row shapes have counts to report.
-    logs_row_counts: bool
 
 
 def _check_reuse(
@@ -416,7 +421,10 @@ def _check_reuse(
 ) -> _ReuseCheck:
     """Re-run *existing_recipe*'s stored strategy against a freshly fetched page. Pure."""
     validation = shape.validate(shape.source(html), shape.from_strategy(existing_recipe.extraction_strategy), schema)
-    if shape.logs_row_counts:
+    # Narrowed on the result TYPE, not on a flag saying what the type should be. The row
+    # counts only exist on the row result, so asking the value itself is both the correct
+    # guard and one fewer field that a fifth strategy shape could pair wrongly.
+    if isinstance(validation, RowValidationResult):
         log.info(
             "%s recipe reuse: target=%s records_captured=%d rows_matched=%d",
             shape.log_label,
@@ -1068,13 +1076,16 @@ async def _judge_row_candidates(
 
 
 #: A single record's worth of extracted values, as the judge and the record list want it.
-def _single_records(validation: Any) -> list[dict[str, Any]]:
+def _single_records(validation: ValidationResult | RowValidationResult) -> list[dict[str, Any]]:
+    """One record, from the single-record result shape."""
+    assert isinstance(validation, ValidationResult), "single-record shape got a row validation"
     return [validation.extracted]
 
 
-def _row_records(validation: Any) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = validation.records
-    return records
+def _row_records(validation: ValidationResult | RowValidationResult) -> list[dict[str, Any]]:
+    """Every record, from the row result shape."""
+    assert isinstance(validation, RowValidationResult), "row shape got a single-record validation"
+    return validation.records
 
 
 _CSS_SHAPE = _StrategyShape(
@@ -1088,7 +1099,6 @@ _CSS_SHAPE = _StrategyShape(
     judge=_judge_candidates,
     # The single-record judge compares one set of values per candidate, not a row set.
     judge_payload=lambda records: records[0],
-    logs_row_counts=False,
 )
 
 _REGEX_SHAPE = _StrategyShape(
@@ -1101,7 +1111,6 @@ _REGEX_SHAPE = _StrategyShape(
     from_strategy=lambda strategy: strategy.get("pattern", ""),
     judge=_judge_candidates,
     judge_payload=lambda records: records[0],
-    logs_row_counts=False,
 )
 
 _CSS_ROW_SHAPE = _StrategyShape(
@@ -1116,7 +1125,6 @@ _CSS_ROW_SHAPE = _StrategyShape(
     from_strategy=lambda strategy: strategy,
     judge=_judge_row_candidates,
     judge_payload=lambda records: records,
-    logs_row_counts=True,
 )
 
 _REGEX_ROW_SHAPE = _StrategyShape(
@@ -1129,7 +1137,6 @@ _REGEX_ROW_SHAPE = _StrategyShape(
     from_strategy=lambda strategy: strategy.get("pattern", ""),
     judge=_judge_row_candidates,
     judge_payload=lambda records: records,
-    logs_row_counts=True,
 )
 
 

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Final, Generic, Literal, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
+from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -132,7 +133,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         registry.register(self)
 
     @property
-    def required_l3_pool(self) -> Any:
+    def required_l3_pool(self) -> L3Backend:
         """:attr:`l3_pool`, or a clear failure saying why it had to be there.
 
         For the raw-SQL escape hatch. :attr:`l3_pool` is legitimately ``None`` -- a
@@ -150,7 +151,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         the callers that have a real fallback.
 
         :return: the L3 backend handle, guaranteed non-``None``
-        :rtype: Any
+        :rtype: L3Backend
         :raises RuntimeError: when this collection has no L3 backend configured
         """
         if self.l3_pool is None:

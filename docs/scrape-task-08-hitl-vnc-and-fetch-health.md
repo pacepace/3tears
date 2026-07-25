@@ -47,7 +47,10 @@ package currently cannot answer.
 
 ## Verified, not assumed
 
-Read directly from the code this session, not recalled:
+Read directly from the code this session, not recalled. **This section is a snapshot of the
+state BEFORE any of this was built** -- it names functions the strategy collapse has since
+removed (`_reuse_recipe`, `_reuse_row_recipe`) and describes the bug Chunk 02 fixed as live.
+It is kept as the evidence the design rested on, not as a description of the code today:
 
 **The container already has everything VNC needs except VNC.** `sidecar/entrypoint.sh` starts
 Xvfb on `:99` at `1920x1080x24`; `sidecar/main.py`'s `_lifespan` launches nodriver with
@@ -106,7 +109,7 @@ already ships. Surveyed before designing; each row is a thing we are **not** wri
 | "Paused for a human" vocabulary | `threetears.langgraph.streaming` -- `detect_interrupt`, `StreamInterruptEvent`, `tool_status='interrupted'` ("not a failure, the graph is pausing for a human decision") | The platform already has a word for this state. Mirror it rather than coining a parallel one |
 | Traced/retried/circuit-broken HTTP | `core.http_client.TracedHttpClient` | Sidecar-facing calls, replacing raw `httpx` use where practical |
 | Isolated browser context | `sidecar/main.py`'s existing `_create_isolated_tab` | Per-target isolation inside one HITL session |
-| Page-text normalisation for comparison | `extraction.strip_boilerplate` | Input to the content fingerprint |
+| Page-text normalisation for comparison | `extraction.html_to_text` | Input to the content fingerprint. As designed this said `strip_boilerplate`; the shipped fingerprint uses `html_to_text` plus whitespace collapse, which is the readable-text extraction the comparison actually wants -- `strip_boilerplate` truncates for prompt budget, which would make the digest depend on where the truncation fell |
 
 **Genuinely new, because nothing covers it:** challenge detection from a rendered page; the
 sidecar's VNC/session endpoints; the HITL session state machine; the fetch-health columns.
@@ -132,10 +135,12 @@ stopped working": ask, once, at the moment of failure.**
 The trigger is deterministic and free -- the page failed to yield data. Two branches that already
 exist in `eval_loop.py` are the hooks:
 
-- `_reuse_recipe` / `_reuse_row_recipe` -- the stored strategy validated against a fresh page and
-  didn't match
-- `_regenerate_recipe` / `_regenerate_row_recipe` -- the "no structurally-valid candidates"
-  branch, already logged and handled today
+- `_run_reuse_cycle` -- the stored strategy validated against a fresh page and didn't match.
+  One cycle now serves all four strategy shapes; it was four separate `_reuse_*` functions
+  when this was written, and the collapse into `_StrategyShape` is what made the hook exist
+  once instead of four times
+- `_persist_no_survivors` -- the "no structurally-valid candidates" branch, already logged and
+  handled today, likewise shared by all four regeneration shapes
 
 Both currently assume one cause (the page changed) and respond one way. Instead, they ask a
 classification question first:
@@ -240,7 +245,7 @@ A new `ScrapeTargetHealth` entity carries:
 
 | Column | Purpose |
 |---|---|
-| `content_fingerprint` | sha256 of `strip_boilerplate(html)`, normalised -- captured whenever a recipe validates |
+| `content_fingerprint` | sha256 of `html_to_text(html)` with whitespace collapsed -- captured whenever a recipe validates |
 | `consecutive_fetch_failures` | fetch-stage failures (blocked, transport, timeout) -- deliberately separate from the extraction counter |
 | `circuit_state` | `closed` / `open` / `half_open`, the `CircuitBreaker` vocabulary |
 | `blocked_until` | when the next probe is permitted |
