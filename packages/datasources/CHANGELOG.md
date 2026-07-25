@@ -7,6 +7,30 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.19.0]
+
+### Added
+
+- `geo:` block on `DatasourceConfig` -- declarative tileable layers, so a product
+  declares which table, which geometry column, which attributes and how to reduce at
+  low zoom, and writes no map plumbing. Lives here rather than in `3tears-geo` because
+  the *declaration* is part of what a datasource is, while the *production* it drives
+  is not; the SDK can validate YAML without pulling in shapely.
+- Validators that turn silent map defects into load-time failures. Almost every
+  mistake in this block renders *something* rather than raising: geometry columns not
+  matching the declared kind produce empty tiles (indistinguishable from empty
+  geography), a crossover zoom outside the served range silently disables one band, and
+  duplicate bbox columns collapse the rectangle onto a line so the overlap query matches
+  almost nothing. `extra="forbid"` throughout, so a typo fails at load rather than
+  shipping a default nobody asked for.
+
+### Notes
+
+- Sensitivity is deliberately *not* a new field. A datasource already records how
+  exposed it is via `visibility` and a nullable `customer_id`; a second place to state
+  it is a second place for it to be wrong. A layer's `cache:` defaults to `inherit` and
+  may only narrow.
+
 ## [0.13.9]
 
 ### Added
