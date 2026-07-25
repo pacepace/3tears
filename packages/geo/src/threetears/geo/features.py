@@ -26,11 +26,11 @@ module; it is one extra table, not a second cache.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
-from threetears.geo.tiles import BoundingBox
+from threetears.geo.tiles import BoundingBox, TileId, bounds_to_tile_range, tile_bounds
 from threetears.observe import get_logger, traced
 
 __all__ = ["FeatureCache", "FeatureEntity", "FeatureLoader"]
@@ -54,14 +54,40 @@ class FeatureCache(BaseCollection[FeatureEntity]):
 
     :param loader: async callable fetching source rows for a rectangle
     :ptype loader: FeatureLoader
+    :param bounds_of: extracts a row's bounding rectangle. supplied by the
+        caller because only the layer declaration knows which column holds
+        geometry, and whether it is WKB or a lon/lat pair
+    :ptype bounds_of: Callable[[dict[str, Any]], BoundingBox]
+    :param feature_id_column: column holding each row's stable identity
+    :ptype feature_id_column: str
     """
 
     primary_key_column: tuple[str, ...] = ("layer", "source_version", "feature_id")
 
-    def __init__(self, *args: Any, loader: FeatureLoader, **kwargs: Any) -> None:
+    #: zoom of the chunks this cache loads and tracks coverage by. z8 is
+    #: roughly metro-sized: coarse enough that a run of z12-z14 tiles shares
+    #: one chunk, fine enough that a single chunk is not a whole country's
+    #: worth of geometry.
+    chunk_zoom: ClassVar[int] = 8
+
+    def __init__(
+        self,
+        *args: Any,
+        loader: FeatureLoader,
+        bounds_of: Callable[[dict[str, Any]], BoundingBox],
+        feature_id_column: str,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._loader = loader
+        self._bounds_of = bounds_of
+        self.feature_id_column = feature_id_column
         self._rtree_ready = False
+        # chunks fully loaded by this pod, and the rows they brought. the
+        # coverage set is what lets a hit be trusted: without it the R-Tree
+        # can only say what is held, never what is complete.
+        self._covered: set[tuple[str, int, tuple[int, int, int]]] = set()
+        self._rows: dict[tuple[str, int], dict[Any, dict[str, Any]]] = {}
 
     @property
     def table_name(self) -> str:
@@ -180,15 +206,25 @@ class FeatureCache(BaseCollection[FeatureEntity]):
 
     @traced
     async def features_in_bbox(self, layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
-        """return every source feature inside ``bounds``, warming the cache.
+        """return every source feature intersecting ``bounds``.
 
-        currently always consults the loader: the R-Tree can say which
-        features this pod already holds, but not whether it holds *all* of
-        them for a rectangle it has never been asked about, and answering a
-        tile build with a silently partial set produces a tile that is wrong
-        rather than slow. coverage tracking per region is the optimisation
-        that would let this skip the loader, and it is deliberately not
-        guessed at here.
+        the R-Tree alone cannot answer this. it can say which features a pod
+        *holds* inside a rectangle, but not whether it holds *all* of them --
+        and a tile built from a silently partial set is wrong rather than
+        slow, then cached as immutable. so the cache tracks **coverage**: the
+        chunks it has fully loaded.
+
+        the chunk is the same trick the whole design rests on, applied one
+        level up. rather than loading each tile's own rectangle, the cache
+        loads the coarse tile containing it (:data:`chunk_zoom`) and records
+        that chunk as covered. a run of neighbouring tiles then falls inside
+        one already-loaded chunk, so the first tile of a region pays one L3
+        read and its neighbours pay none -- which is the actual saving,
+        because adjacent tiles overlap almost entirely in source features.
+
+        a rectangle spanning more than one chunk loads each uncovered chunk
+        it touches, so correctness never depends on the caller's rectangle
+        happening to fit.
 
         :param layer: geo layer name
         :ptype layer: str
@@ -196,18 +232,57 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         :ptype source_version: int
         :param bounds: query rectangle
         :ptype bounds: BoundingBox
-        :return: source rows inside the rectangle
+        :return: source rows intersecting the rectangle
         :rtype: list[dict[str, Any]]
         """
-        rows = await self._loader(layer, source_version, bounds)
+        chunks = self._chunks_for(bounds)
+        for chunk in chunks:
+            await self._ensure_chunk_loaded(layer, source_version, chunk)
+        cached = self._cached_rows(layer, source_version)
+        if cached is None:
+            # no L1 to hold anything; the loader is the only source of truth.
+            return await self._loader(layer, source_version, bounds)
+        return [row for row in cached if self._row_bounds(row).intersects(bounds)]
+
+    def _chunks_for(self, bounds: BoundingBox) -> list[TileId]:
+        """coarse tiles covering ``bounds``."""
+        min_x, min_y, max_x, max_y = bounds_to_tile_range(bounds, self.chunk_zoom)
+        return [TileId(z=self.chunk_zoom, x=x, y=y) for x in range(min_x, max_x + 1) for y in range(min_y, max_y + 1)]
+
+    async def _ensure_chunk_loaded(self, layer: str, source_version: int, chunk: TileId) -> None:
+        """load and index one chunk unless it is already covered."""
+        marker = (layer, source_version, chunk.key)
+        if marker in self._covered:
+            return
+        rows = await self._loader(layer, source_version, tile_bounds(chunk))
+        bucket = self._rows.setdefault((layer, source_version), {})
+        for row in rows:
+            feature_id = row.get(self.feature_id_column)
+            if feature_id is None:
+                continue
+            # keyed by the raw identity, not a string form: this dict only
+            # dedupes rows within a chunk and is never looked up by key, so
+            # a UUID stays a UUID.
+            bucket[feature_id] = row
+            bounds = self._row_bounds(row)
+            self.index_feature(layer, source_version, feature_id, bounds)
+        self._covered.add(marker)
         log.debug(
-            "loaded %d features for layer=%s version=%s bbox=%s",
-            len(rows),
+            "chunk loaded: layer=%s version=%s chunk=%s rows=%d",
             layer,
             source_version,
-            bounds,
+            chunk,
+            len(rows),
         )
-        return rows
+
+    def _cached_rows(self, layer: str, source_version: int) -> list[dict[str, Any]] | None:
+        if self._l1 is None:
+            return None
+        return list(self._rows.get((layer, source_version), {}).values())
+
+    def _row_bounds(self, row: dict[str, Any]) -> BoundingBox:
+        """the row's own bounding rectangle, via the caller-supplied extractor."""
+        return self._bounds_of(row)
 
     # ------------------------------------------------------------------
     # BaseCollection contract

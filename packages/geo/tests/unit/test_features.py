@@ -19,11 +19,16 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.geo.features import FeatureCache
-from threetears.geo.tiles import BoundingBox
+from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
 
 
 async def _empty_loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
     return []
+
+
+def _row_bounds(row: dict[str, Any]) -> BoundingBox:
+    """test rows carry their bounds directly; real layers decode geometry."""
+    return row["bounds"]
 
 
 @pytest.fixture
@@ -48,7 +53,15 @@ def cache(request: pytest.FixtureRequest) -> FeatureCache:
 
     registry = CollectionRegistry()
     registry.configure(l1_backend=backend, l2_client=None, l3_pool=None)
-    return FeatureCache(registry, DefaultCoreConfig(), None, None, loader=_empty_loader)
+    return FeatureCache(
+        registry,
+        DefaultCoreConfig(),
+        None,
+        None,
+        loader=_empty_loader,
+        bounds_of=_row_bounds,
+        feature_id_column="feature_id",
+    )
 
 
 class TestRTreeAvailability:
@@ -140,6 +153,116 @@ class TestWithoutL1:
         # crashing.
         registry = CollectionRegistry()
         registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
-        cache = FeatureCache(registry, DefaultCoreConfig(), None, None, loader=_empty_loader)
+        cache = FeatureCache(
+            registry,
+            DefaultCoreConfig(),
+            None,
+            None,
+            loader=_empty_loader,
+            bounds_of=_row_bounds,
+            feature_id_column="feature_id",
+        )
         cache.index_feature("tracts", 1, "x", BoundingBox(-1, -1, 1, 1))
         assert cache.indexed_keys_in_bbox("tracts", 1, BoundingBox(-1, -1, 1, 1)) == []
+
+
+class TestChunkCoverage:
+    """the R-Tree only pays off if a warm chunk actually skips the L3 read.
+
+    without coverage tracking the index can say what a pod holds but never
+    whether it holds *all* of a region, so every build would have to reload
+    anyway and the index would be decoration.
+    """
+
+    @staticmethod
+    def _counting_cache(request: pytest.FixtureRequest, rows: list[dict[str, Any]]) -> tuple[FeatureCache, list[Any]]:
+        calls: list[Any] = []
+
+        async def _loader(layer: str, source_version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+            calls.append(bounds)
+            return [row for row in rows if row["bounds"].intersects(bounds)]
+
+        metadata = MetaData()
+        Table(
+            "geo_features",
+            metadata,
+            SAColumn("layer", String, primary_key=True),
+            SAColumn("source_version", Integer, primary_key=True),
+            SAColumn("feature_id", String, primary_key=True),
+        )
+        backend = SQLiteBackend(f"geo_chunk_{abs(hash(request.node.nodeid))}")
+        backend.initialize(metadata)
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=backend, l2_client=None, l3_pool=None)
+        cache = FeatureCache(
+            registry,
+            DefaultCoreConfig(),
+            None,
+            None,
+            loader=_loader,
+            bounds_of=_row_bounds,
+            feature_id_column="feature_id",
+        )
+        return cache, calls
+
+    async def test_neighbouring_tiles_share_one_chunk_load(self, request: pytest.FixtureRequest) -> None:
+        """the actual saving: adjacent tiles overlap almost entirely."""
+        rows = [
+            {"feature_id": "a", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)},
+            {"feature_id": "b", "bounds": BoundingBox(-112.08, 33.42, -112.07, 33.43)},
+        ]
+        cache, calls = self._counting_cache(request, rows)
+
+        # two adjacent z12 tiles inside one z8 chunk
+        first = tile_for_point(-112.10, 33.40, 12)
+        second = TileId(z=12, x=first.x + 1, y=first.y)
+        await cache.features_in_bbox("tracts", 1, tile_bounds(first))
+        await cache.features_in_bbox("tracts", 1, tile_bounds(second))
+
+        assert len(calls) == 1, f"expected one chunk load for two neighbouring tiles, got {len(calls)}"
+
+    async def test_a_warm_chunk_serves_without_touching_l3(self, request: pytest.FixtureRequest) -> None:
+        rows = [{"feature_id": "a", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)}]
+        cache, calls = self._counting_cache(request, rows)
+        tile = tile_for_point(-112.10, 33.40, 12)
+
+        first = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        second = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+
+        assert len(calls) == 1
+        assert first == second
+        assert [row["feature_id"] for row in second] == ["a"]
+
+    async def test_results_are_filtered_to_the_requested_rectangle(self, request: pytest.FixtureRequest) -> None:
+        """a chunk is coarser than a tile, so its extra rows must not leak.
+
+        returning everything in the chunk would put features from kilometres
+        away into a tile that does not contain them.
+        """
+        near = BoundingBox(-112.10, 33.40, -112.09, 33.41)
+        far = BoundingBox(-111.50, 33.90, -111.49, 33.91)
+        rows = [{"feature_id": "near", "bounds": near}, {"feature_id": "far", "bounds": far}]
+        cache, _ = self._counting_cache(request, rows)
+
+        tile = tile_for_point(-112.10, 33.40, 12)
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        assert [row["feature_id"] for row in found] == ["near"]
+
+    async def test_a_different_generation_is_loaded_separately(self, request: pytest.FixtureRequest) -> None:
+        # coverage is per generation: reusing version 1's chunk for version 2
+        # would build a tile from the wrong vintage and cache it as immutable.
+        rows = [{"feature_id": "a", "bounds": BoundingBox(-112.10, 33.40, -112.09, 33.41)}]
+        cache, calls = self._counting_cache(request, rows)
+        tile = tile_for_point(-112.10, 33.40, 12)
+
+        await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+        await cache.features_in_bbox("tracts", 2, tile_bounds(tile))
+        assert len(calls) == 2
+
+    async def test_a_rectangle_spanning_chunks_loads_each_one(self, request: pytest.FixtureRequest) -> None:
+        # correctness must not depend on the caller's rectangle happening to
+        # fit inside a single chunk.
+        cache, calls = self._counting_cache(request, [])
+        wide = BoundingBox(-113.0, 33.0, -111.0, 34.0)
+        await cache.features_in_bbox("tracts", 1, wide)
+        assert len(calls) > 1

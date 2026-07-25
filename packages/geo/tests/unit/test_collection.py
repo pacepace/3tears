@@ -333,6 +333,69 @@ class TestDurableTier:
         assert await collection.load_derived(("census_tracts", 4, tile.z, tile.x, tile.y)) is None
 
 
+class TestDurableTierFailures:
+    """an outage must not read as a cache miss.
+
+    a miss means "build it". a store failing every read would then be asked
+    to absorb a rebuild of every requested tile, at the moment it is least
+    able to, while the underlying fault stayed invisible.
+    """
+
+    class _FailingStore:
+        def __init__(self, error: Exception) -> None:
+            self._error = error
+
+        async def open_read(self, key: str) -> Any:
+            raise self._error
+            yield b""  # pragma: no cover - unreachable, makes this an async generator
+
+        async def put(self, key: str, body: Any, *, content_type: str, size: int | None = None) -> None:
+            raise AssertionError("should not write during a failing read")
+
+        async def delete(self, key: str) -> None:
+            return None
+
+    def _collection_over(self, store: Any) -> TileCollection:
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=None, l2_client=None, l3_pool=None)
+
+        async def _loader(layer: str, version: int, bounds: BoundingBox) -> list[dict[str, Any]]:
+            return []
+
+        return TileCollection(
+            registry,
+            DefaultCoreConfig(),
+            None,
+            None,
+            layers={"census_tracts": _tracts_layer()},
+            loader=_loader,
+            object_store=store,
+            datasource_name="aibotsmap-data",
+        )
+
+    async def test_missing_object_is_a_miss(self) -> None:
+        collection = self._collection_over(self._FailingStore(FileNotFoundError("no such file")))
+        assert await collection.load_derived(("census_tracts", 3, 12, 1, 1)) is None
+
+    async def test_s3_no_such_key_is_a_miss(self) -> None:
+        error = RuntimeError("client error")
+        error.response = {"Error": {"Code": "NoSuchKey"}}  # type: ignore[attr-defined]
+        collection = self._collection_over(self._FailingStore(error))
+        assert await collection.load_derived(("census_tracts", 3, 12, 1, 1)) is None
+
+    async def test_permission_error_propagates(self) -> None:
+        error = RuntimeError("access denied")
+        error.response = {"Error": {"Code": "AccessDenied"}}  # type: ignore[attr-defined]
+        collection = self._collection_over(self._FailingStore(error))
+        with pytest.raises(RuntimeError, match="access denied"):
+            await collection.load_derived(("census_tracts", 3, 12, 1, 1))
+
+    async def test_connection_failure_propagates(self) -> None:
+        collection = self._collection_over(self._FailingStore(ConnectionError("no route to host")))
+        with pytest.raises(ConnectionError):
+            await collection.load_derived(("census_tracts", 3, 12, 1, 1))
+
+
 class TestSerialization:
     def test_round_trips_a_payload_containing_the_separator(self, tmp_path: Path) -> None:
         """MVT is protobuf and may contain the separator byte anywhere.

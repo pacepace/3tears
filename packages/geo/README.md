@@ -39,6 +39,57 @@ Imported via `from threetears.geo import …`:
   `bounds_to_tile_range`, `TILE_EXTENT`, `MAX_MERCATOR_LATITUDE`.
 - **attributes** — `coerce_attribute`, `coerce_attributes`,
   `validate_attribute_value`, `UnsupportedAttributeError`.
+- **geometry** — `decode_geometry`, `geometry_bounds`, `point_geometry`.
+- **bands** — `feature_band`, `aggregate_band`, `FeatureSpec`,
+  `AggregateSpec`, `TileFeature`, `simplification_tolerance`.
+- **mvt** — `encode_tile`, `project_to_tile`.
+- **features** — `FeatureCache` (per-pod source cache + R-Tree).
+- **collection** — `TileCollection`, `LayerDefinition`, `ViewportRequest`.
+
+## Zoom bands: aggregate below, features above
+
+Low zoom is not simplified high zoom. A z4 tile spans a large fraction of a
+country; rendering it by simplifying and dropping individual features leaves
+an arbitrary sample of whichever survived. A national view showing 4,000 of
+180,000 precincts is not a coarse view of the data — it is a different and
+misleading dataset.
+
+So each layer declares a crossover. Below it, rows roll up to a coarser
+declared geography and each bucket becomes one feature carrying real totals.
+Above it, individual features are simplified per zoom and capped in count.
+`bl-ds-ai-lcv-registration` reached the same split independently: its
+precomputed z4–z10 band holds cluster aggregates, with individual features
+only from z11.
+
+The cap is a hard limit, not advice. An uncapped tile in a dense metro
+reaches tens of megabytes, which exceeds the NATS payload ceiling, defeats
+the L2 hot band, and renders badly. When it binds, features drop by a
+declared ranking column so the survivors are the important ones, and the
+result records that it was truncated — a silently capped tile reads as
+"this is all the data there is".
+
+## Feature ids are not MVT ids
+
+MVT feature ids are **uint64 by specification**. A census geoid or a UUID is
+silently coerced to `0` by the encoder — no error — which would collapse
+every feature in a tile onto one id and break any client-side join. So only
+genuine integers reach the wire-level id; everything else travels as a
+property, which is exactly what MapLibre's `promoteId` is for. The id is
+always present as a property either way, so a client has one place to look.
+
+## The R-Tree earns its place via chunk coverage
+
+`FeatureCache` indexes cached source features in a SQLite R-Tree (built in,
+unlike SpatiaLite) on the same connection pool as its own managed table, as
+a `BaseCollection` subclass rather than a bespoke `SQLiteBackend` wrapper.
+
+An index alone cannot answer "which features are in this rectangle": it can
+say what a pod *holds*, never whether it holds *all* of them, and a tile
+built from a partial set is wrong rather than slow — then cached as
+immutable. So the cache tracks coverage by **chunk**: it loads the coarse
+tile containing a request and records that chunk as covered. A run of
+neighbouring tiles, which overlap almost entirely in source features, then
+pays one L3 read between them instead of one each.
 
 ### Attribute coercion is fixed, not per-caller
 

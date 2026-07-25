@@ -34,6 +34,7 @@ from threetears.core.collections.derived import DerivedCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.geo.attributes import coerce_attributes
 from threetears.geo.bands import AggregateSpec, BandResult, FeatureSpec, aggregate_band, feature_band
+from threetears.geo.features import FeatureCache
 from threetears.geo.geometry import decode_geometry, point_geometry
 from threetears.geo.mvt import encode_tile
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
@@ -46,6 +47,35 @@ __all__ = ["LayerDefinition", "TileEntity", "TileCollection", "ViewportRequest"]
 log = get_logger(__name__)
 
 _MVT_CONTENT_TYPE = "application/vnd.mapbox-vector-tile"
+
+#: object-store error codes meaning "no such object". checked by string
+#: rather than by exception class so this package does not take a dependency
+#: on botocore purely to name one error -- the S3 backend is an optional
+#: extra, and a filesystem or in-memory store must work without it.
+_MISSING_OBJECT_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
+
+
+def _is_missing_object(exc: BaseException) -> bool:
+    """true when ``exc`` means the object is absent rather than unreachable.
+
+    the distinction matters more than it looks: absent means build it,
+    unreachable means stop. conflating them turns an outage into a rebuild
+    storm aimed at the component that is already failing.
+
+    :param exc: exception raised by an object-store read
+    :ptype exc: BaseException
+    :return: whether the object is simply not there
+    :rtype: bool
+    """
+    if isinstance(exc, FileNotFoundError):
+        return True
+    # botocore's ClientError shape, matched structurally so no import is needed
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = str(response.get("Error", {}).get("Code", ""))
+        status = str(response.get("ResponseMetadata", {}).get("HTTPStatusCode", ""))
+        return code in _MISSING_OBJECT_CODES or status == "404"
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +184,9 @@ class TileCollection(DerivedCollection[TileEntity]):
     :param datasource_name: names the object-key namespace, so two
         datasources declaring a layer of the same name cannot collide
     :ptype datasource_name: str
+    :param feature_caches: per-layer source-feature caches. omitted means
+        every build reads L3 directly: correct, just slower
+    :ptype feature_caches: dict[str, FeatureCache] | None
     """
 
     primary_key_column: tuple[str, ...] = ("layer", "version", "z", "x", "y")
@@ -174,6 +207,7 @@ class TileCollection(DerivedCollection[TileEntity]):
         loader: SourceLoader,
         object_store: Any,
         datasource_name: str,
+        feature_caches: dict[str, FeatureCache] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -181,6 +215,10 @@ class TileCollection(DerivedCollection[TileEntity]):
         self._loader = loader
         self._object_store = object_store
         self._datasource_name = datasource_name
+        # optional per-layer feature caches. absent is a supported
+        # configuration -- builds then read L3 per tile, which is correct and
+        # only slower -- so a deployment without an L1 backend still works.
+        self._feature_caches = feature_caches or {}
 
     @property
     def table_name(self) -> str:
@@ -241,14 +279,23 @@ class TileCollection(DerivedCollection[TileEntity]):
     # ------------------------------------------------------------------
 
     async def load_derived(self, entity_id: Any) -> dict[str, Any] | None:
-        """read an already-built tile from the object store."""
+        """read an already-built tile from the object store.
+
+        an absent object is a miss and returns ``None``. **every other
+        failure propagates**, deliberately: a credentials error, a network
+        partition or a permissions change would otherwise be indistinguishable
+        from "not built yet", and this collection's answer to that is to
+        rebuild. a store that is failing every read would then be asked to
+        absorb a rebuild of every tile requested, at exactly the moment it is
+        least able to, and the underlying fault would never surface.
+        """
         key = self.object_key(entity_id)
         try:
             chunks = [chunk async for chunk in self._object_store.open_read(key)]
-        except Exception:
-            # absent is the overwhelmingly common case on this path and is not
-            # an error: it is how the durable tier says "not built yet".
-            return None
+        except Exception as exc:
+            if _is_missing_object(exc):
+                return None
+            raise
         layer, version, z, x, y = self.normalize_pk(entity_id)
         return {"layer": layer, "version": version, "z": z, "x": x, "y": y, "mvt": b"".join(chunks)}
 
@@ -288,7 +335,7 @@ class TileCollection(DerivedCollection[TileEntity]):
             return None
 
         tile = TileId(z=z, x=x, y=y)
-        rows = await self._loader(layer_name, version, tile_bounds(tile))
+        rows = await self._features_for(definition, version, tile)
         band = self._build_band(rows, tile=tile, definition=definition)
         payload = encode_tile({layer_name: band.features}, tile)
 
@@ -300,6 +347,20 @@ class TileCollection(DerivedCollection[TileEntity]):
                 band.dropped,
             )
         return {"layer": layer_name, "version": version, "z": z, "x": x, "y": y, "mvt": payload}
+
+    async def _features_for(self, definition: LayerDefinition, version: int, tile: TileId) -> list[dict[str, Any]]:
+        """source rows for one tile, through the per-pod feature cache.
+
+        the cache loads coarse chunks and tracks which it has fully covered,
+        so a run of neighbouring tiles -- which overlap almost entirely in
+        source features -- pays one L3 read between them rather than one
+        each. without a cache bound, this falls straight through to the
+        loader, which is correct and merely slower.
+        """
+        cache = self._feature_caches.get(definition.name)
+        if cache is None:
+            return await self._loader(definition.name, version, tile_bounds(tile))
+        return await cache.features_in_bbox(definition.name, version, tile_bounds(tile))
 
     def _build_band(self, rows: list[dict[str, Any]], *, tile: TileId, definition: LayerDefinition) -> BandResult:
         """route a tile to the aggregate or feature band by zoom.
