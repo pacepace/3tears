@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+**Fix: missing `link_selector` DDL column (`threetears.scrape`)** -- `ScrapeTarget`
+exposed a persisted `link_selector` field with no matching `scrape_targets` column,
+so a `multi_document` target seeded from YAML raised `asyncpg.UndefinedColumnError`
+on its first real L3 upsert. Unit tests never caught it: `ScrapeCollection`'s
+in-memory L3 fallback ignores schema entirely. Migration `v009` adds the column
+(nullable, no-op for existing rows).
+
+The guard that should have caught it is the real fix. `test_migrations_drift.py`
+restated each entity's persisted fields as hand-maintained string literals, and
+those literals omitted `link_selector` too, so the drift test sat green while the
+drift shipped. It now derives the field set by walking `property` descriptors
+declared below `BaseEntity`, filtering by declaring class rather than by name --
+`ScrapeExtraction.id` shadows `BaseEntity.id` and IS a real column, so a name-based
+filter would have silently stopped checking that table's primary key. A named,
+currently-empty exemption set covers any future non-persisted property, and a
+companion test asserts the derivation never returns an empty set vacuously.
+
+**Behavior change, logging only (`threetears.scrape`)** -- a `ScrapeCollection`
+whose registry has no `l3_pool` now emits one WARNING naming the table, instead
+of silently using a process-local dict as L3. That silence is why the missing
+column was invisible: the fallback ignores schema entirely, so a field with no
+DDL column round-trips perfectly and only fails against a real pool. Operators
+running without a wired pool will see one new WARNING per table. It is warned
+once per table via a class-level set (mirroring
+`BaseCollection._warn_missing_nats_client_once`), not per instance, so a
+consumer that rebuilds collections each poll cycle still gets one warning
+rather than one per cycle. Not an exception: the fallback is legitimate and
+every unit test in the package relies on it.
+
+Also in `threetears.scrape`, documentation only: the README had drifted a release
+behind (five drivers documented against eight shipped, two extraction strategies
+against four, `forms.py` / `request_shape_finder.py` / `page_finder.py` absent from
+the module map); durable docstrings anchored to build ids and design docs from the
+package's pre-lift home, some of which no longer resolve; and `ScrapeTool`'s MCP
+schema excludes five backends without recording why (they need per-target config
+its flat input schema cannot carry).
+
 ## v0.18.0 -- 2026-07-24
 
 **Feature: `timestamptz` column type (`threetears.core.data`)** -- the declarable

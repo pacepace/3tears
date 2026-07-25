@@ -2,10 +2,10 @@
 
 No real Chromium/Xvfb involved -- ``main._browser`` is monkeypatched with a
 fake object shaped like nodriver's ``Browser``/``Tab`` so these tests stay
-hermetic. The real, live proof that a genuine nodriver-driven Chromium
-render works end-to-end lives in a consumer repo (e.g. faidh's
-tests/integration/test_scrape_nodriver_sidecar_live.py), exercised against
-this container via docker compose.
+hermetic. Proving a genuine nodriver-driven Chromium render works end to end
+requires this container actually running, so it is a consuming
+application's job, exercised against the image built from this directory
+via docker compose.
 """
 
 from __future__ import annotations
@@ -1042,7 +1042,8 @@ class TestWarmUp:
 
 
 # ===========================================================================
-# POST /v1/download (scrape-task-04, browser-forced-download capability)
+# POST /v1/download (browser-forced-download capability; design and live
+# verification in docs/scrape-task-04-multi-document-driver.md)
 # ===========================================================================
 
 
@@ -1252,7 +1253,8 @@ class TestDownloadContract:
 
     async def test_concurrent_downloads_do_not_cross_contaminate(self, client: httpx.AsyncClient):
         """Two concurrent requests must each get their own isolated context/download
-        directory -- mirrors the real live-verified concurrency proof (scrape-task-04)."""
+        directory -- mirrors the real live-verified concurrency proof recorded in
+        docs/scrape-task-04-multi-document-driver.md."""
         browser = _FakeDownloadBrowser()
         main._browser = browser
         async with client:

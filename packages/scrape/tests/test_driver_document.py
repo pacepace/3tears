@@ -2,10 +2,10 @@
 
 All tests are fully mocked -- no real network calls, no real PDF/DOCX/XLSX
 parsing (``parse_document`` is monkeypatched). The real, live proof against
-a genuine New Jersey WARN Act Excel file lives in
-tests/e2e/test_warn_act_eval_loop_live.py (target_id="warn_act_nj").
+a genuine New Jersey WARN Act Excel file lives in the consuming
+application's own live suite (faidh repo), not in this package.
 
-**Not added to tests/scrape/test_driver_contract.py's shared ``_BACKENDS``
+**Not added to test_driver_contract.py's shared ``_BACKENDS``
 list, on purpose:** that contract's ``test_render_returns_the_backend_
 supplied_content`` asserts ``page.html`` equals the literal HTML the fake
 backend was configured to return -- true for NodriverSidecarDriver/
@@ -179,7 +179,7 @@ class TestDocumentTextToHtml:
 
 
 # ===========================================================================
-# parse_document_bytes_to_html -- was_ocr / embedded page images (scrape-task-06)
+# parse_document_bytes_to_html -- was_ocr / embedded page images
 # ===========================================================================
 
 
@@ -237,7 +237,7 @@ class TestParseDocumentBytesToHtmlOcrImages:
         assert OCR_PAGE_IMAGE_CLASS not in result.html
 
     async def test_force_images_embeds_pages_even_when_was_ocr_is_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """scrape-task-07: a born-digital PDF (Nevada's real master WARN table) can
+        """Live-found: a born-digital PDF (Nevada's real master WARN table) can
         still need a vision read -- its own table STRUCTURE, not scan quality,
         defeats text-based extraction, so was_ocr alone can't gate this."""
         fake_result = DocumentResult(
@@ -273,7 +273,7 @@ class TestParseDocumentBytesToHtmlOcrImages:
     async def test_merge_wrapped_table_rows_is_forwarded_to_parse_document(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """scrape-task-07 follow-up: opt-in, not folded into a default-True
+        """Deliberately opt-in, not folded into a default-True
         change for every document-backed target -- forwarded explicitly."""
         fake_result = DocumentResult(text="Table text", title=None, page_count=1, word_count=2, was_ocr=False)
         parse_mock = AsyncMock(return_value=fake_result)

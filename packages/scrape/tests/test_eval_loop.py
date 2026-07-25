@@ -1,7 +1,9 @@
 """Unit tests for threetears.scrape.eval_loop -- recipe reuse vs. re-trigger
-threshold logic and LLM-judge candidate comparison (mocking approach mirrors
-tests/unit/test_query_agent_matching.py's create_chat_model pattern; real
-sidecar + real LLM proof lives in tests/e2e/test_scrape_eval_loop_live.py).
+threshold logic and LLM-judge candidate comparison.
+
+Every LLM call is mocked at ``create_chat_model``. This package ships no
+live-LLM or live-sidecar suite of its own; both belong to a consuming
+application, which owns the API keys and the running container.
 
 Both the candidate-generation call (extraction.py) and the judge call
 (eval_loop.py) now funnel through the single shared
@@ -77,8 +79,8 @@ _WINNING_ROW_STRATEGY = {
 }
 
 # Text-block pages (regex strategy) -- no <table> at all, mirroring
-# Pennsylvania's real WARN page shape (Chunk 20's own live proof case):
-# labeled fields, one per line, per record.
+# Pennsylvania's real WARN page shape (the live case that motivated the
+# regex strategy): labeled fields, one per line, per record.
 _TEXT_PAGE_HTML = """
 <html><body><p>Acme Corp</p><p>AFFECTED: 42</p></body></html>
 """
@@ -373,7 +375,7 @@ class TestRunEvalLoopRecipeReuse:
 
 
 # ===========================================================================
-# run_eval_loop_multi_row -- Chunk 07: many records per page, not one
+# run_eval_loop_multi_row -- many records per page, not one
 # ===========================================================================
 
 
@@ -623,8 +625,10 @@ class TestRunEvalLoopMultiRowRecipeReuse:
 # Regex/text-block strategy (2026-07-14) -- strategy_type="regex". Same
 # propose -> structurally-validate -> judge -> persist cycle as the CSS
 # tests above, mirrored exactly, just against a text-block page shape with
-# no <table> at all (Pennsylvania's real WARN page is the concrete driver
-# -- see build-plan.md Chunk 20). The judge step itself is unmodified/
+# no <table> at all (Pennsylvania's real WARN page is the concrete driver:
+# fields all present, but as a text-block list, so the CSS candidate
+# generator had no strategy shape it could even attempt). The judge step
+# itself is unmodified/
 # shared code, already covered by the CSS tests above.
 # ===========================================================================
 
@@ -908,7 +912,7 @@ class TestRunEvalLoopMultiRowRegexStrategyRecipeReuse:
 
 
 # ===========================================================================
-# run_eval_loop_multi_row -- strategy_type="per_document" (scrape-task-05)
+# run_eval_loop_multi_row -- strategy_type="per_document"
 # ===========================================================================
 
 _NOTICES_PAGE_HTML = """
@@ -966,7 +970,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert judge_mock.await_count == 2
 
     async def test_a_judge_rejected_record_is_dropped_even_though_structurally_complete(self):
-        """The whole point of scrape-task-06's own grounding check: a well-typed,
+        """The whole point of the per-document grounding check: a well-typed,
         complete-looking extraction that the judge says is wrong/hallucinated must
         never count as a real record."""
         import threetears.scrape.eval_loop as eval_loop_module
@@ -1108,7 +1112,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.structured_fields == {"records": [{"employer": "Beta LLC", "affected_count": 7}]}
 
     async def test_one_document_hanging_past_the_deadline_does_not_block_the_others(self):
-        """Live-reproduced (scrape-task-05): the underlying chat client can hang well
+        """Live-reproduced against a real document: the underlying chat client can hang well
         past its own per-attempt timeout with zero further retry activity -- a real
         West Virginia document reproduced this directly. asyncio.wait_for's outer
         deadline (_PER_DOCUMENT_TIMEOUT_SECONDS) is what actually bounds it, not
@@ -1224,7 +1228,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
 
 # ===========================================================================
-# run_eval_loop_multi_row -- per_document routing by document shape (scrape-task-06)
+# run_eval_loop_multi_row -- per_document routing by document shape
 # ===========================================================================
 
 _MIXED_SHAPE_PAGE_HTML = """
@@ -1585,7 +1589,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
 
 
 # ===========================================================================
-# _judge_one_document_extraction -- per_document's own grounding check (scrape-task-06)
+# _judge_one_document_extraction -- per_document's own grounding check
 # ===========================================================================
 
 _TEXT_DOCUMENT = NoticeDocument(text="Acme Corp letter text", was_ocr=False, images=[])
@@ -1661,7 +1665,7 @@ class TestJudgeOneDocumentExtraction:
 
 
 # ===========================================================================
-# _judge_multi_row_extraction -- multi_row_vision's own grounding check (scrape-task-07)
+# _judge_multi_row_extraction -- multi_row_vision's own grounding check
 # ===========================================================================
 
 _MULTI_ROW_RECORDS = [

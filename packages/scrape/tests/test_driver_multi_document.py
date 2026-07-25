@@ -3,7 +3,7 @@
 All tests are fully mocked -- no real network calls, no real document
 parsing (the injected document_driver is a fake). The real, live proof
 against Hawaii's/West Virginia's actual pages lives in
-tests/e2e/test_warn_act_eval_loop_live.py (faidh repo).
+the consuming application's own live suite (faidh repo).
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ class TestMultiDocumentDriver:
         assert fake_docs.fetched_urls == links
 
     async def test_was_ocr_is_propagated_onto_each_documents_own_wrapping_div(self):
-        """scrape-task-06: eval_loop's vision-vs-text routing reads this
+        """eval_loop's vision-vs-text routing reads this
         attribute back out per document -- a document driver's own
         RenderedPage.was_ocr must actually reach the combined page, not just
         this driver's own status/html fields."""
@@ -326,7 +326,7 @@ class TestMultiDocumentDriver:
 
 
 class TestDiscoverLinks:
-    """The promoted public :func:`discover_links` — the pure listing-page link walk."""
+    """The promoted public :func:`discover_links` -- the pure listing-page link walk."""
 
     def test_resolves_relative_and_absolute_hrefs_in_document_order(self) -> None:
         from threetears.scrape.drivers.multi_document import discover_links
@@ -352,7 +352,7 @@ class TestDiscoverLinks:
         assert discover_links(html, base_url="https://h", link_selector="a.doc") == ["https://h/z.pdf"]
 
     def test_discover_links_is_the_url_projection_of_the_labeled_walk(self) -> None:
-        # discover_links delegates to discover_links_labeled — same URLs, anchor text dropped. Pins the
+        # discover_links delegates to discover_links_labeled -- same URLs, anchor text dropped. Pins the
         # promised backward-compatible behavior so the delegation can never drift from the URL-only set.
         from threetears.scrape.drivers.multi_document import discover_links, discover_links_labeled
 
@@ -362,7 +362,7 @@ class TestDiscoverLinks:
 
 
 class TestDiscoverLinksLabeled:
-    """:func:`discover_links_labeled` — the same walk, carrying each anchor's visible text."""
+    """:func:`discover_links_labeled` -- the same walk, carrying each anchor's visible text."""
 
     def test_carries_anchor_text_alongside_the_resolved_url(self) -> None:
         from threetears.scrape.drivers.multi_document import discover_links_labeled

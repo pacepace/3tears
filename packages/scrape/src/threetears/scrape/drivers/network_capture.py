@@ -2,9 +2,9 @@
 arrives via an authenticated, in-session XHR/fetch call, not a statelessly
 GET-able JSON API.
 
-**Design (2026-07-15, Oklahoma's own live proof case):** Chunk 15's network
-detection captures every XHR/fetch call during a real browser render, and
-Chunk 20's ``ApiDriver`` queries a JSON API directly -- but Oklahoma's real
+**Design (2026-07-15, Oklahoma's own live proof case):** this package could
+already capture every XHR/fetch call made during a real browser render, and
+``ApiDriver`` could already query a JSON API directly -- but Oklahoma's real
 WARN listing (a Salesforce Experience Cloud / Aura page) has no such API:
 the actual data arrives via ``POST .../sfsites/aura``, authenticated by
 session cookies and a CSRF-bearing Aura context only a real browser session
