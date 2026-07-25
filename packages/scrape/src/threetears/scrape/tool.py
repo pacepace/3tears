@@ -318,10 +318,15 @@ class ScrapeTool(TearsTool):
             # backoff worked -- the opposite of what backing off is for.
             result = ToolResult(
                 success=False,
+                # Deliberately does not say "behind a wall": the same circuit opens on repeated
+                # transport failures, and telling a caller its target is being challenged when
+                # the real problem is that the host stopped answering sends it looking in the
+                # wrong place. `reason` carries which one it was.
                 error=(
-                    "backing off: this target is behind a wall and its circuit is open, so it "
-                    f"was not fetched. {decision.reason.capitalize()}. Retry in about "
-                    f"{decision.retry_after_seconds:.0f}s; retrying sooner will not fetch anything."
+                    "backing off: this target's fetch circuit is open after repeated failed "
+                    f"fetches, so it was not fetched. {decision.reason.capitalize()}. Retry in "
+                    f"about {decision.retry_after_seconds:.0f}s; retrying sooner will not "
+                    "fetch anything."
                 ),
                 content=json.dumps({"target_id": target_id, "validation_status": "blocked", "records": []}),
                 metadata={
