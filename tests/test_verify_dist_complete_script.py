@@ -167,6 +167,42 @@ def test_a_sidecar_pyproject_is_not_demanded(workspace: Path) -> None:
     assert "nodriver" not in result.stdout
 
 
+def test_exclude_is_applied_to_matched_directories(tmp_path: Path) -> None:
+    """``exclude`` must remove a directory a member glob matched, not a glob string.
+
+    The distinction is invisible in this repo, where the excluded ``packages/agent``
+    has no pyproject of its own, so an implementation that compared exclude entries
+    against the member GLOBS ("packages/*" is never equal to "packages/agent")
+    behaved identically to a correct one. This fixture makes the excluded directory
+    a real package, which is the only arrangement where the two implementations
+    disagree: the broken one demands an artifact uv never builds and blocks every
+    release.
+    """
+    _stage_script(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        textwrap.dedent(
+            """\
+            [tool.uv.workspace]
+            members = ["packages/*"]
+            exclude = ["packages/private"]
+            """
+        )
+    )
+    for rel, name in (("packages/core", "3tears"), ("packages/private", "3tears-private")):
+        pkg = tmp_path / rel
+        pkg.mkdir(parents=True)
+        (pkg / "pyproject.toml").write_text(_pyproject(name))
+    (tmp_path / "dist").mkdir()
+    _add_artifacts(tmp_path, "3tears")
+    # Deliberately NO artifacts for the excluded package.
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "3tears-private" not in result.stderr
+    assert "all 1 workspace packages" in result.stdout
+
+
 def test_a_missing_dist_directory_fails_loudly(workspace: Path) -> None:
     """Nothing built at all is a failure, not a vacuous pass over zero packages."""
     shutil.rmtree(workspace / "dist")
