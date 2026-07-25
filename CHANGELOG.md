@@ -103,19 +103,35 @@ took the first proposed. The shared body uses max-by-record-count for both, whic
 equivalent because every single-record survivor holds exactly one record and `max` returns
 the first maximal element. Both tests fail if that rule is changed in either direction.
 
-**Tooling: the typecheck gate now covers every package that passes it.** `scripts/typecheck.sh`
-went from 13 mypy targets over 315 files to 22 over 449, adding `scrape` plus `nats`,
-`observe`, `registry`, `epoch`, `scheduled-jobs`, `enforcement`, `agent.acl` and
-`agent.audit`. Four pre-existing errors are fixed rather than silenced: an unannotated
-`frozenset` and an optional decode bound onto a `str` in scrape, an `Any` return and a stale
-`type: ignore` in observe. Two bare `except: pass` in observe's telemetry shutdown gained the
-waiver pragma and the reason they are genuinely silent -- that path is the logging subsystem
-being torn down, with its handler already detached, so it has nowhere left to report to.
+**Tooling: every workspace package is now strict-mypy checked.** `scripts/typecheck.sh` went
+from 13 targets over 315 files to 27 over 578 -- the whole workspace. The 144 errors that had
+kept 14 packages out are fixed, not suppressed.
 
-Five packages still fail strict mypy and are deliberately still absent, with their counts
-recorded in the script beside the list: `models` 116, `conversations` 10, `agent.workspace` 8,
-`langgraph` 6, `mcp` 4. Listing a package before it passes would turn the gate red for
-everyone, which is how a not-yet-checked package becomes a permanently skipped one.
+`models` supplied 116 of them, and 79 were one pattern: kwargs dicts typed `dict[str, object]`
+splatted into third-party constructors. `object` claims more safety than a pass-through
+forward has, and those values are arbitrary by construction (some arrive via `**extra_kwargs`),
+so `Any` is the accurate type. The rest were real: `NameTranslatingChatMixin` declared
+`invoke`/`ainvoke` returning `BaseMessage` where the base returns `AIMessage`, and `bind_tools`
+taking `list[BaseTool]` where the base takes a far wider `Sequence` -- LSP violations in both
+directions, against bodies that only ever return what `super()` returned and a translator that
+already accepted both tool shapes.
+
+`conversations` and `agent-workspace` shared one cause worth naming: 16 raw-SQL call sites did
+`await self.l3_pool.fetch(...)` where `BaseCollection` documents `l3_pool` as legitimately
+`None` and tells callers to guard. Those were latent `AttributeError`s, not type noise. A new
+`BaseCollection.required_l3_pool` gives all of them one guard that names the actual mistake.
+`langgraph` had the same shape in its offload middleware, and `mcp` accepted any JSON value as
+a bearer token on a truthiness test.
+
+`threetears.knowledge` was already clean and simply never listed -- the invisible version of
+this gap, since an unlisted package looks exactly like a passing one from outside.
+
+**`langchain-claude-code` is now a dev dependency.** It was the only optional provider adapter
+missing from dev, against a block whose own comment says they are installed "so their test
+suites exercise the real langchain integrations rather than getting skipped". Its absence was
+silently skipping 32 tests across five modules and leaving `_claude_cli.py` entirely unchecked
+(mypy resolved its base class to `Any`). Only the Claude Code CLI binary and Node are runtime
+requirements; the Python packages import fine without them.
 
 **Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
 `datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents
