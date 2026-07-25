@@ -249,8 +249,9 @@ class TestScrapeToolExecute:
         recipe_collection, extraction_collection = _collections()
         target_id = _derive_target_id("https://example.gov/warn", {"employer": "str", "affected_count": "int"})
         # single-record recipes wrap their strategy in a {"selectors": ...}
-        # envelope (see eval_loop._reuse_recipe/_regenerate_recipe) -- unlike
-        # multi-row recipes, which store the strategy dict directly.
+        # envelope -- unlike multi-row recipes, which store the strategy dict
+        # directly. Both shapes declare that wrapping on their own
+        # eval_loop._StrategyShape (as_strategy / from_strategy).
         await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
         driver = _FakeDriver(_SINGLE_HTML)
         tool = ScrapeTool(
@@ -404,6 +405,12 @@ class TestScrapeToolFetchHealth:
 
         assert json.loads(result.content)["validation_status"] == "blocked"
         assert not result.success, "a walled fetch produced no records and must not report success"
+        # A caller that cannot tell a wall from a broken extraction will retry forever and
+        # count it against the target. `error` is the field a failed ToolResult is read
+        # through, so the distinction has to survive there rather than only in metadata.
+        assert result.error is not None
+        assert "blocked" in result.error
+        assert "not implicated" in result.error
         recipe = await recipe_collection.get(target_id)
         assert recipe is not None
         assert recipe.consecutive_validation_failures == 0, "the tool let a wall count against the recipe"

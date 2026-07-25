@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast, get_args
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.collections.base import (
@@ -47,6 +47,7 @@ from .driver import NavStep
 from .extraction import FieldSchema
 
 __all__ = [
+    "VALIDATION_STATUSES",
     "ScrapeExtraction",
     "ScrapeExtractionCollection",
     "ScrapeRecipe",
@@ -57,6 +58,7 @@ __all__ = [
     "decode_nav_steps",
     "encode_field_schema",
     "encode_nav_steps",
+    "ValidationStatus",
 ]
 
 log = get_logger(__name__)
@@ -404,6 +406,27 @@ class ScrapeRecipe(BaseEntity):
         return int(self._get_raw("consecutive_validation_failures", 0))
 
 
+#: The outcome of one fetch, as stored on :attr:`ScrapeExtraction.validation_status`.
+#:
+#: ``"validated"`` -- records were extracted and confirmed.
+#: ``"needs_review"`` -- structurally valid candidates existed but nothing confirmed them.
+#: ``"failed"`` -- we received the page and could not extract from it.
+#: ``"blocked"`` -- we never received the page: a bot wall or human-verification
+#: interstitial stood where the content should be, so no records exist to have got right
+#: or wrong and the target's extraction strategy is not implicated.
+#:
+#: A Literal rather than a bare ``str`` because the fourth value was added long after the
+#: first three, across a dozen write sites, with the difference between "extraction failed"
+#: and "we never got the page" carrying real consequences for anything that counts failures
+#: or retries. Its sibling vocabularies (``challenge.PageVerdictKind``,
+#: ``eval_loop.StrategyType``) are both Literals for the same reason.
+ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
+
+#: Every value :data:`ValidationStatus` permits, derived from the Literal rather than
+#: restated, so a new status cannot be added without this following it.
+VALIDATION_STATUSES: frozenset[str] = frozenset(get_args(ValidationStatus))
+
+
 class ScrapeExtraction(BaseEntity):
     """One row per fetch -- the actual output.
 
@@ -490,7 +513,7 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def validation_status(self) -> str:
-        """``"validated"`` | ``"needs_review"`` | ``"failed"`` | ``"blocked"``; defaults to ``"needs_review"``.
+        """One of :data:`ValidationStatus`; defaults to ``"needs_review"``.
 
         ``"blocked"`` is the one that does not mean "extraction went wrong". It means the
         page never arrived: a bot wall or human-verification interstitial stood where the

@@ -30,7 +30,13 @@ from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
 from .challenge import DEFAULT_CLASSIFIER_MODEL_ID, PageVerdictKind, classify_failed_page
-from .collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipe, ScrapeRecipeCollection
+from .collections import (
+    ScrapeExtraction,
+    ScrapeExtractionCollection,
+    ScrapeRecipe,
+    ScrapeRecipeCollection,
+    ValidationStatus,
+)
 from .health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
@@ -261,7 +267,7 @@ async def _stamp_fingerprint_if_validated(
         return
     try:
         await record_validated_fetch(health_collection, target_id=target_id, html=html)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- health is a diagnostic aid and the extraction is already durable; logged with its traceback below, never silenced
         # The extraction is already persisted and correct by the time this runs. Health is
         # a diagnostic aid, so letting its write failure propagate would turn a successful
         # scrape into a failed one for the caller and lose real extracted data over a
@@ -279,7 +285,7 @@ async def _persist_extraction(
     target_id: str,
     source_url: str,
     structured_fields: dict[str, Any],
-    validation_status: str,
+    validation_status: ValidationStatus,
     extraction_recipe_id: str | None,
     field_confidences: dict[str, Any] | None = None,
 ) -> ScrapeExtraction:
@@ -562,7 +568,7 @@ async def _resolve_failure_verdict(
     fingerprint = content_fingerprint(html)
     try:
         health = await health_collection.get(target_id)
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-health behaviour, not fail every poll; logged with its traceback below
         # Health is a diagnostic aid. A store that cannot be read must degrade this target to
         # the behaviour it had before health existed, not turn every poll into a hard
         # failure. Logged with its traceback, never silenced.
@@ -592,6 +598,15 @@ async def _resolve_failure_verdict(
                 from_cache=True,
             )
 
+    # The free paths above announce themselves; this is the one that costs a model
+    # call, so it says so before spending it. Without this the cheap branch was the
+    # only one visible in a log, which is exactly backwards for anything anyone
+    # would want to count.
+    log.info(
+        "scrape page classifier: asking about target %s (no cached verdict for this page)",
+        target_id,
+        extra={"extra_data": {"target_id": target_id}},
+    )
     verdict = await classify_failed_page(
         html,
         schema,
@@ -600,7 +615,26 @@ async def _resolve_failure_verdict(
         page_status=page_status,
     )
     if verdict is None:
+        # bounded_retry_structured_call already logged the failure itself; this
+        # records what the eval loop does about it, which is nothing.
+        log.info(
+            "scrape page classifier: no verdict for target %s; treating the failure as today would",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
         return None
+
+    # Every verdict leaves a trace, not just the two that change behaviour: a fresh
+    # content/empty/other verdict used to buy a model call and produce no log line
+    # anywhere, so the spend was invisible.
+    log.info(
+        "scrape page classifier: target %s judged %s (%s confidence) -- %s",
+        target_id,
+        verdict.kind,
+        verdict.confidence,
+        verdict.evidence,
+        extra={"extra_data": {"target_id": target_id, "page_verdict": verdict.kind}},
+    )
 
     try:
         await record_classification(
@@ -610,7 +644,7 @@ async def _resolve_failure_verdict(
             kind=verdict.kind,
             evidence=verdict.evidence,
         )
-    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the verdict is already in hand and routing on it beats discarding it; only the cache is lost, and it is logged with its traceback below
         # The verdict is already in hand and routing on it is strictly better than not. All
         # that is lost is the cache, so the next poll asks again. Same reasoning as the
         # fingerprint stamp: bookkeeping must not cost a real result.
@@ -1586,6 +1620,7 @@ async def _run_multi_row_vision_extraction(
         len(confirmed_records),
         extra={"extra_data": {"target_id": target_id}},
     )
+    validation_status: ValidationStatus
     if not confirmed_records:
         validation_status = "failed"
     elif len(confirmed_records) == len(complete_records):

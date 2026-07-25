@@ -1,8 +1,20 @@
 # scrape-task-08: Human-in-the-loop render sessions (VNC) + fetch-side health learning
 
-**Status:** DESIGN, not yet approved to build -- presenting for review before any code, per this
-project's own "Sequence strictly" precedent (scrape-task-01 through 04 each got explicit
-go-ahead before implementation started).
+**Status:** APPROVED TO START, and partially built. Sections 1 and 2 shipped on
+`feat/scrape-hitl-vnc` as build-plan Chunks 01 and 02: `health.py`
+(`ScrapeTargetHealth` + collection, content fingerprint), migration `v010`,
+`challenge.py` (`PageVerdict`, `classify_failed_page`), the eval-loop failure
+classification and routing, and the `ScrapeTool` opt-in. Sections 3 through 6
+(circuit state and backoff, sealed session reuse, the sidecar VNC and HITL
+session endpoints, RBAC/audit/announcement) are Chunks 03 through 07 and are
+NOT built.
+
+This line said "DESIGN, not yet approved to build" for a day after half the
+document had shipped. The go-ahead was a real decision the whole build plan
+rests on, and this is where the sibling docs in this family record it
+(scrape-task-01 "APPROVED TO START", -02 and -03 naming the shipped
+predecessor); leaving it stale made the one place a reader goes to learn the
+state of this work assert something false about the repo.
 
 **Driver:** some targets sit behind a bot wall (Cloudflare interstitial, a captcha, a
 "verify you are human" gate) that no unattended fetch will ever pass. A human can pass it in
@@ -284,8 +296,11 @@ changed, and no repeated candidate generation against a page that demonstrably h
 threshold, recovery timeout and single-probe admission are adopted exactly. It is not used as
 the durable store because it is in-memory and `threading.Lock`-based -- process-local by
 construction. A blocked target must stay blocked across pods and restarts, so the durable state
-lives in the recipe row, with `WindowedCounter` / `DistributedCounter` for the cross-pod counts
-and `TokenBucket` for probe pacing.
+lives on the `ScrapeTargetHealth` row (`circuit_state`, `consecutive_fetch_failures`,
+`blocked_until` -- shipped in `v010`, still unwritten until Chunk 03), with `WindowedCounter` /
+`DistributedCounter` for the cross-pod counts and `TokenBucket` for probe pacing. Section 2
+settled that; this paragraph said "the recipe row" until the contradiction was caught in
+review, and `ScrapeRecipe` is explicitly left untouched by all of this.
 
 Where a per-process fast-fail is still wanted, `scrape` accepts an injected breaker through
 `core.http_client`'s existing `CircuitBreakerLike` protocol -- the same seam `core` already uses
@@ -298,7 +313,9 @@ not a bespoke sleep-and-retry.
 
 On a successful human solve, the sidecar exports that browser context's cookies and storage
 state. The MIT package seals it with `core.security.encryption.seal()` and stores it on the
-recipe row with an expiry. Subsequent unattended renders pass it back so the session resumes
+`ScrapeTargetHealth` row (`session_state_sealed` / `session_state_expires_at`, shipped in
+`v010`) with an expiry -- not on the recipe row, which section 2 settled and which the
+migration reflects. Subsequent unattended renders pass it back so the session resumes
 already-cleared.
 
 These are session credentials. Sealed at rest under an operator-supplied master key resolved via

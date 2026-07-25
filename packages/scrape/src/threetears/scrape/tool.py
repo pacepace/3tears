@@ -308,8 +308,23 @@ class ScrapeTool(TearsTool):
                 {"target_id": target_id, "validation_status": extraction.validation_status, "records": records},
                 default=str,
             )
+            # `blocked` is not success -- no records were produced -- but it is also not
+            # the same failure as the others, and a caller that cannot tell them apart
+            # will retry a walled target forever and count it as a broken extraction.
+            # The distinction is surfaced in `error` because that is the field a caller
+            # actually reads on a failed ToolResult; `validation_status` was already in
+            # metadata and was already being ignored.
+            blocked = extraction.validation_status == "blocked"
             result = ToolResult(
                 success=extraction.validation_status == "validated",
+                error=(
+                    "blocked: a bot wall or human-verification page stood where the content "
+                    "should be, so nothing was extracted. The stored extraction strategy is "
+                    "not implicated and was left untouched; retrying immediately will hit the "
+                    "same wall."
+                )
+                if blocked
+                else None,
                 content=content,
                 metadata={
                     "target_id": target_id,

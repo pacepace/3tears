@@ -243,8 +243,12 @@ async def v010_create_scrape_target_health(store: DataStore) -> None:
             PRIMARY KEY (target_id)
         )
     """)
-    # Answers "which targets are currently walled off", the one query an operator runs
-    # against this table that is not a primary-key lookup.
+    # Will answer "which targets are currently walled off", the one query an operator runs
+    # against this table that is not a primary-key lookup. It returns the empty set today
+    # and will keep doing so until something writes ``circuit_state`` -- said here plainly
+    # because an index whose comment describes a working operator query is exactly the kind
+    # of thing that gets trusted and then quietly reports "no targets are blocked" while
+    # several are.
     await store.execute(
         "CREATE INDEX IF NOT EXISTS scrape_target_health_circuit_state "
         "ON scrape_target_health (circuit_state) WHERE circuit_state <> 'closed'"

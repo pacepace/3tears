@@ -37,7 +37,6 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from threetears.core.entities.base import BaseEntity
-from threetears.observe import get_logger
 
 from .collections import ScrapeCollection, _parse_dt
 from .extraction import html_to_text
@@ -49,8 +48,6 @@ __all__ = [
     "record_classification",
     "record_validated_fetch",
 ]
-
-log = get_logger(__name__)
 
 
 def content_fingerprint(html: str) -> str:
@@ -108,9 +105,13 @@ class ScrapeTargetHealth(BaseEntity):
     def consecutive_fetch_failures(self) -> int:
         """Fetch-stage failures in a row: blocked, transport, timeout.
 
-        Deliberately distinct from ``ScrapeRecipe.consecutive_validation_failures``, which
-        counts a different thing (the stored strategy not matching a page we did receive).
-        Conflating them is the bug this entity exists to make impossible.
+            Deliberately distinct from ``ScrapeRecipe.consecutive_validation_failures``, which
+            counts a different thing (the stored strategy not matching a page we did receive).
+            Conflating them is the bug this entity exists to make impossible.
+
+
+        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
+        lands with the backoff work. Read it as absent, not as observed.
         """
         return int(self._get_raw("consecutive_fetch_failures", 0))
 
@@ -118,15 +119,23 @@ class ScrapeTargetHealth(BaseEntity):
     def circuit_state(self) -> str:
         """``"closed"`` | ``"open"`` | ``"half_open"``, defaulting to ``"closed"``.
 
-        The three-state vocabulary of ``threetears.models.circuit_breaker.CircuitState``,
-        stored durably here rather than held in that class's own process-local instance,
-        because a target blocked on one pod is blocked on all of them.
+            The three-state vocabulary of ``threetears.models.circuit_breaker.CircuitState``,
+            stored durably here rather than held in that class's own process-local instance,
+            because a target blocked on one pod is blocked on all of them.
+
+
+        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
+        lands with the backoff work. Read it as absent, not as observed.
         """
         return str(self._get_raw("circuit_state", "closed"))
 
     @property
     def blocked_until(self) -> datetime | None:
-        """When the next fetch attempt is permitted; ``None`` means no backoff is in force."""
+        """When the next fetch attempt is permitted; ``None`` means no backoff is in force.
+
+        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
+        lands with the backoff work. Read it as absent, not as observed.
+        """
         return _parse_dt(self._get_raw("blocked_until"))
 
     @property
@@ -136,7 +145,14 @@ class ScrapeTargetHealth(BaseEntity):
 
     @property
     def last_block_kind(self) -> str | None:
-        """What kind of wall was last observed, as evidence for an operator; ``None`` if never."""
+        """What kind of wall was last observed, as evidence for an operator; ``None`` if never.
+
+        **Nothing writes this yet**, deliberately: the classifier reports THAT a page is a wall,
+        not which vendor's wall it is, and filling this with the literal string ``"blocked"``
+        would populate a column meant to distinguish walls with a value that never distinguishes
+        anything. It waits for a real taxonomy. :attr:`last_blocked_at` IS written on a blocked
+        verdict; this is not.
+        """
         result: str | None = self._get_raw("last_block_kind", None)
         return result
 
@@ -184,6 +200,9 @@ class ScrapeTargetHealth(BaseEntity):
         Ciphertext only. Sealed via ``threetears.core.security.encryption`` under an
         operator-supplied master key, because these are live session credentials: never
         stored in the clear, never logged, never included in a debug dump.
+
+        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
+        lands with the human-in-the-loop session work. Read it as absent, not as observed.
         """
         result: str | None = self._get_raw("session_state_sealed", None)
         return result
@@ -194,6 +213,8 @@ class ScrapeTargetHealth(BaseEntity):
 
         Treated as advisory: past this point the state is ignored and a human is needed
         again, which degrades to "ask for help", never to bad data.
+
+        **Nothing writes this yet**, alongside :attr:`session_state_sealed`.
         """
         return _parse_dt(self._get_raw("session_state_expires_at"))
 
