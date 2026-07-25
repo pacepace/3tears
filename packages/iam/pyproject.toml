@@ -57,6 +57,14 @@ dependencies = [
     "httpx>=0.27",
     # TOTP code generation/verification (RFC 6238).
     "pyotp>=2.9",
+    # OIDC id_token verification. joserfc rather than pyjwt for this one path: it models a
+    # JWKS KeySet and a claims registry directly, which is what an id_token needs, and
+    # authlib's own jose module -- the obvious alternative -- is deprecated.
+    "joserfc>=1.0",
+    # SecretStr on the seed-sealing surface, and the type core's seal/open_secret speak.
+    # Declared directly rather than leaned on transitively: this package names it in a
+    # public signature, so it is a real dependency of this API, not an implementation detail.
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
