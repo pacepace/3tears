@@ -46,7 +46,7 @@ print(extraction.validation_status, extraction.structured_fields["records"])
 
 ## Architecture
 
-> Lifted from faidh's `src/faidh/scrape/` into this package ([`docs/scrape-task-01-lift-core-package.md`](../../docs/scrape-task-01-lift-core-package.md), 2026-07-15) as a directory move -- zero logic changes. faidh's WARN Act plugin is used throughout as the running example of a consumer; it remains a faidh-side module (`faidh/src/faidh/intake/plugins/warn_act.py`), not part of this package, and is the only place WARN-domain meaning exists.
+> Lifted from faidh's `src/faidh/scrape/` into this package ([`docs/scrape-task-01-lift-core-package.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-01-lift-core-package.md), 2026-07-15) as a directory move -- zero logic changes. faidh's WARN Act plugin is used throughout as the running example of a consumer; it remains a faidh-side module (`faidh/src/faidh/intake/plugins/warn_act.py`), not part of this package, and is the only place WARN-domain meaning exists.
 
 ### Why this exists
 
@@ -161,7 +161,7 @@ flowchart TD
 
 All three front-end stages have shipped, and each landed without touching `driver.py`, `eval_loop.py`, or `collections.py` -- which is the point. They produce and consume the same plain data shapes (`RenderedPage`, `FieldSchema`, `PageFinderResult`, `DiscoverySchemaResult`) the core already uses, and none of them persists anything: a caller decides whether a discovered page or schema becomes a real `ScrapeTarget`.
 
-Full designs live in `docs/`: [`scrape-lift-design.md`](../../docs/scrape-lift-design.md) (the overall shape and its decision log), [`scrape-task-01-lift-core-package.md`](../../docs/scrape-task-01-lift-core-package.md) (the lift itself and the AGPL isolation boundary), [`scrape-task-02-page-finder-agent.md`](../../docs/scrape-task-02-page-finder-agent.md), [`scrape-task-03-schema-discovery-mode.md`](../../docs/scrape-task-03-schema-discovery-mode.md), and [`scrape-task-04-multi-document-driver.md`](../../docs/scrape-task-04-multi-document-driver.md) (the multi-document driver plus the sidecar's browser-forced-download mode).
+Full designs live in `docs/`: [`scrape-lift-design.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-lift-design.md) (the overall shape and its decision log), [`scrape-task-01-lift-core-package.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-01-lift-core-package.md) (the lift itself and the AGPL isolation boundary), [`scrape-task-02-page-finder-agent.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-02-page-finder-agent.md), [`scrape-task-03-schema-discovery-mode.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-03-schema-discovery-mode.md), and [`scrape-task-04-multi-document-driver.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-04-multi-document-driver.md) (the multi-document driver plus the sidecar's browser-forced-download mode).
 
 ### 6. Module map
 
