@@ -284,6 +284,7 @@ mypy_path = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/geo/src",
+    "packages/iam/src",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
@@ -306,6 +307,7 @@ files = [
     "packages/enforcement/src",
     "packages/epoch/src",
     "packages/geo/src",
+    "packages/iam/src",
     "packages/langgraph/src",
     "packages/mcp/src",
     "packages/media-contracts/src",

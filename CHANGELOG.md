@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.20.0 -- 2026-07-25
+
+**New package: `3tears-iam`.** Identity and access primitives, factored out of two
+services that had each grown their own. Both had independently written argon2id
+password hashing with anti-enumeration timing, a GitHub OAuth2 authorization-code
+flow, a NATS-KV login throttle, a single-use SHA-256 ticket store, and a JWT
+mint/verify pair pinning its claim set -- and neither could adopt the other's,
+because each was welded to its own schema, transport, and config prefix.
+
+The package owns protocol, crypto, and policy, and owns nobody's database schema
+or wire DTOs. That line is deliberate: the two services disagree about persistence
+in every way that matters, so unifying it would have produced an abstraction
+neither could use. State sits behind `SingleUseTicketStore`, `StateStore`, and
+`AttemptLimiter` Protocols, with JetStream KV implementations for production and
+in-memory ones for tests -- shipped rather than left to each consumer, because a
+hand-rolled double that drifts from the real store is how a store bug ships green.
+
+Session tokens carry one claim vocabulary over either EdDSA or HS256, with the
+claim set pinned on mint *and* on verify: a token carrying an unrecognized claim
+is rejected, which is what makes "identity only, authorization evaluated live" an
+enforceable property rather than an aspiration. Algorithms are pinned from
+literals and checked twice -- once before key selection, once in the decode call.
+
+It builds on what already existed rather than beside it. `jwk_thumbprint`,
+`build_jwks`, `generate_signing_keypair` and `ReplayGuard` come from
+`threetears.core.security`; the sensitive-action taxonomy comes from
+`threetears.agent.acl`. That last one had been hand-copied into a downstream repo
+with a comment explaining the copy existed only because no import path connected
+the two. This package is that path, and the second declaration goes away.
+
+SAML sits behind a `[saml]` extra and WebAuthn behind `[webauthn]`, so a consumer
+doing password and OIDC only does not inherit pysaml2 and an `xmlsec1` system
+binary it will never call.
+
+The package is complete for passwords, PKCE, GitHub sign-in, session tokens, DPoP,
+API-key secrets, step-up freshness, trusted-proxy client-IP resolution, and the
+storage seams. OIDC, SAML, TOTP, WebAuthn and refresh rotation are still resident
+in the downstream identity service and land next.
+
 ## v0.19.0 -- 2026-07-25
 
 **New package: `3tears-geo`.** Slippy-map tile geometry in application code. Every
