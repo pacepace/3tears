@@ -313,16 +313,26 @@ class ScrapeTool(TearsTool):
                         # be retried at full rate. Only the wall stamps `last_blocked_at`.
                         await self._circuit.record_unreachable(target_id)
             except BaseException:
-                # Everything that is not an `Exception`, which in practice means a cancelled
-                # poll -- and this block holds the longest await in the function, so it is
-                # where a cancellation most often lands. It strands an admitted probe exactly
-                # as thoroughly as a failure does, and unlike a failure it reports no outcome,
-                # so the flag is never cleared. Deliberately does not record a durable
-                # outcome: persisting one would back the target off across every pod, and
-                # outlive the process that was cancelled, for something the target did not do.
-                # Releasing the in-process probe does cost that breaker a failure -- the
-                # protocol has no "never mind" -- but that is seconds-scale, process-local,
-                # and dies with the process anyway.
+                # Two ways in, now that this guards the block rather than the render alone: a
+                # cancelled poll, which the inner handler does not catch by design, and any
+                # exception raised INSIDE that handler, most plausibly a store failure in
+                # `record_unreachable`. Both leave an admitted probe unresolved -- neither
+                # reports an outcome, and only an outcome clears the flag -- and this block
+                # holds the longest await in the function, so it is where a cancellation most
+                # often lands.
+                #
+                # Deliberately does not record a durable outcome: persisting one would back
+                # the target off across every pod, and outlive the process that was cancelled,
+                # for something the target did not do. Releasing the in-process probe does
+                # cost that breaker a failure -- the protocol has no "never mind" -- but that
+                # is seconds-scale, process-local, and dies with the process anyway.
+                #
+                # On the second path the `error` string the inner handler had already composed
+                # is discarded by the re-raise, so a store failure during the report surfaces
+                # as an exception rather than as the ToolResult the inner pragma promises.
+                # That predates this guard -- such an exception escaped `execute` before too,
+                # just without releasing the probe -- and is left alone rather than widened
+                # into a behaviour change smuggled in under a probe-lifecycle fix.
                 if self._circuit is not None:
                     self._circuit.release_probe(target_id)
                 raise
