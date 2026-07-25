@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.media.contracts.keys import build_object_key, sanitize_segment
+from threetears.media.contracts.keys import SHARED_PREFIX, build_object_key, sanitize_segment
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
@@ -121,3 +121,59 @@ def test_filename_cannot_inject_path_separators() -> None:
     leaf = segments[-1]
     assert len(segments) == 8
     assert leaf and "/" not in leaf and ".." not in leaf
+
+
+class TestSharedAndDeterministicKeys:
+    """the two shapes added for objects that are not tenant-owned or not opaque.
+
+    both exist because ``platform.datasources.customer_id`` is itself
+    nullable -- NULL meaning platform-shared -- so artifacts derived from
+    such a row have no tenant to scope to, and because a reader like a CDN
+    must be able to derive a key from a request without a lookup.
+    """
+
+    def test_shared_objects_get_the_shared_prefix_not_a_none_segment(self) -> None:
+        # "None/..." would be a key that looks tenant-scoped and is not.
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="layer/v1/8/40/98.mvt")
+        assert key.startswith(f"{SHARED_PREFIX}/")
+        assert "None" not in key
+
+    def test_shared_prefix_is_still_a_grantable_boundary(self) -> None:
+        # the leading segment IS what bucket policy grants on, so a shared
+        # object still needs exactly one, just not a customer's.
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="a/b.mvt")
+        assert key.split("/")[0] == SHARED_PREFIX
+
+    def test_deterministic_path_is_derivable_from_a_request(self) -> None:
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="census_tracts/v3/8/40/98.mvt")
+        assert key == f"{SHARED_PREFIX}/tiles/ds/census-tracts/v3/8/40/98.mvt"
+
+    def test_deterministic_path_keeps_the_final_extension(self) -> None:
+        # ``98.mvt`` collapsing to ``98-mvt`` would lose the type a reader
+        # and a CDN's content handling depend on.
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="a/98.mvt")
+        assert key.endswith("/98.mvt")
+
+    def test_deterministic_path_still_sanitizes_each_component(self) -> None:
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="Census Tracts/V3/8.mvt")
+        assert key == f"{SHARED_PREFIX}/tiles/ds/census-tracts/v3/8.mvt"
+
+    def test_deterministic_path_cannot_traverse_out_of_its_prefix(self) -> None:
+        key = build_object_key(customer_id=None, scope="tiles", category="ds", path="../../etc/passwd")
+        assert ".." not in key
+        assert key.startswith(f"{SHARED_PREFIX}/tiles/ds/")
+
+    def test_a_tenant_may_also_use_a_deterministic_path(self) -> None:
+        key = build_object_key(customer_id=_CUSTOMER, scope="tiles", category="ds", path="layer/v1/0/0/0.mvt")
+        assert key.startswith(f"{_CUSTOMER}/")
+        assert key.endswith("/0.mvt")
+
+    def test_neither_path_nor_object_id_is_an_error(self) -> None:
+        # silently emitting a key missing its date/id segments would collide
+        # every object in a category onto one address.
+        with pytest.raises(ValueError, match="either path="):
+            build_object_key(customer_id=None, scope="s", category="c")
+
+    def test_empty_path_is_an_error(self) -> None:
+        with pytest.raises(ValueError, match="at least one component"):
+            build_object_key(customer_id=None, scope="s", category="c", path="///")

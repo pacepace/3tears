@@ -232,6 +232,31 @@ def test_mcp_rbac_epoch_under_3tears_namespace() -> None:
     assert Subjects.mcp_rbac_epoch().path == "3tears.mcp.rbac.epoch"
 
 
+def test_datasource_tile_epoch_is_per_datasource_per_layer() -> None:
+    """each geo layer carries its own version.
+
+    a single global tile version would discard every layer's edge cache
+    worldwide whenever any one of them was reseeded, so the subject -- and
+    therefore the epoch row -- is per (datasource, layer).
+    """
+    subject = Subjects.datasource_tile_epoch("0f9b1c2e-0000-0000-0000-000000000001", "census_tracts")
+    assert subject.path == "3tears.datasource.0f9b1c2e-0000-0000-0000-000000000001.tiles.census_tracts.epoch"
+
+
+def test_datasource_tile_epoch_separates_layers_of_one_datasource() -> None:
+    """two layers of the same datasource must not share a version."""
+    tracts = Subjects.datasource_tile_epoch("ds-1", "census_tracts")
+    locations = Subjects.datasource_tile_epoch("ds-1", "locations")
+    assert tracts.path != locations.path
+
+
+@pytest.mark.parametrize(("datasource_id", "layer"), [("", "layer"), ("ds-1", "")])
+def test_datasource_tile_epoch_rejects_empty_segments(datasource_id: str, layer: str) -> None:
+    """an empty segment would collapse two distinct layers onto one subject."""
+    with pytest.raises(ValueError, match="must be non-empty"):
+        Subjects.datasource_tile_epoch(datasource_id, layer)
+
+
 def test_epoch_subjects_track_namespace_changes() -> None:
     """epoch subjects honour the bound namespace at call time, like every other Subject."""
     set_default_namespace("metallm-staging")

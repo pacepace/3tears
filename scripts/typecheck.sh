@@ -31,7 +31,7 @@ cd "$REPO_ROOT"
 # Add each one HERE as it is fixed, in the same change that fixes it. Adding a
 # package before it passes turns the gate red for everyone, which is how a
 # not-yet-checked package becomes a permanently-skipped one.
-MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/backup/src \
+MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/backup/src:packages/geo/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
@@ -56,4 +56,5 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.agent.audit \
         -p threetears.nats \
         -p threetears.observe \
+        -p threetears.geo \
         "$@"
