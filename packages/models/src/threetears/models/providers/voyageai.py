@@ -9,7 +9,7 @@ needs (see :mod:`._voyageai_compat`).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
@@ -32,7 +32,7 @@ def create_voyageai_embedding(
     model_name: str = "voyage-3-lite",
     base_url: str | None = None,
     embedding_dimensions: int | None = None,
-    **extra_kwargs: object,
+    **extra_kwargs: Any,
 ) -> VoyageAIEmbeddings:
     """creates a configured ``VoyageAIEmbeddings`` instance.
 
@@ -49,7 +49,7 @@ def create_voyageai_embedding(
     :param embedding_dimensions: optional output vector dimensionality
     :ptype embedding_dimensions: int | None
     :param extra_kwargs: additional keyword arguments forwarded to ``VoyageAIEmbeddings``
-    :ptype extra_kwargs: object
+    :ptype extra_kwargs: Any
     :return: configured ``VoyageAIEmbeddings`` instance
     :rtype: VoyageAIEmbeddings
     """
@@ -59,7 +59,7 @@ def create_voyageai_embedding(
 
     from langchain_voyageai import VoyageAIEmbeddings
 
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
     }

@@ -54,7 +54,8 @@ Mix in BEFORE the concrete base (``(NameTranslatingChatMixin, ChatX)``) so
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import TYPE_CHECKING, Any
 
 from threetears.models.tool_name_translation import (
     build_name_translation,
@@ -66,8 +67,8 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
-    from langchain_core.language_models.chat_models import LanguageModelInput
-    from langchain_core.messages import AIMessageChunk, BaseMessage
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
     from langchain_core.outputs import ChatResult
     from langchain_core.runnables import Runnable, RunnableConfig
     from langchain_core.tools import BaseTool
@@ -129,9 +130,9 @@ class NameTranslatingChatMixin:
 
     def bind_tools(
         self,
-        tools: list[BaseTool],
+        tools: Sequence[Any],
         **kwargs: Any,
-    ) -> Runnable[LanguageModelInput, BaseMessage]:
+    ) -> Runnable[LanguageModelInput, AIMessage]:
         """bind tools after dot->underscore name translation for the wire.
 
         Application-side tools keep their canonical dotted names; the bound
@@ -140,17 +141,25 @@ class NameTranslatingChatMixin:
         un-translation. Mutated (clear + update) rather than reassigned so a
         concurrently-running stream's closure keeps the same dict object.
 
-        :param tools: application-side tool list (canonical dotted names)
-        :ptype tools: list[BaseTool]
+        :param tools: application-side bind_tools input -- BaseTool objects or
+            provider-native tool-spec dicts, both of which the translator handles.
+            Deliberately ``Sequence[Any]``: this mixin sits over ChatOpenAI,
+            ChatAnthropic and ChatOpenRouter, whose own ``bind_tools`` signatures
+            disagree with each other (``dict`` vs ``Mapping`` elements, and three
+            different ``tool_choice`` types), so no narrower annotation can be a
+            valid override of all three. The mixin never inspects a tool itself --
+            it translates names and forwards -- so ``Any`` is what it actually means
+        :ptype tools: Sequence[Any]
         :param kwargs: passthrough to ``super().bind_tools``
         :ptype kwargs: Any
         :return: runnable bound to wire-side proxy tools
-        :rtype: Runnable[LanguageModelInput, BaseMessage]
+        :rtype: Runnable[LanguageModelInput, AIMessage]
         """
-        wire_tools, reverse_map = build_name_translation(tools)
+        wire_tools, reverse_map = build_name_translation(list(tools))
         self._name_reverse_map.clear()
         self._name_reverse_map.update(reverse_map)
-        return super().bind_tools(wire_tools, **kwargs)  # type: ignore[misc]
+        bound: Runnable[LanguageModelInput, AIMessage] = super().bind_tools(wire_tools, **kwargs)  # type: ignore[misc]
+        return bound
 
     async def astream(
         self,
@@ -221,7 +230,8 @@ class NameTranslatingChatMixin:
         for generation in result.generations:
             reverse_translate_message(generation.message, self._name_reverse_map)
             drop_junk_invalid_tool_calls(generation.message)
-        return result
+        translated: ChatResult = result
+        return translated
 
     async def agenerate(
         self,
@@ -292,7 +302,7 @@ class NameTranslatingChatMixin:
         *,
         stop: list[str] | None = None,
         **kwargs: Any,
-    ) -> BaseMessage:
+    ) -> AIMessage:
         """invoke (non-streaming public API) with names translated both ways.
 
         Overriding ``astream`` + ``_agenerate`` is not sufficient: under a
@@ -310,7 +320,7 @@ class NameTranslatingChatMixin:
         :param kwargs: passthrough to ``super().ainvoke``
         :ptype kwargs: Any
         :return: response message with canonical (dotted) tool-call names
-        :rtype: BaseMessage
+        :rtype: AIMessage
         """
         from langchain_core.runnables.config import ensure_config, merge_configs
 
@@ -323,7 +333,8 @@ class NameTranslatingChatMixin:
         )
         reverse_translate_message(result, self._name_reverse_map)
         drop_junk_invalid_tool_calls(result)
-        return result
+        translated: AIMessage = result
+        return translated
 
     def invoke(
         self,
@@ -332,7 +343,7 @@ class NameTranslatingChatMixin:
         *,
         stop: list[str] | None = None,
         **kwargs: Any,
-    ) -> BaseMessage:
+    ) -> AIMessage:
         """sync mirror of :meth:`ainvoke` (same bypass, same fix).
 
         :param input: chat input (messages or string)
@@ -344,7 +355,7 @@ class NameTranslatingChatMixin:
         :param kwargs: passthrough to ``super().invoke``
         :ptype kwargs: Any
         :return: response message with canonical (dotted) tool-call names
-        :rtype: BaseMessage
+        :rtype: AIMessage
         """
         from langchain_core.runnables.config import ensure_config, merge_configs
 
@@ -357,4 +368,5 @@ class NameTranslatingChatMixin:
         )
         reverse_translate_message(result, self._name_reverse_map)
         drop_junk_invalid_tool_calls(result)
-        return result
+        translated: AIMessage = result
+        return translated

@@ -136,7 +136,7 @@ class PromptCachingMiddleware(AgentMiddleware):
         annotated = _annotate_system_message_for_cache(request.system_message, request.model)
         if annotated is not None:
             request = request.override(system_message=annotated)
-        response = await handler(request)
+        response: ModelResponse = await handler(request)
         _stamp_cache_usage(response)
         return response
 
@@ -157,6 +157,6 @@ class PromptCachingMiddleware(AgentMiddleware):
         annotated = _annotate_system_message_for_cache(request.system_message, request.model)
         if annotated is not None:
             request = request.override(system_message=annotated)
-        response = handler(request)
+        response: ModelResponse = handler(request)
         _stamp_cache_usage(response)
         return response

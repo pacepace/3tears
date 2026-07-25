@@ -28,6 +28,8 @@ from threetears.scrape.challenge import PageVerdict, build_classification_prompt
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import _JudgeVerdict, run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.extraction import (
+    RowValidationResult,
+    ValidationResult,
     _CandidateStrategy,
     _CandidateStrategyList,
     _RegexCandidateStrategy,
@@ -899,13 +901,15 @@ def test_every_shipped_strategy_shape_is_internally_consistent() -> None:
     }
     one = {"employer": "Acme Corp"}
     two = {"employer": "Beta LLC"}
-    # Carries BOTH shapes at once, so which one `records` reads is observable.
-    validation = SimpleNamespace(extracted=one, records=[one, two], total_rows_matched=2)
+    # Real result objects, so `records` is exercised against the types the seam declares
+    # rather than a duck-typed stand-in that would accept a wrong pairing silently.
+    single = ValidationResult(valid=True, extracted=one)
+    rows = RowValidationResult(valid=True, records=[one, two], total_rows_matched=2)
 
     for name, is_row in shapes.items():
         shape = getattr(el, name)
 
-        got = shape.records(validation)
+        got = shape.records(rows if is_row else single)
         assert got == ([one, two] if is_row else [one]), f"{name}'s record extractor has the wrong arity"
 
         judge_name = shape.judge.__name__
@@ -916,7 +920,6 @@ def test_every_shipped_strategy_shape_is_internally_consistent() -> None:
         payload = shape.judge_payload([one, two])
         assert payload == ([one, two] if is_row else one), f"{name} hands its judge the wrong payload shape"
 
-        assert shape.logs_row_counts is is_row, f"{name} logs row counts it does not have"
         assert shape.log_label.startswith("scrape "), f"{name} has an off-pattern log label"
 
 

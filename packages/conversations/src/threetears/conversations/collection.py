@@ -404,7 +404,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             next_param += 1
 
         where_clause = " AND ".join(predicates)
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery($6::regconfig, $3)) AS rank "
             "FROM conversations "
             f"WHERE {where_clause}"
@@ -462,13 +462,13 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :rtype: list[Conversation]
         """
         if include_closed:
-            rows = await self.l3_pool.fetch(
+            rows = await self.required_l3_pool.fetch(
                 "SELECT * FROM conversations WHERE agent_id = $1 AND user_id = $2 ORDER BY date_created DESC",
                 agent_id,
                 user_id,
             )
         else:
-            rows = await self.l3_pool.fetch(
+            rows = await self.required_l3_pool.fetch(
                 "SELECT * FROM conversations "
                 "WHERE agent_id = $1 AND user_id = $2 AND status != $3 "
                 "ORDER BY date_created DESC",
@@ -512,7 +512,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             ``agent_id``, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM conversations WHERE agent_id = $1 AND folder_id = $2 ORDER BY date_created DESC",
             agent_id,
             folder_id,
@@ -582,7 +582,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: number of conversations filed under ``folder_id``
         :rtype: int
         """
-        count = await self.l3_pool.fetchval(
+        count = await self.required_l3_pool.fetchval(
             "SELECT COUNT(*) FROM conversations WHERE agent_id = $1 AND folder_id = $2",
             agent_id,
             folder_id,
@@ -614,7 +614,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: conversations matching the ref under the agent + channel, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM conversations "
             "WHERE agent_id = $1 AND channel_type = $2 AND conversation_ref = $3 "
             "ORDER BY date_created DESC",
@@ -657,7 +657,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: conversations whose ref starts with ``ref_prefix``, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM conversations "
             "WHERE agent_id = $1 AND channel_type = $2 AND left(conversation_ref, char_length($3)) = $3 "
             "ORDER BY date_created DESC",

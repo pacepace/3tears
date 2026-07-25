@@ -97,6 +97,41 @@ class TestLogin:
         finally:
             await client.aclose()
 
+    @pytest.mark.parametrize(
+        ("value", "why"),
+        [
+            (12345, "a number would be stored and then fail inside an Authorization header"),
+            ({"jwt": "x"}, "a nested object stringifies into a header that is not a token"),
+            ([], "an empty list is falsy but is not a missing field"),
+            ("", "an empty string is present and useless"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_login_rejects_a_token_that_is_not_a_non_empty_string(self, value: object, why: str) -> None:
+        """A 200 whose token field is present but not a usable string must be rejected here.
+
+        The field is decoded JSON, so it is whatever the server chose to put there. The
+        original check was a bare truthiness test, which accepts a number or a nested object
+        and caches it as the bearer token -- the failure then surfaces much later, inside an
+        Authorization header, with nothing pointing back at the login response that caused it.
+
+        The pre-existing missing-field test could not catch this: it asserted on the substring
+        "missing", which the absent-key path produced anyway, so the type check was never
+        exercised by anything.
+        """
+
+        def responder(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"access_token": value})
+
+        transport = httpx.MockTransport(responder)
+        client = _build_client(transport)
+        try:
+            with pytest.raises(PlatformHttpError, match="not a string"):
+                await client.login()
+        finally:
+            await client.aclose()
+        assert client.token is None, f"rejected token was cached anyway: {why}"
+
 
 class TestRequestWithRefreshOn401:
     """authenticated request flow + refresh-on-401 retry semantics."""

@@ -170,7 +170,7 @@ class FolderCollection(SchemaBackedCollection[Folder]):
             ordered by name
         :rtype: list[Folder]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM folders WHERE agent_id = $1 AND user_id = $2 ORDER BY name ASC",
             agent_id,
             user_id,

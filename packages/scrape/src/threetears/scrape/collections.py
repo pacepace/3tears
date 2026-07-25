@@ -501,7 +501,15 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def field_confidences(self) -> dict[str, Any] | None:
-        """Per-field validation notes from the eval loop; ``None`` when it never ran."""
+        """Free-form eval-loop notes about this extraction; ``None`` when it never ran.
+
+        Usually per-field confidence keyed by field name, which is what the column was
+        named for. On a ``blocked`` row it instead carries ``page_verdict`` and
+        ``page_verdict_evidence`` -- why the page was judged a wall, in the classifier's
+        own words -- because there are no fields to have confidence about and this is the
+        row's only free-form JSONB slot. Read it as "what the eval loop wanted to say
+        about this extraction", not strictly as a per-field map.
+        """
         result: dict[str, Any] | None = _decode_json_field(self._get_raw("field_confidences"), None)
         return result
 
