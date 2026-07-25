@@ -70,6 +70,12 @@ rarely decisive since most walls return 200) and `classifier_model_id`. A classi
 cannot answer degrades to precisely today's behaviour: an unanswerable question is never
 more destructive than not having asked one.
 
+`ScrapeTool.__init__` gains a matching optional `health_collection`, and forwards
+`page_status` from the page it just rendered. Both are keyword-only and default to the old
+behaviour, so no existing construction changes. Without this the feature had no caller in
+this repo at all: the tool was holding the status and passing neither, which makes a
+parameter plumbing rather than a capability.
+
 The four recipe-reuse paths were restructured into pure validators plus one shared commit,
 and the four "no structurally valid candidates" branches into one shared helper, so the
 classification hook exists once per family rather than eight times. The regex strategies were
