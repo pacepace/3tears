@@ -39,12 +39,32 @@ def _pyproject(name: str) -> str:
     )
 
 
+_ROOT_PYPROJECT = textwrap.dedent(
+    """\
+    [tool.uv.workspace]
+    members = ["packages/*", "packages/agent/*"]
+    exclude = ["packages/agent"]
+    """
+)
+
+
+def _stage_script(root: Path) -> None:
+    (root / "scripts").mkdir(exist_ok=True)
+    shutil.copy(_SCRIPT, root / "scripts" / "verify-dist-complete.sh")
+    (root / "scripts" / "verify-dist-complete.sh").chmod(0o755)
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    """A miniature workspace: two top-level packages and one under agent/."""
-    (tmp_path / "scripts").mkdir()
-    shutil.copy(_SCRIPT, tmp_path / "scripts" / "verify-dist-complete.sh")
-    (tmp_path / "scripts" / "verify-dist-complete.sh").chmod(0o755)
+    """A miniature workspace: two top-level packages and one under agent/.
+
+    Carries a real root pyproject because the script reads the member globs out
+    of it. That is the point rather than fixture ceremony -- the globs being
+    genuinely derived is what stops this guard falling behind a workspace tier
+    somebody adds later, so the tests have to exercise the derivation.
+    """
+    _stage_script(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(_ROOT_PYPROJECT)
 
     for rel, name in (
         ("packages/core", "3tears"),
@@ -112,7 +132,10 @@ def test_the_v0180_omission_is_caught(workspace: Path) -> None:
 
     assert result.returncode == 1
     assert "3tears-scrape" in result.stderr
-    assert "3tears" in result.stderr
+    # The packages that ARE present must not be named. Asserting only that
+    # "3tears" appears would have been satisfied by the "3tears-scrape" line
+    # itself and proved nothing about the report being precise.
+    assert "3tears-agent-memory" not in result.stderr
 
 
 def test_a_wheel_without_an_sdist_is_incomplete(workspace: Path) -> None:
@@ -154,24 +177,42 @@ def test_a_missing_dist_directory_fails_loudly(workspace: Path) -> None:
     assert "does not exist" in result.stderr
 
 
-def test_an_empty_workspace_fails_rather_than_passing_vacuously(tmp_path: Path) -> None:
+def test_globs_that_match_nothing_fail_rather_than_passing_vacuously(tmp_path: Path) -> None:
     """A guard that finds no packages has been mis-wired, and must say so.
 
-    Without this, a glob that stopped matching would report success on an empty
+    Without this, globs that stopped matching would report success on an empty
     check -- the guard would still be green while protecting nothing, which is
     precisely the failure mode it exists to prevent.
     """
-    (tmp_path / "scripts").mkdir()
-    shutil.copy(_SCRIPT, tmp_path / "scripts" / "verify-dist-complete.sh")
-    (tmp_path / "scripts" / "verify-dist-complete.sh").chmod(0o755)
+    _stage_script(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        textwrap.dedent(
+            """\
+            [tool.uv.workspace]
+            members = ["nowhere/*"]
+            """
+        )
+    )
     (tmp_path / "dist").mkdir()
 
-    result = subprocess.run(
-        [str(tmp_path / "scripts" / "verify-dist-complete.sh")],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run(tmp_path)
 
     assert result.returncode == 1
     assert "no workspace members" in result.stderr
+
+
+def test_a_root_pyproject_declaring_no_members_fails(tmp_path: Path) -> None:
+    """The globs are the whole input; an absent members list is a broken guard, not an empty one.
+
+    Distinct from the case above: there the globs are present and match nothing,
+    here there is nothing to glob with. Both must fail, and they fail in different
+    places, so a change that fixed one could silently leave the other passing.
+    """
+    _stage_script(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[tool.uv]\n")
+    (tmp_path / "dist").mkdir()
+
+    result = _run(tmp_path)
+
+    assert result.returncode != 0
+    assert "members is empty or absent" in result.stderr

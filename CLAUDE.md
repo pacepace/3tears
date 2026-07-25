@@ -68,6 +68,17 @@ The `threetears/` and `threetears/agent/` directories must **never** have `__ini
 - Releases: bump version → PR into develop → PR develop into main (no
   version bump on that second PR) → tag from main. Don't cut a release
   tag on a plain develop→main sync that isn't meant to ship a release.
+- **Republishing an already-tagged version** (a package missed the upload,
+  a partial publish needs completing): do NOT move the tag and do NOT bump
+  the version to carry one artifact. Land the fix on `main` via a hotfix
+  branch — never through `develop`, which usually holds unreleased work —
+  then run the `Release` workflow manually (`gh workflow run release.yml
+  --ref main -f version=X.Y.Z`) and approve the `pypi` environment gate.
+  `skip-existing` means everything already on PyPI is skipped, so the only
+  possible effect is that a genuinely absent artifact uploads. This is
+  written here rather than only in `release.yml` because v0.18.0 shipped
+  26 of 27 packages while the instruction that would have prevented it sat
+  in a comment inside the step it was telling you to delete.
 
 ## Conventions
 

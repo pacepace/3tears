@@ -20,10 +20,12 @@ set -euo pipefail
 # comment -- if a package exists in the workspace and is not in dist/, the release
 # stops.
 #
-# Deliberately derives the expected set from the workspace globs in the root
-# pyproject rather than a hand-maintained list, for the same reason the migration
-# drift guard derives its columns: a list you have to remember to update is a list
-# that silently rots, which is the failure this is here to prevent.
+# Reads the member globs out of the root pyproject's [tool.uv.workspace] rather
+# than restating them, for the same reason the migration drift guard derives its
+# columns: a list you have to remember to update is a list that silently rots,
+# which is the failure this is here to prevent. An earlier version of this script
+# claimed to do that while actually hardcoding a third copy of the globs -- the
+# exact drift it was written to stop, in its own header.
 #
 # Usage:  ./scripts/verify-dist-complete.sh [dist-dir]
 
@@ -40,34 +42,52 @@ fi
 missing=()
 checked=0
 
-# packages/* and packages/agent/* are the workspace member globs (root
-# pyproject [tool.uv.workspace]). A nested pyproject.toml deeper than that
-# (packages/scrape/sidecar) is a separate deployable that is NOT a workspace
-# member and is deliberately not published -- mirroring bump-version.sh's own
-# lockstep scope, so the two scripts cannot disagree about what a member is.
-for pyproject in packages/*/pyproject.toml packages/agent/*/pyproject.toml; do
-    [ -f "$pyproject" ] || continue
+# The member globs come from the root pyproject, so adding a workspace tier
+# there is enough -- this script needs no edit and cannot fall behind it. A
+# nested pyproject deeper than a member glob (packages/scrape/sidecar) is a
+# separate deployable, is not a member, and is correctly not demanded here.
+MEMBER_GLOBS="$(
+    python3 - <<'PY'
+import sys, tomllib, pathlib
+data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+ws = data.get("tool", {}).get("uv", {}).get("workspace", {})
+members = ws.get("members") or []
+if not members:
+    sys.exit("error: [tool.uv.workspace] members is empty or absent in pyproject.toml")
+excluded = set(ws.get("exclude") or [])
+print("\n".join(m for m in members if m not in excluded))
+PY
+)" || exit 1
 
-    name="$(sed -n 's/^name = "\(.*\)"/\1/p' "$pyproject" | head -1)"
-    if [ -z "$name" ]; then
-        echo "error: could not read a package name from $pyproject" >&2
-        exit 1
-    fi
+# Fed by a herestring, NOT a pipe: a piped `while read` runs in a subshell and
+# every `missing`/`checked` update would be discarded at the `done`, leaving a
+# guard that always reports success.
+while IFS= read -r glob; do
+    [ -n "$glob" ] || continue
+    for pyproject in $glob/pyproject.toml; do
+        [ -f "$pyproject" ] || continue
 
-    # PyPI normalizes '-' to '_' in built artifact filenames.
-    normalized="${name//-/_}"
-    checked=$((checked + 1))
+        name="$(sed -n 's/^name = "\(.*\)"/\1/p' "$pyproject" | head -1)"
+        if [ -z "$name" ]; then
+            echo "error: could not read a package name from $pyproject" >&2
+            exit 1
+        fi
 
-    wheel_count=$(find "$DIST_DIR" -maxdepth 1 -name "${normalized}-*.whl" | wc -l | tr -d ' ')
-    sdist_count=$(find "$DIST_DIR" -maxdepth 1 -name "${normalized}-*.tar.gz" | wc -l | tr -d ' ')
+        # PyPI normalizes '-' to '_' in built artifact filenames.
+        normalized="${name//-/_}"
+        checked=$((checked + 1))
 
-    if [ "$wheel_count" -eq 0 ]; then
-        missing+=("$name (no wheel)")
-    fi
-    if [ "$sdist_count" -eq 0 ]; then
-        missing+=("$name (no sdist)")
-    fi
-done
+        wheel_count=$(find "$DIST_DIR" -maxdepth 1 -name "${normalized}-*.whl" | wc -l | tr -d ' ')
+        sdist_count=$(find "$DIST_DIR" -maxdepth 1 -name "${normalized}-*.tar.gz" | wc -l | tr -d ' ')
+
+        if [ "$wheel_count" -eq 0 ]; then
+            missing+=("$name (no wheel)")
+        fi
+        if [ "$sdist_count" -eq 0 ]; then
+            missing+=("$name (no sdist)")
+        fi
+    done
+done <<< "$MEMBER_GLOBS"
 
 if [ "$checked" -eq 0 ]; then
     echo "error: found no workspace members to check -- the globs are wrong, not the dist." >&2
