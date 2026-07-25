@@ -42,7 +42,7 @@ print(extraction.validation_status, extraction.structured_fields["records"])
 
 ## The nodriver sidecar
 
-`NodriverSidecarDriver` talks HTTP to a genuinely separate process/container -- this is the AGPL isolation boundary nodriver (AGPL-3.0) requires, since this package itself is MIT-licensed. Build and run it via `docker buildx bake nodriver-sidecar` from the repo root; see `sidecar/README.md` for details. If you don't want the sidecar dependency at all, `CamoufoxDriver` is a fully in-process, MPL-2.0-safe alternative.
+`NodriverSidecarDriver` talks HTTP to a genuinely separate process/container -- this is the AGPL isolation boundary nodriver (AGPL-3.0) requires, since this package itself is MIT-licensed. Build and run it via `docker buildx bake nodriver-sidecar` from the repo root; the container definition, its pinned AGPL-3.0 licence, and its own contract tests all live in [`sidecar/`](sidecar/). If you don't want the sidecar dependency at all, `CamoufoxDriver` is a fully in-process, MPL-2.0-safe alternative.
 
 ## Architecture
 
@@ -208,4 +208,4 @@ faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The bundled sidecar (`sidecar/`) wraps nodriver (AGPL-3.0) as a genuinely separate process -- see `sidecar/README.md`.
+MIT. See [LICENSE](LICENSE). The bundled sidecar (`sidecar/`) wraps nodriver (AGPL-3.0) as a genuinely separate process, under its own [`sidecar/LICENSE`](sidecar/LICENSE).

@@ -274,7 +274,7 @@ class TestNodriverSidecarDriver:
 
 
 # ===========================================================================
-# ScrapeExtraction entity defaults (Chunk 1: pre-eval-loop, pre-enrichment)
+# ScrapeExtraction entity defaults (no eval loop, no enrichment pass involved)
 # ===========================================================================
 
 

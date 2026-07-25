@@ -3,7 +3,7 @@
 All tests are fully mocked -- no real network calls, no real document
 parsing (the injected document_driver is a fake). The real, live proof
 against Hawaii's/West Virginia's actual pages lives in
-tests/e2e/test_warn_act_eval_loop_live.py (faidh repo).
+the consuming application's own live suite (faidh repo).
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ class TestMultiDocumentDriver:
         assert fake_docs.fetched_urls == links
 
     async def test_was_ocr_is_propagated_onto_each_documents_own_wrapping_div(self):
-        """scrape-task-06: eval_loop's vision-vs-text routing reads this
+        """eval_loop's vision-vs-text routing reads this
         attribute back out per document -- a document driver's own
         RenderedPage.was_ocr must actually reach the combined page, not just
         this driver's own status/html fields."""

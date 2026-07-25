@@ -1,7 +1,8 @@
-"""Unit tests for threetears.scrape.enrichment -- the secondary, separate LLM pass
-(mocking approach mirrors tests/unit/test_query_agent_matching.py's
-create_chat_model pattern; real sidecar + real LLM proof lives in
-tests/e2e/test_scrape_enrichment_live.py).
+"""Unit tests for threetears.scrape.enrichment -- the secondary, separate LLM pass.
+
+Every LLM call is mocked at ``create_chat_model``. This package ships no
+live-LLM suite of its own: exercising this path against a real model is a
+consuming application's job, since it owns the API keys and the target.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ class TestEnrichExtraction:
             }
         )
         await extraction_collection.save_entity(original)
-        assert original.enrichment_notes is None  # Chunk 1's pre-enrichment default
+        assert original.enrichment_notes is None  # the default when enrichment never ran
 
         parsed = _EnrichmentResult(notes={"context": "closure tied to Q3 restructuring"})
         fake_model, _ = _fake_structured_model(parsed)

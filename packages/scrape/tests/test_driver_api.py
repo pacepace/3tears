@@ -2,12 +2,12 @@
 
 All tests are fully mocked -- no real network calls (httpx.MockTransport
 throughout). The real, live proof against Michigan's genuine Sitecore XA
-search API lives in tests/e2e/test_warn_act_eval_loop_live.py
-(target_id="warn_act_mi").
+search API lives in the consuming application's own live suite (faidh
+repo), not in this package.
 
-**Not added to tests/scrape/test_driver_contract.py's shared ``_BACKENDS``
+**Not added to test_driver_contract.py's shared ``_BACKENDS``
 list, on purpose:** same reason as DocumentDriver (see
-tests/scrape/test_driver_document.py's own module docstring) -- this driver
+test_driver_document.py's own module docstring) -- this driver
 transforms concatenated JSON fragments into synthetic HTML rather than
 passing already-HTML source through verbatim, so the contract's exact-
 content-equality assertion doesn't apply the same way. It also requires

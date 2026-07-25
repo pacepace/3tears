@@ -1042,7 +1042,8 @@ class TestWarmUp:
 
 
 # ===========================================================================
-# POST /v1/download (scrape-task-04, browser-forced-download capability)
+# POST /v1/download (browser-forced-download capability; design and live
+# verification in docs/scrape-task-04-multi-document-driver.md)
 # ===========================================================================
 
 
@@ -1252,7 +1253,8 @@ class TestDownloadContract:
 
     async def test_concurrent_downloads_do_not_cross_contaminate(self, client: httpx.AsyncClient):
         """Two concurrent requests must each get their own isolated context/download
-        directory -- mirrors the real live-verified concurrency proof (scrape-task-04)."""
+        directory -- mirrors the real live-verified concurrency proof recorded in
+        docs/scrape-task-04-multi-document-driver.md."""
         browser = _FakeDownloadBrowser()
         main._browser = browser
         async with client:

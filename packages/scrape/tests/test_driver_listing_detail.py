@@ -3,7 +3,7 @@ fetch, merged into one synthetic table.
 
 All tests are fully mocked -- no real network calls. The real, live proof
 against Arizona/Delaware/Kansas/Vermont/Maine's actual pages lives in
-tests/e2e/test_warn_act_eval_loop_live.py (faidh repo).
+the consuming application's own live suite (faidh repo).
 """
 
 from __future__ import annotations
@@ -337,7 +337,7 @@ class TestListingDetailDriver:
         assert sleep_mock.await_args.args == (1.0,)
 
     async def test_a_429_detail_response_backs_off_with_extra_delay_and_falls_back_to_listing_fields(self):
-        """Live-found (scrape-task-07 follow-up): the real Arizona/Delaware/
+        """Live-found: the real Arizona/Delaware/
         Kansas/Vermont/Maine servers returned intermittent 429s at a 0.1s
         pace -- a 429 is the server's own explicit "slow down" signal, not
         a generic error, and must extend the NEXT pause rather than just

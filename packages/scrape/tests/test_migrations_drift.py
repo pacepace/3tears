@@ -1,10 +1,19 @@
 """Tests guarding against ScrapeTarget/ScrapeRecipe/ScrapeExtraction <-> DDL drift.
 
-Mirrors ``tests/unit/test_migrations.py``'s pattern exactly (same class of bug:
-an entity field persisted in code with no matching DDL column raises
-``asyncpg.UndefinedColumnError`` against a real L3 store, invisible to every
-in-memory-only test) applied to ``threetears.scrape.migrations`` instead of
-``faidh.db.migrations``.
+The bug class: an entity exposes a persisted field with no matching DDL
+column. Nothing fails until a real L3 store is involved, at which point the
+first upsert raises ``asyncpg.UndefinedColumnError``. Every in-memory test in
+this package is blind to it, because ``ScrapeCollection``'s fallback L3 is a
+plain dict that ignores schema entirely.
+
+So these tests do not use a collection at all. They run every registered
+migration against a recording fake store, scrape the column names back out of
+the captured SQL, and compare that against the fields the entity classes
+actually expose -- derived by introspection, never restated by hand. The
+hand-restated version of this file is why the guard was useless: its literal
+field sets omitted ``link_selector`` exactly as the DDL did, so it agreed with
+the bug instead of catching it (fixed alongside
+``migrations.v009_target_link_selector``).
 """
 
 from __future__ import annotations
@@ -181,9 +190,11 @@ def test_introspection_actually_finds_each_entitys_fields():
 
 def test_every_scrape_table_has_date_created_and_date_updated(captured_ddl: list[str]):
     """BaseCollection.save_entity() unconditionally stamps date_created/date_updated
-    on every upsert regardless of what a collection's entity class exposes --
-    every scrape table must declare both from the start (the exact failure mode
-    faidh's own v018/v019/v022/v023 migrations document and fixed)."""
+    on every upsert regardless of what a collection's entity class exposes, so
+    every scrape table must declare both from the start. Introspection cannot
+    catch this one: neither column is a property on any entity class, which is
+    precisely why it needs its own assertion rather than falling out of
+    _persisted_fields()."""
     for table in ("scrape_targets", "scrape_recipes", "scrape_extractions"):
         columns = _ddl_columns(table, captured_ddl)
         assert "date_created" in columns, f"{table} is missing date_created"

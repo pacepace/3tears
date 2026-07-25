@@ -2,9 +2,9 @@
 
 All tests use a fake *inner* driver (no real network calls, no real browser).
 The real, live proof against Oklahoma's genuine Salesforce Aura page lives in
-tests/e2e/test_warn_act_eval_loop_live.py (target_id="warn_act_ok").
+the consuming application's own live suite (faidh repo), not in this package.
 
-**Not added to tests/scrape/test_driver_contract.py's shared ``_BACKENDS``
+**Not added to test_driver_contract.py's shared ``_BACKENDS``
 list, on purpose:** same reason as ApiDriver/DocumentDriver -- this driver
 transforms a captured network call's JSON body into synthetic HTML rather
 than passing already-HTML source through verbatim, and it requires a real
