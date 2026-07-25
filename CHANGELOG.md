@@ -1,10 +1,66 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 27 workspace
+This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.19.0 -- 2026-07-25
+
+**New package: `3tears-geo`.** Slippy-map tile geometry in application code. Every
+off-the-shelf tile server assumes PostGIS and calls `ST_AsMVT`; YugabyteDB ships no
+postgis extension, so the work happens in Python -- shapely for geometry,
+`mapbox-vector-tile` for encoding. Tile addressing is Web Mercator EPSG:3857 with XYZ
+orientation (`y` increasing southward, **not** TMS), stated explicitly because the two
+conventions differ only in that axis and confusing them renders a mirrored map that
+looks plausible.
+
+The package carries: tile addressing and bounds math, a fixed SQL-to-MVT attribute
+coercion (NULL becomes an omitted key, since MVT has no null and collapsing it to zero
+shades unmeasured regions as though they were surveyed), WKB/EWKB decoding, two zoom
+bands, MVT encoding, a per-pod feature cache with a SQLite R-Tree, and `TileCollection`.
+
+Low zoom is **not** simplified high zoom. A z4 tile spans a large fraction of a country,
+so rendering it by dropping individual features leaves an arbitrary sample of whichever
+survived -- a different, misleading dataset rather than a coarse view of the same one.
+The aggregate band rolls rows up to a declared coarser geography and emits real totals;
+individual features appear only above the declared crossover.
+
+**New primitive: `DerivedCollection` (`3tears`).** A collection whose key is derived
+from a request and whose value is computed on miss. `BaseCollection` caches by primary
+key, which serves reads whose identity is already discrete and does not serve reads
+whose identity is continuous -- a bounding box, a time window or an offset/limit page
+names a region rather than a row, so no two callers produce the same key and the
+cross-pod hit rate is zero. Those reads are annotated `# cache-bypass: not by-pk`
+throughout this codebase. The fix is quantization: collapse the request onto a discrete
+grid and the cell becomes a primary key the existing three tiers already handle
+unmodified. Geographic tiles are one instance; hour buckets and pagination pages are
+others.
+
+Misses are single-flighted twice: an in-process `asyncio.Lock` per key, and
+`nats_distributed_lock` across pods. Derivation is expensive by definition -- if it were
+cheap there would be nothing to cache -- so an unguarded miss on a popular key is a
+stampede. An integration test against real NATS caught exactly that during development:
+a peer-wait budget shorter than a derivation meant every loser duplicated the winner's
+work, reintroducing the stampede underneath the lock meant to prevent it.
+
+**`geo:` block on `DatasourceConfig` (`3tears-datasources`).** A product declares its
+tileable layers alongside its connection details and writes no map plumbing. Sensitivity
+is deliberately not a new field: a datasource already records how exposed it is via
+`visibility` and a nullable `customer_id`, and a second place to say it is a second
+place for it to be wrong, so a layer may only narrow what it inherits.
+
+**`build_object_key` extended (`3tears-media-contracts`).** Optional customer (absent
+yields a grantable `shared/` prefix, mirroring `platform.datasources.customer_id` being
+nullable for platform-shared rows) and a caller-supplied deterministic path. A CDN
+deriving a storage key from a request URL cannot perform a lookup to translate `z/x/y`
+into an opaque object id. The existing key shape is unchanged and its tests pass
+untouched.
+
+**`Subjects.datasource_tile_epoch`.** Tile versions per (datasource, layer). A single
+global version would discard every layer's edge cache worldwide whenever any one layer
+was reseeded.
+
+### Also in this release
 
 **Fix: `3tears-scrape` 0.18.0 was built and then dropped before upload.** The v0.18.0
 release published 26 of its 27 packages. A step in `release.yml` deleted the scrape
