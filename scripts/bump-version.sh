@@ -166,6 +166,23 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
         fi
     done < <(find "$REPO_ROOT/packages" -path '*/tests/test_smoke.py' -type f)
 
+    # 2b. Intra-family dependency bounds must name the releasing minor line.
+    # A family whose members require siblings <own-version cannot install
+    # itself; this is the pre-flight that stops such a release reaching PyPI.
+    V_MAJOR="${NEW%%.*}"
+    V_MINOR="$(echo "$NEW" | cut -d. -f2)"
+    V_FLOOR="${V_MAJOR}.${V_MINOR}.0"
+    V_CEIL="${V_MAJOR}.$((V_MINOR + 1)).0"
+    while IFS= read -r FILE; do
+        REL="${FILE#$REPO_ROOT/}"
+        BAD=$(grep -oE '"3tears[a-z0-9-]*(\[[a-z0-9,_-]+\])?>=[0-9]+\.[0-9]+\.[0-9]+,<[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
+              | grep -v ">=$V_FLOOR,<$V_CEIL\"" || true)
+        if [ -n "$BAD" ]; then
+            echo "  MISMATCH $REL: $BAD (expected >=$V_FLOOR,<$V_CEIL)" >&2
+            MISMATCH=1
+        fi
+    done < <(_member_pyprojects)
+
     # 3 + 4. docker-bake.hcl VERSION variable + every image tag ref.
     if [ -f "$REPO_ROOT/docker-bake.hcl" ]; then
         BAKE_VERSION=$(grep -E '^[[:space:]]*default = "v[0-9]+\.[0-9]+\.[0-9]+"$' \
@@ -258,6 +275,38 @@ while IFS= read -r FILE; do
         SMOKE_UPDATED=$((SMOKE_UPDATED + 1))
     fi
 done < <(find "$REPO_ROOT/packages" -path '*/tests/test_smoke.py' -type f)
+
+# 2b. Intra-family dependency BOUNDS.
+#
+# Every `"3tears-foo>=X.Y.0,<X.Y+1.0"` entry must name the minor line the
+# family is releasing on. Miss this and the bump produces a family that
+# EXCLUDES ITSELF -- every package at 0.20.0 while requiring siblings
+# <0.20.0 -- which is unresolvable the moment anyone installs it.
+#
+# This is not hypothetical: the bounds only exist because unbounded
+# siblings let pip mix versions and report failures against innocent
+# packages (see tests/enforcement/test_intra_family_version_bounds.py).
+# Adding the bounds without teaching the bump script about them would
+# have traded a silent-mixing bug for a broken-on-release bug.
+#
+# Bounds are rewritten to `>=<new-minor>.0,<<next-minor>.0` rather than
+# to the exact new version: a patch release must stay installable
+# alongside its own line (0.19.1 consuming 0.19.0 siblings is fine).
+NEW_MAJOR="${NEW%%.*}"
+NEW_MINOR="$(echo "$NEW" | cut -d. -f2)"
+BOUND_FLOOR="${NEW_MAJOR}.${NEW_MINOR}.0"
+BOUND_CEIL="${NEW_MAJOR}.$((NEW_MINOR + 1)).0"
+BOUNDS_UPDATED=0
+while IFS= read -r FILE; do
+    REL="${FILE#$REPO_ROOT/}"
+    BAD=$(grep -oE '"3tears[a-z0-9-]*(\[[a-z0-9,_-]+\])?>=[0-9]+\.[0-9]+\.[0-9]+,<[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
+          | grep -v ">=$BOUND_FLOOR,<$BOUND_CEIL\"" || true)
+    if [ -n "$BAD" ]; then
+        _sed_i -E "s/(\"3tears[a-z0-9-]*(\[[a-z0-9,_-]+\])?)>=[0-9]+\.[0-9]+\.[0-9]+,<[0-9]+\.[0-9]+\.[0-9]+\"/\\1>=$BOUND_FLOOR,<$BOUND_CEIL\"/g" "$FILE"
+        echo "  updated $REL (intra-family bounds -> >=$BOUND_FLOOR,<$BOUND_CEIL)"
+        BOUNDS_UPDATED=$((BOUNDS_UPDATED + 1))
+    fi
+done < <(_member_pyprojects)
 
 # 3 + 4. docker-bake.hcl: the VERSION variable + every hardcoded
 # `:v<old>` image tag reference. Replace based on the current bake

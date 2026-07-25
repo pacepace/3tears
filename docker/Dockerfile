@@ -34,8 +34,18 @@
 # after the agent reorg). ``find -name pyproject.toml`` covers both.
 FROM python:3.14-slim AS wheels
 
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir hatchling build
+# uv, not pip. This platform is uv-only everywhere else (see the "uv-Only" rule
+# in the consuming repos' CLAUDE.md) and the image builds were the last holdout
+# -- which is exactly where it hurt: pip's resolver backtracks across the
+# cross-product of every published version when a dependency graph is even
+# slightly under-constrained, then reports ResolutionImpossible against whichever
+# node it happened to be holding rather than the package actually in conflict.
+# One such message named an innocent, correctly-installed package and cost most
+# of a day. uv resolved the identical dependency set in seconds and names the
+# real conflict.
+COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
+
+RUN uv pip install --system --no-cache hatchling build
 
 COPY packages /build/packages
 
@@ -76,15 +86,24 @@ RUN python -m venv /opt/threetears/.venv
 ENV VIRTUAL_ENV=/opt/threetears/.venv
 ENV PATH="/opt/threetears/.venv/bin:${PATH}"
 
+# uv is carried into the RUNTIME image, not just the builder, because every
+# downstream consumer (aibots-base, hub, admin, schema) installs into this venv
+# and must do so with the same resolver. Leaving them on pip is what let the
+# image chain drift away from the platform's uv-only rule in the first place.
+# It is a single static binary -- no Python dependency, negligible layer cost.
+COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
+
 # Build tooling INTO the venv so downstream consumer Dockerfiles
 # (aibots-base, hub, admin, schema, future 3tears apps) can `python -m build`
-# and `pip install /app` from a source tree without spinning their own
-# builder stage. Must be inside the venv because PATH puts venv-bin first;
-# system-pip-installed `build` would be invisible to `python -m build`.
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir hatchling build
+# and install /app from a source tree without spinning their own builder stage.
+# Must be inside the venv because PATH puts venv-bin first; a system-installed
+# `build` would be invisible to `python -m build`.
+#
+# UV_PROJECT_ENVIRONMENT + the VIRTUAL_ENV set above make `uv pip install` target
+# this venv without an explicit --python on every call.
+RUN uv pip install --no-cache hatchling build
 
-RUN pip install --no-cache-dir /threetears-wheels/*.whl
+RUN uv pip install --no-cache /threetears-wheels/*.whl
 
 # /app is the canonical working directory for every consumer. Owned by
 # appuser so consumer COPY operations land with the right owner.
