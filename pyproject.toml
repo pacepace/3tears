@@ -86,6 +86,13 @@ dev-dependencies = [
     # whole module goes unchecked. Only the CLI BINARY + Node are runtime requirements;
     # the python packages import fine without them, so this costs nothing here.
     "langchain-claude-code>=0.1.0",
+    # threetears.iam's SAML service provider is behind the `saml` extra, so without this the
+    # whole module -- including its XXE and billion-laughs regression tests -- would collect
+    # as an ImportError and skip. Same rationale as prometheus-client and the datasources
+    # drivers above: optional for consumers, mandatory for the workspace test run. pysaml2
+    # itself is NOT pinned here, because it needs the xmlsec1 system binary and nothing in
+    # this package imports it -- assertion verification is the consumer's call.
+    "defusedxml>=0.7",
 ]
 
 [tool.ruff]
@@ -366,6 +373,16 @@ module = [
     "shapely.*",
     "mapbox_vector_tile",
     "mapbox_vector_tile.*",
+    # threetears.iam's SAML service provider. defusedxml ships no stubs, and pysaml2's are
+    # incomplete; both arrive only via the `saml` extra, so a consumer without it never
+    # reaches these imports at all.
+    "defusedxml",
+    "defusedxml.*",
+    "saml2",
+    "saml2.*",
+    # threetears.iam's TOTP second factor.
+    "pyotp",
+    "pyotp.*",
 ]
 ignore_missing_imports = true
 

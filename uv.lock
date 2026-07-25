@@ -44,6 +44,7 @@ constraints = [{ name = "lxml", specifier = ">=6.1.0,<7" }]
 dev = [
     { name = "aiohttp", specifier = ">=3.9" },
     { name = "anthropic", specifier = ">=0.94.0" },
+    { name = "defusedxml", specifier = ">=0.7" },
     { name = "discord-py", specifier = ">=2.7" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.110" },
