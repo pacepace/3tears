@@ -2,16 +2,16 @@
 
 Given a rendered page and a caller-supplied field schema, an LLM proposes N
 candidate CSS-selector extraction strategies (``{field_name: css_selector}``
-— re-executable against a fresh page without another LLM call, unlike a
+-- re-executable against a fresh page without another LLM call, unlike a
 generated-code strategy). Each candidate is validated structurally: does its
 selector match something, and does the matched text parse as the field's
 declared type. Domain-agnostic: this module never hardcodes what a field
-means (no WARN-Act-shaped assumptions) — the field schema is supplied by the
-caller (e.g. Chunk 5's WARN Act plugin), never stored in the core's own
-data model. See ``scrape-data-model.md`` / ``scrape-product-brief.md`` and
-``build-plan.md``'s Chunk 02 "Design decisions made during build" note.
-
-Zero faidh imports (see ``scrape/__init__.py``).
+means (no WARN-Act-shaped assumptions) -- the field schema is supplied by the
+caller (a consuming application's own plugin), never stored in the core's own
+data model. That split is why onboarding a new site is a config addition: the
+caller owns what to look for, this module owns whether what came back is
+structurally what was asked for, and neither half needs to know the other's
+subject matter.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def _normalize_whitespace_text(text: str) -> str:
     """Collapse runs of whitespace to a single space.
 
     A real site's own HTML formatting quirk, not a BeautifulSoup artifact --
-    live against Maryland's WARN page (Chunk 5): "Dejana    Truck and
+    live against Maryland's real WARN page: "Dejana    Truck and
     Utility Equipment", multiple literal spaces in the source markup itself.
     """
     return " ".join(text.split())
@@ -260,7 +260,7 @@ def validate_candidate(html: str, strategy: dict[str, str], schema: FieldSchema)
             continue
         # separator=" " matters: get_text(strip=True) strips each text node individually
         # but inserts nothing between them, so a <br>-split cell concatenates with no
-        # space at all (Chunk 5's live finding, WARN Act's own effective-date column).
+        # space at all (live finding, a real <br>-split effective-date column).
         text = _normalize_whitespace_text(element.get_text(" ", strip=True))
         if not text:
             errors.append(f"{field_name}: selector {selector!r} matched an empty element")
@@ -652,8 +652,10 @@ async def generate_row_candidates(
 # this module already uses for the schema-known path. Deliberately NOT
 # wired into eval_loop.py's recipe-persistence functions -- discovery is a
 # pre-onboarding operation (no ScrapeTarget/recipe exists yet), not a mode
-# of the persisted-recipe lifecycle. See
-# docs/scrape-task-03-schema-discovery-mode.md's placement-deviation note.
+# of the persisted-recipe lifecycle -- which is also why it lives here beside
+# the validators it reuses rather than in eval_loop.py beside the functions it
+# superficially resembles. See docs/scrape-task-03-schema-discovery-mode.md's
+# placement-deviation note for the full reasoning.
 # ===========================================================================
 
 #: Mirrors collections.py's own _FIELD_SCHEMA_TYPE_NAMES (4 entries, same set) --
@@ -807,9 +809,13 @@ def _best_discovery_result(
 
     Unlike the schema-known path, there's no external ground truth to judge
     semantic correctness against (the LLM invented the fields) -- "most
-    fields validated" is the honest, objective, comparable signal, the same
-    kind of tiebreak ``_regenerate_row_recipe``'s own ``needs_review``
-    fallback already uses.
+    fields validated" is the honest, objective, comparable signal. The eval
+    loop reaches for the same shape of tiebreak when its judge confirms
+    nothing and it has to surface something for review: prefer the candidate
+    that captured the most, rather than the one that happened to be proposed
+    first. Stated as the principle rather than as a cross-reference, because
+    the function that held it has since been folded into one shared
+    regeneration body and the rule itself was tightened in the move.
     """
     best: DiscoverySchemaResult = DiscoverySchemaResult(validated=False)
     for proposals, validation in proposals_and_validations:
@@ -981,8 +987,8 @@ async def discover_row_candidates(
 # propose -> structurally-validate -> judge -> persist cycle above, for
 # pages whose real content is prose/list text with no <table> (or pipe-
 # table-shaped) structure a CSS selector could ever match against.
-# Pennsylvania's real WARN page (rejected in Chunk 12: "fields present but
-# as a text-block list, not a literal <table>") is the concrete driver --
+# Pennsylvania's real WARN page is the concrete driver: its fields are all
+# present, but as a text-block list rather than a literal <table> --
 # the CSS-selector candidate generator had no strategy shape to propose a
 # candidate in AT ALL for that page, not a page it tried and failed on.
 # ===========================================================================
@@ -1027,7 +1033,7 @@ NOTICE_DOCUMENT_CLASS = "notice"
 
 #: Same driver-agnostic-core convention as :data:`NOTICE_DOCUMENT_CLASS` -- the other
 #: half of :class:`~threetears.scrape.drivers.document`'s own embedded-page-image
-#: contract (scrape-task-06): when a document needed OCR, its combined-page ``<div>``
+#: contract: when a document needed OCR, its combined-page ``<div>``
 #: contains one ``<img class="ocr-page-image">`` per rendered page, read back out by
 #: :func:`split_notice_documents` for the vision-extraction path.
 OCR_PAGE_IMAGE_CLASS = "ocr-page-image"
@@ -1038,7 +1044,7 @@ class NoticeDocument(NamedTuple):
 
     :func:`split_notice_documents`'s own return shape -- carries both the plain
     text (the fast/cheap path every document already had) and, when the document
-    needed OCR, the embedded page images (the vision path scrape-task-06 added).
+    needed OCR, the embedded page images (the vision path added for that case).
     """
 
     text: str
@@ -1486,7 +1492,7 @@ def _build_direct_extraction_prompt(text: str, schema: FieldSchema) -> str:
     )
 
 
-#: Live-found (scrape-task-05, a real West Virginia document): every schema field
+#: Live-found (a real West Virginia document): every schema field
 #: here is ``str | None`` (see :func:`_build_direct_extraction_model`'s own docstring
 #: for why), which means a garbage response -- observed live: the model echoed its
 #: ENTIRE prompt back into one field's value, with the real answer buried in a
@@ -1595,7 +1601,7 @@ def _coerce_direct_extraction_result(result: BaseModel, schema: FieldSchema) -> 
     return extracted
 
 
-#: Live-verified (scrape-task-05, real West Virginia and Hawaii documents): a single
+#: Live-verified (real West Virginia and Hawaii documents): a single
 #: call asking for every schema field at once is measurably LESS reliable than several
 #: smaller calls each asking for fewer fields -- isolated proof: a 2-field-only call
 #: succeeded on a real document where that same document's 4-field call returned null
@@ -1668,12 +1674,12 @@ async def extract_fields_directly_chunked(
 
 
 # ===========================================================================
-# extract_fields_from_images -- vision extraction path (scrape-task-06)
+# extract_fields_from_images -- vision extraction path
 # ===========================================================================
 
 #: OpenRouter model id for a vision-capable Claude model, reached through the
 #: SAME OpenRouter API key every other extraction call in this module already
-#: uses -- no new secret needed (live-verified, scrape-task-06). Not pre-
+#: uses -- no new secret needed (live-verified). Not pre-
 #: registered in threetears-models' own capability registry under the
 #: "openrouter" provider (only "anthropic" has it, for a direct-Anthropic-key
 #: deployment), so every call here passes ``provider="openrouter"`` explicitly
@@ -1716,7 +1722,7 @@ async def extract_fields_from_images(
     document that needed OCR (see :class:`~threetears.scrape.drivers.multi_document.
     MultiDocumentDriver`'s own ``data-was-ocr`` convention and :func:`split_notice_documents`),
     reading the ORIGINAL page images directly full-set live-verified dramatically more
-    reliable than the OCR'd-text path (scrape-task-06: 10/10 complete records via vision
+    reliable than the OCR'd-text path (10/10 complete records via vision
     vs. 2/10 via OCR'd text across all of a real target's documents) -- OCR can drop or
     garble a narrow numeric table column a vision model reads correctly by seeing the
     actual page layout, and can recover none of a genuinely-redacted value either (a
@@ -1775,7 +1781,7 @@ async def extract_fields_from_images(
 
 
 # ===========================================================================
-# extract_multi_row_fields_from_images -- multi-row vision extraction (scrape-task-07)
+# extract_multi_row_fields_from_images -- multi-row vision extraction
 # ===========================================================================
 
 #: A multi-row vision call reads the same page image(s) as :func:`extract_fields_from_images`
@@ -1846,7 +1852,7 @@ async def extract_multi_row_fields_from_images(
     single PDF holds many records in one table (not one document = one record, the
     ``"per_document"`` StrategyType's own assumption), used when the table's own structure
     genuinely defeats text-based table extraction. Live-verified against Nevada's real
-    master WARN PDF (scrape-task-07): ``find_tables()``'s default ``"lines"`` strategy finds
+    master WARN PDF: ``find_tables()``'s default ``"lines"`` strategy finds
     only the header (the entire 17-row dataset silently dropped), its ``"text"`` strategy
     mis-splits words/columns (a URL broken mid-string) -- a genuine structural defeat, not a
     scan-quality one (the source PDF is born-digital, has a real text layer). Mississippi's

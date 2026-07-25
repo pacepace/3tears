@@ -18,6 +18,8 @@ distillation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -71,7 +73,7 @@ def _message_text(message: BaseMessage) -> str:
     return "".join(parts)
 
 
-def _format_transcript(messages: list[BaseMessage]) -> str:
+def _format_transcript(messages: Sequence[BaseMessage]) -> str:
     """Format messages as a readable transcript for summarization."""
     lines: list[str] = []
     for msg in messages:
@@ -87,7 +89,7 @@ def _format_transcript(messages: list[BaseMessage]) -> str:
     return "\n\n".join(lines)
 
 
-def _fallback_summary(messages: list[BaseMessage]) -> str:
+def _fallback_summary(messages: Sequence[BaseMessage]) -> str:
     """Heuristic fallback when the LLM summarization call fails.
 
     Extracts the last sentence of each assistant message — enough to keep some
@@ -111,7 +113,7 @@ def _fallback_summary(messages: list[BaseMessage]) -> str:
 
 
 async def summarize_older_messages(
-    older_messages: list[BaseMessage],
+    older_messages: Sequence[BaseMessage],
     chat_model: BaseChatModel,
     custom_prompt: str | None = None,
     config: RunnableConfig | None = None,

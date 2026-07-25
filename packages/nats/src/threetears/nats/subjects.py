@@ -1335,6 +1335,46 @@ class Subjects:
         return Subject(path=f"{_ns()}.gateway.catalog.epoch", kind="point")
 
     @classmethod
+    def datasource_tile_epoch(cls, datasource_id: str | UUID, layer: str) -> Subject:
+        """publish + subscribe subject for one geo layer's tile version.
+
+        bumped when a layer's tiles are rebuilt from a new source
+        generation -- a reseed, a redistricting, a corrected boundary.
+        sibling pods subscribe so every pod flips to the new version
+        together rather than one serving new tiles while others serve
+        old ones.
+
+        the version this carries is the ``v{n}`` segment of a tile URL,
+        so a bump changes every tile address for the layer and the
+        superseded version ages out of browser and CDN caches on its
+        own. that is why the versioning is per (datasource, layer) and
+        not global: a single global version would discard every
+        layer's edge cache worldwide whenever one of them was reseeded.
+
+        higher cardinality than this family's other members, which are
+        parameterless platform-wide config domains -- there is one row
+        in ``platform.config_epochs`` per registered geo layer, and one
+        subscription per layer per pod. that is the cost of not sharing
+        a version across layers, and it is the point.
+
+        :param datasource_id: owning datasource's id
+        :ptype datasource_id: str | UUID
+        :param layer: geo layer name within that datasource
+        :ptype layer: str
+        :return: subject ``{ns}.datasource.{id}.tiles.{layer}.epoch``
+        :rtype: Subject
+        :raises ValueError: if datasource_id or layer is empty
+        """
+        if not datasource_id:
+            raise ValueError("datasource_id must be non-empty")
+        if not layer:
+            raise ValueError("layer must be non-empty")
+        return Subject(
+            path=f"{_ns()}.datasource.{_sanitize(datasource_id)}.tiles.{_sanitize(layer)}.epoch",
+            kind="point",
+        )
+
+    @classmethod
     def mcp_rbac_epoch(cls) -> Subject:
         """publish + subscribe subject for MCP per-tool RBAC epoch.
 

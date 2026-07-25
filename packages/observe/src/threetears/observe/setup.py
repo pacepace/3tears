@@ -249,14 +249,22 @@ def shutdown_telemetry() -> None:
         _log_handler = None
 
     if _log_provider is not None:
+        # Broad on purpose -- a vendor exporter can raise anything on teardown, and neither
+        # failure may stop the shutdown that follows it or prevent ``init_telemetry()``
+        # being called again. NOT silent, though: an earlier version swallowed both with
+        # `pass`, reasoning that the OTel handler had just been detached from the root
+        # logger so there was nowhere left to report. That reasoning was wrong. Detaching
+        # one handler does not disable the root logger; every other handler a host app
+        # installed (console, file) is still attached and still receiving. All the silence
+        # bought was an unexportable telemetry backend failing invisibly at every shutdown.
         try:
             _log_provider.force_flush(timeout_millis=2000)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not stop the shutdown that follows; logged, not silenced
+            logger.warning("telemetry shutdown: log provider flush failed", exc_info=True)
         try:
-            _log_provider.shutdown()  # type: ignore[no-untyped-call]
-        except Exception:
-            pass
+            _log_provider.shutdown()
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a vendor exporter can raise anything on teardown and must not prevent init_telemetry() being callable again; logged, not silenced
+            logger.warning("telemetry shutdown: log provider shutdown failed", exc_info=True)
         _log_provider = None
 
     if _tracer_provider is None:

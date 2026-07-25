@@ -173,7 +173,7 @@ class CorrelationMiddleware:
         for raw_key, raw_value in scope.get("headers", ()):
             if raw_key.lower() == _CORRELATION_HEADER:
                 try:
-                    candidate = raw_value.decode("ascii")
+                    candidate: str = raw_value.decode("ascii")
                 except UnicodeDecodeError:
                     return str(uuid7())
                 if candidate and len(candidate) <= _MAX_CORRELATION_LENGTH:

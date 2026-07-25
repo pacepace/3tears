@@ -34,7 +34,7 @@ Each document's synthetic HTML is wrapped in a delimiting
 channel a per-document caller downstream (``eval_loop._run_per_document_extraction``)
 has into what any one sub-document actually was.
 
-**Revision (scrape-task-05, 2026-07-15):** the first version of this design
+**Revision (2026-07-15):** the first version of this design
 assumed ``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing
 pattern) would apply unmodified once documents were combined -- live-verified
 wrong. Regex/CSS strategies both assume one shared template repeated across
@@ -48,7 +48,7 @@ cached pattern, a fresh, independent LLM extraction call per document, every
 poll -- ``extraction.split_notice_documents`` is this driver's own combined-page
 convention's other half.
 
-**Revision (scrape-task-06, 2026-07-16):** per_document's own OCR'd-text path
+**Revision (2026-07-16):** per_document's own OCR'd-text path
 (``extraction.extract_fields_directly_chunked``) turned out unreliable on real
 scanned WARN letters -- full-set live comparison against all 10 of West
 Virginia's real documents: 2/10 complete records via OCR'd text vs. 10/10 via a
@@ -126,7 +126,7 @@ def discover_links_labeled(html: str, base_url: str, link_selector: str) -> list
     also carries the anchor's **visible text** (whitespace-collapsed to a single line; ``""`` when the
     anchor has no text, e.g. an image-only link). A listing's anchor text is often the only
     human-readable name a linked document has ("November 2024 schedule"), and it is discarded the moment
-    the page is re-parsed — so a caller that wants it (per-document provenance, a labeled inventory) must
+    the page is re-parsed -- so a caller that wants it (per-document provenance, a labeled inventory) must
     capture it on the same walk that resolves the URL. Ordering, de-duplication, host policy, and pattern
     filtering remain the caller's, exactly as for :func:`discover_links`.
 
@@ -157,10 +157,10 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     against ``base_url`` (typically the listing's own URL) so relative and absolute hrefs both come
     back absolute, in document order. Parsing uses ``html.parser`` (the same parser the extraction
     eval loop is authored against, so selectors resolve consistently). Ordering, de-duplication, host
-    policy, and any pattern filtering are the caller's to apply — this returns the raw resolved set so
+    policy, and any pattern filtering are the caller's to apply -- this returns the raw resolved set so
     each consumer can weigh them (a crawl inventory, a multi-document driver) without a baked-in policy.
 
-    The URL-only projection of :func:`discover_links_labeled` (same walk; anchor text dropped) — a caller
+    The URL-only projection of :func:`discover_links_labeled` (same walk; anchor text dropped) -- a caller
     that also needs each anchor's text calls that variant instead.
 
     :param html: the listing page's HTML
@@ -175,7 +175,7 @@ def discover_links(html: str, base_url: str, link_selector: str) -> list[str]:
     return [url for url, _label in discover_links_labeled(html, base_url, link_selector)]
 
 
-#: Backwards-compatible private alias — the function was internal (``_discover_links_html``) before it
+#: Backwards-compatible private alias -- the function was internal (``_discover_links_html``) before it
 #: was promoted to public :func:`discover_links`; kept so any in-tree reference keeps resolving.
 _discover_links_html = discover_links
 
@@ -345,7 +345,7 @@ class MultiDocumentDriver(ScrapeDriver):
         for doc_url in candidate_urls:
             try:
                 page = await self._document_driver.render(doc_url, timeout=timeout)
-            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others, mirrors _regenerate_row_recipe's own per-candidate resilience
+            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
                 log.warning(
                     "multi-document: one document fetch failed, skipping",
                     extra={"extra_data": {"url": doc_url, "error": str(exc)}},

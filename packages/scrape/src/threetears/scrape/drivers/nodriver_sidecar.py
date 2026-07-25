@@ -1,10 +1,11 @@
-"""NodriverSidecarDriver — httpx client for the ``services/nodriver-sidecar`` container.
+"""NodriverSidecarDriver -- httpx client for the ``services/nodriver-sidecar`` container.
 
-Talks to the sidecar exclusively over HTTP (``POST /v1/render``, per
-``scrape-api-contract.md``) — never imports ``nodriver`` itself, which stays
-inside the sidecar's own AGPL-3.0-licensed process. This module has zero
-faidh imports (see ``scrape/__init__.py``); the sidecar's base URL is a
-plain constructor argument, resolved by faidh-side wiring code.
+Talks to the sidecar exclusively over HTTP (``POST /v1/render``; the request
+and response shapes are the sidecar's own contract, implemented in
+``sidecar/main.py``) -- never imports ``nodriver`` itself, which stays inside
+the sidecar's own AGPL-3.0-licensed process. The sidecar's base URL is a
+plain constructor argument, resolved by the consuming application's wiring
+code, never read from the environment here.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class NodriverSidecarDriver(ScrapeDriver):
     """``ScrapeDriver`` backed by the nodriver sidecar's HTTP API.
 
     Chromium-direct-CDP rendering via a separate, AGPL-3.0-licensed
-    container — this class only ever speaks plain HTTP to it, never
+    container -- this class only ever speaks plain HTTP to it, never
     imports ``nodriver`` as a library.
     """
 

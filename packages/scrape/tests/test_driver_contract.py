@@ -1,5 +1,5 @@
-"""Shared, parametrized ``ScrapeDriver`` contract tests -- Chunk 6's own
-acceptance criteria: "no ScrapeDriver-contract test is nodriver-specific."
+"""Shared, parametrized ``ScrapeDriver`` contract tests, holding to one rule:
+no ScrapeDriver-contract test may be nodriver-specific.
 
 Both backends (NodriverSidecarDriver, CamoufoxDriver) are constructed with a
 backend-specific injected fake (httpx.MockTransport / a fake Playwright
@@ -8,10 +8,10 @@ generic assertions here -- the actual proof that ``ScrapeDriver`` is a real,
 backend-agnostic interface and not secretly shaped around one backend's
 assumptions. Backend-specific behavior (payload shapes, error codes,
 timeout-unit conversions) is tested in each backend's own test file
-(tests/scrape/test_driver_nodriver_sidecar.py, tests/scrape/test_driver_camoufox.py).
+(test_driver_nodriver_sidecar.py, test_driver_camoufox.py).
 
-DocumentDriver (Chunk 17) deliberately does NOT join ``_BACKENDS`` below --
-see tests/scrape/test_driver_document.py's own module docstring for why
+DocumentDriver deliberately does NOT join ``_BACKENDS`` below --
+see test_driver_document.py's own module docstring for why
 (it transforms content into synthetic HTML rather than passing through
 already-HTML source verbatim, so this file's exact-content-equality
 assertion doesn't apply to it the same way).

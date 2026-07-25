@@ -7,12 +7,14 @@ first real production caller anywhere in the monorepo), then deterministically
 verifies the winning candidate has real extractable structure (a table, a
 document link, a JSON API response) before returning it. Independently
 callable: takes a query, returns plain data (``PageFinderResult``) -- never
-persists a ``ScrapeTarget`` itself, never forces extraction to follow. See
-``docs/scrape-task-02-page-finder-agent.md`` for the full design and the
-reasoning behind reusing ``ToolExecutor``/``WebSearchTool``/``WebFetchTool``
-as-is rather than building a new agent-loop primitive.
+persists a ``ScrapeTarget`` itself, never forces extraction to follow.
 
-Zero faidh imports (see ``scrape/__init__.py``).
+Built on ``ToolExecutor``/``WebSearchTool``/``WebFetchTool`` exactly as they
+ship rather than on a new agent-loop primitive: what this needs is a capped
+number of search/fetch turns over plain-data tools, which is precisely what
+those already do. A page-finder-specific loop would have been the same
+mechanism with a narrower blast radius of reuse. See
+``docs/scrape-task-02-page-finder-agent.md`` for the full design.
 """
 
 from __future__ import annotations
@@ -55,7 +57,9 @@ _DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xlsx", ".csv")
 
 # Verified backends only -- a stateless structural check can't tell whether a page needs
 # JS rendering (camoufox) or an authenticated in-session XHR (network_capture), so this
-# module never guesses either (see docs/scrape-task-02-page-finder-agent.md's Design §4).
+# module never guesses either -- an unverifiable guess in a returned
+# `driver_backend` is worse than an absent one, since the caller can't tell
+# the two apart (see docs/scrape-task-02-page-finder-agent.md's Design section).
 _VERIFIABLE_BACKENDS = frozenset({"nodriver", "document", "api"})
 
 
@@ -143,8 +147,9 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
     ``find_target_page`` stays independently callable without any running
     container (Design Rule 4). Checks, in order: a real HTML table, a
     document link, a JSON API response. Never verifies to ``camoufox``/
-    ``network_capture`` -- see this module's own docstring and
-    ``docs/scrape-task-02-page-finder-agent.md``.
+    ``network_capture`` -- see this module's own docstring for why those two
+    are structurally unreachable from a stateless fetch, and
+    ``docs/scrape-task-02-page-finder-agent.md`` for the full design.
 
     :param url: the candidate URL to check
     :ptype url: str

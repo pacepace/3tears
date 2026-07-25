@@ -2,20 +2,20 @@
 
 Many server-side portals return their data only after a form POST: a plain GET yields the search
 form, and the rows come back when the form's hidden + default fields are posted together with a submit
-control. The classic case is ASP.NET WebForms — a GET returns only the ``__VIEWSTATE`` /
-``__EVENTVALIDATION`` search form — but the shape is general (any server-rendered search form).
+control. The classic case is ASP.NET WebForms -- a GET returns only the ``__VIEWSTATE`` /
+``__EVENTVALIDATION`` search form -- but the shape is general (any server-rendered search form).
 
 A browser scrape can drive such a form by clicking; this module is the deterministic, **browser-free**
 counterpart. It parses a form into its POST target, its default field values (the WHATWG "successful
 controls" a browser would submit for the untouched form), and its submit controls, and serializes a
 postback body. The caller composes it with an HTTP client (e.g. an :mod:`threetears.scrape` driver /
-``threetears.core`` http client) to replay the POST, and with an extractor to read the result — no
+``threetears.core`` http client) to replay the POST, and with an extractor to read the result -- no
 browser needed for the classic stateless case.
 
-Domain-agnostic by design (the ``scrape`` charter — no hardcoded framework or field meaning):
+Domain-agnostic by design (the ``scrape`` charter -- no hardcoded framework or field meaning):
 ``require_field`` is a general knob (pass ``"__VIEWSTATE"`` to select an ASP.NET WebForms form), and
 :func:`build_form_post` takes caller ``overrides`` so search criteria / option choices stay the
-caller's policy, never assumed here. Pure and side-effect-free — parsing only, no network, no LLM.
+caller's policy, never assumed here. Pure and side-effect-free -- parsing only, no network, no LLM.
 """
 
 from __future__ import annotations
@@ -33,14 +33,14 @@ __all__ = ["FormControl", "HtmlForm", "build_form_post", "parse_form"]
 #: deterministic replay omits).
 _SUBMIT_INPUT_TYPES = frozenset({"submit", "image"})
 
-#: ``<input>`` types excluded from the default "successful controls" body — the submit-like triggers
+#: ``<input>`` types excluded from the default "successful controls" body -- the submit-like triggers
 #: (added explicitly by the caller, one at a time) and ``reset`` (never submitted).
 _NON_DATA_INPUT_TYPES = frozenset({"submit", "image", "reset", "button"})
 
 
 @dataclass(frozen=True)
 class FormControl:
-    """One named form control — the ``name=value`` a submission carries for it.
+    """One named form control -- the ``name=value`` a submission carries for it.
 
     :param name: the control's ``name`` attribute (a control with no ``name`` is never "successful")
     :param value: the value submitted for it (a submit control's label/value; a field's default value)
@@ -55,12 +55,12 @@ class HtmlForm:
     """A parsed HTML form reduced to what a browser-free postback replay needs.
 
     :param action_url: the absolute POST target (the form ``action`` resolved against the page URL; the
-        page URL itself when ``action`` is empty/absent — a self-posting form, the ASP.NET default)
-    :param fields: every successful NON-submit control at its default value — hidden inputs (the
+        page URL itself when ``action`` is empty/absent -- a self-posting form, the ASP.NET default)
+    :param fields: every successful NON-submit control at its default value -- hidden inputs (the
         ``__VIEWSTATE`` family), text-like input values, each ``<select>``'s selected option, checked
-        checkboxes/radios, and ``<textarea>`` text — the base of a postback body
+        checkboxes/radios, and ``<textarea>`` text -- the base of a postback body
     :param submit_controls: the form's named submit controls, in document order (the triggers a caller
-        chooses among; an unnamed submit is omitted — it carries no distinguishing ``name=value``)
+        chooses among; an unnamed submit is omitted -- it carries no distinguishing ``name=value``)
     """
 
     action_url: str
@@ -86,9 +86,9 @@ def _default_fields(form: Tag) -> dict[str, str]:
 
     Mirrors what a browser would submit for the form with nothing changed: hidden and text-like inputs
     post their ``value`` (empty when unset); a checkbox/radio posts only when ``checked``; a
-    ``<select>`` posts its selected option (the first when none is marked — the browser default); a
+    ``<select>`` posts its selected option (the first when none is marked -- the browser default); a
     ``<textarea>`` posts its text. Submit/image/reset/button controls are excluded (the caller adds one
-    submit). Unnamed controls are skipped — a control with no ``name`` is never successful.
+    submit). Unnamed controls are skipped -- a control with no ``name`` is never successful.
     """
     fields: dict[str, str] = {}
     for inp in form.find_all("input"):
@@ -123,7 +123,7 @@ def _submit_controls(form: Tag) -> tuple[FormControl, ...]:
     """The form's NAMED submit controls, in document order (``<input type=submit|image>``, ``<button>``).
 
     A ``<button>`` with no explicit ``type`` defaults to a submit button (HTML), so it is included; its
-    submitted value is its ``value`` attribute, else its text. Unnamed submits are dropped — they carry
+    submitted value is its ``value`` attribute, else its text. Unnamed submits are dropped -- they carry
     no ``name=value`` and so cannot be the distinguishing trigger a replay activates.
     """
     controls: list[FormControl] = []
@@ -155,8 +155,8 @@ def _find_form(soup: BeautifulSoup, require_field: str | None) -> Tag | None:
 def parse_form(html: str | bytes, *, base_url: str, require_field: str | None = None) -> HtmlForm | None:
     """Parse an HTML form into its POST target, default field values, and submit controls.
 
-    Parses with the stdlib ``html.parser`` (no lxml C-extension required — the ``scrape`` dependency
-    philosophy). Returns the FIRST ``<form>``, or — when ``require_field`` is set — the first form
+    Parses with the stdlib ``html.parser`` (no lxml C-extension required -- the ``scrape`` dependency
+    philosophy). Returns the FIRST ``<form>``, or -- when ``require_field`` is set -- the first form
     carrying a control with that ``name`` (pass ``"__VIEWSTATE"`` to select an ASP.NET WebForms form);
     ``None`` when no matching form exists. ``fields`` are the successful controls a browser would submit
     for the untouched form; ``submit_controls`` are the named triggers the caller chooses among.
@@ -182,7 +182,7 @@ def build_form_post(
 
     The base is the form's default ``fields``; ``submit`` (when given) adds the ONE submit control's
     ``name=value`` that triggers the submission (a browser posts exactly the activated submit, not every
-    one); ``overrides`` set/replace specific fields (search criteria, an option choice) — the caller's
+    one); ``overrides`` set/replace specific fields (search criteria, an option choice) -- the caller's
     policy, applied LAST so it always wins. Returns a fresh dict; the ``form`` is never mutated.
 
     :param form: the parsed form

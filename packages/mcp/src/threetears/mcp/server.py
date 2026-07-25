@@ -130,7 +130,13 @@ class McpServer:
         :rtype: None
         """
 
-        @self._sdk_server.list_tools()
+        # The MCP SDK ships py.typed but leaves `list_tools`/`call_tool` themselves
+        # unannotated (mcp/server/lowlevel/server.py: `def list_tools(self):`), so mypy
+        # sees an untyped decorator and treats everything it wraps as untyped too. Nothing
+        # here is unchecked by choice -- both handlers below carry full annotations. These
+        # narrow ignores disappear on their own once the SDK annotates its decorators,
+        # because `warn_unused_ignores` is on.
+        @self._sdk_server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
         async def _list_tools() -> list[mcp_types.Tool]:
             """return the registered tool inventory in registration order."""
             tools = []
@@ -144,7 +150,7 @@ class McpServer:
                 )
             return tools
 
-        @self._sdk_server.call_tool()
+        @self._sdk_server.call_tool()  # type: ignore[untyped-decorator]
         async def _call_tool(
             name: str,
             arguments: dict[str, Any],

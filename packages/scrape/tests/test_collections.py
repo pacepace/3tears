@@ -1,13 +1,16 @@
 """Tests for ScrapeTarget / ScrapeRecipe / ScrapeExtraction collections' L3 wiring.
 
 Covers both storage tiers: the in-memory ``self._rows`` fallback (no L3 pool
-configured — the shape every other scrape unit test already exercises) and
-the real ``DurableStore`` branch added so scrape's collections are
-multi-pod-safe (mirrors ``faidh.db.collection.FaidhCollection``'s existing
-pattern). ``FakeDurableStore`` below is a pure in-memory stand-in for the
-``threetears.core.backends.protocol.DurableStore`` protocol — no real
-database involved; the live, real-Postgres proof lives in
-``tests/e2e/test_scrape_collections_persistence_live.py``.
+configured -- the shape every other scrape unit test already exercises) and
+the real ``DurableStore`` branch that makes scrape's collections
+multi-pod-safe. ``FakeDurableStore`` below is a pure in-memory stand-in for
+the ``threetears.core.backends.protocol.DurableStore`` protocol, so no real
+database is involved anywhere in this file.
+
+That is also this file's own blind spot, and it is worth naming: a fake
+store conforms to the protocol but not to any table's schema, so nothing
+here can catch an entity field that has no DDL column. That check lives in
+``test_migrations_drift.py``, which reads the real migrations instead.
 """
 
 from __future__ import annotations
@@ -135,7 +138,7 @@ async def test_target_multi_row_flag_round_trips_through_l3(
 
 
 class TestFieldSchemaCodec:
-    """Chunk 13's field_schema codec -- a closed, explicit type-name resolver,
+    """The field_schema codec -- a closed, explicit type-name resolver,
     never eval()."""
 
     def test_encode_then_decode_round_trips_real_types(self) -> None:
@@ -329,3 +332,83 @@ async def test_target_delete_removes_from_in_memory_dict(
     await coll.delete("warn_act_pa")
 
     assert "warn_act_pa" not in coll._rows
+
+
+class TestInMemoryL3FallbackWarning:
+    """The fallback is legitimate, but a process using it should say so.
+
+    Root cause of the ``link_selector`` bug class: with no L3 pool wired,
+    every store primitive silently used a schema-ignoring dict, so a missing
+    DDL column could not fail. The fallback stays (every unit test here needs
+    it), but it is now observable.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_warned_tables(self):
+        """Clear the class-level guard around each test.
+
+        The guard is deliberately class-level and process-wide (see
+        ``ScrapeCollection._warn_in_memory_l3``), which is exactly what makes
+        it order-dependent under pytest: whichever test ran first would be the
+        only one to see a warning. Reset per test so each asserts against a
+        clean slate rather than against test-execution order.
+        """
+        for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
+            cls._in_memory_l3_warned_tables = frozenset()
+        yield
+        for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
+            cls._in_memory_l3_warned_tables = frozenset()
+
+    @staticmethod
+    def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if "in-memory dict" in r.getMessage()]
+
+    def test_warns_once_across_repeated_access_on_one_collection(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = CollectionRegistry()
+        collection = ScrapeTargetCollection(registry, DefaultCoreConfig())
+        with caplog.at_level("WARNING"):
+            for _ in range(5):
+                assert collection._durable_store is None
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 1, f"expected one warning across 5 accesses, got {len(warnings)}"
+        assert "scrape_targets" in warnings[0]
+
+    def test_a_second_collection_over_the_same_table_does_not_warn_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The contract that matters, and the reason the guard is class-level.
+
+        Nothing in this package constructs these collections, so a consumer is
+        free to build a fresh one every poll cycle. Under a per-instance flag
+        that turns "warn once" into "warn every cycle", which is the noise the
+        guard exists to prevent. Two separate instances over the SAME table
+        must produce exactly one warning between them.
+        """
+        registry = CollectionRegistry()
+        config = DefaultCoreConfig()
+        with caplog.at_level("WARNING"):
+            assert ScrapeTargetCollection(registry, config)._durable_store is None
+            assert ScrapeTargetCollection(registry, config)._durable_store is None
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 1, f"a rebuilt collection re-warned: got {len(warnings)} warnings, expected 1"
+
+    def test_a_different_table_still_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Keyed on table_name, not silenced globally after the first warning:
+        a second table is genuinely new information for an operator."""
+        registry = CollectionRegistry()
+        config = DefaultCoreConfig()
+        with caplog.at_level("WARNING"):
+            assert ScrapeTargetCollection(registry, config)._durable_store is None
+            assert ScrapeRecipeCollection(registry, config)._durable_store is None
+        warnings = self._fallback_warnings(caplog)
+        assert len(warnings) == 2
+        assert any("scrape_targets" in m for m in warnings)
+        assert any("scrape_recipes" in m for m in warnings)
+
+    def test_no_warning_when_a_real_l3_pool_is_wired(self, caplog: pytest.LogCaptureFixture) -> None:
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=FakeDurableStore())
+        collection = ScrapeTargetCollection(registry, DefaultCoreConfig())
+        with caplog.at_level("WARNING"):
+            assert collection._durable_store is not None
+        assert not self._fallback_warnings(caplog)

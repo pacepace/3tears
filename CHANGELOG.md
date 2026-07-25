@@ -1,10 +1,66 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 27 workspace
+This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.19.0 -- 2026-07-25
+
+**New package: `3tears-geo`.** Slippy-map tile geometry in application code. Every
+off-the-shelf tile server assumes PostGIS and calls `ST_AsMVT`; YugabyteDB ships no
+postgis extension, so the work happens in Python -- shapely for geometry,
+`mapbox-vector-tile` for encoding. Tile addressing is Web Mercator EPSG:3857 with XYZ
+orientation (`y` increasing southward, **not** TMS), stated explicitly because the two
+conventions differ only in that axis and confusing them renders a mirrored map that
+looks plausible.
+
+The package carries: tile addressing and bounds math, a fixed SQL-to-MVT attribute
+coercion (NULL becomes an omitted key, since MVT has no null and collapsing it to zero
+shades unmeasured regions as though they were surveyed), WKB/EWKB decoding, two zoom
+bands, MVT encoding, a per-pod feature cache with a SQLite R-Tree, and `TileCollection`.
+
+Low zoom is **not** simplified high zoom. A z4 tile spans a large fraction of a country,
+so rendering it by dropping individual features leaves an arbitrary sample of whichever
+survived -- a different, misleading dataset rather than a coarse view of the same one.
+The aggregate band rolls rows up to a declared coarser geography and emits real totals;
+individual features appear only above the declared crossover.
+
+**New primitive: `DerivedCollection` (`3tears`).** A collection whose key is derived
+from a request and whose value is computed on miss. `BaseCollection` caches by primary
+key, which serves reads whose identity is already discrete and does not serve reads
+whose identity is continuous -- a bounding box, a time window or an offset/limit page
+names a region rather than a row, so no two callers produce the same key and the
+cross-pod hit rate is zero. Those reads are annotated `# cache-bypass: not by-pk`
+throughout this codebase. The fix is quantization: collapse the request onto a discrete
+grid and the cell becomes a primary key the existing three tiers already handle
+unmodified. Geographic tiles are one instance; hour buckets and pagination pages are
+others.
+
+Misses are single-flighted twice: an in-process `asyncio.Lock` per key, and
+`nats_distributed_lock` across pods. Derivation is expensive by definition -- if it were
+cheap there would be nothing to cache -- so an unguarded miss on a popular key is a
+stampede. An integration test against real NATS caught exactly that during development:
+a peer-wait budget shorter than a derivation meant every loser duplicated the winner's
+work, reintroducing the stampede underneath the lock meant to prevent it.
+
+**`geo:` block on `DatasourceConfig` (`3tears-datasources`).** A product declares its
+tileable layers alongside its connection details and writes no map plumbing. Sensitivity
+is deliberately not a new field: a datasource already records how exposed it is via
+`visibility` and a nullable `customer_id`, and a second place to say it is a second
+place for it to be wrong, so a layer may only narrow what it inherits.
+
+**`build_object_key` extended (`3tears-media-contracts`).** Optional customer (absent
+yields a grantable `shared/` prefix, mirroring `platform.datasources.customer_id` being
+nullable for platform-shared rows) and a caller-supplied deterministic path. A CDN
+deriving a storage key from a request URL cannot perform a lookup to translate `z/x/y`
+into an opaque object id. The existing key shape is unchanged and its tests pass
+untouched.
+
+**`Subjects.datasource_tile_epoch`.** Tile versions per (datasource, layer). A single
+global version would discard every layer's edge cache worldwide whenever any one layer
+was reseeded.
+
+### Also in this release
 
 **Fix: `3tears-scrape` 0.18.0 was built and then dropped before upload.** The v0.18.0
 release published 26 of its 27 packages. A step in `release.yml` deleted the scrape
@@ -28,6 +84,206 @@ a workspace tier added later is covered without touching the script. Verified ag
 the real failure: delete the scrape artifacts from a full build and it fails with
 exactly that name. The republish procedure is documented in `CLAUDE.md` rather than
 only in a workflow comment, which is the defect that caused this.
+
+**Feature: per-target fetch health (`threetears.scrape`)** -- the eval loop has always
+remembered which extraction strategy won for a target, and nothing at all about the
+fetch: whether the page came back, whether it resembled the page the strategy was learned
+against, or whether a bot wall was served instead of content. All three of those failures
+currently increment the same counter and get the same response, which is why a blocked
+target burns through its failure threshold and spends an LLM candidate round learning to
+extract data from a challenge page, discarding a recipe that was never broken.
+
+New `ScrapeTargetHealth` entity and `scrape_target_health` table (migration `v010`),
+keyed by `target_id`. A separate table rather than columns on `scrape_recipes`, because
+health exists for targets that never had a recipe: one blocked before it ever extracted
+successfully has real health and no strategy, and giving it a strategy-less recipe row
+would need a guard so the reuse path never mistook that empty strategy for a real one.
+
+`content_fingerprint` is a digest of the page's readable text, stamped whenever an
+extraction validates, and it is the comparison value that lets a redesigned page be told
+apart from an unchanged one. Fingerprinting text rather than markup is deliberate: a site
+that reformats its template has not changed what it says, and a fingerprint that flipped on
+that would claim the site changed on every deploy the site makes. The circuit, backoff and
+sealed-session columns are created now because the shape is settled and one `CREATE` beats
+several `ALTER`s against a table this young.
+
+`run_eval_loop` and `run_eval_loop_multi_row` take an optional `health_collection`;
+omitted, as every existing caller omits it, nothing is written and nothing else differs.
+
+**Feature: a failed page is classified before it is acted on (`threetears.scrape`)** -- the
+fix for the recipe destruction described above. When a stored strategy stops matching, the
+eval loop now asks what the page actually is before deciding what the failure meant, and
+routes on the answer: a bot wall leaves the recipe byte-identical and persists an extraction
+with the new `validation_status` value `"blocked"`; a page that genuinely changed regenerates
+on the **first** failure instead of the third; anything else keeps today's behaviour exactly.
+
+Detection is a question, not a marker list. Matching a vendor's current interstitial markup
+is a hand-written parser for one page as it looks this week, and vendors reword these pages,
+so a fixture set captured today specifies nothing about tomorrow -- and the rot is silent in
+the worst direction, a stale marker meaning a blocked page is read as "the site changed" and
+its recipe burned. New `threetears.scrape.challenge` holds the verdict model and the prompt;
+it contains no vendor string, so a wall it has never seen classifies on meaning.
+
+Cost, stated honestly rather than as a slogan. Classification is never the first question
+asked. A page whose readable text is identical to the one the strategy last validated
+against provably has not changed and provably is not a new wall, so it counts the failure for
+zero model calls, exactly as today. A page already classified reuses its verdict from the new
+`classified_fingerprint` / `classified_verdict` / `classified_evidence` columns. Only a page
+that is both different and unseen costs a call -- one, in exchange for the entire
+candidate-generation round a blocked target burns today, and for regenerating two polls sooner
+when the site really did change. A cached `"changed"` verdict also records that regeneration
+has already been tried against that exact page, which is what stops an unlearnable page burning
+a candidate round every poll.
+
+The verdict cache bounds cost only for a wall that renders the same bytes each time. The
+fingerprint digests visible text, and a real Cloudflare interstitial renders a per-request Ray
+ID into exactly that, so such a target costs one classification **per poll** rather than one
+while walled. Still cheaper than the candidate round it replaces, and it no longer destroys the
+recipe, but not a bounded cost. Normalising ids out of the fingerprint was rejected: it puts
+vendor-shaped pattern matching back into the one place this design removed it, and would
+suppress genuine content changes that happen to look like ids. What bounds a walled target is
+not fetching it every poll, which is the circuit backoff still to come.
+
+Both entry points take an optional `page_status` (real evidence for the classifier, though
+rarely decisive since most walls return 200) and `classifier_model_id`. A classifier that
+cannot answer degrades to precisely today's behaviour: an unanswerable question is never
+more destructive than not having asked one.
+
+`ScrapeTool.__init__` gains a matching optional `health_collection`, and forwards
+`page_status` from the page it just rendered. Both are keyword-only and default to the old
+behaviour, so no existing construction changes. Without this the feature had no caller in
+this repo at all: the tool was holding the status and passing neither, which makes a
+parameter plumbing rather than a capability.
+
+**Operator-visible log strings changed** in the strategy collapse, which is worth stating
+because anything grepping them will stop matching. The per-strategy reuse and no-survivor
+messages are now prefixed by the shape's own label rather than hand-written per function, so
+`scrape row recipe reuse: ...` reads `scrape row eval loop recipe reuse: ...`, and the regex
+row variant reports `rows_matched=` where it said `matches=`. Same events, same fields, same
+frequency. A spent classification call also now logs before and after, so a fresh
+`content`/`empty`/`other` verdict is no longer invisible -- previously only the free cached
+path announced itself, which is backwards for the one branch that costs money.
+
+The four recipe-reuse paths were restructured into pure validators plus one shared commit,
+and the four "no structurally valid candidates" branches into one shared helper, so the
+classification hook exists once per family rather than eight times. The regex strategies were
+not an afterthought here -- a regex target behind a wall loses its recipe exactly as a CSS one
+does, and hooking only the two paths originally named would have left that intact.
+
+`v010` gained the three `classified_*` columns rather than a `v011` adding them, since the
+table had not shipped and no database outside a test container had run it -- verified, not
+assumed: no `scrape_*` table and no `3tears_scrape` migration row existed in any local
+database. A database that HAD applied an earlier `v010` would not pick the columns up, since
+the version is already recorded as applied, and would need dropping.
+
+**The four cached-recipe strategies are now one implementation.** CSS or regex, single record
+or many rows, used to be eight functions: a reuse checker and a ~90-line regeneration body
+apiece, differing only in which generator and validator they called and how they wrapped a
+winning candidate. Adding the classification hook meant touching all of them, which is what
+made the duplication expensive rather than untidy. They are now a `_StrategyShape` record of
+the genuine differences plus one shared reuse cycle and one shared regeneration body -- 197
+lines lighter, and a fifth shape would inherit the classification routing, the judging and
+the persistence by construction.
+
+One behaviour needed care and is pinned by two tests: the row shapes surfaced the survivor
+capturing the most records when the judge confirmed nothing, while the single-record shapes
+took the first proposed. The shared body uses max-by-record-count for both, which is only
+equivalent because every single-record survivor holds exactly one record and `max` returns
+the first maximal element. Both tests fail if that rule is changed in either direction.
+
+**Tooling: every workspace package is now strict-mypy checked.** `scripts/typecheck.sh` went
+from 13 targets over 315 files to 28 over 578 -- the whole workspace. The 144 errors that had
+kept 14 packages out are fixed, not suppressed.
+
+`models` supplied 116 of them, and 79 were one pattern: kwargs dicts typed `dict[str, object]`
+splatted into third-party constructors. `object` claims more safety than a pass-through
+forward has, and those values are arbitrary by construction (some arrive via `**extra_kwargs`),
+so `Any` is the accurate type. The rest were real: `NameTranslatingChatMixin` declared
+`invoke`/`ainvoke` returning `BaseMessage` where the base returns `AIMessage`, and `bind_tools`
+taking `list[BaseTool]` where the base takes a far wider `Sequence` -- LSP violations in both
+directions, against bodies that only ever return what `super()` returned and a translator that
+already accepted both tool shapes.
+
+`conversations` and `agent-workspace` shared one cause worth naming: 16 raw-SQL call sites did
+`await self.l3_pool.fetch(...)` where `BaseCollection` documents `l3_pool` as legitimately
+`None` and tells callers to guard. Those were latent `AttributeError`s, not type noise. A new
+`BaseCollection.required_l3_pool` gives all of them one guard that names the actual mistake.
+`langgraph` had the same shape in its offload middleware, and `mcp` accepted any JSON value as
+a bearer token on a truthiness test.
+
+`threetears.knowledge` was already clean and simply never listed -- the invisible version of
+this gap, since an unlisted package looks exactly like a passing one from outside.
+
+**`langchain-claude-code` is now a dev dependency.** It was the only optional provider adapter
+missing from dev, against a block whose own comment says they are installed "so their test
+suites exercise the real langchain integrations rather than getting skipped". Its absence was
+silently skipping 32 tests across five modules and leaving `_claude_cli.py` entirely unchecked
+(mypy resolved its base class to `Any`). Only the Claude Code CLI binary and Node are runtime
+requirements; the Python packages import fine without them.
+
+**Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
+`datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents
+`deserialize` as where a subclass restores typed fields, and this one was a bare `json.loads`
+against a `serialize` that writes `default=str`, so a row read through L2 differed in type
+from the identical row read through L1 or L3. Invisible while such a row is only read, since
+the entity accessors already parsed on the way out. Not invisible when one is written back:
+an update fences on the row's own `date_updated` as an optimistic lock against a TIMESTAMPTZ
+column, and a string bound there fails at the asyncpg border. Both read-modify-write paths in
+the package were exposed, by different routes: `enrichment.enrich_extraction` rebuilds its row
+through `create()`, so it binds no fence and would have failed on `retrieved_at` entering the
+upsert's VALUES as a string; the new health merge rebuilds as an existing entity and fails on
+the fence itself, where its own non-fatal handling would have swallowed the error and quietly
+stopped updating fingerprints. Each collection declares its
+`datetime_columns`, and a test asserts those match the TIMESTAMPTZ columns the migrations
+create, in both directions. A caller that was reading these fields off the raw row dict and
+expecting a string will now get a `datetime`; one using the entity accessors sees no change.
+
+**Testing: `packages/scrape` gets its first integration suite** -- `link_selector` shipped
+broken because the package had no test that touched a real database, and
+`ScrapeCollection` falls back to an in-memory dict that has no schema to violate. The new
+suite applies the real migrations to real Postgres and round-trips a row through the
+production collection. Both guards were verified to discriminate by deleting a column:
+the integration test raises `asyncpg.UndefinedColumnError` and the offline drift guard
+names the missing column. The drift guard now also discovers its entity-to-table pairings
+from the collections themselves, so a collection added later is guarded the moment it
+exists rather than when someone remembers to add a fourth copy of the test.
+
+**Fix: missing `link_selector` DDL column (`threetears.scrape`)** -- `ScrapeTarget`
+exposed a persisted `link_selector` field with no matching `scrape_targets` column,
+so a `multi_document` target seeded from YAML raised `asyncpg.UndefinedColumnError`
+on its first real L3 upsert. Unit tests never caught it: `ScrapeCollection`'s
+in-memory L3 fallback ignores schema entirely. Migration `v009` adds the column
+(nullable, no-op for existing rows).
+
+The guard that should have caught it is the real fix. `test_migrations_drift.py`
+restated each entity's persisted fields as hand-maintained string literals, and
+those literals omitted `link_selector` too, so the drift test sat green while the
+drift shipped. It now derives the field set by walking `property` descriptors
+declared below `BaseEntity`, filtering by declaring class rather than by name --
+`ScrapeExtraction.id` shadows `BaseEntity.id` and IS a real column, so a name-based
+filter would have silently stopped checking that table's primary key. A named,
+currently-empty exemption set covers any future non-persisted property, and a
+companion test asserts the derivation never returns an empty set vacuously.
+
+**Behavior change, logging only (`threetears.scrape`)** -- a `ScrapeCollection`
+whose registry has no `l3_pool` now emits one WARNING naming the table, instead
+of silently using a process-local dict as L3. That silence is why the missing
+column was invisible: the fallback ignores schema entirely, so a field with no
+DDL column round-trips perfectly and only fails against a real pool. Operators
+running without a wired pool will see one new WARNING per table. It is warned
+once per table via a class-level set (mirroring
+`BaseCollection._warn_missing_nats_client_once`), not per instance, so a
+consumer that rebuilds collections each poll cycle still gets one warning
+rather than one per cycle. Not an exception: the fallback is legitimate and
+every unit test in the package relies on it.
+
+Also in `threetears.scrape`, documentation only: the README had drifted a release
+behind (five drivers documented against eight shipped, two extraction strategies
+against four, `forms.py` / `request_shape_finder.py` / `page_finder.py` absent from
+the module map); durable docstrings anchored to build ids and design docs from the
+package's pre-lift home, some of which no longer resolve; and `ScrapeTool`'s MCP
+schema excludes five backends without recording why (they need per-target config
+its flat input schema cannot carry).
 
 ## v0.18.0 -- 2026-07-24
 

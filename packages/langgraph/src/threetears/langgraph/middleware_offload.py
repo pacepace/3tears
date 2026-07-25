@@ -121,14 +121,15 @@ async def _maybe_offload_result(
     # tool itself): re-offloading it loops -- the model asked for the
     # bytes and would get a fresh handle instead.
     should_offload = (
-        success
-        and offloader is not None
-        and conversation_id is not None
-        and not is_never_offload_tool(tool_name)
-        and len(content) > threshold
+        success and conversation_id is not None and not is_never_offload_tool(tool_name) and len(content) > threshold
     )
     message_content = content
-    if should_offload:
+    # "is this result worth offloading" and "have we anywhere to put it" are two separate
+    # questions, and the second is asked here rather than folded into `should_offload` so
+    # that it narrows `offloader` at the branch that actually dereferences it. Buried in the
+    # boolean it read as narrowed to a human and not at all to a type checker, which is the
+    # shape that hides a real None dereference behind a flag nobody rechecks.
+    if should_offload and offloader is not None:
         offload_result = None
         try:
             offload_result = await offloader.offload(

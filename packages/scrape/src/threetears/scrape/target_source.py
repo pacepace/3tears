@@ -7,8 +7,6 @@ keeps the core deliberately unopinionated about that: a Python literal, a
 YAML file, a database-backed ``ScrapeTargetCollection``, or a single
 hand-built ``ScrapeTarget`` for a one-off ad-hoc scrape are all just
 ``TargetSource`` implementations, chosen by the caller.
-
-Zero faidh imports (see ``scrape/__init__.py``).
 """
 
 from __future__ import annotations
@@ -137,8 +135,8 @@ class CollectionTargetSource(TargetSource):
     """Reads target definitions from a database-backed ``ScrapeTargetCollection``.
 
     Works identically whether the collection's L3 is a real asyncpg pool or
-    the in-memory fallback (Chunk 08's ``ScrapeCollection`` abstracts that
-    difference away already) -- this source never needs to know which.
+    the in-memory fallback -- ``ScrapeCollection`` already abstracts that
+    difference away, so this source never needs to know which it has.
     """
 
     def __init__(self, collection: ScrapeTargetCollection) -> None:

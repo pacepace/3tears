@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scrape"
-version = "0.18.0"
+version = "0.19.0"
 description = "AI-driven, self-healing web scraping: pluggable render backends + LLM-proposed extraction candidates validated and judged against real page content, never hand-rolled per-site parsers"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -29,9 +29,9 @@ dependencies = [
     "3tears-models",
     "3tears-observe",
     "httpx[socks]>=0.27",
-    # extraction.py's vision-extraction path (scrape-task-06) builds a
-    # multimodal HumanMessage directly -- an explicit dependency rather than
-    # relying on 3tears-models' own transitive langchain-core pin.
+    # extraction.py's vision-extraction path builds a multimodal
+    # HumanMessage directly -- an explicit dependency rather than relying on
+    # 3tears-models' own transitive langchain-core pin.
     "langchain-core>=0.3",
     "pydantic>=2.0",
     "pyyaml>=6.0",

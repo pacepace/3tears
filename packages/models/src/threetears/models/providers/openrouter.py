@@ -150,7 +150,7 @@ def create_openrouter_chat(
     *,
     timeout: int = 120,
     max_retries: int = 2,
-    **extra_kwargs: object,
+    **extra_kwargs: Any,
 ) -> ChatOpenRouter:
     """creates a configured ``ChatOpenRouter`` for OpenRouter-routed models.
 
@@ -169,7 +169,7 @@ def create_openrouter_chat(
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenRouter``
-    :ptype extra_kwargs: object
+    :ptype extra_kwargs: Any
     :return: configured ``ChatOpenRouter`` (the name-translating subclass)
     :rtype: ChatOpenRouter
     """
@@ -181,7 +181,7 @@ def create_openrouter_chat(
     # raises TypeError. setting both to None restores compatibility until
     # langchain-openrouter ships a fix; callers that need attribution can
     # pass app_title/app_url via extra_kwargs.
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
         "timeout": timeout * 1000,
