@@ -13,7 +13,9 @@ import re
 
 import pytest
 from threetears.core.data.migrations import MigrationRunner
+from threetears.core.entities.base import BaseEntity
 
+from threetears.scrape.collections import ScrapeExtraction, ScrapeRecipe, ScrapeTarget
 from threetears.scrape.migrations import register
 
 _CREATE_COLUMN_RE = re.compile(
@@ -21,6 +23,63 @@ _CREATE_COLUMN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _ADD_COLUMN_RE = re.compile(r"ADD COLUMN IF NOT EXISTS\s+(\w+)", re.IGNORECASE)
+
+#: Entity properties that are genuinely NOT backed by a column -- computed or
+#: derived values with nothing to persist. Keyed by ``"<EntityClass>.<property>"``
+#: so an exemption can never accidentally silence the same-named property on a
+#: different entity.
+#:
+#: Deliberately empty today: every property on all three entities reads a raw
+#: field via ``_get_raw()`` and therefore needs a column. The set exists as the
+#: declared escape hatch -- the ONLY sanctioned way to exclude a property from
+#: the coverage check below -- so that a future computed property is excluded
+#: visibly, with a reviewable reason on the line, rather than by quietly editing
+#: a hand-maintained list of field names (which is exactly how ``link_selector``
+#: shipped with no DDL column while these tests sat green).
+#:
+#: Every entry MUST carry a trailing comment stating why the property has no
+#: column, e.g.::
+#:
+#:     "ScrapeTarget.some_derived_flag",  # computed from multi_row + driver_backend, never stored
+_NON_PERSISTED_PROPERTIES: frozenset[str] = frozenset()
+
+
+def _persisted_fields(entity_cls: type[BaseEntity]) -> set[str]:
+    """Return every persisted field name *entity_cls* exposes, by introspection.
+
+    Walks the MRO and collects the name of every ``property`` descriptor
+    declared on the entity's own classes, stopping short of
+    :class:`~threetears.core.entities.base.BaseEntity` -- ``BaseEntity``'s own
+    ``id``/``is_dirty``/``is_new`` are cache-proxy machinery describing the
+    entity's state, not per-table columns, and would otherwise leak
+    ``is_dirty``/``is_new`` into every table's expected column set.
+
+    Filtering by DECLARING class (rather than by name) is deliberate: it keeps
+    a property a subclass genuinely redefines. ``ScrapeExtraction.id`` shadows
+    ``BaseEntity.id`` and IS a real ``scrape_extractions`` column, so a
+    name-based exclusion would silently stop checking the primary key of the
+    one table whose key isn't also a plain foreign/natural key elsewhere.
+
+    Derived rather than hand-listed on purpose. The previous version of these
+    tests restated each entity's fields as string literals, which meant a new
+    persisted property was only covered once someone remembered to add it here
+    too -- and when ``link_selector`` was added to ``ScrapeTarget`` nobody did,
+    so the guard whose entire job is catching "field with no column" reported
+    green while exactly that bug shipped.
+
+    :param entity_cls: entity class to introspect
+    :ptype entity_cls: type[BaseEntity]
+    :return: persisted field names, minus any declared in :data:`_NON_PERSISTED_PROPERTIES`
+    :rtype: set[str]
+    """
+    fields: set[str] = set()
+    for klass in entity_cls.__mro__:
+        if klass is BaseEntity:
+            break
+        for name, attr in vars(klass).items():
+            if isinstance(attr, property) and f"{entity_cls.__name__}.{name}" not in _NON_PERSISTED_PROPERTIES:
+                fields.add(name)
+    return fields
 
 
 # parity-exempt: hand-rolled subset stub of 3tears' DataStore (execute/query only) -- a real DataStore needs a live registry/pool, defeating the point of a fast, network-free unit test
@@ -77,21 +136,7 @@ def test_registered_versions_are_sequential_starting_at_one():
 
 def test_target_fields_covered_by_ddl(captured_ddl: list[str]):
     """Every field ScrapeTarget exposes must have a matching scrape_targets column."""
-    persisted_fields = {
-        "target_id",
-        "url",
-        "driver_backend",
-        "rate_limit_key",
-        "cadence",
-        "multi_row",
-        "wait_for",
-        "field_schema",
-        "nav_steps",
-        "extraction_strategy_type",
-        "api_results_path",
-        "api_fragment_field",
-        "timeout_seconds",
-    }
+    persisted_fields = _persisted_fields(ScrapeTarget)
     columns = _ddl_columns("scrape_targets", captured_ddl)
     missing = persisted_fields - columns
     assert not missing, f"ScrapeTarget fields with no matching scrape_targets DDL column: {missing}"
@@ -99,13 +144,7 @@ def test_target_fields_covered_by_ddl(captured_ddl: list[str]):
 
 def test_recipe_fields_covered_by_ddl(captured_ddl: list[str]):
     """Every field ScrapeRecipe exposes must have a matching scrape_recipes column."""
-    persisted_fields = {
-        "target_id",
-        "extraction_strategy",
-        "won_at",
-        "last_validated_at",
-        "consecutive_validation_failures",
-    }
+    persisted_fields = _persisted_fields(ScrapeRecipe)
     columns = _ddl_columns("scrape_recipes", captured_ddl)
     missing = persisted_fields - columns
     assert not missing, f"ScrapeRecipe fields with no matching scrape_recipes DDL column: {missing}"
@@ -113,20 +152,31 @@ def test_recipe_fields_covered_by_ddl(captured_ddl: list[str]):
 
 def test_extraction_fields_covered_by_ddl(captured_ddl: list[str]):
     """Every field ScrapeExtraction exposes must have a matching scrape_extractions column."""
-    persisted_fields = {
-        "id",
-        "target_id",
-        "extraction_recipe_id",
-        "source_url",
-        "retrieved_at",
-        "structured_fields",
-        "field_confidences",
-        "enrichment_notes",
-        "validation_status",
-    }
+    persisted_fields = _persisted_fields(ScrapeExtraction)
     columns = _ddl_columns("scrape_extractions", captured_ddl)
     missing = persisted_fields - columns
     assert not missing, f"ScrapeExtraction fields with no matching scrape_extractions DDL column: {missing}"
+
+
+def test_introspection_actually_finds_each_entitys_fields():
+    """The coverage tests above are only as good as :func:`_persisted_fields`.
+
+    A silently-empty (or BaseEntity-polluted) derivation would make all three
+    pass vacuously -- the same false-green failure mode the hand-maintained
+    literal sets had, just arrived at differently. Assert the shape of what
+    introspection returns directly: a known-real field is present, the entity's
+    own primary key is present, and none of ``BaseEntity``'s cache-proxy
+    machinery properties leak through.
+    """
+    target_fields = _persisted_fields(ScrapeTarget)
+    assert "link_selector" in target_fields
+    assert "target_id" in target_fields
+    assert _persisted_fields(ScrapeRecipe) >= {"target_id", "extraction_strategy"}
+    # ScrapeExtraction redefines ``id``; it is a real column and must survive the MRO walk.
+    assert "id" in _persisted_fields(ScrapeExtraction)
+    for entity_cls in (ScrapeTarget, ScrapeRecipe, ScrapeExtraction):
+        leaked = _persisted_fields(entity_cls) & {"is_dirty", "is_new"}
+        assert not leaked, f"{entity_cls.__name__}: BaseEntity machinery leaked into persisted fields: {leaked}"
 
 
 def test_every_scrape_table_has_date_created_and_date_updated(captured_ddl: list[str]):

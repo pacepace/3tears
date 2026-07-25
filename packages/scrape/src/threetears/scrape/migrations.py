@@ -175,6 +175,27 @@ async def v008_target_timeout_seconds(store: DataStore) -> None:
     )
 
 
+async def v009_target_link_selector(store: DataStore) -> None:
+    """``ScrapeTarget.link_selector`` -- CSS selector matching the document
+    links on a listing page, required by ``MultiDocumentDriver``'s HTML
+    discovery mode (``driver_backend: "multi_document"`` without
+    :attr:`~threetears.scrape.collections.ScrapeTarget.api_results_path`).
+    Nullable; ``None`` is fine for every non-``"multi_document"`` target,
+    which ignores it, so this is a no-op for every pre-existing row.
+
+    Shipped a release late: the entity property landed with the
+    multi-document capability (2026-07-15) but no migration followed it, so
+    a ``multi_document`` target seeded from YAML by ``bootstrap_targets()``
+    raised ``asyncpg.UndefinedColumnError`` on its first real L3 upsert --
+    the exact failure mode v001's docstring already describes, invisible to
+    every unit test because ``ScrapeCollection``'s in-memory L3 fallback
+    ignores schema entirely. ``tests/test_migrations_drift.py`` now derives
+    its field set by introspecting the entity classes rather than restating
+    them by hand, which is what lets it catch the next one.
+    """
+    await store.execute("ALTER TABLE scrape_targets ADD COLUMN IF NOT EXISTS link_selector TEXT")
+
+
 def register(runner: MigrationRunner) -> PackageMigrations:
     """Register every 3tears-scrape migration version with the given runner.
 
@@ -192,6 +213,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(6)(v006_target_extraction_strategy_type)
     pkg.version(7)(v007_target_api_config)
     pkg.version(8)(v008_target_timeout_seconds)
+    pkg.version(9)(v009_target_link_selector)
     runner.register(pkg)
     return pkg
 
