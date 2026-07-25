@@ -2,7 +2,14 @@ name: CI
 
 on:
   pull_request:
-    branches: [develop]
+    # `main` as well as `develop`, so a branch cut FROM main can satisfy main's
+    # own required `check` context. The push-stamp below covers the normal
+    # develop -> main release PR, whose head commit already carries a result --
+    # but a hotfix branched off main never passes through develop, so nothing
+    # ever stamps it and the PR blocks forever on a check that cannot run.
+    # Found the first time a hotfix needed to reach main without shipping the
+    # unreleased work sitting on develop.
+    branches: [develop, main]
   # The merged develop head, not just the pre-merge PR ref. A PR check runs
   # against a throwaway merge ref whose SHA nobody keeps, so the commit that
   # actually lands on develop carries no status of its own. Stamping it here

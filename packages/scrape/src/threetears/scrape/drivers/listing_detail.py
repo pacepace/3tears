@@ -2,7 +2,7 @@
 own rows link to a per-record detail page carrying fields the listing itself
 doesn't have.
 
-**Design (scrape-task-07 follow-up, 2026-07-16):** the Geographic Solutions
+**Design (2026-07-16):** the Geographic Solutions
 "JobLink" platform (Rails + Ransack search) backs Arizona/Delaware/Kansas/
 Vermont's real WARN Act pages, and (previously mis-configured, see below)
 Maine's -- confirmed live, identical across all 5 states: a plain GET-
@@ -34,7 +34,7 @@ uniform structured markup, not freeform prose (West Virginia/Hawaii's own
 independently-worded letters) -- an LLM read of them would be real,
 unnecessary cost for data a deterministic label-match reads for free (the
 same "cheap path where it works" call as Mississippi's PDF row-merge fix
-vs. Nevada's vision extraction, scrape-task-07). This driver parses both
+vs. Nevada's vision extraction). This driver parses both
 layers itself and emits ONE flat synthetic ``<table>`` (via
 :func:`~threetears.scrape.drivers.api._records_to_synthetic_table`, reused
 unchanged) -- the existing, unmodified plain ``"css"`` multi-row strategy

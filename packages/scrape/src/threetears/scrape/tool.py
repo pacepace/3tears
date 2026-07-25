@@ -3,8 +3,9 @@
 **Design (2026-07-14, MCP exposure):** an ad-hoc, one-off scrape -- "fetch
 this URL, extract these fields" -- with no pre-registered ``ScrapeTarget``,
 matching the exact use case ``StaticTargetSource``/a single inline
-``ScrapeTarget`` construction was already designed for (Chunk 13's own
-design decision). Runs through the *same* unmodified AI eval loop
+``ScrapeTarget`` construction was already designed for -- a target does not
+have to be persisted to be a valid target. Runs through the *same*
+unmodified AI eval loop
 (``eval_loop.run_eval_loop``/``run_eval_loop_multi_row``) every configured
 target already uses -- no separate "MCP extraction path" to keep in sync.
 
@@ -15,13 +16,12 @@ field_schema)`` when the caller doesn't supply one explicitly -- an LLM
 caller shouldn't have to invent and remember target IDs itself for this to
 work.
 
-Zero faidh imports (see ``scrape/__init__.py``): all real dependencies
-(collections, drivers, API key) are constructor-injected, never resolved
-internally (no env-var reads, no ``faidh.config``/``faidh.store`` calls) --
-mirrors every other driver in this package (e.g. ``NodriverSidecarDriver``'s
-``base_url``). The faidh-side registration wrapper that resolves real
-config/collections/drivers and constructs this class lives in
-``src/faidh/tools/scrape_tool.py``.
+All real dependencies (collections, drivers, API key) are constructor-
+injected, never resolved internally -- no env-var reads, no application
+config or store lookups -- mirroring every other component in this package
+(e.g. ``NodriverSidecarDriver``'s ``base_url``). A consuming application
+registers this tool through its own thin wrapper, which is where resolving
+real config/collections/drivers belongs.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ class ScrapeTool(TearsTool):
     """Ad-hoc "fetch this URL, extract these fields" tool, backed by 3tears-scrape.
 
     All state (collections, drivers, API key) is injected at construction --
-    no internal env-var or faidh-config resolution, per this module's own
-    zero-faidh-imports discipline.
+    no internal env-var or application-config resolution, per this module's
+    own docstring.
     """
 
     def __init__(
@@ -102,9 +102,9 @@ class ScrapeTool(TearsTool):
         """Return the namespaced tool name.
 
         A generic ``3tears.scrape`` identity, since this class is a
-        reusable 3tears component, not faidh-specific -- a consuming
-        wrapper (e.g. faidh's own ``FaidhScrapeTool``) is free to
-        override this with its own namespaced name.
+        reusable 3tears component and not specific to any one application --
+        a consuming wrapper that registers it is free to override this with
+        its own namespaced name.
         """
         return "3tears.scrape"
 
@@ -113,7 +113,29 @@ class ScrapeTool(TearsTool):
         return "1.0.0"
 
     def mcp_schema(self) -> MCPToolDefinition:
-        """Return the MCP tool definition."""
+        """Return the MCP tool definition.
+
+        **Deliberately narrower than the full backend/strategy set.**
+        ``driver_backend`` offers only ``nodriver``/``camoufox``/``document``
+        of the eight this package ships, and ``strategy_type`` only
+        ``css``/``regex`` of ``eval_loop.StrategyType``'s four. The omissions
+        are not oversights: each excluded option needs per-target
+        configuration this flat, single-call input schema has nowhere to
+        carry, and offering it would advertise a backend that fails at
+        runtime. ``api`` and ``multi_document``'s JSON discovery mode need
+        ``api_results_path``/``api_fragment_field``; ``multi_document``'s HTML
+        mode needs ``link_selector``; ``multi_document``,
+        ``network_capture``, and ``nodriver_download`` each need an inner
+        driver injected at construction rather than named in a call;
+        ``listing_detail`` needs a base URL plus a pacing policy for its
+        per-row detail fetches. ``per_document`` and ``multi_row_vision``
+        are only meaningful against pages those excluded drivers produce.
+        The three backends and two strategies that remain are exactly the
+        ones fully specified by a URL and a field schema -- which is the
+        whole contract of an ad-hoc, no-pre-configuration call. A target
+        needing more than that is a real ``ScrapeTarget``, seeded through
+        ``target_source.bootstrap_targets()``, not an MCP one-off.
+        """
         return MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),

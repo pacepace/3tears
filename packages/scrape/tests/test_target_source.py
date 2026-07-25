@@ -143,9 +143,10 @@ class TestCollectionTargetSource:
         assert loaded["t1"].field_schema == {"employer": str, "affected_count": int}
 
     async def test_load_reflects_writes_from_a_second_collection_instance(self, config: DefaultCoreConfig):
-        """A real L3 store (unlike the in-memory fallback, which is
-        deliberately not multi-instance-safe -- see Chunk 08) is genuinely
-        shared -- a second collection instance's write is visible."""
+        """A real L3 store is genuinely shared, so a second collection
+        instance's write is visible. The in-memory fallback is deliberately
+        NOT multi-instance-safe (each instance gets its own dict), which is
+        the whole reason the real L3 branch exists."""
         registry = CollectionRegistry()
         registry.configure(l3_pool=FakeDurableStore())
         coll_a = ScrapeTargetCollection(registry, config, nats_client=None)

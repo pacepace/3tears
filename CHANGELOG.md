@@ -1,8 +1,70 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 21 workspace
+This project follows semantic versioning across all 27 workspace
 packages (bumped in lock-step).
+
+## Unreleased
+
+**Fix: `3tears-scrape` 0.18.0 was built and then dropped before upload.** The v0.18.0
+release published 26 of its 27 packages. A step in `release.yml` deleted the scrape
+artifacts from `dist/` between build and publish -- correct when it was written, since
+the project did not yet exist on PyPI and so had no trusted-publisher entry -- and its
+own comment said to remove it for the release where scrape shipped. Nothing enforced
+that, and the only person who would ever have read the comment was someone already
+editing `release.yml`, which cutting a release does not require. PyPI has carried
+`3tears-scrape` as a reserved name with zero files since.
+
+No version is bumped and no tag moves. The withhold step is gone, and `release.yml`
+gains a `workflow_dispatch` path so an already-tagged version can be republished:
+`skip-existing` means every artifact already on PyPI is skipped, so the only possible
+effect is that a genuinely absent one uploads. The operator types the version, and the
+existing lockstep verify holds the run to it.
+
+**Guard: `scripts/verify-dist-complete.sh`.** Asserts `dist/` carries an sdist and a
+wheel for every workspace member and fails the build naming any that are missing. It
+reads the member globs out of the root `pyproject.toml` rather than restating them, so
+a workspace tier added later is covered without touching the script. Verified against
+the real failure: delete the scrape artifacts from a full build and it fails with
+exactly that name. The republish procedure is documented in `CLAUDE.md` rather than
+only in a workflow comment, which is the defect that caused this.
+
+**Fix: missing `link_selector` DDL column (`threetears.scrape`)** -- `ScrapeTarget`
+exposed a persisted `link_selector` field with no matching `scrape_targets` column,
+so a `multi_document` target seeded from YAML raised `asyncpg.UndefinedColumnError`
+on its first real L3 upsert. Unit tests never caught it: `ScrapeCollection`'s
+in-memory L3 fallback ignores schema entirely. Migration `v009` adds the column
+(nullable, no-op for existing rows).
+
+The guard that should have caught it is the real fix. `test_migrations_drift.py`
+restated each entity's persisted fields as hand-maintained string literals, and
+those literals omitted `link_selector` too, so the drift test sat green while the
+drift shipped. It now derives the field set by walking `property` descriptors
+declared below `BaseEntity`, filtering by declaring class rather than by name --
+`ScrapeExtraction.id` shadows `BaseEntity.id` and IS a real column, so a name-based
+filter would have silently stopped checking that table's primary key. A named,
+currently-empty exemption set covers any future non-persisted property, and a
+companion test asserts the derivation never returns an empty set vacuously.
+
+**Behavior change, logging only (`threetears.scrape`)** -- a `ScrapeCollection`
+whose registry has no `l3_pool` now emits one WARNING naming the table, instead
+of silently using a process-local dict as L3. That silence is why the missing
+column was invisible: the fallback ignores schema entirely, so a field with no
+DDL column round-trips perfectly and only fails against a real pool. Operators
+running without a wired pool will see one new WARNING per table. It is warned
+once per table via a class-level set (mirroring
+`BaseCollection._warn_missing_nats_client_once`), not per instance, so a
+consumer that rebuilds collections each poll cycle still gets one warning
+rather than one per cycle. Not an exception: the fallback is legitimate and
+every unit test in the package relies on it.
+
+Also in `threetears.scrape`, documentation only: the README had drifted a release
+behind (five drivers documented against eight shipped, two extraction strategies
+against four, `forms.py` / `request_shape_finder.py` / `page_finder.py` absent from
+the module map); durable docstrings anchored to build ids and design docs from the
+package's pre-lift home, some of which no longer resolve; and `ScrapeTool`'s MCP
+schema excludes five backends without recording why (they need per-target config
+its flat input schema cannot carry).
 
 ## v0.18.0 -- 2026-07-24
 

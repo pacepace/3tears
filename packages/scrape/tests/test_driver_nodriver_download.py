@@ -2,8 +2,8 @@
 
 All tests are fully mocked/in-memory -- no network calls, no sidecar
 container, no real document parsing (``parse_document_bytes_to_html`` is
-monkeypatched). The real, live sidecar proof lives in
-tests/integration/test_scrape_nodriver_sidecar_live.py.
+monkeypatched). This package ships no live-sidecar suite of its own; that
+needs the container running, so it belongs to whoever operates one.
 """
 
 from __future__ import annotations

@@ -19,7 +19,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from threetears.agent.tools.serve import _BuiltinToolBootstrap
+from threetears.agent.tools.serve import _BuiltinToolBootstrap, _register_builtin_tools
 from threetears.core.security import IdentityMinter, verify_identity_token
 
 _ISSUER = "aibots-tool-pod"
@@ -145,3 +145,60 @@ async def test_identity_key_without_issuer_fails_loud(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_CONNECT_ISSUER"):
         await _BuiltinToolBootstrap("builtin").build_server()
+
+
+class TestEveryBuiltinToolIsAccountedFor:
+    """a tool this pod does not serve must say so; it may never just be absent.
+
+    ``_register_builtin_tools`` reports a ``registered`` / ``skipped`` summary that an
+    operator reads as the complete picture. Any tool that is neither registered NOR in
+    ``skipped_reasons`` vanishes from that accounting: the pod logs a healthy total,
+    the registry never receives the tool, an agent's readiness gate never waits for it
+    (the gate intersects the catalog with the access patterns, so a tool that never
+    registered is never expected), and the only symptom is an agent that quietly
+    cannot do the thing.
+
+    ``web_search`` shipped that way. Its registration was gated on
+    ``THREETEARS_SEARXNG_URL`` with no ``else``, so an unset variable dropped it with
+    no counter, no reason and no log line -- observed live on cobalt-dev reporting
+    "registered: 8, skipped: 3" with web_search mentioned nowhere.
+    """
+
+    def test_web_search_is_reported_as_skipped_when_searxng_is_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """an unset SEARXNG url must produce a skip REASON, not silence."""
+        monkeypatch.delenv("THREETEARS_SEARXNG_URL", raising=False)
+        server = MagicMock()
+
+        with caplog.at_level("WARNING"):
+            _register_builtin_tools(server)
+
+        registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
+        assert "WebSearchTool" not in registered, "web_search cannot register without a SearXNG url"
+        assert any("web_search" in record.message for record in caplog.records), (
+            "web_search was dropped with NO log line. it must report itself as skipped, "
+            "naming THREETEARS_SEARXNG_URL, or its absence is invisible to the operator."
+        )
+        assert any("THREETEARS_SEARXNG_URL" in str(record.__dict__) for record in caplog.records), (
+            "the skip must name the env var that turns the tool back on"
+        )
+
+    def test_web_search_registers_when_searxng_is_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """the complement: with the url set, the tool is actually served.
+
+        Without this half the test above would pass on a pod that never serves
+        web_search under any configuration.
+        """
+        monkeypatch.setenv("THREETEARS_SEARXNG_URL", "http://searxng:8080")
+        server = MagicMock()
+
+        _register_builtin_tools(server)
+
+        registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
+        assert "WebSearchTool" in registered, "web_search did not register even with THREETEARS_SEARXNG_URL set"

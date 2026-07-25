@@ -5,10 +5,11 @@ metadata/context the structured extraction schema has no field for (e.g.
 ambiguous wording, unusual formatting, nearby related information). This is
 deliberately NOT validated structured data -- it's LLM commentary, stored
 in ``ScrapeExtraction.enrichment_notes``, kept distinct from
-``structured_fields`` so consumers can always tell the two apart (see
-``scrape-data-model.md``'s ``enrichment_notes`` field).
-
-Zero faidh imports (see ``scrape/__init__.py``).
+``structured_fields`` so consumers can always tell the two apart: a
+consumer that trusts ``structured_fields`` is trusting something a candidate
+strategy structurally validated, while anything read out of
+``enrichment_notes`` is unvalidated model commentary and has to be treated
+as such.
 """
 
 from __future__ import annotations

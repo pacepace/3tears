@@ -8,14 +8,12 @@ no LLM call at all (just re-executing its stored selectors); only when
 generation re-run, survivors get compared by an LLM judge against the real
 page content, and the winner is persisted as the new recipe.
 
-**Exception: ``StrategyType`` ``"per_document"``** (scrape-task-05,
-2026-07-15) has no cached-recipe cycle at all -- some real multi-document
+**Exception: ``StrategyType`` ``"per_document"``** (2026-07-15) has no
+cached-recipe cycle at all -- some real multi-document
 targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern
 learned once and reused; every document gets its own fresh LLM extraction
 call on every poll instead (:func:`_run_per_document_extraction`).
-
-Zero faidh imports (see ``scrape/__init__.py``).
 """
 
 from __future__ import annotations
@@ -63,13 +61,13 @@ __all__ = ["DEFAULT_JUDGE_MODEL_ID", "StrategyType", "run_eval_loop", "run_eval_
 #: MultiDocumentDriver-combined page whose documents are each independently
 #: worded -- e.g. one employer's own freeform letter per notice -- sharing
 #: no boilerplate any single cached pattern could generalize across; added
-#: scrape-task-05, 2026-07-15, live-verified against West Virginia's real
+#: 2026-07-15, live-verified against West Virginia's real
 #: WARN letters after a regex-strategy attempt matched only 1 of 10), or
 #: "multi_row_vision" (a single born-digital PDF whose own table structure
 #: defeats text-based table extraction -- e.g. Nevada's real master WARN
 #: PDF, where ``find_tables()`` finds only the header one way and mis-splits
 #: columns the other -- needs a vision read of the whole table at once;
-#: added scrape-task-07, 2026-07-15, explicitly chosen per-target in config,
+#: added 2026-07-15, explicitly chosen per-target in config,
 #: never auto-detected by shape: Mississippi's superficially similar
 #: "multi-row PDF" needs the OPPOSITE fix, a plain row-merge on its own
 #: already-working text-based extraction, proof shape alone doesn't decide
@@ -103,7 +101,7 @@ DEFAULT_CANDIDATE_COUNT = 3
 
 #: Hard outer deadline for ONE document's ``extract_fields_directly`` call inside
 #: ``"per_document"`` StrategyType (:func:`_run_per_document_extraction`) -- live-
-#: reproduced (scrape-task-05, a real West Virginia document): the underlying chat
+#: reproduced (a real West Virginia document): the underlying chat
 #: client can hang well past its own configured per-attempt timeout with zero
 #: further retry activity, so ``extract_fields_directly``'s own *timeout*/*attempts*
 #: parameters alone are not a reliable bound. 90s covers every well-behaved case
@@ -169,15 +167,16 @@ async def _judge(
     candidate comparison against real page HTML; a multimodal message list for a
     vision-grounded per_document/multi_row confirmation against real page images --
     ``bounded_retry_structured_call``'s own ``prompt`` parameter already accepts
-    either shape), *log_label*, and -- since scrape-task-07 -- *response_model*
+    either shape), *log_label*, and -- since the multi-row judge arrived --
+    *response_model*
     (:class:`_JudgeVerdict`'s single-winner shape for css/regex/per_document; the
     multi-row judge passes :class:`_MultiRowJudgeVerdict` instead, since "which ONE
     candidate wins" doesn't fit "which of these N independent records are each
     individually correct" -- required explicitly, not defaulted, so mypy can infer
     *T* precisely at each call site). Previously ``_judge_candidates`` and
     ``_judge_row_candidates`` each called ``bounded_retry_structured_call`` directly
-    with near-identical arguments (scrape-task-06's own per-document grounding
-    check made that duplication worth closing, not adding a third copy of it).
+    with near-identical arguments; the per-document grounding check made that
+    duplication worth closing rather than adding a third copy of it.
     """
     return await bounded_retry_structured_call(
         prompt_or_messages,
@@ -670,13 +669,13 @@ async def _judge_row_candidates(
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
     Shares :func:`_judge_candidates`'s retry/logging shape via the shared
-    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14 -- see build-plan.md's
-    Chunk 07 design decision for the original "duplicated, not shared" call
-    and this chunk for why it changed; scrape-task-06 closed the SAME
-    duplication again between this function and ``_judge_candidates`` once a
-    third judge use -- per-document grounding -- made it worth a shared
-    primitive instead of a third copy). Never raises; returns ``None`` only
-    after every attempt fails.
+    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14). The multi-row judge
+    was first written as a deliberate copy of the single-record one rather
+    than a shared abstraction -- two callers did not justify the indirection.
+    A third judge use (per-document grounding) is what tipped it: at that
+    point the same retry/backoff/degrade-to-``None`` policy was being
+    maintained in three places. Never raises; returns ``None`` only after
+    every attempt fails.
     """
     prompt = _build_row_judge_prompt(html, survivors, schema)
     return await _judge(
@@ -1213,8 +1212,8 @@ async def _run_per_document_extraction(
 
     Each document's call is bounded by an explicit outer deadline
     (:data:`_PER_DOCUMENT_TIMEOUT_SECONDS`), not just ``extract_fields_directly``'s
-    own per-attempt *timeout* -- live-reproduced (scrape-task-05, real West Virginia
-    document): the underlying chat client occasionally hangs well past its
+    own per-attempt *timeout* -- live-reproduced against a real West Virginia
+    document: the underlying chat client occasionally hangs well past its
     configured per-attempt timeout with zero further retry activity (the 200 OK
     response headers land, the body read then never completes), a pre-existing
     reliability gap in :func:`~threetears.scrape.llm_retry.bounded_retry_structured_call`
@@ -1228,12 +1227,12 @@ async def _run_per_document_extraction(
     Documents run concurrently (``asyncio.gather``), not one at a time -- each is a
     fully independent extraction (no shared cache/state), and
     :func:`~threetears.scrape.extraction.extract_fields_directly_chunked` already
-    roughly doubles the LLM calls a single document needs (scrape-task-05's own
+    roughly doubles the LLM calls a single document needs (its own
     reliability fix), so serializing across documents on top of that would make an
     N-document poll's wall-clock cost grow far faster than the accuracy gain
     justifies.
 
-    **Routing by document shape (scrape-task-06):** a scanned document
+    **Routing by document shape:** a scanned document
     (``NoticeDocument.was_ocr``) routes to :func:`~threetears.scrape.extraction.
     extract_fields_from_images` (a vision-capable model reading the original page
     images) rather than the OCR'd-text path -- full-set live comparison against a
@@ -1243,7 +1242,7 @@ async def _run_per_document_extraction(
     text path unchanged -- vision's own real cost/latency is only paid where OCR
     was needed in the first place, not globally.
 
-    **Grounding check (scrape-task-06):** css/regex strategies get a real semantic-
+    **Grounding check:** css/regex strategies get a real semantic-
     correctness check -- the judge (:func:`_judge_candidates`/:func:`_judge_row_candidates`)
     compares candidate values against real page content -- but only once, on cold
     start, when candidates are first generated; a healthy cached recipe skips it on

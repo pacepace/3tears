@@ -1,14 +1,17 @@
-"""ScrapeDriver — pure-Python ABC for pluggable browser-rendering backends.
+"""ScrapeDriver -- pure-Python ABC for pluggable browser-rendering backends.
 
-Zero non-stdlib imports. Lift-ready: move this module (and drivers/) to a
-3tears package without any changes to driver code — mirrors
-``src/faidh/intake/rate_limit/strategy.py``'s zero-faidh-imports discipline.
+Zero non-stdlib imports -- the discipline that let this module (and
+``drivers/``) move out of the application it was first written in as a plain
+directory move, with no changes to driver code at all.
 
 Deliberately excludes anything backend-specific (no CDP handles, no
 Firefox-specific objects): a driver takes a URL and returns a
 ``RenderedPage`` carrying only plain data. This genericness is what keeps
 the nodriver sidecar boundary "arm's length" under FSF's own aggregation
-test (see ``scrape-api-contract.md``), not merely a style preference.
+test -- the two processes exchange plain data over a documented HTTP
+contract and neither is built around the other's internals -- not merely a
+style preference. See ``docs/scrape-lift-design.md`` (D4) for why that
+isolation is treated as structural rather than maintainer-dependent.
 """
 
 from __future__ import annotations
@@ -115,7 +118,7 @@ class RenderedPage:
     #: needed OCR fallback -- a scanned/image PDF, not born-digital text. Always
     #: ``False`` for every other driver (an HTML page render has no such concept).
     #: Consumed by :class:`~threetears.scrape.drivers.multi_document.
-    #: MultiDocumentDriver` (scrape-task-06) to mark which combined-page documents
+    #: MultiDocumentDriver` to mark which combined-page documents
     #: need vision-based extraction rather than the faster/cheaper text path --
     #: see ``eval_loop._run_per_document_extraction``.
     was_ocr: bool = False
@@ -130,7 +133,7 @@ class ScrapeDriver(ABC):
     """Abstract base for pluggable browser-rendering backends.
 
     Implementations render a URL and return the resulting page as plain
-    data (:class:`RenderedPage`) — no backend-specific handles leak across
+    data (:class:`RenderedPage`) -- no backend-specific handles leak across
     this boundary, so callers can swap backends without caring which one
     rendered the page.
     """

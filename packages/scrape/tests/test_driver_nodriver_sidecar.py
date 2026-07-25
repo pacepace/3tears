@@ -2,8 +2,9 @@
 scrape collections' entity logic.
 
 All tests are fully mocked/in-memory -- no network calls, no sidecar
-container. The real, live sidecar proof lives in
-tests/integration/test_scrape_nodriver_sidecar_live.py.
+container. This package ships no live-sidecar suite of its own: proving a
+real Chromium render end to end needs the container running, so it belongs
+to whoever operates one.
 """
 
 from __future__ import annotations
@@ -274,7 +275,7 @@ class TestNodriverSidecarDriver:
 
 
 # ===========================================================================
-# ScrapeExtraction entity defaults (Chunk 1: pre-eval-loop, pre-enrichment)
+# ScrapeExtraction entity defaults (no eval loop, no enrichment pass involved)
 # ===========================================================================
 
 
