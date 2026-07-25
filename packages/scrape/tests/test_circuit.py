@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.models.circuit_breaker import CircuitOpenError, CircuitState
+from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
 
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
@@ -452,3 +452,46 @@ async def test_a_failed_booking_does_not_lose_the_backoff(
     assert row is not None
     assert row.circuit_state == CircuitState.OPEN.value
     assert row.blocked_until == _NOW + timedelta(seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The two circuits run on different clocks, and the fast one must not deadlock.
+
+    The in-process breaker is asked first, and an OPEN one whose own (short) recovery
+    timeout has elapsed answers by promoting itself to HALF_OPEN and marking ITS probe in
+    flight. If the durable circuit then suppresses the fetch -- which it will, because its
+    window is minutes rather than seconds -- that probe never happens, and
+    ``CircuitBreakerLike`` has no way to say "never mind": an admitted probe is cleared only
+    by an outcome. Left set, the flag outlives the durable window and fast-fails this target
+    forever with ``retry_after_seconds`` of zero, telling the caller to retry immediately
+    into a circuit that will never admit it.
+
+    Uses the real ``CircuitBreaker`` rather than a fake, because the in-flight flag IS the
+    behaviour under test and a fake would be asserting against my own model of it.
+    """
+    breaker = CircuitBreaker("warn_oh", failure_threshold=1, recovery_timeout_seconds=0.0)
+    breaker.record_failure()
+    assert breaker.state is CircuitState.OPEN
+
+    circuit = TargetCircuit(health, policy=policy, breaker=breaker)
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until=_NOW + timedelta(seconds=300),
+    )
+
+    first = await circuit.check(_T, now=_NOW)
+    assert not first.permitted
+    assert breaker.state is CircuitState.OPEN, "the in-process breaker was left holding a phantom probe"
+
+    second = await circuit.check(_T, now=_NOW + timedelta(seconds=1))
+    assert not second.permitted
+    assert second.retry_after_seconds > 1.0, (
+        "the caller was told to retry immediately into a circuit that cannot admit it -- "
+        "the stranded in-process probe answered instead of the durable window"
+    )

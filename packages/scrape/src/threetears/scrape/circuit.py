@@ -247,6 +247,14 @@ class TargetCircuit:
         try:
             restored.check()
         except CircuitOpenError as exc:
+            # The in-process breaker was asked first and said yes, which for an OPEN breaker
+            # means it just promoted itself to HALF_OPEN and marked ITS probe in flight. That
+            # probe is now never going to happen, and its in-flight flag is only cleared by an
+            # outcome being recorded -- so leaving it set strands that breaker fast-failing
+            # this target forever, outliving the durable window it was waiting on. Reporting
+            # the failure it effectively had clears the flag and restarts its own recovery
+            # timer, which is the honest description: the attempt did not reach the target.
+            self._release_in_process_probe()
             log.info(
                 "scrape circuit: suppressing the fetch of target %s for another %.0fs",
                 target_id,
@@ -265,6 +273,10 @@ class TargetCircuit:
         # request is the probe.
         paced = await self._claim_probe(target_id)
         if not paced.permitted:
+            # Same reasoning as the suppressed branch above: another pod holds the fleet's
+            # probe slot, so this process's own probe is not happening and must not be left
+            # marked as in flight.
+            self._release_in_process_probe()
             return paced
 
         if was is not CircuitState.HALF_OPEN:
@@ -325,6 +337,14 @@ class TargetCircuit:
         common case. A healthy target polled every few minutes must not be paying a
         read-modify-write on a health row for the privilege of still being healthy.
 
+        One inherited behaviour worth naming, since it looks like a bug and is not: a success
+        reported against a row still reading OPEN leaves it open. That is ``CircuitBreaker``'s
+        own answer to a success from a request it never admitted, and it is adopted rather
+        than overridden, because overriding it would mean writing a transition rule here --
+        the one thing this module is built not to do. It is reachable only when the
+        HALF_OPEN promotion :meth:`check` performs failed to persist, and it self-heals on the
+        next poll, whose :meth:`check` promotes again.
+
         :param target_id: the target that served content
         :ptype target_id: str
         :param now: the current time; injected by tests, defaults to now
@@ -348,6 +368,17 @@ class TargetCircuit:
             extra={"extra_data": {"target_id": target_id, "circuit_state": restored.state.value}},
         )
         await self._write(target_id, state=restored.state, failures=restored.failure_count, blocked_until=None)
+
+    def _release_in_process_probe(self) -> None:
+        """Resolve a probe the in-process breaker admitted but that never reached the target.
+
+        ``CircuitBreakerLike`` has three calls and no way to say "never mind"; an admitted
+        probe is cleared only by an outcome. Reporting a failure is the accurate one -- the
+        attempt did not reach the target -- and it restarts that breaker's own recovery timer
+        rather than leaving it fast-failing indefinitely.
+        """
+        if self._breaker is not None:
+            self._breaker.record_failure()
 
     async def _record_failure(self, target_id: str, *, now: datetime | None, blocked: bool) -> None:
         """Drive one failure through the breaker's rules and persist what it decided."""
