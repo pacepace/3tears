@@ -113,7 +113,7 @@ equivalent because every single-record survivor holds exactly one record and `ma
 the first maximal element. Both tests fail if that rule is changed in either direction.
 
 **Tooling: every workspace package is now strict-mypy checked.** `scripts/typecheck.sh` went
-from 13 targets over 315 files to 27 over 578 -- the whole workspace. The 144 errors that had
+from 13 targets over 315 files to 28 over 578 -- the whole workspace. The 144 errors that had
 kept 14 packages out are fixed, not suppressed.
 
 `models` supplied 116 of them, and 79 were one pattern: kwargs dicts typed `dict[str, object]`
