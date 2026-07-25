@@ -507,7 +507,18 @@ class ScrapeCollection(BaseCollection[EntityT]):
     #: the ``cls._in_memory_l3_warned_tables = ...`` assignment in that
     #: method; declared here so the attribute is typed and present on the
     #: base. Mirrors ``BaseCollection._missing_nats_warned_tables``.
-    _in_memory_l3_warned_tables: ClassVar[set[str]] = set()
+    _in_memory_l3_warned_tables: ClassVar[frozenset[str]] = frozenset()
+
+    #: Columns this collection's table holds as ``TIMESTAMPTZ``, rehydrated from their
+    #: ISO-string form by :meth:`deserialize`. A subclass declares only its OWN columns;
+    #: the two framework-stamped ones are added here because ``BaseCollection.save_entity``
+    #: writes them to every table regardless of what the entity class exposes.
+    #:
+    #: Hand-declared but not hand-trusted: ``tests/test_migrations_drift.py`` asserts each
+    #: collection's set matches the TIMESTAMPTZ columns its migrations actually create, so
+    #: a column added without a declaration fails there rather than silently reopening the
+    #: string-into-a-TIMESTAMPTZ-fence bug this exists to prevent.
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
     def __init__(
         self,
@@ -576,11 +587,14 @@ class ScrapeCollection(BaseCollection[EntityT]):
         outcome this guard exists to avoid.
         """
         cls = type(self)
-        warned: set[str] = getattr(cls, "_in_memory_l3_warned_tables", None) or set()
+        warned = getattr(cls, "_in_memory_l3_warned_tables", frozenset())
         if self.table_name in warned:
             return
-        warned.add(self.table_name)
-        cls._in_memory_l3_warned_tables = warned
+        # Rebuild-and-replace rather than mutate in place. This is class-level state shared
+        # by every instance and every task, so an in-place ``add`` is a mutation of shared
+        # state; assigning a new frozenset is a single atomic attribute rebind. A lost
+        # update under a race costs one duplicate warning line, never a corrupted set.
+        cls._in_memory_l3_warned_tables = frozenset(warned | {self.table_name})
         log.warning(
             "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
             "Rows will NOT survive process restart and are NOT shared across pods, and this path "
@@ -655,15 +669,50 @@ class ScrapeCollection(BaseCollection[EntityT]):
         return json.dumps(data, default=str).encode()
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        """Deserialize JSON bytes from the L2 cache tier back into a row dict."""
+        """Deserialize JSON bytes from the L2 cache tier back into a row dict.
+
+        Rehydrates :attr:`datetime_columns` from the ISO strings :meth:`serialize`'s
+        ``default=str`` produced. ``BaseCollection.deserialize``'s contract names this as
+        the place subclasses restore typed fields, and until this did so, a row that
+        happened to be read through L2 differed in TYPE from the identical row read
+        through L1 or L3 -- strings where the others hold ``datetime``.
+
+        That asymmetry is only cosmetic while such a row is read. It becomes a real fault
+        when one is written BACK: an update fences on the row's own ``date_updated`` as an
+        optimistic lock, rendered as ``WHERE date_updated = $n`` against ``TIMESTAMPTZ``,
+        and a string bound there fails at the asyncpg border. Every read-modify-write path
+        in this package is exposed to it (``enrichment.add_enrichment_notes`` and the
+        health fingerprint merge both do ``to_dict()`` then save), which is why the fix
+        belongs here rather than in each of them.
+
+        A value that does not parse is left exactly as found rather than nulled: losing a
+        timestamp silently is worse than carrying a malformed one to a border that will
+        reject it loudly.
+        """
         result: dict[str, Any] = json.loads(data)
+        for column in self.datetime_columns:
+            raw = result.get(column)
+            if isinstance(raw, str) and raw:
+                try:
+                    result[column] = datetime.fromisoformat(raw)
+                except ValueError:  # NOSILENT: unparseable timestamp is preserved verbatim
+                    log.warning(
+                        "%s: %r in column %r did not parse as a timestamp; left as-is",
+                        type(self).__name__,
+                        raw,
+                        column,
+                    )
         return result
 
     async def list_all(self) -> list[EntityT]:
         """Return every entity in the store (L3 scan or in-memory dict values)."""
         entity_cls = self.entity_class
         store = self._durable_store
-        rows: Any = await store.scan(self.table_name) if store is not None else self._rows.values()
+        # ``list(...)`` snapshots the fallback dict instead of iterating a live view: a
+        # concurrent save into ``self._rows`` during iteration would otherwise raise
+        # "dictionary changed size during iteration". The L3 branch needs no equivalent,
+        # since ``scan`` has already materialized its rows.
+        rows: Any = await store.scan(self.table_name) if store is not None else list(self._rows.values())
         return [entity_cls(row, is_new=False, collection=self) for row in rows]
 
 
@@ -687,6 +736,10 @@ class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
     """Collection of extraction recipes, one per target, keyed by ``target_id``."""
 
     primary_key_column = "target_id"
+    datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {
+        "won_at",
+        "last_validated_at",
+    }
 
     @property
     def table_name(self) -> str:
@@ -701,6 +754,8 @@ class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
 
 class ScrapeExtractionCollection(ScrapeCollection[ScrapeExtraction]):
     """Collection of per-fetch extraction rows, keyed by uuid7 ``id``."""
+
+    datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {"retrieved_at"}
 
     @property
     def table_name(self) -> str:

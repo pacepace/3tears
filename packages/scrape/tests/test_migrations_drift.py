@@ -24,6 +24,8 @@ import pytest
 from threetears.core.data.migrations import MigrationRunner
 from threetears.core.entities.base import BaseEntity
 
+from typing import Any
+
 from threetears.scrape.collections import ScrapeCollection, ScrapeExtraction, ScrapeRecipe, ScrapeTarget
 from threetears.scrape.health import ScrapeTargetHealth
 from threetears.scrape.migrations import register
@@ -33,6 +35,8 @@ _CREATE_COLUMN_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _ADD_COLUMN_RE = re.compile(r"ADD COLUMN IF NOT EXISTS\s+(\w+)", re.IGNORECASE)
+_CREATE_TIMESTAMPTZ_RE = re.compile(r"^\s*(\w+)\s+TIMESTAMPTZ\b", re.IGNORECASE | re.MULTILINE)
+_ADD_TIMESTAMPTZ_RE = re.compile(r"ADD COLUMN IF NOT EXISTS\s+(\w+)\s+TIMESTAMPTZ\b", re.IGNORECASE)
 
 #: Entity properties that are genuinely NOT backed by a column -- computed or
 #: derived values with nothing to persist. Keyed by ``"<EntityClass>.<property>"``
@@ -92,6 +96,11 @@ def _persisted_fields(entity_cls: type[BaseEntity]) -> set[str]:
     return fields
 
 
+def _collection_classes() -> list[type[ScrapeCollection[Any]]]:
+    """Every concrete ``ScrapeCollection`` subclass, in declaration order."""
+    return list(ScrapeCollection.__subclasses__())
+
+
 def _collection_pairings() -> list[tuple[type[BaseEntity], str]]:
     """Discover every (entity class, table name) pair from the collections themselves.
 
@@ -112,7 +121,7 @@ def _collection_pairings() -> list[tuple[type[BaseEntity], str]]:
     :rtype: list[tuple[type[BaseEntity], str]]
     """
     pairings: list[tuple[type[BaseEntity], str]] = []
-    for collection_cls in ScrapeCollection.__subclasses__():
+    for collection_cls in _collection_classes():
         entity_cls = collection_cls.entity_class.fget(None)  # type: ignore[attr-defined]
         table_name = collection_cls.table_name.fget(None)  # type: ignore[attr-defined]
         pairings.append((entity_cls, table_name))
@@ -220,3 +229,45 @@ def test_every_scrape_table_has_date_created_and_date_updated(captured_ddl: list
         columns = _ddl_columns(table, captured_ddl)
         assert "date_created" in columns, f"{table} is missing date_created"
         assert "date_updated" in columns, f"{table} is missing date_updated"
+
+
+def _ddl_timestamptz_columns(table_name: str, statements: list[str]) -> set[str]:
+    """Every column declared TIMESTAMPTZ for *table_name* across the captured SQL."""
+    columns: set[str] = set()
+    for stmt in statements:
+        if table_name not in stmt:
+            continue
+        columns.update(_CREATE_TIMESTAMPTZ_RE.findall(stmt))
+        columns.update(_ADD_TIMESTAMPTZ_RE.findall(stmt))
+    return columns
+
+
+@pytest.mark.parametrize("collection_cls", _collection_classes(), ids=lambda c: c.__name__)
+def test_declared_datetime_columns_match_the_ddl(
+    collection_cls: type[ScrapeCollection[Any]], captured_ddl: list[str]
+) -> None:
+    """``datetime_columns`` must name exactly the table's TIMESTAMPTZ columns.
+
+    That set drives ``ScrapeCollection.deserialize``'s rehydration of timestamps read
+    through L2, where they arrive as ISO strings. A column missing from it is written
+    back as a string, and for ``date_updated`` specifically that string is bound to the
+    optimistic-lock fence against a TIMESTAMPTZ column, which fails at the asyncpg
+    border. Because a health-write failure is deliberately non-fatal, that failure can be
+    invisible, so a hand-maintained list with no guard would silently reopen the bug it
+    was written to close.
+
+    Asserted in both directions: a TIMESTAMPTZ column with no declaration is the bug
+    above, and a declared column that is not TIMESTAMPTZ means the set is describing a
+    schema that no longer exists.
+    """
+    entity_cls = collection_cls.entity_class.fget(None)  # type: ignore[attr-defined]
+    table = collection_cls.table_name.fget(None)  # type: ignore[attr-defined]
+    declared = set(collection_cls.datetime_columns)
+    actual = _ddl_timestamptz_columns(table, captured_ddl)
+
+    assert actual, f"{table}: no TIMESTAMPTZ columns found in the captured DDL at all"
+    assert declared == actual, (
+        f"{entity_cls.__name__}: datetime_columns disagrees with {table}'s DDL. "
+        f"Undeclared TIMESTAMPTZ columns (read back from L2 as strings): {sorted(actual - declared)}. "
+        f"Declared but not TIMESTAMPTZ: {sorted(declared - actual)}."
+    )

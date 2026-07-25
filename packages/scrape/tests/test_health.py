@@ -15,7 +15,7 @@ for behaviour but structurally cannot catch a missing DDL column -- that check l
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -376,36 +376,71 @@ async def test_the_vision_strategies_also_stamp(
         assert stored.content_fingerprint == content_fingerprint(_PAGE)
 
 
-async def test_a_row_hydrated_from_l2_merges_with_real_datetimes(health: ScrapeTargetHealthCollection) -> None:
-    """An L2-sourced row carries ISO-string timestamps and must not be written back as strings.
+async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """L2 serialization is lossy in one direction, and ``deserialize`` is where that is repaired.
 
-    ``ScrapeCollection`` serializes to JSON with ``default=str`` and deserializes with a
-    plain ``json.loads``, so a row that came through L2 has strings where L1 and L3 have
-    ``datetime``. Writing that back fences the update on ``date_updated`` as an optimistic
-    lock against a ``TIMESTAMPTZ`` column, which a string cannot satisfy. Since a
-    health-write failure is deliberately non-fatal, the visible symptom would be nothing at
-    all: fingerprints would quietly stop updating for those targets, feeding a stale
-    comparison value to the change detection this column exists to serve.
+    ``serialize`` writes JSON with ``default=str``, so every timestamp leaves as an ISO
+    string. Until ``deserialize`` turned them back, a row read through L2 differed in TYPE
+    from the identical row read through L1 or L3. Harmless while it is only read, because
+    the entity accessors parse on the way out. Not harmless when it is written BACK: an
+    update fences on the row's own ``date_updated`` as an optimistic lock against a
+    ``TIMESTAMPTZ`` column, and a string bound there fails at the asyncpg border.
 
-    Asserts on the fence value handed TO the write, which is the only place the bug is
-    observable. Two things erase the evidence afterwards: the entity's own accessors parse
-    on read, and ``save_entity`` reassigns ``original_date_updated`` from the freshly
-    stamped ``date_updated`` once the write succeeds. An earlier version of this test
-    checked both of those and passed whether or not the fix was present.
+    Asserted at the serialize/deserialize boundary rather than by mocking a hydrated row
+    into the merge, because that is where the repair now lives; a test that injected
+    strings past this layer would be testing its own setup.
     """
-    seeded = health.create({"target_id": "warn_l2", "consecutive_fetch_failures": 1})
-    await health.save_entity(seeded)
-
-    # Exactly what a read through L2 produces: every timestamp an ISO string. Detached from
-    # the collection deliberately, since ``to_dict()`` on an attached entity reads the row
-    # back out of cache and would hand back the native datetimes stored there.
-    hydrated = {
+    written = {
         "target_id": "warn_l2",
         "consecutive_fetch_failures": 1,
-        "date_created": "2026-07-25T03:00:00+00:00",
-        "date_updated": "2026-07-25T03:10:00+00:00",
-        "last_blocked_at": "2026-07-25T03:30:00+00:00",
+        "date_created": datetime(2026, 7, 25, 3, 0, tzinfo=UTC),
+        "date_updated": datetime(2026, 7, 25, 3, 10, tzinfo=UTC),
+        "last_blocked_at": datetime(2026, 7, 25, 3, 30, tzinfo=UTC),
+        "fingerprint_updated_at": datetime(2026, 7, 25, 3, 30, tzinfo=UTC),
     }
+
+    round_tripped = health.deserialize(health.serialize(written))
+
+    for column in ("date_created", "date_updated", "last_blocked_at", "fingerprint_updated_at"):
+        assert isinstance(round_tripped[column], datetime), (
+            f"{column} came back from L2 as {type(round_tripped[column]).__name__}; "
+            "written back, a string cannot satisfy a TIMESTAMPTZ optimistic lock"
+        )
+        assert round_tripped[column] == written[column]
+    # Non-timestamp columns are untouched by the rehydration.
+    assert round_tripped["consecutive_fetch_failures"] == 1
+    assert round_tripped["target_id"] == "warn_l2"
+
+
+def test_an_unparseable_timestamp_survives_rather_than_being_nulled(
+    health: ScrapeTargetHealthCollection,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A value that will not parse is carried through as found, and logged.
+
+    Nulling it would discard a real stored value silently and, for ``date_updated``,
+    would quietly disable the optimistic lock on the next write by making the fence
+    ``None``. Better to carry it to a border that rejects it loudly.
+    """
+    payload = b'{"target_id": "warn_bad", "date_updated": "not-a-timestamp"}'
+
+    result = health.deserialize(payload)
+
+    assert result["date_updated"] == "not-a-timestamp"
+    assert "did not parse as a timestamp" in caplog.text
+
+
+async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTargetHealthCollection) -> None:
+    """The read-modify-write path fences on the row it read.
+
+    Two pods can both read a health row and both write it back, so the update relies on
+    the compare-and-swap fence rather than on ordering. This pins that the fence value
+    reaching the write is the timestamp of the row that was read, as a real datetime.
+    """
+    seeded = health.create({"target_id": "warn_cas", "consecutive_fetch_failures": 1})
+    await health.save_entity(seeded)
 
     fences: list[Any] = []
     original_save = health.save_to_store
@@ -414,16 +449,12 @@ async def test_a_row_hydrated_from_l2_merges_with_real_datetimes(health: ScrapeT
         fences.append(original_timestamp)
         return await original_save(data, original_timestamp, **kwargs)
 
-    with (
-        patch.object(health, "get", return_value=ScrapeTargetHealth(hydrated, is_new=False)),
-        patch.object(health, "save_to_store", side_effect=_capture),
-    ):
-        entity = await record_validated_fetch(health, target_id="warn_l2", html=_PAGE)
+    with patch.object(health, "save_to_store", side_effect=_capture):
+        entity = await record_validated_fetch(health, target_id="warn_cas", html=_PAGE)
 
     assert fences, "save_to_store was never reached"
     assert not isinstance(fences[0], str), (
         f"the optimistic-lock fence was bound as a string ({fences[0]!r}); "
         "asyncpg cannot compare that against a TIMESTAMPTZ column"
     )
-    assert isinstance(fences[0], datetime)
     assert entity.content_fingerprint == content_fingerprint(_PAGE)

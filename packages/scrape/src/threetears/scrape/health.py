@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from threetears.core.entities.base import BaseEntity
 from threetears.observe import get_logger
@@ -164,6 +164,12 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
     """Collection of per-target fetch health, keyed by ``target_id``."""
 
     primary_key_column = "target_id"
+    datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {
+        "fingerprint_updated_at",
+        "blocked_until",
+        "last_blocked_at",
+        "session_state_expires_at",
+    }
 
     @property
     def table_name(self) -> str:
@@ -174,42 +180,6 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
     def entity_class(self) -> type[ScrapeTargetHealth]:
         """Return the entity type this collection manages."""
         return ScrapeTargetHealth
-
-
-#: Every column on this entity that Postgres holds as ``TIMESTAMPTZ``. ``date_created`` and
-#: ``date_updated`` are framework-stamped rather than entity properties, and are the two that
-#: matter most here -- see :func:`_normalize_datetimes`.
-_DATETIME_FIELDS = (
-    "date_created",
-    "date_updated",
-    "fingerprint_updated_at",
-    "blocked_until",
-    "last_blocked_at",
-    "session_state_expires_at",
-)
-
-
-def _normalize_datetimes(data: dict[str, Any]) -> None:
-    """Coerce any ISO-string timestamps in *data* back to real ``datetime`` objects, in place.
-
-    A row read through L2 arrives with its timestamps as strings: ``ScrapeCollection``
-    serializes to JSON with ``default=str`` and deserializes with a plain ``json.loads``,
-    so the round trip is lossy in exactly one direction. The same L1/L3 row is a native
-    ``datetime``, which is why :func:`~threetears.scrape.collections._parse_dt` exists at
-    all on the read side.
-
-    That split becomes a correctness problem when such a row is written BACK. An update
-    fences on the row's own ``date_updated`` as an optimistic lock, rendered as
-    ``WHERE date_updated = $n`` against a ``TIMESTAMPTZ`` column, and a string bound there
-    fails at the asyncpg border. Because the caller treats a health-write failure as
-    non-fatal, that would surface as fingerprints silently ceasing to update for every
-    target whose row happened to come from L2 -- a stale comparison value feeding the very
-    change-detection this column exists for, with nothing visible going wrong.
-    """
-    for field in _DATETIME_FIELDS:
-        raw = data.get(field)
-        if isinstance(raw, str):
-            data[field] = _parse_dt(raw)
 
 
 async def record_validated_fetch(
@@ -240,7 +210,6 @@ async def record_validated_fetch(
     """
     existing = await health_collection.get(target_id)
     data: dict[str, Any] = dict(existing.to_dict()) if existing is not None else {"target_id": target_id}
-    _normalize_datetimes(data)
     data["content_fingerprint"] = content_fingerprint(html)
     data["fingerprint_updated_at"] = datetime.now(UTC)
 
