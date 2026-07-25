@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.collections.base import (
@@ -501,6 +501,14 @@ class ScrapeCollection(BaseCollection[EntityT]):
     rather than inherited from the application-side base class it mirrors.
     """
 
+    #: Tables already warned about in :meth:`_warn_in_memory_l3`, so a
+    #: consumer that rebuilds collections per poll cycle still gets one
+    #: warning rather than one per cycle. Each subclass gets its own set via
+    #: the ``cls._in_memory_l3_warned_tables = ...`` assignment in that
+    #: method; declared here so the attribute is typed and present on the
+    #: base. Mirrors ``BaseCollection._missing_nats_warned_tables``.
+    _in_memory_l3_warned_tables: ClassVar[set[str]] = set()
+
     def __init__(
         self,
         registry: CollectionRegistry,
@@ -522,7 +530,6 @@ class ScrapeCollection(BaseCollection[EntityT]):
         :rtype: None
         """
         self._rows: dict[Any, dict[str, Any]] = {}
-        self._warned_in_memory_l3 = False
         super().__init__(registry, config, nats_client)
 
     @property
@@ -544,7 +551,7 @@ class ScrapeCollection(BaseCollection[EntityT]):
         return cast(DurableStore, self.l3_pool)
 
     def _warn_in_memory_l3(self) -> None:
-        """Warn once per instance that this collection's L3 is a process-local dict, not a database.
+        """Warn once per table that this collection's L3 is a process-local dict, not a database.
 
         The in-memory fallback is deliberate and every unit test in this
         package legitimately depends on it, so this is a warning and never an
@@ -557,13 +564,23 @@ class ScrapeCollection(BaseCollection[EntityT]):
         not, should say so out loud rather than look identical to one that
         is.
 
-        Once per instance, not per call: these methods sit inside polling
-        loops, and a per-call warning would be noise dense enough that
-        operators filter it out, which is the same as not logging it.
+        Mirrors ``BaseCollection._warn_missing_nats_client_once`` exactly,
+        including its class-level-set-keyed-on-``table_name`` mechanism: same
+        problem (a process-wide wiring gap worth surfacing once, on a path hot
+        enough that per-call logging would be filtered out as noise), so the
+        same shape rather than a second one. Keying on the class and table
+        rather than on the instance is the part that matters here: nothing in
+        this package constructs these collections, so a consumer is free to
+        build a fresh one per poll cycle, and a per-instance flag would
+        quietly degrade "warn once" into "warn every cycle" -- the exact
+        outcome this guard exists to avoid.
         """
-        if self._warned_in_memory_l3:
+        cls = type(self)
+        warned: set[str] = getattr(cls, "_in_memory_l3_warned_tables", None) or set()
+        if self.table_name in warned:
             return
-        self._warned_in_memory_l3 = True
+        warned.add(self.table_name)
+        cls._in_memory_l3_warned_tables = warned
         log.warning(
             "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
             "Rows will NOT survive process restart and are NOT shared across pods, and this path "
