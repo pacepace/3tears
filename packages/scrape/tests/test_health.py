@@ -435,9 +435,20 @@ def test_an_unparseable_timestamp_survives_rather_than_being_nulled(
 async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTargetHealthCollection) -> None:
     """The read-modify-write path fences on the row it read.
 
-    Two pods can both read a health row and both write it back, so the update relies on
-    the compare-and-swap fence rather than on ordering. This pins that the fence value
-    reaching the write is the timestamp of the row that was read, as a real datetime.
+    Two pods can both read a health row and both write it back, so the update relies on a
+    compare-and-swap rather than on ordering. This pins that the fence reaching the write
+    is a real ``datetime`` taken from the row that was read.
+
+    The first write after creation is deliberately exercised too, because it behaves
+    differently and that difference is easy to mistake for this bug: ``save_entity`` only
+    stamps ``date_updated`` once an entity is no longer new, so a freshly created row has
+    none and its first update is genuinely unfenced -- there is no prior value to compare
+    against. Every update after that is fenced, which is the state this asserts.
+
+    Asserting the positive type matters and not merely "it is not a string": ``None``
+    passes a not-a-string check and makes ``save_entity`` skip the compare-and-swap
+    entirely, silently turning the optimistic lock into last-write-wins. An earlier
+    version of this test checked only the negative and passed in exactly that state.
     """
     seeded = health.create({"target_id": "warn_cas", "consecutive_fetch_failures": 1})
     await health.save_entity(seeded)
@@ -450,11 +461,18 @@ async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTarg
         return await original_save(data, original_timestamp, **kwargs)
 
     with patch.object(health, "save_to_store", side_effect=_capture):
+        await record_validated_fetch(health, target_id="warn_cas", html=_PAGE)
         entity = await record_validated_fetch(health, target_id="warn_cas", html=_PAGE)
 
-    assert fences, "save_to_store was never reached"
-    assert not isinstance(fences[0], str), (
-        f"the optimistic-lock fence was bound as a string ({fences[0]!r}); "
+    assert len(fences) == 2, "save_to_store was not reached twice"
+    assert fences[0] is None, (
+        "a row that has never been updated has no date_updated to fence on; if this ever "
+        "becomes non-None the framework's stamping rules changed and the comment above is stale"
+    )
+    fence = fences[1]
+    assert not isinstance(fence, str), (
+        f"the optimistic-lock fence was bound as a string ({fence!r}); "
         "asyncpg cannot compare that against a TIMESTAMPTZ column"
     )
+    assert isinstance(fence, datetime), f"the fence was {fence!r}, so the update would not be fenced at all"
     assert entity.content_fingerprint == content_fingerprint(_PAGE)

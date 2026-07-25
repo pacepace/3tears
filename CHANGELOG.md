@@ -28,9 +28,22 @@ it says, and a fingerprint that flipped on that would claim the site changed on 
 deploy the site makes. The remaining columns are created now because the shape is settled
 and one `CREATE` beats three `ALTER`s against a table this young.
 
-No behaviour changes. `run_eval_loop` and `run_eval_loop_multi_row` take an optional
-`health_collection`; omitted, as every existing caller omits it, nothing is written and
-nothing else differs.
+`run_eval_loop` and `run_eval_loop_multi_row` take an optional `health_collection`;
+omitted, as every existing caller omits it, nothing is written and nothing else differs.
+
+**Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
+`datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents
+`deserialize` as where a subclass restores typed fields, and this one was a bare `json.loads`
+against a `serialize` that writes `default=str`, so a row read through L2 differed in type
+from the identical row read through L1 or L3. Invisible while such a row is only read, since
+the entity accessors already parsed on the way out. Not invisible when one is written back:
+an update fences on the row's own `date_updated` as an optimistic lock against a TIMESTAMPTZ
+column, and a string bound there fails at the asyncpg border. `enrichment.add_enrichment_notes`
+would have raised; the new health merge would have had that failure swallowed by its own
+non-fatal handling and quietly stopped updating fingerprints. Each collection declares its
+`datetime_columns`, and a test asserts those match the TIMESTAMPTZ columns the migrations
+create, in both directions. A caller that was reading these fields off the raw row dict and
+expecting a string will now get a `datetime`; one using the entity accessors sees no change.
 
 **Testing: `packages/scrape` gets its first integration suite** -- `link_selector` shipped
 broken because the package had no test that touched a real database, and

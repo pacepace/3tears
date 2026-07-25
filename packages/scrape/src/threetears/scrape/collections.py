@@ -590,10 +590,12 @@ class ScrapeCollection(BaseCollection[EntityT]):
         warned = getattr(cls, "_in_memory_l3_warned_tables", frozenset())
         if self.table_name in warned:
             return
-        # Rebuild-and-replace rather than mutate in place. This is class-level state shared
-        # by every instance and every task, so an in-place ``add`` is a mutation of shared
-        # state; assigning a new frozenset is a single atomic attribute rebind. A lost
-        # update under a race costs one duplicate warning line, never a corrupted set.
+        # Rebuild-and-replace rather than mutate in place. No await sits between the read
+        # and the write below, so nothing can interleave here on a single-threaded asyncio
+        # loop and this is not fixing a live race. It is about the shape of the state: this
+        # is class-level and shared by every instance and task, and immutable-plus-atomic-
+        # rebind cannot degrade if it is ever touched from a thread or a second loop, where
+        # an in-place ``add`` on a shared set would be a genuine hazard.
         cls._in_memory_l3_warned_tables = frozenset(warned | {self.table_name})
         log.warning(
             "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
@@ -708,10 +710,13 @@ class ScrapeCollection(BaseCollection[EntityT]):
         """Return every entity in the store (L3 scan or in-memory dict values)."""
         entity_cls = self.entity_class
         store = self._durable_store
-        # ``list(...)`` snapshots the fallback dict instead of iterating a live view: a
-        # concurrent save into ``self._rows`` during iteration would otherwise raise
-        # "dictionary changed size during iteration". The L3 branch needs no equivalent,
-        # since ``scan`` has already materialized its rows.
+        # ``list(...)`` snapshots the fallback dict rather than iterating a live view. The
+        # comprehension below contains no await, so a concurrent save cannot interleave on
+        # a single-threaded asyncio loop and this is not fixing a live race either. It
+        # removes the failure mode entirely ("dictionary changed size during iteration")
+        # for one word, so the invariant does not depend on there never being an await
+        # added inside that comprehension later. The L3 branch needs no equivalent, since
+        # ``scan`` has already materialized its rows.
         rows: Any = await store.scan(self.table_name) if store is not None else list(self._rows.values())
         return [entity_cls(row, is_new=False, collection=self) for row in rows]
 
