@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-intention"
-version = "0.19.0"
+version = "0.19.1"
 description = "Standing-wants corpus for LLM agents -- intention lifecycle, salience decay, embedding dedup, and private deliberation tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -28,10 +28,10 @@ classifiers = [
 # (owner RBAC in authorize.py) and 3tears-langgraph (FrameworkEvents in
 # events.py), so both are declared here alongside the code that uses them.
 dependencies = [
-    "3tears",
-    "3tears-agent-acl",
-    "3tears-langgraph",
-    "3tears-observe",
+    "3tears>=0.19.0,<0.20.0",
+    "3tears-agent-acl>=0.19.0,<0.20.0",
+    "3tears-langgraph>=0.19.0,<0.20.0",
+    "3tears-observe>=0.19.0,<0.20.0",
     "pgvector",
     "langchain-core",
     "pydantic",
