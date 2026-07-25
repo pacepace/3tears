@@ -116,11 +116,40 @@ HALF_OPEN row with a live reservation and nothing left that would ever revisit i
 the crash the reservation was invented for, and it was solved for a poller -- whose next poll
 is the re-probe -- and silently not for the event-driven caller `reprobe.py` exists to serve.
 Bookings are keyed by target, so the outcome report that normally follows replaces this one.
-A recovery is the exception, since closing the circuit cannot retract a booking and
-`ReprobeScheduler` has no cancel: a target that comes back gets one unasked wake-up, and that
-wake-up is a whole poll including its eval loop, not a bare fetch. Accepted rather than
-solved, because a cancel seam costs every implementer a second method to save one poll per
-recovery of a target that is healthy by then.
+A recovery is the exception, since closing the circuit books nothing and so cannot supersede
+the outstanding booking. `ReprobeScheduler` therefore gains `cancel_reprobe`, called when the
+circuit closes: without it the last booking survives and fires against a target that already
+came back, which is a whole poll including its eval loop rather than a bare fetch, and it
+leaves a job row behind for every target that ever tripped. The cancel deletes rather than
+expires, and is silent when there is nothing to delete -- a caller closing a circuit does not
+know whether a booking was outstanding, and asking would be a round trip to answer what the
+delete already answers.
+
+**A success reported against a circuit the breaker leaves OPEN no longer erases its backoff.**
+`CircuitBreaker` answers a success from a request it never admitted by leaving the circuit
+open, which this module adopts rather than overrides. Clearing `blocked_until` on the way past
+turned that conservative answer into its opposite: a missing window restores as nought seconds
+remaining, so the next check found an open breaker whose recovery had elapsed, promoted it and
+probed -- the state column still reading OPEN while the backoff it names had been discarded.
+Reachable across a fleet with nothing failing to persist, when one pod trips the row while
+another's already-permitted fetch is in flight. The window is now cleared only by an actual
+close, which writes no transition rule: the window is this module's storage, not a state.
+
+**`TargetCircuit.forget_target()` is the retention story, and it is manual on purpose.** Both
+tables this writes are keyed by target and upserted rather than appended, so neither grows
+with time or poll count -- but both grow with distinct targets, and an ad-hoc target id is
+derived from `(url, field_schema)`, so a long-lived process accumulates a row per URL it has
+ever scraped. There was previously no way to reclaim any of it. It is not automatic because a
+health row is not garbage: it carries the fingerprint that stops a target being re-classified
+on every poll, so evicting one for a target still being polled costs exactly the LLM calls
+this design exists to avoid, and no TTL can distinguish a retired target from a quiet one.
+Only the caller knows which is which.
+
+The three `BackoffPolicy` defaults now carry their reasoning rather than appearing as bare
+numbers -- three failures because two in a row is ordinary bad luck, fifteen minutes because
+it is sized against the poll interval it protects rather than any vendor's undocumented
+cooldown, six hours because a doubling curve otherwise passes a day within a working shift
+and a target blocked overnight should be probed by morning without anyone intervening.
 
 ## v0.19.1 -- 2026-07-25
 

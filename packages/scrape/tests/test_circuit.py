@@ -18,6 +18,7 @@ No database anywhere: the collections fall back to an in-memory L3.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
@@ -315,11 +316,14 @@ class _FakeBreaker:
 class _FakeFleetCounter:
     """Counts blocked observations the way a cross-pod windowed counter would."""
 
-    def __init__(self, *, start: int = 0) -> None:
+    def __init__(self, *, start: int = 0, explode: bool = False) -> None:
         self._count = start
+        self._explode = explode
 
     async def record_attempt(self, key: str) -> int:
         del key
+        if self._explode:
+            raise RuntimeError("counter KV is unreachable")
         self._count += 1
         return self._count
 
@@ -336,13 +340,16 @@ class _FakeFleetCounter:
 class _FakeProbePacer:
     """A capacity-one bucket: the first claim wins, later ones are refused."""
 
-    def __init__(self, *, tokens: int = 1) -> None:
+    def __init__(self, *, tokens: int = 1, explode: bool = False) -> None:
         self.tokens = tokens
         self.claims = 0
+        self._explode = explode
 
     async def claim(self, key: str = "default", **_kwargs: object) -> object:
         del key
         self.claims += 1
+        if self._explode:
+            raise RuntimeError("token bucket KV is unreachable")
         if self.tokens > 0:
             self.tokens -= 1
             return _Claim(claimed=True, retry_after_seconds=0.0)
@@ -361,12 +368,19 @@ class _Claim:
 class _FakeReprobeScheduler:
     def __init__(self, *, explode: bool = False) -> None:
         self.booked: list[tuple[str, float]] = []
+        self.cancelled: list[str] = []
         self._explode = explode
 
     async def schedule_reprobe(self, *, target_id: str, delay_seconds: float) -> None:
         if self._explode:
             raise RuntimeError("scheduler store is down")
         self.booked.append((target_id, delay_seconds))
+
+    async def cancel_reprobe(self, *, target_id: str) -> None:
+        if self._explode:
+            raise RuntimeError("scheduler store is down")
+        self.cancelled.append(target_id)
+        self.booked = [b for b in self.booked if b[0] != target_id]
 
 
 @pytest.mark.asyncio
@@ -464,6 +478,154 @@ async def test_opening_the_circuit_books_a_reprobe_for_when_the_window_expires(
 
     await circuit.record_blocked(_T, now=_NOW)
     assert scheduler.booked == [(_T, 60.0)]
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_probe_pacer_admits_the_probe_rather_than_stranding_the_target(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The pacer is a cross-pod refinement, so its outage must cost precision, not liveness.
+
+    Refusing the probe when the bucket cannot answer would mean a KV outage leaves every
+    walled target permanently unprobed -- the circuit's own ceiling exists to stop exactly
+    that. Degrading to the row-only behaviour costs at most a few pods probing together once.
+    """
+    pacer = _FakeProbePacer(explode=True)
+    circuit = TargetCircuit(health, policy=policy, probe_pacer=pacer)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    decision = await circuit.check(_T, now=_NOW + timedelta(seconds=61))
+
+    assert pacer.claims == 1, "the pacer was never consulted, so this proves nothing about its outage"
+    assert decision.permitted and decision.is_probe, (
+        "a pacer outage left a walled target unprobed, which is the one failure the backoff ceiling exists to prevent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_fleet_counter_falls_back_to_the_rows_own_count(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The fleet count can only ever RAISE the failure count, so losing it must not lower it.
+
+    It exists so several pods reach the threshold together. If its store is unreachable the
+    honest fallback is the per-row count this pod can see -- degrading to slower tripping,
+    never to a missed block, and never to an exception on the fetch path.
+    """
+    circuit = TargetCircuit(health, policy=policy, blocked_attempts=_FakeFleetCounter(explode=True))
+
+    await circuit.record_blocked(_T, now=_NOW)
+    row = await health.get(_T)
+    assert row is not None
+    assert row.consecutive_fetch_failures == 1, "a counter outage lost the block entirely"
+
+    await circuit.record_blocked(_T, now=_NOW)
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.OPEN.value, (
+        "the row's own count no longer reached the threshold once the fleet counter was gone"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_health_store_that_cannot_be_written_does_not_fail_the_fetch(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Bookkeeping must never turn a completed fetch into a failed one.
+
+    The caller has already paid for the fetch and holds its result by the time any of this
+    runs. Raising here would discard a good page because a health row could not be written,
+    which trades the expensive thing for the cheap one.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    with patch("threetears.scrape.circuit.record_circuit_state", side_effect=RuntimeError("L3 pool is gone")):
+        await circuit.record_blocked(_T, now=_NOW)
+        await circuit.record_unreachable(_T, now=_NOW)
+
+    # Nothing persisted, and nothing raised. The circuit degrades to its pre-existing
+    # behaviour -- fetching -- which is the safe direction for an unwritable store.
+    assert (await circuit.check(_T, now=_NOW)).permitted
+
+
+@pytest.mark.asyncio
+async def test_closing_the_circuit_cancels_the_outstanding_reprobe(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A close is the only outcome that books nothing, so it is the only one that must cancel.
+
+    Every failure path re-books over the same target-derived key and therefore supersedes
+    itself. A close books nothing, so without an explicit cancel the last booking survives
+    and fires against a target that already came back -- a whole poll, and a job row left
+    behind for every target that ever tripped.
+    """
+    scheduler = _FakeReprobeScheduler()
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+    assert scheduler.booked == [(_T, 60.0)]
+
+    # The probe has to be admitted for the outcome to be a close: a success reported against
+    # a row still reading OPEN is one the breaker never admitted, and it deliberately leaves
+    # the circuit open (with its window intact, per the test above).
+    probe_at = _NOW + timedelta(seconds=61)
+    assert (await circuit.check(_T, now=probe_at)).is_probe
+    await circuit.record_reachable(_T, now=probe_at + timedelta(seconds=1))
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.CLOSED.value
+    assert scheduler.cancelled == [_T], "the recovered target kept a booking that will fire on it"
+    assert scheduler.booked == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cancel_does_not_fail_the_fetch_that_succeeded(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Cleanup is not worth the result it is cleaning up after.
+
+    A cancel that cannot reach its store costs one spurious wake-up against a target that has
+    recovered. Raising would discard a successful fetch to avoid a wasted poll.
+    """
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=_FakeReprobeScheduler(explode=True))
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    probe_at = _NOW + timedelta(seconds=61)
+    assert (await circuit.check(_T, now=probe_at)).is_probe
+    await circuit.record_reachable(_T, now=probe_at + timedelta(seconds=1))
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.CLOSED.value, "the close was lost because its cleanup failed"
+    assert row.blocked_until is None
+
+
+@pytest.mark.asyncio
+async def test_forgetting_a_target_reclaims_both_rows_it_owns(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Retention, for the only party that can know a target is retired.
+
+    Both tables are keyed by target and upserted rather than appended, so neither grows with
+    time or poll count -- but both grow with DISTINCT targets, and an ad-hoc target id is
+    derived from (url, field_schema), so a long-lived process accumulates a row per URL it
+    has ever scraped. Until this there was no way to reclaim any of it. It stays manual
+    because a health row carries the fingerprint that stops needless re-classification, so
+    evicting one for a target still being polled costs the LLM calls this design exists to
+    avoid, and no TTL can tell a retired target from a quiet one.
+    """
+    scheduler = _FakeReprobeScheduler()
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+    assert await health.get(_T) is not None
+
+    await circuit.forget_target(_T)
+
+    assert await health.get(_T) is None, "the health row survived the target being retired"
+    assert scheduler.cancelled == [_T], "the retired target kept its outstanding booking"
 
 
 @pytest.mark.asyncio

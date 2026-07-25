@@ -48,6 +48,9 @@ class _FakeJobCollection(ScheduledJobCollection):
         self.saved[(row["partition_key"], row["job_id"])] = row
         return 1
 
+    async def delete_from_store(self, entity_id: Any) -> None:
+        self.saved.pop(self.normalize_pk(entity_id), None)
+
 
 #: Every ``scheduled_jobs`` column declared ``NOT NULL`` in v001. The upsert binds all of
 #: them positionally, so a server-side DEFAULT never applies -- a key this adapter forgets
@@ -72,9 +75,11 @@ _NOT_NULL_JOB_COLUMNS = frozenset(
 async def test_the_booked_row_binds_a_value_for_every_not_null_column() -> None:
     """The bind path, which every other test in this file goes around.
 
-    ``_FakeJobCollection`` intercepts ``save_entity``, so nothing here otherwise reaches the
-    projection that turns a row dict into the upsert's positional params -- and that is
-    exactly where a hand-built row gets judged. ``save_entity`` stamps ``date_created`` for a
+    Nothing else in this file reaches the projection that turns a row dict into the upsert's
+    positional params, and that is exactly where a hand-built row gets judged. It is also why
+    ``_FakeJobCollection`` cuts in at ``save_to_store`` rather than ``save_entity``: the
+    latter is where the stamping below happens, so intercepting it skips the very step the
+    row has to survive. ``save_entity`` stamps ``date_created`` for a
     new entity but stamps ``date_updated`` only when the key is already present or the entity
     is not new, so this adapter must supply it. The column is ``NOT NULL DEFAULT now()`` and
     the default cannot rescue it: the upsert writes every column unconditionally, so a
@@ -168,3 +173,36 @@ async def test_an_explicit_partition_key_is_honoured() -> None:
     )
     (row,) = jobs.saved.values()
     assert row["partition_key"] == partition
+
+
+@pytest.mark.asyncio
+async def test_cancelling_deletes_the_booking_rather_than_leaving_it_expired() -> None:
+    """A recovered target should leave nothing behind, and the job id makes that possible.
+
+    The booking's id is derived from the target, so a cancel addresses whichever probe is
+    outstanding without the caller having kept a handle on it. Deleting rather than expiring,
+    because once the target has recovered the row carries no information the health row does
+    not already hold -- and expiring in place would leave one row per target that ever
+    tripped, which is the retention story this adapter would otherwise have none of.
+    """
+    jobs = _FakeJobCollection()
+    scheduler = ScheduledJobsReprobeScheduler(jobs)
+    await scheduler.schedule_reprobe(target_id="warn_oh", delay_seconds=900.0)
+    assert len(jobs.saved) == 1
+
+    await scheduler.cancel_reprobe(target_id="warn_oh")
+
+    assert jobs.saved == {}, "the recovered target kept a booking that will fire on it"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_booking_that_is_not_there_is_silent() -> None:
+    """The caller closing a circuit does not know whether a booking was ever made.
+
+    Asking first would be a round trip to answer a question the delete already answers, and
+    raising would turn ordinary cleanup into a failure on the path where a target just came
+    back healthy.
+    """
+    jobs = _FakeJobCollection()
+    await ScheduledJobsReprobeScheduler(jobs).cancel_reprobe(target_id="never_booked")
+    assert jobs.saved == {}

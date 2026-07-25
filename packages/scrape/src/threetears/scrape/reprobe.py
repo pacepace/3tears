@@ -138,3 +138,31 @@ class ScheduledJobsReprobeScheduler:
             delay,
             extra={"extra_data": {"target_id": target_id, "job_id": str(job_id)}},
         )
+
+    async def cancel_reprobe(self, *, target_id: str) -> None:
+        """Delete *target_id*'s outstanding re-probe booking, if it has one.
+
+        Deleting rather than marking it expired, because the row carries no information once
+        the target has recovered: the health row is the durable record of what happened, and
+        a fired one-shot would otherwise sit at ``status="expired"`` for every target that has
+        ever tripped. The job id is derived from the target, so this addresses whichever
+        booking is currently outstanding without needing to have kept a handle on it.
+
+        Silent when there is nothing to delete -- ``delete`` reports that as ``False`` rather
+        than raising, and a caller closing a circuit does not know or need to know whether a
+        booking was outstanding.
+
+        :param target_id: the target whose booking should be dropped
+        :ptype target_id: str
+        :return: nothing
+        :rtype: None
+        """
+        job_id = reprobe_job_id(target_id)
+        partition_key = self._partition_key or uuid5(_REPROBE_NAMESPACE, f"partition:{target_id}")
+        deleted = await self._jobs.delete((partition_key, job_id))
+        if deleted:
+            log.info(
+                "scrape circuit: cancelled the outstanding re-probe of target %s",
+                target_id,
+                extra={"extra_data": {"target_id": target_id, "job_id": str(job_id)}},
+            )

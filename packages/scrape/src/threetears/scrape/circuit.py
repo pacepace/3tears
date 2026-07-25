@@ -150,10 +150,46 @@ class ReprobeScheduler(Protocol):
         """Arrange for *target_id* to be probed again in *delay_seconds*."""
         ...
 
+    async def cancel_reprobe(self, *, target_id: str) -> None:
+        """Drop any outstanding re-probe booking for *target_id*.
+
+        Called when the circuit closes, which is the one outcome a re-booking cannot
+        supersede: every other outcome books a fresh probe over the same key, and a close
+        books nothing, so without this the last booking survives and fires against a target
+        that recovered. That wake-up is a whole poll, and it also leaves a row behind per
+        target that ever tripped.
+
+        Must be idempotent and must not raise for a booking that is not there: the caller
+        cannot know whether one is outstanding without asking, and asking is a round trip to
+        answer a question the delete already answers.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class BackoffPolicy:
     """How hard to back off a target that keeps coming back walled.
+
+    The three defaults are judgement, not measurement, and are recorded here as such so a
+    later reader tunes them against a reason rather than against a number of unknown
+    provenance. Each is a `BackoffPolicy` field precisely because the right value is
+    deployment-specific; nothing here reads a constant it did not receive.
+
+    - ``failure_threshold=3`` -- two is a coin toss. A single interstitial served to a warm
+      cache, a redeploy, one timeout: any of those produces one failure, and a pair of them
+      in a row is ordinary. Three consecutive failures against a target that was working is
+      the first count that is more cheaply explained by "this target is walled" than by bad
+      luck, and the cost of being wrong is one suppressed poll.
+    - ``base_delay_seconds=900.0`` (15 minutes) -- sized against the poll interval it
+      protects, not against any vendor's documented cooldown, since walls do not publish one.
+      A scrape target polled every few minutes needs a first backoff long enough to skip
+      several polls, or the circuit reads as open while the fetch rate barely moves. Fifteen
+      minutes skips a handful and is still short enough that a target unblocked by a human
+      minutes ago is not left waiting an afternoon.
+    - ``max_delay_seconds=21600.0`` (6 hours) -- the ceiling exists because the curve doubles
+      and would otherwise pass a day within a working shift. Six hours means a target blocked
+      overnight is probed by morning without anyone intervening, which is the property that
+      matters: a target nobody ever re-probes stays broken after the block is lifted.
 
     :param failure_threshold: consecutive blocked or unreachable fetches before the circuit
         opens. Below it nothing is suppressed, so a transient block costs nothing.
@@ -500,6 +536,13 @@ class TargetCircuit:
             failures=restored.failure_count,
             blocked_until=None if closed else health.blocked_until,
         )
+        if closed:
+            # The only outcome that books nothing, and therefore the only one that leaves the
+            # previous booking standing. Every failure path re-books over the same key, so it
+            # supersedes itself; a close has to say so explicitly or the last probe fires
+            # against a target that already came back -- a whole poll, and a job row per
+            # target that ever tripped.
+            await self._cancel_reprobe(target_id)
 
     def release_probe(self, target_id: str) -> None:
         """Resolve a permitted fetch that will never report an outcome.
@@ -730,6 +773,52 @@ class TargetCircuit:
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
             log.exception(
                 "scrape circuit: could not book the re-probe for target %s; its backoff window still stands",
+                target_id,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+
+    async def _cancel_reprobe(self, target_id: str) -> None:
+        """Drop an outstanding booking, never letting the cleanup cost the caller its result."""
+        if self._reprobe_scheduler is None:
+            return
+        try:
+            await self._reprobe_scheduler.cancel_reprobe(target_id=target_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a failed cancel costs one spurious wake-up against a target that has recovered, which is a wasted poll and not a wrong answer; failing the fetch that just succeeded would be worse. Logged with its traceback below
+            log.exception(
+                "scrape circuit: could not cancel the outstanding re-probe of target %s; it may fire once more",
+                target_id,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+
+    async def forget_target(self, target_id: str) -> None:
+        """Discard everything this circuit durably holds about *target_id*.
+
+        For a caller retiring a target, which is the only party that can know a target is
+        retired: this module sees polls, not the list of things worth polling.
+
+        Both tables it writes are keyed by target and upserted, never appended, so neither
+        grows with time or poll count -- one health row per target observed, one job row per
+        target that has tripped, and a re-booking replaces rather than accumulates. What they
+        do grow with is DISTINCT targets, and `ScrapeTool._derive_target_id` mints a fresh
+        ``adhoc_<sha256>`` per ``(url, field_schema)``, so a long-lived process scraping
+        ad-hoc URLs accumulates a row per URL it has ever seen. That is a real bound, just not
+        a small one, and until now there was no way to reclaim any of it.
+
+        Deliberately not automatic. A health row is not garbage: it carries the fingerprint
+        that stops a target being re-classified on every poll, so evicting one for a target
+        still being scraped costs exactly the LLM calls this whole design exists to avoid. No
+        TTL can tell those apart, because "still wanted" is the caller's fact, not this
+        module's.
+
+        :param target_id: the target being retired
+        :ptype target_id: str
+        """
+        await self._cancel_reprobe(target_id)
+        try:
+            await self._health.delete(target_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- retiring a target is housekeeping; a store outage must not raise into a caller that is tidying up, and the row is harmless until the next attempt. Logged with its traceback below
+            log.exception(
+                "scrape circuit: could not delete the health row for target %s",
                 target_id,
                 extra={"extra_data": {"target_id": target_id}},
             )
