@@ -1,8 +1,33 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 21 workspace
+This project follows semantic versioning across all 27 workspace
 packages (bumped in lock-step).
+
+## Unreleased
+
+**Fix: `3tears-scrape` 0.18.0 was built and then dropped before upload.** The v0.18.0
+release published 26 of its 27 packages. A step in `release.yml` deleted the scrape
+artifacts from `dist/` between build and publish -- correct when it was written, since
+the project did not yet exist on PyPI and so had no trusted-publisher entry -- and its
+own comment said to remove it for the release where scrape shipped. Nothing enforced
+that, and the only person who would ever have read the comment was someone already
+editing `release.yml`, which cutting a release does not require. PyPI has carried
+`3tears-scrape` as a reserved name with zero files since.
+
+No version is bumped and no tag moves. The withhold step is gone, and `release.yml`
+gains a `workflow_dispatch` path so an already-tagged version can be republished:
+`skip-existing` means every artifact already on PyPI is skipped, so the only possible
+effect is that a genuinely absent one uploads. The operator types the version, and the
+existing lockstep verify holds the run to it.
+
+**Guard: `scripts/verify-dist-complete.sh`.** Asserts `dist/` carries an sdist and a
+wheel for every workspace member and fails the build naming any that are missing. It
+reads the member globs out of the root `pyproject.toml` rather than restating them, so
+a workspace tier added later is covered without touching the script. Verified against
+the real failure: delete the scrape artifacts from a full build and it fails with
+exactly that name. The republish procedure is documented in `CLAUDE.md` rather than
+only in a workflow comment, which is the defect that caused this.
 
 ## v0.18.0 -- 2026-07-24
 
