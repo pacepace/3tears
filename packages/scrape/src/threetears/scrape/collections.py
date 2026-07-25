@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast, get_args
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.collections.base import (
@@ -47,6 +47,7 @@ from .driver import NavStep
 from .extraction import FieldSchema
 
 __all__ = [
+    "VALIDATION_STATUSES",
     "ScrapeExtraction",
     "ScrapeExtractionCollection",
     "ScrapeRecipe",
@@ -57,6 +58,7 @@ __all__ = [
     "decode_nav_steps",
     "encode_field_schema",
     "encode_nav_steps",
+    "ValidationStatus",
 ]
 
 log = get_logger(__name__)
@@ -404,6 +406,27 @@ class ScrapeRecipe(BaseEntity):
         return int(self._get_raw("consecutive_validation_failures", 0))
 
 
+#: The outcome of one fetch, as stored on :attr:`ScrapeExtraction.validation_status`.
+#:
+#: ``"validated"`` -- records were extracted and confirmed.
+#: ``"needs_review"`` -- structurally valid candidates existed but nothing confirmed them.
+#: ``"failed"`` -- we received the page and could not extract from it.
+#: ``"blocked"`` -- we never received the page: a bot wall or human-verification
+#: interstitial stood where the content should be, so no records exist to have got right
+#: or wrong and the target's extraction strategy is not implicated.
+#:
+#: A Literal rather than a bare ``str`` because the fourth value was added long after the
+#: first three, across a dozen write sites, with the difference between "extraction failed"
+#: and "we never got the page" carrying real consequences for anything that counts failures
+#: or retries. Its sibling vocabularies (``challenge.PageVerdictKind``,
+#: ``eval_loop.StrategyType``) are both Literals for the same reason.
+ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
+
+#: Every value :data:`ValidationStatus` permits, derived from the Literal rather than
+#: restated, so a new status cannot be added without this following it.
+VALIDATION_STATUSES: frozenset[str] = frozenset(get_args(ValidationStatus))
+
+
 class ScrapeExtraction(BaseEntity):
     """One row per fetch -- the actual output.
 
@@ -490,7 +513,14 @@ class ScrapeExtraction(BaseEntity):
 
     @property
     def validation_status(self) -> str:
-        """``"validated"`` | ``"needs_review"`` | ``"failed"``; defaults to ``"needs_review"``."""
+        """One of :data:`ValidationStatus`; defaults to ``"needs_review"``.
+
+        ``"blocked"`` is the one that does not mean "extraction went wrong". It means the
+        page never arrived: a bot wall or human-verification interstitial stood where the
+        content should be, so no records exist to have got right or wrong, and the target's
+        extraction strategy is not implicated. A consumer counting it as a failed extraction
+        will over-count failures for a target that is merely walled.
+        """
         return str(self._get_raw("validation_status", "needs_review"))
 
 
@@ -507,7 +537,18 @@ class ScrapeCollection(BaseCollection[EntityT]):
     #: the ``cls._in_memory_l3_warned_tables = ...`` assignment in that
     #: method; declared here so the attribute is typed and present on the
     #: base. Mirrors ``BaseCollection._missing_nats_warned_tables``.
-    _in_memory_l3_warned_tables: ClassVar[set[str]] = set()
+    _in_memory_l3_warned_tables: ClassVar[frozenset[str]] = frozenset()
+
+    #: Columns this collection's table holds as ``TIMESTAMPTZ``, rehydrated from their
+    #: ISO-string form by :meth:`deserialize`. A subclass declares only its OWN columns;
+    #: the two framework-stamped ones are added here because ``BaseCollection.save_entity``
+    #: writes them to every table regardless of what the entity class exposes.
+    #:
+    #: Hand-declared but not hand-trusted: ``tests/test_migrations_drift.py`` asserts each
+    #: collection's set matches the TIMESTAMPTZ columns its migrations actually create, so
+    #: a column added without a declaration fails there rather than silently reopening the
+    #: string-into-a-TIMESTAMPTZ-fence bug this exists to prevent.
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
     def __init__(
         self,
@@ -576,11 +617,16 @@ class ScrapeCollection(BaseCollection[EntityT]):
         outcome this guard exists to avoid.
         """
         cls = type(self)
-        warned: set[str] = getattr(cls, "_in_memory_l3_warned_tables", None) or set()
+        warned: frozenset[str] = getattr(cls, "_in_memory_l3_warned_tables", frozenset())
         if self.table_name in warned:
             return
-        warned.add(self.table_name)
-        cls._in_memory_l3_warned_tables = warned
+        # Rebuild-and-replace rather than mutate in place. No await sits between the read
+        # and the write below, so nothing can interleave here on a single-threaded asyncio
+        # loop and this is not fixing a live race. It is about the shape of the state: this
+        # is class-level and shared by every instance and task, and immutable-plus-atomic-
+        # rebind cannot degrade if it is ever touched from a thread or a second loop, where
+        # an in-place ``add`` on a shared set would be a genuine hazard.
+        cls._in_memory_l3_warned_tables = frozenset(warned | {self.table_name})
         log.warning(
             "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
             "Rows will NOT survive process restart and are NOT shared across pods, and this path "
@@ -655,15 +701,58 @@ class ScrapeCollection(BaseCollection[EntityT]):
         return json.dumps(data, default=str).encode()
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
-        """Deserialize JSON bytes from the L2 cache tier back into a row dict."""
+        """Deserialize JSON bytes from the L2 cache tier back into a row dict.
+
+        Rehydrates :attr:`datetime_columns` from the ISO strings :meth:`serialize`'s
+        ``default=str`` produced. ``BaseCollection.deserialize``'s contract names this as
+        the place subclasses restore typed fields, and until this did so, a row that
+        happened to be read through L2 differed in TYPE from the identical row read
+        through L1 or L3 -- strings where the others hold ``datetime``.
+
+        That asymmetry is only cosmetic while such a row is read. It becomes a real fault
+        when one is written BACK: an update fences on the row's own ``date_updated`` as an
+        optimistic lock, rendered as ``WHERE date_updated = $n`` against ``TIMESTAMPTZ``,
+        and a string bound there fails at the asyncpg border.
+
+        Every read-modify-write path in this package is exposed, though not identically.
+        :func:`~threetears.scrape.enrichment.enrich_extraction` rebuilds its row through
+        ``create()``, so it binds no fence at all and would instead have failed on
+        ``retrieved_at`` going into the upsert's VALUES as a string. The health fingerprint
+        merge rebuilds as an existing entity and so fails on the fence itself, where its own
+        non-fatal handling would have swallowed it. Both are repaired by fixing the read,
+        which is why this belongs here rather than in each writer.
+
+        A value that does not parse is left exactly as found rather than nulled: losing a
+        timestamp silently is worse than carrying a malformed one to a border that will
+        reject it loudly.
+        """
         result: dict[str, Any] = json.loads(data)
+        for column in self.datetime_columns:
+            raw = result.get(column)
+            if isinstance(raw, str) and raw:
+                try:
+                    result[column] = datetime.fromisoformat(raw)
+                except ValueError:  # NOSILENT: unparseable timestamp is preserved verbatim
+                    log.warning(
+                        "%s: %r in column %r did not parse as a timestamp; left as-is",
+                        type(self).__name__,
+                        raw,
+                        column,
+                    )
         return result
 
     async def list_all(self) -> list[EntityT]:
         """Return every entity in the store (L3 scan or in-memory dict values)."""
         entity_cls = self.entity_class
         store = self._durable_store
-        rows: Any = await store.scan(self.table_name) if store is not None else self._rows.values()
+        # ``list(...)`` snapshots the fallback dict rather than iterating a live view. The
+        # comprehension below contains no await, so a concurrent save cannot interleave on
+        # a single-threaded asyncio loop and this is not fixing a live race either. It
+        # removes the failure mode entirely ("dictionary changed size during iteration")
+        # for one word, so the invariant does not depend on there never being an await
+        # added inside that comprehension later. The L3 branch needs no equivalent, since
+        # ``scan`` has already materialized its rows.
+        rows: Any = await store.scan(self.table_name) if store is not None else list(self._rows.values())
         return [entity_cls(row, is_new=False, collection=self) for row in rows]
 
 
@@ -687,6 +776,10 @@ class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
     """Collection of extraction recipes, one per target, keyed by ``target_id``."""
 
     primary_key_column = "target_id"
+    datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {
+        "won_at",
+        "last_validated_at",
+    }
 
     @property
     def table_name(self) -> str:
@@ -701,6 +794,8 @@ class ScrapeRecipeCollection(ScrapeCollection[ScrapeRecipe]):
 
 class ScrapeExtractionCollection(ScrapeCollection[ScrapeExtraction]):
     """Collection of per-fetch extraction rows, keyed by uuid7 ``id``."""
+
+    datetime_columns: ClassVar[frozenset[str]] = ScrapeCollection.datetime_columns | {"retrieved_at"}
 
     @property
     def table_name(self) -> str:

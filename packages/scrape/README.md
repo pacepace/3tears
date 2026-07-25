@@ -11,7 +11,7 @@ pip install 3tears-scrape
 - **`ScrapeDriver`** -- a pluggable, backend-agnostic render contract (`RenderedPage`, `NavStep`, `NetworkCall`). Eight implementations ship: `NodriverSidecarDriver` (real headless Chromium via an isolated HTTP sidecar -- see `sidecar/`), `CamoufoxDriver` (in-process stealth Firefox, no sidecar needed), `DocumentDriver` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX via `3tears-agent-tools`' `parse_document`), `ApiDriver` (stateless JSON API GET), `NetworkCaptureDriver` (authenticated in-session XHR capture for pages whose real data never reaches a statelessly-fetchable API), `MultiDocumentDriver` (a listing of links that each point at one whole document rather than a row, fetched via an injected inner driver and concatenated into one combined page, skipping documents already seen on a prior poll), `ListingDetailDriver` (a listing table whose rows each link to a per-record detail page, resolved row-scoped and merged back into one flat synthetic table -- detail value preferred, listing value as fallback, neither fabricated), and `NodriverDownloadDriver` (a document behind a real bot challenge a plain HTTP client can't pass, fetched through the sidecar's forced-download endpoint).
 - **Four extraction-strategy shapes** (`eval_loop.StrategyType`) -- `css` selector candidates for real (or synthesized) HTML tables; `regex` candidates for text-block/prose pages with no table structure at all; `per_document` for independently-worded documents that share no template a single cached pattern could ever generalize across, which get a fresh extraction call each instead of a reused recipe; and `multi_row_vision` for a table whose own structure defeats text-based table extraction and needs the whole table read visually at once. All four run through the identical propose -> structurally-validate -> judge -> persist cycle; the judge only ever sees extracted values and real page content, never which mechanism produced them. Chosen explicitly per target, never auto-detected -- two superficially identical page shapes have needed opposite strategies.
 - **`run_eval_loop` / `run_eval_loop_multi_row`** -- the self-healing cycle itself: reuse a target's existing `ScrapeRecipe` with zero LLM calls while it keeps validating; only regenerate candidates once `consecutive_validation_failures` crosses a threshold.
-- **`ScrapeTarget` / `ScrapeRecipe` / `ScrapeExtraction`** -- the domain-agnostic persisted entities (three-tier L1/L2/L3-backed collections). The core never learns what a field *means* -- only that whatever a candidate extracts for a caller-supplied field name parses as its declared type.
+- **`ScrapeTarget` / `ScrapeRecipe` / `ScrapeExtraction` / `ScrapeTargetHealth`** -- the domain-agnostic persisted entities (three-tier L1/L2/L3-backed collections). `ScrapeTargetHealth` is per-target FETCH health, deliberately separate from the recipe: it exists for targets that never had a recipe at all, such as one walled off before it ever extracted successfully. The core never learns what a field *means* -- only that whatever a candidate extracts for a caller-supplied field name parses as its declared type.
 - **Pluggable target config** -- `TargetSource` (`StaticTargetSource` / `YamlTargetSource` / `CollectionTargetSource`) and `bootstrap_targets()` for seeding a database-backed target collection from a git-tracked YAML file, never overwriting a row already present.
 - **`ScrapeTool`** -- an ad-hoc, single-call MCP-exposed entry point: give it a URL and a field schema, get back real extracted data through the same eval loop, no target pre-configuration required.
 - **`enrichment.py`** -- a secondary, separate LLM pass capturing free-form context a structured schema has no field for, kept distinct from validated structured data.
@@ -72,12 +72,12 @@ flowchart TD
     K --> L[NATS subject: arbitrary_signals]
     L --> M[Downstream: scoreboard, retrospect, ...]
 
-    F -.-> N[(Postgres:<br/>scrape_targets / scrape_recipes /<br/>scrape_extractions -- provenance)]
+    F -.-> N[(Postgres:<br/>scrape_targets / scrape_recipes /<br/>scrape_extractions / scrape_target_health -- provenance)]
 ```
 
 Two Postgres-writing paths run **in parallel, not sequentially**:
 
-- **Provenance** (`scrape_targets`, `scrape_recipes`, `scrape_extractions`) -- what was fetched, what strategy won, when. Domain-agnostic, lives in this package.
+- **Provenance** (`scrape_targets`, `scrape_recipes`, `scrape_extractions`, `scrape_target_health`) -- what was fetched, what strategy won, when, and whether the fetch itself is healthy. Domain-agnostic, lives in this package.
 - **Signal** (`faidh_arbitrary_signals`) -- what faidh's forecasting actually reads. Faidh-specific, mapped by `WarnActPlugin._produce()`, stays in faidh.
 
 ### 2. The abstraction: `ScrapeTarget` is the entire adapter surface
@@ -139,9 +139,10 @@ In faidh's WARN Act consumer, every one of the ~24 onboarded states is one confi
 | Structural validation, all-or-nothing per record | `validate_candidate` / `validate_row_candidate` (+ regex variants), `extraction.py` -- no coercion, no defaults, a record missing even one requested field is **dropped entirely** | Oklahoma: 217 real records exist, only 128 survived -- the other 89 genuinely lack a workforce-region value on the page |
 | Schema omits what a page can't provide | `field_schema` per target -- never forces a value that isn't there | New York schema doesn't request `affected_count`/`effective_date` because its page has neither |
 | Judge does semantic verification, not just structural plausibility | `_judge_candidates` / `_judge_row_candidates`, `eval_loop.py` -- sees real page HTML + candidate values, told structural validity is already checked, job is *semantic correctness* | Georgia: an earlier schema mistakenly asked for `county`; judge rejected the resulting hallucinated-mapping candidate rather than accepting it |
-| Confirmed vs. best-guess survives to the signal | `ScrapeExtraction.validation_status` ∈ `validated` / `needs_review` / `failed` | `WarnActPlugin._produce()` logs a distinct warning for `needs_review` yields rather than treating them as confirmed |
+| Confirmed vs. best-guess survives to the signal | `ScrapeExtraction.validation_status` ∈ `validated` / `needs_review` / `failed` / `blocked` | `WarnActPlugin._produce()` logs a distinct warning for `needs_review` yields rather than treating them as confirmed |
+| "We never received the page" is not "the page was wrong" | `challenge.classify_failed_page`, `challenge.py` -- asked only once extraction has already failed, and only about a page that differs from the last one that worked; a `blocked` verdict persists `validation_status="blocked"` with no records and leaves the recipe untouched | A bot wall used to increment the same failure counter a redesign does, so three polls later the recipe was discarded and an LLM round spent learning to extract data from a challenge page |
 
-**Open tension, not fully resolved:** a `needs_review` record still gets yielded as a real signal -- "surface for review, never silently drop" beats "silently withhold," by deliberate design. But nothing downstream currently filters on `validation_status`. The signal *carries* the distinction; no consumer currently *reads* it. A consumer treating every signal as equally trustworthy today would be wrong to.
+**Open tension, not fully resolved:** a `needs_review` record still gets yielded as a real signal -- "surface for review, never silently drop" beats "silently withhold," by deliberate design. But nothing downstream currently filters on `validation_status`. The signal *carries* the distinction; no consumer currently *reads* it. A consumer treating every signal as equally trustworthy today would be wrong to. `blocked` widens that gap slightly: it is the one value that means *no data was produced and none should have been*, so a consumer that treats it as a failed extraction will over-count failures for a target that is merely walled.
 
 ### 5. Where new capabilities plug in
 
@@ -183,10 +184,14 @@ packages/scrape/src/threetears/scrape/
 ├── eval_loop.py               run_eval_loop()/run_eval_loop_multi_row(),
 │                              _judge_candidates()/_judge_row_candidates(),
 │                              _persist_extraction(), _save_recipe()
+├── challenge.py               PageVerdict, classify_failed_page() -- asks what a page that
+│                              failed extraction actually is; no vendor markers
+├── health.py                  ScrapeTargetHealth + collection, content_fingerprint(),
+│                              record_validated_fetch(), record_classification()
 ├── collections.py             ScrapeTarget/ScrapeRecipe/ScrapeExtraction (BaseEntity)
 │                              + BaseCollection subclasses (L1/L2/L3 via
 │                              threetears.core.backends.protocol.DurableStore)
-├── migrations.py               v001-v009, PACKAGE_NAME="3tears_scrape"
+├── migrations.py               v001-v010, PACKAGE_NAME="3tears_scrape"
 ├── target_source.py            TargetSource ABC, YamlTargetSource, CollectionTargetSource,
 │                              StaticTargetSource, bootstrap_targets()
 ├── page_finder.py              find_target_page() -- bounded-turn search/fetch research agent
@@ -204,7 +209,7 @@ faidh/src/faidh/intake/plugins/__init__.py                PluginBase.collect() -
 faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/Collection -- the actual Postgres sink
 ```
 
-**Call chain, one live poll cycle (faidh's WARN Act consumer):** `runner.publish_observations()` → `WarnActPlugin.collect()` (inherited `PluginBase`) → `WarnActPlugin._produce()` → resolves `self._drivers[target.driver_backend]` → `driver.render(...)` → `run_eval_loop_multi_row(...)` (or `run_eval_loop` if `multi_row=False`) → `_reuse_row_recipe`/`_regenerate_row_recipe` (or `_regex_` variants) → `_persist_extraction()` writes `scrape_extractions` → back in `_produce()`, each record becomes an `ArbitrarySignalEntity` → `collect()`'s `save_entity()` writes `faidh_arbitrary_signals` → `publish_arbitrary_signals()` re-drives `collect()` and publishes each yielded entity to `arbitrary_signals()` on NATS.
+**Call chain, one live poll cycle (faidh's WARN Act consumer):** `runner.publish_observations()` → `WarnActPlugin.collect()` (inherited `PluginBase`) → `WarnActPlugin._produce()` → resolves `self._drivers[target.driver_backend]` → `driver.render(...)` → `run_eval_loop_multi_row(...)` (or `run_eval_loop` if `multi_row=False`) → `_run_reuse_cycle` (re-runs the stored strategy; on a miss, classifies the page and routes) or `_regenerate` → `_persist_extraction()` writes `scrape_extractions` → back in `_produce()`, each record becomes an `ArbitrarySignalEntity` → `collect()`'s `save_entity()` writes `faidh_arbitrary_signals` → `publish_arbitrary_signals()` re-drives `collect()` and publishes each yielded entity to `arbitrary_signals()` on NATS.
 
 ## License
 

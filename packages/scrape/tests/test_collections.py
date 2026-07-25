@@ -354,10 +354,10 @@ class TestInMemoryL3FallbackWarning:
         clean slate rather than against test-execution order.
         """
         for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
-            cls._in_memory_l3_warned_tables = set()
+            cls._in_memory_l3_warned_tables = frozenset()
         yield
         for cls in (ScrapeTargetCollection, ScrapeRecipeCollection):
-            cls._in_memory_l3_warned_tables = set()
+            cls._in_memory_l3_warned_tables = frozenset()
 
     @staticmethod
     def _fallback_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:

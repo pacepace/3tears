@@ -29,6 +29,153 @@ the real failure: delete the scrape artifacts from a full build and it fails wit
 exactly that name. The republish procedure is documented in `CLAUDE.md` rather than
 only in a workflow comment, which is the defect that caused this.
 
+**Feature: per-target fetch health (`threetears.scrape`)** -- the eval loop has always
+remembered which extraction strategy won for a target, and nothing at all about the
+fetch: whether the page came back, whether it resembled the page the strategy was learned
+against, or whether a bot wall was served instead of content. All three of those failures
+currently increment the same counter and get the same response, which is why a blocked
+target burns through its failure threshold and spends an LLM candidate round learning to
+extract data from a challenge page, discarding a recipe that was never broken.
+
+New `ScrapeTargetHealth` entity and `scrape_target_health` table (migration `v010`),
+keyed by `target_id`. A separate table rather than columns on `scrape_recipes`, because
+health exists for targets that never had a recipe: one blocked before it ever extracted
+successfully has real health and no strategy, and giving it a strategy-less recipe row
+would need a guard so the reuse path never mistook that empty strategy for a real one.
+
+`content_fingerprint` is a digest of the page's readable text, stamped whenever an
+extraction validates, and it is the comparison value that lets a redesigned page be told
+apart from an unchanged one. Fingerprinting text rather than markup is deliberate: a site
+that reformats its template has not changed what it says, and a fingerprint that flipped on
+that would claim the site changed on every deploy the site makes. The circuit, backoff and
+sealed-session columns are created now because the shape is settled and one `CREATE` beats
+several `ALTER`s against a table this young.
+
+`run_eval_loop` and `run_eval_loop_multi_row` take an optional `health_collection`;
+omitted, as every existing caller omits it, nothing is written and nothing else differs.
+
+**Feature: a failed page is classified before it is acted on (`threetears.scrape`)** -- the
+fix for the recipe destruction described above. When a stored strategy stops matching, the
+eval loop now asks what the page actually is before deciding what the failure meant, and
+routes on the answer: a bot wall leaves the recipe byte-identical and persists an extraction
+with the new `validation_status` value `"blocked"`; a page that genuinely changed regenerates
+on the **first** failure instead of the third; anything else keeps today's behaviour exactly.
+
+Detection is a question, not a marker list. Matching a vendor's current interstitial markup
+is a hand-written parser for one page as it looks this week, and vendors reword these pages,
+so a fixture set captured today specifies nothing about tomorrow -- and the rot is silent in
+the worst direction, a stale marker meaning a blocked page is read as "the site changed" and
+its recipe burned. New `threetears.scrape.challenge` holds the verdict model and the prompt;
+it contains no vendor string, so a wall it has never seen classifies on meaning.
+
+Cost, stated honestly rather than as a slogan. Classification is never the first question
+asked. A page whose readable text is identical to the one the strategy last validated
+against provably has not changed and provably is not a new wall, so it counts the failure for
+zero model calls, exactly as today. A page already classified reuses its verdict from the new
+`classified_fingerprint` / `classified_verdict` / `classified_evidence` columns. Only a page
+that is both different and unseen costs a call -- one, in exchange for the entire
+candidate-generation round a blocked target burns today, and for regenerating two polls sooner
+when the site really did change. A cached `"changed"` verdict also records that regeneration
+has already been tried against that exact page, which is what stops an unlearnable page burning
+a candidate round every poll.
+
+The verdict cache bounds cost only for a wall that renders the same bytes each time. The
+fingerprint digests visible text, and a real Cloudflare interstitial renders a per-request Ray
+ID into exactly that, so such a target costs one classification **per poll** rather than one
+while walled. Still cheaper than the candidate round it replaces, and it no longer destroys the
+recipe, but not a bounded cost. Normalising ids out of the fingerprint was rejected: it puts
+vendor-shaped pattern matching back into the one place this design removed it, and would
+suppress genuine content changes that happen to look like ids. What bounds a walled target is
+not fetching it every poll, which is the circuit backoff still to come.
+
+Both entry points take an optional `page_status` (real evidence for the classifier, though
+rarely decisive since most walls return 200) and `classifier_model_id`. A classifier that
+cannot answer degrades to precisely today's behaviour: an unanswerable question is never
+more destructive than not having asked one.
+
+`ScrapeTool.__init__` gains a matching optional `health_collection`, and forwards
+`page_status` from the page it just rendered. Both are keyword-only and default to the old
+behaviour, so no existing construction changes. Without this the feature had no caller in
+this repo at all: the tool was holding the status and passing neither, which makes a
+parameter plumbing rather than a capability.
+
+**Operator-visible log strings changed** in the strategy collapse, which is worth stating
+because anything grepping them will stop matching. The per-strategy reuse and no-survivor
+messages are now prefixed by the shape's own label rather than hand-written per function, so
+`scrape row recipe reuse: ...` reads `scrape row eval loop recipe reuse: ...`, and the regex
+row variant reports `rows_matched=` where it said `matches=`. Same events, same fields, same
+frequency. A spent classification call also now logs before and after, so a fresh
+`content`/`empty`/`other` verdict is no longer invisible -- previously only the free cached
+path announced itself, which is backwards for the one branch that costs money.
+
+The four recipe-reuse paths were restructured into pure validators plus one shared commit,
+and the four "no structurally valid candidates" branches into one shared helper, so the
+classification hook exists once per family rather than eight times. The regex strategies were
+not an afterthought here -- a regex target behind a wall loses its recipe exactly as a CSS one
+does, and hooking only the two paths originally named would have left that intact.
+
+`v010` gained the three `classified_*` columns rather than a `v011` adding them, since the
+table had not shipped and no database outside a test container had run it -- verified, not
+assumed: no `scrape_*` table and no `3tears_scrape` migration row existed in any local
+database. A database that HAD applied an earlier `v010` would not pick the columns up, since
+the version is already recorded as applied, and would need dropping.
+
+**The four cached-recipe strategies are now one implementation.** CSS or regex, single record
+or many rows, used to be eight functions: a reuse checker and a ~90-line regeneration body
+apiece, differing only in which generator and validator they called and how they wrapped a
+winning candidate. Adding the classification hook meant touching all of them, which is what
+made the duplication expensive rather than untidy. They are now a `_StrategyShape` record of
+the genuine differences plus one shared reuse cycle and one shared regeneration body -- 197
+lines lighter, and a fifth shape would inherit the classification routing, the judging and
+the persistence by construction.
+
+One behaviour needed care and is pinned by two tests: the row shapes surfaced the survivor
+capturing the most records when the judge confirmed nothing, while the single-record shapes
+took the first proposed. The shared body uses max-by-record-count for both, which is only
+equivalent because every single-record survivor holds exactly one record and `max` returns
+the first maximal element. Both tests fail if that rule is changed in either direction.
+
+**Tooling: the typecheck gate now covers every package that passes it.** `scripts/typecheck.sh`
+went from 13 mypy targets over 315 files to 22 over 449, adding `scrape` plus `nats`,
+`observe`, `registry`, `epoch`, `scheduled-jobs`, `enforcement`, `agent.acl` and
+`agent.audit`. Four pre-existing errors are fixed rather than silenced: an unannotated
+`frozenset` and an optional decode bound onto a `str` in scrape, an `Any` return and a stale
+`type: ignore` in observe. Two bare `except: pass` in observe's telemetry shutdown gained the
+waiver pragma and the reason they are genuinely silent -- that path is the logging subsystem
+being torn down, with its handler already detached, so it has nowhere left to report to.
+
+Five packages still fail strict mypy and are deliberately still absent, with their counts
+recorded in the script beside the list: `models` 116, `conversations` 10, `agent.workspace` 8,
+`langgraph` 6, `mcp` 4. Listing a package before it passes would turn the gate red for
+everyone, which is how a not-yet-checked package becomes a permanently skipped one.
+
+**Behaviour change, all four `threetears.scrape` collections** -- `deserialize` now returns
+`datetime` where it returned `str` for every TIMESTAMPTZ column. `BaseCollection` documents
+`deserialize` as where a subclass restores typed fields, and this one was a bare `json.loads`
+against a `serialize` that writes `default=str`, so a row read through L2 differed in type
+from the identical row read through L1 or L3. Invisible while such a row is only read, since
+the entity accessors already parsed on the way out. Not invisible when one is written back:
+an update fences on the row's own `date_updated` as an optimistic lock against a TIMESTAMPTZ
+column, and a string bound there fails at the asyncpg border. Both read-modify-write paths in
+the package were exposed, by different routes: `enrichment.enrich_extraction` rebuilds its row
+through `create()`, so it binds no fence and would have failed on `retrieved_at` entering the
+upsert's VALUES as a string; the new health merge rebuilds as an existing entity and fails on
+the fence itself, where its own non-fatal handling would have swallowed the error and quietly
+stopped updating fingerprints. Each collection declares its
+`datetime_columns`, and a test asserts those match the TIMESTAMPTZ columns the migrations
+create, in both directions. A caller that was reading these fields off the raw row dict and
+expecting a string will now get a `datetime`; one using the entity accessors sees no change.
+
+**Testing: `packages/scrape` gets its first integration suite** -- `link_selector` shipped
+broken because the package had no test that touched a real database, and
+`ScrapeCollection` falls back to an in-memory dict that has no schema to violate. The new
+suite applies the real migrations to real Postgres and round-trips a row through the
+production collection. Both guards were verified to discriminate by deleting a column:
+the integration test raises `asyncpg.UndefinedColumnError` and the offline drift guard
+names the missing column. The drift guard now also discovers its entity-to-table pairings
+from the collections themselves, so a collection added later is guarded the moment it
+exists rather than when someone remembers to add a fourth copy of the test.
+
 **Fix: missing `link_selector` DDL column (`threetears.scrape`)** -- `ScrapeTarget`
 exposed a persisted `link_selector` field with no matching `scrape_targets` column,
 so a `multi_document` target seeded from YAML raised `asyncpg.UndefinedColumnError`

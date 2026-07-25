@@ -195,6 +195,66 @@ async def v009_target_link_selector(store: DataStore) -> None:
     await store.execute("ALTER TABLE scrape_targets ADD COLUMN IF NOT EXISTS link_selector TEXT")
 
 
+async def v010_create_scrape_target_health(store: DataStore) -> None:
+    """Create ``scrape_target_health`` -- per-target fetch health, one row per target.
+
+    Column shape matches ``ScrapeTargetHealth`` (``health.py``) exactly. A separate table
+    rather than more columns on ``scrape_recipes`` because health exists for targets that
+    have never had a recipe: one blocked before it ever extracted successfully has real
+    health and no strategy, and giving it a strategy-less recipe row would mean adding a
+    guard so the reuse path never mistakes that empty strategy for a real one.
+
+    Every column is nullable or defaulted, so a row can be created knowing only the
+    ``target_id``. ``date_created``/``date_updated`` are present because
+    ``BaseCollection.save_entity()`` stamps both on every upsert regardless of what the
+    entity class exposes; omitting them raises ``asyncpg.UndefinedColumnError`` on the
+    first real write.
+
+    The block/circuit/session columns are created here rather than added later: the shape
+    is already settled, and one CREATE beats several ALTERs against a table this young. The
+    code that writes them lands with the backoff and human-in-the-loop work.
+
+    The three ``classified_*`` columns joined this CREATE after the table was first written,
+    on that same reasoning, while the branch introducing it was still unmerged and unpushed.
+    That was checked rather than assumed: no ``scrape_*`` table and no ``3tears_scrape`` row
+    existed in any local database, because the only thing that has ever run this migration
+    is the integration suite's throwaway container. A database that HAD applied an earlier
+    form of v010 would not pick the new columns up, since the version is already recorded as
+    applied, and would need dropping. Once this ships, the same change has to be an ALTER in
+    a later version instead.
+    """
+    await store.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_target_health (
+            target_id                   TEXT        NOT NULL,
+            content_fingerprint         TEXT,
+            fingerprint_updated_at      TIMESTAMPTZ,
+            consecutive_fetch_failures  INTEGER     NOT NULL DEFAULT 0,
+            circuit_state               TEXT        NOT NULL DEFAULT 'closed',
+            blocked_until               TIMESTAMPTZ,
+            last_blocked_at             TIMESTAMPTZ,
+            last_block_kind             TEXT,
+            classified_fingerprint      TEXT,
+            classified_verdict          TEXT,
+            classified_evidence         TEXT,
+            session_state_sealed        TEXT,
+            session_state_expires_at    TIMESTAMPTZ,
+            date_created                TIMESTAMPTZ,
+            date_updated                TIMESTAMPTZ,
+            PRIMARY KEY (target_id)
+        )
+    """)
+    # Will answer "which targets are currently walled off", the one query an operator runs
+    # against this table that is not a primary-key lookup. It returns the empty set today
+    # and will keep doing so until something writes ``circuit_state`` -- said here plainly
+    # because an index whose comment describes a working operator query is exactly the kind
+    # of thing that gets trusted and then quietly reports "no targets are blocked" while
+    # several are.
+    await store.execute(
+        "CREATE INDEX IF NOT EXISTS scrape_target_health_circuit_state "
+        "ON scrape_target_health (circuit_state) WHERE circuit_state <> 'closed'"
+    )
+
+
 def register(runner: MigrationRunner) -> PackageMigrations:
     """Register every 3tears-scrape migration version with the given runner.
 
@@ -213,6 +273,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(7)(v007_target_api_config)
     pkg.version(8)(v008_target_timeout_seconds)
     pkg.version(9)(v009_target_link_selector)
+    pkg.version(10)(v010_create_scrape_target_health)
     runner.register(pkg)
     return pkg
 

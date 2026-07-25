@@ -12,7 +12,26 @@ cd "$REPO_ROOT"
 #
 # This is the SINGLE SOURCE OF TRUTH for the mypy target set: CI calls this
 # script (see .github/workflows/ci.yml) so the two can never drift apart.
-MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/langgraph/src:packages/media-contracts/src:packages/object-store/src:packages/backup/src:packages/geo/src \
+#
+# The target list is narrower than ``[tool.mypy] files`` in pyproject.toml, and the
+# gap is a known, measured backlog item rather than an oversight. Every package that
+# passes strict mypy today IS listed here, so none of them can regress. Five are
+# absent because they do not pass yet, with the error count each would contribute
+# when this was last measured (2026-07-25):
+#
+#   threetears.models              116    (by far the bulk of the remaining work)
+#   threetears.conversations        10
+#   threetears.agent.workspace       8    (mostly one L3Backend | None narrowing pattern)
+#   threetears.langgraph             6
+#   threetears.mcp                   4
+#
+# That is the whole remainder: every other package in `[tool.mypy] files` is listed
+# below. Tracked as TYP-8H5R.
+#
+# Add each one HERE as it is fixed, in the same change that fixes it. Adding a
+# package before it passes turns the gate red for everyone, which is how a
+# not-yet-checked package becomes a permanently-skipped one.
+MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/backup/src:packages/geo/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
@@ -28,5 +47,14 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.media.contracts \
         -p threetears.object_store \
         -p threetears.backup \
+        -p threetears.scrape \
+        -p threetears.registry \
+        -p threetears.epoch \
+        -p threetears.scheduled_jobs \
+        -p threetears.enforcement \
+        -p threetears.agent.acl \
+        -p threetears.agent.audit \
+        -p threetears.nats \
+        -p threetears.observe \
         -p threetears.geo \
         "$@"
