@@ -108,6 +108,29 @@ def _register_builtin_tools(server: ToolServer) -> None:
                 "skipping web_search (missing dependency)",
                 extra={"extra_data": {"tool": "threetears.web_search"}},
             )
+    else:
+        # ACCOUNTED FOR, not silently absent. Without this branch an unset
+        # THREETEARS_SEARXNG_URL dropped web_search with no counter, no reason and no
+        # log line, so the summary below reported e.g. "registered: 8, skipped: 3" --
+        # a total that reads as complete and leaves nothing to notice. An operator
+        # sees a healthy pod, the agent's readiness gate does not wait for a tool that
+        # never entered the catalog, and the only symptom is an agent that quietly
+        # cannot search. Every other skip path here reports itself; this one now does
+        # too, and names the variable that turns it back on.
+        skipped_count += 1
+        skipped_reasons.append("web_search: THREETEARS_SEARXNG_URL not set (no SearXNG endpoint)")
+        _logger.warning(
+            "skipping web_search (THREETEARS_SEARXNG_URL not set)",
+            extra={
+                "extra_data": {
+                    "tool": "threetears.web_search",
+                    "hint": (
+                        "set THREETEARS_SEARXNG_URL to a reachable SearXNG base url "
+                        "(e.g. http://searxng:8080) to serve web_search from this pod"
+                    ),
+                }
+            },
+        )
 
     try:
         from threetears.agent.tools.document import ParseDocumentTool
