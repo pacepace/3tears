@@ -682,7 +682,8 @@ class ScrapeCollection(BaseCollection[EntityT]):
         That asymmetry is only cosmetic while such a row is read. It becomes a real fault
         when one is written BACK: an update fences on the row's own ``date_updated`` as an
         optimistic lock, rendered as ``WHERE date_updated = $n`` against ``TIMESTAMPTZ``,
-        and a string bound there fails at the asyncpg border. Every read-modify-write path
+        and a string bound there fails at the asyncpg border.
+
         Every read-modify-write path in this package is exposed, though not identically.
         :func:`~threetears.scrape.enrichment.enrich_extraction` rebuilds its row through
         ``create()``, so it binds no fence at all and would instead have failed on
