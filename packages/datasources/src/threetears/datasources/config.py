@@ -72,6 +72,7 @@ from pydantic import (
     model_validator,
 )
 
+from threetears.datasources.geo_config import GeoConfig
 from threetears.datasources.entities import DataSourceType
 from threetears.datasources.secrets import resolve_secret, validate_ref
 
@@ -628,12 +629,19 @@ class DatasourceConfig(BaseModel):
         discriminated on ``datasource_type``). ``None`` on the
         reference shape; required on the definition shape
     :ptype connection_config: ConnectionConfig | None
+    :param geo: tileable layers, when this datasource carries geography.
+        declared here rather than in product code so a mapping application
+        supplies configuration and no map plumbing
+    :ptype geo: GeoConfig | None
     """
 
     name: str
     access_mode: str = "readwrite"
     schemas: list[str] = Field(default_factory=list)
     connection_config: ConnectionConfig | None = None
+    #: tileable layers on this datasource. absent for the overwhelming
+    #: majority of datasources, which are not geographic.
+    geo: GeoConfig | None = None
 
     # reject extra keys so a typo in the reference shape ("acccess_mode")
     # surfaces at load time instead of silently shipping the default.

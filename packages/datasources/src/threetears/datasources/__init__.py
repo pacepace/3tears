@@ -54,6 +54,16 @@ from threetears.datasources.collections import (
     DataSourceTableCollection,
     TableTemplateCollection,
 )
+from threetears.datasources.geo_config import (
+    AggregateBandConfig,
+    CacheClassConfig,
+    FeatureBandConfig,
+    GeoConfig,
+    GeoLayerConfig,
+    GeometryConfig,
+    GeometryKind,
+    MeasureAggregation,
+)
 from threetears.datasources.config import (
     AgentInternalConnectionConfig,
     BigQueryConnectionConfig,
@@ -89,6 +99,14 @@ from threetears.datasources.namespace import (
 from threetears.datasources.schema_priming import SchemaPrimingIntegration
 
 __all__ = [
+    "MeasureAggregation",
+    "GeometryKind",
+    "GeometryConfig",
+    "GeoLayerConfig",
+    "GeoConfig",
+    "FeatureBandConfig",
+    "CacheClassConfig",
+    "AggregateBandConfig",
     "DATASOURCE_NAMESPACE_TYPE",
     "AgentInternalConnectionConfig",
     "BigQueryConnectionConfig",
