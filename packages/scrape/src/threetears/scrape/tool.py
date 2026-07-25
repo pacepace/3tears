@@ -37,6 +37,7 @@ from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, dec
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
+from .health import ScrapeTargetHealthCollection
 
 __all__ = ["ScrapeTool"]
 
@@ -77,6 +78,7 @@ class ScrapeTool(TearsTool):
         extraction_collection: ScrapeExtractionCollection,
         drivers: dict[str, ScrapeDriver],
         api_key: str,
+        health_collection: ScrapeTargetHealthCollection | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -84,6 +86,11 @@ class ScrapeTool(TearsTool):
         :ptype recipe_collection: ScrapeRecipeCollection
         :param extraction_collection: where each call's extraction result is persisted
         :ptype extraction_collection: ScrapeExtractionCollection
+        :param health_collection: per-target fetch health. Supplying it opts this tool into
+            telling a bot wall apart from a site redesign, so a blocked target keeps its
+            recipe instead of burning it; omitted, every failure counts the same way it
+            always has
+        :ptype health_collection: ScrapeTargetHealthCollection | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -94,6 +101,7 @@ class ScrapeTool(TearsTool):
         """
         self._recipe_collection = recipe_collection
         self._extraction_collection = extraction_collection
+        self._health_collection = health_collection
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -288,8 +296,12 @@ class ScrapeTool(TearsTool):
                 schema,
                 recipe_collection=self._recipe_collection,
                 extraction_collection=self._extraction_collection,
+                health_collection=self._health_collection,
                 api_key=self._api_key,
                 strategy_type=strategy_type,
+                # The driver already knows the status; not passing it would leave the
+                # classifier guessing about evidence we are holding.
+                page_status=page.status,
             )
             records: list[dict[str, Any]] = extraction.structured_fields.get("records", [])
             content = json.dumps(

@@ -680,6 +680,54 @@ async def test_a_verdict_that_cannot_be_cached_is_still_acted_on(
     assert recipe.consecutive_validation_failures == 0
 
 
+async def test_the_page_status_reaches_the_prompt_from_the_entry_point(
+    collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
+) -> None:
+    """A parameter accepted and quietly dropped is worse than one that was never added.
+
+    ``page_status`` crosses eight hops between the entry point and the prompt, and asserting
+    only that :func:`build_classification_prompt` renders it proves nothing about whether
+    anything reaches it. This captures the prompt the model was actually handed. Chunk 01
+    shipped a parameter wired into one of two entry points on exactly this basis, so the
+    single-row entry point is checked too rather than assumed to match.
+    """
+    recipes, extractions, health = collections
+    for name, entry_point, strategy in (
+        ("rows", run_eval_loop_multi_row, _ROW_STRATEGY),
+        ("single", run_eval_loop, _SINGLE_STRATEGY),
+    ):
+        await seed_recipe(recipes, name, strategy)
+        seen: list[Any] = []
+
+        def _capture(*_args: Any, **_kwargs: Any) -> Any:
+            def _with_structured_output(_schema: type, **_kw: Any) -> Any:
+                async def _ainvoke(prompt: Any) -> PageVerdict:
+                    seen.append(prompt)
+                    return _BLOCKED
+
+                return SimpleNamespace(ainvoke=_ainvoke)
+
+            return SimpleNamespace(with_structured_output=_with_structured_output)
+
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_capture):
+            await entry_point(
+                name,
+                _WALL,
+                "https://example.gov/warn",
+                _SCHEMA,
+                recipe_collection=recipes,
+                extraction_collection=extractions,
+                health_collection=health,
+                api_key="k",
+                page_status=503,
+            )
+
+        assert seen, f"{name} never reached the classifier"
+        assert "HTTP status 503" in seen[0], (
+            f"{name} dropped page_status somewhere between the entry point and the prompt"
+        )
+
+
 async def test_a_stored_verdict_nobody_recognises_is_re_asked_not_acted_on(
     collections: tuple[ScrapeRecipeCollection, ScrapeExtractionCollection, ScrapeTargetHealthCollection],
 ) -> None:

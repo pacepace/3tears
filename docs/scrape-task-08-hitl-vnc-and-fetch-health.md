@@ -147,12 +147,32 @@ added call". That does not survive contact with the actual paths, so the honest 
 | Reuse fails, page identical to the last validated one | 0 | 0, the fingerprint comparison is free and settles it |
 | Reuse fails, page differs, first time | 0 | **1** (the classification) |
 | Reuse fails, page differs, later polls | 0 | 0, cached verdict |
-| Blocked target, over the polls it takes to cross the threshold | a full candidate-generation-plus-judge round, and a destroyed recipe | 1 classification, ever, and the recipe intact |
+| Blocked target whose wall page is byte-stable | a full candidate-generation-plus-judge round, and a destroyed recipe | 1 classification, and the recipe intact |
+| Blocked target whose wall page carries a per-request token | the same destroyed recipe | 1 classification **per poll**, and the recipe intact |
 | Genuinely changed target | generation+judge on the third failing poll | 1 classification + generation+judge on the *first* |
 
 So one classification is genuinely added at the moment a target's page first stops matching, and
 it buys back the entire regeneration round on every blocked target plus two polls of latency on
 every changed one. That is the trade, and it is worth making. Claiming it is free is not.
+
+**The cache does not bound a blocked target's cost, and this section previously claimed it
+did.** The fingerprint digests the page's readable text, and a real Cloudflare interstitial
+renders a per-request Ray ID into exactly that text. So the fingerprint changes on every poll,
+the cache never hits, and a walled target costs one classification per poll rather than one
+ever. The claim was written before that was checked.
+
+Three responses were considered. Normalising ids out of the fingerprint reintroduces
+vendor-shaped pattern matching in the one place this design rejected it, and would silently
+suppress genuine content changes that happen to look like ids. Fingerprinting structure rather
+than text trades one brittleness for another. The response actually taken is **none, here**:
+what bounds the cost of a walled target is not fetching it on every poll, which is
+`blocked_until` and the circuit backoff in section 3. Until that lands, a walled target costs
+one classification per poll -- cheaper than today's candidate round, and no longer destroying
+the recipe, but not the bounded cost the earlier wording promised.
+
+The same limit applies to a target walled before it ever won a recipe: it reaches
+classification only after paying a full `generate_candidates` round, because there is no
+stored strategy to fail fast. Backoff is the answer there too.
 
 **Three checks, cheapest first, and only the last one costs anything.** Classification is never
 the first question asked on a failure:
@@ -162,7 +182,9 @@ the first question asked on a failure:
    have different content. Count the failure exactly as today and spend nothing. This is the free
    path, and it is the common one.
 2. **Have we already classified this exact page?** (`classified_fingerprint`.) If so, reuse that
-   verdict.
+   verdict. This hits for a wall that renders the same bytes every time, and misses for one
+   that stamps a per-request id into its text -- see the ledger above for why that is left to
+   backoff rather than papered over here.
 3. **Otherwise, ask.** One classification call, cached against the fingerprint of the page it judged.
 
 A cache hit is also the answer to "we already regenerated against this page and it did not
@@ -170,9 +192,10 @@ stick": a repeat `changed` verdict for the same fingerprint routes to counting t
 to regenerating again. Without that, an unlearnable page would burn a generation round every
 single poll, which is strictly worse than the three-poll cadence it replaced.
 
-**The fingerprint stops it repeating.** The verdict is stored with the fingerprint of the page it
-judged (§2). Same fingerprint next poll, same verdict, no call. A target walled for a week costs
-one classification, not seven.
+**The fingerprint stops it repeating, where the page repeats.** The verdict is stored with the
+fingerprint of the page it judged (§2). Same fingerprint next poll, same verdict, no call. A
+wall that renders identically therefore costs one classification for as long as it stands; one
+that stamps a per-request id into its visible text does not, and is bounded by backoff instead.
 
 **Markers, if used at all, are a fast path and never the authority.** A cheap obvious-case check
 may skip the LLM call, but it is only ever allowed to *shortcut* to the same verdict the

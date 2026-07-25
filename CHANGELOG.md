@@ -49,13 +49,21 @@ Cost, stated honestly rather than as a slogan. Classification is never the first
 asked. A page whose readable text is identical to the one the strategy last validated
 against provably has not changed and provably is not a new wall, so it counts the failure for
 zero model calls, exactly as today. A page already classified reuses its verdict from the new
-`classified_fingerprint` / `classified_verdict` / `classified_evidence` columns, so a target
-walled for a week costs one classification rather than seven. Only a page that is both
-different and unseen costs a call -- one, in exchange for the entire candidate-generation
-round a blocked target burns today, and for regenerating two polls sooner when the site
-really did change. A cached `"changed"` verdict also records that regeneration has already
-been tried against that exact page, which is what stops an unlearnable page burning a
-candidate round every poll.
+`classified_fingerprint` / `classified_verdict` / `classified_evidence` columns. Only a page
+that is both different and unseen costs a call -- one, in exchange for the entire
+candidate-generation round a blocked target burns today, and for regenerating two polls sooner
+when the site really did change. A cached `"changed"` verdict also records that regeneration
+has already been tried against that exact page, which is what stops an unlearnable page burning
+a candidate round every poll.
+
+The verdict cache bounds cost only for a wall that renders the same bytes each time. The
+fingerprint digests visible text, and a real Cloudflare interstitial renders a per-request Ray
+ID into exactly that, so such a target costs one classification **per poll** rather than one
+while walled. Still cheaper than the candidate round it replaces, and it no longer destroys the
+recipe, but not a bounded cost. Normalising ids out of the fingerprint was rejected: it puts
+vendor-shaped pattern matching back into the one place this design removed it, and would
+suppress genuine content changes that happen to look like ids. What bounds a walled target is
+not fetching it every poll, which is the circuit backoff still to come.
 
 Both entry points take an optional `page_status` (real evidence for the classifier, though
 rarely decisive since most walls return 200) and `classifier_model_id`. A classifier that

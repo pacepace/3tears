@@ -433,6 +433,12 @@ async def _commit_blocked(
 
     No records are persisted either. There were none; a wall has no data on it, and writing
     an empty extraction with a status that says so is the honest description.
+
+    The verdict rides in ``field_confidences``, which is a stretch of that column's name and
+    is deliberate rather than accidental. It is the row's existing free-form JSONB slot for
+    "what the eval loop thought about this extraction", it is already the only such slot, and
+    an operator looking at a blocked row needs the page's own words in front of them. The
+    alternative was a column that only one status ever populates.
     """
     log.warning(
         "scrape eval loop: target %s appears to be behind a wall (%s); recipe left untouched",
@@ -469,12 +475,20 @@ async def _resolve_failure_verdict(
        the page provably has not changed, and provably is not a new wall either, because a
        wall would not digest to the same content. Nothing to ask. This is the common case on
        a transient miss and it stays exactly as cheap as it is today.
-    2. **Have we already asked about this exact page?** A cached verdict answers for free. A
-       target walled for a week therefore costs one classification, not one per poll. It
+    2. **Have we already asked about this exact page?** A cached verdict answers for free. It
        also records that we have already ACTED on this page, which is what stops a
        ``"changed"`` verdict regenerating on every poll after a regeneration that did not
        stick.
     3. **Otherwise ask**, once, and cache the answer against the page it was about.
+
+    Known limit, because the cost of a wall is easy to overstate: check 2 only hits for a
+    wall that renders identically each time. The fingerprint digests visible text, and a real
+    Cloudflare interstitial puts a per-request Ray ID in exactly that, so such a target
+    re-asks every poll. That is deliberately not solved by normalising ids out of the
+    fingerprint, which would put vendor-shaped pattern matching back into the one place this
+    design removed it and would suppress real content changes that happen to look like ids.
+    What bounds a walled target is not fetching it every poll -- the circuit backoff that
+    consumes ``blocked_until``, which this does not implement.
 
     ``None`` means "no opinion", and every caller must treat it as exactly today's
     behaviour. It is returned when there is no health store to consult, when the page is
