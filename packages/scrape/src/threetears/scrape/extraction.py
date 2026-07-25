@@ -809,9 +809,13 @@ def _best_discovery_result(
 
     Unlike the schema-known path, there's no external ground truth to judge
     semantic correctness against (the LLM invented the fields) -- "most
-    fields validated" is the honest, objective, comparable signal, the same
-    kind of tiebreak ``_regenerate_row_recipe``'s own ``needs_review``
-    fallback already uses.
+    fields validated" is the honest, objective, comparable signal. The eval
+    loop reaches for the same shape of tiebreak when its judge confirms
+    nothing and it has to surface something for review: prefer the candidate
+    that captured the most, rather than the one that happened to be proposed
+    first. Stated as the principle rather than as a cross-reference, because
+    the function that held it has since been folded into one shared
+    regeneration body and the rule itself was tightened in the move.
     """
     best: DiscoverySchemaResult = DiscoverySchemaResult(validated=False)
     for proposals, validation in proposals_and_validations:

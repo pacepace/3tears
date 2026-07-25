@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Final, Generic, Literal, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
+from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -130,6 +131,37 @@ class BaseCollection(ABC, Generic[EntityT]):
         self.l3_pool = registry.get_l3_pool(self.table_name)
         # Auto-register
         registry.register(self)
+
+    @property
+    def required_l3_pool(self) -> L3Backend:
+        """:attr:`l3_pool`, or a clear failure saying why it had to be there.
+
+        For the raw-SQL escape hatch. :attr:`l3_pool` is legitimately ``None`` -- a
+        collection can be configured on L1+L2 alone -- so every ad-hoc query has to
+        establish that it is not, and the documented instruction is to guard rather than
+        assume. In practice the guard was routinely skipped, because ``await
+        self.l3_pool.fetch(...)`` reads fine and only fails when someone actually
+        constructs the collection without L3. What they then get is
+        ``AttributeError: 'NoneType' object has no attribute 'fetch'`` from inside a query
+        method, which says nothing about the real mistake.
+
+        A query written in SQL cannot degrade to "no L3" in any meaningful way, so the
+        honest behaviour is to fail immediately and say what is missing. Use this wherever
+        the query genuinely requires the backend; keep ``if self.l3_pool is not None`` for
+        the callers that have a real fallback.
+
+        :return: the L3 backend handle, guaranteed non-``None``
+        :rtype: L3Backend
+        :raises RuntimeError: when this collection has no L3 backend configured
+        """
+        if self.l3_pool is None:
+            raise RuntimeError(
+                f"{type(self).__name__} (table {self.table_name!r}) needs an L3 backend for this "
+                "query, but none is configured. Raw SQL has no meaningful L1/L2-only fallback -- "
+                "either configure an L3 pool on the CollectionRegistry, or call a Collection API "
+                "method that can serve from cache instead."
+            )
+        return self.l3_pool
 
     @property
     @abstractmethod

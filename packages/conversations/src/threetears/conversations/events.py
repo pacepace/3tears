@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from threetears.langgraph.events import FrameworkEvent, default_registry
+from threetears.langgraph.events import FrameworkEvent, FrameworkEventRegistry, default_registry
 
 __all__ = ["ConversationSummarizedEvent"]
 
@@ -58,7 +58,7 @@ class ConversationSummarizedEvent(FrameworkEvent):
     persisted: bool = False
 
 
-def _register_conversations_events(registry: object) -> None:
+def _register_conversations_events(registry: FrameworkEventRegistry) -> None:
     """register conversation-lifecycle events into ``registry``.
 
     invoked at import time against

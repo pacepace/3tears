@@ -9,8 +9,12 @@ this tool is a thin wrapper over.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.tool import ScrapeTool, _derive_target_id
 from threetears.core.collections.registry import CollectionRegistry
@@ -46,10 +50,17 @@ _SINGLE_HTML = "<html><body><table><tr><td>Acme Corp</td><td>42</td></tr></table
 
 # parity-with: threetears.scrape.driver.ScrapeDriver
 class _FakeDriver:
-    def __init__(self, html: str, final_url: str = "https://example.gov/warn", raise_exc: Exception | None = None):
+    def __init__(
+        self,
+        html: str,
+        final_url: str = "https://example.gov/warn",
+        raise_exc: Exception | None = None,
+        status: int = 200,
+    ):
         self._html = html
         self._final_url = final_url
         self._raise_exc = raise_exc
+        self._status = status
         self.render_calls: list[str] = []
         self.wait_for_calls: list[str | None] = []
         self.nav_steps_calls: list[list[NavStep] | None] = []
@@ -72,7 +83,7 @@ class _FakeDriver:
         self.nav_steps_calls.append(nav_steps)
         if self._raise_exc is not None:
             raise self._raise_exc
-        return RenderedPage(html=self._html, status=200, final_url=self._final_url, timing_ms=1.0)
+        return RenderedPage(html=self._html, status=self._status, final_url=self._final_url, timing_ms=1.0)
 
 
 def _collections():
@@ -238,8 +249,9 @@ class TestScrapeToolExecute:
         recipe_collection, extraction_collection = _collections()
         target_id = _derive_target_id("https://example.gov/warn", {"employer": "str", "affected_count": "int"})
         # single-record recipes wrap their strategy in a {"selectors": ...}
-        # envelope (see eval_loop._reuse_recipe/_regenerate_recipe) -- unlike
-        # multi-row recipes, which store the strategy dict directly.
+        # envelope -- unlike multi-row recipes, which store the strategy dict
+        # directly. Both shapes declare that wrapping on their own
+        # eval_loop._StrategyShape (as_strategy / from_strategy).
         await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
         driver = _FakeDriver(_SINGLE_HTML)
         tool = ScrapeTool(
@@ -349,3 +361,80 @@ class TestScrapeToolExecute:
         recipe = await recipe_collection.get(target_id)
         assert recipe is not None
         assert recipe.consecutive_validation_failures == 0
+
+
+class TestScrapeToolFetchHealth:
+    """The tool is this repo's only in-tree consumer of the eval loop.
+
+    A parameter the entry point accepts but nothing in the repo ever passes is plumbing, not
+    a feature, and it rots without anything noticing. These two tests are what make the
+    classification path reachable from a real caller rather than only from a test that calls
+    the eval loop directly.
+    """
+
+    async def test_a_wall_keeps_the_recipe_when_a_health_collection_is_supplied(self):
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        target_id = _derive_target_id("https://example.gov/walled", {"employer": "str"})
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+        driver = _FakeDriver("<html><body><h1>Checking your browser</h1></body></html>", status=503)
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            drivers={"nodriver": driver},
+            api_key="k",
+        )
+        verdict = PageVerdict(
+            kind="blocked", evidence="the page asks the visitor to verify a browser", confidence="high"
+        )
+        seen: list[str] = []
+
+        def _capture(*_args, **_kwargs):
+            def _with_structured_output(_schema, **_kw):
+                async def _ainvoke(prompt):
+                    seen.append(prompt)
+                    return verdict
+
+                return SimpleNamespace(ainvoke=_ainvoke)
+
+            return SimpleNamespace(with_structured_output=_with_structured_output)
+
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_capture):
+            result = await tool.execute(url="https://example.gov/walled", field_schema={"employer": "str"})
+
+        assert json.loads(result.content)["validation_status"] == "blocked"
+        assert not result.success, "a walled fetch produced no records and must not report success"
+        # A caller that cannot tell a wall from a broken extraction will retry forever and
+        # count it against the target. `error` is the field a failed ToolResult is read
+        # through, so the distinction has to survive there rather than only in metadata.
+        assert result.error is not None
+        assert "blocked" in result.error
+        assert "not implicated" in result.error
+        recipe = await recipe_collection.get(target_id)
+        assert recipe is not None
+        assert recipe.consecutive_validation_failures == 0, "the tool let a wall count against the recipe"
+        assert seen, "the tool never reached the classifier"
+        assert "HTTP status 503" in seen[0], "the tool held the status and did not pass it to the classifier"
+
+    async def test_without_a_health_collection_the_tool_behaves_exactly_as_before(self):
+        """The default, and every pre-existing caller. No classification, no model call at all."""
+        recipe_collection, extraction_collection = _collections()
+        target_id = _derive_target_id("https://example.gov/unwatched", {"employer": "str"})
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+        driver = _FakeDriver("<html><body><h1>Checking your browser</h1></body></html>", status=503)
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": driver},
+            api_key="k",
+        )
+
+        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
+            result = await tool.execute(url="https://example.gov/unwatched", field_schema={"employer": "str"})
+
+        create_model.assert_not_called()
+        assert json.loads(result.content)["validation_status"] == "failed"
+        recipe = await recipe_collection.get(target_id)
+        assert recipe is not None
+        assert recipe.consecutive_validation_failures == 1

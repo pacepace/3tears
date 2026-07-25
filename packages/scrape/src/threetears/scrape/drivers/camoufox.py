@@ -227,10 +227,15 @@ class CamoufoxDriver(ScrapeDriver):
                         # so it escaped this loop's per-response guard and aborted the ENTIRE render:
                         # one mis-encoded response discarded every other captured call on the page.
                         # Re-read the raw bytes and decode them tolerantly instead of losing the page.
-                        body = _decode_captured_body(await resp.body())
-                        if body is None:
+                        # Narrowed through its own name rather than reassigning *body*:
+                        # the tolerant decode is the one path here that can give up, and
+                        # binding its optional result straight back onto a str would hide
+                        # that from the type checker.
+                        decoded = _decode_captured_body(await resp.body())
+                        if decoded is None:
                             log.debug("camoufox network capture: undecodable body for %s -- skipped", resp.url)
                             continue
+                        body = decoded
                     if len(body) > _MAX_NETWORK_BODY_BYTES:
                         continue
                     stripped = body.lstrip()

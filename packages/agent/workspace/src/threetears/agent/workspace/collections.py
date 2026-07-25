@@ -165,7 +165,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
             sql = "SELECT * FROM workspaces WHERE agent_id = $1 ORDER BY date_updated DESC"
         else:
             sql = "SELECT * FROM workspaces WHERE agent_id = $1 AND date_deleted IS NULL ORDER BY date_updated DESC"
-        rows = await self.l3_pool.fetch(sql, agent_id)
+        rows = await self.required_l3_pool.fetch(sql, agent_id)
         entities: list[Workspace] = []
         for row in rows:
             data = dict(row)
@@ -202,7 +202,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching live workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.l3_pool.fetchrow(
+        row = await self.required_l3_pool.fetchrow(
             "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2 AND date_deleted IS NULL",
             workspace_id,
             agent_id,
@@ -233,7 +233,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.l3_pool.fetchrow(
+        row = await self.required_l3_pool.fetchrow(
             "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2",
             workspace_id,
             agent_id,
@@ -265,7 +265,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self.l3_pool.fetchrow(
+        row = await self.required_l3_pool.fetchrow(
             "SELECT * FROM workspaces WHERE agent_id = $1 AND name = $2",
             agent_id,
             name,
@@ -388,7 +388,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         :return: matching file entity or None
         :rtype: WorkspaceFile | None
         """
-        row = await self.l3_pool.fetchrow(
+        row = await self.required_l3_pool.fetchrow(
             "SELECT * FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
             workspace_id,
             relative_path,
@@ -416,7 +416,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         :return: list of file entities for workspace
         :rtype: list[WorkspaceFile]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM workspace_files WHERE workspace_id = $1",
             workspace_id,
         )
@@ -550,7 +550,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
             workspace_id,
             limit,
@@ -581,7 +581,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self.l3_pool.fetch(
+        rows = await self.required_l3_pool.fetch(
             "SELECT * FROM workspace_file_versions "
             "WHERE workspace_id = $1 AND relative_path = $2 "
             "ORDER BY date_created DESC LIMIT $3",

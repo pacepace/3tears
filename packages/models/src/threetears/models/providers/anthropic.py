@@ -207,7 +207,7 @@ def create_anthropic_chat(
     base_url: str | None = None,
     timeout: int = 120,
     max_retries: int = 2,
-    **extra_kwargs: object,
+    **extra_kwargs: Any,
 ) -> BaseChatModel:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
 
@@ -229,7 +229,7 @@ def create_anthropic_chat(
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
-    :ptype extra_kwargs: object
+    :ptype extra_kwargs: Any
     :return: configured ``ChatAnthropic`` (the name-translating subclass), or a Claude
         **subscription**-backed model when ``api_key`` is an OAuth token (``sk-ant-oat…``).
     :rtype: BaseChatModel
@@ -247,7 +247,7 @@ def create_anthropic_chat(
 
     cleaned_base_url = strip_v1_suffix(base_url) if base_url else None
 
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "model_name": model_name,
         "api_key": api_key,
         "timeout": timeout,

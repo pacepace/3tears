@@ -153,7 +153,7 @@ def create_openai_chat(
     timeout: int = 120,
     max_retries: int = 2,
     stream_usage: bool = True,
-    **extra_kwargs: object,
+    **extra_kwargs: Any,
 ) -> ChatOpenAI:
     """creates a configured ``ChatOpenAI`` for OpenAI-compatible providers.
 
@@ -175,13 +175,13 @@ def create_openai_chat(
     :param stream_usage: enable streaming usage metadata (token counts)
     :ptype stream_usage: bool
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenAI``
-    :ptype extra_kwargs: object
+    :ptype extra_kwargs: Any
     :return: configured ``ChatOpenAI`` (the name-translating subclass)
     :rtype: ChatOpenAI
     """
     chat_cls = _build_translating_chat_class()
 
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
         "timeout": timeout,
@@ -202,7 +202,7 @@ def create_openai_embedding(
     *,
     base_url: str | None = None,
     embedding_dimensions: int | None = None,
-    **extra_kwargs: object,
+    **extra_kwargs: Any,
 ) -> OpenAIEmbeddings:
     """creates a configured ``OpenAIEmbeddings`` for OpenAI-compatible providers.
 
@@ -215,13 +215,13 @@ def create_openai_embedding(
     :param embedding_dimensions: optional output vector dimensionality (only honoured by models that support it)
     :ptype embedding_dimensions: int | None
     :param extra_kwargs: additional keyword arguments forwarded to ``OpenAIEmbeddings``
-    :ptype extra_kwargs: object
+    :ptype extra_kwargs: Any
     :return: configured ``OpenAIEmbeddings`` instance
     :rtype: OpenAIEmbeddings
     """
     from langchain_openai import OpenAIEmbeddings
 
-    kwargs: dict[str, object] = {
+    kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,
     }
