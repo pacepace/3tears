@@ -522,6 +522,7 @@ class ScrapeCollection(BaseCollection[EntityT]):
         :rtype: None
         """
         self._rows: dict[Any, dict[str, Any]] = {}
+        self._warned_in_memory_l3 = False
         super().__init__(registry, config, nats_client)
 
     @property
@@ -532,10 +533,46 @@ class ScrapeCollection(BaseCollection[EntityT]):
         conforms to ``DurableStore`` by the registry's own ``_as_l3_backend``
         design; ``l3_pool`` is typed loosely only because the registry has no
         way to prove that statically.
+
+        Returning ``None`` is what selects the in-memory fallback in all four
+        store primitives, so this is also the one place that can observe the
+        fallback being taken at all -- hence the warning below.
         """
         if self.l3_pool is None:
+            self._warn_in_memory_l3()
             return None
         return cast(DurableStore, self.l3_pool)
+
+    def _warn_in_memory_l3(self) -> None:
+        """Warn once per instance that this collection's L3 is a process-local dict, not a database.
+
+        The in-memory fallback is deliberate and every unit test in this
+        package legitimately depends on it, so this is a warning and never an
+        exception. But silence here has a real cost that has already been
+        paid once: the fallback ignores schema entirely, so an entity field
+        with no matching DDL column round-trips through ``self._rows``
+        perfectly and only fails against a real pool. ``link_selector``
+        shipped that way (see ``migrations.v009_target_link_selector``). A
+        process that believes it is durably persisting scrape state, but is
+        not, should say so out loud rather than look identical to one that
+        is.
+
+        Once per instance, not per call: these methods sit inside polling
+        loops, and a per-call warning would be noise dense enough that
+        operators filter it out, which is the same as not logging it.
+        """
+        if self._warned_in_memory_l3:
+            return
+        self._warned_in_memory_l3 = True
+        log.warning(
+            "%s: no L3 pool wired; falling back to a process-local in-memory dict for table %r. "
+            "Rows will NOT survive process restart and are NOT shared across pods, and this path "
+            "ignores the table schema entirely, so a missing DDL column cannot fail here. "
+            "Wire an l3_pool on the CollectionRegistry (and run threetears.scrape.migrations."
+            "apply_migrations) for real durability.",
+            type(self).__name__,
+            self.table_name,
+        )
 
     def _single_pk_column(self) -> str:
         """Return ``primary_key_column`` as a plain string.
