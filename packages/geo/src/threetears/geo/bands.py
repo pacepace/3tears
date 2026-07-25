@@ -185,12 +185,19 @@ def feature_band(
             # correct outcome at this zoom, not an error.
             continue
         feature_id = row.get(spec.feature_id_column) if spec.feature_id_column else None
+        attributes = attributes_of(row, spec.attributes)
+        if spec.feature_id_column is not None and feature_id is not None:
+            # the id always travels as a property, not only as the wire-level
+            # MVT id: that id is uint64 by specification, so a geoid or UUID
+            # cannot be carried there. a client binds volatile values via
+            # MapLibre's promoteId against this property.
+            attributes.setdefault(spec.feature_id_column, feature_id)
         candidates.append(
             (
                 _rank_of(row, spec.rank_column),
                 TileFeature(
                     geometry=simplified,
-                    attributes=attributes_of(row, spec.attributes),
+                    attributes=attributes,
                     feature_id=feature_id,
                 ),
             )

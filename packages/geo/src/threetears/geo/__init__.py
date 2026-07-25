@@ -21,6 +21,13 @@ from threetears.geo.bands import (
     feature_band,
     simplification_tolerance,
 )
+from threetears.geo.collection import (
+    LayerDefinition,
+    TileCollection,
+    TileEntity,
+    ViewportRequest,
+)
+from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
 from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
 from threetears.geo.mvt import encode_tile, project_to_tile
 from threetears.geo.tiles import (
@@ -37,6 +44,13 @@ __all__ = [
     "MAX_MERCATOR_LATITUDE",
     "AggregateSpec",
     "BandResult",
+    "FeatureCache",
+    "FeatureEntity",
+    "FeatureLoader",
+    "LayerDefinition",
+    "TileCollection",
+    "TileEntity",
+    "ViewportRequest",
     "FeatureSpec",
     "TileFeature",
     "aggregate_band",

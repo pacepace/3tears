@@ -93,9 +93,15 @@ def encode_tile(layers: dict[str, Sequence[TileFeature]], tile: TileId) -> bytes
                 "geometry": projected,
                 "properties": feature.attributes,
             }
-            if feature.feature_id is not None:
-                # promoted to the MVT feature id so MapLibre's feature-state
-                # can bind volatile values to this static geometry.
+            # MVT feature ids are uint64 by specification. a non-integer id --
+            # a census geoid, a UUID -- is silently coerced to 0 by the
+            # encoder, which would collapse every feature in a tile onto one
+            # id and break any client-side join keyed on it. so only integer
+            # ids become the wire-level id; everything else travels as a
+            # property, which is exactly what MapLibre's ``promoteId`` is for.
+            # the id is always present in properties either way, so a client
+            # has one consistent place to look.
+            if isinstance(feature.feature_id, int) and not isinstance(feature.feature_id, bool):
                 entry["id"] = feature.feature_id
             encoded_features.append(entry)
         encoded_layers.append({"name": name, "features": encoded_features})
