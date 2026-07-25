@@ -8,15 +8,17 @@ pip install 3tears-scrape
 
 ## What you get
 
-- **`ScrapeDriver`** -- a pluggable, backend-agnostic render contract (`RenderedPage`, `NavStep`, `NetworkCall`). Five implementations ship: `NodriverSidecarDriver` (real headless Chromium via an isolated HTTP sidecar -- see `sidecar/`), `CamoufoxDriver` (in-process stealth Firefox, no sidecar needed), `DocumentDriver` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX via `3tears-agent-tools`' `parse_document`), `ApiDriver` (stateless JSON API GET), and `NetworkCaptureDriver` (authenticated in-session XHR capture for pages whose real data never reaches a statelessly-fetchable API).
-- **Two extraction-strategy shapes** -- CSS-selector candidates for real (or synthesized) HTML tables, and regex candidates for text-block/prose pages with no table structure at all. Both run through the identical propose -> structurally-validate -> judge -> persist cycle; the judge only ever sees extracted values and real page content, never which mechanism produced them.
+- **`ScrapeDriver`** -- a pluggable, backend-agnostic render contract (`RenderedPage`, `NavStep`, `NetworkCall`). Eight implementations ship: `NodriverSidecarDriver` (real headless Chromium via an isolated HTTP sidecar -- see `sidecar/`), `CamoufoxDriver` (in-process stealth Firefox, no sidecar needed), `DocumentDriver` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX via `3tears-agent-tools`' `parse_document`), `ApiDriver` (stateless JSON API GET), `NetworkCaptureDriver` (authenticated in-session XHR capture for pages whose real data never reaches a statelessly-fetchable API), `MultiDocumentDriver` (a listing of links that each point at one whole document rather than a row, fetched via an injected inner driver and concatenated into one combined page, skipping documents already seen on a prior poll), `ListingDetailDriver` (a listing table whose rows each link to a per-record detail page, resolved row-scoped and merged back into one flat synthetic table -- detail value preferred, listing value as fallback, neither fabricated), and `NodriverDownloadDriver` (a document behind a real bot challenge a plain HTTP client can't pass, fetched through the sidecar's forced-download endpoint).
+- **Four extraction-strategy shapes** (`eval_loop.StrategyType`) -- `css` selector candidates for real (or synthesized) HTML tables; `regex` candidates for text-block/prose pages with no table structure at all; `per_document` for independently-worded documents that share no template a single cached pattern could ever generalize across, which get a fresh extraction call each instead of a reused recipe; and `multi_row_vision` for a table whose own structure defeats text-based table extraction and needs the whole table read visually at once. All four run through the identical propose -> structurally-validate -> judge -> persist cycle; the judge only ever sees extracted values and real page content, never which mechanism produced them. Chosen explicitly per target, never auto-detected -- two superficially identical page shapes have needed opposite strategies.
 - **`run_eval_loop` / `run_eval_loop_multi_row`** -- the self-healing cycle itself: reuse a target's existing `ScrapeRecipe` with zero LLM calls while it keeps validating; only regenerate candidates once `consecutive_validation_failures` crosses a threshold.
 - **`ScrapeTarget` / `ScrapeRecipe` / `ScrapeExtraction`** -- the domain-agnostic persisted entities (three-tier L1/L2/L3-backed collections). The core never learns what a field *means* -- only that whatever a candidate extracts for a caller-supplied field name parses as its declared type.
 - **Pluggable target config** -- `TargetSource` (`StaticTargetSource` / `YamlTargetSource` / `CollectionTargetSource`) and `bootstrap_targets()` for seeding a database-backed target collection from a git-tracked YAML file, never overwriting a row already present.
 - **`ScrapeTool`** -- an ad-hoc, single-call MCP-exposed entry point: give it a URL and a field schema, get back real extracted data through the same eval loop, no target pre-configuration required.
 - **`enrichment.py`** -- a secondary, separate LLM pass capturing free-form context a structured schema has no field for, kept distinct from validated structured data.
+- **`parse_form()` / `build_form_post()`** -- deterministic, browser-free HTML form parsing and postback serialization: reduce a form to its POST target, its default "successful controls", and its submit controls, then serialize a replayable body. For the many server-rendered portals (the classic case being ASP.NET WebForms' `__VIEWSTATE`/`__EVENTVALIDATION`) that only return rows after a form POST, this replaces driving a browser with a plain HTTP round-trip. Pure and side-effect-free -- no network, no LLM, no hardcoded framework or field meaning.
 - **`find_target_page()`** -- a bounded-turn research agent: give it a plain-language query ("Ohio WARN Act notices"), it searches and fetches candidate pages (WebSearch/WebFetch, capped turns), deterministically verifies the winner has real extractable structure (a table, a document link, a JSON API response -- never a browser fetch, so it never needs the sidecar running), and returns a `PageFinderResult` (`url`, a `driver_backend` guess, `verified`). Independently callable -- it never persists a `ScrapeTarget` or forces extraction to follow; a caller with a known URL never needs this at all.
 - **`discover_candidates()` / `discover_row_candidates()`** -- "capture every variable on this page": the inverse of `generate_candidates`/`generate_row_candidates`, no caller-supplied `field_schema` required. An LLM proposes field names/types/selectors it finds on the page, each validated by the exact same `validate_candidate`/`validate_row_candidate` every schema-driven candidate already goes through -- a discovered field that doesn't structurally validate is dropped, never included. Returns a `DiscoverySchemaResult` whose `field_schema`/`strategy` are already shaped exactly as `ScrapeTarget.field_schema`/`ScrapeRecipe.extraction_strategy` expect. Never persists anything -- a caller decides what to do with the result.
+- **`capture_request_shape()`** -- the "how" sibling to `find_target_page()`'s "what": drive a real browser session at a target and report back every XHR/fetch call it actually made, so an authenticated in-session API's real request shape is *captured* rather than guessed from remembered conventions. Deliberately does not pick "the one real call" out of the results -- a target's real data call is reliably neither the largest nor the first, so it returns everything and the caller decides.
 
 ## Quickstart
 
@@ -85,13 +87,14 @@ Zero jurisdiction-specific Python exists anywhere in this package. In faidh's WA
 | Field | Controls |
 |---|---|
 | `url` | what to fetch |
-| `driver_backend` | which of 5 `ScrapeDriver` implementations renders it |
+| `driver_backend` | which of the 8 `ScrapeDriver` implementations renders it |
 | `wait_for` | CSS selector to settle on (async-loading pages) |
 | `nav_steps` | ordered click/fill/wait_for/wait_ms/scroll_into_view/scroll_page/evaluate actions (search-form-gated, lazy-render, or in-page-JS-state targets) |
 | `timeout_seconds` | per-target render budget |
 | `field_schema` | field name → Python type, e.g. `{"employer": str, "county": str}` |
-| `extraction_strategy_type` | `"css"` or `"regex"` |
-| `api_results_path` / `api_fragment_field` | JSON traversal (API driver only) |
+| `extraction_strategy_type` | `"css"`, `"regex"`, `"per_document"`, or `"multi_row_vision"` |
+| `api_results_path` / `api_fragment_field` | JSON traversal (`api` driver; also `multi_document`'s JSON discovery mode) |
+| `link_selector` | CSS selector matching the document links on a listing page (`multi_document`'s HTML discovery mode) |
 | `multi_row` | one record vs. many per page |
 
 The core (`driver.py`, `extraction.py`, `eval_loop.py`, `collections.py`) never branches on target identity -- only on `ScrapeTarget` fields and a caller-supplied `field_schema`. It doesn't know what `employer` *means*; it only enforces that whatever a candidate extracts for that field name parses as the declared type. Stated in `extraction.py`'s own docstring: *"this module never hardcodes what a field means."*
@@ -106,6 +109,9 @@ flowchart LR
         D3[document<br/>PDF/DOCX/XLSX/CSV → parse_document]
         D4[api<br/>stateless JSON GET]
         D5[network_capture<br/>authenticated XHR capture]
+        D6[multi_document<br/>link list → N whole documents<br/>combined into one page]
+        D7[listing_detail<br/>listing rows + per-row detail pages<br/>merged row-scoped]
+        D8[nodriver_download<br/>bot-challenged document<br/>via sidecar forced download]
     end
     subgraph Converge["Everything converges here"]
         R[RenderedPage.html<br/>real or synthetic — identical downstream]
@@ -113,14 +119,18 @@ flowchart LR
     subgraph Extract["Axis 2 — extraction_strategy_type"]
         S1[css<br/>real/synthesized table → LLM proposes selectors]
         S2[regex<br/>prose text block → LLM proposes named-group patterns]
+        S3[per_document<br/>no shared template → fresh extraction<br/>per document, no cached recipe]
+        S4[multi_row_vision<br/>table structure defeats text extraction<br/>→ vision read of the whole table]
     end
-    D1 & D2 & D3 & D4 & D5 --> R
+    D1 & D2 & D3 & D4 & D5 & D6 & D7 & D8 --> R
     R --> S1
     R --> S2
-    S1 & S2 --> J[Identical propose → validate →<br/>judge → persist cycle, eval_loop.py]
+    R --> S3
+    R --> S4
+    S1 & S2 & S3 & S4 --> J[Identical propose → validate →<br/>judge → persist cycle, eval_loop.py]
 ```
 
-In faidh's WARN Act consumer, every one of the ~24 onboarded states is one config row picking a combination from this matrix. A new driver/strategy is only written when a target needs a *fetch mechanism* or *extraction shape* that doesn't exist yet -- five times across the WARN Act build: regex strategy, `ApiDriver`, native CSV support, `NetworkCaptureDriver`, plus the original CSS/nodriver baseline.
+In faidh's WARN Act consumer, every one of the ~24 onboarded states is one config row picking a combination from this matrix. A new driver/strategy is only written when a target needs a *fetch mechanism* or *extraction shape* that doesn't exist yet -- and each one that was written has a named real target behind it: the regex strategy (a prose listing with no table), `ApiDriver` (a JSON search endpoint), native CSV support, `NetworkCaptureDriver` (an authenticated Aura POST), `MultiDocumentDriver` plus `per_document` (one PDF letter per notice, no two worded alike), `NodriverDownloadDriver` (those PDFs behind a Cloudflare challenge), `multi_row_vision` (a born-digital PDF table that text extraction mis-split), and `ListingDetailDriver` (a listing whose records are genuinely split across two pages).
 
 ### 4. "The signal must carry the value; the model must never infer it" -- where the rule actually lives
 
@@ -138,17 +148,18 @@ In faidh's WARN Act consumer, every one of the ~24 onboarded states is one confi
 ```mermaid
 flowchart TD
     Core["This package<br/>driver.py / extraction.py / eval_loop.py / collections.py"]
-    T01["scrape-task-01 (done, 2026-07-15)<br/>Lift: moved core here from faidh<br/>package-boundary move only, zero logic change"]
-    T02["scrape-task-02 (planned)<br/>Page-finder agent<br/>outputs ScrapeTarget-shaped guess<br/>(URL + driver_backend/wait_for)"]
-    T03["scrape-task-03 (planned)<br/>Schema-discovery mode<br/>flag on generate_candidates —<br/>schema OUT instead of schema IN"]
-    T01 --> Core
+    T02["find_target_page()<br/>page_finder.py — shipped<br/>outputs a ScrapeTarget-shaped guess<br/>(URL + driver_backend, verified flag)"]
+    T03["discover_candidates() / discover_row_candidates()<br/>extraction.py — shipped<br/>schema OUT instead of schema IN"]
+    T04["capture_request_shape()<br/>request_shape_finder.py — shipped<br/>real captured request shapes<br/>for in-session XHR targets"]
     Core -.plain data in/out, no hidden state.-> T02
     Core -.plain data in/out, no hidden state.-> T03
+    Core -.plain data in/out, no hidden state.-> T04
     T02 --> BT["bootstrap_targets()<br/>target_source.py"]
+    T03 --> BT
     BT --> Core
 ```
 
-`task-02`/`task-03` are new front-end stages that will produce/consume the same plain data shapes (`RenderedPage`, `FieldSchema`, `ScrapeExtraction`) the core already uses -- neither requires touching `driver.py`, `eval_loop.py`, or `collections.py`.
+All three front-end stages have shipped, and each landed without touching `driver.py`, `eval_loop.py`, or `collections.py` -- which is the point. They produce and consume the same plain data shapes (`RenderedPage`, `FieldSchema`, `PageFinderResult`, `DiscoverySchemaResult`) the core already uses, and none of them persists anything: a caller decides whether a discovered page or schema becomes a real `ScrapeTarget`.
 
 ### 6. Module map
 
@@ -160,7 +171,10 @@ packages/scrape/src/threetears/scrape/
 │   ├── camoufox.py           in-process stealth Firefox (MPL-2.0-safe)
 │   ├── document.py           parse_document() + document_text_to_html()
 │   ├── api.py                stateless JSON GET, _resolve_path()
-│   └── network_capture.py    wraps another driver, _find_largest_record_list()
+│   ├── network_capture.py    wraps another driver, _find_largest_record_list()
+│   ├── multi_document.py     link list → N documents → one combined page, seen_urls dedup
+│   ├── listing_detail.py     listing rows + per-row detail pages, merged into one table
+│   └── nodriver_download.py  sidecar POST /v1/download → parse_document_bytes_to_html()
 ├── extraction.py             generate_candidates/generate_row_candidates (+ regex),
 │                              validate_candidate/validate_row_candidate (+ regex),
 │                              html_to_text(), strip_boilerplate()
@@ -170,9 +184,12 @@ packages/scrape/src/threetears/scrape/
 ├── collections.py             ScrapeTarget/ScrapeRecipe/ScrapeExtraction (BaseEntity)
 │                              + BaseCollection subclasses (L1/L2/L3 via
 │                              threetears.core.backends.protocol.DurableStore)
-├── migrations.py               v001-v008, PACKAGE_NAME="3tears_scrape"
+├── migrations.py               v001-v009, PACKAGE_NAME="3tears_scrape"
 ├── target_source.py            TargetSource ABC, YamlTargetSource, CollectionTargetSource,
 │                              StaticTargetSource, bootstrap_targets()
+├── page_finder.py              find_target_page() — bounded-turn search/fetch research agent
+├── request_shape_finder.py     capture_request_shape() — real captured XHR/fetch shapes
+├── forms.py                    parse_form()/build_form_post() — browser-free postback replay
 ├── tool.py                     ScrapeTool — ad-hoc single-call MCP entry point
 ├── enrichment.py                secondary free-form LLM notes pass (separate from structured_fields)
 └── llm_retry.py                 bounded_retry_structured_call() — shared by extraction.py + eval_loop.py
