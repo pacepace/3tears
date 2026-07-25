@@ -23,6 +23,18 @@ filter would have silently stopped checking that table's primary key. A named,
 currently-empty exemption set covers any future non-persisted property, and a
 companion test asserts the derivation never returns an empty set vacuously.
 
+**Behavior change, logging only (`threetears.scrape`)** -- a `ScrapeCollection`
+whose registry has no `l3_pool` now emits one WARNING naming the table, instead
+of silently using a process-local dict as L3. That silence is why the missing
+column was invisible: the fallback ignores schema entirely, so a field with no
+DDL column round-trips perfectly and only fails against a real pool. Operators
+running without a wired pool will see one new WARNING per table. It is warned
+once per table via a class-level set (mirroring
+`BaseCollection._warn_missing_nats_client_once`), not per instance, so a
+consumer that rebuilds collections each poll cycle still gets one warning
+rather than one per cycle. Not an exception: the fallback is legitimate and
+every unit test in the package relies on it.
+
 Also in `threetears.scrape`, documentation only: the README had drifted a release
 behind (five drivers documented against eight shipped, two extraction strategies
 against four, `forms.py` / `request_shape_finder.py` / `page_finder.py` absent from
@@ -46,6 +58,7 @@ A product can now declare `column_type="timestamptz"` and get:
 
 `timestamp` (naive) is unchanged and remains valid; the two are distinct DDL types.
 This is additive -- existing declarations keep their exact behavior.
+
 ## v0.17.9 -- 2026-07-23
 
 **Feature: provider-native structured output (`threetears.models.providers`)** -- every provider
