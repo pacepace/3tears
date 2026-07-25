@@ -1,14 +1,13 @@
 """3tears-scrape's own schema migrations, registered with 3tears' canonical ``MigrationRunner``.
 
-Lives inside ``src/faidh/scrape/`` (not ``src/faidh/db/migrations.py``) so this
-package's DDL travels with it when scrape is lifted into a real 3tears
-package -- a directory move, not a disentangling exercise. Zero faidh
-imports, mirroring the rest of this package's lift-readiness discipline
-(enforced by ``tests/enforcement/test_scrape_no_faidh_imports.py``).
+Lives inside this package rather than in a consuming application's own
+migrations module, so the DDL travels with the code that depends on it --
+which is what made the original lift out of the application repo a directory
+move rather than a disentangling exercise.
 
 Registered under its own ``PACKAGE_NAME`` ("3tears_scrape") so its
-``_schema_migrations`` history is distinct from faidh's own ("faidh")
-package rows, even though both apply against the same PLATFORM schema.
+``_schema_migrations`` history is distinct from every other package's, even
+though several packages can apply against the same PLATFORM schema.
 """
 
 from __future__ import annotations
@@ -34,12 +33,12 @@ async def v001_create_scrape_tables(store: DataStore) -> None:
     """Create ``scrape_targets`` / ``scrape_recipes`` / ``scrape_extractions``.
 
     Column shape matches ``ScrapeTarget`` / ``ScrapeRecipe`` / ``ScrapeExtraction``
-    (``src/faidh/scrape/collections.py``) exactly. ``date_created``/``date_updated``
-    included on every table from the start -- ``BaseCollection.save_entity()``
+    (``collections.py``) exactly. ``date_created``/``date_updated`` included on
+    every table from the start -- ``BaseCollection.save_entity()``
     unconditionally stamps both on every upsert regardless of what a collection's
     entity class exposes, so omitting them would raise
-    ``asyncpg.UndefinedColumnError`` on the first real write (the exact failure
-    mode faidh's own v018/v019/v022/v023 migrations document and fixed).
+    ``asyncpg.UndefinedColumnError`` on the first real write, a failure mode
+    already paid for once in the application this package was lifted out of.
     """
     await store.execute("""
         CREATE TABLE IF NOT EXISTS scrape_targets (
@@ -221,11 +220,11 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 async def apply_migrations(pool: Any) -> None:
     """Apply every pending 3tears-scrape migration against ``pool`` via MigrationRunner.
 
-    Mirrors ``faidh.db.migrations.apply_migrations`` exactly: a throwaway
-    registry/config bound to ``pool`` and a ``DataStore`` wrapping it.
-    ``DataStore`` requires an ``agent_id`` (3tears' per-agent-schema concept),
-    inert here for the same reason documented on the faidh-side twin -- scrape
-    is a single fixed-schema application, not a multi-tenant one.
+    A throwaway registry/config bound to ``pool`` and a ``DataStore`` wrapping
+    it. ``DataStore`` requires an ``agent_id`` (3tears' per-agent-schema
+    concept), inert here: scrape's tables are a single fixed PLATFORM-scope
+    schema shared by every caller, not per-agent state, so the value only has
+    to exist, not to mean anything.
 
     :param pool: asyncpg-compatible pool
     :ptype pool: Any

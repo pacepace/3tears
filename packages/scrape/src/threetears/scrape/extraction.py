@@ -7,11 +7,11 @@ generated-code strategy). Each candidate is validated structurally: does its
 selector match something, and does the matched text parse as the field's
 declared type. Domain-agnostic: this module never hardcodes what a field
 means (no WARN-Act-shaped assumptions) — the field schema is supplied by the
-caller (e.g. Chunk 5's WARN Act plugin), never stored in the core's own
-data model. See ``scrape-data-model.md`` / ``scrape-product-brief.md`` and
-``build-plan.md``'s Chunk 02 "Design decisions made during build" note.
-
-Zero faidh imports (see ``scrape/__init__.py``).
+caller (a consuming application's own plugin), never stored in the core's own
+data model. That split is why onboarding a new site is a config addition: the
+caller owns what to look for, this module owns whether what came back is
+structurally what was asked for, and neither half needs to know the other's
+subject matter.
 """
 
 from __future__ import annotations
@@ -146,7 +146,7 @@ def _normalize_whitespace_text(text: str) -> str:
     """Collapse runs of whitespace to a single space.
 
     A real site's own HTML formatting quirk, not a BeautifulSoup artifact --
-    live against Maryland's WARN page (Chunk 5): "Dejana    Truck and
+    live against Maryland's real WARN page: "Dejana    Truck and
     Utility Equipment", multiple literal spaces in the source markup itself.
     """
     return " ".join(text.split())
@@ -260,7 +260,7 @@ def validate_candidate(html: str, strategy: dict[str, str], schema: FieldSchema)
             continue
         # separator=" " matters: get_text(strip=True) strips each text node individually
         # but inserts nothing between them, so a <br>-split cell concatenates with no
-        # space at all (Chunk 5's live finding, WARN Act's own effective-date column).
+        # space at all (live finding, a real <br>-split effective-date column).
         text = _normalize_whitespace_text(element.get_text(" ", strip=True))
         if not text:
             errors.append(f"{field_name}: selector {selector!r} matched an empty element")
@@ -652,8 +652,9 @@ async def generate_row_candidates(
 # this module already uses for the schema-known path. Deliberately NOT
 # wired into eval_loop.py's recipe-persistence functions -- discovery is a
 # pre-onboarding operation (no ScrapeTarget/recipe exists yet), not a mode
-# of the persisted-recipe lifecycle. See
-# docs/scrape-task-03-schema-discovery-mode.md's placement-deviation note.
+# of the persisted-recipe lifecycle -- which is also why it lives here beside
+# the validators it reuses rather than in eval_loop.py beside the functions it
+# superficially resembles.
 # ===========================================================================
 
 #: Mirrors collections.py's own _FIELD_SCHEMA_TYPE_NAMES (4 entries, same set) --
@@ -981,8 +982,8 @@ async def discover_row_candidates(
 # propose -> structurally-validate -> judge -> persist cycle above, for
 # pages whose real content is prose/list text with no <table> (or pipe-
 # table-shaped) structure a CSS selector could ever match against.
-# Pennsylvania's real WARN page (rejected in Chunk 12: "fields present but
-# as a text-block list, not a literal <table>") is the concrete driver --
+# Pennsylvania's real WARN page is the concrete driver: its fields are all
+# present, but as a text-block list rather than a literal <table> --
 # the CSS-selector candidate generator had no strategy shape to propose a
 # candidate in AT ALL for that page, not a page it tried and failed on.
 # ===========================================================================

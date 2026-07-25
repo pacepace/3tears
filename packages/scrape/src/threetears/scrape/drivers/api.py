@@ -1,9 +1,10 @@
 """ApiDriver -- ``ScrapeDriver`` backend for a raw JSON API response.
 
-**Design (2026-07-14, network/API-query capability):** the direct "query the
-api directly if needed" follow-through to Chunk 15's network/API-detection
-capability, which stopped at *capturing* a page's real backend API call
-without ever *querying* it as a first-class fetch mechanism. Michigan's real
+**Design (2026-07-14, network/API-query capability):** the "query the api
+directly if needed" follow-through to this package's earlier network/API-
+detection work, which stopped at *capturing* a page's real backend API call
+during a browser render without ever *querying* that call as a first-class
+fetch mechanism of its own. Michigan's real
 WARN listing (a Sitecore XA search endpoint, confirmed live via
 ``capture_network``) is the concrete driver: its JSON response wraps a real,
 already-rendered HTML fragment per record (``Results[].Html``), not raw
@@ -149,7 +150,7 @@ class ApiDriver(ScrapeDriver):
 
     Every real dependency is a plain HTTP GET (no session, no nonce, no
     browser) -- a target needing those first (Georgia's own
-    ``admin-ajax.php`` nonce, live-verified during Chunk 19) isn't a fit for
+    ``admin-ajax.php`` nonce, live-verified) isn't a fit for
     this driver; ``nodriver``'s real browser session already handles that
     case via ``wait_for``/``nav_steps``.
     """

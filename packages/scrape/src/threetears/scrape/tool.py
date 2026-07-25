@@ -3,8 +3,9 @@
 **Design (2026-07-14, MCP exposure):** an ad-hoc, one-off scrape -- "fetch
 this URL, extract these fields" -- with no pre-registered ``ScrapeTarget``,
 matching the exact use case ``StaticTargetSource``/a single inline
-``ScrapeTarget`` construction was already designed for (Chunk 13's own
-design decision). Runs through the *same* unmodified AI eval loop
+``ScrapeTarget`` construction was already designed for -- a target does not
+have to be persisted to be a valid target. Runs through the *same*
+unmodified AI eval loop
 (``eval_loop.run_eval_loop``/``run_eval_loop_multi_row``) every configured
 target already uses -- no separate "MCP extraction path" to keep in sync.
 
@@ -15,13 +16,12 @@ field_schema)`` when the caller doesn't supply one explicitly -- an LLM
 caller shouldn't have to invent and remember target IDs itself for this to
 work.
 
-Zero faidh imports (see ``scrape/__init__.py``): all real dependencies
-(collections, drivers, API key) are constructor-injected, never resolved
-internally (no env-var reads, no ``faidh.config``/``faidh.store`` calls) --
-mirrors every other driver in this package (e.g. ``NodriverSidecarDriver``'s
-``base_url``). The faidh-side registration wrapper that resolves real
-config/collections/drivers and constructs this class lives in
-``src/faidh/tools/scrape_tool.py``.
+All real dependencies (collections, drivers, API key) are constructor-
+injected, never resolved internally -- no env-var reads, no application
+config or store lookups -- mirroring every other component in this package
+(e.g. ``NodriverSidecarDriver``'s ``base_url``). A consuming application
+registers this tool through its own thin wrapper, which is where resolving
+real config/collections/drivers belongs.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ class ScrapeTool(TearsTool):
     """Ad-hoc "fetch this URL, extract these fields" tool, backed by 3tears-scrape.
 
     All state (collections, drivers, API key) is injected at construction --
-    no internal env-var or faidh-config resolution, per this module's own
-    zero-faidh-imports discipline.
+    no internal env-var or application-config resolution, per this module's
+    own docstring.
     """
 
     def __init__(
@@ -102,9 +102,9 @@ class ScrapeTool(TearsTool):
         """Return the namespaced tool name.
 
         A generic ``3tears.scrape`` identity, since this class is a
-        reusable 3tears component, not faidh-specific -- a consuming
-        wrapper (e.g. faidh's own ``FaidhScrapeTool``) is free to
-        override this with its own namespaced name.
+        reusable 3tears component and not specific to any one application --
+        a consuming wrapper that registers it is free to override this with
+        its own namespaced name.
         """
         return "3tears.scrape"
 

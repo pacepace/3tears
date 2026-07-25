@@ -14,8 +14,6 @@ targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern
 learned once and reused; every document gets its own fresh LLM extraction
 call on every poll instead (:func:`_run_per_document_extraction`).
-
-Zero faidh imports (see ``scrape/__init__.py``).
 """
 
 from __future__ import annotations
@@ -670,13 +668,13 @@ async def _judge_row_candidates(
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
     Shares :func:`_judge_candidates`'s retry/logging shape via the shared
-    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14 -- see build-plan.md's
-    Chunk 07 design decision for the original "duplicated, not shared" call
-    and this chunk for why it changed; scrape-task-06 closed the SAME
-    duplication again between this function and ``_judge_candidates`` once a
-    third judge use -- per-document grounding -- made it worth a shared
-    primitive instead of a third copy). Never raises; returns ``None`` only
-    after every attempt fails.
+    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14). The multi-row judge
+    was first written as a deliberate copy of the single-record one rather
+    than a shared abstraction -- two callers did not justify the indirection.
+    A third judge use (per-document grounding) is what tipped it: at that
+    point the same retry/backoff/degrade-to-``None`` policy was being
+    maintained in three places. Never raises; returns ``None`` only after
+    every attempt fails.
     """
     prompt = _build_row_judge_prompt(html, survivors, schema)
     return await _judge(

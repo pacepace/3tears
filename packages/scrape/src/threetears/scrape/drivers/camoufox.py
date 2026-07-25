@@ -1,19 +1,19 @@
 """CamoufoxDriver -- in-process ``ScrapeDriver`` backend using Camoufox (a
 stealth-patched Firefox build).
 
-The second driver backend (Chunk 6). Its purpose is explicitly to pressure-
-test whether ``ScrapeDriver`` is a genuinely pluggable interface or secretly
-shaped around ``NodriverSidecarDriver``'s sidecar-only assumptions (HTTP
-transport, JSON error bodies) -- not because a v1 target currently needs
-Camoufox's evasion ceiling.
+The second driver backend written, and written for that reason: its purpose
+was explicitly to pressure-test whether ``ScrapeDriver`` is a genuinely
+pluggable interface or was secretly shaped around ``NodriverSidecarDriver``'s
+sidecar-only assumptions (HTTP transport, JSON error bodies) -- not because
+any target at the time needed Camoufox's evasion ceiling. An interface with
+exactly one implementation is an untested claim.
 
 Unlike ``NodriverSidecarDriver``, this launches its own browser process
-in-process, no separate container: safe per ``scrape-api-contract.md``'s
-license read (verified via GitHub's license API) -- the ``camoufox`` Python
-wrapper package is MIT-licensed, and the browser binary it launches is
-MPL-2.0 (file-level copyleft only, no network-copyleft clause), unlike
-nodriver's AGPL-3.0 boundary that requires the sidecar's separate-process
-isolation. This module has zero faidh imports (see ``scrape/__init__.py``).
+in-process, no separate container, and that is license-safe here (verified
+via GitHub's license API) -- the ``camoufox`` Python wrapper package is
+MIT-licensed, and the browser binary it launches is MPL-2.0 (file-level
+copyleft only, no network-copyleft clause), unlike nodriver's AGPL-3.0, which
+is what forces the sidecar's separate-process isolation.
 
 **Pinned dependency note (2026-07-14):** ``playwright`` is pinned below
 1.61 in ``pyproject.toml`` -- 1.61 added an ``isMobile`` viewport field
@@ -98,10 +98,11 @@ class CamoufoxDriver(ScrapeDriver):
 
     Launches lazily on the first :meth:`render` call and stays alive across
     calls -- a fresh page (tab) is opened and closed per call, never the
-    same tab reused across requests (the same "new tab per request" lesson
-    Chunk 1's nodriver sidecar work already learned the hard way: reusing a
-    single tab across requests severs the browser's control connection
-    after the first request).
+    same tab reused across requests -- the sidecar's own nodriver
+    implementation learned this the hard way first: reusing a single tab
+    across requests severs the browser's control connection after the first
+    request, so every browser backend in this package opens a fresh tab per
+    call.
     """
 
     def __init__(self, *, headless: bool = True, browser: Any | None = None) -> None:

@@ -2,8 +2,10 @@
 
 Runs inside its own AGPL-3.0-licensed container (see LICENSE). Never
 imported as a Python library from 3tears-scrape's (MIT) tree; consumers
-only ever talk to this process over HTTP, per scrape-api-contract.md's
-``POST /v1/render`` contract. ``entrypoint.sh`` starts Xvfb and points
+only ever talk to this process over HTTP, via the ``POST /v1/render`` and
+``POST /v1/download`` endpoints defined below -- those request/response
+models ARE the contract, and ``tests/test_render_contract.py`` is what
+holds them to it. ``entrypoint.sh`` starts Xvfb and points
 ``DISPLAY`` at it before this process starts -- nodriver launches Chromium
 with ``headless=False`` against that virtual display, per nodriver's own
 documented guidance for headless-machine deployments (real headed Chromium
@@ -609,7 +611,7 @@ async def _warm_up() -> None:
 
     Mitigates nodriver's cold-start timing gap at the source, in the
     container, instead of every consumer needing retry-tolerance of their
-    own (reproduced live, faidh-side, 2026-07-14): a freshly-started
+    own (reproduced live in a real consumer, 2026-07-14): a freshly-started
     browser's very first real render can race navigation and return the
     pre-load empty shell even with :func:`_render`'s own explicit settle
     wait -- a first-request-only phenomenon once the browser has completed
@@ -670,7 +672,7 @@ app = FastAPI(lifespan=_lifespan)
 
 @app.post("/v1/render", response_model=RenderResponse)
 async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
-    """Render *req.url* through nodriver and return the page, per scrape-api-contract.md."""
+    """Render *req.url* through nodriver and return the page."""
     if _browser is None:
         return JSONResponse(status_code=503, content={"error": {"code": "not_ready", "message": "browser not started"}})
 
@@ -710,7 +712,7 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
 @app.post("/v1/download", response_model=DownloadResponse)
 async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
     """Download *req.url*'s real file bytes through a real browser session with forced-download
-    behavior, per scrape-api-contract.md's ``POST /v1/download`` contract (scrape-task-04)."""
+    behavior -- for a document a plain HTTP client can't reach (see :class:`DownloadRequest`)."""
     if _browser is None:
         return JSONResponse(status_code=503, content={"error": {"code": "not_ready", "message": "browser not started"}})
 

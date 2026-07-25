@@ -1,14 +1,16 @@
 """ScrapeDriver — pure-Python ABC for pluggable browser-rendering backends.
 
-Zero non-stdlib imports. Lift-ready: move this module (and drivers/) to a
-3tears package without any changes to driver code — mirrors
-``src/faidh/intake/rate_limit/strategy.py``'s zero-faidh-imports discipline.
+Zero non-stdlib imports — the discipline that let this module (and
+``drivers/``) move out of the application it was first written in as a plain
+directory move, with no changes to driver code at all.
 
 Deliberately excludes anything backend-specific (no CDP handles, no
 Firefox-specific objects): a driver takes a URL and returns a
 ``RenderedPage`` carrying only plain data. This genericness is what keeps
 the nodriver sidecar boundary "arm's length" under FSF's own aggregation
-test (see ``scrape-api-contract.md``), not merely a style preference.
+test — the two processes exchange plain data over a documented HTTP
+contract and neither is built around the other's internals — not merely a
+style preference.
 """
 
 from __future__ import annotations

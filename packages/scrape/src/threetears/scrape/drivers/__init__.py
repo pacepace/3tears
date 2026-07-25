@@ -1,4 +1,4 @@
-"""ScrapeDriver backend implementations. Zero faidh imports (see ``scrape/__init__.py``)."""
+"""ScrapeDriver backend implementations — every real dependency is constructor-injected."""
 
 from __future__ import annotations
 

@@ -18,7 +18,6 @@ parse_document_bytes_to_html`) rather than a second copy of that logic.
 
 Talks to the sidecar exclusively over HTTP -- never imports ``nodriver``
 itself, which stays inside the sidecar's own AGPL-3.0-licensed process.
-Zero faidh imports (see ``scrape/__init__.py``).
 """
 
 from __future__ import annotations

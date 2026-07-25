@@ -1,10 +1,18 @@
 """3tears-scrape — general-purpose, AI-native scraping platform component.
 
-Lifted from faidh's ``src/faidh/scrape/`` (2026-07-15, ``scrape-task-01``),
-which built this domain-agnostic from the start specifically for this move
--- a directory move plus import-path updates in faidh's own consumer code,
-not a rewrite. See ``docs/scrape-lift-design.md`` and
-``docs/scrape-task-01-lift-core-package.md`` for the full design.
+Originally built inside a forecasting application (faidh) as
+``src/faidh/scrape/`` and lifted out into this package on 2026-07-15. It was
+written domain-agnostic from its first commit specifically so that move
+could be a directory move plus import-path updates in the consumer, not a
+rewrite: nothing here has ever known what a scraped field *means*, only what
+type it was declared as. That application's WARN Act plugin remains the
+running example of a consumer throughout this package's docstrings -- it is
+not part of this package, and it is the only place domain meaning lives.
+
+The discipline that made the lift cheap is still load-bearing and still
+observed: no module here imports a consuming application's config, store, or
+entities. Every real dependency (collections, drivers, API keys, sidecar
+URLs) is passed in by the caller.
 """
 
 from __future__ import annotations
