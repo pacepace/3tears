@@ -1,0 +1,75 @@
+"""3tears-geo: slippy-map tile geometry in application code.
+
+no PostGIS is available on YugabyteDB, so the work ``ST_Intersects`` /
+``ST_Simplify`` / ``ST_AsMVT`` would do in SQL happens here instead --
+shapely for the geometry, mapbox-vector-tile for the encoding.
+"""
+
+from threetears.geo.attributes import (
+    MVT_SCALAR_TYPES,
+    UnsupportedAttributeError,
+    coerce_attribute,
+    coerce_attributes,
+    validate_attribute_value,
+)
+from threetears.geo.bands import (
+    AggregateSpec,
+    BandResult,
+    FeatureSpec,
+    TileFeature,
+    aggregate_band,
+    feature_band,
+    simplification_tolerance,
+)
+from threetears.geo.collection import (
+    LayerDefinition,
+    TileCollection,
+    TileEntity,
+    ViewportRequest,
+)
+from threetears.geo.features import FeatureCache, FeatureEntity, FeatureLoader
+from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
+from threetears.geo.mvt import encode_tile, project_to_tile
+from threetears.geo.tiles import (
+    MAX_MERCATOR_LATITUDE,
+    TILE_EXTENT,
+    BoundingBox,
+    TileId,
+    bounds_to_tile_range,
+    tile_bounds,
+    tile_for_point,
+)
+
+__all__ = [
+    "MAX_MERCATOR_LATITUDE",
+    "AggregateSpec",
+    "BandResult",
+    "FeatureCache",
+    "FeatureEntity",
+    "FeatureLoader",
+    "LayerDefinition",
+    "TileCollection",
+    "TileEntity",
+    "ViewportRequest",
+    "FeatureSpec",
+    "TileFeature",
+    "aggregate_band",
+    "decode_geometry",
+    "encode_tile",
+    "feature_band",
+    "geometry_bounds",
+    "point_geometry",
+    "project_to_tile",
+    "simplification_tolerance",
+    "MVT_SCALAR_TYPES",
+    "TILE_EXTENT",
+    "BoundingBox",
+    "TileId",
+    "UnsupportedAttributeError",
+    "bounds_to_tile_range",
+    "coerce_attribute",
+    "coerce_attributes",
+    "tile_bounds",
+    "tile_for_point",
+    "validate_attribute_value",
+]
