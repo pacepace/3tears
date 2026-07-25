@@ -24,10 +24,15 @@ arithmetic, and the decision of which outcome counts as a fetch failure.
 Four collaborators are optional and injected, never constructed, because each belongs to
 infrastructure this package does not own:
 
-- ``breaker`` -- any ``threetears.core.http_client.CircuitBreakerLike``, typically a
-  ``CircuitBreaker`` from a ``CircuitBreakerRegistry``. A free in-process fast-fail that
-  answers before the health row is even read. The same structural seam ``core`` already uses
-  to depend on a breaker without importing ``threetears.models``.
+- ``breaker_for`` -- resolves a ``threetears.core.http_client.CircuitBreakerLike`` for one
+  target, typically ``CircuitBreakerRegistry.get``. A free in-process fast-fail that answers
+  before the health row is even read. The same structural seam ``core`` already uses to
+  depend on a breaker without importing ``threetears.models``. It is a lookup rather than a
+  single breaker because everything else here is keyed by target: one instance serves a
+  whole set of targets, so a bare breaker would let one walled target fast-fail every other
+  target the same tool scrapes, and let one healthy target's success reset the count a
+  different target accumulated. The registry this delegates to is already per-key; taking
+  the key is what keeps that property instead of dropping it at this seam.
 - ``blocked_attempts`` -- a ``threetears.core.coordination.windowed_counter.WindowedCounter``.
   Blocked observations counted across a fleet, so several pods polling one target trip its
   circuit as fast as one pod would rather than each accumulating its own share of a count
@@ -47,9 +52,10 @@ event-driven wake-up, not the core behaviour.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from threetears.core.http_client import CircuitBreakerLike
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
@@ -170,7 +176,7 @@ class TargetCircuit:
         health_collection: ScrapeTargetHealthCollection,
         *,
         policy: BackoffPolicy | None = None,
-        breaker: CircuitBreakerLike | None = None,
+        breaker_for: Callable[[str], CircuitBreakerLike] | None = None,
         blocked_attempts: WindowedCounter | None = None,
         probe_pacer: TokenBucket | None = None,
         reprobe_scheduler: ReprobeScheduler | None = None,
@@ -180,8 +186,10 @@ class TargetCircuit:
         :ptype health_collection: ScrapeTargetHealthCollection
         :param policy: threshold and backoff curve; defaults are used when omitted
         :ptype policy: BackoffPolicy | None
-        :param breaker: optional in-process fast-fail, checked before any I/O
-        :ptype breaker: CircuitBreakerLike | None
+        :param breaker_for: optional per-target in-process fast-fail, checked before any
+            I/O. Takes the target id because one instance serves many targets, so a single
+            shared breaker would conflate them; ``CircuitBreakerRegistry.get`` fits directly
+        :ptype breaker_for: Callable[[str], CircuitBreakerLike] | None
         :param blocked_attempts: optional cross-pod counter of blocked observations
         :ptype blocked_attempts: WindowedCounter | None
         :param probe_pacer: optional capacity-one bucket admitting one probe per fleet
@@ -191,7 +199,7 @@ class TargetCircuit:
         """
         self._health = health_collection
         self._policy = policy or BackoffPolicy()
-        self._breaker = breaker
+        self._breaker_for = breaker_for
         self._blocked_attempts = blocked_attempts
         self._probe_pacer = probe_pacer
         self._reprobe_scheduler = reprobe_scheduler
@@ -220,9 +228,10 @@ class TargetCircuit:
         """
         moment = now or datetime.now(UTC)
 
-        if self._breaker is not None:
+        breaker = self._breaker(target_id)
+        if breaker is not None:
             try:
-                self._breaker.check()
+                breaker.check()
             except CircuitOpenError as exc:
                 return FetchDecision(
                     permitted=False,
@@ -232,7 +241,7 @@ class TargetCircuit:
                     reason="in-process circuit breaker is open for this target",
                 )
 
-        health = await self._read_health(target_id)
+        health = (await self._read_health(target_id)).row
         if health is None or _stored_state(health.circuit_state) is CircuitState.CLOSED:
             return FetchDecision(
                 permitted=True,
@@ -243,6 +252,27 @@ class TargetCircuit:
             )
 
         was = _stored_state(health.circuit_state)
+
+        # A HALF_OPEN row means a probe was admitted and has not reported back. `CircuitBreaker`
+        # bounds that with an in-flight flag, but `restore()` cannot carry one across a process
+        # boundary, so its HALF_OPEN branch consults no timer and would admit a fresh probe on
+        # every poll -- a target whose probe never reports (a caller that raised before recording
+        # an outcome) would be fetched at full rate, which is the one hole in "the fetch rate
+        # decays". The promotion below therefore stamps `blocked_until` as the probe's
+        # reservation, and it is honoured here. Only when no pacer is configured: a `TokenBucket`
+        # is the better answer to the same question and owns it when present.
+        if was is CircuitState.HALF_OPEN and self._probe_pacer is None:
+            outstanding = _seconds_until(health.blocked_until, moment)
+            if outstanding > 0.0:
+                self._release_in_process_probe(breaker)
+                return FetchDecision(
+                    permitted=False,
+                    state=CircuitState.HALF_OPEN,
+                    retry_after_seconds=outstanding,
+                    is_probe=False,
+                    reason="a probe of this target is already outstanding",
+                )
+
         restored = self._restore(target_id, health, moment)
         try:
             restored.check()
@@ -254,7 +284,7 @@ class TargetCircuit:
             # this target forever, outliving the durable window it was waiting on. Reporting
             # the failure it effectively had clears the flag and restarts its own recovery
             # timer, which is the honest description: the attempt did not reach the target.
-            self._release_in_process_probe()
+            self._release_in_process_probe(breaker)
             log.info(
                 "scrape circuit: suppressing the fetch of target %s for another %.0fs",
                 target_id,
@@ -276,16 +306,19 @@ class TargetCircuit:
             # Same reasoning as the suppressed branch above: another pod holds the fleet's
             # probe slot, so this process's own probe is not happening and must not be left
             # marked as in flight.
-            self._release_in_process_probe()
+            self._release_in_process_probe(breaker)
             return paced
 
-        if was is not CircuitState.HALF_OPEN:
-            await self._write(
-                target_id,
-                state=CircuitState.HALF_OPEN,
-                failures=health.consecutive_fetch_failures,
-                blocked_until=health.blocked_until,
-            )
+        # Written on every admission, not only the OPEN-to-HALF_OPEN one, because the value
+        # being written is this probe's reservation and a re-probe needs a fresh one. It is
+        # the same arithmetic the trip itself uses, so a probe that never reports back buys
+        # exactly the silence the failure that preceded it had already bought.
+        await self._write(
+            target_id,
+            state=CircuitState.HALF_OPEN,
+            failures=health.consecutive_fetch_failures,
+            blocked_until=moment + timedelta(seconds=self._policy.delay_for(health.consecutive_fetch_failures)),
+        )
         log.info(
             "scrape circuit: probing target %s after backoff",
             target_id,
@@ -351,10 +384,11 @@ class TargetCircuit:
         :ptype now: datetime | None
         """
         moment = now or datetime.now(UTC)
-        if self._breaker is not None:
-            self._breaker.record_success()
+        breaker = self._breaker(target_id)
+        if breaker is not None:
+            breaker.record_success()
 
-        health = await self._read_health(target_id)
+        health = (await self._read_health(target_id)).row
         if health is None:
             return
         if _stored_state(health.circuit_state) is CircuitState.CLOSED and health.consecutive_fetch_failures == 0:
@@ -369,24 +403,46 @@ class TargetCircuit:
         )
         await self._write(target_id, state=restored.state, failures=restored.failure_count, blocked_until=None)
 
-    def _release_in_process_probe(self) -> None:
+    def _breaker(self, target_id: str) -> CircuitBreakerLike | None:
+        """This target's in-process breaker, or ``None`` when no lookup was injected."""
+        return None if self._breaker_for is None else self._breaker_for(target_id)
+
+    def _release_in_process_probe(self, breaker: CircuitBreakerLike | None) -> None:
         """Resolve a probe the in-process breaker admitted but that never reached the target.
 
         ``CircuitBreakerLike`` has three calls and no way to say "never mind"; an admitted
         probe is cleared only by an outcome. Reporting a failure is the accurate one -- the
         attempt did not reach the target -- and it restarts that breaker's own recovery timer
         rather than leaving it fast-failing indefinitely.
+
+        Only when a probe was actually admitted, which is the whole point: a CLOSED breaker
+        admitted nothing, so reporting a failure to it would be inventing one. That is not a
+        theoretical tidiness -- the in-process recovery timeout is seconds where the durable
+        window is minutes to hours, so an unconditional release lets a handful of suppressed
+        polls trip a breaker that never saw a failed fetch, after which :meth:`check` answers
+        from the WRONG circuit and tells the caller to retry in seconds when the truth is
+        hours. A breaker whose state cannot be read is left alone for the same reason: the
+        safe error is a foreign breaker holding its own probe, not a fabricated failure.
         """
-        if self._breaker is not None:
-            self._breaker.record_failure()
+        if breaker is not None and _admitted_a_probe(breaker):
+            breaker.record_failure()
 
     async def _record_failure(self, target_id: str, *, now: datetime | None, blocked: bool) -> None:
         """Drive one failure through the breaker's rules and persist what it decided."""
         moment = now or datetime.now(UTC)
-        if self._breaker is not None:
-            self._breaker.record_failure()
+        breaker = self._breaker(target_id)
+        if breaker is not None:
+            breaker.record_failure()
 
-        health = await self._read_health(target_id)
+        read = await self._read_health(target_id)
+        if not read.readable:
+            # Unlike `check`, where an unreadable row degrades safely to "fetch it", writing
+            # here would persist a state nobody observed: the restore below would start from
+            # CLOSED/0 and stamp a closed circuit with no window over a target that may be
+            # open and backed off, wiping the backoff the row already carried. Skipping the
+            # write costs this one failure; guessing costs the suppression.
+            return
+        health = read.row
         observed = health.consecutive_fetch_failures if health is not None else 0
         if blocked:
             observed = max(observed, await self._fleet_count(target_id))
@@ -535,17 +591,22 @@ class TargetCircuit:
                 extra={"extra_data": {"target_id": target_id}},
             )
 
-    async def _read_health(self, target_id: str) -> ScrapeTargetHealth | None:
-        """Read the durable row, degrading an unreadable store to "no circuit state"."""
+    async def _read_health(self, target_id: str) -> _HealthRead:
+        """Read the durable row, reporting an unreadable store as distinct from an absent row.
+
+        The two are the same to :meth:`check`, which fetches on either, but they are opposite
+        to a writer: "no row" is a fact worth persisting against, and "could not read" is the
+        absence of any fact at all.
+        """
         try:
-            return await self._health.get(target_id)
+            return _HealthRead(row=await self._health.get(target_id), readable=True)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreadable health store must degrade this target to its pre-circuit behaviour, not fail every poll. Logged with its traceback below
             log.exception(
                 "scrape circuit: could not read health for target %s; treating its circuit as closed",
                 target_id,
                 extra={"extra_data": {"target_id": target_id}},
             )
-            return None
+            return _HealthRead(row=None, readable=False)
 
     async def _write(
         self,
@@ -574,6 +635,42 @@ class TargetCircuit:
             )
 
 
+class _HealthRead(NamedTuple):
+    """A health row, and whether the store could be read at all.
+
+    ``row=None, readable=True`` is "this target has no health row yet"; ``readable=False`` is
+    "the store did not answer". Collapsing the two is what lets a failed read be written back
+    as an observation.
+    """
+
+    row: ScrapeTargetHealth | None
+    readable: bool
+
+
 def _stored_state(value: str) -> CircuitState:
     """Read a stored ``circuit_state`` string, defaulting an unrecognised one to CLOSED."""
     return _KNOWN_CIRCUIT_STATES.get(value, CircuitState.CLOSED)
+
+
+def _seconds_until(moment: datetime | None, now: datetime) -> float:
+    """Seconds from *now* until *moment*, or 0.0 when it is absent or already past."""
+    if moment is None:
+        return 0.0
+    return max(0.0, (moment - now).total_seconds())
+
+
+def _admitted_a_probe(breaker: CircuitBreakerLike) -> bool:
+    """Whether *breaker*'s just-returned ``check()`` admitted a recovery probe.
+
+    A breaker only admits a probe from HALF_OPEN, and it only reaches HALF_OPEN by admitting
+    one -- an OPEN breaker whose window elapsed promotes itself and takes the slot, and a
+    HALF_OPEN one whose slot is already taken raises instead of returning. So a breaker
+    reading HALF_OPEN after a ``check()`` that returned is holding this call's probe, and a
+    CLOSED one is holding nothing.
+
+    ``CircuitBreakerLike`` is three calls and does not expose state, so this reads it
+    structurally and answers ``False`` for a breaker that has none. That direction is
+    deliberate: an unresolved probe on a foreign breaker is that breaker's own business,
+    where a fabricated failure is this module corrupting it.
+    """
+    return getattr(breaker, "state", None) is CircuitState.HALF_OPEN

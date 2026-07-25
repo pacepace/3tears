@@ -325,9 +325,31 @@ preference: the eval loop is handed a page that has already been fetched, so a g
 could only suppress work downstream of the cost the circuit exists to avoid. A target inside
 its window consequently reaches neither the candidate generator nor the page classifier.
 
+`restore()` not carrying the in-flight flag has a second consequence, beyond needing the
+`TokenBucket`: a restored HALF_OPEN breaker consults no timer at all, so a row left HALF_OPEN
+admits a fresh probe on every poll. That row is reachable whenever a caller dies between the
+fetch and the outcome report, and it would delete the decay while leaving every individual
+transition correct. So the promotion writes `blocked_until` as the probe's own reservation
+and honours it -- a pacer of last resort, built from the column already being written, for a
+deployment that configured no `TokenBucket`.
+
 Where a per-process fast-fail is still wanted, `scrape` accepts an injected breaker through
 `core.http_client`'s existing `CircuitBreakerLike` protocol -- the same seam `core` already uses
-to avoid importing `threetears.models` and its LangChain weight. No new protocol.
+to avoid importing `threetears.models` and its LangChain weight. No new protocol. It is
+injected as a lookup KEYED BY TARGET rather than as one breaker, because a `TargetCircuit`
+serves a whole set of targets: a shared breaker would let one walled target fast-fail every
+other target on the same tool, and let a healthy target's success reset a count another
+target had accumulated. `CircuitBreakerRegistry` is already per-key, and taking the key is
+what keeps that property instead of dropping it at this seam.
+
+The two circuits run on very different clocks -- seconds against minutes to hours -- so the
+durable one routinely suppresses a fetch the in-process one has already admitted a probe for.
+That probe then never resolves, and `CircuitBreakerLike` has no way to say "never mind", so
+the suppressed path reports the failure it effectively had. Only where a probe was genuinely
+admitted, though: telling a CLOSED breaker about a fetch that was never attempted trips it on
+failures it never saw, after which the wrong circuit answers `check` and the caller is told to
+retry in seconds when the truth is hours -- turning the suppression into a fixed-cadence poll,
+which is the opposite of the whole section.
 
 Re-probing a blocked target is scheduled through `3tears-scheduled-jobs` (`relative_delay`),
 not a bespoke sleep-and-retry. That arrives as the optional `3tears-scrape[reprobe]` extra

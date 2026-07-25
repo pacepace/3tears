@@ -38,13 +38,26 @@ that can disagree. `restore()` deliberately does not restore an in-flight probe:
 belongs to the process that issued it and no other process can observe it.
 
 Four collaborators are optional and injected, never constructed, because each belongs to
-infrastructure `3tears-scrape` does not own: a `CircuitBreakerLike` for a free in-process
-fast-fail before any I/O (the same structural seam `core.http_client` already uses), a
-`WindowedCounter` so several pods polling one target reach the threshold together instead
-of each carrying a share that never gets there, a capacity-one `TokenBucket` for the
-cross-pod single-probe admission a restored breaker structurally cannot give, and a
+infrastructure `3tears-scrape` does not own: a per-target `CircuitBreakerLike` lookup for a
+free in-process fast-fail before any I/O (the same structural seam `core.http_client`
+already uses, taken as a lookup because one `TargetCircuit` serves many targets and a shared
+breaker would let one walled target fast-fail the rest -- `CircuitBreakerRegistry.get` fits
+it directly), a `WindowedCounter` so several pods polling one target reach the threshold
+together instead of each carrying a share that never gets there, a capacity-one `TokenBucket`
+for the cross-pod single-probe admission a restored breaker structurally cannot give, and a
 `ReprobeScheduler`. With all four absent the circuit still decays a blocked target's fetch
 rate off the health row alone.
+
+Two consequences of the durable and in-process circuits running on different clocks are
+handled rather than left latent. A suppressed fetch resolves an in-process probe that will
+now never happen -- but only where one was genuinely admitted, since reporting a failure to
+a breaker that admitted nothing trips it on fetches nobody attempted, after which the wrong
+circuit answers and the caller is told to retry in seconds when the truth is hours. And
+because `restore()` cannot carry an in-flight flag across a process, a restored HALF_OPEN
+breaker consults no timer, so the promotion writes `blocked_until` as the probe's own
+reservation: a caller that dies between the fetch and the outcome report leaves a HALF_OPEN
+row, and without the reservation that row would be fetched on every poll with every
+individual state transition still correct.
 
 `3tears-scrape[reprobe]` is a new extra carrying the fourth: `reprobe.py` books the next
 probe as a `3tears-scheduled-jobs` `relative_delay` job rather than sleeping, for a caller

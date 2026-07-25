@@ -22,7 +22,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
+from threetears.models.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerRegistry,
+    CircuitOpenError,
+    CircuitState,
+)
 
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
@@ -374,7 +379,8 @@ async def test_an_open_in_process_breaker_denies_before_any_io(health: ScrapeTar
         return await original(entity_id, **kwargs)  # type: ignore[arg-type]
 
     health.get = counting_get  # type: ignore[method-assign, assignment]
-    decision = await TargetCircuit(health, breaker=_FakeBreaker()).check(_T, now=_NOW)
+    breaker = _FakeBreaker()
+    decision = await TargetCircuit(health, breaker_for=lambda _target: breaker).check(_T, now=_NOW)
 
     assert not decision.permitted
     assert decision.retry_after_seconds == 12.0
@@ -476,7 +482,7 @@ async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
     breaker.record_failure()
     assert breaker.state is CircuitState.OPEN
 
-    circuit = TargetCircuit(health, policy=policy, breaker=breaker)
+    circuit = TargetCircuit(health, policy=policy, breaker_for=lambda _target: breaker)
     await record_circuit_state(
         health,
         target_id=_T,
@@ -495,3 +501,141 @@ async def test_a_suppressed_fetch_does_not_strand_the_in_process_breaker(
         "the caller was told to retry immediately into a circuit that cannot admit it -- "
         "the stranded in-process probe answered instead of the durable window"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_fetch_invents_no_failure_on_a_closed_in_process_breaker(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The mirror of the test above, and the far more common case of the two.
+
+    A CLOSED breaker's ``check()`` returns without admitting anything, so there is no probe
+    to release and reporting a failure to it is inventing one. The two circuits run on very
+    different clocks -- seconds against minutes-to-hours -- so a handful of suppressed polls
+    is enough to trip a breaker that never once saw a failed fetch. After that the WRONG
+    circuit answers, and the caller is told to retry in seconds when the truth is the durable
+    window. An LLM holding this tool obeys that hint, so the suppression it was given turns
+    into a fixed-cadence poll forever.
+    """
+    breaker = CircuitBreaker(_T, failure_threshold=2, recovery_timeout_seconds=30.0)
+    assert breaker.state is CircuitState.CLOSED
+
+    circuit = TargetCircuit(health, policy=policy, breaker_for=lambda _target: breaker)
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until=_NOW + timedelta(seconds=300),
+    )
+
+    for poll in range(4):
+        decision = await circuit.check(_T, now=_NOW + timedelta(seconds=poll))
+        assert not decision.permitted
+        assert decision.retry_after_seconds > 250.0, (
+            "the in-process breaker answered instead of the durable window, so the caller "
+            "was told to retry orders of magnitude too soon"
+        )
+
+    assert breaker.failure_count == 0, "suppressed fetches were counted as failures against a breaker that saw none"
+    assert breaker.state is CircuitState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_one_targets_in_process_breaker_is_not_another_targets(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Everything else here is keyed by target, and this seam must not drop the key.
+
+    One ``TargetCircuit`` serves every target its tool scrapes. A single shared breaker would
+    let one walled target fast-fail every other target on the same tool, and would let a
+    healthy target's success wipe the failure count a different target had accumulated --
+    both of which the registry this delegates to already gets right, per key.
+    """
+    registry = CircuitBreakerRegistry(failure_threshold=1, recovery_timeout_seconds=300.0)
+    other = "some_other_target"
+    circuit = TargetCircuit(health, policy=policy, breaker_for=registry.get)
+
+    await circuit.record_unreachable(_T, now=_NOW)
+    assert registry.get(_T).state is CircuitState.OPEN
+
+    assert (await circuit.check(other, now=_NOW)).permitted, "one walled target fast-failed an unrelated one"
+    await circuit.record_reachable(other, now=_NOW)
+    assert registry.get(_T).state is CircuitState.OPEN, "a healthy target's success reset another target's breaker"
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_never_reports_back_does_not_re_probe_every_poll(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The one hole in "the fetch rate decays", and it is reachable from a raising caller.
+
+    ``CircuitBreaker`` bounds concurrent probes with an in-flight flag, but ``restore()``
+    cannot carry one across a process boundary, so its HALF_OPEN branch consults no timer:
+    a row left HALF_OPEN admits a fresh probe on every single poll. A caller that raises
+    between the fetch and the outcome report leaves exactly that row, and the target is then
+    fetched at full rate for as long as the fault lasts -- the decay silently gone while
+    every individual state transition remains correct.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    probe_at = _NOW + timedelta(seconds=61)
+    assert (await circuit.check(_T, now=probe_at)).is_probe
+    # The caller dies here: no record_blocked, no record_reachable, row left HALF_OPEN.
+
+    for poll in range(1, 4):
+        decision = await circuit.check(_T, now=probe_at + timedelta(seconds=poll))
+        assert not decision.permitted, "an unreported probe let the target be fetched again on the very next poll"
+        assert decision.retry_after_seconds > 0.0
+
+    # And the reservation is a reservation, not a life sentence: once it expires the probe is
+    # evidently dead and the target is due another one.
+    assert (await circuit.check(_T, now=probe_at + timedelta(seconds=61))).is_probe
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_health_store_does_not_erase_an_open_circuit(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A failed read is the absence of a fact, not the fact that there is nothing.
+
+    ``check`` collapses the two safely -- unreadable or absent, it fetches. A writer must
+    not: restoring from "nothing" starts at CLOSED/0 and would then persist a closed circuit
+    with no window over a target that is open and backed off, throwing away the suppression
+    on the one poll where the store was flaky.
+
+    Only the circuit's OWN read fails here. A store down hard takes the write with it (the
+    merge does its own read), so the two failures cancel and nothing is persisted either way
+    -- which hides the bug rather than proving there is none. The case that bites is the
+    partially degraded one, a read that times out against a store still healthy enough to
+    accept the write, so that is what this drives.
+    """
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=4,
+        blocked_until=_NOW + timedelta(seconds=300),
+    )
+    original = health.get
+    failed_once = False
+
+    async def flaky_get(entity_id: object, **kwargs: object) -> object:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("health store read timed out")
+        return await original(entity_id, **kwargs)  # type: ignore[arg-type]
+
+    health.get = flaky_get  # type: ignore[method-assign, assignment]
+    await TargetCircuit(health, policy=policy).record_blocked(_T, now=_NOW)
+    assert failed_once, "the circuit never read the row, so this test proved nothing"
+
+    health.get = original  # type: ignore[method-assign]
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.OPEN.value, "a failed read was written back as a closed circuit"
+    assert row.consecutive_fetch_failures == 4
+    assert row.blocked_until == _NOW + timedelta(seconds=300)
