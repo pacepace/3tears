@@ -12,6 +12,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
@@ -571,7 +573,11 @@ class TestScrapeToolFetchCircuit:
 
         create_model.assert_not_called()
         assert driver.render_calls == 0
-        assert json.loads(result.content)["validation_status"] == "blocked"
+        # "backoff" even though this particular circuit was opened by a real wall. The status
+        # describes THIS poll, and this poll observed nothing -- it is the same reason no
+        # extraction row is written below. Whether the target was last walled is a historical
+        # question, and `last_blocked_at` on the health row is where it is answered.
+        assert json.loads(result.content)["validation_status"] == "backoff"
         assert await extraction_collection.get(target_id) is None
 
     async def test_a_target_that_comes_back_clears_its_circuit(self):
@@ -617,6 +623,64 @@ class TestScrapeToolFetchCircuit:
         assert row is not None
         assert row.circuit_state == "open"
         assert row.last_blocked_at is None, "a transport failure was recorded as a bot wall"
+
+        # The machine-readable half of the same claim. `error` is prose for whoever reads it;
+        # `content` is the payload a consumer parses, and in this package "blocked" means a
+        # bot wall stood there. This host simply stopped answering, and no fetch happened at
+        # all, so reporting "blocked" would have a consumer chasing a challenge page that
+        # does not exist.
+        assert json.loads(third.content)["validation_status"] == "backoff", (
+            "a suppressed poll on a circuit opened by transport failures reported the target as walled"
+        )
+        assert third.metadata["validation_status"] == "backoff"
+
+    async def test_an_eval_loop_that_raises_does_not_strand_the_targets_probe(self):
+        """The permitted path's version of the stranding the suppressed path already handles.
+
+        A permitted decision can promote the in-process breaker to HALF_OPEN and mark its
+        probe in flight; only an outcome clears that flag. The eval loop raising -- an L3
+        write failing inside ``save_entity``, say -- means no outcome is ever reported, so
+        the flag is held for the life of the process. Every later ``check`` then fast-fails
+        on the in-process branch before the durable row is read and answers "retry in about
+        0s", so the tool tells its caller to hammer a target it will never actually fetch.
+
+        Uses the real ``CircuitBreaker`` because the in-flight flag IS the behaviour under
+        test, and drives it through ``tool.execute`` because the gap being closed is the
+        tool's missing handler, not the circuit's.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/raises"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+
+        breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
+        breaker.record_failure()
+        assert breaker.state is CircuitState.OPEN
+
+        circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
+        tool = self._tool(
+            _FakeDriver(_SINGLE_HTML), circuit, recipe_collection, extraction_collection, health_collection
+        )
+
+        with (
+            patch("threetears.scrape.tool.run_eval_loop", side_effect=RuntimeError("L3 write failed")),
+            pytest.raises(RuntimeError, match="L3 write failed"),
+        ):
+            await tool.execute(url=url, field_schema=schema)
+
+        # The breaker promoted itself on the way in and its probe was abandoned; the tool is
+        # the only thing that knows the probe is dead, so the tool has to say so.
+        assert breaker.state is not CircuitState.HALF_OPEN, (
+            "the in-process breaker was left holding a probe no outcome will ever clear"
+        )
+
+        decision = await circuit.check(target_id)
+        assert decision.permitted, (
+            "a stranded probe fast-failed the target before the durable row was read, so the "
+            "caller is told to retry immediately into a circuit that cannot admit it"
+        )
 
     async def test_without_a_circuit_nothing_is_suppressed(self):
         """The default, and every pre-existing caller: every call fetches, as it always did."""

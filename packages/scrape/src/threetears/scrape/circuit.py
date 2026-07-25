@@ -24,8 +24,10 @@ arithmetic, and the decision of which outcome counts as a fetch failure.
 Four collaborators are optional and injected, never constructed, because each belongs to
 infrastructure this package does not own:
 
-- ``breaker_for`` -- resolves a ``threetears.core.http_client.CircuitBreakerLike`` for one
-  target, typically ``CircuitBreakerRegistry.get``. A free in-process fast-fail that answers
+- ``breaker_for`` -- resolves a :class:`ProbeObservableBreaker` (the
+  ``threetears.core.http_client.CircuitBreakerLike`` three-call protocol plus a readable
+  ``state``) for one target, typically ``CircuitBreakerRegistry.get``. A free in-process
+  fast-fail that answers
   before the health row is even read. The same structural seam ``core`` already uses to
   depend on a breaker without importing ``threetears.models``. It is a lookup rather than a
   single breaker because everything else here is keyed by target: one instance serves a
@@ -73,6 +75,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BackoffPolicy",
     "FetchDecision",
+    "ProbeObservableBreaker",
     "ReprobeScheduler",
     "TargetCircuit",
 ]
@@ -91,6 +94,34 @@ _MAX_BACKOFF_DOUBLINGS = 32
 #: -- the failure mode is one wasted fetch, where the opposite is a target suppressed forever
 #: on a value nobody can explain.
 _KNOWN_CIRCUIT_STATES: dict[str, CircuitState] = {state.value: state for state in CircuitState}
+
+
+class ProbeObservableBreaker(CircuitBreakerLike, Protocol):
+    """A :class:`~threetears.core.http_client.CircuitBreakerLike` whose state can be read.
+
+    The three-call protocol has no way to say "never mind" about a probe it admitted: an
+    in-flight probe is cleared only by an outcome. So resolving a probe that will never
+    reach the target means first knowing whether one was admitted at all, and that is what
+    ``state`` is for -- reporting a failure to a breaker that admitted nothing invents one,
+    and the in-process recovery timeout is seconds where the durable window is minutes to
+    hours, so a handful of fabricated failures put the WRONG circuit in charge of the answer.
+
+    Declared rather than probed for. Reading ``state`` off a bare ``CircuitBreakerLike`` and
+    treating its absence as "no probe admitted" looks conservative and is not: a breaker that
+    satisfies the three calls, has an in-flight-probe concept, and does not expose ``state``
+    is never released, so it stays HALF_OPEN with its probe held, every later ``check()``
+    raises, no fetch happens, no outcome is recorded, and that target is wedged for the life
+    of the process -- with a type signature that disclosed none of it. Requiring the attribute
+    makes the constraint checkable at the seam instead of discoverable in production.
+
+    ``threetears.models.circuit_breaker.CircuitBreaker`` satisfies this, so
+    ``CircuitBreakerRegistry.get`` still fits the ``breaker_for`` parameter directly.
+    """
+
+    @property
+    def state(self) -> CircuitState:
+        """The breaker's current state."""
+        ...
 
 
 class ReprobeScheduler(Protocol):
@@ -176,7 +207,7 @@ class TargetCircuit:
         health_collection: ScrapeTargetHealthCollection,
         *,
         policy: BackoffPolicy | None = None,
-        breaker_for: Callable[[str], CircuitBreakerLike] | None = None,
+        breaker_for: Callable[[str], ProbeObservableBreaker] | None = None,
         blocked_attempts: WindowedCounter | None = None,
         probe_pacer: TokenBucket | None = None,
         reprobe_scheduler: ReprobeScheduler | None = None,
@@ -188,8 +219,10 @@ class TargetCircuit:
         :ptype policy: BackoffPolicy | None
         :param breaker_for: optional per-target in-process fast-fail, checked before any
             I/O. Takes the target id because one instance serves many targets, so a single
-            shared breaker would conflate them; ``CircuitBreakerRegistry.get`` fits directly
-        :ptype breaker_for: Callable[[str], CircuitBreakerLike] | None
+            shared breaker would conflate them; ``CircuitBreakerRegistry.get`` fits directly.
+            Must expose ``state`` (see :class:`ProbeObservableBreaker`), because a probe this
+            module cannot see admitted is a probe it cannot resolve
+        :ptype breaker_for: Callable[[str], ProbeObservableBreaker] | None
         :param blocked_attempts: optional cross-pod counter of blocked observations
         :ptype blocked_attempts: WindowedCounter | None
         :param probe_pacer: optional capacity-one bucket admitting one probe per fleet
@@ -215,9 +248,12 @@ class TargetCircuit:
         expired backoff window. The OPEN-to-HALF_OPEN promotion that produces it is written
         back, so another pod reads the target as probing rather than as still open.
 
-        Never raises. An unreadable health store degrades this target to the behaviour it
-        had before the circuit existed -- fetching -- because a store outage must not
-        silently stop scraping everything.
+        An unreadable health store degrades this target to the behaviour it had before the
+        circuit existed -- fetching -- because a store outage must not silently stop scraping
+        everything. Nothing this module does raises; an injected ``breaker_for`` or its
+        ``check()`` still can, and that propagates rather than being swallowed, because a
+        broken injection is the caller's bug and hiding it would fetch at full rate while
+        looking healthy.
 
         :param target_id: the target about to be fetched
         :ptype target_id: str
@@ -259,9 +295,14 @@ class TargetCircuit:
         # every poll -- a target whose probe never reports (a caller that raised before recording
         # an outcome) would be fetched at full rate, which is the one hole in "the fetch rate
         # decays". The promotion below therefore stamps `blocked_until` as the probe's
-        # reservation, and it is honoured here. Only when no pacer is configured: a `TokenBucket`
-        # is the better answer to the same question and owns it when present.
-        if was is CircuitState.HALF_OPEN and self._probe_pacer is None:
+        # reservation, and it is honoured here.
+        #
+        # Honoured whether or not a pacer is configured, because a `TokenBucket` is not the same
+        # answer to the same question. The bucket bounds how many pods probe at once, at its
+        # own FIXED refill rate; the reservation bounds how OFTEN a stuck target is probed, on
+        # the doubling curve. Deferring to the bucket would swap a decay for a floor, and a
+        # constant re-probe cadence is the thing this whole module exists to remove.
+        if was is CircuitState.HALF_OPEN:
             outstanding = _seconds_until(health.blocked_until, moment)
             if outstanding > 0.0:
                 self._release_in_process_probe(breaker)
@@ -403,11 +444,38 @@ class TargetCircuit:
         )
         await self._write(target_id, state=restored.state, failures=restored.failure_count, blocked_until=None)
 
-    def _breaker(self, target_id: str) -> CircuitBreakerLike | None:
+    def release_probe(self, target_id: str) -> None:
+        """Resolve a permitted fetch that will never report an outcome.
+
+        For a caller whose :meth:`check` said yes and which then raised before reaching
+        :meth:`record_blocked`, :meth:`record_unreachable` or :meth:`record_reachable`.
+        Without it, a permitted decision that promoted the in-process breaker to HALF_OPEN
+        leaves that breaker holding a probe no outcome will ever clear, and from then on
+        :meth:`check` fast-fails this target on the in-process branch -- before the durable
+        row is even read -- with ``retry_after_seconds`` of 0.0, telling the caller to retry
+        immediately, forever.
+
+        The durable circuit needs nothing here and is deliberately not touched: its HALF_OPEN
+        promotion already stamped ``blocked_until`` as the probe's own reservation, so a
+        caller that dies mid-probe is bounded by a value that outlives the process. Only the
+        process-local in-flight flag can strand, so only it is released.
+
+        Safe to call when no probe was admitted, and safe to call twice: the release is
+        conditional on the breaker actually reading HALF_OPEN.
+
+        Not async -- it touches no store, which is what lets an exception handler call it
+        without introducing a new failure of its own.
+
+        :param target_id: the target whose fetch was permitted but never resolved
+        :ptype target_id: str
+        """
+        self._release_in_process_probe(self._breaker(target_id))
+
+    def _breaker(self, target_id: str) -> ProbeObservableBreaker | None:
         """This target's in-process breaker, or ``None`` when no lookup was injected."""
         return None if self._breaker_for is None else self._breaker_for(target_id)
 
-    def _release_in_process_probe(self, breaker: CircuitBreakerLike | None) -> None:
+    def _release_in_process_probe(self, breaker: ProbeObservableBreaker | None) -> None:
         """Resolve a probe the in-process breaker admitted but that never reached the target.
 
         ``CircuitBreakerLike`` has three calls and no way to say "never mind"; an admitted
@@ -421,8 +489,7 @@ class TargetCircuit:
         window is minutes to hours, so an unconditional release lets a handful of suppressed
         polls trip a breaker that never saw a failed fetch, after which :meth:`check` answers
         from the WRONG circuit and tells the caller to retry in seconds when the truth is
-        hours. A breaker whose state cannot be read is left alone for the same reason: the
-        safe error is a foreign breaker holding its own probe, not a fabricated failure.
+        hours.
         """
         if breaker is not None and _admitted_a_probe(breaker):
             breaker.record_failure()
@@ -659,7 +726,7 @@ def _seconds_until(moment: datetime | None, now: datetime) -> float:
     return max(0.0, (moment - now).total_seconds())
 
 
-def _admitted_a_probe(breaker: CircuitBreakerLike) -> bool:
+def _admitted_a_probe(breaker: ProbeObservableBreaker) -> bool:
     """Whether *breaker*'s just-returned ``check()`` admitted a recovery probe.
 
     A breaker only admits a probe from HALF_OPEN, and it only reaches HALF_OPEN by admitting
@@ -668,9 +735,8 @@ def _admitted_a_probe(breaker: CircuitBreakerLike) -> bool:
     reading HALF_OPEN after a ``check()`` that returned is holding this call's probe, and a
     CLOSED one is holding nothing.
 
-    ``CircuitBreakerLike`` is three calls and does not expose state, so this reads it
-    structurally and answers ``False`` for a breaker that has none. That direction is
-    deliberate: an unresolved probe on a foreign breaker is that breaker's own business,
-    where a fabricated failure is this module corrupting it.
+    ``state`` is required by :class:`ProbeObservableBreaker` rather than probed for, so a
+    breaker that cannot answer this question is rejected at the seam instead of silently
+    never being released.
     """
-    return getattr(breaker, "state", None) is CircuitState.HALF_OPEN
+    return breaker.state is CircuitState.HALF_OPEN

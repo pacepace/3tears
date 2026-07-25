@@ -292,13 +292,14 @@ async def test_an_unreadable_health_store_still_lets_the_target_be_fetched(
 # ---------------------------------------------------------------------------
 
 
-# parity-with: threetears.core.http_client.CircuitBreakerLike
+# parity-with: threetears.scrape.circuit.ProbeObservableBreaker
 class _FakeBreaker:
     """An in-process breaker that is already open."""
 
     def __init__(self) -> None:
         self.successes = 0
         self.failures = 0
+        self.state = CircuitState.OPEN
 
     def check(self) -> None:
         raise CircuitOpenError("warn_oh", 12.0)
@@ -416,19 +417,39 @@ async def test_a_pacer_admits_one_probe_and_refuses_the_rest(
     breaker hydrated from a row is a fresh object in a different process, so every pod would
     otherwise consider itself the one probe. A capacity-one bucket is the distributed form
     of the same guarantee.
+
+    Two pods, modelled as two circuits that have each already read the row as OPEN, sharing
+    nothing but the pacer -- which is exactly what they share in a real deployment. That
+    read-before-either-writes window is the only place the pacer can matter: once one pod has
+    written HALF_OPEN, the durable probe reservation refuses everyone else on its own, ahead
+    of the pacer and without needing it. Driving both checks against one collection would
+    therefore prove nothing about the pacer, because the second call would never reach it.
     """
     pacer = _FakeProbePacer(tokens=1)
-    circuit = TargetCircuit(health, policy=policy, probe_pacer=pacer)
-    await circuit.record_blocked(_T, now=_NOW)
-    await circuit.record_blocked(_T, now=_NOW)
+    pod_a = TargetCircuit(health, policy=policy, probe_pacer=pacer)
+    await pod_a.record_blocked(_T, now=_NOW)
+    await pod_a.record_blocked(_T, now=_NOW)
+
+    pod_b_health = ScrapeTargetHealthCollection(
+        CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS"), nats_client=None
+    )
+    await record_circuit_state(
+        pod_b_health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=2,
+        blocked_until=_NOW + timedelta(seconds=60),
+    )
+    pod_b = TargetCircuit(pod_b_health, policy=policy, probe_pacer=pacer)
 
     after = _NOW + timedelta(seconds=61)
-    first = await circuit.check(_T, now=after)
-    second = await circuit.check(_T, now=after)
+    first = await pod_a.check(_T, now=after)
+    second = await pod_b.check(_T, now=after)
 
     assert first.permitted and first.is_probe
-    assert not second.permitted
-    assert second.retry_after_seconds == 45.0
+    assert not second.permitted, "both pods probed the same target in the same window"
+    assert second.retry_after_seconds == 45.0, "the refusal did not come from the pacer"
+    assert pacer.claims == 2, "the fleet's probe slot was never consulted"
 
 
 @pytest.mark.asyncio
@@ -538,6 +559,99 @@ async def test_a_suppressed_fetch_invents_no_failure_on_a_closed_in_process_brea
         )
 
     assert breaker.failure_count == 0, "suppressed fetches were counted as failures against a breaker that saw none"
+    assert breaker.state is CircuitState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_half_open_row_still_decays_when_a_probe_pacer_is_configured(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A token bucket and the probe reservation answer different questions.
+
+    The bucket bounds how MANY pods probe at once, and it refills at a constant rate. The
+    reservation bounds how OFTEN a stuck target is probed, on the doubling curve. Deferring
+    the reservation to the bucket whenever one is configured therefore swaps the decay for a
+    floor: a row left HALF_OPEN by a caller that died before reporting gets re-probed at the
+    refill rate forever, which is exactly the fixed-cadence polling this module exists to
+    remove -- and it only happens in the deployment that bothered to configure a pacer.
+
+    The pacer here always grants, so the bucket cannot be what suppresses the fetch; if the
+    reservation is not honoured, nothing is.
+    """
+    circuit = TargetCircuit(health, policy=policy, probe_pacer=_FakeProbePacer(tokens=99))
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    probe_at = _NOW + timedelta(seconds=61)
+    assert (await circuit.check(_T, now=probe_at)).is_probe
+    # The caller dies here, leaving the row HALF_OPEN with its reservation stamped.
+
+    for poll in range(1, 4):
+        decision = await circuit.check(_T, now=probe_at + timedelta(seconds=poll))
+        assert not decision.permitted, (
+            "a configured pacer disabled the probe reservation, so a stuck row was re-probed "
+            "at the bucket's refill rate instead of the backoff curve"
+        )
+        assert decision.retry_after_seconds > 0.0
+
+    # And it is still a reservation, not a life sentence.
+    assert (await circuit.check(_T, now=probe_at + timedelta(seconds=61))).is_probe
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_probe_can_be_released_by_the_caller_that_abandoned_it(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The permitted path's version of the stranding the suppressed path already handles.
+
+    ``check`` saying yes can promote the in-process breaker to HALF_OPEN and mark ITS probe
+    in flight. If the caller then raises before reporting an outcome, nothing ever clears
+    that flag: every later ``check`` fast-fails on the in-process branch before the durable
+    row is read, with ``retry_after_seconds`` of 0.0 -- an infinite "retry immediately" into
+    a circuit that will never admit anything.
+
+    Uses the real ``CircuitBreaker`` because the in-flight flag IS the behaviour under test.
+    """
+    breaker = CircuitBreaker(_T, failure_threshold=1, recovery_timeout_seconds=0.0)
+    breaker.record_failure()
+    assert breaker.state is CircuitState.OPEN
+
+    circuit = TargetCircuit(health, policy=policy, breaker_for=lambda _target: breaker)
+
+    # A permitted fetch: the durable circuit is closed, and the in-process breaker promotes
+    # itself to HALF_OPEN on the way through, taking its own probe slot.
+    assert (await circuit.check(_T, now=_NOW)).permitted
+    assert breaker.state is CircuitState.HALF_OPEN
+
+    # The caller raises before reporting any outcome, and says so.
+    circuit.release_probe(_T)
+
+    decision = await circuit.check(_T, now=_NOW + timedelta(seconds=1))
+    assert decision.permitted, (
+        "the abandoned probe was never released, so the in-process breaker fast-failed the "
+        "target before the durable row was even read"
+    )
+
+
+@pytest.mark.asyncio
+async def test_releasing_a_probe_nobody_admitted_invents_no_failure(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """``release_probe`` is safe to call blind, which is what lets it live in an except block.
+
+    A caller cannot tell whether its permitted decision promoted the in-process breaker, and
+    should not have to: the alternative is an exception handler that has to reason about
+    circuit state to avoid corrupting it. Releasing what was never admitted would fabricate
+    failures on a healthy breaker at seconds-scale timeouts, and the wrong circuit would then
+    be the one answering.
+    """
+    breaker = CircuitBreaker(_T, failure_threshold=2, recovery_timeout_seconds=30.0)
+    circuit = TargetCircuit(health, policy=policy, breaker_for=lambda _target: breaker)
+
+    for _ in range(4):
+        circuit.release_probe(_T)
+
+    assert breaker.failure_count == 0, "releasing an unadmitted probe was recorded as a failed fetch"
     assert breaker.state is CircuitState.CLOSED
 
 

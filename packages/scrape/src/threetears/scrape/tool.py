@@ -328,10 +328,17 @@ class ScrapeTool(TearsTool):
                     f"about {decision.retry_after_seconds:.0f}s; retrying sooner will not "
                     "fetch anything."
                 ),
-                content=json.dumps({"target_id": target_id, "validation_status": "blocked", "records": []}),
+                # "backoff", not "blocked", for the same reason `error` above does not say
+                # "behind a wall" -- and this is the half a machine reads. In this package
+                # "blocked" means a bot wall stood where the content should be, which is a
+                # fact about the target; the same circuit also opens on repeated transport
+                # failures, and reporting those as "blocked" tells a consumer a host that
+                # simply stopped answering is challenging it. No fetch happened here at all,
+                # so the honest status is the circuit's own.
+                content=json.dumps({"target_id": target_id, "validation_status": "backoff", "records": []}),
                 metadata={
                     "target_id": target_id,
-                    "validation_status": "blocked",
+                    "validation_status": "backoff",
                     "record_count": 0,
                     "source_url": url,
                     "circuit_state": decision.state.value,
@@ -341,42 +348,59 @@ class ScrapeTool(TearsTool):
         else:
             assert page is not None  # narrowed by `error is None` above
             eval_loop_fn = run_eval_loop_multi_row if multi_row else run_eval_loop
-            extraction = await eval_loop_fn(
-                target_id,
-                page.html,
-                page.final_url,
-                schema,
-                recipe_collection=self._recipe_collection,
-                extraction_collection=self._extraction_collection,
-                health_collection=self._health_collection,
-                api_key=self._api_key,
-                strategy_type=strategy_type,
-                # The driver already knows the status; not passing it would leave the
-                # classifier guessing about evidence we are holding.
-                page_status=page.status,
-            )
-            records: list[dict[str, Any]] = extraction.structured_fields.get("records", [])
-            content = json.dumps(
-                {"target_id": target_id, "validation_status": extraction.validation_status, "records": records},
-                default=str,
-            )
-            # `blocked` is not success -- no records were produced -- but it is also not
-            # the same failure as the others, and a caller that cannot tell them apart
-            # will retry a walled target forever and count it as a broken extraction.
-            # The distinction is surfaced in `error` because that is the field a caller
-            # actually reads on a failed ToolResult; `validation_status` was already in
-            # metadata and was already being ignored.
-            blocked = extraction.validation_status == "blocked"
-            if self._circuit is not None:
-                # Every non-blocked outcome closes the circuit, including an extraction that
-                # failed: this circuit counts FETCHES, and a page we can plainly read is a
-                # fetch that worked. A recipe that keeps missing against a page we received
-                # is `ScrapeRecipe.consecutive_validation_failures`'s business, and backing
-                # off the fetch would only starve the regeneration that fixes it.
-                if blocked:
-                    await self._circuit.record_blocked(target_id)
-                else:
-                    await self._circuit.record_reachable(target_id)
+            try:
+                extraction = await eval_loop_fn(
+                    target_id,
+                    page.html,
+                    page.final_url,
+                    schema,
+                    recipe_collection=self._recipe_collection,
+                    extraction_collection=self._extraction_collection,
+                    health_collection=self._health_collection,
+                    api_key=self._api_key,
+                    strategy_type=strategy_type,
+                    # The driver already knows the status; not passing it would leave the
+                    # classifier guessing about evidence we are holding.
+                    page_status=page.status,
+                )
+                records: list[dict[str, Any]] = extraction.structured_fields.get("records", [])
+                content = json.dumps(
+                    {"target_id": target_id, "validation_status": extraction.validation_status, "records": records},
+                    default=str,
+                )
+                # `blocked` is not success -- no records were produced -- but it is also not
+                # the same failure as the others, and a caller that cannot tell them apart
+                # will retry a walled target forever and count it as a broken extraction.
+                # The distinction is surfaced in `error` because that is the field a caller
+                # actually reads on a failed ToolResult; `validation_status` was already in
+                # metadata and was already being ignored.
+                blocked = extraction.validation_status == "blocked"
+                if self._circuit is not None:
+                    # Every non-blocked outcome closes the circuit, including an extraction that
+                    # failed: this circuit counts FETCHES, and a page we can plainly read is a
+                    # fetch that worked. A recipe that keeps missing against a page we received
+                    # is `ScrapeRecipe.consecutive_validation_failures`'s business, and backing
+                    # off the fetch would only starve the regeneration that fixes it.
+                    if blocked:
+                        await self._circuit.record_blocked(target_id)
+                    else:
+                        await self._circuit.record_reachable(target_id)
+            except BaseException:
+                # The circuit permitted this fetch, and a permitted decision may have promoted
+                # the in-process breaker to HALF_OPEN and marked its probe in flight. That flag
+                # is cleared only by an outcome, and raising past here means no outcome is ever
+                # reported -- so the breaker would hold the probe for the life of the process,
+                # fast-failing every later check of this target before the durable row is even
+                # read, and answering "retry in about 0s" forever. The durable side needs
+                # nothing: its promotion already stamped `blocked_until` as the probe's own
+                # reservation, which outlives the process that abandoned it.
+                #
+                # `BaseException`, not `Exception`, because a cancelled poll strands the probe
+                # exactly as thoroughly as a failing one. Deliberately does not swallow: a
+                # failing eval loop is not a fetch outcome and must not be recorded as one.
+                if self._circuit is not None:
+                    self._circuit.release_probe(target_id)
+                raise
             result = ToolResult(
                 success=extraction.validation_status == "validated",
                 error=(

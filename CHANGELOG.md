@@ -67,6 +67,31 @@ with a random id every superseded booking would survive and eventually fire, tur
 longest backoff into the biggest burst. The extra is optional because scheduled-jobs
 brings NATS and APScheduler with it, and nothing in the default install imports it.
 
+**A suppressed poll reports `validation_status: "backoff"`, not `"blocked"`.** In this
+package `"blocked"` is a fact about the target -- a bot wall stood where the content should
+be -- and the same circuit also opens on repeated transport failures, so the old value told
+a consumer that a host which had simply stopped answering was challenging it. The status
+now describes the poll rather than the target, which is the same reason a suppressed poll
+persists no extraction row: it observed nothing. Whether a target was ever walled remains
+`last_blocked_at`'s question to answer.
+
+The probe reservation is honoured whether or not a `TokenBucket` is configured. The bucket
+and the reservation look like two answers to one question and are not: the bucket bounds how
+many pods probe at once and refills at a constant rate, while the reservation bounds how
+often a stuck target is probed and decays. Deferring to the bucket swapped the decay for a
+floor, and only in the deployments that had configured one.
+
+`TargetCircuit.release_probe()` closes the permitted path's version of a hazard the
+suppressed path already handled. A permitted decision can promote the in-process breaker and
+mark its probe in flight; that flag is cleared only by an outcome, so a caller raising
+between the fetch and the report left the breaker holding it for the life of the process,
+fast-failing the target ahead of the durable row and answering "retry in about 0s" forever.
+The durable side needs no equivalent, because its own promotion already stamped a
+reservation that outlives the process that abandoned it. `breaker_for` is correspondingly
+typed to `ProbeObservableBreaker` -- the three-call protocol plus a readable `state` -- since
+a probe this module cannot see admitted is a probe it cannot release, and a breaker that
+could not answer that was previously accepted at the seam and wedged at runtime.
+
 ## v0.19.0 -- 2026-07-25
 
 **New package: `3tears-geo`.** Slippy-map tile geometry in application code. Every

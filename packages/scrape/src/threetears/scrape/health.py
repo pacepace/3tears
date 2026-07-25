@@ -110,9 +110,17 @@ class ScrapeTargetHealth(BaseEntity):
         counts a different thing (the stored strategy not matching a page we did receive).
         Conflating them is the bug this entity exists to make impossible.
 
-        Written by :mod:`threetears.scrape.circuit`: incremented on a blocked or unreachable
-        fetch, reset to zero the moment a fetch reaches real content again. "Consecutive"
-        is load-bearing -- it is the input to the circuit's failure threshold.
+        Written by :mod:`threetears.scrape.circuit`: raised on a blocked or unreachable
+        fetch, reset to zero the moment a fetch reaches real content again. It is the input
+        to the circuit's failure threshold.
+
+        "Consecutive" describes what this column counts on its own, and is exact for a single
+        pod. Where a fleet-wide ``WindowedCounter`` is injected, a blocked fetch stores the
+        greater of this count and the fleet's windowed count, and that window deliberately
+        survives a success -- so a target that recovers and is walled again inside the window
+        re-trips faster than a first-time block. That is the point of the window rather than a
+        leak in it: the per-row count is memoryless by design, and one pod's success is not
+        evidence that the other pods' blocks did not happen.
         """
         return int(self._get_raw("consecutive_fetch_failures", 0))
 
