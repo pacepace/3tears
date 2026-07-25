@@ -68,6 +68,29 @@ The `threetears/` and `threetears/agent/` directories must **never** have `__ini
 - Releases: bump version → PR into develop → PR develop into main (no
   version bump on that second PR) → tag from main. Don't cut a release
   tag on a plain develop→main sync that isn't meant to ship a release.
+- **Republishing an already-tagged version** (a package missed the upload,
+  a partial publish needs completing): do NOT move the tag and do NOT bump
+  the version to carry one artifact.
+  1. Land the fix on `main` via a hotfix branch — a release must be cut
+     from `main`, and `develop` usually holds unreleased work that must
+     not ship.
+  2. **Also merge it to `develop` BEFORE dispatching.** GitHub only offers
+     `workflow_dispatch` for a workflow whose file is on the repo's
+     **default branch**, which here is `develop`. Land it on `main` alone
+     and `gh workflow run` returns 422 with the trigger apparently
+     missing. This is a hotfix, so it goes to both branches anyway; the
+     ordering is what matters.
+  3. `gh workflow run release.yml --ref main -f version=X.Y.Z`. The `--ref`
+     decides which version of the workflow file runs AND which tree is
+     built, so it must carry both the fix and the version being published.
+     Do not dispatch against the old tag: that tree predates the fix.
+  4. Approve the `pypi` environment gate.
+
+  `skip-existing` means everything already on PyPI is skipped, so the only
+  possible effect is that a genuinely absent artifact uploads. This is
+  written here rather than only in `release.yml` because v0.18.0 shipped
+  26 of 27 packages while the instruction that would have prevented it sat
+  in a comment inside the step it was telling you to delete.
 
 ## Conventions
 

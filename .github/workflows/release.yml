@@ -4,16 +4,36 @@ on:
   push:
     tags:
       - "v*"
+  # Republish an already-tagged version without cutting a new one.
+  #
+  # Exists because of a real incident: 3tears-scrape was withheld from the
+  # v0.18.0 publish by a step whose own comment said to remove it for that
+  # release. Nobody did, and 26 of 27 packages shipped. Re-tagging was not an
+  # option (the tag is published and must not move) and a 0.18.1 lockstep bump
+  # would have meant 26 no-change releases to carry one missing package.
+  #
+  # `skip-existing` on the publish step is what makes this safe: every artifact
+  # already on PyPI is skipped, so the only thing that can happen is a genuinely
+  # absent one gets uploaded. The version is typed by the operator rather than
+  # inferred, so the run states out loud what it believes it is publishing and
+  # the lockstep verify below can hold it to that.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, no leading v (e.g. 0.18.0). Must match the workspace exactly."
+        required: true
+        type: string
 
 # Least privilege by default; each job requests only what it needs.
 permissions:
   contents: read
 
 jobs:
-  # A release tag must point at a commit that is CONTAINED IN main. This is
-  # the cheapest job in the workflow and gates everything else because it
-  # catches the one failure that is unfixable after the fact: publishing to
-  # PyPI from a commit main does not have.
+  # Whatever we are about to publish from must point at a commit CONTAINED IN
+  # main -- a pushed tag on the release path, or the dispatched ref on a manual
+  # republish. This is the cheapest job in the workflow and gates everything else
+  # because it catches the one failure that is unfixable after the fact:
+  # publishing to PyPI from a commit main does not have.
   #
   # That happened with v0.17.8 -- tagged from develop, published, and main
   # was left at 0.17.7 for days while PyPI served 0.17.8. Nothing in the
@@ -35,17 +55,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Tag must be on main
+      - name: Ref must be on main
+        # Both trigger paths answer the same question -- is the commit we are about
+        # to publish from contained in main -- because that is the property that
+        # actually protects PyPI, not the shape of the ref that carried us here.
+        #
+        # Uses github.sha rather than parsing GITHUB_REF: the commit is the thing
+        # being checked, and reading it directly means this cannot break on a ref
+        # shape it was not written for (a tag, a branch, a future trigger).
+        env:
+          REF_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG_SHA="$(git rev-parse "${GITHUB_REF}^{commit}")"
           git fetch --quiet origin main
-          if git merge-base --is-ancestor "$TAG_SHA" origin/main; then
-            echo "OK: ${GITHUB_REF#refs/tags/} ($TAG_SHA) is contained in main."
+          if git merge-base --is-ancestor "$REF_SHA" origin/main; then
+            echo "OK: ${REF_NAME} ($REF_SHA) is contained in main."
           else
-            echo "::error::Tag ${GITHUB_REF#refs/tags/} points at $TAG_SHA, which is NOT contained in main."
+            echo "::error::${REF_NAME} points at $REF_SHA, which is NOT contained in main."
             echo "Releases are cut FROM main (see CLAUDE.md). Merge the release PR into main first,"
             echo "then re-tag that merge commit. Publishing from a commit main lacks is not"
             echo "reversible once the artifacts are on PyPI."
+            echo "For a manual re-publish, dispatch this workflow against main itself."
             exit 1
           fi
 
@@ -92,8 +122,22 @@ jobs:
         run: uv python install 3.14
 
       - name: Verify version matches tag (full lockstep)
+        # Operator input arrives through the environment, never interpolated into
+        # the script body: `${{ }}` is substituted before bash ever sees the text,
+        # so a crafted input would be executed rather than compared.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
+          # On a tag push the version IS the tag. On a manual dispatch there is no
+          # tag, so the operator states the version and this step holds the
+          # workspace to it -- a typo fails here rather than publishing something
+          # other than what was intended.
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_VERSION}"
+          else
+            TAG="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "Verifying the workspace is at ${TAG} in lockstep."
           # Single source of truth: scripts/bump-version.sh --verify
           # checks every place the version string lives (pyproject *.19,
           # test_smoke.py *.5, docker-bake.hcl VERSION + image tags).
@@ -110,28 +154,17 @@ jobs:
         # (e.g. 3tears -> 3tears-observe, 3tears-nats), not workspace paths.
         run: uv build --all-packages --out-dir dist/
 
-      # 3tears-scrape is a workspace member (so it builds, and holds the
-      # lockstep version like every sibling) but is NOT yet released. Drop
-      # its artifacts before anything downstream can see them: the upload
-      # feeds BOTH the PyPI publish and the GitHub release, so removing them
-      # here is what keeps an unreleased package out of both.
-      #
-      # 3tears-scrape does not exist on PyPI, which means it also has no
-      # trusted-publisher entry -- an upload including it would be rejected
-      # AFTER the manual approval gate, mid-publish, with some projects
-      # already uploaded.
-      #
-      # REMOVE THIS STEP as an explicit, deliberate step of the 0.18.0
-      # release, which is when scrape ships. That release also needs a
-      # PyPI *pending* trusted publisher created first (repo pacepace/3tears,
-      # workflow release.yml, environment pypi) -- a new project cannot be
-      # created by an upload alone -- and it counts against PyPI's
-      # 4-new-projects-per-24h cap.
-      - name: Withhold unreleased packages (3tears-scrape -- ships at 0.18.0)
-        run: |
-          rm -fv dist/3tears_scrape-* dist/3tears-scrape-*
-          echo "Publishing:"
-          ls -1 dist/
+      # Nothing is withheld any more. A step used to delete 3tears-scrape from
+      # dist/ because the project did not yet exist on PyPI and so had no
+      # trusted-publisher entry; its own comment said to remove it for the
+      # release where scrape shipped. That instruction lived only inside the
+      # step it was telling you to delete, nothing enforced it, and v0.18.0
+      # went out with 26 of 27 packages. The pending trusted publisher now
+      # exists, so the reason is gone -- and the guard below replaces the
+      # comment with something that fails a build instead of relying on
+      # somebody reading a YAML comment at exactly the right moment.
+      - name: Every workspace package must be in dist/
+        run: ./scripts/verify-dist-complete.sh dist/
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
@@ -144,7 +177,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # The `pypi` environment is the manual-approval gate: the run pauses here
-    # until an approver releases it, so an irreversible 23-package upload never
+    # until an approver releases it, so an irreversible whole-workspace upload never
     # happens on an accidental tag push. Its name must match the environment
     # configured on every project's PyPI trusted-publisher entry.
     environment:
@@ -165,7 +198,7 @@ jobs:
       - name: Publish to PyPI
         # Single upload of the combined dist/: PyPI mints one short-lived token
         # scoped to every project whose trusted publisher matches this
-        # (repo, workflow, environment), so all 23 packages route in one shot.
+        # (repo, workflow, environment), so every package routes in one shot.
         # skip-existing makes a re-run after a partial failure idempotent.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -174,6 +207,15 @@ jobs:
 
   github-release:
     needs: pypi-publish
+    # Tag pushes only, keyed on the EVENT and not on the ref shape.
+    #
+    # `startsWith(github.ref, 'refs/tags/')` looks equivalent and is not:
+    # workflow_dispatch accepts a tag as its ref, and dispatching against the tag
+    # is the natural way to republish a tagged version. On that path a ref-shaped
+    # condition is true, and the step below runs `gh release delete <tag> --yes`
+    # and rebuilds the release from scratch -- destroying a real release as a
+    # side effect of republishing one missing artifact.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
