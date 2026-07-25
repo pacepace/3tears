@@ -729,6 +729,39 @@ class TestScrapeToolFetchCircuit:
         )
         assert row is None or row.circuit_state == "closed"
 
+    async def test_a_cancellation_while_recording_the_failure_still_releases_the_probe(self):
+        """The narrow window between the two handlers, and the third strand in this family.
+
+        A render that fails with an ordinary exception is handled by reporting the fetch
+        failure, and ``record_unreachable`` clears the probe as its first act. But it awaits,
+        so a cancellation can land inside it before that happens -- escaping the
+        ``except Exception`` handler it is running in, and never reaching an
+        ``except BaseException`` placed only around the render. Nesting the handlers so the
+        outer one covers the recovery path is what closes it.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/cancelled-mid-report"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+
+        breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
+        breaker.record_failure()
+        circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
+        driver = _FakeDriver("", raise_exc=RuntimeError("connection refused"))
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+
+        with (
+            patch.object(TargetCircuit, "record_unreachable", side_effect=asyncio.CancelledError()),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await tool.execute(url=url, field_schema=schema)
+
+        assert breaker.state is not CircuitState.HALF_OPEN, (
+            "a cancellation inside the failure report escaped between the two handlers and "
+            "left the in-process breaker holding a probe"
+        )
+
     async def test_without_a_circuit_nothing_is_suppressed(self):
         """The default, and every pre-existing caller: every call fetches, as it always did."""
         recipe_collection, extraction_collection = _collections()

@@ -116,6 +116,11 @@ HALF_OPEN row with a live reservation and nothing left that would ever revisit i
 the crash the reservation was invented for, and it was solved for a poller -- whose next poll
 is the re-probe -- and silently not for the event-driven caller `reprobe.py` exists to serve.
 Bookings are keyed by target, so the outcome report that normally follows replaces this one.
+A recovery is the exception, since closing the circuit cannot retract a booking and
+`ReprobeScheduler` has no cancel: a target that comes back gets one unasked wake-up, and that
+wake-up is a whole poll including its eval loop, not a bare fetch. Accepted rather than
+solved, because a cancel seam costs every implementer a second method to save one poll per
+recovery of a target that is healthy by then.
 
 ## v0.19.0 -- 2026-07-25
 

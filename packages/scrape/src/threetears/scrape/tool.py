@@ -290,30 +290,39 @@ class ScrapeTool(TearsTool):
         page: RenderedPage | None = None
         if error is None and (decision is None or decision.permitted):
             assert driver is not None  # narrowed by `error is None` above
+            # Nested so the outer handler covers the recovery handler too, not just the
+            # render. `record_unreachable` clears the probe as its first act, but a
+            # cancellation landing in the statements before that would otherwise escape
+            # between the two handlers and strand it again -- a narrow window, and the third
+            # one in this family, which is why the guard is placed to cover the block rather
+            # than the call.
             try:
-                page = await driver.render(url, timeout=self._default_timeout, wait_for=wait_for, nav_steps=nav_steps)
-            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
-                log.warning(
-                    "scrape tool: render failed",
-                    extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
-                )
-                error = f"fetch failed: {exc}"
-                if self._circuit is not None:
-                    # A page that never arrived is a fetch failure, exactly like a wall, and
-                    # a target that has become unreachable should back off rather than be
-                    # retried at full rate. Only the wall stamps `last_blocked_at`.
-                    await self._circuit.record_unreachable(target_id)
+                try:
+                    page = await driver.render(
+                        url, timeout=self._default_timeout, wait_for=wait_for, nav_steps=nav_steps
+                    )
+                except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
+                    log.warning(
+                        "scrape tool: render failed",
+                        extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
+                    )
+                    error = f"fetch failed: {exc}"
+                    if self._circuit is not None:
+                        # A page that never arrived is a fetch failure, exactly like a wall,
+                        # and a target that has become unreachable should back off rather than
+                        # be retried at full rate. Only the wall stamps `last_blocked_at`.
+                        await self._circuit.record_unreachable(target_id)
             except BaseException:
                 # Everything that is not an `Exception`, which in practice means a cancelled
-                # poll -- and this is the longest await in the function, so it is where a
-                # cancellation most often lands. It strands an admitted probe exactly as
-                # thoroughly as a failure does, and unlike a failure it reports no outcome,
-                # so the flag is never cleared. Not folded into the handler above because a
-                # cancellation is not a DURABLE fetch outcome: persisting one would back the
-                # target off across every pod, and outlive the process that was cancelled,
-                # for something the target did not do. Releasing the in-process probe does
-                # cost that breaker a failure -- the protocol has no "never mind" -- but that
-                # is seconds-scale, process-local, and dies with the process anyway.
+                # poll -- and this block holds the longest await in the function, so it is
+                # where a cancellation most often lands. It strands an admitted probe exactly
+                # as thoroughly as a failure does, and unlike a failure it reports no outcome,
+                # so the flag is never cleared. Deliberately does not record a durable
+                # outcome: persisting one would back the target off across every pod, and
+                # outlive the process that was cancelled, for something the target did not do.
+                # Releasing the in-process probe does cost that breaker a failure -- the
+                # protocol has no "never mind" -- but that is seconds-scale, process-local,
+                # and dies with the process anyway.
                 if self._circuit is not None:
                     self._circuit.release_probe(target_id)
                 raise

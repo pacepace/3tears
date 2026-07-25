@@ -125,7 +125,9 @@ class ProbeObservableBreaker(CircuitBreakerLike, Protocol):
     makes the constraint checkable at the seam instead of discoverable in production.
 
     ``threetears.models.circuit_breaker.CircuitBreaker`` satisfies this, so
-    ``CircuitBreakerRegistry.get`` still fits the ``breaker_for`` parameter directly.
+    ``CircuitBreakerRegistry.get`` still fits the ``breaker_for`` parameter directly, subject
+    to the lifetime caveat in the module docstring: that registry never evicts, which is
+    bounded by provider name and not by scrape target.
     """
 
     @property
@@ -379,8 +381,18 @@ class TargetCircuit:
         # look at it again -- the exact crash the reservation was invented for, solved for a
         # poller (whose next poll is the re-probe) and silently not for the deployment
         # `reprobe.py` exists to serve. The booking is keyed by target, so the outcome report
-        # that normally follows replaces it rather than adding to it, and a booking that
-        # outlives a recovery finds a closed circuit and costs one fetch.
+        # that normally follows replaces it rather than adding to it.
+        #
+        # A recovery is the one outcome that cannot replace it: `record_reachable` closes the
+        # circuit and `ReprobeScheduler` has no cancel, so a target that comes back gets one
+        # unasked wake-up about `reservation` seconds later. It self-terminates -- the
+        # dispatcher finds a closed circuit and never books another -- but it is a whole poll,
+        # fetch and eval loop included, not a bare fetch. Accepted rather than solved with a
+        # cancel seam: that costs every `ReprobeScheduler` implementer a second method, and
+        # buys one poll per recovery of a target that is by then healthy, which is work that
+        # produces real data rather than work that is wasted. If recoveries ever become
+        # frequent enough for that to matter, the cancel seam is the fix.
+
         await self._book_reprobe(target_id, reservation)
         log.info(
             "scrape circuit: probing target %s after backoff",
