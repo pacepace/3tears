@@ -26,15 +26,25 @@ infrastructure this package does not own:
 
 - ``breaker_for`` -- resolves a :class:`ProbeObservableBreaker` (the
   ``threetears.core.http_client.CircuitBreakerLike`` three-call protocol plus a readable
-  ``state``) for one target, typically ``CircuitBreakerRegistry.get``. A free in-process
-  fast-fail that answers
-  before the health row is even read. The same structural seam ``core`` already uses to
-  depend on a breaker without importing ``threetears.models``. It is a lookup rather than a
-  single breaker because everything else here is keyed by target: one instance serves a
-  whole set of targets, so a bare breaker would let one walled target fast-fail every other
-  target the same tool scrapes, and let one healthy target's success reset the count a
-  different target accumulated. The registry this delegates to is already per-key; taking
-  the key is what keeps that property instead of dropping it at this seam.
+  ``state``) for one target. A free in-process fast-fail that answers before the health row
+  is even read. The same structural seam ``core`` already uses to depend on a breaker
+  without importing ``threetears.models``. It is a lookup rather than a single breaker
+  because everything else here is keyed by target: one instance serves a whole set of
+  targets, so a bare breaker would let one walled target fast-fail every other target the
+  same tool scrapes, and let one healthy target's success reset the count a different
+  target accumulated.
+
+  The caller owns this lookup, including its lifetime, and for a long-lived process that
+  second part matters. ``CircuitBreakerRegistry.get`` fits the signature and is the obvious
+  thing to reach for, but the registry holds a plain dict with no eviction: bounded when the
+  key is a provider name, unbounded when the key is a scrape target, because
+  ``ScrapeTool._derive_target_id`` mints a fresh ``adhoc_<sha256>`` per distinct
+  ``(url, field_schema)``. Handed straight to a long-running tool it accumulates one breaker
+  per URL ever scraped. A short-lived process can ignore that; a long-lived one should inject
+  a lookup bounded the way it wants bounding -- an LRU, a TTL, a registry it prunes. Nothing
+  here evicts on the caller's behalf, because a cache policy for someone else's process is
+  not this module's to pick, and a wrong guess here silently discards circuit state that a
+  walled target is relying on.
 - ``blocked_attempts`` -- a ``threetears.core.coordination.windowed_counter.WindowedCounter``.
   Blocked observations counted across a fleet, so several pods polling one target trip its
   circuit as fast as one pod would rather than each accumulating its own share of a count
@@ -219,7 +229,8 @@ class TargetCircuit:
         :ptype policy: BackoffPolicy | None
         :param breaker_for: optional per-target in-process fast-fail, checked before any
             I/O. Takes the target id because one instance serves many targets, so a single
-            shared breaker would conflate them; ``CircuitBreakerRegistry.get`` fits directly.
+            shared breaker would conflate them; ``CircuitBreakerRegistry.get`` fits directly,
+            though a long-lived process wants a bounded lookup (see the module docstring).
             Must expose ``state`` (see :class:`ProbeObservableBreaker`), because a probe this
             module cannot see admitted is a probe it cannot resolve
         :ptype breaker_for: Callable[[str], ProbeObservableBreaker] | None
@@ -354,12 +365,23 @@ class TargetCircuit:
         # being written is this probe's reservation and a re-probe needs a fresh one. It is
         # the same arithmetic the trip itself uses, so a probe that never reports back buys
         # exactly the silence the failure that preceded it had already bought.
+        reservation = self._policy.delay_for(health.consecutive_fetch_failures)
         await self._write(
             target_id,
             state=CircuitState.HALF_OPEN,
             failures=health.consecutive_fetch_failures,
-            blocked_until=moment + timedelta(seconds=self._policy.delay_for(health.consecutive_fetch_failures)),
+            blocked_until=moment + timedelta(seconds=reservation),
         )
+        # Booked here as well as at the trip, because a `relative_delay` job is terminal: the
+        # job the trip booked has now fired and will not fire again. Without this, an
+        # event-driven caller that dies between this probe and its outcome report leaves a
+        # HALF_OPEN row with a live reservation and nothing left in the world that will ever
+        # look at it again -- the exact crash the reservation was invented for, solved for a
+        # poller (whose next poll is the re-probe) and silently not for the deployment
+        # `reprobe.py` exists to serve. The booking is keyed by target, so the outcome report
+        # that normally follows replaces it rather than adding to it, and a booking that
+        # outlives a recovery finds a closed circuit and costs one fetch.
+        await self._book_reprobe(target_id, reservation)
         log.info(
             "scrape circuit: probing target %s after backoff",
             target_id,
@@ -646,12 +668,31 @@ class TargetCircuit:
             return 0
 
     async def _book_reprobe(self, target_id: str, delay_seconds: float) -> None:
-        """Ask the scheduler to wake something up when the backoff window expires."""
+        """Ask the scheduler to wake something up when the backoff window expires.
+
+        A failed booking is logged and swallowed rather than failing the fetch that caused
+        it, but what that costs depends entirely on the caller, and it is worth being exact
+        about which. A poller loses nothing: its next poll IS the re-probe, and
+        ``blocked_until`` is already durable. A caller with no tick -- the only kind
+        :mod:`threetears.scrape.reprobe` exists for -- loses the re-probe itself, because
+        nothing else will ever revisit the row, and the target stays suppressed past the
+        window that was supposed to release it. That is the failure
+        :attr:`BackoffPolicy.max_delay_seconds` is written to prevent ("a target nobody ever
+        re-probes is a target that stays broken after the block is lifted"), so for that
+        deployment this is a real gap and not merely a lost convenience.
+
+        It stays swallowed because the alternative is worse -- turning a scheduler outage
+        into a failed scrape of a target we already have an answer for -- and ``log.exception``
+        makes it detectable. An event-driven deployment that cannot tolerate the gap needs a
+        reconciliation sweep over rows whose ``blocked_until`` has passed while
+        ``circuit_state`` is still open; that is deliberately not built here, because it is a
+        scheduled job about the whole table rather than a decision about one fetch.
+        """
         if self._reprobe_scheduler is None:
             return
         try:
             await self._reprobe_scheduler.schedule_reprobe(target_id=target_id, delay_seconds=delay_seconds)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the block is already durable in blocked_until, so a failed booking costs a wake-up, not correctness; a polling caller never needed one. Logged with its traceback below
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a scheduler outage must not fail a fetch whose result we already hold; blocked_until still stands, so a poller loses nothing and an event-driven caller loses this wake-up, which the docstring states and log.exception makes detectable
             log.exception(
                 "scrape circuit: could not book the re-probe for target %s; its backoff window still stands",
                 target_id,

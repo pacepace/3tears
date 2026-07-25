@@ -8,6 +8,7 @@ this tool is a thin wrapper over.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -57,7 +58,10 @@ class _FakeDriver:
         self,
         html: str,
         final_url: str = "https://example.gov/warn",
-        raise_exc: Exception | None = None,
+        # BaseException, not Exception: a cancelled render is the case the driver's own
+        # handler deliberately does not catch, so a fake that cannot raise one cannot
+        # exercise it.
+        raise_exc: BaseException | None = None,
         status: int = 200,
     ):
         self._html = html
@@ -681,6 +685,49 @@ class TestScrapeToolFetchCircuit:
             "a stranded probe fast-failed the target before the durable row was read, so the "
             "caller is told to retry immediately into a circuit that cannot admit it"
         )
+
+    async def test_a_cancelled_render_does_not_strand_the_targets_probe(self):
+        """The same strand, in the longest await of the function, via the one exception class
+        the driver's own handler does not catch.
+
+        ``render`` is guarded by ``except Exception``, which a ``CancelledError`` is not, so
+        a poll cancelled during the fetch propagates with no outcome recorded and no probe
+        released. Cancellation is where this most often lands, because that await is where
+        the time goes. It must not be recorded as a DURABLE fetch outcome either: a shutdown
+        is not evidence about the target, and persisting it as one would back the target off
+        for something it did not do, across every pod and past the process that was
+        cancelled.
+
+        The in-process breaker does take a failure, because ``CircuitBreakerLike`` has no
+        "never mind" and reporting one is the only way to clear an admitted probe. That is
+        the cheap half to be wrong about: seconds-scale recovery, process-local, and it dies
+        with the process being cancelled. The health row is the expensive half, and is what
+        this asserts stays untouched.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/cancelled"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+
+        breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
+        breaker.record_failure()
+        circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
+        driver = _FakeDriver("", raise_exc=asyncio.CancelledError())
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+
+        with pytest.raises(asyncio.CancelledError):
+            await tool.execute(url=url, field_schema=schema)
+
+        assert breaker.state is not CircuitState.HALF_OPEN, (
+            "a cancelled fetch left the in-process breaker holding a probe no outcome clears"
+        )
+        row = await health_collection.get(target_id)
+        assert row is None or row.consecutive_fetch_failures == 0, (
+            "a cancellation was persisted as a fetch failure, so a shutdown backs the target "
+            "off across every pod and outlives the process that was cancelled"
+        )
+        assert row is None or row.circuit_state == "closed"
 
     async def test_without_a_circuit_nothing_is_suppressed(self):
         """The default, and every pre-existing caller: every call fetches, as it always did."""

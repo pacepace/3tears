@@ -42,7 +42,9 @@ infrastructure `3tears-scrape` does not own: a per-target `CircuitBreakerLike` l
 free in-process fast-fail before any I/O (the same structural seam `core.http_client`
 already uses, taken as a lookup because one `TargetCircuit` serves many targets and a shared
 breaker would let one walled target fast-fail the rest -- `CircuitBreakerRegistry.get` fits
-it directly), a `WindowedCounter` so several pods polling one target reach the threshold
+it directly, though a long-lived process should inject a bounded lookup, since that registry
+never evicts and a scrape target is a far larger key space than the provider name it was
+built for), a `WindowedCounter` so several pods polling one target reach the threshold
 together instead of each carrying a share that never gets there, a capacity-one `TokenBucket`
 for the cross-pod single-probe admission a restored breaker structurally cannot give, and a
 `ReprobeScheduler`. With all four absent the circuit still decays a blocked target's fetch
@@ -91,6 +93,29 @@ reservation that outlives the process that abandoned it. `breaker_for` is corres
 typed to `ProbeObservableBreaker` -- the three-call protocol plus a readable `state` -- since
 a probe this module cannot see admitted is a probe it cannot release, and a breaker that
 could not answer that was previously accepted at the seam and wedged at runtime.
+
+The same release covers a cancelled fetch. `driver.render` is guarded by `except Exception`,
+which a `CancelledError` is not, and it is the longest await in the call -- so cancellation
+is where a strand most often lands. The cancellation is not persisted as a fetch outcome:
+a shutdown is not evidence about the target, and a durable failure would back it off across
+every pod and outlive the process that was cancelled. The in-process breaker does take the
+failure, because the three-call protocol has no "never mind", but that is seconds-scale,
+process-local, and dies with the process anyway.
+
+`"backoff"` is deliberately NOT added to the `ValidationStatus` Literal, whose four values
+are the domain of what gets stored on `ScrapeExtraction`. A suppressed poll stores nothing,
+so admitting it would declare a storable value that can never be stored; the four existing
+values each describe a page we did or did not receive, where `"backoff"` describes a fetch
+we declined to attempt. The scrape README and the design doc record the distinction, since
+the tool's JSON payload is where a consumer meets both.
+
+The OPEN-to-HALF_OPEN promotion now books a re-probe as well as stamping a reservation. A
+`relative_delay` job is terminal, so the job booked at trip time is spent once it fires: a
+dispatcher that fires it, promotes the row, and then dies before reporting an outcome left a
+HALF_OPEN row with a live reservation and nothing left that would ever revisit it. That is
+the crash the reservation was invented for, and it was solved for a poller -- whose next poll
+is the re-probe -- and silently not for the event-driven caller `reprobe.py` exists to serve.
+Bookings are keyed by target, so the outcome report that normally follows replaces this one.
 
 ## v0.19.0 -- 2026-07-25
 

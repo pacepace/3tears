@@ -420,6 +420,13 @@ class ScrapeRecipe(BaseEntity):
 #: and "we never got the page" carrying real consequences for anything that counts failures
 #: or retries. Its sibling vocabularies (``challenge.PageVerdictKind``,
 #: ``eval_loop.StrategyType``) are both Literals for the same reason.
+#:
+#: One value a consumer can see under this key is deliberately NOT here: ``ScrapeTool``'s
+#: JSON payload reports ``"backoff"`` for a poll its fetch circuit suppressed. That is not a
+#: validation outcome and is never stored -- a suppressed poll persists nothing at all,
+#: because it observed nothing -- so admitting it to this Literal would declare a storable
+#: value that can never be stored. Every one of the four above describes a page we did or
+#: did not receive; ``"backoff"`` describes a fetch we declined to attempt.
 ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
 
 #: Every value :data:`ValidationStatus` permits, derived from the Literal rather than

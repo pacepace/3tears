@@ -303,6 +303,20 @@ class ScrapeTool(TearsTool):
                     # a target that has become unreachable should back off rather than be
                     # retried at full rate. Only the wall stamps `last_blocked_at`.
                     await self._circuit.record_unreachable(target_id)
+            except BaseException:
+                # Everything that is not an `Exception`, which in practice means a cancelled
+                # poll -- and this is the longest await in the function, so it is where a
+                # cancellation most often lands. It strands an admitted probe exactly as
+                # thoroughly as a failure does, and unlike a failure it reports no outcome,
+                # so the flag is never cleared. Not folded into the handler above because a
+                # cancellation is not a DURABLE fetch outcome: persisting one would back the
+                # target off across every pod, and outlive the process that was cancelled,
+                # for something the target did not do. Releasing the in-process probe does
+                # cost that breaker a failure -- the protocol has no "never mind" -- but that
+                # is seconds-scale, process-local, and dies with the process anyway.
+                if self._circuit is not None:
+                    self._circuit.release_probe(target_id)
+                raise
 
         if error is not None:
             result = ToolResult(success=False, content="", error=error)

@@ -241,6 +241,11 @@ review: the README already records that no consumer currently filters on `valida
 all, so this new value is inert until one does -- a pre-existing gap, out of scope here, but a
 fourth value widens it slightly.
 
+Section 3's fetch circuit later adds a fifth value to the tool's JSON payload, `"backoff"`, without
+adding it to the `ValidationStatus` Literal. The Literal is the domain of what gets *stored* on
+`ScrapeExtraction`, and a suppressed poll stores nothing; `"backoff"` is a statement about our own
+behaviour rather than about a page, so it has no row to live on.
+
 ### 2. Fetch-side health, and a fingerprint to tell failures apart
 
 A new `ScrapeTargetHealth` entity carries:
@@ -341,6 +346,16 @@ serves a whole set of targets: a shared breaker would let one walled target fast
 other target on the same tool, and let a healthy target's success reset a count another
 target had accumulated. `CircuitBreakerRegistry` is already per-key, and taking the key is
 what keeps that property instead of dropping it at this seam.
+
+The lookup's lifetime is the caller's, and the obvious choice has a sharp edge worth naming.
+`CircuitBreakerRegistry` holds a plain dict with no eviction. Keyed by provider name -- what
+it was built for -- that is bounded by a handful of entries. Keyed by scrape target it is
+not, because `_derive_target_id` mints a fresh `adhoc_<sha256>` per distinct
+`(url, field_schema)`, so a long-running tool handed the bare registry accumulates one
+breaker per URL it has ever scraped. Deliberately not solved by evicting from inside
+`TargetCircuit`: choosing a cache policy for the caller's process would discard circuit state
+a walled target is relying on, on a schedule the caller never asked for. A long-lived
+deployment injects a bounded lookup; a short-lived one has nothing to do.
 
 The two circuits run on very different clocks -- seconds against minutes to hours -- so the
 durable one routinely suppresses a fetch the in-process one has already admitted a probe for.

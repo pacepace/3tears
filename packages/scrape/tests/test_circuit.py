@@ -467,6 +467,36 @@ async def test_opening_the_circuit_books_a_reprobe_for_when_the_window_expires(
 
 
 @pytest.mark.asyncio
+async def test_the_probe_promotion_books_the_next_wake_up_too(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A ``relative_delay`` job is terminal, so the trip's booking is spent once it fires.
+
+    The sequence that strands an event-driven target: the trip books a job, the job fires,
+    the dispatcher calls ``check`` which promotes to HALF_OPEN and stamps a fresh
+    reservation, and the dispatcher then dies before reporting an outcome. The row is now
+    HALF_OPEN with a live reservation, the one-shot job has already fired, and if the
+    promotion booked nothing then nothing in the world will ever look at that row again --
+    the crash the reservation exists for, solved for a poller whose next poll IS the
+    re-probe, and silently not for the only caller ``reprobe.py`` was written to serve.
+    """
+    scheduler = _FakeReprobeScheduler()
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+    assert scheduler.booked == [(_T, 60.0)], "the trip did not book the first wake-up"
+
+    probe_at = _NOW + timedelta(seconds=61)
+    assert (await circuit.check(_T, now=probe_at)).is_probe
+
+    assert scheduler.booked[-1] == (_T, 60.0), (
+        "the promotion stamped a reservation and booked nothing to honour it, so an "
+        "event-driven caller that dies mid-probe is never woken again"
+    )
+    assert len(scheduler.booked) == 2
+
+
+@pytest.mark.asyncio
 async def test_a_failed_booking_does_not_lose_the_backoff(
     health: ScrapeTargetHealthCollection, policy: BackoffPolicy
 ) -> None:
