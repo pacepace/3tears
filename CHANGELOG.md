@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**Feature: per-target fetch health (`threetears.scrape`)** -- the eval loop has always
+remembered which extraction strategy won for a target, and nothing at all about the
+fetch: whether the page came back, whether it resembled the page the strategy was learned
+against, or whether a bot wall was served instead of content. All three of those failures
+currently increment the same counter and get the same response, which is why a blocked
+target burns through its failure threshold and spends an LLM candidate round learning to
+extract data from a challenge page, discarding a recipe that was never broken.
+
+New `ScrapeTargetHealth` entity and `scrape_target_health` table (migration `v010`),
+keyed by `target_id`. A separate table rather than columns on `scrape_recipes`, because
+health exists for targets that never had a recipe: one blocked before it ever extracted
+successfully has real health and no strategy, and giving it a strategy-less recipe row
+would need a guard so the reuse path never mistook that empty strategy for a real one.
+
+This release populates one column. `content_fingerprint` is a digest of the page's
+readable text, stamped whenever an extraction validates, and it is the comparison value
+that will let a redesigned page be told apart from an unchanged one. Fingerprinting text
+rather than markup is deliberate: a site that reformats its template has not changed what
+it says, and a fingerprint that flipped on that would claim the site changed on every
+deploy the site makes. The remaining columns are created now because the shape is settled
+and one `CREATE` beats three `ALTER`s against a table this young.
+
+No behaviour changes. `run_eval_loop` and `run_eval_loop_multi_row` take an optional
+`health_collection`; omitted, as every existing caller omits it, nothing is written and
+nothing else differs.
+
+**Testing: `packages/scrape` gets its first integration suite** -- `link_selector` shipped
+broken because the package had no test that touched a real database, and
+`ScrapeCollection` falls back to an in-memory dict that has no schema to violate. The new
+suite applies the real migrations to real Postgres and round-trips a row through the
+production collection. Both guards were verified to discriminate by deleting a column:
+the integration test raises `asyncpg.UndefinedColumnError` and the offline drift guard
+names the missing column. The drift guard now also discovers its entity-to-table pairings
+from the collections themselves, so a collection added later is guarded the moment it
+exists rather than when someone remembers to add a fourth copy of the test.
+
 **Fix: missing `link_selector` DDL column (`threetears.scrape`)** -- `ScrapeTarget`
 exposed a persisted `link_selector` field with no matching `scrape_targets` column,
 so a `multi_document` target seeded from YAML raised `asyncpg.UndefinedColumnError`

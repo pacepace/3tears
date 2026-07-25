@@ -195,6 +195,50 @@ async def v009_target_link_selector(store: DataStore) -> None:
     await store.execute("ALTER TABLE scrape_targets ADD COLUMN IF NOT EXISTS link_selector TEXT")
 
 
+async def v010_create_scrape_target_health(store: DataStore) -> None:
+    """Create ``scrape_target_health`` -- per-target fetch health, one row per target.
+
+    Column shape matches ``ScrapeTargetHealth`` (``health.py``) exactly. A separate table
+    rather than more columns on ``scrape_recipes`` because health exists for targets that
+    have never had a recipe: one blocked before it ever extracted successfully has real
+    health and no strategy, and giving it a strategy-less recipe row would mean adding a
+    guard so the reuse path never mistakes that empty strategy for a real one.
+
+    Every column is nullable or defaulted, so a row can be created knowing only the
+    ``target_id``. ``date_created``/``date_updated`` are present because
+    ``BaseCollection.save_entity()`` stamps both on every upsert regardless of what the
+    entity class exposes; omitting them raises ``asyncpg.UndefinedColumnError`` on the
+    first real write.
+
+    The block/circuit/session columns are created here rather than added later: the shape
+    is already settled, and one CREATE beats three ALTERs against a table this young. The
+    code that writes them lands with the failure-classification and backoff work.
+    """
+    await store.execute("""
+        CREATE TABLE IF NOT EXISTS scrape_target_health (
+            target_id                   TEXT        NOT NULL,
+            content_fingerprint         TEXT,
+            fingerprint_updated_at      TIMESTAMPTZ,
+            consecutive_fetch_failures  INTEGER     NOT NULL DEFAULT 0,
+            circuit_state               TEXT        NOT NULL DEFAULT 'closed',
+            blocked_until               TIMESTAMPTZ,
+            last_blocked_at             TIMESTAMPTZ,
+            last_block_kind             TEXT,
+            session_state_sealed        TEXT,
+            session_state_expires_at    TIMESTAMPTZ,
+            date_created                TIMESTAMPTZ,
+            date_updated                TIMESTAMPTZ,
+            PRIMARY KEY (target_id)
+        )
+    """)
+    # Answers "which targets are currently walled off", the one query an operator runs
+    # against this table that is not a primary-key lookup.
+    await store.execute(
+        "CREATE INDEX IF NOT EXISTS scrape_target_health_circuit_state "
+        "ON scrape_target_health (circuit_state) WHERE circuit_state <> 'closed'"
+    )
+
+
 def register(runner: MigrationRunner) -> PackageMigrations:
     """Register every 3tears-scrape migration version with the given runner.
 
@@ -213,6 +257,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(7)(v007_target_api_config)
     pkg.version(8)(v008_target_timeout_seconds)
     pkg.version(9)(v009_target_link_selector)
+    pkg.version(10)(v010_create_scrape_target_health)
     runner.register(pkg)
     return pkg
 

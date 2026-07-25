@@ -28,6 +28,7 @@ from threetears.models import LlmPurpose
 from threetears.observe import get_logger
 
 from .collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipe, ScrapeRecipeCollection
+from .health import ScrapeTargetHealthCollection, record_validated_fetch
 from .extraction import (
     DEFAULT_EXTRACTION_MODEL_ID,
     DEFAULT_VISION_MODEL_ID,
@@ -221,6 +222,47 @@ async def _judge_candidates(
         backoff_seconds=backoff_seconds,
         log_label="scrape judge",
     )
+
+
+async def _stamp_fingerprint_if_validated(
+    health_collection: ScrapeTargetHealthCollection | None,
+    result: ScrapeExtraction,
+    *,
+    target_id: str,
+    html: str,
+) -> None:
+    """Record what the page looked like, but only when we actually read it successfully.
+
+    Called on every path that can persist an extraction, rather than inside each of the
+    reuse and regeneration branches that produce one: a fingerprint only some paths wrote
+    would go stale silently after whichever path was missed, and the first version of this
+    change did exactly that, leaving ``per_document`` and ``multi_row_vision`` unstamped
+    because both return before the multi-row entry point's common exit. Keying off the
+    persisted row's own ``validation_status`` means each call cannot disagree with the
+    outcome it describes; keeping the number of call sites small is what makes "every path"
+    checkable by reading one function.
+
+    ``needs_review`` deliberately does not stamp. That status means structurally valid
+    candidates existed but nothing confirmed they were right, so the page is not a
+    trustworthy "this is what the target looks like when it works" reference.
+
+    Silent no-op when *health_collection* is ``None``, which is every caller that has not
+    opted in yet.
+    """
+    if health_collection is None or result.validation_status != "validated":
+        return
+    try:
+        await record_validated_fetch(health_collection, target_id=target_id, html=html)
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see below
+        # The extraction is already persisted and correct by the time this runs. Health is
+        # a diagnostic aid, so letting its write failure propagate would turn a successful
+        # scrape into a failed one for the caller and lose real extracted data over a
+        # bookkeeping row. Logged at exception level with the traceback, never silenced.
+        log.exception(
+            "scrape health: fingerprint stamp failed for target %s; extraction is unaffected",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
 
 
 async def _persist_extraction(
@@ -559,6 +601,7 @@ async def run_eval_loop(
     extraction_model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
     judge_model_id: str = DEFAULT_JUDGE_MODEL_ID,
     strategy_type: StrategyType = "css",
+    health_collection: ScrapeTargetHealthCollection | None = None,
 ) -> ScrapeExtraction:
     """Run one fetch through the eval loop and persist a ``ScrapeExtraction`` row.
 
@@ -625,6 +668,7 @@ async def run_eval_loop(
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
         )
+    await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result
 
 
@@ -1493,6 +1537,7 @@ async def run_eval_loop_multi_row(
     extraction_model_id: str = DEFAULT_EXTRACTION_MODEL_ID,
     judge_model_id: str = DEFAULT_JUDGE_MODEL_ID,
     strategy_type: StrategyType = "css",
+    health_collection: ScrapeTargetHealthCollection | None = None,
 ) -> ScrapeExtraction:
     """Run one fetch through the multi-row eval loop and persist a ``ScrapeExtraction`` row.
 
@@ -1537,8 +1582,12 @@ async def run_eval_loop_multi_row(
     :return: the persisted ``ScrapeExtraction`` row (``structured_fields["records"]`` holds every record)
     :rtype: ScrapeExtraction
     """
+    # Single exit below, deliberately: these two strategies used to `return` here, which
+    # put them past the fingerprint stamp at the end of this function even though both can
+    # persist a validated extraction. Assigning and falling through means a strategy added
+    # later is covered by construction rather than by remembering.
     if strategy_type == "per_document":
-        return await _run_per_document_extraction(
+        result = await _run_per_document_extraction(
             html,
             schema,
             target_id,
@@ -1549,8 +1598,10 @@ async def run_eval_loop_multi_row(
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
         )
+        await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
+        return result
     if strategy_type == "multi_row_vision":
-        return await _run_multi_row_vision_extraction(
+        result = await _run_multi_row_vision_extraction(
             html,
             schema,
             target_id,
@@ -1559,6 +1610,8 @@ async def run_eval_loop_multi_row(
             extraction_collection=extraction_collection,
             api_key=api_key,
         )
+        await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
+        return result
     reuse_fn = _reuse_regex_row_recipe if strategy_type == "regex" else _reuse_row_recipe
     regenerate_fn = _regenerate_regex_row_recipe if strategy_type == "regex" else _regenerate_row_recipe
     existing_recipe = await recipe_collection.get(target_id)
@@ -1585,4 +1638,5 @@ async def run_eval_loop_multi_row(
             extraction_model_id=extraction_model_id,
             judge_model_id=judge_model_id,
         )
+    await _stamp_fingerprint_if_validated(health_collection, result, target_id=target_id, html=html)
     return result
