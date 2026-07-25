@@ -23,11 +23,11 @@ adding a guard so the reuse path never mistakes that empty strategy for a real o
 separate row makes the situation simply not arise -- health with no recipe is a health row
 and no recipe row, which is an honest description of what is true.
 
-This module writes the fingerprint of a validated page, and the cached verdict about a page
-that failed. The circuit, backoff and sealed-session columns are declared here, and their
-table created in one migration, because the shape is already designed and a single DDL beats
-several ALTERs against the same young table; the code that populates them lands with the
-backoff and human-in-the-loop work that needs them.
+This module writes the fingerprint of a validated page, the cached verdict about a page that
+failed, and where the target's fetch circuit stands. The sealed-session columns are declared
+here, and their table created in one migration, because the shape is already designed and a
+single DDL beats several ALTERs against the same young table; the code that populates them
+lands with the human-in-the-loop work that needs them.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ __all__ = [
     "ScrapeTargetHealth",
     "ScrapeTargetHealthCollection",
     "content_fingerprint",
+    "record_circuit_state",
     "record_classification",
     "record_validated_fetch",
 ]
@@ -105,13 +106,13 @@ class ScrapeTargetHealth(BaseEntity):
     def consecutive_fetch_failures(self) -> int:
         """Fetch-stage failures in a row: blocked, transport, timeout.
 
-            Deliberately distinct from ``ScrapeRecipe.consecutive_validation_failures``, which
-            counts a different thing (the stored strategy not matching a page we did receive).
-            Conflating them is the bug this entity exists to make impossible.
+        Deliberately distinct from ``ScrapeRecipe.consecutive_validation_failures``, which
+        counts a different thing (the stored strategy not matching a page we did receive).
+        Conflating them is the bug this entity exists to make impossible.
 
-
-        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
-        lands with the backoff work. Read it as absent, not as observed.
+        Written by :mod:`threetears.scrape.circuit`: incremented on a blocked or unreachable
+        fetch, reset to zero the moment a fetch reaches real content again. "Consecutive"
+        is load-bearing -- it is the input to the circuit's failure threshold.
         """
         return int(self._get_raw("consecutive_fetch_failures", 0))
 
@@ -119,13 +120,11 @@ class ScrapeTargetHealth(BaseEntity):
     def circuit_state(self) -> str:
         """``"closed"`` | ``"open"`` | ``"half_open"``, defaulting to ``"closed"``.
 
-            The three-state vocabulary of ``threetears.models.circuit_breaker.CircuitState``,
-            stored durably here rather than held in that class's own process-local instance,
-            because a target blocked on one pod is blocked on all of them.
-
-
-        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
-        lands with the backoff work. Read it as absent, not as observed.
+        The three-state vocabulary of ``threetears.models.circuit_breaker.CircuitState``,
+        stored durably here rather than held in that class's own process-local instance,
+        because a target blocked on one pod is blocked on all of them. The transitions
+        between the three are still that class's, driven through its ``restore()`` seam by
+        :mod:`threetears.scrape.circuit`; only the storage lives here.
         """
         return str(self._get_raw("circuit_state", "closed"))
 
@@ -133,8 +132,10 @@ class ScrapeTargetHealth(BaseEntity):
     def blocked_until(self) -> datetime | None:
         """When the next fetch attempt is permitted; ``None`` means no backoff is in force.
 
-        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
-        lands with the backoff work. Read it as absent, not as observed.
+        This gates the FETCH, which is what bounds a walled target's cost. A target inside
+        this window is not fetched, so it reaches neither candidate generation nor the page
+        classifier -- the classifier's own verdict cache cannot bound it, because a real
+        interstitial renders a per-request id into the very text the cache keys on.
         """
         return _parse_dt(self._get_raw("blocked_until"))
 
@@ -315,6 +316,51 @@ async def record_validated_fetch(
             "fingerprint_updated_at": datetime.now(UTC),
         },
     )
+
+
+async def record_circuit_state(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+    circuit_state: str,
+    consecutive_fetch_failures: int,
+    blocked_until: datetime | None,
+    blocked_at: datetime | None = None,
+) -> ScrapeTargetHealth:
+    """Persist where *target_id*'s fetch circuit now stands.
+
+    One writer for both directions, because the two are exact mirrors and a pair of them
+    would eventually stop being mirrors: the columns a trip writes are the columns a
+    recovery has to clear, and a recovery that cleared three of four would leave a target
+    reading as closed while still carrying a future ``blocked_until`` that gates it.
+
+    This function decides nothing. What the new state IS comes from
+    ``threetears.models.circuit_breaker.CircuitBreaker``, whose transition rules are
+    driven and then written here; see :mod:`threetears.scrape.circuit`.
+
+    :param health_collection: this target's health store
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target whose circuit moved
+    :ptype target_id: str
+    :param circuit_state: the new state, a ``CircuitState`` value
+    :ptype circuit_state: str
+    :param consecutive_fetch_failures: the new consecutive fetch-failure count
+    :ptype consecutive_fetch_failures: int
+    :param blocked_until: when the next fetch is permitted, or ``None`` to clear the window
+    :ptype blocked_until: datetime | None
+    :param blocked_at: when this block was observed; omitted leaves the previous value
+    :ptype blocked_at: datetime | None
+    :return: the persisted health row
+    :rtype: ScrapeTargetHealth
+    """
+    changes: dict[str, Any] = {
+        "circuit_state": circuit_state,
+        "consecutive_fetch_failures": consecutive_fetch_failures,
+        "blocked_until": blocked_until,
+    }
+    if blocked_at is not None:
+        changes["last_blocked_at"] = blocked_at
+    return await _merge_health(health_collection, target_id=target_id, changes=changes)
 
 
 async def record_classification(

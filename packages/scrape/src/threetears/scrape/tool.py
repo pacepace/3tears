@@ -33,6 +33,7 @@ from typing import Any
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
 
+from .circuit import FetchDecision, TargetCircuit
 from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, decode_field_schema, decode_nav_steps
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
@@ -79,6 +80,7 @@ class ScrapeTool(TearsTool):
         drivers: dict[str, ScrapeDriver],
         api_key: str,
         health_collection: ScrapeTargetHealthCollection | None = None,
+        circuit: TargetCircuit | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -91,6 +93,11 @@ class ScrapeTool(TearsTool):
             recipe instead of burning it; omitted, every failure counts the same way it
             always has
         :ptype health_collection: ScrapeTargetHealthCollection | None
+        :param circuit: per-target fetch circuit. Supplying it opts this tool into backing
+            off a target that keeps coming back walled, so its fetch rate -- and with it the
+            classification rate that only a fetch can incur -- decays instead of holding
+            steady forever; omitted, every call fetches
+        :ptype circuit: TargetCircuit | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -102,6 +109,7 @@ class ScrapeTool(TearsTool):
         self._recipe_collection = recipe_collection
         self._extraction_collection = extraction_collection
         self._health_collection = health_collection
+        self._circuit = circuit
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -272,8 +280,15 @@ class ScrapeTool(TearsTool):
         wait_for = kwargs.get("wait_for") or None
         target_id = kwargs.get("target_id") or _derive_target_id(url, raw_schema)
 
+        # Asked before the driver is touched, because a suppressed fetch is the entire point:
+        # a target inside its backoff window must reach neither the candidate generator nor
+        # the page classifier, and both of those live downstream of a page being fetched.
+        decision: FetchDecision | None = None
+        if error is None and self._circuit is not None:
+            decision = await self._circuit.check(target_id)
+
         page: RenderedPage | None = None
-        if error is None:
+        if error is None and (decision is None or decision.permitted):
             assert driver is not None  # narrowed by `error is None` above
             try:
                 page = await driver.render(url, timeout=self._default_timeout, wait_for=wait_for, nav_steps=nav_steps)
@@ -283,9 +298,41 @@ class ScrapeTool(TearsTool):
                     extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
                 )
                 error = f"fetch failed: {exc}"
+                if self._circuit is not None:
+                    # A page that never arrived is a fetch failure, exactly like a wall, and
+                    # a target that has become unreachable should back off rather than be
+                    # retried at full rate. Only the wall stamps `last_blocked_at`.
+                    await self._circuit.record_unreachable(target_id)
 
         if error is not None:
             result = ToolResult(success=False, content="", error=error)
+        elif decision is not None and not decision.permitted:
+            log.info(
+                "scrape tool: fetch of target %s suppressed by its circuit (%s)",
+                target_id,
+                decision.reason,
+                extra={"extra_data": {"target_id": target_id, "circuit_state": decision.state.value}},
+            )
+            # Nothing is persisted for a suppressed poll. No observation was made, and an
+            # extraction row per suppressed poll would write more rows the harder the
+            # backoff worked -- the opposite of what backing off is for.
+            result = ToolResult(
+                success=False,
+                error=(
+                    "backing off: this target is behind a wall and its circuit is open, so it "
+                    f"was not fetched. {decision.reason.capitalize()}. Retry in about "
+                    f"{decision.retry_after_seconds:.0f}s; retrying sooner will not fetch anything."
+                ),
+                content=json.dumps({"target_id": target_id, "validation_status": "blocked", "records": []}),
+                metadata={
+                    "target_id": target_id,
+                    "validation_status": "blocked",
+                    "record_count": 0,
+                    "source_url": url,
+                    "circuit_state": decision.state.value,
+                    "retry_after_seconds": decision.retry_after_seconds,
+                },
+            )
         else:
             assert page is not None  # narrowed by `error is None` above
             eval_loop_fn = run_eval_loop_multi_row if multi_row else run_eval_loop
@@ -315,6 +362,16 @@ class ScrapeTool(TearsTool):
             # actually reads on a failed ToolResult; `validation_status` was already in
             # metadata and was already being ignored.
             blocked = extraction.validation_status == "blocked"
+            if self._circuit is not None:
+                # Every non-blocked outcome closes the circuit, including an extraction that
+                # failed: this circuit counts FETCHES, and a page we can plainly read is a
+                # fetch that worked. A recipe that keeps missing against a page we received
+                # is `ScrapeRecipe.consecutive_validation_failures`'s business, and backing
+                # off the fetch would only starve the regeneration that fixes it.
+                if blocked:
+                    await self._circuit.record_blocked(target_id)
+                else:
+                    await self._circuit.record_reachable(target_id)
             result = ToolResult(
                 success=extraction.validation_status == "validated",
                 error=(

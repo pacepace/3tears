@@ -4,6 +4,56 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+**A blocked scrape target now backs off, instead of being hammered forever
+(`3tears-scrape`).** Telling a bot wall apart from a site redesign already stopped a
+walled target burning its recipe, but it did not make one cheap: the target was still
+fetched on every poll, and every one of those fetches produced a page that failed
+extraction and therefore got classified. The classifier's verdict cache does not bound
+that, because it keys on a digest of the page's visible text and a real interstitial
+renders a per-request id into exactly that text -- so the cache misses on every poll,
+forever. The only thing that bounds either cost is not fetching the target, which is why
+the fetch rate and the classification rate are two separate claims and both are now
+tested over many polls rather than one.
+
+`TargetCircuit` gates the fetch off durable state on the health row
+(`circuit_state`, `consecutive_fetch_failures`, `blocked_until`, shipped unwritten in
+`v010`). Repeated blocks trip it open, an open circuit suppresses the fetch, and each
+probe that finds the wall still standing doubles the wait up to a ceiling -- a decay,
+not a floor. A transport failure shares the circuit with a wall, since both mean the
+content did not arrive, but only a wall stamps `last_blocked_at`, so that column keeps
+meaning "walled" rather than drifting into "something went wrong". A suppressed poll
+persists nothing: no observation was made, and a row per suppressed poll would write
+more the harder the backoff worked.
+
+**No new state machine was written.** The three states, the failure threshold, the
+OPEN-to-HALF_OPEN promotion and what a probe's outcome does are all
+`threetears.models.circuit_breaker.CircuitBreaker`'s, reached through a new
+`CircuitBreaker.restore()` classmethod (`3tears-models`): the durable row is hydrated
+into a real breaker, the transition is driven by calling it, and the resulting state is
+written back. That seam is the point -- a consumer keeping circuit state in its own store
+should not also keep its own copy of the rules, because a second copy is a second copy
+that can disagree. `restore()` deliberately does not restore an in-flight probe: that
+belongs to the process that issued it and no other process can observe it.
+
+Four collaborators are optional and injected, never constructed, because each belongs to
+infrastructure `3tears-scrape` does not own: a `CircuitBreakerLike` for a free in-process
+fast-fail before any I/O (the same structural seam `core.http_client` already uses), a
+`WindowedCounter` so several pods polling one target reach the threshold together instead
+of each carrying a share that never gets there, a capacity-one `TokenBucket` for the
+cross-pod single-probe admission a restored breaker structurally cannot give, and a
+`ReprobeScheduler`. With all four absent the circuit still decays a blocked target's fetch
+rate off the health row alone.
+
+`3tears-scrape[reprobe]` is a new extra carrying the fourth: `reprobe.py` books the next
+probe as a `3tears-scheduled-jobs` `relative_delay` job rather than sleeping, for a caller
+that is event-driven rather than polling (a poller's next poll already is the re-probe).
+The job id is derived from the target, so re-booking replaces the outstanding probe --
+with a random id every superseded booking would survive and eventually fire, turning the
+longest backoff into the biggest burst. The extra is optional because scheduled-jobs
+brings NATS and APScheduler with it, and nothing in the default install imports it.
+
 ## v0.19.0 -- 2026-07-25
 
 **New package: `3tears-geo`.** Slippy-map tile geometry in application code. Every

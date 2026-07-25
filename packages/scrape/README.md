@@ -187,7 +187,14 @@ packages/scrape/src/threetears/scrape/
 ├── challenge.py               PageVerdict, classify_failed_page() -- asks what a page that
 │                              failed extraction actually is; no vendor markers
 ├── health.py                  ScrapeTargetHealth + collection, content_fingerprint(),
-│                              record_validated_fetch(), record_classification()
+│                              record_validated_fetch(), record_classification(),
+│                              record_circuit_state()
+├── circuit.py                 TargetCircuit, BackoffPolicy -- gates the FETCH of a target
+│                              that keeps coming back walled, so its fetch rate and its
+│                              classification rate both decay. Transitions come from
+│                              models.circuit_breaker.CircuitBreaker via restore()
+├── reprobe.py                 ScheduledJobsReprobeScheduler -- books the next probe as a
+│                              scheduled-jobs relative_delay job. Needs the [reprobe] extra
 ├── collections.py             ScrapeTarget/ScrapeRecipe/ScrapeExtraction (BaseEntity)
 │                              + BaseCollection subclasses (L1/L2/L3 via
 │                              threetears.core.backends.protocol.DurableStore)

@@ -33,6 +33,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
     content_fingerprint,
+    record_circuit_state,
     record_classification,
     record_validated_fetch,
 )
@@ -239,3 +240,50 @@ async def test_a_blocked_verdict_and_a_later_success_coexist_on_one_row(
     # moment that history is most worth having.
     assert stored.classified_verdict == "blocked"
     assert stored.last_blocked_at is not None
+
+
+async def test_the_circuit_writer_round_trips_a_full_trip_and_recovery(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """The circuit's own writer against a real schema, not only a hand-built row.
+
+    The columns themselves are already covered above, but they were covered by a row this
+    suite assembled. ``record_circuit_state`` is what production actually calls, it writes a
+    timestamp and an integer into columns an in-memory dict would accept in any shape, and
+    the recovery half writes SQL NULL into a ``TIMESTAMPTZ`` -- the case where "the dict took
+    it" says least about whether Postgres will.
+    """
+    target_id = _target("circuit")
+    blocked_at = datetime.now(UTC).replace(microsecond=0)
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=4,
+        blocked_until=blocked_at + timedelta(hours=2),
+        blocked_at=blocked_at,
+    )
+    tripped = await health.get(target_id)
+    assert tripped is not None
+    assert tripped.circuit_state == "open"
+    assert tripped.consecutive_fetch_failures == 4
+    assert tripped.blocked_until == blocked_at + timedelta(hours=2)
+    assert tripped.last_blocked_at == blocked_at
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="closed",
+        consecutive_fetch_failures=0,
+        blocked_until=None,
+    )
+    recovered = await health.get(target_id)
+    assert recovered is not None
+    assert recovered.circuit_state == "closed"
+    assert recovered.consecutive_fetch_failures == 0
+    assert recovered.blocked_until is None
+    # The block history survives the recovery: a merge that replaced the row would erase
+    # the evidence that this target was ever walled, which is the one thing an operator
+    # looking at a recovered target wants to see.
+    assert recovered.last_blocked_at == blocked_at

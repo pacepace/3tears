@@ -183,13 +183,15 @@ vendor-shaped pattern matching in the one place this design rejected it, and wou
 suppress genuine content changes that happen to look like ids. Fingerprinting structure rather
 than text trades one brittleness for another. The response actually taken is **none, here**:
 what bounds the cost of a walled target is not fetching it on every poll, which is
-`blocked_until` and the circuit backoff in section 3. Until that lands, a walled target costs
-one classification per poll -- cheaper than today's candidate round, and no longer destroying
-the recipe, but not the bounded cost the earlier wording promised.
+`blocked_until` and the circuit backoff in section 3. That is what makes the classification
+rate a SEPARATE claim from the fetch rate rather than a restatement of it: the verdict cache
+cannot bound classification here, so only the suppressed fetch can, and section 3's gate is
+therefore load-bearing for both.
 
 The same limit applies to a target walled before it ever won a recipe: it reaches
 classification only after paying a full `generate_candidates` round, because there is no
-stored strategy to fail fast. Backoff is the answer there too.
+stored strategy to fail fast. The same gate is the answer there too, and for the same
+reason -- it sits in front of the fetch, so nothing downstream of the fetch runs at all.
 
 **Three checks, cheapest first, and only the last one costs anything.** Classification is never
 the first question asked on a failure:
@@ -302,17 +304,45 @@ threshold, recovery timeout and single-probe admission are adopted exactly. It i
 the durable store because it is in-memory and `threading.Lock`-based -- process-local by
 construction. A blocked target must stay blocked across pods and restarts, so the durable state
 lives on the `ScrapeTargetHealth` row (`circuit_state`, `consecutive_fetch_failures`,
-`blocked_until` -- shipped in `v010`, still unwritten until Chunk 03), with `WindowedCounter` /
-`DistributedCounter` for the cross-pod counts and `TokenBucket` for probe pacing. Section 2
-settled that; this paragraph said "the recipe row" until the contradiction was caught in
-review, and `ScrapeRecipe` is explicitly left untouched by all of this.
+`blocked_until`), with `WindowedCounter` for the cross-pod counts and `TokenBucket` for probe
+pacing. Section 2 settled that; this paragraph said "the recipe row" until the contradiction
+was caught in review, and `ScrapeRecipe` is explicitly left untouched by all of this.
+
+**How the rules stay in one place, which "adopted exactly" alone does not settle.** Storing
+the state elsewhere is the easy half; the trap is then re-deriving the transitions next to
+the store, because a second copy of a state machine is a second copy that can disagree. So
+`CircuitBreaker` gained a `restore()` classmethod: the durable row is hydrated into a real
+breaker, the transition is driven by calling `check()` / `record_success()` /
+`record_failure()`, and the resulting state is written back. `TargetCircuit` therefore
+contains storage, backoff arithmetic, and the judgement of which outcome counts as a fetch
+failure -- and no transition logic at all. `restore()` deliberately does NOT restore an
+in-flight probe: that belongs to whichever process issued it, and no other process can
+observe it, which is exactly why cross-pod single-probe admission needs the `TokenBucket`
+rather than the flag.
+
+The gate sits at the FETCH boundary, not in the eval loop. This is not a placement
+preference: the eval loop is handed a page that has already been fetched, so a gate there
+could only suppress work downstream of the cost the circuit exists to avoid. A target inside
+its window consequently reaches neither the candidate generator nor the page classifier.
 
 Where a per-process fast-fail is still wanted, `scrape` accepts an injected breaker through
 `core.http_client`'s existing `CircuitBreakerLike` protocol -- the same seam `core` already uses
 to avoid importing `threetears.models` and its LangChain weight. No new protocol.
 
 Re-probing a blocked target is scheduled through `3tears-scheduled-jobs` (`relative_delay`),
-not a bespoke sleep-and-retry.
+not a bespoke sleep-and-retry. That arrives as the optional `3tears-scrape[reprobe]` extra
+rather than a hard dependency, because scheduled-jobs brings NATS and APScheduler with it and
+a POLLING caller needs none of it -- its next poll is already the re-probe, gated by
+`blocked_until`. Only an event-driven caller has nothing to wake it. The booked job's id is
+derived from the target so a re-booking replaces the outstanding probe; with a random id
+every superseded booking would survive and eventually fire, turning the longest backoff into
+the biggest burst.
+
+A transport failure shares this circuit with a wall, since both mean the content did not
+arrive and retrying immediately will not change that, but only a wall stamps
+`last_blocked_at` -- otherwise the column that answers "when was this target last behind a
+wall" quietly becomes "when did anything last go wrong" and sends an operator hunting for a
+challenge page that was really a DNS failure.
 
 ### 4. Reusing the human's work
 
@@ -412,6 +442,9 @@ is the whole integration surface with the queue.
 
 **Create**
 - `packages/scrape/src/threetears/scrape/challenge.py` -- `PageVerdict`, `classify_failed_page`
+- `packages/scrape/src/threetears/scrape/health.py` -- `ScrapeTargetHealth` + collection + writers
+- `packages/scrape/src/threetears/scrape/circuit.py` -- `TargetCircuit`, `BackoffPolicy`, the fetch gate
+- `packages/scrape/src/threetears/scrape/reprobe.py` -- scheduled-jobs adapter, `[reprobe]` extra only
 - `packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate
 - `packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine
 - `packages/scrape/sidecar/hitl.py` -- session endpoints, VNC lifecycle
@@ -420,7 +453,9 @@ is the whole integration surface with the queue.
 
 **Modify**
 - `eval_loop.py` -- challenge short-circuit, fingerprint routing, fetch-health updates
-- `collections.py` -- new `ScrapeTargetHealth` entity + `ScrapeTargetHealthCollection`; `ScrapeRecipe` untouched
+- `tool.py` -- the fetch gate and the outcome report; the fetch boundary is where the circuit lives
+- `packages/models/.../circuit_breaker.py` -- `CircuitBreaker.restore()`, the durable-state seam
+- `collections.py` -- re-export only; the health entity and collection live in `health.py`
 - `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed session state)
 - `driver.py` + all 8 drivers -- `session_state` parameter (accept-and-ignore except the browser backends)
 - `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc`, `websockify`, noVNC
@@ -456,14 +491,21 @@ is the whole integration surface with the queue.
 4. A target with health but no recipe (blocked before it ever extracted successfully) is a health
    row with no recipe row. No strategy-less `ScrapeRecipe` is ever written, and `run_eval_loop`'s
    reuse branch is unchanged.
-5. An operator with a granted role can open a session for a permitted queue; one without is
+5. A repeatedly blocked target's **fetch rate decays**: the circuit opens at the threshold and
+   each probe that finds the wall still standing doubles the wait, to a ceiling.
+6. Its **classification rate decays too**, which criterion 5 does not imply. Proven over many
+   polls against a page carrying a per-request id -- the shape that provably defeats the
+   verdict cache, so only the suppressed fetch can bound it.
+7. No new state machine exists: the transitions come from `CircuitBreaker` via `restore()`,
+   and the reused primitive is named at each site.
+8. An operator with a granted role can open a session for a permitted queue; one without is
    denied with `HitlAccessDenied`, distinguishable from "nothing queued".
-6. A completed solve yields sealed session state that a subsequent unattended render consumes to
+9. A completed solve yields sealed session state that a subsequent unattended render consumes to
    fetch the target successfully with no human involved.
-7. Sealed state is unreadable without the master key; a tampered token is rejected.
-8. Session teardown stops `x11vnc`/`websockify` and drops contexts; the TTL reaper collects an
-   abandoned session.
-9. `./scripts/check-all.sh` green; the introspection-based drift guard covers every new column.
+10. Sealed state is unreadable without the master key; a tampered token is rejected.
+11. Session teardown stops `x11vnc`/`websockify` and drops contexts; the TTL reaper collects an
+    abandoned session.
+12. `./scripts/check-all.sh` green; the introspection-based drift guard covers every new column.
 
 ---
 

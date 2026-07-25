@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from threetears.scrape.challenge import PageVerdict
+from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.health import ScrapeTargetHealthCollection
 from threetears.scrape.driver import NavStep, RenderedPage
@@ -438,3 +439,198 @@ class TestScrapeToolFetchHealth:
         recipe = await recipe_collection.get(target_id)
         assert recipe is not None
         assert recipe.consecutive_validation_failures == 1
+
+
+# parity-with: threetears.scrape.driver.ScrapeDriver
+class _WallDriver:
+    """A wall that renders a fresh per-request id every time, like a real interstitial.
+
+    This is the shape that defeats the classifier's verdict cache: the cache keys on a
+    digest of the page's visible text, and a per-request id lives in exactly that text, so
+    every poll looks like a page nobody has ever classified.
+    """
+
+    def __init__(self) -> None:
+        self.render_calls = 0
+
+    @property
+    def name(self) -> str:
+        return "wall"
+
+    async def render(
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        wait_for: str | None = None,
+        capture_network: bool = False,
+        nav_steps: list[NavStep] | None = None,
+    ) -> RenderedPage:
+        del timeout, wait_for, capture_network, nav_steps
+        self.render_calls += 1
+        return RenderedPage(
+            html=(
+                f"<html><body><h1>Checking your browser</h1><p>Ray ID: 8f2c{self.render_calls:08d}</p></body></html>"
+            ),
+            status=503,
+            final_url=url,
+            timing_ms=1.0,
+        )
+
+
+class TestScrapeToolFetchCircuit:
+    """The acceptance criteria for the backoff: BOTH rates decay, and they are not one rate.
+
+    The fetch rate is the obvious one. The classification rate is the one that does not
+    follow from it, because classification has its own cache and that cache provably misses
+    on a page carrying a per-request id -- which is what a real interstitial is. Only the
+    fetch never happening bounds it, so both are counted here, separately, over many polls.
+    """
+
+    @staticmethod
+    def _tool(driver, circuit, recipe_collection, extraction_collection, health_collection):
+        return ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            health_collection=health_collection,
+            circuit=circuit,
+            drivers={"nodriver": driver},
+            api_key="k",
+        )
+
+    async def test_a_repeatedly_blocked_target_stops_being_fetched_and_stops_being_classified(self):
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/decay"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+
+        driver = _WallDriver()
+        circuit = TargetCircuit(
+            health_collection,
+            policy=BackoffPolicy(failure_threshold=3, base_delay_seconds=900.0),
+        )
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+
+        verdict = PageVerdict(
+            kind="blocked", evidence="the page asks the visitor to verify a browser", confidence="high"
+        )
+        classifications: list[str] = []
+
+        def _capture(*_args, **_kwargs):
+            def _with_structured_output(_schema, **_kw):
+                async def _ainvoke(prompt):
+                    classifications.append(prompt)
+                    return verdict
+
+                return SimpleNamespace(ainvoke=_ainvoke)
+
+            return SimpleNamespace(with_structured_output=_with_structured_output)
+
+        with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=_capture):
+            results = [await tool.execute(url=url, field_schema=schema) for _ in range(20)]
+
+        assert driver.render_calls == 3, "the circuit did not stop the fetch of a repeatedly walled target"
+        assert len(classifications) == 3, (
+            "the classification rate did not decay with the fetch rate -- a page carrying a "
+            "per-request id misses the verdict cache on every poll, so only the suppressed "
+            "fetch can bound it"
+        )
+        assert all(not r.success for r in results)
+        assert "backing off" in (results[-1].error or "")
+        assert results[-1].metadata["circuit_state"] == "open"
+        assert results[-1].metadata["retry_after_seconds"] > 0
+
+        row = await health_collection.get(target_id)
+        assert row is not None
+        assert row.circuit_state == "open"
+        recipe = await recipe_collection.get(target_id)
+        assert recipe is not None
+        assert recipe.consecutive_validation_failures == 0, "a wall counted against the recipe"
+
+    async def test_a_suppressed_poll_persists_no_extraction(self):
+        """Backing off harder must not write more rows than backing off less.
+
+        A suppressed poll made no observation. Persisting one anyway would mean the emptier
+        the result the busier the table, and would give an operator counting extractions a
+        row saying "blocked" for a fetch that never happened.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/quiet"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+        circuit = TargetCircuit(health_collection, policy=BackoffPolicy(failure_threshold=1))
+        await circuit.record_blocked(target_id)
+
+        driver = _WallDriver()
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+        with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
+            result = await tool.execute(url=url, field_schema=schema)
+
+        create_model.assert_not_called()
+        assert driver.render_calls == 0
+        assert json.loads(result.content)["validation_status"] == "blocked"
+        assert await extraction_collection.get(target_id) is None
+
+    async def test_a_target_that_comes_back_clears_its_circuit(self):
+        """One good fetch is enough. A recovered target must not stay half-suppressed."""
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/recovers"
+        schema = {"employer": "str", "affected_count": "int"}
+        target_id = _derive_target_id(url, schema)
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+        circuit = TargetCircuit(health_collection, policy=BackoffPolicy(failure_threshold=5))
+        await circuit.record_blocked(target_id)
+        await circuit.record_blocked(target_id)
+
+        driver = _FakeDriver(_SINGLE_HTML)
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+        result = await tool.execute(url=url, field_schema=schema)
+
+        assert result.success
+        row = await health_collection.get(target_id)
+        assert row is not None
+        assert row.circuit_state == "closed"
+        assert row.consecutive_fetch_failures == 0
+        assert row.blocked_until is None
+
+    async def test_a_render_that_never_returns_a_page_counts_as_a_fetch_failure(self):
+        """A target that stops responding backs off too; it is just not recorded as walled."""
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/gone"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+        circuit = TargetCircuit(health_collection, policy=BackoffPolicy(failure_threshold=2))
+        driver = _FakeDriver("", raise_exc=RuntimeError("connection refused"))
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+
+        await tool.execute(url=url, field_schema=schema)
+        await tool.execute(url=url, field_schema=schema)
+        third = await tool.execute(url=url, field_schema=schema)
+
+        assert "backing off" in (third.error or "")
+        row = await health_collection.get(target_id)
+        assert row is not None
+        assert row.circuit_state == "open"
+        assert row.last_blocked_at is None, "a transport failure was recorded as a bot wall"
+
+    async def test_without_a_circuit_nothing_is_suppressed(self):
+        """The default, and every pre-existing caller: every call fetches, as it always did."""
+        recipe_collection, extraction_collection = _collections()
+        url = "https://example.gov/ungated"
+        schema = {"employer": "str", "affected_count": "int"}
+        await _seed_recipe(recipe_collection, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+        driver = _FakeDriver(_SINGLE_HTML)
+        tool = ScrapeTool(
+            recipe_collection=recipe_collection,
+            extraction_collection=extraction_collection,
+            drivers={"nodriver": driver},
+            api_key="k",
+        )
+        for _ in range(3):
+            assert (await tool.execute(url=url, field_schema=schema)).success
+        assert len(driver.render_calls) == 3

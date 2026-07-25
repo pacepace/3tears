@@ -545,8 +545,9 @@ async def _resolve_failure_verdict(
     re-asks every poll. That is deliberately not solved by normalising ids out of the
     fingerprint, which would put vendor-shaped pattern matching back into the one place this
     design removed it and would suppress real content changes that happen to look like ids.
-    What bounds a walled target is not fetching it every poll -- the circuit backoff that
-    consumes ``blocked_until``, which this does not implement.
+    What bounds a walled target is not fetching it every poll, which is
+    :class:`threetears.scrape.circuit.TargetCircuit`'s job at the fetch boundary rather than
+    this function's -- by the time a page reaches here it has already been paid for.
 
     ``None`` means "no opinion", and every caller must treat it as exactly today's
     behaviour. It is returned when there is no health store to consult, when the page is

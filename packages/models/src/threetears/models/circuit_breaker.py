@@ -93,6 +93,76 @@ class CircuitBreaker:
         self._probe_in_flight = False
         self._lock = threading.Lock()
 
+    @classmethod
+    def restore(
+        cls,
+        provider_name: str,
+        *,
+        state: CircuitState,
+        failure_count: int,
+        seconds_until_probe_permitted: float = 0.0,
+        failure_threshold: int = 5,
+        recovery_timeout_seconds: float = 30.0,
+    ) -> CircuitBreaker:
+        """rebuilds a breaker from state that was persisted somewhere else.
+
+        this class holds its state in memory behind a ``threading.Lock``, so
+        it is process-local by construction. a consumer that needs the SAME
+        circuit honoured across pods and restarts has to keep the state in a
+        durable store of its own -- but the transition rules (when a
+        threshold trips, when a probe is admitted, what a probe's outcome
+        does) should not be reimplemented alongside it, because a second
+        copy of a state machine is a second copy that can disagree.
+
+        ``restore`` is the seam for that: hydrate from the durable row, drive
+        the transition through :meth:`check` / :meth:`record_success` /
+        :meth:`record_failure`, then persist :attr:`state` and
+        :attr:`failure_count` back. the rules stay here; only the storage
+        moves.
+
+        ``seconds_until_probe_permitted`` is how long remains before an OPEN
+        circuit may admit its recovery probe, which is what a durable
+        "blocked until" timestamp already records. it is expressed that way
+        rather than as an age because :attr:`last_failure_time` is a
+        ``time.monotonic()`` reading, and a monotonic clock is meaningless
+        across the process boundary the caller just crossed. zero or less
+        means the recovery window has already elapsed, so the next
+        :meth:`check` promotes OPEN to HALF_OPEN and admits the probe.
+
+        no probe is treated as in flight on a restored breaker: an in-flight
+        probe belongs to whichever process issued it, and a different process
+        cannot observe it. a caller needing cross-pod single-probe admission
+        has to reach for a distributed primitive; this restores the state,
+        not the other process's in-flight request.
+
+        :param provider_name: identifier for the provider this breaker protects
+        :ptype provider_name: str
+        :param state: the persisted circuit state
+        :ptype state: CircuitState
+        :param failure_count: the persisted consecutive-failure count
+        :ptype failure_count: int
+        :param seconds_until_probe_permitted: seconds remaining before an OPEN
+            circuit may probe; zero or less means the window has elapsed
+        :ptype seconds_until_probe_permitted: float
+        :param failure_threshold: consecutive failures before the circuit opens
+        :ptype failure_threshold: int
+        :param recovery_timeout_seconds: seconds to wait in OPEN before probing
+        :ptype recovery_timeout_seconds: float
+        :return: a breaker positioned at the persisted state
+        :rtype: CircuitBreaker
+        """
+        breaker = cls(
+            provider_name,
+            failure_threshold=failure_threshold,
+            recovery_timeout_seconds=recovery_timeout_seconds,
+        )
+        breaker._state = state
+        breaker.failure_count = max(0, failure_count)
+        breaker.last_failure_time = (
+            time.monotonic() - recovery_timeout_seconds + max(0.0, seconds_until_probe_permitted)
+        )
+        return breaker
+
     @property
     def state(self) -> CircuitState:
         """returns current circuit state.

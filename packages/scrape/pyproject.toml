@@ -57,6 +57,16 @@ dependencies = [
     "playwright<1.61",
 ]
 
+[project.optional-dependencies]
+# reprobe.py books a blocked target's next probe as a scheduled-jobs
+# `relative_delay` job, for a caller that is event-driven rather than
+# polling. Optional because 3tears-scheduled-jobs brings NATS and
+# APScheduler with it, and a polling caller needs none of that: its next
+# poll is the re-probe, gated by `blocked_until` on the health row.
+# circuit.py depends on the one-method ReprobeScheduler Protocol, never on
+# this package, so nothing in the default install imports it.
+reprobe = ["3tears-scheduled-jobs"]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 
@@ -68,3 +78,4 @@ packages = ["src/threetears"]
 3tears-agent-tools = { workspace = true }
 3tears-models = { workspace = true }
 3tears-observe = { workspace = true }
+3tears-scheduled-jobs = { workspace = true }
