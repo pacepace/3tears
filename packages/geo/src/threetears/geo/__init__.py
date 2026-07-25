@@ -12,6 +12,17 @@ from threetears.geo.attributes import (
     coerce_attributes,
     validate_attribute_value,
 )
+from threetears.geo.bands import (
+    AggregateSpec,
+    BandResult,
+    FeatureSpec,
+    TileFeature,
+    aggregate_band,
+    feature_band,
+    simplification_tolerance,
+)
+from threetears.geo.geometry import decode_geometry, geometry_bounds, point_geometry
+from threetears.geo.mvt import encode_tile, project_to_tile
 from threetears.geo.tiles import (
     MAX_MERCATOR_LATITUDE,
     TILE_EXTENT,
@@ -24,6 +35,18 @@ from threetears.geo.tiles import (
 
 __all__ = [
     "MAX_MERCATOR_LATITUDE",
+    "AggregateSpec",
+    "BandResult",
+    "FeatureSpec",
+    "TileFeature",
+    "aggregate_band",
+    "decode_geometry",
+    "encode_tile",
+    "feature_band",
+    "geometry_bounds",
+    "point_geometry",
+    "project_to_tile",
+    "simplification_tolerance",
     "MVT_SCALAR_TYPES",
     "TILE_EXTENT",
     "BoundingBox",

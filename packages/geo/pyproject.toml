@@ -22,7 +22,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
+    # NOT 3tears (core): nothing here imports it yet. the tile Collection that
+    # will subclass DerivedCollection is Hub-side wiring, and the
+    # dependency-alignment guard rejects a declaration no module uses.
     "3tears-observe",
     # Geometry math in application code, not in SQL: YugabyteDB ships no
     # postgis extension, so there is no ST_Intersects / ST_Simplify /
@@ -39,7 +41,6 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
-3tears = { workspace = true }
 3tears-observe = { workspace = true }
 
 [tool.mypy]
