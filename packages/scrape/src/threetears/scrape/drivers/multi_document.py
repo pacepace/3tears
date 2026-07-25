@@ -345,7 +345,7 @@ class MultiDocumentDriver(ScrapeDriver):
         for doc_url in candidate_urls:
             try:
                 page = await self._document_driver.render(doc_url, timeout=timeout)
-            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others, mirrors _regenerate_row_recipe's own per-candidate resilience
+            except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
                 log.warning(
                     "multi-document: one document fetch failed, skipping",
                     extra={"extra_data": {"url": doc_url, "error": str(exc)}},

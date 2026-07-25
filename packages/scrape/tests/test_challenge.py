@@ -868,3 +868,77 @@ async def test_an_unconfirmed_row_set_still_surfaces_the_richest_survivor(
 
     assert result.validation_status == "needs_review"
     assert result.structured_fields == {"records": [{"employer": "Acme Corp"}, {"employer": "Beta LLC"}]}
+
+
+# ---------------------------------------------------------------------------
+# The strategy shapes themselves
+# ---------------------------------------------------------------------------
+
+
+def test_every_shipped_strategy_shape_is_internally_consistent() -> None:
+    """A `_StrategyShape` has ten fields over two real axes, so wrong pairings are constructible.
+
+    Nothing stops someone declaring a single-record `records` alongside the row judge, or a
+    row `judge_payload` with the single-record one. Both type-check, and both would hand the
+    judge a shape it cannot read -- at which point every candidate is rejected and the target
+    quietly stops learning, a failure that looks like a bad page rather than bad wiring.
+
+    Rather than collapse the descriptor (the ten fields are ten genuine differences), this
+    pins the invariant that actually matters: the record extractor, the judge and the payload
+    adapter must all agree about whether the shape is single-record or multi-row. Asserted
+    behaviourally -- what each field DOES -- rather than by identity against private
+    functions, which also keeps it honest if one is ever reimplemented.
+    """
+    from threetears.scrape import eval_loop as el
+
+    shapes = {
+        "_CSS_SHAPE": False,
+        "_REGEX_SHAPE": False,
+        "_CSS_ROW_SHAPE": True,
+        "_REGEX_ROW_SHAPE": True,
+    }
+    one = {"employer": "Acme Corp"}
+    two = {"employer": "Beta LLC"}
+    # Carries BOTH shapes at once, so which one `records` reads is observable.
+    validation = SimpleNamespace(extracted=one, records=[one, two], total_rows_matched=2)
+
+    for name, is_row in shapes.items():
+        shape = getattr(el, name)
+
+        got = shape.records(validation)
+        assert got == ([one, two] if is_row else [one]), f"{name}'s record extractor has the wrong arity"
+
+        judge_name = shape.judge.__name__
+        assert ("row" in judge_name) is is_row, f"{name} pairs {judge_name}, the wrong judge for its arity"
+
+        # The payload adapter is the piece that must match the judge: the single-record
+        # judge wants one dict per candidate, the row judge wants the whole list.
+        payload = shape.judge_payload([one, two])
+        assert payload == ([one, two] if is_row else one), f"{name} hands its judge the wrong payload shape"
+
+        assert shape.logs_row_counts is is_row, f"{name} logs row counts it does not have"
+        assert shape.log_label.startswith("scrape "), f"{name} has an off-pattern log label"
+
+
+def test_a_strategy_shape_round_trips_its_own_stored_strategy() -> None:
+    """`as_strategy` and `from_strategy` must be inverses, or reuse reads back nonsense.
+
+    They are declared as two independent lambdas per shape, so nothing structurally forces
+    them to agree. If they disagree, a recipe written by regeneration cannot be read back by
+    reuse: every poll re-validates against a garbage strategy, fails, and the target burns its
+    way to a regeneration it did not need.
+    """
+    from threetears.scrape import eval_loop as el
+
+    candidates = {
+        "_CSS_SHAPE": {"employer": "td.employer"},
+        "_REGEX_SHAPE": r"(?P<employer>Acme Corp)",
+        "_CSS_ROW_SHAPE": {"row_selector": "tr", "field_selectors": {"employer": "td"}},
+        "_REGEX_ROW_SHAPE": r"(?P<employer>Acme Corp)",
+    }
+    for name, candidate in candidates.items():
+        shape = getattr(el, name)
+        assert shape.from_strategy(shape.as_strategy(candidate)) == candidate, (
+            f"{name}'s as_strategy/from_strategy are not inverses, so a stored recipe "
+            "cannot be read back as the candidate that produced it"
+        )

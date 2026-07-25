@@ -76,6 +76,15 @@ behaviour, so no existing construction changes. Without this the feature had no 
 this repo at all: the tool was holding the status and passing neither, which makes a
 parameter plumbing rather than a capability.
 
+**Operator-visible log strings changed** in the strategy collapse, which is worth stating
+because anything grepping them will stop matching. The per-strategy reuse and no-survivor
+messages are now prefixed by the shape's own label rather than hand-written per function, so
+`scrape row recipe reuse: ...` reads `scrape row eval loop recipe reuse: ...`, and the regex
+row variant reports `rows_matched=` where it said `matches=`. Same events, same fields, same
+frequency. A spent classification call also now logs before and after, so a fresh
+`content`/`empty`/`other` verdict is no longer invisible -- previously only the free cached
+path announced itself, which is backwards for the one branch that costs money.
+
 The four recipe-reuse paths were restructured into pure validators plus one shared commit,
 and the four "no structurally valid candidates" branches into one shared helper, so the
 classification hook exists once per family rather than eight times. The regex strategies were
