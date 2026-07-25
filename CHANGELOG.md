@@ -121,6 +121,7 @@ A recovery is the exception, since closing the circuit cannot retract a booking 
 wake-up is a whole poll including its eval loop, not a bare fetch. Accepted rather than
 solved, because a cancel seam costs every implementer a second method to save one poll per
 recovery of a target that is healthy by then.
+
 ## v0.19.1 -- 2026-07-25
 
 **Every intra-family dependency is now version-bounded.** The packages release in

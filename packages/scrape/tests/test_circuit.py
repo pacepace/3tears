@@ -467,6 +467,47 @@ async def test_opening_the_circuit_books_a_reprobe_for_when_the_window_expires(
 
 
 @pytest.mark.asyncio
+async def test_a_success_against_an_open_row_does_not_erase_its_backoff(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The fleet race: pod B trips the row while pod A's permitted fetch is still in flight.
+
+    Pod A then reports the success it genuinely had. ``CircuitBreaker`` answers a success
+    from a request it never admitted by leaving the circuit OPEN, which this module adopts
+    rather than overriding. But clearing ``blocked_until`` on the way past turns that
+    conservative answer into the opposite of one: ``_restore`` reads a missing window as
+    nought seconds remaining, so the very next ``check`` finds an OPEN breaker whose recovery
+    has elapsed, promotes it and probes. The state column still says OPEN while the backoff
+    it names has been erased -- the worst of the two outcomes the transition rule was
+    choosing between.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    await record_circuit_state(
+        health,
+        target_id=_T,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=4,
+        blocked_until=_NOW + timedelta(seconds=300),
+    )
+
+    await circuit.record_reachable(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.OPEN.value, "the inherited leave-it-open answer changed"
+    assert row.blocked_until == _NOW + timedelta(seconds=300), (
+        "the backoff window was cleared under a circuit still reading OPEN"
+    )
+
+    decision = await circuit.check(_T, now=_NOW + timedelta(seconds=1))
+    assert not decision.permitted, (
+        "the target was probed immediately after a success it was never admitted for, so the "
+        "suppression the open circuit claims to be enforcing had already been thrown away"
+    )
+    assert decision.retry_after_seconds > 1.0
+
+
+@pytest.mark.asyncio
 async def test_the_probe_promotion_books_the_next_wake_up_too(
     health: ScrapeTargetHealthCollection, policy: BackoffPolicy
 ) -> None:

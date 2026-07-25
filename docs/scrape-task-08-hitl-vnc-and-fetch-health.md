@@ -340,12 +340,22 @@ deployment that configured no `TokenBucket`.
 
 Where a per-process fast-fail is still wanted, `scrape` accepts an injected breaker through
 `core.http_client`'s existing `CircuitBreakerLike` protocol -- the same seam `core` already uses
-to avoid importing `threetears.models` and its LangChain weight. No new protocol. It is
+to avoid importing `threetears.models` and its LangChain weight. It is
 injected as a lookup KEYED BY TARGET rather than as one breaker, because a `TargetCircuit`
 serves a whole set of targets: a shared breaker would let one walled target fast-fail every
 other target on the same tool, and let a healthy target's success reset a count another
 target had accumulated. `CircuitBreakerRegistry` is already per-key, and taking the key is
 what keeps that property instead of dropping it at this seam.
+
+Two protocols ARE new, which an earlier draft of this section denied. `ProbeObservableBreaker`
+narrows `CircuitBreakerLike` with a readable `state`, because releasing a probe requires first
+knowing one was admitted, and a breaker that cannot answer that gets wedged rather than
+released -- the constraint belongs in the signature, not in a `getattr`. `ReprobeScheduler` is
+the one-method seam `reprobe.py` satisfies, so the polling caller never takes on
+`3tears-scheduled-jobs`. Neither adds a dependency: the LangChain-weight argument above is
+about `core`'s reason for the original seam, and `circuit.py` already imports
+`threetears.models.circuit_breaker` at module top, since `3tears-models` is a hard dependency
+of `3tears-scrape` regardless.
 
 The lookup's lifetime is the caller's, and the obvious choice has a sharp edge worth naming.
 `CircuitBreakerRegistry` holds a plain dict with no eviction. Keyed by provider name -- what

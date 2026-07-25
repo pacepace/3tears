@@ -120,6 +120,16 @@ class ScheduledJobsReprobeScheduler:
             "last_fired_at": None,
             "missed_fire_policy": "coalesce",
             "name": f"scrape re-probe {target_id}",
+            # Explicit, and load-bearing. `save_entity` stamps `date_created` for a new
+            # entity but only stamps `date_updated` when the key is already present or the
+            # entity is not new -- neither holds for a hand-built row like this one. The
+            # column is `TIMESTAMPTZ NOT NULL` with a server DEFAULT, but the default cannot
+            # save it: the upsert binds every column positionally by design (omitting one
+            # would change the arity and break the SQL), so a missing key is bound as an
+            # explicit NULL and the constraint fires. Because `_book_reprobe` swallows and
+            # logs, the result was not a loud failure but a silent one -- an event-driven
+            # deployment booking no re-probes whatsoever.
+            "date_updated": now,
         }
         await self._jobs.save_entity(ScheduledJobEntity(row, is_new=True, collection=self._jobs))
         log.info(

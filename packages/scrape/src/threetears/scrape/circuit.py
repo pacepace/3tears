@@ -449,9 +449,22 @@ class TargetCircuit:
         reported against a row still reading OPEN leaves it open. That is ``CircuitBreaker``'s
         own answer to a success from a request it never admitted, and it is adopted rather
         than overridden, because overriding it would mean writing a transition rule here --
-        the one thing this module is built not to do. It is reachable only when the
-        HALF_OPEN promotion :meth:`check` performs failed to persist, and it self-heals on the
-        next poll, whose :meth:`check` promotes again.
+        the one thing this module is built not to do.
+
+        What is NOT adopted is clearing the window in that case. A circuit left open keeps its
+        ``blocked_until``, because writing ``(OPEN, N, None)`` would be strictly worse than
+        either outcome the transition rule is choosing between: :meth:`_restore` reads a
+        missing window as nought seconds remaining, so the very next :meth:`check` finds an
+        OPEN breaker whose recovery has elapsed, promotes it, and probes -- the backoff gone
+        while the state column still says it is being enforced. The window is this module's
+        own storage, not a transition, so preserving it writes no rule. Reachable whenever the
+        HALF_OPEN promotion failed to persist, and across a fleet without that: pod B trips
+        the row while pod A's already-permitted fetch is still in flight, and pod A then
+        reports the success it genuinely had.
+
+        With the window kept, that case self-heals on schedule rather than immediately: the
+        next :meth:`check` after ``blocked_until`` elapses promotes and probes, which is the
+        same treatment the failure that opened the circuit had already bought.
 
         :param target_id: the target that served content
         :ptype target_id: str
@@ -471,12 +484,22 @@ class TargetCircuit:
 
         restored = self._restore(target_id, health, moment)
         restored.record_success()
+        closed = restored.state is CircuitState.CLOSED
         log.info(
-            "scrape circuit: target %s is reachable again; circuit closed",
+            "scrape circuit: target %s is reachable again; circuit %s",
             target_id,
+            "closed" if closed else f"left {restored.state.value} with its window intact",
             extra={"extra_data": {"target_id": target_id, "circuit_state": restored.state.value}},
         )
-        await self._write(target_id, state=restored.state, failures=restored.failure_count, blocked_until=None)
+        # The window is cleared only by an actual close. A circuit the breaker chose to leave
+        # open keeps the `blocked_until` it already had -- see the note above on why writing
+        # `(OPEN, N, None)` would erase the backoff while still reading as enforced.
+        await self._write(
+            target_id,
+            state=restored.state,
+            failures=restored.failure_count,
+            blocked_until=None if closed else health.blocked_until,
+        )
 
     def release_probe(self, target_id: str) -> None:
         """Resolve a permitted fetch that will never report an outcome.

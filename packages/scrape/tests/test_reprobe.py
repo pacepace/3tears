@@ -14,28 +14,84 @@ from typing import Any
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.scheduled_jobs.collections import ScheduledJobCollection
+from threetears.scheduled_jobs.collections import (
+    _JOB_INSERT_COLUMNS,
+    ScheduledJobCollection,
+    _job_insert_params,
+)
 from threetears.scheduled_jobs.entities import ScheduledJobEntity
 
 from threetears.scrape.reprobe import REPROBE_JOB_KIND, ScheduledJobsReprobeScheduler, reprobe_job_id
 
 
 class _FakeJobCollection(ScheduledJobCollection):
-    """The real collection with its one write intercepted, keyed by the real composite pk.
+    """The real collection with only its L3 write intercepted, keyed by the real composite pk.
 
     A subclass rather than a stand-in because the entity constructor calls back into its
     collection, so anything less than the real class is testing a different object than
     production hands this adapter.
+
+    Intercepts ``save_to_store`` rather than ``save_entity`` deliberately. ``save_entity`` is
+    where the framework stamps ``date_created`` and ``date_updated``, and stubbing it out
+    skips that -- which is how a row missing a ``NOT NULL`` column passed every test in this
+    file while failing at the real border. Cutting in one layer lower means the captured row
+    is the one that would actually have been bound.
     """
 
     def __init__(self) -> None:
         super().__init__(CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS"), nats_client=None)
         self.saved: dict[tuple[Any, Any], dict[str, Any]] = {}
 
-    async def save_entity(self, entity: Any, **kwargs: Any) -> Any:
-        row = dict(entity.to_dict())
+    async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
+        del original_timestamp, conn
+        row = dict(data)
         self.saved[(row["partition_key"], row["job_id"])] = row
-        return entity
+        return 1
+
+
+#: Every ``scheduled_jobs`` column declared ``NOT NULL`` in v001. The upsert binds all of
+#: them positionally, so a server-side DEFAULT never applies -- a key this adapter forgets
+#: to set is bound as an explicit NULL and the constraint fires at the border.
+_NOT_NULL_JOB_COLUMNS = frozenset(
+    {
+        "partition_key",
+        "job_id",
+        "kind",
+        "payload",
+        "schedule_type",
+        "schedule_config",
+        "status",
+        "missed_fire_policy",
+        "date_created",
+        "date_updated",
+    }
+)
+
+
+@pytest.mark.asyncio
+async def test_the_booked_row_binds_a_value_for_every_not_null_column() -> None:
+    """The bind path, which every other test in this file goes around.
+
+    ``_FakeJobCollection`` intercepts ``save_entity``, so nothing here otherwise reaches the
+    projection that turns a row dict into the upsert's positional params -- and that is
+    exactly where a hand-built row gets judged. ``save_entity`` stamps ``date_created`` for a
+    new entity but stamps ``date_updated`` only when the key is already present or the entity
+    is not new, so this adapter must supply it. The column is ``NOT NULL DEFAULT now()`` and
+    the default cannot rescue it: the upsert writes every column unconditionally, so a
+    missing key binds an explicit NULL.
+
+    The failure this pins is silent, not loud. ``TargetCircuit._book_reprobe`` catches and
+    logs, so a constraint violation here does not fail a fetch -- it just means an
+    event-driven deployment books no re-probes at all, which is the entire purpose of the
+    ``[reprobe]`` extra, and the health row's ``blocked_until`` goes on looking correct.
+    """
+    jobs = _FakeJobCollection()
+    await ScheduledJobsReprobeScheduler(jobs).schedule_reprobe(target_id="warn_oh", delay_seconds=900.0)
+    (row,) = jobs.saved.values()
+
+    bound = dict(zip(_JOB_INSERT_COLUMNS, _job_insert_params(row), strict=True))
+    nulls = sorted(col for col in _NOT_NULL_JOB_COLUMNS if bound.get(col) is None)
+    assert not nulls, f"NOT NULL column(s) bound as NULL, so every booking raises at the border: {nulls}"
 
 
 @pytest.mark.asyncio
