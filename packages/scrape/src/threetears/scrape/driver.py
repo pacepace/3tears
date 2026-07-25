@@ -118,7 +118,7 @@ class RenderedPage:
     #: needed OCR fallback -- a scanned/image PDF, not born-digital text. Always
     #: ``False`` for every other driver (an HTML page render has no such concept).
     #: Consumed by :class:`~threetears.scrape.drivers.multi_document.
-    #: MultiDocumentDriver` (scrape-task-06) to mark which combined-page documents
+    #: MultiDocumentDriver` to mark which combined-page documents
     #: need vision-based extraction rather than the faster/cheaper text path --
     #: see ``eval_loop._run_per_document_extraction``.
     was_ocr: bool = False

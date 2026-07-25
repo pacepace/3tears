@@ -1,8 +1,8 @@
 """Unit tests for CamoufoxDriver, the second ScrapeDriver backend.
 
 All tests are fully mocked/in-memory -- no real browser launch, no camoufox
-binary download. The real, live browser proof lives in
-tests/integration/test_scrape_camoufox_live.py. The generic,
+binary download, and no live-browser suite ships with this package (that
+needs a real Camoufox binary on the machine running it). The generic,
 backend-agnostic ScrapeDriver contract (shared with NodriverSidecarDriver)
 lives in test_driver_contract.py, not here.
 """

@@ -75,12 +75,12 @@ class NodriverDownloadDriver(ScrapeDriver):
         :ptype ocr_config: OcrConfig | None
         :param force_images: embed page images even for a born-digital
             (non-OCR'd) document -- see ``document.py``'s
-            ``parse_document_bytes_to_html`` docstring (scrape-task-07)
+            ``parse_document_bytes_to_html`` docstring
         :ptype force_images: bool
         :param merge_wrapped_table_rows: stitch a PDF table's wrapped-cell
             continuation rows back onto their parent record -- see
-            ``document.py``'s ``parse_document_bytes_to_html`` docstring
-            (scrape-task-07 follow-up). Off by default.
+            ``document.py``'s ``parse_document_bytes_to_html`` docstring.
+            Off by default.
         :ptype merge_wrapped_table_rows: bool
         """
         self._base_url = base_url.rstrip("/")

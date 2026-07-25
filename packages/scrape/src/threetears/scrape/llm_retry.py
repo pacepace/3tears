@@ -68,7 +68,7 @@ async def bounded_retry_structured_call[T: BaseModel](
 
     :param prompt: the fully-built prompt text for this call, OR a pre-built list of
         LangChain messages (e.g. one ``HumanMessage`` with multimodal image+text
-        content blocks, scrape-task-06's vision extraction path) -- passed straight
+        content blocks, as the vision extraction path uses) -- passed straight
         through to ``ainvoke()``, which accepts either shape natively
     :ptype prompt: str | list[Any]
     :param response_model: pydantic model the structured output is forced into

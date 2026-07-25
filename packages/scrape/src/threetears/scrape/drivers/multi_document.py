@@ -34,7 +34,7 @@ Each document's synthetic HTML is wrapped in a delimiting
 channel a per-document caller downstream (``eval_loop._run_per_document_extraction``)
 has into what any one sub-document actually was.
 
-**Revision (scrape-task-05, 2026-07-15):** the first version of this design
+**Revision (2026-07-15):** the first version of this design
 assumed ``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing
 pattern) would apply unmodified once documents were combined -- live-verified
 wrong. Regex/CSS strategies both assume one shared template repeated across
@@ -48,7 +48,7 @@ cached pattern, a fresh, independent LLM extraction call per document, every
 poll -- ``extraction.split_notice_documents`` is this driver's own combined-page
 convention's other half.
 
-**Revision (scrape-task-06, 2026-07-16):** per_document's own OCR'd-text path
+**Revision (2026-07-16):** per_document's own OCR'd-text path
 (``extraction.extract_fields_directly_chunked``) turned out unreliable on real
 scanned WARN letters -- full-set live comparison against all 10 of West
 Virginia's real documents: 2/10 complete records via OCR'd text vs. 10/10 via a

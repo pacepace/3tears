@@ -2,10 +2,10 @@
 
 No real Chromium/Xvfb involved -- ``main._browser`` is monkeypatched with a
 fake object shaped like nodriver's ``Browser``/``Tab`` so these tests stay
-hermetic. The real, live proof that a genuine nodriver-driven Chromium
-render works end-to-end lives in a consumer repo (e.g. faidh's
-tests/integration/test_scrape_nodriver_sidecar_live.py), exercised against
-this container via docker compose.
+hermetic. Proving a genuine nodriver-driven Chromium render works end to end
+requires this container actually running, so it is a consuming
+application's job, exercised against the image built from this directory
+via docker compose.
 """
 
 from __future__ import annotations

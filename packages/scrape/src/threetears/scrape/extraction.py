@@ -1029,7 +1029,7 @@ NOTICE_DOCUMENT_CLASS = "notice"
 
 #: Same driver-agnostic-core convention as :data:`NOTICE_DOCUMENT_CLASS` -- the other
 #: half of :class:`~threetears.scrape.drivers.document`'s own embedded-page-image
-#: contract (scrape-task-06): when a document needed OCR, its combined-page ``<div>``
+#: contract: when a document needed OCR, its combined-page ``<div>``
 #: contains one ``<img class="ocr-page-image">`` per rendered page, read back out by
 #: :func:`split_notice_documents` for the vision-extraction path.
 OCR_PAGE_IMAGE_CLASS = "ocr-page-image"
@@ -1040,7 +1040,7 @@ class NoticeDocument(NamedTuple):
 
     :func:`split_notice_documents`'s own return shape -- carries both the plain
     text (the fast/cheap path every document already had) and, when the document
-    needed OCR, the embedded page images (the vision path scrape-task-06 added).
+    needed OCR, the embedded page images (the vision path added for that case).
     """
 
     text: str
@@ -1488,7 +1488,7 @@ def _build_direct_extraction_prompt(text: str, schema: FieldSchema) -> str:
     )
 
 
-#: Live-found (scrape-task-05, a real West Virginia document): every schema field
+#: Live-found (a real West Virginia document): every schema field
 #: here is ``str | None`` (see :func:`_build_direct_extraction_model`'s own docstring
 #: for why), which means a garbage response -- observed live: the model echoed its
 #: ENTIRE prompt back into one field's value, with the real answer buried in a
@@ -1597,7 +1597,7 @@ def _coerce_direct_extraction_result(result: BaseModel, schema: FieldSchema) -> 
     return extracted
 
 
-#: Live-verified (scrape-task-05, real West Virginia and Hawaii documents): a single
+#: Live-verified (real West Virginia and Hawaii documents): a single
 #: call asking for every schema field at once is measurably LESS reliable than several
 #: smaller calls each asking for fewer fields -- isolated proof: a 2-field-only call
 #: succeeded on a real document where that same document's 4-field call returned null
@@ -1670,12 +1670,12 @@ async def extract_fields_directly_chunked(
 
 
 # ===========================================================================
-# extract_fields_from_images -- vision extraction path (scrape-task-06)
+# extract_fields_from_images -- vision extraction path
 # ===========================================================================
 
 #: OpenRouter model id for a vision-capable Claude model, reached through the
 #: SAME OpenRouter API key every other extraction call in this module already
-#: uses -- no new secret needed (live-verified, scrape-task-06). Not pre-
+#: uses -- no new secret needed (live-verified). Not pre-
 #: registered in threetears-models' own capability registry under the
 #: "openrouter" provider (only "anthropic" has it, for a direct-Anthropic-key
 #: deployment), so every call here passes ``provider="openrouter"`` explicitly
@@ -1718,7 +1718,7 @@ async def extract_fields_from_images(
     document that needed OCR (see :class:`~threetears.scrape.drivers.multi_document.
     MultiDocumentDriver`'s own ``data-was-ocr`` convention and :func:`split_notice_documents`),
     reading the ORIGINAL page images directly full-set live-verified dramatically more
-    reliable than the OCR'd-text path (scrape-task-06: 10/10 complete records via vision
+    reliable than the OCR'd-text path (10/10 complete records via vision
     vs. 2/10 via OCR'd text across all of a real target's documents) -- OCR can drop or
     garble a narrow numeric table column a vision model reads correctly by seeing the
     actual page layout, and can recover none of a genuinely-redacted value either (a
@@ -1777,7 +1777,7 @@ async def extract_fields_from_images(
 
 
 # ===========================================================================
-# extract_multi_row_fields_from_images -- multi-row vision extraction (scrape-task-07)
+# extract_multi_row_fields_from_images -- multi-row vision extraction
 # ===========================================================================
 
 #: A multi-row vision call reads the same page image(s) as :func:`extract_fields_from_images`
@@ -1848,7 +1848,7 @@ async def extract_multi_row_fields_from_images(
     single PDF holds many records in one table (not one document = one record, the
     ``"per_document"`` StrategyType's own assumption), used when the table's own structure
     genuinely defeats text-based table extraction. Live-verified against Nevada's real
-    master WARN PDF (scrape-task-07): ``find_tables()``'s default ``"lines"`` strategy finds
+    master WARN PDF: ``find_tables()``'s default ``"lines"`` strategy finds
     only the header (the entire 17-row dataset silently dropped), its ``"text"`` strategy
     mis-splits words/columns (a URL broken mid-string) -- a genuine structural defeat, not a
     scan-quality one (the source PDF is born-digital, has a real text layer). Mississippi's
