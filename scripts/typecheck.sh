@@ -13,28 +13,16 @@ cd "$REPO_ROOT"
 # This is the SINGLE SOURCE OF TRUTH for the mypy target set: CI calls this
 # script (see .github/workflows/ci.yml) so the two can never drift apart.
 #
-# The target list is narrower than ``[tool.mypy] files`` in pyproject.toml, and the
-# gap is a known, measured backlog item rather than an oversight. Every package that
-# passes strict mypy today IS listed here, so none of them can regress. Five are
-# absent because they do not pass yet, with the error count each would contribute
-# when this was last measured (2026-07-25):
-#
-#   threetears.models              116    (by far the bulk of the remaining work)
-#   threetears.conversations        10
-#   threetears.agent.workspace       8    (mostly one L3Backend | None narrowing pattern)
-#   threetears.langgraph             6
-#   threetears.mcp                   4
-#
-# That is the whole remainder: every other package in `[tool.mypy] files` is listed
-# below. Tracked as TYP-8H5R.
-#
-# Add each one HERE as it is fixed, in the same change that fixes it. Adding a
-# package before it passes turns the gate red for everyone, which is how a
-# not-yet-checked package becomes a permanently-skipped one.
+# The target list now matches ``[tool.mypy] files``: every package in this workspace
+# is strict-mypy checked here. Keep it that way -- a package added to the workspace
+# without a line below is a package nobody is checking, and the gap is invisible
+# because the gate still passes. Add the ``-p`` target in the same change that adds
+# the package.
 MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent/acl/src:packages/agent/audit/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/knowledge/src:packages/agent/memory/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/channels/src:packages/datasources/src:packages/enforcement/src:packages/epoch/src:packages/langgraph/src:packages/media-contracts/src:packages/models/src:packages/object-store/src:packages/registry/src:packages/scheduled-jobs/src:packages/scrape/src:packages/backup/src \
     uv run mypy \
         --explicit-package-bases \
         -p threetears.core \
+        -p threetears.knowledge \
         -p threetears.agent.identity \
         -p threetears.agent.intention \
         -p threetears.agent.knowledge \
@@ -56,4 +44,9 @@ MYPYPATH=packages/core/src:packages/nats/src:packages/observe/src:packages/agent
         -p threetears.agent.audit \
         -p threetears.nats \
         -p threetears.observe \
+        -p threetears.models \
+        -p threetears.mcp \
+        -p threetears.conversations \
+        -p threetears.langgraph \
+        -p threetears.agent.workspace \
         "$@"

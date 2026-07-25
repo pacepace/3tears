@@ -17,7 +17,7 @@ pass an explicit ``provider`` kwarg (or to register capabilities first).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from threetears.observe import get_logger
 
@@ -198,7 +198,13 @@ def create_chat_model(
         extra_callbacks=extra_callbacks,
     )
 
-    configured: BaseChatModel = model.with_config(callbacks=callbacks)
+    # `with_config` returns a RunnableBinding wrapping the model, not the model itself, so
+    # the concrete chat-model type is erased even though every chat-model method callers
+    # use (`with_structured_output`, `invoke`, `ainvoke`, `bind_tools`) is proxied straight
+    # through. Widening this function's return type to `Runnable` instead would be the
+    # wrong trade: `with_structured_output` is not on `Runnable`, so it would break every
+    # caller in the workspace to describe an object that does in fact have it.
+    configured = cast("BaseChatModel", model.with_config(callbacks=callbacks))
     return configured
 
 

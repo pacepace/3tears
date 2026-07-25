@@ -243,9 +243,14 @@ class PlatformHttpClient:
                     body=response.content,
                 ) from exc
             token = payload.get(self._token_field)
-            if not token:
+            # Checked for type, not just truthiness. `payload` is decoded JSON, so this
+            # field is whatever the server chose to put there: a bare truthiness test
+            # accepts a number or a nested object and stores it as the bearer token, which
+            # then fails much later inside an Authorization header with nothing pointing
+            # back to here.
+            if not isinstance(token, str) or not token:
                 raise PlatformHttpError(
-                    f"login response missing {self._token_field!r}",
+                    f"login response {self._token_field!r} missing or not a string",
                     status_code=response.status_code,
                     body=response.content,
                 )

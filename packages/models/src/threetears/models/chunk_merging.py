@@ -58,7 +58,7 @@ def merge_chunks(chunks: list[AIMessageChunk]) -> AIMessage:
 
     merged = chunks[0]
     for chunk in chunks[1:]:
-        merged = merged + chunk  # type: ignore[assignment]
+        merged = merged + chunk
 
     return AIMessage(
         content=merged.content if merged.content is not None else "",

@@ -174,7 +174,8 @@ class ContextMergeMiddleware(AgentMiddleware):
         :return: the model response.
         :rtype: ModelResponse
         """
-        return await handler(_merge_request_context(request))
+        response: ModelResponse = await handler(_merge_request_context(request))
+        return response
 
     def wrap_model_call(
         self,
@@ -190,4 +191,5 @@ class ContextMergeMiddleware(AgentMiddleware):
         :return: the model response.
         :rtype: ModelResponse
         """
-        return handler(_merge_request_context(request))
+        response: ModelResponse = handler(_merge_request_context(request))
+        return response
