@@ -42,8 +42,11 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 __all__ = [
+    "BASE_CLAIMS",
     "DEFAULT_ACCESS_TTL",
     "DEFAULT_REFRESH_TTL",
+    "KNOWN_CLAIMS",
+    "OPTIONAL_CLAIMS",
     "Ed25519JwksVerifier",
     "Ed25519Signer",
     "HmacSigner",
@@ -73,7 +76,7 @@ _HS256: Final[str] = "HS256"
 
 #: Claims every token carries. Enforced as an exact set on mint, and as the required floor
 #: on verify.
-_BASE_CLAIMS: Final[frozenset[str]] = frozenset(
+BASE_CLAIMS: Final[frozenset[str]] = frozenset(
     {
         "sub",
         "sid",
@@ -90,11 +93,11 @@ _BASE_CLAIMS: Final[frozenset[str]] = frozenset(
 )
 
 #: Claims a token MAY carry, each corresponding to an optional field on
-#: :class:`SessionClaims`. Anything outside ``_BASE_CLAIMS | _OPTIONAL_CLAIMS`` is a
+#: :class:`SessionClaims`. Anything outside ``BASE_CLAIMS | OPTIONAL_CLAIMS`` is a
 #: verification failure -- that is what stops a role claim from riding along unnoticed.
-_OPTIONAL_CLAIMS: Final[frozenset[str]] = frozenset({"customer_id", "cnf", "act", "act_reason", "act_restriction"})
+OPTIONAL_CLAIMS: Final[frozenset[str]] = frozenset({"customer_id", "cnf", "act", "act_reason", "act_restriction"})
 
-_KNOWN_CLAIMS: Final[frozenset[str]] = _BASE_CLAIMS | _OPTIONAL_CLAIMS
+KNOWN_CLAIMS: Final[frozenset[str]] = BASE_CLAIMS | OPTIONAL_CLAIMS
 
 
 class TokenType(StrEnum):
@@ -303,7 +306,7 @@ class Ed25519JwksVerifier:
                     issuer=self._issuer,
                     audience=list(self._audience),
                     leeway=self._leeway,
-                    options={"require": sorted(_BASE_CLAIMS)},
+                    options={"require": sorted(BASE_CLAIMS)},
                 )
             )
         except jwt.PyJWTError as exc:
@@ -344,7 +347,7 @@ class HmacVerifier:
                     issuer=self._issuer,
                     audience=list(self._audience),
                     leeway=self._leeway,
-                    options={"require": sorted(_BASE_CLAIMS)},
+                    options={"require": sorted(BASE_CLAIMS)},
                 )
             )
         except jwt.PyJWTError as exc:
@@ -395,7 +398,7 @@ def mint_session_token(claims: SessionClaims, *, signer: TokenSigner) -> str:
         payload["act_reason"] = claims.act_reason
     if claims.act_restriction is not None:
         payload["act_restriction"] = claims.act_restriction
-    unexpected = set(payload) - _KNOWN_CLAIMS
+    unexpected = set(payload) - KNOWN_CLAIMS
     if unexpected:
         raise TokenError(f"refusing to mint a token carrying unexpected claims: {sorted(unexpected)}.")
     return signer.sign(payload)
@@ -422,7 +425,7 @@ def verify_session_token(
     :raises TokenError: on any verification failure.
     """
     payload = verifier.verify(token)
-    unexpected = set(payload) - _KNOWN_CLAIMS
+    unexpected = set(payload) - KNOWN_CLAIMS
     if unexpected:
         # The invariant that makes "identity only" enforceable rather than aspirational: a
         # token carrying a claim this package does not know about is rejected, not ignored.

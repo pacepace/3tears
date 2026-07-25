@@ -45,6 +45,20 @@ def test_authorize_url_requests_minimal_scopes() -> None:
     assert "repo" not in authorize_url(client_id="c", redirect_uri="https://a/b", state="s")
 
 
+def test_authorize_url_suppresses_signup_by_default() -> None:
+    # The opposite of GitHub's own default, deliberately: an app that allow-lists or provisions
+    # against known accounts does not want a brand-new account created mid-sign-in, because
+    # that account satisfies the flow while matching nothing on the other side.
+    url = authorize_url(client_id="c", redirect_uri="https://a/b", state="s")
+    assert parse_qs(urlparse(url).query)["allow_signup"] == ["false"]
+
+
+def test_authorize_url_allows_signup_when_asked() -> None:
+    url = authorize_url(client_id="c", redirect_uri="https://a/b", state="s", allow_signup=True)
+    # Lower-case: GitHub reads this as a string, and "True" is not "true".
+    assert parse_qs(urlparse(url).query)["allow_signup"] == ["true"]
+
+
 def test_authorize_url_refuses_an_empty_state() -> None:
     # A flow without state accepts a callback the user never initiated.
     with pytest.raises(GithubOAuth2Error, match="state"):

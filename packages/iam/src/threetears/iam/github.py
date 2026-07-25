@@ -90,6 +90,7 @@ def authorize_url(
     redirect_uri: str,
     state: str,
     scopes: Sequence[str] = DEFAULT_SCOPES,
+    allow_signup: bool = False,
 ) -> str:
     """Build the URL to send a signing-in user to.
 
@@ -103,6 +104,12 @@ def authorize_url(
     :ptype state: str
     :param scopes: the scopes to request.
     :ptype scopes: Sequence[str]
+    :param allow_signup: whether GitHub may offer account creation during the flow. Defaults
+        to ``False``, which is the opposite of GitHub's own default and deliberate: an
+        application that allow-lists or provisions against known accounts does not want a
+        brand-new account created mid-sign-in, because that account satisfies the flow while
+        matching nothing on the other side. Pass ``True`` only for genuinely open sign-up.
+    :ptype allow_signup: bool
     :return: the authorization URL.
     :rtype: str
     :raises GithubOAuth2Error: ``state`` is empty.
@@ -114,6 +121,8 @@ def authorize_url(
         "redirect_uri": redirect_uri,
         "scope": " ".join(scopes),
         "state": state,
+        # Lower-case literals: GitHub reads this as a string, and "False" is not "false".
+        "allow_signup": "true" if allow_signup else "false",
     }
     return f"{AUTHORIZE_URL}?{urlencode(params)}"
 
