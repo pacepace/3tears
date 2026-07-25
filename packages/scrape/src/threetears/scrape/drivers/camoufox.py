@@ -13,7 +13,8 @@ in-process, no separate container, and that is license-safe here (verified
 via GitHub's license API) -- the ``camoufox`` Python wrapper package is
 MIT-licensed, and the browser binary it launches is MPL-2.0 (file-level
 copyleft only, no network-copyleft clause), unlike nodriver's AGPL-3.0, which
-is what forces the sidecar's separate-process isolation.
+is what forces the sidecar's separate-process isolation (see
+``docs/scrape-lift-design.md``).
 
 **Pinned dependency note (2026-07-14):** ``playwright`` is pinned below
 1.61 in ``pyproject.toml`` -- 1.61 added an ``isMobile`` viewport field

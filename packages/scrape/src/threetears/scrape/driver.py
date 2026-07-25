@@ -10,7 +10,8 @@ Firefox-specific objects): a driver takes a URL and returns a
 the nodriver sidecar boundary "arm's length" under FSF's own aggregation
 test — the two processes exchange plain data over a documented HTTP
 contract and neither is built around the other's internals — not merely a
-style preference.
+style preference. See ``docs/scrape-lift-design.md`` (D4) for why that
+isolation is treated as structural rather than maintainer-dependent.
 """
 
 from __future__ import annotations

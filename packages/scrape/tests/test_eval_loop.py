@@ -623,8 +623,10 @@ class TestRunEvalLoopMultiRowRecipeReuse:
 # Regex/text-block strategy (2026-07-14) -- strategy_type="regex". Same
 # propose -> structurally-validate -> judge -> persist cycle as the CSS
 # tests above, mirrored exactly, just against a text-block page shape with
-# no <table> at all (Pennsylvania's real WARN page is the concrete driver
-# -- see build-plan.md Chunk 20). The judge step itself is unmodified/
+# no <table> at all (Pennsylvania's real WARN page is the concrete driver:
+# fields all present, but as a text-block list, so the CSS candidate
+# generator had no strategy shape it could even attempt). The judge step
+# itself is unmodified/
 # shared code, already covered by the CSS tests above.
 # ===========================================================================
 

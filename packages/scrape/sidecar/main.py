@@ -712,7 +712,10 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
 @app.post("/v1/download", response_model=DownloadResponse)
 async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
     """Download *req.url*'s real file bytes through a real browser session with forced-download
-    behavior -- for a document a plain HTTP client can't reach (see :class:`DownloadRequest`)."""
+    behavior -- for a document a plain HTTP client can't reach (see :class:`DownloadRequest`).
+
+    Design and live verification: docs/scrape-task-04-multi-document-driver.md's
+    "New sidecar capability: browser-forced download" section."""
     if _browser is None:
         return JSONResponse(status_code=503, content={"error": {"code": "not_ready", "message": "browser not started"}})
 

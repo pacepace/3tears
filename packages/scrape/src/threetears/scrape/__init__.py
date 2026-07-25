@@ -13,6 +13,12 @@ The discipline that made the lift cheap is still load-bearing and still
 observed: no module here imports a consuming application's config, store, or
 entities. Every real dependency (collections, drivers, API keys, sidecar
 URLs) is passed in by the caller.
+
+See ``docs/scrape-lift-design.md`` and
+``docs/scrape-task-01-lift-core-package.md`` for the full design, including
+the scope boundary (what lifted, what deliberately stayed in the consumer)
+and why the nodriver sidecar's AGPL isolation is structural rather than a
+convention.
 """
 
 from __future__ import annotations

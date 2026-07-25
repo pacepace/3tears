@@ -46,7 +46,7 @@ print(extraction.validation_status, extraction.structured_fields["records"])
 
 ## Architecture
 
-> Lifted from faidh's `src/faidh/scrape/` into this package (`scrape-task-01`, 2026-07-15) as a directory move -- zero logic changes. faidh's WARN Act plugin is used throughout as the running example of a consumer; it remains a faidh-side module (`faidh/src/faidh/intake/plugins/warn_act.py`), not part of this package, and is the only place WARN-domain meaning exists.
+> Lifted from faidh's `src/faidh/scrape/` into this package ([`docs/scrape-task-01-lift-core-package.md`](../../docs/scrape-task-01-lift-core-package.md), 2026-07-15) as a directory move -- zero logic changes. faidh's WARN Act plugin is used throughout as the running example of a consumer; it remains a faidh-side module (`faidh/src/faidh/intake/plugins/warn_act.py`), not part of this package, and is the only place WARN-domain meaning exists.
 
 ### Why this exists
 
@@ -148,9 +148,9 @@ In faidh's WARN Act consumer, every one of the ~24 onboarded states is one confi
 ```mermaid
 flowchart TD
     Core["This package<br/>driver.py / extraction.py / eval_loop.py / collections.py"]
-    T02["find_target_page()<br/>page_finder.py — shipped<br/>outputs a ScrapeTarget-shaped guess<br/>(URL + driver_backend, verified flag)"]
-    T03["discover_candidates() / discover_row_candidates()<br/>extraction.py — shipped<br/>schema OUT instead of schema IN"]
-    T04["capture_request_shape()<br/>request_shape_finder.py — shipped<br/>real captured request shapes<br/>for in-session XHR targets"]
+    T02["find_target_page() — shipped<br/>page_finder.py<br/>outputs a ScrapeTarget-shaped guess<br/>(URL + driver_backend, verified flag)<br/>docs/scrape-task-02-page-finder-agent.md"]
+    T03["discover_candidates() / discover_row_candidates() — shipped<br/>extraction.py<br/>schema OUT instead of schema IN<br/>docs/scrape-task-03-schema-discovery-mode.md"]
+    T04["capture_request_shape() — shipped<br/>request_shape_finder.py<br/>real captured request shapes<br/>for in-session XHR targets"]
     Core -.plain data in/out, no hidden state.-> T02
     Core -.plain data in/out, no hidden state.-> T03
     Core -.plain data in/out, no hidden state.-> T04
@@ -160,6 +160,8 @@ flowchart TD
 ```
 
 All three front-end stages have shipped, and each landed without touching `driver.py`, `eval_loop.py`, or `collections.py` -- which is the point. They produce and consume the same plain data shapes (`RenderedPage`, `FieldSchema`, `PageFinderResult`, `DiscoverySchemaResult`) the core already uses, and none of them persists anything: a caller decides whether a discovered page or schema becomes a real `ScrapeTarget`.
+
+Full designs live in `docs/`: [`scrape-lift-design.md`](../../docs/scrape-lift-design.md) (the overall shape and its decision log), [`scrape-task-01-lift-core-package.md`](../../docs/scrape-task-01-lift-core-package.md) (the lift itself and the AGPL isolation boundary), [`scrape-task-02-page-finder-agent.md`](../../docs/scrape-task-02-page-finder-agent.md), [`scrape-task-03-schema-discovery-mode.md`](../../docs/scrape-task-03-schema-discovery-mode.md), and [`scrape-task-04-multi-document-driver.md`](../../docs/scrape-task-04-multi-document-driver.md) (the multi-document driver plus the sidecar's browser-forced-download mode).
 
 ### 6. Module map
 

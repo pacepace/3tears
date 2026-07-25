@@ -654,7 +654,8 @@ async def generate_row_candidates(
 # pre-onboarding operation (no ScrapeTarget/recipe exists yet), not a mode
 # of the persisted-recipe lifecycle -- which is also why it lives here beside
 # the validators it reuses rather than in eval_loop.py beside the functions it
-# superficially resembles.
+# superficially resembles. See docs/scrape-task-03-schema-discovery-mode.md's
+# placement-deviation note for the full reasoning.
 # ===========================================================================
 
 #: Mirrors collections.py's own _FIELD_SCHEMA_TYPE_NAMES (4 entries, same set) --

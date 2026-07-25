@@ -1,10 +1,9 @@
 """Unit tests for threetears.scrape.tool.ScrapeTool -- the ad-hoc MCP scrape tool.
 
 All LLM/driver calls are mocked/fake; the real sidecar + real LLM proof
-lives in a live script exercised manually against the running sidecar
-(see build-plan.md Chunk 18's Context note) and in
-tests/e2e/test_warn_act_eval_loop_live.py's own live driver+LLM proof for
-the eval loop this tool is a thin wrapper over.
+lives in a live script exercised manually against the running sidecar, and
+in the consuming application's own live driver+LLM proof for the eval loop
+this tool is a thin wrapper over.
 """
 
 from __future__ import annotations
