@@ -339,6 +339,13 @@ class RobotsGate:
             # A malformed Crawl-delay is not a refusal and not a licence. Ignoring the value
             # while still honouring the rest of the file is the reading that respects what the
             # site could actually express.
+            #
+            # Unreachable through a real robots.txt: `urllib.robotparser` validates the value
+            # itself and returns None for anything non-integer, including `1e3`. This guards
+            # the injected-parser case -- `_capped_delay` takes whatever object `_parser_for`
+            # produced -- and a future stdlib that returns the raw token. Kept rather than
+            # deleted because the cost is three lines and the failure it prevents is a
+            # ValueError escaping a method documented never to raise.
             if announce:
                 log.info("scrape robots: %s asked for an unparseable crawl delay %r; ignoring it", origin, raw)
             return None

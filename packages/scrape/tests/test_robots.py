@@ -1022,6 +1022,35 @@ async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
     assert gate.max_wait_seconds == pytest.approx(30.0), "the declared ceiling still bounds it"
 
 
+async def test_a_malformed_delay_is_reported_once_per_poll_not_twice(caplog) -> None:
+    """The other `announce` branch, reached the only way it can be.
+
+    `urllib.robotparser` validates `Crawl-delay` itself and returns None for anything
+    non-integer, so no real file reaches this branch -- it guards the parser `_parser_for`
+    hands over, and a future stdlib that returns the raw token. A stub parser is therefore not
+    a shortcut here; it is the only caller that exists.
+    """
+
+    class _RawDelayParser:
+        """Returns what a stricter stdlib would have filtered."""
+
+        def crawl_delay(self, _agent: str) -> str:
+            return "soon"
+
+        def can_fetch(self, _agent: str, _url: str) -> bool:
+            return True
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+
+    with caplog.at_level("INFO", logger="threetears.scrape.robots"):
+        first = gate._capped_delay("https://example.gov", _RawDelayParser())  # noqa: SLF001
+        second = gate._capped_delay("https://example.gov", _RawDelayParser(), announce=False)  # noqa: SLF001
+
+    assert first is None and second is None, "an unparseable delay is ignored, not honoured"
+    said = [r for r in caplog.records if "unparseable crawl delay" in r.getMessage()]
+    assert len(said) == 1, f"announced {len(said)} times; the second caller must stay quiet"
+
+
 async def test_a_capped_delay_is_reported_once_per_poll_not_twice(caplog) -> None:
     """`_capped_delay` runs twice per fetch now -- once for the local wait, once to decide
     whether the origin is paced at all -- and both of its branches log.

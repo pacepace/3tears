@@ -1,19 +1,21 @@
 """The one stand-in for a cross-pod pacer, shared by every suite that needs one.
 
-Extracted because there were two. `test_robots.py` had `_FakeDelayPacer` at module level, where
-the fake-parity walker enforces its declaration; `test_tool.py` grew a second copy nested inside
-a helper method, where the walker never looks -- so its `# parity-with:` marker was decorative
-and a drifted `claim` signature passed unnoticed. Verified by drifting it and watching the
-enforcement suite stay green.
+Extracted because there were two, and only one of them was checked. `test_robots.py` had
+`_FakeDelayPacer`; `test_tool.py` grew a second copy called `_Pacer`, and the fake-parity
+walker filters on the NAME alone -- `_FAKE_NAME_PREFIXES` is `("Fake", "_Fake")` and is its
+only test -- so `_Pacer` was invisible and its `# parity-with:` marker checked nothing.
 
-Nesting is the trap: the marker looks identical at both sites and only one of them is checked.
-One module-level definition removes the choice.
+Confirmed in both directions rather than reasoned about: a module-level class with a non-`Fake`
+name is not seen, and a `Fake`-named class nested inside a `@staticmethod` IS seen, because
+`find_fakes_in_tree` uses `ast.walk` and never considers nesting. An earlier version of this
+docstring blamed the nesting, which is backwards, and would have taught the next reader to move
+a fake that was already fine while leaving a misnamed one unguarded.
 
-What the walker enforces here, confirmed by breaking each in turn: removing the marker raises
-`fake_parity.no_declaration`, and removing `claim` raises `fake_parity.method_missing`. It does
-NOT check the signature -- a drifted `claim(self, key)` passes -- so the marker buys "this fake
-still has the methods the protocol declares", not "it still matches them". Worth knowing before
-trusting it to catch a parameter that quietly disappears.
+What the marker buys, each confirmed by breaking it: removing the marker raises
+`fake_parity.no_declaration`; removing `claim` raises `fake_parity.method_missing`; and a
+required parameter that disappears raises `fake_parity.method_required_arg_missing`. That last
+one cannot fire for THIS fake, because every parameter of `TokenBucket.claim` has a default --
+so here, and only here, a drifted `claim(self, key)` passes clean.
 """
 
 from __future__ import annotations

@@ -1182,9 +1182,22 @@ class TestTheFleetAndTheSiteBothBind:
             robots=RobotsGate(fetch=_fetch, delay_pacer=pacer),
         )
 
-        result = await tool.execute(url=url, field_schema=schema)
+        # A delay is already owed, so the OTHER `fetch_will_happen` guard -- the one on the
+        # sleep -- is exercised too. Without it a suppressed poll sleeps out the site's crawl
+        # delay before being told it will not fetch: a caller blocked for up to the delay
+        # ceiling to be handed a backoff result. The previous version never called
+        # `note_fetched`, so the wait was zero either way and that guard was deletable green.
+        tool._robots.note_fetched(url)  # noqa: SLF001
+        slept: list[float] = []
+
+        async def _record(seconds: float) -> None:
+            slept.append(seconds)
+
+        with patch("asyncio.sleep", _record):
+            result = await tool.execute(url=url, field_schema=schema)
 
         assert result.success is False, "the circuit should have suppressed this poll"
+        assert slept == [], f"a suppressed poll waited {slept} before declining to fetch"
         assert pacer.keys == [], (
             "a suppressed poll spent the origin's shared token, so one walled target delays every sibling on that site"
         )
