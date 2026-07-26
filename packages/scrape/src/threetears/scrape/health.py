@@ -249,6 +249,59 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         """Return the entity type this collection manages."""
         return ScrapeTargetHealth
 
+    async def list_walled(self, *, now: datetime | None = None, limit: int = 200) -> list[ScrapeTargetHealth]:
+        """Targets currently suppressed because a human has to clear them.
+
+        The one question about this table that is not a primary-key lookup, and until now the
+        only way to answer it was to scrape every target and read the result. A caller with
+        fifty targets and four walls had to do fifty fetches to find the four -- which is
+        precisely what the circuit exists to avoid, so the absence of this made the circuit
+        argue against itself.
+
+        **Walled, not merely failing.** The filter is ``last_blocked_at IS NOT NULL``, because
+        the circuit opens on repeated transport failures too and those are nobody's to clear:
+        a human sent to a host that stopped answering has nothing to do when they arrive. Only
+        a bot-wall verdict stamps ``last_blocked_at`` (``record_circuit_state`` leaves it alone
+        for an unreachable fetch), so it is the discriminator that already exists rather than
+        one invented here.
+
+        Rows whose backoff has elapsed are included. An expired window means the next poll
+        will probe, not that the wall is gone -- the target is still walled until something
+        proves otherwise, and dropping it from this list would make a queue empty itself on a
+        timer.
+
+        Served by the partial index ``scrape_target_health_circuit_state``, which was created
+        for this query in ``v010`` and has had nothing to serve since.
+
+        :param now: current time; injected by tests, defaults to now. Unused by the predicate
+            today and taken anyway, so adding a freshness bound later is not a signature change
+        :ptype now: datetime | None
+        :param limit: cap on rows returned, newest block first
+        :ptype limit: int
+        :return: health rows for targets a human needs to look at
+        :rtype: list[ScrapeTargetHealth]
+        """
+        del now
+        if self.l3_pool is None:
+            # No durable store means the in-memory fallback, which has no query surface at
+            # all. Returning empty rather than raising matches every other read in this
+            # package: a caller without L3 gets "nothing is walled", which is true of a
+            # process that cannot remember anything between restarts anyway.
+            return []
+        # cache-bypass: a multi-row scan by circuit state is not pk-addressable, so the L1
+        # row cache cannot serve it.
+        rows = await self.l3_pool.fetch(
+            "SELECT target_id, content_fingerprint, fingerprint_updated_at, "
+            "consecutive_fetch_failures, circuit_state, blocked_until, last_blocked_at, "
+            "last_block_kind, classified_fingerprint, classified_verdict, classified_evidence, "
+            "session_state_sealed, session_state_expires_at, date_created, date_updated "
+            "FROM scrape_target_health "
+            "WHERE circuit_state <> 'closed' AND last_blocked_at IS NOT NULL "
+            "ORDER BY last_blocked_at DESC LIMIT $1",
+            limit,
+        )
+        return [ScrapeTargetHealth(dict(row), is_new=False, collection=self) for row in rows]
+
 
 async def _merge_health(
     health_collection: ScrapeTargetHealthCollection,

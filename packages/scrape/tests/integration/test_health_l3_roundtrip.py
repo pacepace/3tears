@@ -287,3 +287,145 @@ async def test_the_circuit_writer_round_trips_a_full_trip_and_recovery(
     # the evidence that this target was ever walled, which is the one thing an operator
     # looking at a recovered target wants to see.
     assert recovered.last_blocked_at == blocked_at
+
+
+async def test_list_walled_finds_only_targets_a_human_can_actually_help(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """The query the circuit needed and never had, and the filter that makes it useful.
+
+    Without this a caller with fifty targets and four walls had to fetch all fifty to find
+    the four -- which is exactly the cost the circuit exists to avoid, so its absence made the
+    circuit argue against itself.
+
+    The filter is the substance. The circuit opens on repeated TRANSPORT failures too, and a
+    human sent to a host that stopped answering has nothing to do when they arrive. Only a
+    bot-wall verdict stamps ``last_blocked_at``, so that column is the discriminator, and this
+    asserts an unreachable target is absent rather than merely that a walled one is present.
+
+    Real Postgres, necessarily: ``list_walled`` returns an empty list without an L3 pool, so
+    a unit test cannot reach a single line of its behaviour.
+    """
+    walled = _target("walled")
+    unreachable = _target("unreachable")
+    healthy = _target("healthy")
+    blocked_at = datetime.now(UTC).replace(microsecond=0)
+
+    # A wall: circuit open AND last_blocked_at stamped.
+    await record_circuit_state(
+        health,
+        target_id=walled,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=blocked_at + timedelta(hours=1),
+        blocked_at=blocked_at,
+    )
+    # A host that stopped answering: circuit open, no block stamp. Same suppression, nothing
+    # for a person to do.
+    await record_circuit_state(
+        health,
+        target_id=unreachable,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=blocked_at + timedelta(hours=1),
+    )
+    # A target that has only ever worked.
+    await record_validated_fetch(health, target_id=healthy, html="<html><body>fine</body></html>")
+
+    found = {row.target_id for row in await health.list_walled()}
+
+    assert walled in found
+    assert unreachable not in found, (
+        "a target whose host stopped answering was queued for a human, who will arrive with nothing to clear"
+    )
+    assert healthy not in found
+
+
+async def test_list_walled_keeps_a_target_whose_backoff_has_elapsed(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """An expired window means the next poll will probe, not that the wall is gone.
+
+    Dropping a target from this list when its backoff elapses would make a human queue empty
+    itself on a timer, while every target in it is still walled.
+    """
+    target_id = _target("elapsed")
+    long_ago = datetime.now(UTC).replace(microsecond=0) - timedelta(days=2)
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=5,
+        blocked_until=long_ago + timedelta(hours=1),
+        blocked_at=long_ago,
+    )
+
+    assert target_id in {row.target_id for row in await health.list_walled()}
+
+
+async def test_a_recovered_target_leaves_the_queue(health: ScrapeTargetHealthCollection) -> None:
+    """The other half: a human cleared it, so it must stop being asked about.
+
+    ``last_blocked_at`` deliberately survives a recovery as evidence, so a filter on that
+    column alone would keep every target that was EVER walled in the queue forever. The
+    circuit state is what makes it current.
+    """
+    target_id = _target("recovered")
+    blocked_at = datetime.now(UTC).replace(microsecond=0)
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=blocked_at + timedelta(hours=1),
+        blocked_at=blocked_at,
+    )
+    assert target_id in {row.target_id for row in await health.list_walled()}
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="closed",
+        consecutive_fetch_failures=0,
+        blocked_until=None,
+    )
+
+    found = await health.list_walled()
+    assert target_id not in {row.target_id for row in found}
+    # And the evidence is still on the row, just not in the queue.
+    recovered = await health.get(target_id)
+    assert recovered is not None
+    assert recovered.last_blocked_at == blocked_at
+
+
+async def test_list_walled_carries_what_an_operator_needs(health: ScrapeTargetHealthCollection) -> None:
+    """A queue item has to be actionable, not just an id.
+
+    Whoever picks this up needs to know what the page said and when it is due a probe;
+    otherwise they open a session against a target and discover the reason for themselves.
+    """
+    target_id = _target("actionable")
+    blocked_at = datetime.now(UTC).replace(microsecond=0)
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=blocked_at + timedelta(hours=6),
+        blocked_at=blocked_at,
+    )
+    await record_classification(
+        health,
+        target_id=target_id,
+        fingerprint="deadbeef",
+        kind="blocked",
+        evidence="the page asks the visitor to verify a browser",
+    )
+
+    (row,) = [r for r in await health.list_walled() if r.target_id == target_id]
+    assert row.classified_evidence == "the page asks the visitor to verify a browser"
+    assert row.blocked_until == blocked_at + timedelta(hours=6)
+    assert row.consecutive_fetch_failures == 3
