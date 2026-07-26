@@ -32,10 +32,18 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Sequence
+from typing import Protocol
 
 from threetears.observe import get_logger
 
-__all__ = ["TrustedProxyCidr", "is_trusted_peer", "parse_trusted_cidrs", "resolve_client_ip"]
+__all__ = [
+    "ForwardedRequest",
+    "TrustedProxyCidr",
+    "is_trusted_peer",
+    "parse_trusted_cidrs",
+    "resolve_client_ip",
+    "resolve_request_client_ip",
+]
 
 log = get_logger(__name__)
 
@@ -126,3 +134,71 @@ def resolve_client_ip(
         # the peer rather than reaching past the end and picking a client-supplied value.
         return peer
     return candidates[-trusted_hops]
+
+
+class _HeaderValues(Protocol):
+    """The one header accessor that resolution needs.
+
+    ``getlist`` rather than ``get``, and that is the whole reason this Protocol names a
+    method instead of taking a mapping: ``get`` returns only the FIRST occurrence of a
+    repeated header, which for ``X-Forwarded-For`` is the client-controlled portion.
+    """
+
+    def getlist(self, key: str) -> list[str]: ...
+
+
+class _PeerAddress(Protocol):
+    """The direct TCP peer, as an ASGI framework exposes it."""
+
+    @property
+    def host(self) -> str: ...
+
+
+class ForwardedRequest(Protocol):
+    """The two attributes :func:`resolve_request_client_ip` reads off a request.
+
+    Structural rather than an import of any web framework: this package depends on no
+    server, and Starlette's ``Request`` satisfies this by construction. A relayed RPC that
+    carries the same two things satisfies it just as well.
+    """
+
+    @property
+    def client(self) -> _PeerAddress | None: ...
+
+    @property
+    def headers(self) -> _HeaderValues: ...
+
+
+def resolve_request_client_ip(
+    request: ForwardedRequest,
+    *,
+    trusted: Sequence[TrustedProxyCidr] = (),
+    trusted_hops: int = 1,
+) -> str | None:
+    """Resolve the real client IP straight off an ASGI request.
+
+    The adapter for :func:`resolve_client_ip`, which deliberately takes a peer and header
+    values rather than a request. Both exist because both are needed: the framework-agnostic
+    form serves a relayed RPC, and this one saves every ASGI app re-deriving the same two
+    lines -- including the ``getlist`` detail, which is the one an app gets wrong by
+    reaching for ``headers.get`` and silently trusting a forgeable first header line.
+
+    :param request: the inbound request.
+    :ptype request: ForwardedRequest
+    :param trusted: the trusted-proxy networks. Empty -- the default -- means nothing is
+        trusted and the direct peer is used unchanged, so a deployment that has not opted in
+        behaves exactly as it did before.
+    :ptype trusted: Sequence[TrustedProxyCidr]
+    :param trusted_hops: how many proxies sit in front of this app.
+    :ptype trusted_hops: int
+    :return: the resolved client address, or ``None`` when the transport exposes no peer at
+        all -- an in-process test client, say. ``None`` means "cannot key by IP", which a
+        caller must treat as skip-the-limiter rather than one shared bucket for everyone.
+    :rtype: str | None
+    """
+    return resolve_client_ip(
+        peer=request.client.host if request.client is not None else None,
+        forwarded_for=request.headers.getlist("x-forwarded-for"),
+        trusted=trusted,
+        trusted_hops=trusted_hops,
+    )

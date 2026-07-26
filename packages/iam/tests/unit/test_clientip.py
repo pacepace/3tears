@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.iam.clientip import parse_trusted_cidrs, resolve_client_ip
+from threetears.iam.clientip import parse_trusted_cidrs, resolve_client_ip, resolve_request_client_ip
 
 _TRUSTED = parse_trusted_cidrs("10.0.0.0/8,fd00::/8")
 
@@ -88,3 +88,72 @@ def test_parse_trusted_cidrs_rejects_host_bits() -> None:
 def test_parse_trusted_cidrs_rejects_nonsense() -> None:
     with pytest.raises(ValueError):
         parse_trusted_cidrs("not-a-cidr")
+
+
+# -- the ASGI-request adapter --------------------------------------------------------------
+
+
+class _Peer:
+    """A direct TCP peer, shaped like Starlette's ``Address``.
+
+    # parity-with: threetears.iam.clientip._PeerAddress
+    """
+
+    def __init__(self, host: str) -> None:
+        self.host = host
+
+
+class _Headers:
+    """Multi-valued headers, shaped like Starlette's ``Headers``.
+
+    # parity-with: threetears.iam.clientip._HeaderValues
+    """
+
+    def __init__(self, **values: list[str]) -> None:
+        self._values = values
+
+    def getlist(self, key: str) -> list[str]:
+        return self._values.get(key.replace("-", "_"), [])
+
+
+class _Request:
+    """The two attributes the adapter reads.
+
+    # parity-with: threetears.iam.clientip.ForwardedRequest
+    """
+
+    def __init__(self, peer: str | None, **headers: list[str]) -> None:
+        self.client = _Peer(peer) if peer is not None else None
+        self.headers = _Headers(**headers)
+
+
+_INGRESS = parse_trusted_cidrs("10.44.0.0/16")
+
+
+def test_the_adapter_resolves_through_a_trusted_proxy() -> None:
+    request = _Request("10.44.2.103", x_forwarded_for=["203.0.113.9"])
+    assert resolve_request_client_ip(request, trusted=_INGRESS) == "203.0.113.9"
+
+
+def test_the_adapter_ignores_forwarded_values_from_an_untrusted_peer() -> None:
+    request = _Request("198.51.100.7", x_forwarded_for=["203.0.113.9"])
+    assert resolve_request_client_ip(request, trusted=_INGRESS) == "198.51.100.7"
+
+
+def test_the_adapter_trusts_nothing_by_default() -> None:
+    # An app that has not opted in behaves exactly as it did before.
+    request = _Request("10.44.2.103", x_forwarded_for=["203.0.113.9"])
+    assert resolve_request_client_ip(request) == "10.44.2.103"
+
+
+def test_the_adapter_reads_every_header_line_not_just_the_first() -> None:
+    # THE reason the Protocol names getlist. A proxy that appends its observation as a
+    # SEPARATE header line rather than extending the client's value would, under
+    # `headers.get`, hand back the client-controlled first line as though it were trusted.
+    request = _Request("10.44.2.103", x_forwarded_for=["1.2.3.4", "203.0.113.9"])
+    assert resolve_request_client_ip(request, trusted=_INGRESS) == "203.0.113.9"
+
+
+def test_the_adapter_returns_none_when_there_is_no_peer() -> None:
+    # An in-process test client. None means "cannot key by IP", never "one shared bucket".
+    assert resolve_request_client_ip(_Request(None), trusted=_INGRESS) is None
