@@ -713,3 +713,88 @@ def test_matching_egress_on_both_says_nothing(caplog) -> None:
         )
 
     assert not any("container's own address" in r.message for r in caplog.records)
+
+
+async def test_the_exit_a_page_came_through_reaches_the_health_row() -> None:
+    """The last unasserted link in the egress round trip.
+
+    The driver reports which exit a page came through, and the tool passes it to the circuit --
+    but nothing drove a real fetch and read `last_egress` back, so setting both call sites to
+    `None` left the whole suite green. Every other assertion about that column calls the
+    circuit or the health layer directly, which cannot see whether the tool wires them.
+    """
+    from unittest.mock import patch as _patch
+
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.driver import RenderedPage
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+
+    class _ExitReportingDriver:
+        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+        @property
+        def name(self) -> str:
+            return "exit-reporting"
+
+        async def render(self, url: str, **_kw: Any) -> RenderedPage:
+            # A page that fails extraction, so the circuit records a blocked observation and
+            # the exit is stamped. Extraction succeeding would take the reachable path, which
+            # is asserted separately at the circuit layer.
+            return RenderedPage(
+                html="<html><body>nothing extractable here</body></html>",
+                status=200,
+                final_url=url,
+                timing_ms=1.0,
+                egress="tor",
+            )
+
+    url = "https://example.gov/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    target_id = _derive_target_id(url, schema)
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    # Seeded so the eval loop takes the REUSE path: its selectors miss this page, the verdict
+    # says blocked, and the circuit records it. Without a recipe it regenerates instead, which
+    # reaches candidate generation and spends its full retry budget against a fake key -- 32s
+    # measured, for a path this test is not about.
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": target_id,
+                "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
+    )
+    tool = ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        circuit=TargetCircuit(health, policy=BackoffPolicy(failure_threshold=1), egress_name="container-default"),
+        drivers={"nodriver": _ExitReportingDriver()},
+        robots=None,
+        api_key="k",
+    )
+
+    # A BLOCKED verdict, so the circuit records a failure and writes the row. A `None` verdict
+    # takes the reachable path, which writes nothing at all on a healthy circuit -- so the
+    # first version of this asserted against a row that never existed.
+    from threetears.scrape.challenge import PageVerdict
+
+    verdict = PageVerdict(kind="blocked", evidence="a wall stood here", confidence="high")
+    with _patch("threetears.scrape.eval_loop.classify_failed_page", return_value=verdict):
+        await tool.execute(url=url, field_schema=schema)
+
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.last_egress == "tor", (
+        "the tool recorded the circuit's configured exit rather than the one the page came through"
+    )

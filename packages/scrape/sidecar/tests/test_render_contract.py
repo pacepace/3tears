@@ -276,6 +276,26 @@ class _FakeBrowser:
         self._hang = hang
         self._fail_times = fail_times
         self.get_calls = 0
+        self.cdp_calls: list[object] = []
+        self._targets: list[object] = []
+
+    async def send(self, cmd: object) -> object:
+        """Stand in for the CDP calls the isolated-context path makes.
+
+        A render that names its own exit goes through `_create_isolated_tab`, which creates a
+        browser context and a target on the browser connection rather than calling `get`.
+        Without this the proxied path 502s and a test of the echo would be asserting on an
+        error response.
+        """
+        self.cdp_calls.append(cmd)
+        return "ctx-fake"
+
+    async def update_targets(self) -> None:
+        return None
+
+    @property
+    def targets(self) -> list[object]:
+        return list(self._targets)
 
     async def get(self, url: str, new_tab: bool = False) -> _FakeTab:
         self.get_calls += 1
@@ -1323,19 +1343,49 @@ class TestEgressReporting:
             "per-context proxying is not reaching CDP, so a per-request exit is silently the default one"
         )
 
-    def test_the_reported_exit_names_the_request_when_it_chose_one(self, monkeypatch) -> None:
-        """The echo has to distinguish the request's exit from the container's default.
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ({"egress_proxy": "socks5://tor:9050", "egress_name": "tor"}, "tor"),
+            ({"egress_proxy": "socks5://tor:9050"}, "unnamed"),
+            ({}, "container-default"),
+        ],
+        ids=["named-request-exit", "unnamed-request-exit", "container-default"],
+    )
+    async def test_the_response_reports_the_exit_the_render_used(
+        self, client, monkeypatch, body: dict, expected: str
+    ) -> None:
+        """Driven through the real endpoint, because the previous version was a test of itself.
 
-        Without it a caller records what it asked for, and a dropped proxy argument is
-        indistinguishable from an honoured one.
+        That version re-typed the production expression inside the test and compared it
+        against literals, so deleting `egress=` from the RenderResponse left it green. It sat
+        four tests below one whose docstring describes exactly that defect -- "rebuilt the
+        argument list inside itself and asserted on its own copy" -- which is how a pattern
+        survives being named.
+
+        What matters to a caller is that the RESPONSE carries the exit, so the response is
+        what gets read.
         """
         monkeypatch.setattr(main, "EGRESS_NAME", "container-default")
+        tab = _FakeTab(html="<html>hi</html>", url="https://example.gov/x", response_status=200)
+        main._browser = _FakeBrowser(tab=tab)
 
-        req = main.RenderRequest(url="https://x", egress_proxy="socks5://tor:9050", egress_name="tor")
-        assert ((req.egress_name or "unnamed") if req.egress_proxy else main.EGRESS_NAME) == "tor"
+        # A render that names its own exit goes through the isolated-context path, which needs
+        # real CDP target bookkeeping. Substituted at the helper -- a module seam -- so the
+        # endpoint, `_render`, and the response construction under test all run for real.
+        async def _fake_isolated(_browser, _url, *, proxy_server=None):
+            captured["proxy_server"] = proxy_server
+            return tab, "ctx-fake"
 
-        unnamed = main.RenderRequest(url="https://x", egress_proxy="socks5://tor:9050")
-        assert ((unnamed.egress_name or "unnamed") if unnamed.egress_proxy else main.EGRESS_NAME) == "unnamed"
+        captured: dict = {}
+        monkeypatch.setattr(main, "_create_isolated_tab", _fake_isolated)
 
-        plain = main.RenderRequest(url="https://x")
-        assert ((plain.egress_name or "unnamed") if plain.egress_proxy else main.EGRESS_NAME) == "container-default"
+        async with client:
+            r = await client.post("/v1/render", json={"url": "https://example.gov/x", "timeout": 5.0, **body})
+
+        assert r.status_code == 200
+        assert r.json()["egress"] == expected
+        if body.get("egress_proxy"):
+            assert captured["proxy_server"] == body["egress_proxy"], (
+                "the request's exit never reached the browser context, so the echo names an exit that was not used"
+            )

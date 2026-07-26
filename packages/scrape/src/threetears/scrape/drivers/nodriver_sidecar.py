@@ -73,6 +73,17 @@ class NodriverSidecarDriver(ScrapeDriver):
         self._egress = egress
 
     @property
+    def egress(self) -> EgressDriver | None:
+        """The exit this driver's fetches leave by, or ``None`` for the default route.
+
+        Public because ``ScrapeTool`` reads it to spot a split configuration -- drivers
+        proxied while the tool's own robots read is not. A security check that probed a
+        private name would fail silently the moment the name changed, which is the worst
+        possible failure mode for one.
+        """
+        return self._egress
+
+    @property
     def name(self) -> str:
         """Stable string key for this driver."""
         return "nodriver"

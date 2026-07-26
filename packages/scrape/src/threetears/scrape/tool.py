@@ -285,7 +285,10 @@ class ScrapeTool(TearsTool):
         """
         if egress is not None:
             return
-        proxied = sorted(name for name, d in drivers.items() if getattr(d, "_egress", None) is not None)
+        # `egress` is a PUBLIC property on the drivers that support one. Probing a private
+        # name would make this check fail silently the moment that name changed -- the worst
+        # failure mode for a security check, and the reason it is not a getattr on `_egress`.
+        proxied = sorted(name for name, d in drivers.items() if getattr(d, "egress", None) is not None)
         if proxied:
             log.warning(
                 "scrape tool: driver(s) %s leave by a configured exit but this tool does not, so its "
