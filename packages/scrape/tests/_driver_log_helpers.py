@@ -5,14 +5,16 @@ Extracted because the decision is where a bug lived: filtering with
 forwards a human's solve to the inner document driver -- so the loose form was wrong precisely
 in the case the filter exists for.
 
-Sharing it is what makes the rule guardable. EVERY driver suite asserts through this function,
-and ``test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver`` drives it directly, so
+Sharing it is what makes the rule guardable. Every driver suite that asserts on driver log
+records goes through this function -- the others never touch ``caplog`` -- and
+``test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver`` drives it directly, so
 loosening the match fails there rather than quietly weakening the assertions elsewhere.
 
-No count of suites or call sites here, deliberately: the sentence above this one was itself
-rewritten to fix a false claim, and that rewrite introduced a "four suites" figure its own
-commit made wrong. A number in prose is a fact that has to be maintained, and this file has
-now proved twice that it will not be.
+No count of suites or call sites here, deliberately. This docstring carried "four suites",
+which was accurate when written and wrong one commit later, when a different file gained an
+import and nothing brought anyone back here. That is the whole hazard: a tally is true at the
+moment of writing and rots without being touched, so neither re-reading the diff nor grepping
+the prose catches it.
 
 The previous attempt at that guard asserted ``"...multi_document".endswith("document")``,
 which is a property of :class:`str`: it held whether production was exact or loose, and so
