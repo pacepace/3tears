@@ -36,6 +36,10 @@ import httpx
 from threetears.observe import get_logger
 
 __all__ = [
+    "USER_URL",
+    "TOKEN_URL",
+    "EMAILS_URL",
+    "AUTHORIZE_URL",
     "DEFAULT_SCOPES",
     "GithubOAuth2Client",
     "GithubOAuth2Error",

@@ -23,7 +23,7 @@ __all__ = [
 ]
 
 
-def _write_atomically(path: Path, payload: bytes) -> None:
+def _write_atomically(path: Path, payload: bytes, mode: int) -> None:
     """perform synchronous atomic write of payload to path.
 
     wrapped in :func:`asyncio.to_thread` by public async entrypoint so event
@@ -33,13 +33,15 @@ def _write_atomically(path: Path, payload: bytes) -> None:
     :ptype path: Path
     :param payload: raw bytes to write
     :ptype payload: bytes
+    :param mode: permission bits for the created file
+    :ptype mode: int
     :return: None
     :rtype: None
     :raises OSError: if filesystem operation fails at any step
     """
     parent = path.parent
     tmp_path = parent / f"{path.name}.tmp.{uuid7().hex}"
-    tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         try:
             os.write(tmp_fd, payload)
@@ -63,7 +65,7 @@ def _write_atomically(path: Path, payload: bytes) -> None:
         raise
 
 
-async def atomic_write(path: Path, content: bytes | str) -> None:
+async def atomic_write(path: Path, content: bytes | str, *, mode: int = 0o600) -> None:
     """write content to path atomically with fsync-rename-fsync sequence.
 
     coerces str content to UTF-8 bytes before writing. interrupted writes
@@ -77,16 +79,21 @@ async def atomic_write(path: Path, content: bytes | str) -> None:
     :ptype path: Path
     :param content: raw bytes, or str encoded as UTF-8 before writing
     :ptype content: bytes | str
+    :param mode: permission bits for the file. defaults to ``0o600`` -- the rename carries the
+        TEMP file's mode onto the destination, including over an existing file, so a caller
+        writing world- or group-readable content must say so explicitly rather than inherit
+        whatever the target had
+    :ptype mode: int
     :return: None
     :rtype: None
     :raises OSError: if filesystem operation fails at any step
     :raises UnicodeEncodeError: if str content cannot be encoded as UTF-8
     """
     payload = content.encode("utf-8") if isinstance(content, str) else content
-    await asyncio.to_thread(_write_atomically, path, payload)
+    await asyncio.to_thread(_write_atomically, path, payload, mode)
 
 
-def atomic_write_sync(path: Path, content: bytes | str) -> None:
+def atomic_write_sync(path: Path, content: bytes | str, *, mode: int = 0o600) -> None:
     """write content to path atomically, BLOCKING the calling thread.
 
     same tmp + fsync + rename + dir-fsync sequence as :func:`atomic_write`, for callers that
@@ -98,10 +105,12 @@ def atomic_write_sync(path: Path, content: bytes | str) -> None:
     :ptype path: Path
     :param content: raw bytes, or str encoded as UTF-8 before writing
     :ptype content: bytes | str
+    :param mode: permission bits for the file; see :func:`atomic_write`
+    :ptype mode: int
     :return: None
     :rtype: None
     :raises OSError: if filesystem operation fails at any step
     :raises UnicodeEncodeError: if str content cannot be encoded as UTF-8
     """
     payload = content.encode("utf-8") if isinstance(content, str) else content
-    _write_atomically(path, payload)
+    _write_atomically(path, payload, mode)

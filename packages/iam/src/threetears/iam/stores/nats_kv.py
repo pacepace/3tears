@@ -3,9 +3,12 @@
 TTL is the bucket's job here, not application code's. A store whose expiry
 depends on someone remembering to sweep is a store that accumulates live
 password-reset tickets for a year; a bucket opened with a TTL forgets on its
-own. Each store therefore expects a bucket already opened with the right TTL,
-via :meth:`~threetears.nats.NatsClient.kv_bucket`, rather than opening one
-itself -- bucket naming and lifecycle stay with the caller who knows the
+own. The two stores take a bucket already opened with the right TTL -- or come from
+the :func:`state_store` / :func:`ticket_store` factories below, which open it
+per call (``kv_bucket`` caches the handle, so that stays correct across a broker
+reconnect). :class:`NatsKvAttemptLimiter` is the exception: it takes the client
+and a bucket name, because the ``WindowedCounter`` underneath owns its own
+bucket lifecycle. Either way, naming stays with the caller who knows the
 deployment's namespace.
 
 **Redemption is a compare-and-swap claim, not a read-then-delete.** Two

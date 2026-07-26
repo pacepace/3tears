@@ -14,6 +14,14 @@ SIZE; it is hygiene, not correctness. That distinction is the whole reason a tab
 tolerable here -- a store whose security depends on a cron job is a store whose security
 depends on a cron job still running.
 
+**Payloads are handed to asyncpg as dicts, never pre-serialized.** These stores assume the
+caller registered `threetears.core.collections.asyncpg_init.register_jsonb_text_codec` on the
+pool, which every 3tears consumer that owns an asyncpg pool is required to do. That codec is
+the ONE ``json.dumps`` step; serializing here as well would silently double-encode, leaving
+the column holding a JSON *string* rather than an object -- so ``payload->>'user_id'``, any
+functional index, and any operator query would return nothing useful, while a round trip
+through this module still looked fine.
+
 **This package still owns no schema.** The caller creates the table in its own migration and
 names it here; the DDL is published as :data:`TICKET_TABLE_DDL` / :data:`STATE_TABLE_DDL` so
 the column set the queries assume is stated once rather than reconstructed per consumer. What
@@ -34,6 +42,7 @@ from threetears.observe import get_logger
 from threetears.iam.stores.base import TicketIssue, hash_ticket, new_ticket_secret
 
 __all__ = [
+    "EXPIRES_INDEX_DDL",
     "STATE_TABLE_DDL",
     "TICKET_TABLE_DDL",
     "PoolLike",
@@ -98,8 +107,10 @@ def _validate_table(table: str) -> str:
 def _decode(raw: Any) -> Mapping[str, Any] | None:
     """Decode a stored payload, treating corruption as absence.
 
-    A value that will not parse is unusable either way, and raising would turn it into a 500
-    on an authentication path where the correct answer is "this ticket is not valid".
+    A registered JSONB codec hands back a ``dict`` already; the string branch covers a pool
+    without one, and a row written before the codec was in place. A value that will not parse
+    is unusable either way, and raising would turn it into a 500 on an authentication path
+    where the correct answer is "this ticket is not valid".
     """
     if isinstance(raw, Mapping):
         return dict(raw)
@@ -136,7 +147,7 @@ class PostgresTicketStore:
         await self._pool.execute(
             f"INSERT INTO {self._table} (hashed, payload, expires_at) VALUES ($1, $2, $3)",  # noqa: S608
             hashed,
-            json.dumps(dict(payload), separators=(",", ":")),
+            dict(payload),  # the pool's JSONB codec encodes; see the module docstring
             datetime.now(UTC) + ttl,
         )
         return TicketIssue(secret=secret, hashed=hashed)
@@ -189,7 +200,7 @@ class PostgresStateStore:
             f"INSERT INTO {self._table} (key, payload, expires_at) VALUES ($1, $2, $3) "  # noqa: S608
             "ON CONFLICT (key) DO UPDATE SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at",
             key,
-            json.dumps(dict(payload), separators=(",", ":")),
+            dict(payload),  # the pool's JSONB codec encodes; see the module docstring
             datetime.now(UTC) + ttl,
         )
 

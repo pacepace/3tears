@@ -7,6 +7,7 @@ and an expiry that depends on something having swept.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,6 +28,10 @@ class _FakePool:
     would still serialise it and the concurrency test below would pass on a broken store. The
     double therefore does NOT interleave -- the test relies on the store issuing exactly one
     statement, which is asserted separately.
+
+    It also models the JSONB codec every 3tears pool registers: a payload arrives as a
+    ``dict`` and is handed back as one. A double that accepted a pre-serialized string would
+    make double-encoding invisible, which is exactly how that bug shipped once already.
     """
 
     def __init__(self) -> None:
@@ -40,7 +45,12 @@ class _FakePool:
         self.statements.append(query)
         collapsed = " ".join(query.split())
         if collapsed.startswith("INSERT"):
-            key, payload, expires = str(args[0]), str(args[1]), args[2]
+            key, payload, expires = str(args[0]), args[1], args[2]
+            if not isinstance(payload, dict):
+                raise AssertionError(
+                    f"payload must reach asyncpg as a dict, not {type(payload).__name__} -- "
+                    "the pool's JSONB codec is the only json.dumps step"
+                )
             self.rows[key] = {"payload": payload, "expires_at": expires}
         elif collapsed.startswith("DELETE") and "expires_at <= $1" in collapsed:
             cutoff = args[0]
@@ -166,3 +176,34 @@ async def test_a_corrupt_payload_reads_as_absent(pool: _FakePool) -> None:
     await store.put("state-1", {"nonce": "n"}, ttl=_TTL)
     pool.rows["state-1"]["payload"] = "{not json"
     assert await store.get("state-1") is None
+
+
+async def test_the_payload_is_never_pre_serialized(pool: _FakePool) -> None:
+    """The JSONB double-encoding guard.
+
+    Every 3tears pool registers `register_jsonb_text_codec`, whose encoder is the ONE
+    `json.dumps` step. Serializing here as well leaves the column holding a JSON string rather
+    than an object -- `payload->>'key'` returns nothing, indexes on the payload do not work,
+    and a round trip through this module still looks correct, which is why it went unnoticed
+    the last time. Asserted on the value handed to the pool, not on what comes back.
+    """
+    store = PostgresTicketStore(pool, table="tickets")
+    issued = await store.issue({"principal": "p-1", "n": 2}, ttl=_TTL)
+    stored = pool.rows[issued.hashed]["payload"]
+    assert isinstance(stored, dict)
+    assert stored == {"principal": "p-1", "n": 2}
+
+
+async def test_state_payload_is_never_pre_serialized(pool: _FakePool) -> None:
+    store = PostgresStateStore(pool, table="state")
+    await store.put("state-1", {"nonce": "n"}, ttl=_TTL)
+    assert pool.rows["state-1"]["payload"] == {"nonce": "n"}
+
+
+async def test_a_payload_from_a_pool_without_the_codec_still_decodes(pool: _FakePool) -> None:
+    """The string branch of `_decode`: a pool with no codec registered, or a row written
+    before one was."""
+    store = PostgresStateStore(pool, table="state")
+    await store.put("state-1", {"nonce": "n"}, ttl=_TTL)
+    pool.rows["state-1"]["payload"] = json.dumps({"nonce": "n"})
+    assert await store.get("state-1") == {"nonce": "n"}

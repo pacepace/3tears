@@ -2,7 +2,7 @@
 primitive, sibling to :class:`~threetears.core.coordination.replay_guard.ReplayGuard` and
 :class:`~threetears.core.coordination.replay_guard.RevocationGuard`, but a different shape: those
 two answer "have I seen this exact key" (bare presence / timestamped presence); this answers "how
-many times has this key been attempted inside a moving time window" -- the shape a throttle or
+many times has this key been attempted inside a fixed window anchored at its first attempt" -- the shape a throttle or
 rate limiter needs (e.g. "no more than N login attempts per IP per minute").
 
     counter = WindowedCounter(nats_client, bucket_name="login_ip_throttle", window_seconds=60)
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import random
 import json
 import time
 from dataclasses import dataclass
@@ -54,7 +55,16 @@ __all__ = ["WindowState", "WindowedCounter"]
 
 log = get_logger(__name__)
 
-_MAX_CAS_ATTEMPTS = 5
+#: matched to the sibling primitives in this package (`distributed_counter`, `token_bucket`),
+#: whose 30 is empirical: 8 retries raised a conflict on ~75% of runs under a 25-connection
+#: integration test, zero at 30. the contention this counter sees is a credential-stuffing
+#: burst against ONE key, which is exactly that case -- a budget tuned for the quiet path
+#: degrades precisely when the counter is the control that matters.
+_MAX_CAS_ATTEMPTS = 30
+
+#: full-jitter backoff bound between CAS retries, seconds. without it, retries collide in
+#: lockstep and the budget is spent on the same instant repeatedly. same value as the siblings.
+_CAS_RETRY_BACKOFF_SECONDS = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +89,7 @@ def _decode(value: bytes) -> WindowState:
 
 
 class WindowedCounter:
-    """per-key attempt counter over a fixed sliding window, in a NATS JetStream KV bucket.
+    """per-key attempt counter over a fixed window anchored at the first attempt, in a NATS JetStream KV bucket.
 
     generic: the caller supplies the key (already hashed if it carries anything sensitive -- this
     class hashes it again into a KV-safe form regardless, but does not otherwise interpret it) and
@@ -104,7 +114,8 @@ class WindowedCounter:
             edge-tier and a core-tier throttle over the "same" logical key) can be given
             deliberately SEPARATE buckets with different write access
         :ptype bucket_name: str
-        :param window_seconds: length of the sliding window in seconds. MUST be positive: a
+        :param window_seconds: length of the fixed window in seconds, measured from the first
+            attempt in it. MUST be positive: a
             non-positive window would mean the count never resets
         :ptype window_seconds: int
         :param fail_open: on a :class:`~threetears.nats.KvError` (KV transport failure), whether
@@ -257,9 +268,14 @@ class WindowedCounter:
                 next_state = WindowState(count=state.count + 1, window_start=state.window_start)
             if await bucket.update(key=kv_key, value=_encode(next_state), revision=revision) is not None:
                 return next_state.count
-        # CAS retries exhausted under heavy concurrent contention on the SAME key -- exceedingly
-        # unlikely in practice. Read back whatever is there now rather than silently under-counting
-        # to 0 or 1; the next attempt still sees accurate state either way.
+            await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311
+        # CAS retries exhausted: the increment was LOST, so the count read back under-reports
+        # by at least one. Logged rather than swallowed -- losing writes is what a burst against
+        # one key causes, and this counter is a security control on exactly that burst.
+        log.warning(
+            "WindowedCounter %s lost an increment to CAS contention; the count is under-reported",
+            self._bucket_name,
+        )
         live_state = await self._read_live_state(key)
         return 1 if live_state is None else live_state.count
 
