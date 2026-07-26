@@ -169,14 +169,15 @@ Nothing is held while a target waits for a person. It is reported and forgotten,
 re-driven from `url` plus `nav_steps` when an operator actually arrives, so waiting costs no
 container resources at all.
 
-When they finish, the context's cookies and storage are exported, sealed with
+When they finish, the context's cookies and `localStorage` are exported, sealed with
 `core.security.encryption` under an operator master key, and stored on the health row with an
 expiry. Later unattended renders send them, so the target extracts normally without anyone
 watching. The sidecar holds no key and seals nothing -- the container driving a browser for
 arbitrary targets is the one you least want holding a decryption key. Every way the stored
 state can fail (wrong key, tamper, format change, missing or passed expiry, no key configured)
 degrades to "this target needs a human again", never to sending a dead cookie and believing
-the answer.
+the answer. `localStorage` is named because the export always captured it while the apply path
+dropped it, so a site keeping its session there came back needing a human anyway.
 
 Two seams make that loop usable by a platform, which owns the queue and the operator.
 `ScrapeTargetHealthCollection.list_walled()` answers "which targets need a person" -- the only
@@ -219,8 +220,7 @@ that exemption, because load on someone's server is caused equally by either. Ev
 robots file means "allowed": treating an unreachable text file as a refusal lets one bad
 response stop a scrape silently. Parsing is `urllib.robotparser`, so no new dependency.
 
-
-**`robots.txt` is consulted by default, and a disallowed target becomes a queue item.**
+A disallowed target becomes a queue item rather than a dead end.
 `ScrapeTool` builds a gate unless one is passed; `robots=None` is the explicit opt-out.
 Migration `v012` adds `robots_blocked_at`/`robots_blocked_reason`, and `list_walled()` now
 answers with BOTH kinds of target a human is needed for -- a bot wall and a robots refusal --
@@ -234,10 +234,6 @@ The default robots fetcher leaves by the tool's configured exit. On-by-default p
 an unproxied read would have disclosed the container's real address to every origin
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
-
-Exported `localStorage` is restored alongside cookies, which the export always captured and
-the apply path had been dropping.
-
 
 ## v0.19.1 -- 2026-07-25
 
