@@ -74,6 +74,12 @@ class MemoryStateStore:
             return None
         return entry.payload
 
+    async def get(self, key: str) -> Mapping[str, Any] | None:
+        entry = self._entries.get(key)
+        if entry is None or entry.expires_at <= self._clock():
+            return None
+        return entry.payload
+
 
 class MemoryAttemptLimiter:
     """In-memory :class:`~threetears.iam.stores.base.AttemptLimiter`, fixed-window."""

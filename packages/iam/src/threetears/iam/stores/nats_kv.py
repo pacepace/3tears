@@ -64,6 +64,13 @@ def _decode(raw: bytes) -> Mapping[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
+def _strip_internal(payload: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """Drop the bookkeeping keys this module adds, so callers see only what they stored."""
+    if payload is None:
+        return None
+    return {name: value for name, value in payload.items() if name != "_ttl_seconds"}
+
+
 class NatsKvTicketStore:
     """KV-backed :class:`~threetears.iam.stores.base.SingleUseTicketStore`.
 
@@ -118,10 +125,13 @@ class NatsKvStateStore:
         raw, revision = entry
         if not await self._bucket.delete(key=key, revision=revision):
             return None
-        payload = _decode(raw)
-        if payload is None:
+        return _strip_internal(_decode(raw))
+
+    async def get(self, key: str) -> Mapping[str, Any] | None:
+        raw = await self._bucket.get(key=key)
+        if raw is None:
             return None
-        return {name: value for name, value in payload.items() if name != "_ttl_seconds"}
+        return _strip_internal(_decode(raw))
 
 
 class NatsKvAttemptLimiter:

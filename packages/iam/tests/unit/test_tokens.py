@@ -6,10 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from jwt.algorithms import ECAlgorithm
 
 from threetears.core.security.identity_token import build_jwks
 from threetears.iam.tokens import (
+    BASE_CLAIMS,
     Ed25519JwksVerifier,
     Ed25519Signer,
     HmacSigner,
@@ -20,6 +23,7 @@ from threetears.iam.tokens import (
     mint_session_token,
     mint_token_pair,
     new_session_id,
+    sole_audience,
     verify_session_token,
 )
 
@@ -300,3 +304,57 @@ def test_error_never_leaks_the_token(ed_signer: Ed25519Signer, signing_key: Ed25
     with pytest.raises(TokenError) as excinfo:
         verify_session_token(token, verifier=verifier)
     assert token not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("missing", sorted(BASE_CLAIMS))
+def test_missing_required_claim_is_rejected(
+    signing_key: Ed25519PrivateKey, ed_verifier: Ed25519JwksVerifier, missing: str
+) -> None:
+    """Every base claim is load-bearing: a token missing any one of them is rejected rather
+    than verified with a hole in it."""
+    payload = _wire_payload(_claims())
+    del payload[missing]
+    token = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
+    with pytest.raises(TokenError):
+        verify_session_token(token, verifier=ed_verifier)
+
+
+def test_unrecognized_token_type_is_rejected(signing_key: Ed25519PrivateKey, ed_verifier: Ed25519JwksVerifier) -> None:
+    """A `type` outside the enum is refused, not coerced to a default."""
+    payload = _wire_payload(_claims(), type="not-a-real-type")
+    token = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
+    with pytest.raises(TokenError, match="unrecognized token type"):
+        verify_session_token(token, verifier=ed_verifier)
+
+
+def test_jwks_entry_that_is_not_ed25519_is_rejected(ed_signer: Ed25519Signer) -> None:
+    """The kid matches but the key is EC. Verifying against it anyway would mean the key
+    type came from the JWKS rather than from this module's pin."""
+    token = mint_session_token(_claims(), signer=ed_signer)
+    ec_jwk = ECAlgorithm.to_jwk(ec.generate_private_key(ec.SECP256R1()).public_key(), as_dict=True)
+    ec_jwk["kid"] = "key-1"
+    verifier = Ed25519JwksVerifier(jwks={"keys": [ec_jwk]}, issuer=_ISSUER, audience=_AUDIENCE)
+    with pytest.raises(TokenError, match="not an Ed25519 public key"):
+        verify_session_token(token, verifier=verifier)
+
+
+@pytest.mark.parametrize("bad_jwks", [{"keys": []}, {"no_keys": 1}, []])
+def test_malformed_or_empty_jwks_fails_closed(ed_signer: Ed25519Signer, bad_jwks: object) -> None:
+    """A JWKS that is empty, shaped wrong, or not a mapping at all denies rather than
+    crashing -- the normal state of a verifier whose key set has not warmed yet."""
+    token = mint_session_token(_claims(), signer=ed_signer)
+    verifier = Ed25519JwksVerifier(jwks=bad_jwks, issuer=_ISSUER, audience=_AUDIENCE)  # type: ignore[arg-type]
+    with pytest.raises(TokenError):
+        verify_session_token(token, verifier=verifier)
+
+
+def test_sole_audience_returns_the_single_value() -> None:
+    assert sole_audience(_claims()) == _AUDIENCE
+
+
+@pytest.mark.parametrize("audience", [("a", "b"), ("a", "b", "c")])
+def test_sole_audience_refuses_a_multi_valued_audience(audience: tuple[str, ...]) -> None:
+    """A token claiming two boundaries is usable on either side of the split the claim
+    exists to enforce."""
+    with pytest.raises(TokenError, match="exactly one audience"):
+        sole_audience(_claims(aud=audience))

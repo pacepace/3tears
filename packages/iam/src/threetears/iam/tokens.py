@@ -61,6 +61,7 @@ __all__ = [
     "mint_token_pair",
     "new_session_id",
     "new_token_id",
+    "sole_audience",
     "verify_session_token",
 ]
 
@@ -501,6 +502,26 @@ def mint_token_pair(
         refresh_token=mint_session_token(refresh_claims, signer=signer),
         claims=access_claims,
     )
+
+
+def sole_audience(claims: SessionClaims) -> str:
+    """The single audience ``claims`` was issued for.
+
+    :class:`SessionClaims` carries an open tuple because a token in general may serve several
+    audiences. A service whose audiences are a closed vocabulary -- internal versus external,
+    say -- usually issues exactly one per token, and that narrowing is load-bearing: a token
+    claiming both is usable on either side of the boundary the claim exists to enforce. This
+    is the checked way to read it back, so each such service does not re-derive the check.
+
+    :param claims: claims from a token that has already been verified.
+    :ptype claims: SessionClaims
+    :return: the one audience value.
+    :rtype: str
+    :raises TokenError: the token carries several audiences, or none.
+    """
+    if len(claims.aud) != 1:
+        raise TokenError(f"expected a token with exactly one audience; found {len(claims.aud)}.")
+    return claims.aud[0]
 
 
 def new_session_id() -> str:

@@ -150,3 +150,22 @@ async def test_ticket_payloads_round_trip_unchanged(payload: dict[str, object]) 
     store = MemoryTicketStore()
     ticket = await store.issue(payload, ttl=timedelta(minutes=1))
     assert await store.redeem(ticket.secret) == payload
+
+
+async def test_state_store_get_does_not_consume() -> None:
+    """The whole point of `get` over `take`: the value survives the read, because single-use
+    is somebody else's job here."""
+    store = MemoryStateStore()
+    await store.put("state-1", {"nonce": "n"}, ttl=timedelta(minutes=5))
+    assert await store.get("state-1") == {"nonce": "n"}
+    assert await store.get("state-1") == {"nonce": "n"}
+    assert await store.take("state-1") == {"nonce": "n"}
+    assert await store.get("state-1") is None
+
+
+async def test_state_store_get_honours_the_ttl() -> None:
+    clock = _Clock()
+    store = MemoryStateStore(clock=clock)
+    await store.put("state-1", {"nonce": "n"}, ttl=timedelta(minutes=5))
+    clock.advance(301)
+    assert await store.get("state-1") is None

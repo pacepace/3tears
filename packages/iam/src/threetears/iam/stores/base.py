@@ -117,7 +117,18 @@ class StateStore(Protocol):
         """Atomically remove and return the value under ``key``, or ``None``.
 
         Removing on read is what makes an OAuth ``state`` single-use, which is what stops a
-        captured callback URL from being replayed.
+        captured callback URL from being replayed. Prefer this to :meth:`get`.
+        """
+        ...
+
+    async def get(self, key: str) -> Mapping[str, Any] | None:
+        """Return the value under ``key`` WITHOUT consuming it, or ``None``.
+
+        Use this only where single-use is enforced by a separate mechanism -- a replay guard
+        that records the spent value independently. That split is a legitimate design (it
+        distinguishes "no such state" from "state already spent", which is worth having in an
+        audit trail), but it is two things to get right instead of one. If you have no such
+        guard, :meth:`take` is the safe default and this method is a replay hole.
         """
         ...
 
