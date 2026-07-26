@@ -16,9 +16,10 @@ stored separately -- one value, no chance of the two drifting.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from typing import Final
+
+from threetears.iam._digest import sha256_hex
 
 __all__ = [
     "DEFAULT_KEY_PREFIX",
@@ -56,8 +57,13 @@ def generate_api_key_secret(*, prefix: str = DEFAULT_KEY_PREFIX) -> str:
 
 
 def hash_api_key_secret(raw_secret: str) -> str:
-    """SHA-256 hex digest of a raw API-key secret -- the value to store and look up by."""
-    return hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+    """SHA-256 hex digest of a raw API-key secret -- the value to store and look up by.
+
+    Shares its digest with :func:`threetears.iam.stores.base.hash_ticket` via
+    :func:`threetears.iam._digest.sha256_hex`; the names stay separate because the two are
+    separate contracts, but the hashing is one implementation.
+    """
+    return sha256_hex(raw_secret)
 
 
 def key_prefix(raw_secret: str, *, length: int = KEY_PREFIX_LEN) -> str:

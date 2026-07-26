@@ -6,12 +6,13 @@ schema this package owns.
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final, Protocol, runtime_checkable
+
+from threetears.iam._digest import sha256_hex
 
 __all__ = [
     "AttemptLimiter",
@@ -38,9 +39,11 @@ def hash_ticket(secret: str) -> str:
 
     SHA-256 rather than argon2id for the same reason as an API key: the secret is 256 bits
     of generated randomness, so there is no dictionary to slow an attacker down against, and
-    the store needs an equality lookup rather than a per-candidate KDF run.
+    the store needs an equality lookup rather than a per-candidate KDF run. The digest
+    itself is :func:`threetears.iam._digest.sha256_hex`, shared with the API-key path so a
+    change to how this package hashes cannot land in one and miss the other.
     """
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    return sha256_hex(secret)
 
 
 @dataclass(frozen=True, slots=True)
