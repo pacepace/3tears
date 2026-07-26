@@ -442,3 +442,34 @@ class TestMultiDocumentSessionStateForwarding:
         assert "session_state" not in inner.render_kwargs[0], (
             "the keyword was passed with no solve to carry, which breaks any driver predating it"
         )
+
+
+class TestMultiDocumentEgressDelegation:
+    """The wrapper reports the exit its documents actually leave by, not the base class default.
+
+    `ScrapeDriver.egress` returns `None` for backends with no concept of an exit, which is right
+    for them and wrong for a wrapper: this class performs no document fetch of its own, so
+    inheriting the default reports the truth about itself and a lie about the fetch. `ScrapeTool`
+    reads it to decide whether a configuration is split, and the lie lands on the safe-looking
+    side -- a proxied inner driver would read as unconfigured.
+
+    The asymmetric case relative to `NetworkCaptureDriver`: the inner driver is INJECTED here,
+    and this class also makes a listing request of its own that the property deliberately does
+    not cover.
+    """
+
+    def test_the_document_drivers_exit_is_reported(self) -> None:
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        assert MultiDocumentDriver(document_driver=ApiDriver(egress=tor)).egress is tor
+
+    def test_an_unproxied_document_driver_is_not_dressed_up(self) -> None:
+        """The negative half, so the delegation is not merely returning something truthy.
+
+        Without it the assertion above passes against a property hard-coded to any object.
+        """
+        from threetears.scrape.drivers.api import ApiDriver
+
+        assert MultiDocumentDriver(document_driver=ApiDriver()).egress is None

@@ -561,24 +561,44 @@ leave by two exits. The claim was corrected after probing the running image's ow
 bindings rather than recalling the flag's behaviour.
 
 So the container's `EGRESS_PROXY` is a DEFAULT, and `RenderRequest.egress_proxy` overrides it
-for one render, which gets its own context and disposes it with the tab. `last_egress` on the health row records which was used, and "used" is meant literally: the
-sidecar reports the exit a render actually left by, the driver carries it back on
-`RenderedPage.egress`, and the circuit stamps THAT rather than how it was configured. The
-difference matters because a render can choose its own exit, so a constructor-time name would
-record one that was never taken -- and because an older sidecar that ignores the proxy argument
-reports its own exit, which surfaces the mismatch instead of hiding it.
+for one render, which gets its own context and disposes it with the tab. `last_egress` on the
+health row records which exit the render was CONFIGURED to leave by. The value is reported by
+the fetcher rather than assumed by the caller: the sidecar returns it, the driver carries it
+back on `RenderedPage.egress`, and the circuit stamps that rather than a constructor-time name
+which a per-render override would have made wrong. What it buys is that a dropped proxy
+argument surfaces as a mismatch, because an older sidecar that ignores the argument reports its
+own exit instead of echoing the one it was asked for.
+
+It is not evidence that traffic left that way. A per-context proxy Chromium accepted and then
+ignored would still be recorded under the name it was asked for, and nothing inside the process
+can tell the difference -- confirming it needs an observer outside, which is VRF-004's job.
+
+`None` means no exit was configured, which is a different fact from choosing the default route.
+That choice is `DirectEgress` and records as `direct`.
 
 With more than one exit, the useful fact stops being "this target is walled" and becomes
 "walled FROM THIS EXIT", without which a target blocked through one route looks permanently
 walled and a working alternative is never tried.
 
-One configuration hazard is worth naming because it is invisible: egress is wired separately
-on the drivers and on `ScrapeTool` itself, and getting only the drivers right means the page
-leaves by the configured exit while the `robots.txt` read in front of it leaves by the
-container's own address. Both halves work; the target simply learns the real address from the
-request nobody was thinking about. `ScrapeTool` logs a warning when it sees a proxied driver
-and no exit of its own -- a warning rather than a refusal, since a deployment may want exactly
-that, but it should have to be a decision.
+One configuration hazard is worth naming because it is invisible: egress is wired separately on
+the drivers and on `ScrapeTool` itself, and getting either half alone leaks the container's
+address on the other. Drivers proxied with an unproxied gate means the page leaves by the
+configured exit while the `robots.txt` read in front of it does not. The gate proxied with an
+unproxied driver is the worse one, because what goes out direct is the page fetch itself, the
+request the exit was configured for. Both halves work either way; the target simply learns the
+real address from the request nobody was thinking about.
+
+`ScrapeTool` warns on both shapes, reading the gate it actually holds rather than its own
+constructor argument -- a caller can build a `RobotsGate` with its own egress and pass it in, so
+the argument describes what the default gate WOULD have been. It says nothing when robots is
+disabled, since there is no second request to be split from. A warning rather than a refusal,
+since a deployment may want exactly that, but it should have to be a decision.
+
+The warning also names any driver that cannot honour an exit at all. Most backends cannot:
+`CamoufoxDriver` launches a browser with no proxy support, and `DocumentDriver`,
+`ListingDetailDriver` and `MultiDocumentDriver`'s listing fetch each build a bare
+`httpx.AsyncClient`. Threading an exit through them is filed as SCR-2WQ7; until then the bypass
+is loud rather than closed.
 
 ### 8. robots.txt: wait when asked, escalate when refused
 

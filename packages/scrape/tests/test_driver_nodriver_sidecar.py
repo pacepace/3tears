@@ -524,8 +524,13 @@ class TestSidecarDriverEgress:
     async def test_the_reported_exit_is_the_sidecars_not_the_drivers_assumption(self) -> None:
         """An older sidecar that ignores the proxy argument reports its own exit.
 
-        That mismatch is the point: a caller stamps what happened, so a dropped argument shows
-        up rather than being recorded as an exit that was never taken.
+        That mismatch is the point. The driver stamps what the SIDECAR reported rather than
+        what it asked for, so a dropped argument shows up as a disagreement instead of being
+        recorded as an exit that was never taken.
+
+        Reported, not observed: the sidecar derives its answer from the request too, so this
+        catches a sidecar that ignored the argument, not a proxy Chromium accepted and then
+        failed to use. Nothing inside either process can see that second case.
         """
         import httpx
         from threetears.core.egress import ProxyEgress
