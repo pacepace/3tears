@@ -97,13 +97,13 @@ packages/core/tests/unit/data/test_collection_factory.py:218:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
 packages/core/tests/unit/data/test_collection_factory.py:229:_nats_client
 
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain — calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
+# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
 packages/models/src/threetears/models/tool_name_translation.py:235:_arun
-# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain — calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
+# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
 packages/models/src/threetears/models/tool_name_translation.py:236:_arun
-# rationale: same as line 140 above — the sync _run override forwards to delegate._run for the same double-wrapper reason.
+# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
 packages/models/src/threetears/models/tool_name_translation.py:261:_run
-# rationale: same as line 140 above — the sync _run override forwards to delegate._run for the same double-wrapper reason.
+# rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
 packages/models/src/threetears/models/tool_name_translation.py:262:_run
 
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
