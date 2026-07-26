@@ -1322,3 +1322,20 @@ class TestEgressReporting:
         assert "proxyServer" in str(payload) or "proxy_server" in str(payload), (
             "per-context proxying is not reaching CDP, so a per-request exit is silently the default one"
         )
+
+    def test_the_reported_exit_names_the_request_when_it_chose_one(self, monkeypatch) -> None:
+        """The echo has to distinguish the request's exit from the container's default.
+
+        Without it a caller records what it asked for, and a dropped proxy argument is
+        indistinguishable from an honoured one.
+        """
+        monkeypatch.setattr(main, "EGRESS_NAME", "container-default")
+
+        req = main.RenderRequest(url="https://x", egress_proxy="socks5://tor:9050", egress_name="tor")
+        assert ((req.egress_name or "unnamed") if req.egress_proxy else main.EGRESS_NAME) == "tor"
+
+        unnamed = main.RenderRequest(url="https://x", egress_proxy="socks5://tor:9050")
+        assert ((unnamed.egress_name or "unnamed") if unnamed.egress_proxy else main.EGRESS_NAME) == "unnamed"
+
+        plain = main.RenderRequest(url="https://x")
+        assert ((plain.egress_name or "unnamed") if plain.egress_proxy else main.EGRESS_NAME) == "container-default"

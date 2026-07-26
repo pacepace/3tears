@@ -606,17 +606,20 @@ async def test_a_fetch_of_an_unblocked_target_writes_nothing() -> None:
         api_key="k",
     )
 
-    # Supplying a health collection opts the tool into challenge classification, which runs
-    # whenever extraction misses and burns its full retry budget against a fake key -- 33s
-    # measured, for a path this test is not about. `None` is the classifier's own documented
-    # "could not decide", so the tool takes the same branch it would on a real one.
-    with patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None):
+    # Asserted on the WRITE, not on the resulting row. The row-shape version could not fail:
+    # nothing on this path ever sets `robots_blocked_at`, so restoring the unconditional clear
+    # -- which creates a row with `robots_blocked_at=None` -- satisfied both disjuncts and the
+    # test stayed green against the exact regression its own docstring named.
+    from unittest.mock import AsyncMock
+
+    clear = AsyncMock()
+    with (
+        patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None),
+        patch("threetears.scrape.tool.clear_robots_block", new=clear),
+    ):
         await tool.execute(url=url, field_schema=schema)
 
-    row = await health.get(target_id)
-    assert row is None or row.robots_blocked_at is None, (
-        "an allowed fetch of a never-blocked target wrote to its health row"
-    )
+    clear.assert_not_awaited()
 
 
 async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
@@ -649,9 +652,64 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
         api_key="k",
     )
 
-    with patch(
-        "threetears.scrape.tool.clear_robots_block", new=AsyncMock(side_effect=RuntimeError("health store is gone"))
-    ):
-        # Returns rather than raises. Nothing to assert but the absence of an exception, which
-        # is exactly the contract: the caller's fetch is already done and paid for.
+    clear = AsyncMock(side_effect=RuntimeError("health store is gone"))
+    with patch("threetears.scrape.tool.clear_robots_block", new=clear):
+        # Returns rather than raises: the caller's fetch is already done and paid for.
         await tool._clear_robots_block_if_any("t")  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the housekeeping method IS the subject
+
+    # And it REACHED the clear. Asserting only "no exception" would pass against a method that
+    # returns unconditionally -- so inverting the guard would leave every test here green
+    # while a blocked target could never be released.
+    clear.assert_awaited_once()
+
+
+def test_a_proxied_driver_with_an_unproxied_tool_says_so(caplog) -> None:
+    """One security property, two wiring points, and getting only one right is invisible.
+
+    The page leaves by TOR while the robots.txt read in front of it leaves by the container's
+    own address -- both halves work, and the target learns the real address from the request
+    nobody was thinking about. A warning, not a refusal: a deployment may want it, but it
+    should have to be a decision.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.drivers.api import ApiDriver
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    with caplog.at_level("WARNING", logger="threetears.scrape.tool"):
+        ScrapeTool(
+            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"api": ApiDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))},
+            api_key="k",
+        )
+
+    assert any("container's own address" in r.message for r in caplog.records), (
+        "a split egress configuration passed silently"
+    )
+
+
+def test_matching_egress_on_both_says_nothing(caplog) -> None:
+    """The correct configuration must not be noisy, or the warning stops being read."""
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.drivers.api import ApiDriver
+    from threetears.scrape.tool import ScrapeTool
+
+    tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    with caplog.at_level("WARNING", logger="threetears.scrape.tool"):
+        ScrapeTool(
+            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"api": ApiDriver(egress=tor)},
+            egress=tor,
+            api_key="k",
+        )
+
+    assert not any("container's own address" in r.message for r in caplog.records)

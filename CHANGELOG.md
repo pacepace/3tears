@@ -199,9 +199,17 @@ leaves by the container's own IP. Nothing here starts a daemon.
 Egress is per target, not per container. The sidecar's `EGRESS_PROXY` is a default applied at
 browser launch, and a render may override it with `egress_proxy`, which gets its own browser
 context -- `Target.createBrowserContext` accepts a `proxyServer`, where the `--proxy-server`
-flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an
-observation came from, so "walled" can be told apart from "walled from this exit" and a
-working alternative is not left untried.
+flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an observation came
+from -- reported by the sidecar and carried back on `RenderedPage.egress`, so it is the exit
+actually used rather than the one configured or the one asked for. That lets "walled" be told
+apart from "walled from this exit", so a working alternative is not left untried, and it
+surfaces an older sidecar that ignored the proxy argument instead of recording an exit that
+was never taken.
+
+Egress is wired separately on the drivers and on `ScrapeTool`. Getting only the drivers right
+means the page leaves by the configured exit while the `robots.txt` read in front of it leaves
+by the container's own address, which is invisible because both halves work. `ScrapeTool` logs
+a warning when it sees a proxied driver and no exit of its own.
 
 **`robots.txt` is honoured, both halves on by default.** `Crawl-delay` is waited between
 fetches of an origin; a `Disallow` is escalated for a person rather than fetched unattended or

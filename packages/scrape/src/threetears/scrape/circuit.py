@@ -448,7 +448,7 @@ class TargetCircuit:
             reason="single recovery probe after the backoff window elapsed",
         )
 
-    async def record_blocked(self, target_id: str, *, now: datetime | None = None) -> None:
+    async def record_blocked(self, target_id: str, *, now: datetime | None = None, egress: str | None = None) -> None:
         """Count a fetch that came back a wall, and open the circuit once that is the pattern.
 
         :param target_id: the target that came back walled
@@ -456,9 +456,11 @@ class TargetCircuit:
         :param now: the current time; injected by tests, defaults to now
         :ptype now: datetime | None
         """
-        await self._record_failure(target_id, now=now, blocked=True)
+        await self._record_failure(target_id, now=now, blocked=True, egress=egress)
 
-    async def record_unreachable(self, target_id: str, *, now: datetime | None = None) -> None:
+    async def record_unreachable(
+        self, target_id: str, *, now: datetime | None = None, egress: str | None = None
+    ) -> None:
         """Count a fetch that never produced a page: a transport error, a timeout, a refusal.
 
         Shares the circuit with :meth:`record_blocked` because both mean the same thing to a
@@ -472,9 +474,9 @@ class TargetCircuit:
         :param now: the current time; injected by tests, defaults to now
         :ptype now: datetime | None
         """
-        await self._record_failure(target_id, now=now, blocked=False)
+        await self._record_failure(target_id, now=now, blocked=False, egress=egress)
 
-    async def record_reachable(self, target_id: str, *, now: datetime | None = None) -> None:
+    async def record_reachable(self, target_id: str, *, now: datetime | None = None, egress: str | None = None) -> None:
         """Report that *target_id* served real content, and close its circuit.
 
         Called for every outcome that is not a wall and not a transport failure, including a
@@ -540,6 +542,7 @@ class TargetCircuit:
             state=restored.state,
             failures=restored.failure_count,
             blocked_until=None if closed else health.blocked_until,
+            egress=egress,
         )
         if closed:
             # The only outcome that books nothing, and therefore the only one that leaves the
@@ -667,7 +670,9 @@ class TargetCircuit:
         if breaker is not None and _admitted_a_probe(breaker):
             breaker.record_failure()
 
-    async def _record_failure(self, target_id: str, *, now: datetime | None, blocked: bool) -> None:
+    async def _record_failure(
+        self, target_id: str, *, now: datetime | None, blocked: bool, egress: str | None = None
+    ) -> None:
         """Drive one failure through the breaker's rules and persist what it decided."""
         moment = now or datetime.now(UTC)
         breaker = self._breaker(target_id)
@@ -710,6 +715,7 @@ class TargetCircuit:
             failures=failures,
             blocked_until=blocked_until,
             blocked_at=moment if blocked else None,
+            egress=egress,
         )
         if blocked_until is not None:
             await self._book_reprobe(target_id, (blocked_until - moment).total_seconds())
@@ -921,6 +927,7 @@ class TargetCircuit:
         failures: int,
         blocked_until: datetime | None,
         blocked_at: datetime | None = None,
+        egress: str | None = None,
     ) -> None:
         """Persist the circuit, never letting the bookkeeping cost the caller its fetch."""
         try:
@@ -931,7 +938,10 @@ class TargetCircuit:
                 consecutive_fetch_failures=failures,
                 blocked_until=blocked_until,
                 blocked_at=blocked_at,
-                egress=self._egress_name,
+                # The observation's own exit when the caller knows it, falling back to how
+                # this circuit was configured. A render that chose a different exit reports
+                # what it used, which is the value worth recording.
+                egress=egress or self._egress_name,
             )
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
             log.exception(

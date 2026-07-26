@@ -441,3 +441,68 @@ class TestSidecarDriverEgress:
         await NodriverSidecarDriver("http://sidecar:8088", client=client).render("https://example.gov/x")
 
         assert "egress_proxy" not in sent
+
+    async def test_the_exit_name_is_sent_so_the_echo_is_not_a_placeholder(self) -> None:
+        """`egress_name` had no producer, so the sidecar's echo evaluated to the literal
+        "unnamed" for every proxied render -- a field that existed on both ends and carried
+        nothing either way."""
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+        sent: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "html": "<html></html>",
+                    "status": 200,
+                    "final_url": "https://x",
+                    "timing_ms": 1.0,
+                    "egress": "tor",
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        driver = NodriverSidecarDriver(
+            "http://sidecar:8088", client=client, egress=ProxyEgress("tor", "socks5://tor:9050")
+        )
+
+        page = await driver.render("https://example.gov/x")
+
+        assert sent.get("egress_name") == "tor"
+        # And the reported exit reaches the caller, rather than being assumed from what was sent.
+        assert page.egress == "tor"
+
+    async def test_the_reported_exit_is_the_sidecars_not_the_drivers_assumption(self) -> None:
+        """An older sidecar that ignores the proxy argument reports its own exit.
+
+        That mismatch is the point: a caller stamps what happened, so a dropped argument shows
+        up rather than being recorded as an exit that was never taken.
+        """
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+        def _handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "html": "<html></html>",
+                    "status": 200,
+                    "final_url": "https://x",
+                    "timing_ms": 1.0,
+                    "egress": "direct",
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        driver = NodriverSidecarDriver(
+            "http://sidecar:8088", client=client, egress=ProxyEgress("tor", "socks5://tor:9050")
+        )
+
+        page = await driver.render("https://example.gov/x")
+
+        assert page.egress == "direct", "the driver reported the exit it asked for, not the one used"

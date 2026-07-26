@@ -531,10 +531,24 @@ leave by two exits. The claim was corrected after probing the running image's ow
 bindings rather than recalling the flag's behaviour.
 
 So the container's `EGRESS_PROXY` is a DEFAULT, and `RenderRequest.egress_proxy` overrides it
-for one render, which gets its own context and disposes it with the tab. `last_egress` on the
-health row records which was used: with more than one exit, the useful fact stops being "this
-target is walled" and becomes "walled FROM THIS EXIT", without which a target blocked through
-one route looks permanently walled and a working alternative is never tried.
+for one render, which gets its own context and disposes it with the tab. `last_egress` on the health row records which was used, and "used" is meant literally: the
+sidecar reports the exit a render actually left by, the driver carries it back on
+`RenderedPage.egress`, and the circuit stamps THAT rather than how it was configured. The
+difference matters because a render can choose its own exit, so a constructor-time name would
+record one that was never taken -- and because an older sidecar that ignores the proxy argument
+reports its own exit, which surfaces the mismatch instead of hiding it.
+
+With more than one exit, the useful fact stops being "this target is walled" and becomes
+"walled FROM THIS EXIT", without which a target blocked through one route looks permanently
+walled and a working alternative is never tried.
+
+One configuration hazard is worth naming because it is invisible: egress is wired separately
+on the drivers and on `ScrapeTool` itself, and getting only the drivers right means the page
+leaves by the configured exit while the `robots.txt` read in front of it leaves by the
+container's own address. Both halves work; the target simply learns the real address from the
+request nobody was thinking about. `ScrapeTool` logs a warning when it sees a proxied driver
+and no exit of its own -- a warning rather than a refusal, since a deployment may want exactly
+that, but it should have to be a decision.
 
 ### 8. robots.txt: wait when asked, escalate when refused
 

@@ -137,7 +137,11 @@ class NodriverSidecarDriver(ScrapeDriver):
             # per-context proxying existed still accepts the payload. The sidecar renders it in
             # its own browser context, which is what makes an exit a per-target choice rather
             # than a per-container one.
-            **({"egress_proxy": self._egress.browser_proxy_arg()} if self._egress is not None else {}),
+            **(
+                {"egress_proxy": self._egress.browser_proxy_arg(), "egress_name": self._egress.name}
+                if self._egress is not None
+                else {}
+            ),
         }
         client = self._client
         owns_client = client is None

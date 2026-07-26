@@ -151,6 +151,7 @@ class ScrapeTool(TearsTool):
         # The default gate inherits this tool's exit. A robots request on the container's own
         # route, in front of a proxied scrape, discloses the address the proxy exists to hide.
         self._robots = RobotsGate(egress=egress) if robots is _ROBOTS_DEFAULT else robots
+        self._warn_on_split_egress(drivers, egress)
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -266,6 +267,33 @@ class ScrapeTool(TearsTool):
             },
             timeout_seconds=self._default_timeout + 60.0,  # render timeout + eval loop's own LLM-call budget
         )
+
+    @staticmethod
+    def _warn_on_split_egress(drivers: dict[str, ScrapeDriver], egress: EgressDriver | None) -> None:
+        """Say something when the scrape is proxied and this tool's own requests are not.
+
+        Safe configuration otherwise needs two independent wiring points for one security
+        property, and getting only the driver right reproduces the disclosure exactly: the
+        page leaves by TOR while the robots.txt read that precedes it leaves by the container's
+        own address. Nothing about that is visible -- both halves work, and the target learns
+        the real address from the request nobody was thinking about.
+
+        A warning rather than a refusal, because a deployment may genuinely want it (a robots
+        read through a shared exit that the target is not the audience for), and refusing would
+        be this library overriding a decision it cannot see the reasons for. But it should have
+        to be a decision.
+        """
+        if egress is not None:
+            return
+        proxied = sorted(name for name, d in drivers.items() if getattr(d, "_egress", None) is not None)
+        if proxied:
+            log.warning(
+                "scrape tool: driver(s) %s leave by a configured exit but this tool does not, so its "
+                "robots.txt reads go out on the container's own address in front of every proxied "
+                "fetch. Pass the same egress driver to ScrapeTool(egress=...) unless that is intended.",
+                ", ".join(proxied),
+                extra={"extra_data": {"proxied_drivers": proxied}},
+            )
 
     async def _clear_robots_block_if_any(self, target_id: str) -> None:
         """Take a target out of the human queue, but only if it was in it.
@@ -589,10 +617,14 @@ class ScrapeTool(TearsTool):
                     # fetch that worked. A recipe that keeps missing against a page we received
                     # is `ScrapeRecipe.consecutive_validation_failures`'s business, and backing
                     # off the fetch would only starve the regeneration that fixes it.
+                    # `egress=` carries the exit the page ACTUALLY came through, as reported by
+                    # the fetcher, rather than the circuit's constructor-time name -- which
+                    # describes how the circuit was configured and is wrong for any render
+                    # that chose a different exit.
                     if blocked:
-                        await self._circuit.record_blocked(target_id)
+                        await self._circuit.record_blocked(target_id, egress=page.egress)
                     else:
-                        await self._circuit.record_reachable(target_id)
+                        await self._circuit.record_reachable(target_id, egress=page.egress)
             except BaseException:
                 # The circuit permitted this fetch, and a permitted decision may have promoted
                 # the in-process breaker to HALF_OPEN and marked its probe in flight. That flag

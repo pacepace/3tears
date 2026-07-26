@@ -1125,3 +1125,36 @@ async def test_no_configured_exit_stamps_nothing_rather_than_direct(
     row = await health.get(_T)
     assert row is not None
     assert row.last_egress is None
+
+
+@pytest.mark.asyncio
+async def test_an_observation_records_the_exit_it_actually_came_through(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The circuit's constructor name describes how it was CONFIGURED, not what happened.
+
+    A render that chose a different exit -- which per-context proxying makes possible -- would
+    otherwise be recorded against the wrong one, and `last_egress` would answer "walled from
+    this exit" with an exit that was never used.
+    """
+    circuit = TargetCircuit(health, policy=policy, egress_name="container-default")
+
+    await circuit.record_blocked(_T, now=_NOW, egress="tor")
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.last_egress == "tor", "the observation was stamped with the circuit's default, not its own exit"
+
+
+@pytest.mark.asyncio
+async def test_an_observation_with_no_exit_falls_back_to_the_circuits_own(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A backend that reports no exit is not evidence the circuit's own is wrong."""
+    circuit = TargetCircuit(health, policy=policy, egress_name="tor")
+
+    await circuit.record_blocked(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.last_egress == "tor"
