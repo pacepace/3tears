@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.ast_helpers import note_unscanned
+
 __all__ = [
     "find_worktree_root",
     "repo_identity",
@@ -126,7 +128,10 @@ def _read_gitdir_pointer(git_file: Path) -> Path | None:
     """
     try:
         content = git_file.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError) as exc:
+        # Without the pointer the caller cannot locate the real git dir, and a worktree checkout
+        # then resolves as if it were a plain repo -- the layout the gates key their scan roots off.
+        note_unscanned(git_file, f"gitdir pointer unreadable: {type(exc).__name__}")
         return None
     result: Path | None = None
     for line in content.splitlines():

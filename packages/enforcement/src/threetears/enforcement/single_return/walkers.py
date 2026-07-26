@@ -35,6 +35,7 @@ from pathlib import Path
 from threetears.enforcement.common import (
     Violation,
     iter_python_files,
+    note_unscanned,
     parse_python_file,
     relative_posix_path,
 )
@@ -174,7 +175,8 @@ def find_multiple_business_returns(
             try:
                 if module_path.stat().st_size == 0:
                     continue
-            except OSError:
+            except OSError as exc:
+                note_unscanned(module_path, f"could not stat: {type(exc).__name__}")
                 continue
             if relative_posix_path(module_path, repo_root) in exempt_files:
                 continue

@@ -12,14 +12,42 @@ import ast
 from collections.abc import Iterable
 from pathlib import Path
 
+from threetears.observe import get_logger
+
 __all__ = [
     "iter_python_files",
+    "note_unscanned",
     "parse_python_file",
     "relative_posix_path",
     "is_private_name",
     "is_logger_call",
     "is_suppress_call",
 ]
+
+log = get_logger(__name__)
+
+
+def note_unscanned(target: Path | str, reason: str) -> None:
+    """record something an enforcement walker could not examine.
+
+    every walker skips files it cannot read or parse, and a skipped file is indistinguishable in
+    the result from a file that was read and found clean -- the gate reports a pass over source it
+    never looked at. that is the whole failure mode these gates exist to catch, so the skips go
+    through one function: ``grep note_unscanned`` finds every place coverage can silently thin,
+    and the warnings say which files it actually thinned on in a given run.
+
+    :param target: the file, directory, or dotted name that was not examined
+    :ptype target: Path | str
+    :param reason: why it could not be examined
+    :ptype reason: str
+    :return: nothing
+    :rtype: None
+    """
+    log.warning(
+        "enforcement walker skipped a target it could not examine",
+        extra={"extra_data": {"target": str(target), "reason": reason}},
+    )
+
 
 # directories never walked for source-scanning passes. covers virtual
 # environments, build artefacts, IDE caches, vcs metadata, and the
@@ -85,7 +113,9 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
     """
     try:
         entries = sorted(directory.iterdir(), key=lambda p: p.name)
-    except PermissionError, FileNotFoundError:
+    except (PermissionError, FileNotFoundError) as exc:
+        # A whole subtree drops out of every walker that uses this iterator, silently.
+        note_unscanned(directory, f"directory could not be listed: {type(exc).__name__}")
         return
     for entry in entries:
         if entry.is_dir():
@@ -103,9 +133,11 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
 def parse_python_file(path: Path) -> ast.Module | None:
     """parse a python file as utf-8, returning None on parse failure.
 
-    swallows :class:`SyntaxError` and :class:`UnicodeDecodeError` since
+    absorbs :class:`SyntaxError` and :class:`UnicodeDecodeError` since
     walkers must be robust to template / non-python files that slipped
-    past the iterator filters. every other I/O error propagates.
+    past the iterator filters. every other I/O error propagates. both
+    absorbed cases go through :func:`note_unscanned` -- a file no walker
+    could parse is a file no gate has actually checked.
 
     :param path: file to parse
     :ptype path: Path
@@ -115,10 +147,12 @@ def parse_python_file(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
+        note_unscanned(path, "not valid utf-8")
         return None
     try:
         return ast.parse(source, filename=str(path))
-    except SyntaxError:
+    except SyntaxError as exc:
+        note_unscanned(path, f"syntax error at line {exc.lineno}")
         return None
 
 

@@ -49,6 +49,7 @@ from threetears.enforcement.common import (
     Violation,
     is_suppress_call,
     iter_python_files,
+    note_unscanned,
     parse_python_file,
 )
 
@@ -389,6 +390,7 @@ def find_silent_swallows(
             try:
                 source_text = module_path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
+                note_unscanned(module_path, "not valid utf-8")
                 continue
             tree = parse_python_file(module_path)
             if tree is None:
