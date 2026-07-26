@@ -166,7 +166,10 @@ class RenderRequest(BaseModel):
     #: a per-target choice. Omitted uses the container's own route.
     egress_proxy: str | None = None
     #: Name recorded against the result, so "walled" can be told apart from "walled from this
-    #: exit". Free-form because the names are the deployment's.
+    #: exit". Free-form because the names are the deployment's. Echoed back on the response so
+    #: the caller records the exit that was actually used rather than the one it hoped for --
+    #: without the echo, a request whose proxy argument was dropped is indistinguishable from
+    #: one that was honoured.
     egress_name: str | None = None
 
 
@@ -184,6 +187,11 @@ class RenderResponse(BaseModel):
     final_url: str
     timing_ms: float
     network_calls: list[NetworkCall] = []
+    #: The exit this render actually left by: the request's own name when it asked for one,
+    #: otherwise the container's. A caller stamps THIS against its result rather than what it
+    #: sent, so a dropped proxy argument shows up as a mismatch instead of silently recording
+    #: an exit that was never used.
+    egress: str | None = None
     #: One entry per real ``evaluate`` nav step, in step order -- see
     #: ``threetears.scrape.driver.NavStep``'s own docstring.
     eval_results: list[Any] = []
@@ -803,6 +811,10 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
         eval_results=result.eval_results,
+        # The exit actually used: the request's own name when it supplied a proxy, otherwise
+        # the container's. Reported rather than assumed, so a caller records what happened
+        # instead of what it asked for.
+        egress=(req.egress_name or "unnamed") if req.egress_proxy else EGRESS_NAME,
     )
 
 

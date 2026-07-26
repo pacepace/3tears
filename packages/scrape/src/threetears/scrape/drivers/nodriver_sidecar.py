@@ -170,6 +170,10 @@ class NodriverSidecarDriver(ScrapeDriver):
             status=data["status"],
             final_url=data["final_url"],
             timing_ms=data["timing_ms"],
+            # Reported by the sidecar, not inferred from what was sent: a request whose proxy
+            # argument was dropped by an older sidecar comes back with the container's exit,
+            # which is the truth and is what should be recorded.
+            egress=data.get("egress"),
             network_calls=[NetworkCall(**call) for call in data.get("network_calls", [])],
             eval_results=data.get("eval_results", []),
         )

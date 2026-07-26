@@ -127,6 +127,11 @@ class RenderedPage:
     #: expression's own (JSON-serializable) return value. Empty when no
     #: ``evaluate`` step ran.
     eval_results: list[Any] = field(default_factory=list)
+    #: Which exit this page was fetched through, when the backend knows. ``None`` from a
+    #: backend that has no concept of one. Reported by the fetcher rather than assumed by the
+    #: caller, so a dropped proxy argument surfaces as a mismatch rather than as a result
+    #: quietly stamped with an exit that was never used.
+    egress: str | None = None
 
 
 class ScrapeDriver(ABC):

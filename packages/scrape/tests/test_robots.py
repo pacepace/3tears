@@ -12,6 +12,7 @@ is "on" while nothing waits is worse than one that is off, because it is believe
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -357,37 +358,57 @@ async def test_passing_none_explicitly_consults_nothing() -> None:
     assert driver.fetched == [url]
 
 
-async def test_a_tool_built_without_mentioning_robots_still_gets_a_gate() -> None:
-    """ "On by default" has to be true of a tool nobody configured, or it is not a default.
+async def test_a_tool_built_without_mentioning_robots_still_consults_one() -> None:
+    """The default has to be provable without the test supplying the thing it is proving.
 
-    This is the chunk's own "Watch for" one layer up from where it was first fixed: a config
-    that is on by default while reading a value nothing sets is on in name and off in fact.
+    My first version of this assigned `tool._robots` before asserting, so reverting the
+    constructor default to `None` left it green -- it tested the gate the test had just
+    installed. The inline comment claimed it substituted only the FETCHER; the line replaced
+    the whole gate.
+
+    Patching the default FETCHER BUILDER instead leaves the tool's own wiring untouched: if
+    `ScrapeTool` stops building a gate, nothing consults the stub and the disallowed path is
+    fetched.
     """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-    from threetears.scrape.robots import RobotsGate
-    from threetears.scrape.tool import ScrapeTool
+    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+
+    url = "https://example.gov/private/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    driver = _RecordingDriver()
+
+    def _disallowing(_egress=None):
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, _ROBOTS_DISALLOW
+
+        return _fetch
 
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
-    tool = ScrapeTool(
-        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
-        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
-        drivers={},
-        api_key="k",
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": _derive_target_id(url, schema),
+                "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
     )
 
-    # Asserted by BEHAVIOUR, not by isinstance. "Watch for: a config that is on by default but
-    # reads a value nothing sets" is this chunk's own warning, and a test that checks the
-    # attribute exists would pass against a gate that never consults anything.
-    tool._robots = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- substituting the gate's FETCHER while keeping the tool's own default wiring is the only way to prove the default path consults a file
-    driver = _RecordingDriver()
-    tool._drivers = {"nodriver": driver}  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
-    await _seed(tool, "https://example.gov/private/list", {"employer": "str", "affected_count": "int"})
-
-    result = await tool.execute(
-        url="https://example.gov/private/list", field_schema={"employer": "str", "affected_count": "int"}
-    )
+    with patch("threetears.scrape.robots._default_fetch_via", _disallowing):
+        # Built AFTER the patch and never touched again: the gate under test is the one the
+        # constructor decides to make, which is the whole claim.
+        tool = ScrapeTool(
+            recipe_collection=recipes,
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": driver},
+            api_key="k",
+        )
+        result = await tool.execute(url=url, field_schema=schema)
 
     assert driver.fetched == [], "a tool that never mentioned robots fetched a disallowed path"
     assert result.metadata["needs_human"] is True
@@ -417,21 +438,66 @@ async def test_a_gate_with_no_arguments_actually_reaches_for_a_file() -> None:
     assert decision.allowed is True, "an unreachable file must not block the work"
 
 
+@pytest.mark.real_robots_fetch
 async def test_the_default_fetcher_leaves_by_the_configured_exit() -> None:
-    """A robots read on the container's own route, in front of a proxied scrape, discloses the
-    address the proxy exists to hide.
+    """The branch's one security fix, guarded by a test that fails when it regresses.
 
-    This was introduced BY making robots on-by-default: before that, no request went out at
-    all. It is the failure design section 7 names -- a deployment with one exit configured and
-    two in reality, believing it has the property.
+    My first version asserted `gate._egress is not None` and then inspected the EGRESS
+    DRIVER's transport -- never the fetcher. Removing `transport=` from `_default_fetch_via`
+    left it green, so the fix protecting against disclosing the container's real address had
+    no protection of its own. The autouse conftest made it worse: it patched the real builder
+    suite-wide, so nothing anywhere executed it.
+
+    This runs the REAL builder (hence the marker) and intercepts the client it constructs, so
+    the assertion is on the transport the robots request would actually use.
     """
-    from threetears.core.egress import ProxyEgress
+    import httpx
 
-    gate = RobotsGate(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
-    # The fetcher is a closure over the egress; what is observable is the transport it builds.
-    assert gate._egress is not None  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the bound exit is the property under test
-    pool = gate._egress.httpx_transport()._pool  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
-    assert "9050" in str(getattr(pool, "_proxy_url", "")), "the robots read would leave by the wrong exit"
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape import robots as robots_mod
+
+    captured: dict[str, Any] = {}
+    real_client = httpx.AsyncClient
+
+    class _Recording(real_client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["transport"] = kwargs.get("transport")
+            super().__init__(
+                *args, **{**kwargs, "transport": httpx.MockTransport(lambda _r: httpx.Response(200, text=""))}
+            )
+
+    fetch = robots_mod._default_fetch_via(ProxyEgress("tor", "socks5://127.0.0.1:9050"))  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the builder IS the subject
+    with patch.object(httpx, "AsyncClient", _Recording):
+        await fetch("https://example.gov/robots.txt")
+
+    transport = captured["transport"]
+    assert transport is not None, "the robots read went out on the container's own route"
+    pool = transport._pool  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the pool carries the exit
+    assert "9050" in str(getattr(pool, "_proxy_url", "")), "the robots read left by the wrong exit"
+
+
+@pytest.mark.real_robots_fetch
+async def test_the_default_fetcher_with_no_exit_binds_no_transport() -> None:
+    """A deployment with no egress configured gets httpx's own default, not a broken one."""
+    import httpx
+
+    from threetears.scrape import robots as robots_mod
+
+    captured: dict[str, Any] = {}
+    real_client = httpx.AsyncClient
+
+    class _Recording(real_client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["transport"] = kwargs.get("transport")
+            super().__init__(
+                *args, **{**kwargs, "transport": httpx.MockTransport(lambda _r: httpx.Response(200, text=""))}
+            )
+
+    fetch = robots_mod._default_fetch_via(None)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
+    with patch.object(httpx, "AsyncClient", _Recording):
+        await fetch("https://example.gov/robots.txt")
+
+    assert captured["transport"] is None
 
 
 async def _seed(tool, url: str, schema: dict) -> None:
@@ -497,3 +563,95 @@ async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:
     assert driver.fetched == [], "the circuit was supposed to suppress this fetch"
     assert slept.await_count == 0, "a suppressed fetch still paid the crawl delay"
     assert "backing off" in (result.error or "")
+
+
+async def test_a_fetch_of_an_unblocked_target_writes_nothing() -> None:
+    """The clear-down runs on every allowed fetch, so it must not cost a write on every one.
+
+    Unconditional, it created a health row for targets that had never had one and put the
+    optimistic-lock fence on the hot path of every poll, to correct a state the overwhelming
+    majority of targets have never been in.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+
+    url = "https://example.gov/public/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    target_id = _derive_target_id(url, schema)
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": target_id,
+                "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
+    )
+    driver = _RecordingDriver()
+    tool = ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        drivers={"nodriver": driver},
+        robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
+        api_key="k",
+    )
+
+    # Supplying a health collection opts the tool into challenge classification, which runs
+    # whenever extraction misses and burns its full retry budget against a fake key -- 33s
+    # measured, for a path this test is not about. `None` is the classifier's own documented
+    # "could not decide", so the tool takes the same branch it would on a real one.
+    with patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None):
+        await tool.execute(url=url, field_schema=schema)
+
+    row = await health.get(target_id)
+    assert row is None or row.robots_blocked_at is None, (
+        "an allowed fetch of a never-blocked target wrote to its health row"
+    )
+
+
+async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
+    """The clear-down sits outside every try in `execute`, so it has to hold its own.
+
+    A housekeeping write must never turn a page the caller already paid for into a failed
+    ToolResult -- the same posture `circuit.py` takes for its identical call.
+
+    Asserted on the method rather than through `execute`: driving it end to end means a real
+    extraction, a health collection and the classifier behind it, so a failure there would be
+    attributed to this and a pass would prove less than it appears to.
+    """
+    from unittest.mock import AsyncMock
+
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection, record_robots_block
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    await record_robots_block(health, target_id="t", reason="was disallowed")
+
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        drivers={},
+        api_key="k",
+    )
+
+    with patch(
+        "threetears.scrape.tool.clear_robots_block", new=AsyncMock(side_effect=RuntimeError("health store is gone"))
+    ):
+        # Returns rather than raises. Nothing to assert but the absence of an exception, which
+        # is exactly the contract: the caller's fetch is already done and paid for.
+        await tool._clear_robots_block_if_any("t")  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the housekeeping method IS the subject

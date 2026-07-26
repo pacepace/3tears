@@ -24,8 +24,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _no_live_robots_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the default robots fetcher fail fast instead of reaching the network."""
+def _no_live_robots_fetch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the default robots fetcher fail fast instead of reaching the network.
+
+    Opt out with ``@pytest.mark.real_robots_fetch`` when the REAL builder is the thing under
+    test. That escape hatch is not a convenience: patching this suite-wide meant the actual
+    ``_default_fetch_via`` was never executed by anything, so the branch's one security fix --
+    binding the robots read to the configured exit -- had no test that could fail when it
+    regressed. A blanket patch that hides the code it is protecting is worse than no patch.
+    """
+    if request.node.get_closest_marker("real_robots_fetch") is not None:
+        return
 
     def _offline(_egress: Any = None) -> Any:
         async def _fetch(url: str) -> tuple[int, str]:

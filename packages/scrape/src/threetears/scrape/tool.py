@@ -267,6 +267,27 @@ class ScrapeTool(TearsTool):
             timeout_seconds=self._default_timeout + 60.0,  # render timeout + eval loop's own LLM-call budget
         )
 
+    async def _clear_robots_block_if_any(self, target_id: str) -> None:
+        """Take a target out of the human queue, but only if it was in it.
+
+        Reads before writing because the read is cached three-tier and the write is not: the
+        overwhelming majority of fetches are of targets no robots file has ever disallowed,
+        and writing for all of them to correct the few is the wrong way round.
+        """
+        if self._health_collection is None:
+            return
+        try:
+            row = await self._health_collection.get(target_id)
+            if row is None or row.robots_blocked_at is None:
+                return
+            await clear_robots_block(self._health_collection, target_id=target_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this is housekeeping after a fetch the caller has already paid for; a health-store failure must not turn a good page into a failed ToolResult, and the stale queue entry is visible and self-corrects. Logged with its traceback below
+            log.exception(
+                "scrape tool: could not clear the robots block for target %s; it may stay queued",
+                target_id,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+
     async def _read_solved_state(self, target_id: str) -> dict[str, Any] | None:
         """A human's stored solve for *target_id*, or ``None`` when there is none to use.
 
@@ -389,7 +410,14 @@ class ScrapeTool(TearsTool):
             # The file no longer disallows us, so this target stops needing a person for that
             # reason. A site that lifts its rule would otherwise sit in the queue forever, and
             # nobody working that queue would know why it was still there.
-            await clear_robots_block(self._health_collection, target_id=target_id)
+            #
+            # Guarded, and the guard is the point: unconditional, this ran a durable write on
+            # EVERY allowed fetch -- creating rows for targets that never had one, putting the
+            # optimistic-lock fence on the hot path of every poll rather than on state change,
+            # and doing it for the overwhelming majority of targets that have never been
+            # blocked at all. Never raises, for the same reason `circuit.py` wraps its own
+            # call: a housekeeping failure must not turn a good fetch into a failed one.
+            await self._clear_robots_block_if_any(target_id)
 
         decision: FetchDecision | None = None
         if error is None and self._circuit is not None:
