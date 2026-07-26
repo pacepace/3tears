@@ -176,13 +176,7 @@ class ApiDriver(ScrapeDriver):
 
     @property
     def egress(self) -> EgressDriver | None:
-        """The exit this driver's fetches leave by, or ``None`` for the default route.
-
-        Public because ``ScrapeTool`` reads it to spot a split configuration -- drivers
-        proxied while the tool's own robots read is not. A security check that probed a
-        private name would fail silently the moment the name changed, which is the worst
-        possible failure mode for one.
-        """
+        """This driver's configured exit. Overrides ``ScrapeDriver``'s ``None`` default."""
         return self._egress
 
     @property

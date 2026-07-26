@@ -285,9 +285,12 @@ class ScrapeTool(TearsTool):
         """
         if egress is not None:
             return
-        # `egress` is a PUBLIC property on the drivers that support one. Probing a private
-        # name would make this check fail silently the moment that name changed -- the worst
-        # failure mode for a security check, and the reason it is not a getattr on `_egress`.
+        # `egress` is declared on `ScrapeDriver` with a ``None`` default, so the name is
+        # promised rather than guessed at and mypy can see it. The read stays defensive
+        # because this protocol is satisfied STRUCTURALLY as well as by inheritance -- a
+        # consuming application's own driver, or a stand-in written before this attribute
+        # existed, is a valid `ScrapeDriver` without it, and a constructor that raised
+        # `AttributeError` on one would turn a security warning into an outage.
         proxied = sorted(name for name, d in drivers.items() if getattr(d, "egress", None) is not None)
         if proxied:
             log.warning(

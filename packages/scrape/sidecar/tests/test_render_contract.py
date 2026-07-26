@@ -277,25 +277,18 @@ class _FakeBrowser:
         self._fail_times = fail_times
         self.get_calls = 0
         self.cdp_calls: list[object] = []
-        self._targets: list[object] = []
 
     async def send(self, cmd: object) -> object:
         """Stand in for the CDP calls the isolated-context path makes.
 
-        A render that names its own exit goes through `_create_isolated_tab`, which creates a
-        browser context and a target on the browser connection rather than calling `get`.
-        Without this the proxied path 502s and a test of the echo would be asserting on an
-        error response.
+        Needed for context DISPOSAL: a render that named its own exit disposes its context in
+        `_render`'s finally, on the browser connection. The tab creation itself is
+        monkeypatched at `_create_isolated_tab`, so `update_targets`/`targets` are not needed
+        and are deliberately absent -- unreachable fake surface reads as covered behaviour and
+        is worse than none.
         """
         self.cdp_calls.append(cmd)
         return "ctx-fake"
-
-    async def update_targets(self) -> None:
-        return None
-
-    @property
-    def targets(self) -> list[object]:
-        return list(self._targets)
 
     async def get(self, url: str, new_tab: bool = False) -> _FakeTab:
         self.get_calls += 1

@@ -144,6 +144,23 @@ class ScrapeDriver(ABC):
     """
 
     @property
+    def egress(self) -> Any:
+        """The exit this driver's fetches leave by, or ``None`` for the default route.
+
+        Concrete rather than abstract, and returning ``None``, because most backends have no
+        concept of an exit and should not be made to declare one. What it buys is that asking
+        the question is always valid: ``ScrapeTool`` inspects this to warn about a split
+        configuration -- drivers proxied while its own ``robots.txt`` read is not -- and a
+        check that had to ``getattr`` its way to an undeclared name would fail silently the
+        moment that name changed, which is the worst failure mode a security check can have.
+
+        Typed ``Any`` rather than ``EgressDriver`` to keep this module's zero-non-stdlib-import
+        discipline, which is what lets it be imported from anywhere without dragging a
+        dependency along.
+        """
+        return None
+
+    @property
     @abstractmethod
     def name(self) -> str:
         """Stable string key for this driver (e.g. ``"nodriver"``)."""
