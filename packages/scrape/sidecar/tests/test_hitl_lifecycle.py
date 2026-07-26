@@ -252,6 +252,27 @@ def test_x11vnc_is_bound_to_loopback_so_websockify_is_the_only_way_in(stub_path:
     assert "-localhost" in argv
     assert "-display" in argv and ":99" in argv
     assert "-nopw" in argv, "a password prompt with no password to check would stall the connection"
+    assert "-xrandr" in argv and "resize" in argv, "a server-side geometry change would leave viewers on a stale size"
+
+
+def test_the_client_url_asks_the_server_to_match_the_viewport(stub_path: Path) -> None:
+    """The parameter has to be one the served page actually reads.
+
+    `vnc_lite.html` parses `scale` and nothing else, so the `resize=scale` this once handed out
+    was inert -- a URL parameter that had never once done anything, on the one screen a summoned
+    operator sees. `vnc.html` reads `resize`, and needs `autoconnect` to keep the property the
+    lite page was originally chosen for: that it is connected on arrival rather than waiting
+    behind a settings sidebar.
+    """
+    del stub_path
+    path = VncLifecycle(display_num=99).client_path
+
+    assert "resize=scale" in path, (
+        "without a scaling mode the operator scrolls a fixed 1920x1080 desktop; `remote` is "
+        "silently inert here because Xvfb has a single mode and cannot resize"
+    )
+    assert "autoconnect=true" in path, "a summoned operator would arrive at a settings sidebar"
+    assert hitl.NOVNC_PAGE in path
 
 
 def test_websockify_proxies_the_loopback_rfb_port_in_the_documented_argument_order(stub_path: Path) -> None:

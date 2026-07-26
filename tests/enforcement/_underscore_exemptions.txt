@@ -370,9 +370,9 @@ packages/observe/tests/test_tracing.py:190:_otel_available
 packages/observe/tests/test_tracing.py:205:_otel_available
 
 # rationale: main and hitl are two halves of ONE sidecar container and import each other; hitl opens a target through main's own isolated-tab helper rather than reimplementing it. Module-private on purpose -- nothing outside the container may call it, and a public alias would advertise it to consumers that must not have it. Paired with the per-file ignores in packages/scrape/sidecar/ruff.toml, the config that governs these files, since the repo-root pyproject cannot reach past a nested ruff.toml.
-packages/scrape/sidecar/hitl.py:918:_create_isolated_tab
+packages/scrape/sidecar/hitl.py:942:_create_isolated_tab
 # rationale: as above -- hitl replays a target's nav steps through main's executor rather than reimplementing them, so a step type added in main works in a HITL session for free.
-packages/scrape/sidecar/hitl.py:927:_execute_nav_steps
+packages/scrape/sidecar/hitl.py:951:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
 packages/scrape/sidecar/main.py:415:_apply_context_state
@@ -392,11 +392,11 @@ packages/scrape/sidecar/tests/test_hitl_lifecycle.py:154:_websockify
 # rationale: the argv the lifecycle builds; the flags ARE the security property (loopback bind, no view-only), so asserting on the built arguments is the only way to check them without a running server.
 packages/scrape/sidecar/tests/test_hitl_lifecycle.py:251:_x11vnc_argv
 # rationale: as above -- the port and bind address it is launched with are the exposure decision.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:264:_websockify_argv
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:285:_websockify_argv
 # rationale: the module's own loopback RFB port, read so the test scales with it rather than hardcoding a number that would silently stop matching.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:266:_RFB_PORT
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:287:_RFB_PORT
 # rationale: the process-spawn seam, patched so the lifecycle can be driven without launching real x11vnc and websockify binaries.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:347:_spawn
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:368:_spawn
 
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
 packages/scrape/sidecar/tests/test_hitl_session.py:383:_apply_origin_storage

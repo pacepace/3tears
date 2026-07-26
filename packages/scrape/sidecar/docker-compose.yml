@@ -1,7 +1,15 @@
 services:
   nodriver-sidecar:
     build: .
-    image: nodriver-sidecar:latest
+    # The SAME tag `docker buildx bake nodriver-sidecar` writes, and that matters more than it
+    # looks. This once read `nodriver-sidecar:latest` while bake tags `aibots/...`, so a
+    # deployment that built with bake and then ran compose got whatever stale image happened to
+    # carry the bare name -- silently, with every command reported as succeeding. It cost a
+    # verification run against a nine-day-old container whose feature under test did not exist
+    # in it yet.
+    #
+    # REGISTRY defaults to `aibots` in docker-bake.hcl; override both together if you retag.
+    image: ${REGISTRY:-aibots}/nodriver-sidecar:latest
     container_name: nodriver-sidecar
     # Chromium under Xvfb needs real shared memory; the Docker default (64mb)
     # crashes the renderer process under real page loads.

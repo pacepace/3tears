@@ -55,11 +55,19 @@ log = logging.getLogger("nodriver_sidecar.hitl")
 #: page explicitly. Serving the directory alone would 404 at ``/``.
 NOVNC_ROOT = os.environ.get("NOVNC_ROOT", "/usr/share/novnc")
 
-#: The noVNC page to hand a caller. ``vnc_lite.html`` rather than ``vnc.html``: the full
-#: client opens a settings sidebar and expects the user to connect manually, where the lite
-#: page connects to the websockify endpoint that served it. For a human summoned to clear one
-#: challenge, "it is already connected" is the whole difference.
-NOVNC_PAGE = "vnc_lite.html"
+#: The noVNC page to hand a caller. ``vnc.html`` with ``autoconnect``, not ``vnc_lite.html``.
+#:
+#: The lite page was chosen first because it connects on load where the full client waits behind
+#: a settings sidebar, and for a human summoned to clear one challenge "it is already connected"
+#: is the whole difference. ``autoconnect=true`` buys that from the full client too, and the
+#: lite page cannot do the thing that matters more: it parses ``scale`` and nothing else, so it
+#: has no way to ask the server to match the viewport. An operator on a laptop was left
+#: scrolling a 1920x1080 desktop to reach a taskbar at the bottom of it.
+#:
+#: Verified against the installed tree rather than recalled: ``vnc_lite.html`` reads
+#: ``scale``, and ``vnc.html`` reads ``resize``. The ``resize=scale`` this once handed out was
+#: inert on the lite page -- a parameter that had never once done anything.
+NOVNC_PAGE = "vnc.html"
 
 #: RFB port ``x11vnc`` listens on, loopback only. Not published by the container and not
 #: configurable per session, because there is exactly one display.
@@ -241,7 +249,17 @@ class VncLifecycle:
         Without it the page loads and waits for a human to fill in a form, which is a worse
         experience than the black rectangle it resembles.
         """
-        return f"/{NOVNC_PAGE}?path=websockify&resize=scale"
+        # ``resize=scale``, not ``remote``, and the reason is a property of Xvfb rather than a
+        # preference. Xvfb creates ONE mode at startup and reports `maximum 1920 x 1080` with a
+        # single entry in its mode list, so there is nothing for a client-driven resize to
+        # resize to -- `resize=remote` is accepted and silently does nothing. Verified with
+        # `xrandr` against the running container, not assumed.
+        #
+        # Scaling costs some sharpness on text an operator has to read, which is a real cost on
+        # this screen of all screens. Making the desktop genuinely follow the viewport needs an
+        # X server that can resize -- TigerVNC's Xvnc, which would replace both Xvfb and x11vnc
+        # -- and that is a container change rather than a flag.
+        return f"/{NOVNC_PAGE}?path=websockify&autoconnect=true&resize=scale"
 
     def _x11vnc_argv(self) -> list[str]:
         """``x11vnc`` invocation.
@@ -257,6 +275,10 @@ class VncLifecycle:
         - ``-noxdamage`` because Xvfb's DAMAGE extension reports are unreliable enough to
           leave stale rectangles on screen, and a stale screen is exactly the failure mode
           nobody notices until they have already clicked the wrong thing.
+        - ``-xrandr resize`` so a server-side geometry change is picked up rather than leaving
+          viewers on a stale size. It does NOT enable a client-driven resize here: Xvfb has one
+          fixed mode, so there is nothing to resize to. Kept because it costs nothing and
+          becomes correct the moment the X server is one that can resize.
         """
         return [
             self._require("x11vnc"),
@@ -269,6 +291,8 @@ class VncLifecycle:
             "-forever",
             "-shared",
             "-noxdamage",
+            "-xrandr",
+            "resize",
             "-quiet",
         ]
 

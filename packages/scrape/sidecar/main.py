@@ -721,6 +721,20 @@ async def _warm_up() -> None:
     _ready = True
 
 
+#: How much larger to draw everything a human looks at, like the display-scaling setting on a
+#: desktop OS. ``1.0`` is unscaled; ``1.5`` makes text half again as large.
+#:
+#: A requirement raised by an operator during verification, not a fix: the display is a fixed
+#: 1920x1080 scaled down to whatever browser window is looking at it, so on a laptop the text
+#: arrives small and there was no way to ask for it bigger. Scaling the DESKTOP would undo the
+#: fit; scaling the CONTENT leaves the fit alone, which is what was asked for.
+#:
+#: Deliberately affects only what a person reads. Rendering for extraction never goes through
+#: this path -- a scraped page's own layout must not depend on an operator's comfort setting, or
+#: two deployments with different values would extract differently from the same site.
+UI_SCALE = os.environ.get("UI_SCALE", "1.0")
+
+
 def _browser_args() -> list[str]:
     """Chromium's launch arguments, including the egress exit when one is configured.
 
@@ -729,6 +743,11 @@ def _browser_args() -> list[str]:
     its own copy, which stayed green with the production line deleted -- a test of the test.
     """
     args = ["--disable-dev-shm-usage", "--disable-gpu"]
+    if UI_SCALE not in ("", "1.0", "1"):
+        # Chromium's own display-scaling knob, the same one a desktop OS drives. Applied to the
+        # browser rather than the X server so the desktop geometry -- and therefore the fit the
+        # operator already has -- is untouched.
+        args.append(f"--force-device-scale-factor={UI_SCALE}")
     if EGRESS_PROXY:
         # Process-wide by nature: Chromium applies --proxy-server to the whole browser, so this
         # is the DEFAULT exit rather than the only one. A render that wants a different exit

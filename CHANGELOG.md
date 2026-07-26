@@ -235,6 +235,38 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**The VNC display is now operable by a human, which it was not (`3tears-scrape` sidecar).** Four
+defects, every one invisible to a green suite because every test asserted the contexts were
+isolated and the slots accounted for, and every one of those assertions was true. The windows
+existed, held the right cookies, and could not be used.
+
+There was no window manager: bare Xvfb maps windows in creation order with no titlebars and no
+click-to-focus, so with four slots only the last target opened was reachable. `openbox` fixes
+that, and `tint2` gives a taskbar, without which switching is blind and a minimised window has
+nowhere to come back from. openbox's four virtual desktops with the mousewheel bound to
+`GoToDesktop` are collapsed to one and the gesture unbound -- a stray scroll moved the operator
+to an empty desktop where the panel was still drawn but held nothing, which reads as a missing
+taskbar rather than a switched desktop.
+
+And the client URL handed to every operator since the VNC shipped carried `resize=scale`, which
+`vnc_lite.html` does not parse: it reads `scale` and does not know the word `resize`. The
+parameter had never once done anything, so an operator on a laptop scrolled a fixed 1920x1080
+desktop to reach the taskbar at the bottom of it. The page served is now `vnc.html` with
+`autoconnect=true&resize=scale`.
+
+**`UI_SCALE` is the display-scaling setting a desktop OS would offer.** Chromium's
+`--force-device-scale-factor` plus `Xft.dpi` for openbox and tint2, so the page and the
+furniture around it scale together -- either alone reads as a rendering fault. It affects only
+what a person looks at: extraction renders never go through it, because a scraped page's layout
+must not depend on an operator's comfort setting. Live per-site adjustment is Chromium's own
+`Ctrl +`, which persists in the pinned profile.
+
+**`docker-compose.yml` names the tag `docker buildx bake` writes.** It said
+`nodriver-sidecar:latest` while bake tags `aibots/...`, so building and then running started
+whatever stale image carried the bare name -- silently, with every command reporting success. It
+cost a verification run against a nine-day-old container in which the feature under test did not
+exist.
+
 **A cancelled poll gives back the crawl-delay turn it took (`3tears`, `3tears-scrape`).**
 `TokenBucket.claim` consumes and had no inverse, so the only recovery was refill over time: a
 caller cancelled between taking a turn and doing the work held that key's shared budget down for

@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 import main
 import pytest
+import hitl
 from hitl import VncSession, VncUnavailable
 
 
@@ -42,7 +43,7 @@ class _FakeLifecycle:
 
     @property
     def client_path(self) -> str:
-        return "/vnc_lite.html?path=websockify"
+        return f"/{hitl.NOVNC_PAGE}?path=websockify"
 
     def health(self) -> bool:
         return self._running
@@ -51,7 +52,7 @@ class _FakeLifecycle:
         if self._explode:
             raise VncUnavailable("x11vnc is not installed in this container")
         self._running = True
-        return VncSession(web_port=6080, display=":99", path="/vnc_lite.html?path=websockify")
+        return VncSession(web_port=6080, display=":99", path=f"/{hitl.NOVNC_PAGE}?path=websockify")
 
     async def stop(self) -> None:
         self.stops += 1
@@ -78,7 +79,7 @@ async def test_starting_returns_where_to_point_a_browser(fake_vnc: _FakeLifecycl
     body: dict[str, Any] = r.json()
     assert body["display"] == ":99"
     assert body["web_port"] == 6080
-    assert body["path"].startswith("/vnc_lite.html")
+    assert body["path"].startswith(f"/{hitl.NOVNC_PAGE}")
 
 
 async def test_status_reports_running_only_once_started(fake_vnc: _FakeLifecycle) -> None:
@@ -212,7 +213,7 @@ async def test_opening_returns_the_token_once_and_says_where_the_display_is(
     assert r.status_code == 200
     assert body["token"] == "tok"
     assert body["max_slots"] == 2
-    assert body["vnc_path"].startswith("/vnc_lite.html")
+    assert body["vnc_path"].startswith(f"/{hitl.NOVNC_PAGE}")
 
 
 async def test_a_second_session_is_409_not_a_queue(fake_sessions: _FakeSessions) -> None:
