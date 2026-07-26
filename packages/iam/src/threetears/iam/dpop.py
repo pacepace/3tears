@@ -138,6 +138,12 @@ async def validate_dpop_proof(
     now = int(datetime.now(UTC).timestamp())
     # Two-sided: a proof from the future is as suspect as a stale one, and an unbounded
     # future iat would let an attacker mint proofs today for use after a key rotation.
+    #
+    # The future half is a BACKSTOP today, not the thing that fires: PyJWT validates `iat`
+    # during decode above and rejects an immature signature first. It is kept because that
+    # is PyJWT's default with zero leeway -- a caller that ever passes leeway, or a PyJWT
+    # release that relaxes the check, silently removes the only guard otherwise. The stale
+    # half is genuinely this module's: PyJWT has no maximum-age notion at all.
     if abs(now - iat) > iat_window.total_seconds():
         raise DpopError("dpop proof iat is outside the acceptable freshness window.")
 
