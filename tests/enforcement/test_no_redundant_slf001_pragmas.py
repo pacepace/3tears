@@ -48,17 +48,26 @@ _BLANKET_NOQA = re.compile(
 
 
 def _is_vendored(path: Path) -> bool:
-    return any(part in {".venv", "node_modules", ".git", "__pycache__"} for part in path.parts)
+    """Whether *path* sits under a vendored directory INSIDE the repo.
+
+    Relative to the repo root, deliberately. Testing an absolute path's parts meant a checkout
+    living under any directory named `.venv` or `.git` -- a plausible place to clone one --
+    excluded the entire tree, and both assertions below would then pass on a scan of nothing.
+    """
+    return any(part in {".venv", "node_modules", ".git", "__pycache__"} for part in path.relative_to(_REPO_ROOT).parts)
 
 
 def _ruff_configs() -> list[Path]:
-    """Every file ruff would read a per-file ignore from: all four forms it recognises.
+    """Every file ruff would read a per-file ignore from: the three forms it recognises.
 
     An earlier version read the root ``pyproject.toml`` plus ``ruff.toml`` and described itself
-    as reading every config -- which is how the sidecar override went unscanned in the first
-    place. Enumerating all four is cheap; being one form short is the same failure again, and
-    the likeliest miss in a 27-package workspace is a package ``pyproject.toml`` growing a
-    ``[tool.ruff]`` section, since every package already ships that file.
+    as reading every config -- which is how the sidecar override went unscanned. Enumerating all
+    three is cheap; being one form short is the same failure again, and the likeliest miss in a
+    27-package workspace is a package ``pyproject.toml`` growing a ``[tool.ruff]`` section,
+    since every package already ships that file.
+
+    (The correction to that overclaim then said "all four forms", over a loop reading three.
+    Hence the count is now stated once, next to the tuple it describes.)
     """
     configs: list[Path] = []
     for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
@@ -100,6 +109,25 @@ def _exempted_files(config: Path, pattern: str) -> list[Path]:
 
 
 class TestNoRedundantSlf001Pragmas:
+    def test_the_scan_actually_covers_something(self) -> None:
+        """A floor, because every failure mode of this discovery is an EMPTY list.
+
+        The first version opened with an unconditional read of the root `pyproject.toml`, which
+        would have raised if discovery were wrong. Replacing it with globbing plus filters
+        removed that accidental floor: a bad filter, a renamed config, or a path predicate that
+        excludes the tree all yield zero files, and both assertions below then pass on a scan of
+        nothing -- which is the exact failure this module exists to end, committed by the module
+        itself.
+        """
+        configs = _ruff_configs()
+        assert (_REPO_ROOT / "pyproject.toml") in configs, "the root ruff config was not discovered"
+        assert (_REPO_ROOT / "packages/scrape/sidecar/ruff.toml") in configs, (
+            "the sidecar's nested override was not discovered, which is what R-1 was about"
+        )
+
+        scanned = {p for c in _ruff_configs() for g in _slf001_globs(c) for p in _exempted_files(c, g)}
+        assert len(scanned) > 25, f"only {len(scanned)} files scanned; discovery has silently collapsed"
+
     def test_every_slf001_exemption_glob_matches_something(self) -> None:
         """A key matching no file is a stale exemption AND a silent hole in the check below.
 

@@ -243,12 +243,11 @@ select = ["SLF"]
 # shadowing, not test-fixture attribute access, so this ruff-only ignore
 # doesn't need one.
 "packages/scrape/tests/test_collections.py" = ["SLF001"]
-# The sidecar's own module-level globals (_browser/_ready) and its
-# lazy-warmup hook (_warm_up) have no public accessor -- tests directly
-# set/read them to drive cold-start/warm-start/retry scenarios without a
-# real Chromium launch. Same no-paired-exemptions-entry reasoning as
-# test_collections.py above.
-"packages/scrape/sidecar/tests/test_render_contract.py" = ["SLF001"]
+# NOT a per-file ignore for the sidecar: `packages/scrape/sidecar/ruff.toml` is a
+# nested config and therefore a FULL override, so ruff never reads a root key for a
+# path beneath it. The key that used to sit here was inert from the moment that file
+# was added, and inert-but-plausible is worse than absent -- it reads as coverage.
+# The sidecar's own `"tests/*"` entry carries the same exemption, with the reason.
 
 [tool.pytest.ini_options]
 # ``packages/scrape/sidecar`` is a separate deployable with its own
