@@ -275,6 +275,10 @@ class MultiDocumentDriver(ScrapeDriver):
             discovered document is (re-)fetched, matching this driver's
             pre-2026-07-16 behavior).
         :ptype seen_urls: set[str] | None
+        :param session_state: a human's exported cookies and storage, forwarded to the inner
+            document driver only when one is present. Whether it is honoured is that driver's
+            business; this one neither applies nor withholds it
+        :ptype session_state: dict[str, Any] | None
         :return: one combined page -- each successfully fetched document's
             content wrapped in its own delimiting block
         :rtype: RenderedPage
@@ -348,7 +352,10 @@ class MultiDocumentDriver(ScrapeDriver):
                 # Forwarded for the same reason the network-capture wrapper forwards it: a
                 # wrapper that silently withholds a credential its inner driver might use
                 # makes the capability depend on which wrapper happens to be in the way.
-                page = await self._document_driver.render(doc_url, timeout=timeout, session_state=session_state)
+                # Conditional for the same reason as the network-capture wrapper: the inner
+                # driver is injected and may predate this parameter.
+                doc_extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
+                page = await self._document_driver.render(doc_url, timeout=timeout, **doc_extra)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
                 log.warning(
                     "multi-document: one document fetch failed, skipping",

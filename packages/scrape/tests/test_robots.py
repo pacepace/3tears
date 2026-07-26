@@ -468,13 +468,13 @@ async def test_the_default_fetcher_leaves_by_the_configured_exit() -> None:
                 *args, **{**kwargs, "transport": httpx.MockTransport(lambda _r: httpx.Response(200, text=""))}
             )
 
-    fetch = robots_mod._default_fetch_via(ProxyEgress("tor", "socks5://127.0.0.1:9050"))  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the builder IS the subject
+    fetch = robots_mod._default_fetch_via(ProxyEgress("tor", "socks5://127.0.0.1:9050"))
     with patch.object(httpx, "AsyncClient", _Recording):
         await fetch("https://example.gov/robots.txt")
 
     transport = captured["transport"]
     assert transport is not None, "the robots read went out on the container's own route"
-    pool = transport._pool  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the pool carries the exit
+    pool = transport._pool
     assert "9050" in str(getattr(pool, "_proxy_url", "")), "the robots read left by the wrong exit"
 
 
@@ -495,7 +495,7 @@ async def test_the_default_fetcher_with_no_exit_binds_no_transport() -> None:
                 *args, **{**kwargs, "transport": httpx.MockTransport(lambda _r: httpx.Response(200, text=""))}
             )
 
-    fetch = robots_mod._default_fetch_via(None)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
+    fetch = robots_mod._default_fetch_via(None)
     with patch.object(httpx, "AsyncClient", _Recording):
         await fetch("https://example.gov/robots.txt")
 
@@ -506,7 +506,7 @@ async def _seed(tool, url: str, schema: dict) -> None:
     """Give the tool a winning recipe so no test here reaches a model."""
     from threetears.scrape.tool import _derive_target_id
 
-    recipes = tool._recipe_collection  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- test setup for a constructor-injected collection
+    recipes = tool._recipe_collection
     await recipes.save_entity(
         recipes.create(
             {
@@ -657,7 +657,7 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
     clear = AsyncMock(side_effect=RuntimeError("health store is gone"))
     with patch("threetears.scrape.tool.clear_robots_block", new=clear):
         # Returns rather than raises: the caller's fetch is already done and paid for.
-        await tool._clear_robots_block_if_any("t")  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the housekeeping method IS the subject
+        await tool._clear_robots_block_if_any("t")
 
     # And it REACHED the clear. Asserting only "no exception" would pass against a method that
     # returns unconditionally -- so inverting the guard would leave every test here green
@@ -751,10 +751,10 @@ async def test_the_per_origin_stores_do_not_grow_without_bound() -> None:
         await gate.check(f"https://s{i}.example/a", now=1000.0 + i)
         gate.note_fetched(f"https://s{i}.example/a", now=1000.0 + i)
 
-    assert len(gate._cache) == 3, "the parsed files are capped"  # noqa: SLF001
-    assert len(gate._last_fetch_at) == 3, "and so are the fetch clocks"  # noqa: SLF001
-    assert "https://s9.example" in gate._cache, "the most recent origin survives"  # noqa: SLF001
-    assert "https://s0.example" not in gate._cache, "the oldest is the one evicted"  # noqa: SLF001
+    assert len(gate._cache) == 3, "the parsed files are capped"
+    assert len(gate._last_fetch_at) == 3, "and so are the fetch clocks"
+    assert "https://s9.example" in gate._cache, "the most recent origin survives"
+    assert "https://s0.example" not in gate._cache, "the oldest is the one evicted"
 
 
 async def test_forget_drops_one_origin_and_leaves_the_rest() -> None:
@@ -766,9 +766,9 @@ async def test_forget_drops_one_origin_and_leaves_the_rest() -> None:
 
     gate.forget("https://a.example/anything")
 
-    assert "https://a.example" not in gate._cache  # noqa: SLF001
-    assert "https://a.example" not in gate._last_fetch_at  # noqa: SLF001
-    assert "https://b.example" in gate._cache, "forgetting one origin leaves the others"  # noqa: SLF001
+    assert "https://a.example" not in gate._cache
+    assert "https://a.example" not in gate._last_fetch_at
+    assert "https://b.example" in gate._cache, "forgetting one origin leaves the others"
 
 
 async def test_a_forget_during_a_fetch_is_not_undone_by_it() -> None:
@@ -794,7 +794,7 @@ async def test_a_forget_during_a_fetch_is_not_undone_by_it() -> None:
     release.set()
     await asyncio.wait_for(task, timeout=1.0)
 
-    assert "https://example.gov" not in gate._cache, (  # noqa: SLF001
+    assert "https://example.gov" not in gate._cache, (
         "the in-flight fetch wrote back over the forget, so the next check reuses the file that was discarded"
     )
 

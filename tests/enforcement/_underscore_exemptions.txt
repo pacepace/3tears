@@ -185,3 +185,93 @@ packages/scrape/sidecar/main.py:422:_apply_context_state
 # hitl's own helper rather than duplicated here.
 packages/scrape/sidecar/main.py:472:_apply_origin_storage
 
+# rationale: ScrapeTool's resolved robots gate has no accessor; the subject is the tool's own guard, not how it builds a gate
+packages/scrape/tests/test_robots.py:366:_robots
+# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on resolution
+packages/scrape/tests/test_robots.py:447:_egress
+# rationale: module-private factory for the default robots fetcher; the test's whole subject is which exit that default binds, which is unobservable from outside
+packages/scrape/tests/test_robots.py:471:_default_fetch_via
+# rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
+packages/scrape/tests/test_robots.py:477:_pool
+# rationale: module-private factory for the default robots fetcher; the test's whole subject is which exit that default binds, which is unobservable from outside
+packages/scrape/tests/test_robots.py:498:_default_fetch_via
+# rationale: the tool's recipe collection has no accessor and seeding it is how the eval loop is kept off a real LLM
+packages/scrape/tests/test_robots.py:509:_recipe_collection
+# rationale: module-private housekeeping step; the test asserts a store outage cannot escape it, which is only reachable by calling it
+packages/scrape/tests/test_robots.py:660:_clear_robots_block_if_any
+# rationale: reads the fake pacer's own recorded state, not production's
+packages/scrape/tests/test_robots.py:680:_claimed
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_robots.py:681:_retry_after
+# rationale: reads the fake pacer's own recorded state, not production's
+packages/scrape/tests/test_robots.py:686:_claimed
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_robots.py:686:_retry_after
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:754:_cache
+# rationale: RobotsGate's per-origin fetch clock has no accessor; the LRU bound and forget() are only checkable against it
+packages/scrape/tests/test_robots.py:755:_last_fetch_at
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:756:_cache
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:757:_cache
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:769:_cache
+# rationale: RobotsGate's per-origin fetch clock has no accessor; the LRU bound and forget() are only checkable against it
+packages/scrape/tests/test_robots.py:770:_last_fetch_at
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:771:_cache
+# rationale: RobotsGate's parsed-file cache has no accessor; bounded retention and forget() are observable only here, and asserting the configured cap instead of the observed one is the failure this suite exists to exclude
+packages/scrape/tests/test_robots.py:797:_cache
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:69:_html
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:70:_final_url
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:71:_raise_exc
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:72:_status
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:99:_raise_exc
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:100:_raise_exc
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:101:_html
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:101:_status
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:101:_final_url
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:269:_StrategyShape
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:529:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:583:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:609:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:628:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:676:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:726:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:761:_tool
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:806:_robots_fetcher
+# rationale: private state with no public accessor, and it is the behaviour under test
+packages/scrape/tests/test_tool.py:807:_tool
+# rationale: ScrapeTool's resolved robots gate has no accessor; the subject is the tool's own guard, not how it builds a gate
+packages/scrape/tests/test_tool.py:808:_robots
+# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on resolution
+packages/scrape/tests/test_tool.py:1073:_egress
+# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on resolution
+packages/scrape/tests/test_tool.py:1074:_egress
+# rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
+packages/scrape/tests/test_driver_api.py:324:_pool
+# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on resolution
+packages/scrape/tests/test_driver_api.py:326:_egress
+# rationale: the pinned httpx client has no accessor; the test asserts an injected client is reused rather than replaced
+packages/scrape/tests/test_driver_api.py:343:_client
+# rationale: the pacing delay has no accessor and is the behaviour under test
+packages/scrape/tests/test_driver_listing_detail.py:409:_pace_delay_seconds

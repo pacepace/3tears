@@ -321,9 +321,9 @@ class TestApiDriverEgress:
         egress = ProxyEgress("tor", "socks5://127.0.0.1:9050")
         driver = ApiDriver(egress=egress)
 
-        pool = egress.httpx_transport()._pool  # noqa: SLF001 -- the pool carries the exit
+        pool = egress.httpx_transport()._pool
         assert "9050" in str(getattr(pool, "_proxy_url", "")), "the driver's exit is not the configured one"
-        assert driver._egress is egress  # noqa: SLF001
+        assert driver._egress is egress
 
     async def test_an_injected_client_is_not_rebound(self) -> None:
         """An injected client already has whatever transport its owner gave it.
@@ -340,4 +340,4 @@ class TestApiDriverEgress:
         driver = ApiDriver(client=pinned, egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
 
         await driver.render("https://example.gov/api", results_path="")
-        assert driver._client is pinned  # noqa: SLF001
+        assert driver._client is pinned

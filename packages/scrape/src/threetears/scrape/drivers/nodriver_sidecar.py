@@ -120,6 +120,11 @@ class NodriverSidecarDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: a human's exported cookies and storage. THIS driver is the one
+            that applies them -- it forwards the payload to the sidecar, which re-installs the
+            cookies on the browser context and the storage on the origin, so a target solved
+            once by a person extracts unattended afterwards
+        :ptype session_state: dict[str, Any] | None
         :return: the rendered page, including any ``evaluate`` step results
         :rtype: RenderedPage
         :raises NodriverSidecarError: on a sidecar-reported error (4xx/5xx

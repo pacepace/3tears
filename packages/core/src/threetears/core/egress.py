@@ -13,10 +13,17 @@ its command line", or a deployment ends up with its API calls going one way and 
 going another while both report the same configured exit. Those are the two halves every
 backend has to supply, and a driver that can only do one of them is not an exit.
 
-**Nothing here opens a socket.** A driver describes an exit; it does not run the daemon that
-provides it. Starting `tor` or `warp-cli` is deployment work -- a container, a sidecar, a host
-service -- and a library that tried to own process lifecycle for someone else's network would
-be wrong about it in every deployment that already had one.
+**A driver describes an exit; it does not run the daemon that provides it.** Starting `tor` or
+`warp-cli` is deployment work -- a container, a sidecar, a host service -- and a library that
+tried to own process lifecycle for someone else's network would be wrong about it in every
+deployment that already had one.
+
+The one thing that does reach the network is :meth:`EgressDriver.health`, and only when a
+caller asks. It fetches an address-reporting endpoint THROUGH the exit rather than merely
+opening a socket to the proxy, because a proxy that is listening but forwarding directly
+answers a connectivity check perfectly while providing none of the property it was configured
+for. Describing an exit and being able to say whether it currently works are not the same
+claim, and a deployment needs both.
 
 **Direct is a driver, not a special case.** The no-proxy path going through the same seam is
 what stops "direct" quietly meaning "the seam was bypassed", and it means a caller never
@@ -340,7 +347,7 @@ class EgressRegistry:
         unreachability is deliberately not a wall. "All my targets broke at once" and "one
         daemon died" produce identical evidence until something asks the exits directly.
         """
-        import asyncio  # noqa: PLC0415 -- keeps this module importable by the browser half
+        import asyncio  # noqa: PLC0415 -- deferred purely to keep this module's import surface flat; asyncio is stdlib and costs nothing, so this is consistency with the httpx imports above rather than a constraint
 
         async def _ask(driver: EgressDriver) -> EgressHealth:
             probe = getattr(driver, "health", None)

@@ -196,13 +196,19 @@ class NetworkCaptureDriver(ScrapeDriver):
         # the one backend that can actually apply a human's solve -- so swallowing this here
         # discarded a solved session at the exact point it would have worked, and the symptom
         # is a capture that returns the login wall's XHR instead of the data's.
+        # Forwarded only when there IS one, for the same reason `ScrapeTool` passes it
+        # conditionally: the inner driver is INJECTED, so it may be an out-of-tree
+        # implementation written before this parameter existed, and passing it unconditionally
+        # makes every ordinary render through such a driver raise `TypeError`. Fixing that one
+        # layer up and reintroducing it here would have been the same bug wearing a wrapper.
+        extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
         page = await self._inner.render(
             url,
             timeout=timeout,
             wait_for=wait_for,
             capture_network=True,
             nav_steps=nav_steps,
-            session_state=session_state,
+            **extra,
         )
 
         best: list[dict[str, Any]] | None = None

@@ -235,6 +235,10 @@ class ListingDetailDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not applicable
             (this driver's own *row_selector*/*detail_link_column* replace it)
         :ptype link_selector: str | None
+        :param session_state: accepted for interface conformance; a human's exported cookies
+            and storage are applied only by
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :ptype session_state: dict[str, Any] | None
         :return: one synthetic ``<table>`` page, one row per successfully-resolved record
         :rtype: RenderedPage
         :raises ListingDetailDriverError: the listing fetch itself fails outright

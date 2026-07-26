@@ -406,4 +406,4 @@ class TestListingDetailDriver:
         driver = ListingDetailDriver(
             row_selector="tr", listing_field_columns={}, detail_link_column=0, detail_field_labels={}
         )
-        assert driver._pace_delay_seconds > 0  # noqa: SLF001 -- asserting the documented default itself
+        assert driver._pace_delay_seconds > 0

@@ -230,11 +230,42 @@ class TestNetworkCaptureForwardsTheSolve:
             "the wrapper dropped the human's solve on the way to the driver that could use it"
         )
 
-    async def test_no_session_state_forwards_none(self):
-        """The ordinary path stays ordinary: nothing invented on the way through."""
-        inner = _FakeInnerDriver([_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})])
-        driver = NetworkCaptureDriver(inner)
+    async def test_no_session_state_is_not_passed_at_all(self):
+        """Not passed, rather than passed as None -- the distinction is the whole point.
 
-        await driver.render("https://example.gov/list")
+        The inner driver is INJECTED, so it can be an out-of-tree implementation written before
+        this parameter existed. Passing the keyword unconditionally makes every ordinary render
+        through such a driver raise TypeError, which is exactly the defect that was just fixed
+        one layer up in `ScrapeTool`. An earlier version of this test asserted
+        `session_states == [None]` and therefore PINNED the broken form.
+        """
 
-        assert inner.session_states == [None]
+        class _PreSessionStateInner:
+            @property
+            def name(self) -> str:
+                return "old-inner"
+
+            async def render(
+                self,
+                url: str,
+                *,
+                timeout: float = 30.0,
+                wait_for: str | None = None,
+                capture_network: bool = False,
+                nav_steps: list[NavStep] | None = None,
+                results_path: str | None = None,
+                fragment_field: str | None = None,
+            ) -> RenderedPage:
+                return RenderedPage(
+                    html="<html></html>",
+                    status=200,
+                    final_url=url,
+                    timing_ms=1.0,
+                    network_calls=[_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})],
+                )
+
+        driver = NetworkCaptureDriver(_PreSessionStateInner())  # type: ignore[arg-type]
+
+        page = await driver.render("https://example.gov/list")
+
+        assert page.status == 200, "a wrapper broke an inner driver that predates session_state"

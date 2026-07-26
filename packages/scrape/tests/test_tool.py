@@ -805,7 +805,7 @@ class TestScrapeToolFetchCircuit:
         driver = _FakeDriver(_SINGLE_HTML)
         gate = RobotsGate(fetch=self._robots_fetcher("User-agent: *\nCrawl-delay: 120\n"))
         tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
-        tool._robots = gate  # noqa: SLF001 -- the subject is the tool's guard, not how it builds a gate
+        tool._robots = gate
         gate.note_fetched(url)
 
         with (
@@ -1070,8 +1070,8 @@ class TestEgressByName:
             robots=None,
         )
 
-        assert tool._egress is not None  # noqa: SLF001
-        assert tool._egress.name == "tor"  # noqa: SLF001
+        assert tool._egress is not None
+        assert tool._egress.name == "tor"
 
     def test_an_unknown_name_raises_rather_than_quietly_going_direct(self) -> None:
         """The failure this forbids is silent and total: a deployment that asked for TOR,

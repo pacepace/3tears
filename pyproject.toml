@@ -149,6 +149,19 @@ select = ["SLF"]
 # internal lazy-resolution table; a public accessor would add API
 # surface only these consistency tests need. paired entries live in
 # tests/enforcement/_underscore_exemptions.txt.
+# scrape suites assert on the private state that IS the behaviour under test: RobotsGate's
+# per-origin cache and fetch clocks (bounded retention and `forget` are only observable there),
+# ScrapeTool's resolved egress and robots gate, and the httpx transport's connection pool, which
+# is the only place a configured proxy is visible after construction. Paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+#
+# Declared here rather than as inline `noqa` comments deliberately: the enforcement walker shells
+# out to ruff, and ruff honours an inline pragma -- so a pragma keeps the gate green while the
+# exemptions ledger silently stops being a complete list of private access in this repo.
+"packages/scrape/tests/test_robots.py" = ["SLF001"]
+"packages/scrape/tests/test_tool.py" = ["SLF001"]
+"packages/scrape/tests/test_driver_api.py" = ["SLF001"]
+"packages/scrape/tests/test_driver_listing_detail.py" = ["SLF001"]
 "packages/core/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]

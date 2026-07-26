@@ -668,7 +668,9 @@ waiting ten seconds present a request every two.
 - `eval_loop.py` -- challenge short-circuit, fingerprint routing, fetch-health updates
 - `tool.py` -- the fetch gate and the outcome report; the fetch boundary is where the circuit lives
 - `packages/models/.../circuit_breaker.py` -- `CircuitBreaker.restore()`, the durable-state seam
-- `collections.py` -- re-export only; the health entity and collection live in `health.py`
+- `collections.py` -- untouched by the health work in the end. The entity and collection live
+  in `health.py`, and the planned re-export was dropped rather than added: a second import path
+  for one class is a second thing to keep in step, and consumers import from `health` directly
 - `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed
   session state); `v011` adds `last_egress`; `v012` adds the robots-block columns. Three
   migrations rather than one because `v010` had already shipped to `develop` -- an applied
@@ -714,8 +716,13 @@ waiting ten seconds present a request every two.
    verdict cache, so only the suppressed fetch can bound it.
 7. No new state machine exists: the transitions come from `CircuitBreaker` via `restore()`,
    and the reused primitive is named at each site.
-8. An operator with a granted role can open a session for a permitted queue; one without is
-   denied with `HitlAccessDenied`, distinguishable from "nothing queued".
+8. ~~An operator with a granted role can open a session for a permitted queue; one without is
+   denied with `HitlAccessDenied`, distinguishable from "nothing queued".~~ **Withdrawn with
+   the §6 rewrite**, which struck the file this criterion tested. Authorization is the
+   consuming platform's, evaluated where identity lives; the sidecar holds none and cannot
+   satisfy this criterion in any package. What replaces it: the session token proves only that
+   a caller holds something this container minted, and the queue is a fact on the health row
+   that a platform reads and gates for itself.
 9. A completed solve yields sealed session state that a subsequent unattended render consumes to
    fetch the target successfully with no human involved.
 10. Sealed state is unreadable without the master key; a tampered token is rejected.

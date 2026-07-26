@@ -132,6 +132,10 @@ class NodriverDownloadDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: accepted for interface conformance; a human's exported cookies
+            and storage are applied only by
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :ptype session_state: dict[str, Any] | None
         :return: the parsed document's content as synthetic HTML
         :rtype: RenderedPage
         :raises NodriverDownloadError: on a sidecar-reported error (4xx/5xx
