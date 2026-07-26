@@ -197,6 +197,14 @@ class RobotsGate:
         # would otherwise hold one entry per origin it had ever touched, forever.
         self._cache: OrderedDict[str, tuple[RobotFileParser | None, float]] = OrderedDict()
         self._last_fetch_at: OrderedDict[str, float] = OrderedDict()
+        # Bumped by `forget`. `_parser_for` deliberately does not hold the lock across its
+        # fetch -- one slow origin must not stall every other -- which leaves a window where a
+        # forget lands mid-load and the completing write would resurrect what was just
+        # discarded, silently returning the pre-forget file to a caller who forgot precisely
+        # because it changed. A counter rather than a per-origin epoch so this cannot become a
+        # third store that grows per origin forever, which is the hazard being fixed two lines
+        # up; the cost is that any forget discards any in-flight load, worth one re-fetch.
+        self._generation = 0
         self._lock = asyncio.Lock()
 
     async def check(self, url: str, *, now: float | None = None) -> RobotsDecision:
@@ -318,6 +326,7 @@ class RobotsGate:
         origin = _origin_of(url_or_origin) or url_or_origin
         self._cache.pop(origin, None)
         self._last_fetch_at.pop(origin, None)
+        self._generation += 1
 
     def _evict_if_needed(self, store: OrderedDict[str, Any]) -> None:
         """Hold *store* to ``max_origins`` entries, dropping least-recently-touched first."""
@@ -340,9 +349,14 @@ class RobotsGate:
                 # burst of one-off ones purely because it was fetched longer ago.
                 self._cache.move_to_end(origin)
                 return cached[0]
+            seen = self._generation
 
         parser = await self._load(origin)
         async with self._lock:
+            if self._generation != seen:
+                # Something was forgotten while this was in flight. Hand the caller what was
+                # actually fetched, but do not cache it: the write would undo the forget.
+                return parser
             self._cache[origin] = (parser, now + self._cache_seconds)
             self._cache.move_to_end(origin)
             self._evict_if_needed(self._cache)

@@ -12,6 +12,7 @@ is "on" while nothing waits is worse than one that is off, because it is believe
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -768,3 +769,31 @@ async def test_forget_drops_one_origin_and_leaves_the_rest() -> None:
     assert "https://a.example" not in gate._cache  # noqa: SLF001
     assert "https://a.example" not in gate._last_fetch_at  # noqa: SLF001
     assert "https://b.example" in gate._cache, "forgetting one origin leaves the others"  # noqa: SLF001
+
+
+async def test_a_forget_during_a_fetch_is_not_undone_by_it() -> None:
+    """The window between dropping the lock to fetch and retaking it to write.
+
+    `forget` exists for "this site's file just changed". If the completing write can resurrect
+    the pre-forget parser, the method does the opposite of what it advertises precisely when a
+    caller reaches for it -- and does so only under concurrency, so nothing looks wrong.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_fetch(url: str) -> tuple[int, str]:
+        started.set()
+        await release.wait()
+        return 200, _ROBOTS_DISALLOW
+
+    gate = RobotsGate(fetch=_slow_fetch)
+    task = asyncio.create_task(gate.check("https://example.gov/private/x", now=1000.0))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    gate.forget("https://example.gov")
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert "https://example.gov" not in gate._cache, (  # noqa: SLF001
+        "the in-flight fetch wrote back over the forget, so the next check reuses the file that was discarded"
+    )

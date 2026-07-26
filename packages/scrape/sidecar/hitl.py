@@ -741,10 +741,15 @@ class SessionManager:
 
         try:
             tab.exported_state = await asyncio.wait_for(self._export_state(tab), timeout=_COMPLETE_TAB_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human's work is worth more than a clean export, but a wedged browser must not strand the slot; the tab is already popped, so failing here still frees it. Logged with its traceback below
-            log.exception(
-                "hitl: could not export state for tab %s; completing it without any",
+        except TimeoutError:
+            # Only a hang can reach here. `_export_state` catches its own failures and returns
+            # None -- it promises never to raise into the completion -- so a broad catch here
+            # would be guarding against nothing while claiming to guard against everything,
+            # and would silently start swallowing real errors the day that promise changed.
+            log.warning(
+                "hitl: exporting state for tab %s timed out after %.0fs; completing it without any",
                 tab_id,
+                _COMPLETE_TAB_TIMEOUT_SECONDS,
                 extra={"extra_data": {"tab_id": tab_id, "session_id": session.session_id}},
             )
             tab.exported_state = None

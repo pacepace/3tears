@@ -495,22 +495,48 @@ async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager
     await asyncio.wait_for(task, timeout=1.0)
 
 
-async def test_a_tab_that_never_exports_still_gives_up_its_slot(manager: SessionManager, monkeypatch) -> None:
-    """Popping is the claim, so a failed export costs the state and not the slot.
+async def test_a_tab_whose_export_hangs_still_gives_up_its_slot(manager: SessionManager, monkeypatch) -> None:
+    """Popping is the claim, so a browser that stops answering costs the state and not the slot.
 
-    The alternative -- raising out of complete_tab with the tab still in the session -- strands
-    a slot behind a browser that is already broken, and a bounded working set that cannot be
-    reclaimed is just a smaller ceiling on the same leak.
+    A hang rather than a raise, because a hang is the only failure that can actually get here:
+    `_export_state` catches its own errors and returns None by contract. An earlier version of
+    this test monkeypatched it to raise, which asserted a premise production cannot produce
+    while leaving the reachable path -- and the timeout that bounds it -- untested.
+
+    The alternative to reclaiming the slot is stranding it behind a browser that is already
+    broken, and a bounded working set that cannot be reclaimed is just a smaller ceiling on
+    the same leak.
     """
+    monkeypatch.setattr(hitl, "_COMPLETE_TAB_TIMEOUT_SECONDS", 0.05)
     session = await manager.open(now=1000.0)
     tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
     before = session.free_slots()
 
-    async def _boom(_tab: Any) -> dict[str, Any] | None:
-        raise RuntimeError("the browser stopped answering")
+    async def _hangs(_tab: Any) -> dict[str, Any] | None:
+        await asyncio.sleep(3600)
+        return {"cookies": []}
 
-    monkeypatch.setattr(manager, "_export_state", _boom)
+    monkeypatch.setattr(manager, "_export_state", _hangs)
     completed = await asyncio.wait_for(manager.complete_tab(session, tab.tab_id), timeout=2.0)
 
-    assert completed.exported_state is None, "a failed export yields no state rather than a partial one"
+    assert completed.exported_state is None, "a hung export yields no state rather than hanging the caller"
     assert session.free_slots() == before + 1, "and the slot comes back regardless"
+
+
+async def test_export_state_never_raises_into_a_completion(manager: SessionManager, monkeypatch) -> None:
+    """The contract the narrowed catch in complete_tab depends on.
+
+    `complete_tab` catches only TimeoutError. That is correct exactly as long as this holds,
+    so it is asserted here rather than assumed -- if `_export_state` ever starts propagating,
+    this fails and names the reason instead of a completion blowing up in production.
+    """
+    session = await manager.open(now=1000.0)
+    tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
+
+    async def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise RuntimeError("the browser stopped answering")
+
+    monkeypatch.setattr(hitl, "_export_context_state", _boom)
+    state = await manager._export_state(session.tabs[tab.tab_id])  # noqa: SLF001
+
+    assert state is None, "a failing export returns None rather than raising into the completion"
