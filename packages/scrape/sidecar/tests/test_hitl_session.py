@@ -458,3 +458,59 @@ async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
     await hitl._apply_origin_storage(
         _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": '{"a":"1"}'}]}
     )  # noqa: SLF001
+
+
+async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager, monkeypatch) -> None:
+    """The completion path's CDP work must not span the lock either.
+
+    Sibling of the slow-OPEN test above, and the same failure at the other end of a tab's
+    life. A browser context that has stopped answering is exactly the state in which the hard
+    TTL matters most -- an operator's authenticated session is still live in it -- so holding
+    the manager across an untimed export makes the one guarantee that does not depend on
+    guessing intent depend on a wedged browser instead.
+    """
+    session = await manager.open(now=1000.0)
+    tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _wedged(_tab: Any) -> dict[str, Any] | None:
+        started.set()
+        await release.wait()
+        return {"cookies": []}
+
+    monkeypatch.setattr(manager, "_export_state", _wedged)
+    task = asyncio.create_task(manager.complete_tab(session, tab.tab_id))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    assert await asyncio.wait_for(manager.reap(now=1001.0), timeout=1.0) is False, (
+        "the reaper could not run while a tab was exporting, so the TTL depends on the browser answering"
+    )
+    assert await asyncio.wait_for(manager.reap(now=99_999.0), timeout=1.0) is True, (
+        "an expired session could not be reaped while an export hung, which is the leak the TTL exists to stop"
+    )
+
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+
+async def test_a_tab_that_never_exports_still_gives_up_its_slot(manager: SessionManager, monkeypatch) -> None:
+    """Popping is the claim, so a failed export costs the state and not the slot.
+
+    The alternative -- raising out of complete_tab with the tab still in the session -- strands
+    a slot behind a browser that is already broken, and a bounded working set that cannot be
+    reclaimed is just a smaller ceiling on the same leak.
+    """
+    session = await manager.open(now=1000.0)
+    tab = await manager.open_tab(session, target_id="t", url="https://example.gov/a")
+    before = session.free_slots()
+
+    async def _boom(_tab: Any) -> dict[str, Any] | None:
+        raise RuntimeError("the browser stopped answering")
+
+    monkeypatch.setattr(manager, "_export_state", _boom)
+    completed = await asyncio.wait_for(manager.complete_tab(session, tab.tab_id), timeout=2.0)
+
+    assert completed.exported_state is None, "a failed export yields no state rather than a partial one"
+    assert session.free_slots() == before + 1, "and the slot comes back regardless"

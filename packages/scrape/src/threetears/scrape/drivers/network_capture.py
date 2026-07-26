@@ -181,6 +181,10 @@ class NetworkCaptureDriver(ScrapeDriver):
         :ptype fragment_field: str | None
         :param link_selector: accepted for interface conformance; not applicable
         :ptype link_selector: str | None
+        :param session_state: accepted for interface conformance; a human's exported cookies
+            and storage are applied only by
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :ptype session_state: dict[str, Any] | None
         :return: synthetic HTML built from the largest captured JSON record
             list, with the inner render's real status/final_url/timing
         :rtype: RenderedPage

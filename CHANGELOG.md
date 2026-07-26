@@ -235,6 +235,32 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**A fleet pacer no longer overrides what a site asked for.** With a `delay_pacer` injected,
+`RobotsGate` returned the bucket's answer alone and discarded the parsed `Crawl-delay`
+entirely -- so a site asking for 30s between requests was fetched at whatever rate the bucket
+happened to carry, and only in the fleet deployments where several pods make that delay
+matter most. Both constraints bind now: the wait is the longer of the fleet's turn and this
+origin's own clock. That branch was previously the module's only untested one, which is how
+it stayed wrong.
+
+`RobotsGate` also stops growing forever. Both per-origin stores are caches reconstructible
+from a re-fetch, so they self-bound at `max_origins` on a least-recently-used basis, and
+`forget()` retires one origin explicitly. The circuit's equivalent state gets a manual lever
+instead, because evicting a circuit row would discard a judgement nothing can rebuild.
+
+**Completing a HITL tab no longer holds the session lock across the browser.** The export and
+context-dispose are two CDP round-trips, and a wedged browser holding that lock blocked
+`reap()` and `close()` -- defeating the hard TTL exactly when it matters, since the stuck
+context is the one still holding a target's authenticated session. Popping the tab is the
+claim and stays under the lock; the round-trips happen outside it under their own timeouts,
+and a failed export costs the state rather than the slot.
+
+**`CamoufoxDriver` says when it drops a session state.** It accepts the parameter and cannot
+apply it -- a real gap rather than an inapplicability, since it drives a browser. Silence
+meant a caller handed over a session a person had spent real time solving, got a successful
+render back, and learned nothing until extraction failed on a login wall and the target was
+escalated to a human who had already done the work. Now a warning, and a documented one.
+
 ## v0.19.1 -- 2026-07-25
 
 **Every intra-family dependency is now version-bounded.** The packages release in

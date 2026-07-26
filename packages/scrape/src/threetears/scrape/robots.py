@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
@@ -74,6 +75,12 @@ _DEFAULT_CACHE_SECONDS = 3600.0
 #: its own robots file within this is a site we are about to fetch anyway, and blocking a
 #: scrape on it would let an unreachable text file stop real work.
 _FETCH_TIMEOUT_SECONDS = 10.0
+
+#: How many origins' parsed files and fetch clocks to retain. A cap rather than unbounded
+#: growth: everything held per origin is reconstructible by re-reading a text file, so the
+#: cost of evicting the least-recently-used entry is one re-fetch, while the cost of never
+#: evicting is a leak proportional to how many distinct sites a process has ever seen.
+_DEFAULT_MAX_ORIGINS = 2048
 
 
 @dataclass(frozen=True)
@@ -150,6 +157,10 @@ class RobotsGate:
     :ptype delay_pacer: TokenBucket | None
     :param cache_seconds: how long a parsed file is trusted
     :ptype cache_seconds: float
+    :param max_origins: how many origins to retain before evicting the least recently used.
+        Both per-origin stores are reconstructible from a re-fetch, so this is a cap rather
+        than a leak; see :meth:`forget` for retiring one origin explicitly
+    :ptype max_origins: int
     """
 
     def __init__(
@@ -160,6 +171,7 @@ class RobotsGate:
         egress: EgressDriver | None = None,
         delay_pacer: TokenBucket | None = None,
         cache_seconds: float = _DEFAULT_CACHE_SECONDS,
+        max_origins: int = _DEFAULT_MAX_ORIGINS,
     ) -> None:
         self._policy = policy or RobotsPolicy()
         # A default fetcher, so a gate constructed with no arguments actually reads robots.txt.
@@ -176,8 +188,15 @@ class RobotsGate:
         self._fetch = fetch if fetch is not None else _default_fetch_via(egress)
         self._delay_pacer = delay_pacer
         self._cache_seconds = cache_seconds
-        self._cache: dict[str, tuple[RobotFileParser | None, float]] = {}
-        self._last_fetch_at: dict[str, float] = {}
+        self._max_origins = max_origins
+        # Both are keyed by origin and neither is durable: everything here can be rebuilt by
+        # re-reading a text file. That is what makes self-bounding the right answer, where the
+        # circuit's equivalent state gets a manual `forget_target` instead -- evicting a
+        # circuit row would discard a judgement nothing can reconstruct, while evicting one of
+        # these costs exactly one re-fetch. A long-lived process scraping a wide set of sites
+        # would otherwise hold one entry per origin it had ever touched, forever.
+        self._cache: OrderedDict[str, tuple[RobotFileParser | None, float]] = OrderedDict()
+        self._last_fetch_at: OrderedDict[str, float] = OrderedDict()
         self._lock = asyncio.Lock()
 
     async def check(self, url: str, *, now: float | None = None) -> RobotsDecision:
@@ -236,6 +255,8 @@ class RobotsGate:
         origin = _origin_of(url)
         if origin:
             self._last_fetch_at[origin] = now if now is not None else time.monotonic()
+            self._last_fetch_at.move_to_end(origin)
+            self._evict_if_needed(self._last_fetch_at)
 
     async def _delay_owed(self, origin: str, parser: RobotFileParser, now: float) -> float:
         """Seconds still owed to *origin* before another fetch is polite."""
@@ -270,8 +291,41 @@ class RobotsGate:
             except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
                 log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
             else:
-                return 0.0 if claim.claimed else float(claim.retry_after_seconds)
+                # The pacer coordinates the FLEET; it is a rate primitive and knows nothing
+                # about what THIS site asked for. Returning its answer alone would discard the
+                # parsed Crawl-delay entirely -- so a site asking for 30s between requests
+                # would be fetched at whatever rate the bucket happened to be configured for,
+                # and the more pods there were the more certainly that would happen. Both
+                # constraints bind, so the wait is the longer of the two: the fleet's turn to
+                # go, and this origin's own clock.
+                paced = 0.0 if claim.claimed else float(claim.retry_after_seconds)
+                return max(paced, self._local_delay_owed(origin, delay, now))
 
+        return self._local_delay_owed(origin, delay, now)
+
+    def forget(self, url_or_origin: str) -> None:
+        """Drop everything cached for one origin: its parsed file and its fetch clock.
+
+        For a caller retiring a site, or one that knows the file just changed. Dropping the
+        clock is deliberate and is the reason this is not simply a cache expiry -- a caller
+        that forgets an origin it is still scraping gets a fresh crawl-delay window rather
+        than a preserved one, which is the permissive direction, so this is for retirement
+        rather than for reset.
+
+        :param url_or_origin: a full url or a bare ``scheme://host`` origin
+        :ptype url_or_origin: str
+        """
+        origin = _origin_of(url_or_origin) or url_or_origin
+        self._cache.pop(origin, None)
+        self._last_fetch_at.pop(origin, None)
+
+    def _evict_if_needed(self, store: OrderedDict[str, Any]) -> None:
+        """Hold *store* to ``max_origins`` entries, dropping least-recently-touched first."""
+        while len(store) > self._max_origins:
+            store.popitem(last=False)
+
+    def _local_delay_owed(self, origin: str, delay: float, now: float) -> float:
+        """Seconds owed by this process's own clock alone, ignoring any fleet coordination."""
         last = self._last_fetch_at.get(origin)
         if last is None:
             return 0.0
@@ -282,11 +336,16 @@ class RobotsGate:
         async with self._lock:
             cached = self._cache.get(origin)
             if cached is not None and now < cached[1]:
+                # A read counts as use, or a steadily-scraped origin would be evicted by a
+                # burst of one-off ones purely because it was fetched longer ago.
+                self._cache.move_to_end(origin)
                 return cached[0]
 
         parser = await self._load(origin)
         async with self._lock:
             self._cache[origin] = (parser, now + self._cache_seconds)
+            self._cache.move_to_end(origin)
+            self._evict_if_needed(self._cache)
         return parser
 
     async def _load(self, origin: str) -> RobotFileParser | None:
@@ -301,7 +360,7 @@ class RobotsGate:
         try:
             status, body = await asyncio.wait_for(self._fetch(url), timeout=_FETCH_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an unreachable robots.txt is not a refusal; letting it raise would turn one 500 on a text file into a stopped scrape the site never objected to. Logged with its traceback below
-            log.info("scrape robots: could not read %s; proceeding as unrestricted", url)
+            log.info("scrape robots: could not read %s; proceeding as unrestricted", url, exc_info=True)
             return None
         if status != 200 or not body:
             log.debug("scrape robots: %s returned %s; proceeding as unrestricted", url, status)
@@ -310,7 +369,7 @@ class RobotsGate:
         try:
             parser.parse(body.splitlines())
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the grammar is loose and implementations disagree; an unparseable file is a site that failed to express a restriction, not one that expressed a total ban. Logged with its traceback below
-            log.info("scrape robots: %s did not parse; proceeding as unrestricted", url)
+            log.info("scrape robots: %s did not parse; proceeding as unrestricted", url, exc_info=True)
             return None
         return parser
 

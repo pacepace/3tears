@@ -92,6 +92,11 @@ REAPER_INTERVAL_SECONDS = float(os.environ.get("HITL_REAPER_INTERVAL_SECONDS", "
 #: is already waiting by this point, and failing the replay costs them the whole target.
 _NAV_STEP_TIMEOUT_SECONDS = 30.0
 
+#: Ceiling on each CDP round-trip taken while completing a tab. These run OUTSIDE the session
+#: lock so a wedged browser cannot block the reaper, but they still need their own bound, or a
+#: caller waits forever on a request that has already given up its slot.
+_COMPLETE_TAB_TIMEOUT_SECONDS = 20.0
+
 
 class VncUnavailable(RuntimeError):
     """Raised when the VNC path cannot be brought up.
@@ -722,20 +727,43 @@ class SessionManager:
 
         :raises SessionNotFound: no such tab in this session
         """
+        # Only the pop is under the lock. Popping IS the claim: the tab is out of
+        # `session.tabs` before anything is awaited, so no second caller can complete it and
+        # no reap can double-drop it. The CDP work that follows is two round-trips to a
+        # browser that may be wedged, and holding the lock across them would let one stuck
+        # context block `reap()` and `close()` -- which is to say, defeat the hard TTL, the
+        # one guarantee that does not depend on guessing an operator's intent. The TTL is
+        # worth more than the tidiness of one critical section.
         async with self._lock:
             tab = session.tabs.pop(tab_id, None)
             if tab is None:
                 raise SessionNotFound(f"no tab {tab_id} in this session")
-            tab.exported_state = await self._export_state(tab)
-            await self._drop_tab(tab)
-            log.info(
-                "hitl: session %s completed tab %s (%d/%d slots used)",
-                session.session_id,
+
+        try:
+            tab.exported_state = await asyncio.wait_for(self._export_state(tab), timeout=_COMPLETE_TAB_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human's work is worth more than a clean export, but a wedged browser must not strand the slot; the tab is already popped, so failing here still frees it. Logged with its traceback below
+            log.exception(
+                "hitl: could not export state for tab %s; completing it without any",
                 tab_id,
-                len(session.tabs),
-                session.max_slots,
+                extra={"extra_data": {"tab_id": tab_id, "session_id": session.session_id}},
             )
-            return tab
+            tab.exported_state = None
+
+        try:
+            await asyncio.wait_for(self._drop_tab(tab), timeout=_COMPLETE_TAB_TIMEOUT_SECONDS)
+        except TimeoutError:
+            # `_drop_tab` already swallows its own errors; only a hang reaches here, and the
+            # leaked context is bounded by the browser's lifetime exactly as it is there.
+            log.warning("hitl: disposing tab %s's context timed out; leaving it to the browser", tab_id)
+
+        log.info(
+            "hitl: session %s completed tab %s (%d/%d slots used)",
+            session.session_id,
+            tab_id,
+            len(session.tabs),
+            session.max_slots,
+        )
+        return tab
 
     async def close(self, session: HitlSession | None = None) -> None:
         """Tear a session down: drop every context, stop the display.

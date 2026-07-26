@@ -12,6 +12,7 @@ is "on" while nothing waits is worse than one that is off, because it is believe
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -661,3 +662,109 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
     # returns unconditionally -- so inverting the guard would leave every test here green
     # while a blocked target could never be released.
     clear.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# The fleet pacer, and what it may not override. Previously the module's one
+# untested branch, which is why it could quietly return the wrong answer: the
+# pacer is a RATE primitive with no idea what any particular site asked for.
+# ---------------------------------------------------------------------------
+
+
+# parity-with: threetears.core.coordination.token_bucket.TokenBucket
+class _FakeDelayPacer:
+    """The one method `RobotsGate` calls on a pacer, so drift in its signature fails here."""
+
+    def __init__(self, *, claimed: bool = True, retry_after_seconds: float = 0.0) -> None:
+        self._claimed = claimed
+        self._retry_after = retry_after_seconds
+        self.keys: list[str] = []
+
+    async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+        self.keys.append(key)
+        return SimpleNamespace(claimed=self._claimed, retry_after_seconds=self._retry_after, tokens_remaining=0.0)
+
+
+async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay() -> None:
+    """The bug this excludes returns 0.0 the moment a pacer is injected.
+
+    The pacer coordinates the fleet against a bucket configured in deployment; it is never
+    told what this origin's file said. So treating a granted claim as the whole answer
+    discards the parsed Crawl-delay outright -- and does it only in the fleet deployments
+    where several pods make that delay matter most, which is the worst possible place for it
+    to happen and the least likely place for anyone to notice.
+    """
+    pacer = _FakeDelayPacer(claimed=True)
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=pacer)
+
+    gate.note_fetched("https://example.gov/a", now=1000.0)
+    decision = await gate.check("https://example.gov/b", now=1004.0)
+
+    assert pacer.keys == ["https://example.gov"], "the pacer is keyed per origin"
+    assert decision.wait_seconds == pytest.approx(6.0), (
+        "the site asked for 10s and 4 had passed; a granted fleet claim must not shorten that"
+    )
+
+
+async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower() -> None:
+    """Both bind, so the pacer can only ever make the wait longer, never shorter."""
+    pacer = _FakeDelayPacer(claimed=False, retry_after_seconds=25.0)
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=pacer)
+
+    gate.note_fetched("https://example.gov/a", now=1000.0)
+    decision = await gate.check("https://example.gov/b", now=1004.0)
+
+    assert decision.wait_seconds == pytest.approx(25.0), "the fleet's 25s outlasts this pod's 6s"
+
+
+async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
+    """A KV outage costs fleet-wide precision, never politeness and never the scrape."""
+
+    class _BrokenPacer(_FakeDelayPacer):
+        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+            raise RuntimeError("kv unavailable")
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BrokenPacer())
+    gate.note_fetched("https://example.gov/a", now=1000.0)
+
+    decision = await gate.check("https://example.gov/b", now=1004.0)
+    assert decision.allowed is True, "an outage must not stop the scrape"
+    assert decision.wait_seconds == pytest.approx(6.0), "and must not stop the politeness either"
+
+
+# ---------------------------------------------------------------------------
+# Bounded retention: both per-origin stores are caches, so they self-bound.
+# ---------------------------------------------------------------------------
+
+
+async def test_the_per_origin_stores_do_not_grow_without_bound() -> None:
+    """A long-lived process scraping a wide set of sites otherwise holds every origin forever.
+
+    Asserted by observing the store after more origins than the cap, rather than by reading
+    the cap back off the object -- a bound that is configured but never enforced is exactly
+    the failure worth excluding.
+    """
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), max_origins=3)
+
+    for i in range(10):
+        await gate.check(f"https://s{i}.example/a", now=1000.0 + i)
+        gate.note_fetched(f"https://s{i}.example/a", now=1000.0 + i)
+
+    assert len(gate._cache) == 3, "the parsed files are capped"  # noqa: SLF001
+    assert len(gate._last_fetch_at) == 3, "and so are the fetch clocks"  # noqa: SLF001
+    assert "https://s9.example" in gate._cache, "the most recent origin survives"  # noqa: SLF001
+    assert "https://s0.example" not in gate._cache, "the oldest is the one evicted"  # noqa: SLF001
+
+
+async def test_forget_drops_one_origin_and_leaves_the_rest() -> None:
+    """For a caller retiring a site, mirroring the circuit's own forget_target lever."""
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+    await gate.check("https://a.example/x", now=1000.0)
+    await gate.check("https://b.example/x", now=1000.0)
+    gate.note_fetched("https://a.example/x", now=1000.0)
+
+    gate.forget("https://a.example/anything")
+
+    assert "https://a.example" not in gate._cache  # noqa: SLF001
+    assert "https://a.example" not in gate._last_fetch_at  # noqa: SLF001
+    assert "https://b.example" in gate._cache, "forgetting one origin leaves the others"  # noqa: SLF001
