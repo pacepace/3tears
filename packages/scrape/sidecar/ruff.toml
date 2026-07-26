@@ -22,8 +22,10 @@ select = ["SLF"]
 [lint.per-file-ignores]
 # Restated from the repo root, which cannot reach this far once a nested config exists:
 # a ruff.toml is a full override, not an extension. Reinstating the root's setting is
-# deliberate rather than a copy for its own sake -- dropping it would silently turn every real,
-# already-justified private access in this container into a failure the moment this file exists.
+# deliberate rather than a copy for its own sake -- dropping it would silently turn the
+# already-justified private access in this container's own test suite into failures the moment
+# this file exists. (`main.py` and `hitl.py` carry their own keys further down, added later and
+# for a different reason, so they are unaffected either way.)
 #
 # The sidecar's module-level globals (_browser/_ready) and its lazy warm-up hook have no
 # public accessor; tests set and read them directly to drive cold-start, warm-start and
@@ -39,7 +41,7 @@ select = ["SLF"]
 # Declared here rather than as inline `noqa`, with entries in
 # `tests/enforcement/_underscore_exemptions.txt`, because that is the channel the exemptions
 # file's own header requires: every entry there must have a matching ruff ignore so the two
-# stay in step, and the reasons then live in one reviewable list instead of at five call sites.
+# stay in step, and the reasons then live in one reviewable list instead of at each call site.
 #
 # The cost, stated rather than glossed: a per-file ignore also suppresses every FUTURE private
 # access in the files listed below, which an inline pragma would not. The ledger entries are what

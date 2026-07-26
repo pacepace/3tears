@@ -112,7 +112,7 @@ class TestUnderscoreExemptionsResolve:
             if not raw.strip().startswith("# rationale:"):
                 continue
             following = lines[number] if number < len(lines) else ""
-            if not following.strip() or following.startswith("#"):
+            if not following.strip() or following.strip().startswith("#"):
                 orphans.append(f"line {number}")
 
         assert not orphans, (
