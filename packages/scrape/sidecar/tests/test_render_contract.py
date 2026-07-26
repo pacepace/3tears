@@ -1362,9 +1362,22 @@ class TestEgressReporting:
             # the shared browser would report "container-default" AND route the request out
             # through the container's `--proxy-server`, while the caller had asked for neither.
             ({"egress_proxy": "direct://", "egress_name": "direct"}, "direct"),
+            # A name with no proxy to take it. `RenderRequest.egress_name` documents this to
+            # consumers as reporting the CONTAINER's exit rather than the name sent, because
+            # nothing routed the render anywhere -- so a consumer that assumed an echo would
+            # record a route never used. The in-repo driver always sends the pair, which is
+            # why this branch had no producer and no test; a stated contract with no test is
+            # how the previous version of that same comment drifted into being wrong.
+            ({"egress_name": "tor"}, "container-default"),
             ({}, "container-default"),
         ],
-        ids=["named-request-exit", "unnamed-request-exit", "explicit-direct", "container-default"],
+        ids=[
+            "named-request-exit",
+            "unnamed-request-exit",
+            "explicit-direct",
+            "name-without-proxy",
+            "container-default",
+        ],
     )
     async def test_the_response_reports_the_exit_the_render_used(
         self, client, monkeypatch, body: dict, expected: str

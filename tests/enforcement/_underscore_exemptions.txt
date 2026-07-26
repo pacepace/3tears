@@ -550,7 +550,7 @@ packages/scrape/sidecar/tests/test_render_contract.py:1328:_browser_args
 # rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
 packages/scrape/sidecar/tests/test_render_contract.py:1333:_browser_args
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1385:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:1398:_browser
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows
