@@ -47,6 +47,7 @@ class _FakeInnerDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
+        session_state: dict[str, object] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
     ) -> RenderedPage:

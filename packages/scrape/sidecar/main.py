@@ -966,7 +966,13 @@ async def hitl_tab_open(
     except hitl.SessionNotFound as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
     try:
-        tab = await _sessions.open_tab(session, target_id=req.target_id, url=req.url, nav_steps=req.nav_steps)
+        tab = await _sessions.open_tab(
+            session,
+            target_id=req.target_id,
+            url=req.url,
+            nav_steps=req.nav_steps,
+            session_state=req.session_state,
+        )
     except hitl.SessionUnavailable as exc:
         return JSONResponse(status_code=409, content={"error": str(exc)})
     except hitl.SessionNotFound as exc:

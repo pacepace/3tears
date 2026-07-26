@@ -84,6 +84,12 @@ class _FakeDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
+        # Accepted and ignored, like every other optional on this protocol. Fake-parity
+        # enforcement only requires the params production REQUIRES, so an optional added to
+        # ScrapeDriver does not fail the gate -- it fails at the first test that passes it.
+        # ScrapeDriver's contract is "accept the full signature, use what you need", so a
+        # stand-in that does not is not standing in for it.
+        session_state: dict[str, object] | None = None,
     ) -> RenderedPage:
         self.render_calls.append(url)
         self.wait_for_calls.append(wait_for)
@@ -471,6 +477,7 @@ class _WallDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
+        session_state: dict[str, object] | None = None,
     ) -> RenderedPage:
         del timeout, wait_for, capture_network, nav_steps
         self.render_calls += 1

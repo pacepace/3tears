@@ -33,7 +33,10 @@ from typing import Any
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
 
+from pydantic import SecretStr
+
 from .circuit import FetchDecision, TargetCircuit
+from .session_state import usable_session_state
 from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, decode_field_schema, decode_nav_steps
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
@@ -81,6 +84,7 @@ class ScrapeTool(TearsTool):
         api_key: str,
         health_collection: ScrapeTargetHealthCollection | None = None,
         circuit: TargetCircuit | None = None,
+        session_state_key: SecretStr | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -98,6 +102,11 @@ class ScrapeTool(TearsTool):
             classification rate that only a fetch can incur -- decays instead of holding
             steady forever; omitted, every call fetches
         :ptype circuit: TargetCircuit | None
+        :param session_state_key: operator master key that opens a stored human solve. Without
+            it a sealed state on the health row is left sealed and the target is fetched as if
+            no human had ever cleared it -- which is the safe direction, since the alternative
+            would be a deployment silently not knowing whether its credentials were readable
+        :ptype session_state_key: SecretStr | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -110,6 +119,7 @@ class ScrapeTool(TearsTool):
         self._extraction_collection = extraction_collection
         self._health_collection = health_collection
         self._circuit = circuit
+        self._session_state_key = session_state_key
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -226,6 +236,27 @@ class ScrapeTool(TearsTool):
             timeout_seconds=self._default_timeout + 60.0,  # render timeout + eval loop's own LLM-call budget
         )
 
+    async def _read_solved_state(self, target_id: str) -> dict[str, Any] | None:
+        """A human's stored solve for *target_id*, or ``None`` when there is none to use.
+
+        Never raises into a fetch. Every reason to decline -- no key configured, nothing
+        stored, a passed expiry, a token that will not open -- means the same thing: fetch as
+        if no human had cleared it. That is the safe direction, because the failure it avoids
+        is not "no cookie" but a fetch that never happens over a credential problem.
+        """
+        if self._health_collection is None or self._session_state_key is None:
+            return None
+        try:
+            row = await self._health_collection.get(target_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a health-store outage must degrade to fetching without a solve, exactly as the circuit degrades to fetching; losing the reuse is a cost, losing the fetch is an outage. Logged with its traceback below
+            log.exception(
+                "scrape tool: could not read the health row for target %s; fetching without a stored solve",
+                target_id,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            return None
+        return usable_session_state(row, self._session_state_key)
+
     async def execute(self, **kwargs: Any) -> ToolResult:
         """Fetch *url*, then extract *field_schema* via the real AI eval loop.
 
@@ -287,6 +318,18 @@ class ScrapeTool(TearsTool):
         if error is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)
 
+        # The human's solve, read once and passed to the driver. This is the step that makes
+        # chunk 06 a capability rather than plumbing: the columns, the sealing and the driver
+        # parameter all existed and nothing carried a stored solve into an actual fetch, so a
+        # person cleared the same challenge on every poll.
+        #
+        # Read AFTER the circuit decision, because a suppressed fetch has nothing to carry it
+        # into, and opening a credential for a request that will not be made is work done to
+        # no purpose on the hottest path this tool has.
+        solved_state: dict[str, Any] | None = None
+        if error is None and (decision is None or decision.permitted) and self._health_collection is not None:
+            solved_state = await self._read_solved_state(target_id)
+
         page: RenderedPage | None = None
         if error is None and (decision is None or decision.permitted):
             assert driver is not None  # narrowed by `error is None` above
@@ -299,7 +342,11 @@ class ScrapeTool(TearsTool):
             try:
                 try:
                     page = await driver.render(
-                        url, timeout=self._default_timeout, wait_for=wait_for, nav_steps=nav_steps
+                        url,
+                        timeout=self._default_timeout,
+                        wait_for=wait_for,
+                        nav_steps=nav_steps,
+                        session_state=solved_state,
                     )
                 except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
                     log.warning(

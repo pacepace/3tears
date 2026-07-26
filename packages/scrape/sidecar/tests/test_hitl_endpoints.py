@@ -128,6 +128,7 @@ class _FakeSessions:
         self.tab_error: Exception | None = None
         self.expired = False
         self.authorized_with: list[tuple[str, str]] = []
+        self.session_states: list[Any] = []
 
     def current(self) -> Any:
         return self._session
@@ -154,7 +155,20 @@ class _FakeSessions:
         await self.vnc.start()
         return self._session
 
-    async def open_tab(self, session: Any, *, target_id: str, url: str, nav_steps: Any = None) -> Any:
+    async def open_tab(
+        self,
+        session: Any,
+        *,
+        target_id: str,
+        url: str,
+        nav_steps: Any = None,
+        # Recorded, not ignored: the endpoint forwarding this is the whole point of the
+        # capability, and it was already shipped once dropping it silently. A fake that does
+        # not accept it turns that bug into a 502 from the broad handler rather than a
+        # failed assertion, which is how it stayed hidden.
+        session_state: Any = None,
+    ) -> Any:
+        self.session_states.append(session_state)
         if self.tab_error is not None:
             raise self.tab_error
         from hitl import HitlTab
@@ -381,3 +395,27 @@ async def test_a_session_closed_mid_navigation_is_409_not_502(fake_sessions: _Fa
             json={"target_id": "a", "url": "https://a.example"},
         )
     assert r.status_code == 409
+
+
+async def test_the_tab_endpoint_forwards_the_session_state_it_accepts(fake_sessions: _FakeSessions) -> None:
+    """It shipped once accepting this field and discarding it.
+
+    `HitlTabRequest` declared it, documented it, and the manager implemented applying it --
+    and the endpoint called `open_tab` without it. The request returned 200, set no cookies,
+    and logged nothing, so every symptom pointed at the browser rather than at one missing
+    keyword argument. Nothing tested the forwarding, which is why.
+    """
+    sid, tok = await _open(fake_sessions)
+    state = {"cookies": [{"name": "cf_clearance", "value": "earned", "domain": ".example.gov"}]}
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.post(
+            f"/v1/hitl/session/{sid}/tab",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"target_id": "a", "url": "https://a.example", "session_state": state},
+        )
+
+    assert r.status_code == 200
+    assert fake_sessions.session_states == [state], (
+        "the endpoint accepted a human's solve and dropped it, so the tab opens unauthenticated"
+    )

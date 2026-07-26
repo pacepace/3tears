@@ -18,6 +18,8 @@ from pydantic import SecretStr
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.scrape.health import ScrapeTargetHealthCollection
+from unittest.mock import patch
+
 from threetears.scrape.session_state import (
     DEFAULT_SESSION_STATE_TTL,
     SealedSessionState,
@@ -31,6 +33,12 @@ _KEY = SecretStr("an-operator-master-key-from-secret-refs")
 _OTHER_KEY = SecretStr("a-different-operators-master-key")
 _NOW = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 _T = "warn_oh"
+#: Known-good page + strategy + schema, lifted from test_tool.py so extraction succeeds from
+#: the seeded recipe and no test in this file ever reaches a model.
+_EXTRACTABLE_HTML = "<html><body><table><tr><td>Acme Corp</td><td>42</td></tr></table></body></html>"
+_EXTRACTABLE_STRATEGY = {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"}
+_EXTRACTABLE_SCHEMA = {"employer": "str", "affected_count": "int"}
+
 _STATE = {
     "cookies": [{"name": "cf_clearance", "value": "the-thing-a-human-earned", "domain": ".example.gov"}],
     "origins": [],
@@ -203,3 +211,186 @@ async def test_a_wrong_key_against_a_stored_state_asks_for_a_human(health: Scrap
     await record_session_state(health, target_id=_T, state=seal_session_state(_STATE, _KEY, now=_NOW))
     row = await health.get(_T)
     assert usable_session_state(row, _OTHER_KEY, now=_NOW) is None
+
+
+# ---------------------------------------------------------------------------
+# The wiring. These are the tests whose absence let chunk 06 be marked done
+# while the capability did not exist: every piece was built and tested, and
+# nothing carried a stored solve into an actual fetch.
+# ---------------------------------------------------------------------------
+
+
+class _StateCapturingDriver:
+    """A ScrapeDriver stand-in that records the session_state it was handed.
+
+    # parity-with: threetears.scrape.driver.ScrapeDriver
+    """
+
+    def __init__(self) -> None:
+        self.session_states: list[dict | None] = []
+
+    @property
+    def name(self) -> str:
+        return "state-capturing"
+
+    async def render(
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        wait_for: str | None = None,
+        capture_network: bool = False,
+        nav_steps: list | None = None,
+        session_state: dict | None = None,
+    ):
+        from threetears.scrape.driver import RenderedPage
+
+        self.session_states.append(session_state)
+        # The same html/strategy/schema triple test_tool.py already proves extracts cleanly.
+        # Reused rather than invented: a near-miss makes extraction fail, which sends the eval
+        # loop to candidate generation and the challenge classifier to a verdict, both against
+        # a fake key, and both burn their full retry budget -- 30s per test for a path these
+        # tests are not about.
+        return RenderedPage(html=_EXTRACTABLE_HTML, status=200, final_url=url, timing_ms=1.0)
+
+
+def _no_llm():
+    """Stub the classifier itself, not the model factory underneath it.
+
+    These tests are about which cookies reach the driver, and supplying a health collection
+    opts the tool into challenge classification, which runs whenever extraction misses. The
+    classifier is a bounded-retry call -- 6 attempts with 2s linear backoff -- so making the
+    MODEL raise does not skip it, it makes it retry: 2+4+6+8+10 = exactly 30 seconds per test,
+    which is what was measured before this was moved.
+
+    Patching at the classifier boundary returns immediately and leaves every behaviour these
+    tests assert on untouched, because none of them is about classification. ``None`` is the
+    classifier's own documented "could not decide" answer, so the tool takes the same path it
+    would on a real inconclusive verdict.
+    """
+    return patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None)
+
+
+async def _tool(driver, health, key, *, target_id: str):
+    """A tool whose recipe already wins, so no test here reaches an LLM.
+
+    Seeding the recipe is not incidental tidiness. Without it the eval loop treats every
+    fetch as a target it has never solved, runs candidate generation against a fake API key,
+    and spends its full retry-with-backoff budget before failing -- 65 seconds per test,
+    measured, for tests that are about which cookies reach the driver and have nothing to do
+    with extraction at all.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": target_id,
+                "extraction_strategy": _EXTRACTABLE_STRATEGY,
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
+    )
+    return ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        session_state_key=key,
+        drivers={"nodriver": driver},
+        api_key="k",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_tool_carries_a_stored_solve_into_the_fetch(health: ScrapeTargetHealthCollection) -> None:
+    """The step that makes this chunk a capability rather than plumbing.
+
+    The columns, the sealing, the driver parameter and the sidecar's apply-path all existed
+    and were individually tested while NOTHING passed a stored solve to a driver, so a person
+    cleared the same challenge on every poll and the chunk's whole purpose was unmet. Chunk 02
+    had already written this rule down: "the tool wiring is what makes the parameter a
+    capability rather than plumbing."
+    """
+    url = "https://example.gov/walled"
+    schema = _EXTRACTABLE_SCHEMA
+    from threetears.scrape.tool import _derive_target_id
+
+    target_id = _derive_target_id(url, schema)
+    await record_session_state(health, target_id=target_id, state=seal_session_state(_STATE, _KEY))
+
+    driver = _StateCapturingDriver()
+    tool = await _tool(driver, health, _KEY, target_id=target_id)
+    with _no_llm():
+        await tool.execute(url=url, field_schema=schema)
+
+    assert driver.session_states, "the driver was never called"
+    assert driver.session_states[0] == _STATE, (
+        "the fetch went out without the human's solve, so the target sees an unauthenticated "
+        "request and the person clears the same challenge again"
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_stored_solve_means_no_session_state(health: ScrapeTargetHealthCollection) -> None:
+    """A target nobody has ever cleared fetches exactly as it always did."""
+    from threetears.scrape.tool import _derive_target_id
+
+    url = "https://example.gov/plain"
+    schema = _EXTRACTABLE_SCHEMA
+    driver = _StateCapturingDriver()
+    tool = await _tool(driver, health, _KEY, target_id=_derive_target_id(url, schema))
+    with _no_llm():
+        await tool.execute(url=url, field_schema=schema)
+    assert driver.session_states == [None]
+
+
+@pytest.mark.asyncio
+async def test_an_expired_solve_is_not_sent(health: ScrapeTargetHealthCollection) -> None:
+    """The expiry has to be honoured on the path that actually fetches, not only in a helper.
+
+    A dead cookie does not fail loudly: the target serves a challenge, extraction fails, and
+    the circuit records a wall -- so an unhonoured expiry looks like a target that got harder.
+    """
+    url = "https://example.gov/stale"
+    schema = _EXTRACTABLE_SCHEMA
+    from threetears.scrape.tool import _derive_target_id
+
+    target_id = _derive_target_id(url, schema)
+    stale = seal_session_state(_STATE, _KEY, ttl=timedelta(seconds=-1))
+    await record_session_state(health, target_id=target_id, state=stale)
+
+    driver = _StateCapturingDriver()
+    tool = await _tool(driver, health, _KEY, target_id=target_id)
+    with _no_llm():
+        await tool.execute(url=url, field_schema=schema)
+
+    assert driver.session_states == [None], "an expired solve was sent as if a human had just earned it"
+
+
+@pytest.mark.asyncio
+async def test_without_a_key_the_stored_solve_is_left_sealed(health: ScrapeTargetHealthCollection) -> None:
+    """A deployment with no master key fetches as if no human had cleared the target.
+
+    The safe direction: the alternative is a fetch that never happens over a key problem, or
+    worse, ciphertext handed to a driver as if it were a cookie jar.
+    """
+    url = "https://example.gov/nokey"
+    schema = _EXTRACTABLE_SCHEMA
+    from threetears.scrape.tool import _derive_target_id
+
+    target_id = _derive_target_id(url, schema)
+    await record_session_state(health, target_id=target_id, state=seal_session_state(_STATE, _KEY))
+
+    driver = _StateCapturingDriver()
+    tool = await _tool(driver, health, None, target_id=target_id)
+    with _no_llm():
+        await tool.execute(url=url, field_schema=schema)
+
+    assert driver.session_states == [None]
