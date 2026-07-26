@@ -267,3 +267,51 @@ class TestNodriverDownloadDriver:
 
         assert isinstance(page, RenderedPage)
         assert page.timing_ms >= 0.0
+
+
+class TestNodriverDownloadAnnouncesADroppedSolve:
+    """Through render(), because the call site is what was untested.
+
+    This driver also carries its own remedy: the base class's default advice, "use the nodriver
+    sidecar driver", names the thing it already IS -- a reader who follows it changes nothing
+    and concludes the warning was noise.
+    """
+
+    @staticmethod
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": 200,
+                "filename": "notice.pdf",
+                "content_type": "application/pdf",
+                "content_base64": base64.b64encode(b"%PDF-fake-bytes").decode("ascii"),
+                "timing_ms": 1.0,
+            },
+        )
+
+    def _driver(self, monkeypatch) -> NodriverDownloadDriver:
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.nodriver_download.parse_document_bytes_to_html",
+            AsyncMock(return_value=ParsedDocumentHtml(html="<html>parsed</html>", was_ocr=False)),
+        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(self._handler))
+        return NodriverDownloadDriver("http://sidecar.test", client=client)
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog, monkeypatch):
+        driver = self._driver(monkeypatch)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
+            await driver.render("https://workforcewv.org/notice.pdf", session_state={"cookies": [{"name": "s"}]})
+
+        messages = [r.getMessage() for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert messages, f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
+        assert "/v1/download" in messages[0], f"the generic remedy leaked through: {messages[0]}"
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
+        driver = self._driver(monkeypatch)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
+            await driver.render("https://workforcewv.org/notice.pdf")
+
+        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]

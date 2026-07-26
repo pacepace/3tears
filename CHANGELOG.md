@@ -235,6 +235,23 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**A driver that cannot use a human's solve now says so, once per site.** Only the nodriver
+sidecar can apply exported cookies and storage; the other five accept the parameter and render
+unauthenticated. In silence that is a trap -- the caller gets a successful page back and learns
+nothing until extraction fails on a login wall and the target is escalated to a person who
+already cleared it.
+
+The cardinality is the whole design, and both obvious choices are wrong. Per render is a storm:
+`MultiDocumentDriver` forwards a solve to its inner driver once per document, so one listing
+would emit a warning per document, and a warning that repeats that way teaches its reader to
+filter it. Per driver instance is silence: `ScrapeTool` builds its driver map once and reuses it
+for the life of the process, so the first target would warn and every later one would be dropped
+quietly. An origin is what a solve actually belongs to, so it is the unit -- one report per site,
+bounded so a long-lived process cannot accumulate origins forever. `NodriverDownloadDriver`
+carries its own remedy, since the general advice ("use the nodriver sidecar driver") names the
+thing it already is; its constraint is the `/v1/download` endpoint, which carries no session
+state.
+
 **A driver written before this release keeps working.** `ScrapeDriver` ships as a pluggable
 contract, and `session_state` was being passed on EVERY fetch -- so an out-of-tree driver
 written against 0.19.x raised `TypeError` on every call, including the overwhelming majority

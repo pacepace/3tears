@@ -324,21 +324,39 @@ class TestADroppedSolveIsNeverSilent:
         )
 
     @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
-    def test_it_says_so_once_per_instance_not_once_per_render(self, caplog, make_driver, module: str) -> None:
-        """A per-render warning is a storm, and a storm trains its reader to filter it.
+    def test_one_origin_is_reported_once_however_many_documents_it_has(self, caplog, make_driver, module: str) -> None:
+        """Per render is a storm: `MultiDocumentDriver` forwards a solve once per document, so
+        one listing emitted a warning per document up to the cap, and a warning that repeats
+        that way trains its reader to filter it out."""
+        driver = make_driver()
+        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            for i in range(5):
+                driver._warn_dropped_session_state(f"https://example.gov/doc{i}.pdf", log)
 
-        `MultiDocumentDriver` forwards a solve to its inner document driver once per document,
-        so per-render meant one warning per document up to the cap. The fact reported is a
-        property of the driver and does not change between calls.
+        emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one origin"
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str) -> None:
+        """The opposite failure, and the one that is silent rather than noisy.
+
+        `ScrapeTool` builds its driver map once and reuses it for the life of the process, so
+        deduping per driver INSTANCE meant per process: the first target warned and every later
+        one was rendered logged-out with nothing said at all. An origin is what a human's solve
+        belongs to, so it is the unit that makes this true exactly once per site.
         """
         driver = make_driver()
         log = logging.getLogger(f"threetears.scrape.drivers.{module}")
         with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
-            for _ in range(5):
-                driver._warn_dropped_session_state("https://example.gov/x", log)
+            driver._warn_dropped_session_state("https://first.example/a", log)
+            driver._warn_dropped_session_state("https://second.example/a", log)
 
         emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
-        assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one instance"
+        assert len(emitted) == 2, (
+            f"{module} reported {len(emitted)} of 2 sites; a driver reused across targets goes "
+            "silent after the first, which is the failure this cardinality exists to avoid"
+        )
 
     def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
         """It IS sidecar-backed, so the default advice names what it already is.

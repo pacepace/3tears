@@ -580,3 +580,49 @@ class TestDocumentDriver:
 
         assert isinstance(page, RenderedPage)
         await client.aclose()
+
+
+class TestDocumentDriverAnnouncesADroppedSolve:
+    """Through render(), because the call site is what was untested.
+
+    Asserting the base-class helper directly exercised one inherited implementation and left
+    this driver's own `if session_state:` block deletable with the suite green.
+    """
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.parse_document",
+            AsyncMock(
+                return_value=DocumentResult(text="Acme", title="t", page_count=None, word_count=1, was_ocr=False)
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
+            await driver.render("https://example.gov/warn.txt", session_state={"cookies": [{"name": "s"}]})
+
+        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
+            f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.parse_document",
+            AsyncMock(
+                return_value=DocumentResult(text="Acme", title="t", page_count=None, word_count=1, was_ocr=False)
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
+            await driver.render("https://example.gov/warn.txt")
+
+        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]

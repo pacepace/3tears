@@ -19,6 +19,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 
@@ -30,8 +31,20 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page", "evaluate"]
 
 #: Default advice when a driver drops a solve. Wrong for the sidecar-backed download driver,
-#: which is why :meth:`ScrapeDriver.warn_dropped_session_state` takes an override.
+#: which is why :meth:`ScrapeDriver._warn_dropped_session_state` takes an override.
 _SIDECAR_REMEDY = "Use the nodriver sidecar driver to reuse a solved session."
+
+#: Ceiling on remembered origins per driver, so the dedupe set cannot grow without bound in a
+#: long-lived process. Reached, it clears wholesale -- the cost is at most one repeated warning.
+_MAX_WARNED_ORIGINS = 512
+
+
+def _origin_of(url: str) -> str:
+    """``scheme://host[:port]`` for *url*, or the url itself when it has no parseable origin."""
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 @dataclass(frozen=True)
@@ -147,14 +160,19 @@ class ScrapeDriver(ABC):
     rendered the page.
     """
 
-    #: Set once this instance has reported dropping a human's solve. A class-level default so
-    #: no backend has to remember to initialise it, flipped per instance on first use.
-    _warned_dropped_solve: bool = False
+    #: Origins this instance has already reported a dropped solve for. Per ORIGIN, not per
+    #: instance: `ScrapeTool` builds its driver map once and reuses it for the life of the
+    #: process, so once-per-instance meant once-per-process -- the first target warned and
+    #: every later one was rendered logged-out in exactly the silence this exists to prevent.
+    #: Per render was the opposite failure, a warning per document across a whole listing.
+    #: An origin is the unit a human's solve actually belongs to, so it is the unit here.
+    _warned_dropped_origins: set[str] | None = None
 
     #: What to tell an operator instead. PUBLIC and a class attribute: subclasses are meant to
     #: override it, which the repo's underscore rule rightly forbids for a private name -- an
     #: underscore attribute is implementation detail of the class that declares it. A class
-    #: attribute rather than a call-site keyword so it is a property of the DRIVER: the download driver's own remedy is different, and a
+    #: attribute rather than a call-site keyword so it is a property of the DRIVER: the
+    #: download driver's own remedy is different, and a
     #: keyword passed at the point of call made that difference invisible to any test that did
     #: not go through that exact line.
     dropped_solve_remedy: str = _SIDECAR_REMEDY
@@ -166,13 +184,14 @@ class ScrapeDriver(ABC):
         time solving, gets a successful render back, and learns nothing until extraction fails
         on a login wall and the target is escalated to a human who already did the work.
 
-        **Once per driver instance, not once per render**, because the fact being reported is a
-        property of the DRIVER -- it cannot apply session state, and that does not change
-        between calls. Per-render was a real storm: :class:`MultiDocumentDriver` forwards a
-        solve to its inner document driver once per document, so a single listing with a solve
-        emitted one warning per document up to its cap, and a warning that repeats that way
-        trains its reader to filter it out. That is the same reasoning as the sibling test
-        asserting an ordinary render stays silent.
+        **Once per ORIGIN**, which is the only cardinality that is wrong in neither direction.
+        Per render is a storm: :class:`MultiDocumentDriver` forwards a solve to its inner
+        document driver once per document, so one listing emitted a warning per document, and a
+        warning that repeats that way trains its reader to filter it out. Per driver INSTANCE is
+        silence: `ScrapeTool` builds its driver map once and reuses it for the whole process, so
+        the first dropped solve would warn and every later target would be rendered logged-out
+        with nothing said. An origin is what a human's solve actually belongs to, so it is the
+        unit that makes "this site's solve was discarded" true exactly once.
 
         On the base class rather than a module function so the once-per-instance state has
         somewhere to live, and so every backend gets it by inheriting rather than by each
@@ -184,9 +203,19 @@ class ScrapeDriver(ABC):
         :param log: the calling module's own logger, so the record carries its name
         :ptype log: Any
         """
-        if self._warned_dropped_solve:
+        origin = _origin_of(url)
+        if self._warned_dropped_origins is None:
+            # Lazily per instance, so no backend has to remember to initialise it and the
+            # class-level default is never mutated into a shared set across every driver.
+            self._warned_dropped_origins = set()
+        if origin in self._warned_dropped_origins:
             return
-        self._warned_dropped_solve = True
+        if len(self._warned_dropped_origins) >= _MAX_WARNED_ORIGINS:
+            # Bounded rather than unbounded: a long-lived process scraping a wide set of sites
+            # would otherwise hold one string per origin forever, which is the same leak the
+            # robots gate had to fix. Clearing wholesale costs at most one repeated warning.
+            self._warned_dropped_origins.clear()
+        self._warned_dropped_origins.add(origin)
         log.warning(
             "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
             "unauthenticated. %s (reported once per driver instance)",

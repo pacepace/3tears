@@ -341,3 +341,38 @@ class TestApiDriverEgress:
 
         await driver.render("https://example.gov/api", results_path="")
         assert driver._client is pinned
+
+
+class TestApiDriverAnnouncesADroppedSolve:
+    """Through render(), not by calling the warning helper.
+
+    An earlier version of this coverage called the base-class method directly, which asserted
+    one inherited implementation five times and left every driver's own `if session_state:`
+    block deletable with the suite green. The call site is the thing that was untested.
+    """
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
+        driver = ApiDriver(client=client)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+            await driver.render(
+                "https://example.gov/api/search",
+                results_path="Results",
+                fragment_field="Html",
+                session_state={"cookies": [{"name": "s", "value": "solved"}]},
+            )
+
+        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
+            f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog):
+        """A warning on every render is noise that teaches the reader to skip it."""
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
+        driver = ApiDriver(client=client)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+            await driver.render("https://example.gov/api/search", results_path="Results", fragment_field="Html")
+
+        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]
