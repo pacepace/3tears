@@ -311,7 +311,9 @@ class TestHealthz:
     async def test_not_ready_before_startup(self, client: httpx.AsyncClient):
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "starting"}
+        # The status field is the contract; the body is an envelope that gains fields.
+        # Asserting the whole dict made every additive field a breaking change.
+        assert r.json()["status"] == "starting"
 
     async def test_not_ready_while_browser_started_but_warm_up_incomplete(self, client: httpx.AsyncClient):
         """Browser started =/= ready -- the warm-up render must complete (or
@@ -319,14 +321,14 @@ class TestHealthz:
         main._browser = _FakeBrowser()
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "starting"}
+        assert r.json()["status"] == "starting"
 
     async def test_ready_once_warm_up_completes(self, client: httpx.AsyncClient):
         main._browser = _FakeBrowser()
         main._ready = True
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "ok"}
+        assert r.json()["status"] == "ok"
 
 
 class TestRenderContract:
@@ -1268,3 +1270,38 @@ class TestDownloadContract:
         assert filenames == {"a.pdf", "b.pdf"}
         assert len(browser.disposed_contexts) == 2
         assert len(set(browser.disposed_contexts)) == 2  # each context disposed exactly once, no reuse/collision
+
+
+class TestEgressReporting:
+    """Which exit this container leaves by, visible from outside it."""
+
+    async def test_healthz_reports_direct_when_nothing_is_configured(self) -> None:
+        """A deployment running one container per exit needs to confirm which one it reached.
+
+        Without this the only way to tell a TOR container from a direct one is to fetch an
+        address-echo service through it, which is a network round trip to answer a question
+        the container already knows.
+        """
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+            body = (await client.get("/healthz")).json()
+        assert body["egress"] == "direct"
+
+    def test_a_configured_proxy_reaches_the_browser_args(self, monkeypatch) -> None:
+        """The launch argument is the whole mechanism, so it is what gets asserted.
+
+        Chromium accepts --proxy-server silently and ignores nothing about it; the failure
+        this guards is the argument never being built, which looks identical from inside the
+        container and only differs at the far end.
+        """
+        monkeypatch.setattr(main, "EGRESS_PROXY", "socks5://tor:9050")
+        args = [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            *([f"--proxy-server={main.EGRESS_PROXY}"] if main.EGRESS_PROXY else []),
+        ]
+        assert "--proxy-server=socks5://tor:9050" in args
+
+        monkeypatch.setattr(main, "EGRESS_PROXY", None)
+        args = [*([f"--proxy-server={main.EGRESS_PROXY}"] if main.EGRESS_PROXY else [])]
+        assert args == []

@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import Any
 
+    from threetears.core.egress import EgressDriver
+
 __all__ = ["CircuitBreakerLike", "TracedHttpClient", "UpstreamHttpError"]
 
 _SPAN_NAME = "threetears.core.http_client.request"
@@ -148,6 +150,7 @@ class TracedHttpClient:
         initial_backoff: float = 0.5,
         max_backoff: float = 8.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        egress: EgressDriver | None = None,
     ) -> None:
         """capture config and open the single underlying httpx client.
 
@@ -165,6 +168,11 @@ class TracedHttpClient:
         :ptype max_backoff: float
         :param transport: optional httpx transport (test seam)
         :ptype transport: httpx.AsyncBaseTransport | None
+        :param egress: optional exit this client should leave by (see
+            :mod:`threetears.core.egress`). ``transport`` wins when both are
+            given, because it is the test seam and a test that pinned a
+            transport must not have it replaced by ambient configuration
+        :ptype egress: EgressDriver | None
         :return: nothing
         :rtype: None
         :raises ValueError: when ``upstream_base_url`` is empty
@@ -176,11 +184,26 @@ class TracedHttpClient:
         self._initial_backoff = initial_backoff
         self._max_backoff = max_backoff
         self._host = httpx.URL(upstream_base_url).host
+        self._egress = egress
+        # An explicit transport wins. It is the documented test seam, and a test that binds a
+        # transport is asserting on what this client does with it -- letting a configured
+        # egress override that would make the seam conditional on deployment config.
+        resolved_transport = transport if transport is not None else (egress.httpx_transport() if egress else None)
         self._client = httpx.AsyncClient(
             base_url=upstream_base_url,
             timeout=timeout,
-            transport=transport,
+            transport=resolved_transport,
         )
+
+    @property
+    def egress_name(self) -> str:
+        """Which exit this client leaves by, for recording against a result.
+
+        ``"direct"`` when none was configured rather than ``None``: a caller writing this
+        against an outcome wants a value meaning "the default route", and "nobody said" would
+        be indistinguishable from it in a query later.
+        """
+        return self._egress.name if self._egress is not None else "direct"
 
     async def __aenter__(self) -> TracedHttpClient:
         """return self for ``async with`` ergonomics.

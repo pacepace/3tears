@@ -33,6 +33,11 @@ COPY hitl.py /app/hitl.py
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# EGRESS_PROXY / EGRESS_NAME are unset by default: the default route, named
+# "direct". A deployment that wants this container to leave by TOR or a VPN sets
+# EGRESS_PROXY to a --proxy-server value and EGRESS_NAME to the identifier it
+# records results against. Chromium takes --proxy-server process-wide, so one
+# container is one exit; two exits are two containers.
 ENV DISPLAY_NUM=99 \
     NOVNC_ROOT=/usr/share/novnc \
     SCREEN_GEOM=1920x1080x24 \

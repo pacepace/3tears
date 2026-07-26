@@ -261,3 +261,45 @@ def test_breaker_spy_satisfies_protocol() -> None:
     # CircuitBreakerLike, and so is the real reuse target.
     assert isinstance(_BreakerSpy(), CircuitBreakerLike)
     assert isinstance(CircuitBreaker(provider_name="x"), CircuitBreakerLike)
+
+
+class TestEgressWiring:
+    """The one transport, leaving by a configured exit."""
+
+    def test_an_egress_driver_supplies_the_transport(self) -> None:
+        """This is the reuse the seam exists for: httpx proxying IS a transport, and
+        ``TracedHttpClient`` already had a transport seam, so an exit needed no new plumbing."""
+        from threetears.core.egress import ProxyEgress
+        from threetears.core.http_client import TracedHttpClient
+
+        client = TracedHttpClient(
+            upstream_base_url="https://upstream.example",
+            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+        )
+        assert client.egress_name == "tor"
+        assert client._client._transport is not None  # noqa: SLF001 -- the bound transport IS the assertion
+
+    def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
+        """``transport`` is the documented test seam.
+
+        A test that binds one is asserting on what this client does with it; letting ambient
+        deployment configuration replace it would make the seam conditional on config, which
+        is the sort of thing that passes locally and behaves differently in production.
+        """
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.core.http_client import TracedHttpClient
+
+        pinned = httpx.MockTransport(lambda _req: httpx.Response(200))
+        client = TracedHttpClient(
+            upstream_base_url="https://upstream.example",
+            transport=pinned,
+            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+        )
+        assert client._client._transport is pinned  # noqa: SLF001
+
+    def test_no_egress_reports_direct_rather_than_nothing(self) -> None:
+        """A result recorded against ``None`` cannot be told apart from one nobody stamped."""
+        from threetears.core.http_client import TracedHttpClient
+
+        assert TracedHttpClient(upstream_base_url="https://upstream.example").egress_name == "direct"

@@ -38,6 +38,16 @@ logging.basicConfig(level=logging.INFO)
 
 CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
 
+# Egress: the exit this container's browser leaves by, as a --proxy-server value
+# (e.g. "socks5://tor:9050"). Set by the deployment, because which exits exist is
+# deployment knowledge -- this container only needs to be told which one to use.
+# Applied at browser launch: Chromium takes it process-wide, so it cannot be varied
+# per tab, and a container that needs two exits runs two containers. Named here
+# rather than passed per request for exactly that reason -- a per-request proxy
+# argument would advertise a capability Chromium does not have.
+EGRESS_PROXY = os.environ.get("EGRESS_PROXY") or None
+EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("direct" if not os.environ.get("EGRESS_PROXY") else "configured")
+
 # Browser-forced-download capability (scrape-task-04, 2026-07-15): a fixed profile
 # directory (rather than nodriver's own auto-generated temp one) so the Preferences
 # file below is written before uc.start() launches Chromium and reliably applies to
@@ -680,7 +690,11 @@ async def _lifespan(_app: FastAPI):
         # only via browser_args is not sufficient -- nodriver's own
         # connect-back check still refuses to start without this.
         sandbox=False,
-        browser_args=["--disable-dev-shm-usage", "--disable-gpu"],
+        browser_args=[
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            *([f"--proxy-server={EGRESS_PROXY}"] if EGRESS_PROXY else []),
+        ],
     )
     await _warm_up()
     yield
@@ -770,8 +784,13 @@ async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    """Liveness/readiness probe for docker-compose healthcheck."""
-    return {"status": "ok" if _ready else "starting"}
+    """Liveness/readiness probe for docker-compose healthcheck.
+
+    Reports the configured egress so a caller can tell WHICH exit a result came from. A
+    deployment running one container per exit otherwise has no way to confirm, from outside,
+    that the container it is talking to is the one it thinks it is.
+    """
+    return {"status": "ok" if _ready else "starting", "egress": EGRESS_NAME}
 
 
 # --------------------------------------------------------------------------
