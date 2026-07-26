@@ -828,6 +828,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             span = _trace.get_current_span()
             span.set_attribute(key, value)
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 
