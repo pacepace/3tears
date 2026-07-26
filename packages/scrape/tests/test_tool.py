@@ -1155,6 +1155,114 @@ async def test_a_driver_predating_session_state_still_works() -> None:
     assert result.success, f"a pre-existing driver broke on an ordinary fetch: {result.error}"
 
 
+async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
+    """A configuration error must not be answered with a timer.
+
+    The sibling above covers the common case -- no stored solve, so nothing is passed and the
+    old driver works. This is the other one: a solve EXISTS and the driver cannot take it. That
+    is a static incompatibility, identical on every poll and unfixable by waiting, and it used
+    to reach `record_unreachable` through the broad guard -- so `failure_threshold` polls later
+    the durable circuit opened and suppressed the target for fifteen minutes escalating to six
+    hours, while also stamping circuit state that `list_walled` and the operator queue then
+    reason about.
+
+    Both halves are asserted. The error alone would pass against a version that reported the
+    problem AND still backed the target off, which is the actual defect.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+    class _PreSessionStateDriver:
+        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+        @property
+        def name(self) -> str:
+            return "old"
+
+        async def render(
+            self,
+            url: str,
+            *,
+            timeout: float = 30.0,
+            wait_for: str | None = None,
+            capture_network: bool = False,
+            nav_steps: list[NavStep] | None = None,
+        ) -> RenderedPage:
+            raise AssertionError("the render must not be attempted once the mismatch is known")
+
+    class _SpyCircuit:
+        """# parity-with: threetears.scrape.circuit.TargetCircuit"""
+
+        def __init__(self) -> None:
+            self.unreachable: list[str] = []
+
+        async def record_unreachable(self, target_id: str) -> None:
+            self.unreachable.append(target_id)
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    circuit = _SpyCircuit()
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"old": _PreSessionStateDriver()},  # type: ignore[dict-item]
+        circuit=circuit,  # type: ignore[arg-type]
+        api_key="k",
+        robots=None,
+    )
+
+    page, error = await tool._render_once(  # noqa: SLF001
+        _PreSessionStateDriver(),  # type: ignore[arg-type]
+        "https://example.gov/x",
+        wait_for=None,
+        nav_steps=None,
+        solved_state={"cookies": {"session": "abc"}},
+        target_id="t1",
+        driver_backend="old",
+    )
+
+    assert page is None
+    assert "does not accept session_state" in (error or ""), (
+        f"the incompatibility was reported as something else: {error}"
+    )
+    assert circuit.unreachable == [], (
+        "a driver that cannot take a solve was recorded as an unreachable fetch, so the durable "
+        "circuit will back the target off for hours over a wiring mistake time cannot fix"
+    )
+
+
+def test_a_driver_taking_kwargs_is_not_called_incompatible() -> None:
+    """A forwarding wrapper can take the solve, and refusing it would break a driver that works.
+
+    Asserted alongside the negative case so the helper is not merely rejecting everything it
+    does not recognise.
+    """
+    from threetears.scrape.tool import _accepts_session_state
+
+    class _Forwards:
+        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+        @property
+        def name(self) -> str:
+            return "forwards"
+
+        async def render(self, url: str, **kwargs: Any) -> RenderedPage:
+            raise NotImplementedError
+
+    class _Declines:
+        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+        @property
+        def name(self) -> str:
+            return "declines"
+
+        async def render(self, url: str, *, timeout: float = 30.0) -> RenderedPage:
+            raise NotImplementedError
+
+    assert _accepts_session_state(_Forwards())  # type: ignore[arg-type]
+    assert not _accepts_session_state(_Declines())  # type: ignore[arg-type]
+
+
 class TestEgressByName:
     """The registry's reason to exist: configuration names an exit, nothing branches on it."""
 

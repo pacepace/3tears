@@ -367,8 +367,11 @@ class EgressRegistry:
         async def _ask(driver: EgressDriver) -> EgressHealth:
             probe = getattr(driver, "health", None)
             if probe is None:
-                # A duck-typed driver written before `health` joined the protocol. Reported as
-                # NOT reachable with a reason that says why, rather than defaulting to healthy:
+                # A driver that does not implement `health`. `EgressDriver` is a Protocol and
+                # `register` type-checks rather than isinstance-checks, so an application
+                # wiring its own driver from untyped configuration puts one here without
+                # anything objecting. Reported as NOT reachable with a reason that says why,
+                # rather than defaulting to healthy:
                 # this sweep exists so an operator can rule an exit out, and an exit that
                 # cannot answer must not be the one that looks fine. Degrading to "true" here
                 # would reintroduce exactly the blind spot the method was added to remove.

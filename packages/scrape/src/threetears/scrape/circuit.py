@@ -588,7 +588,11 @@ class TargetCircuit:
 
         :param target_id: the target a human just cleared
         :ptype target_id: str
-        :param now: current time; injected by tests, defaults to now
+        :param now: ACCEPTED AND DISCARDED. Nothing here is time-dependent -- clearing a wall
+            writes fixed values and removes a deadline rather than computing one -- so there is
+            no clock to inject. Taken anyway to match every other recorder on this class, so a
+            caller threading a test clock through them does not have to special-case this one,
+            and so adding a time-dependent step later is not a signature change.
         :ptype now: datetime | None
         :return: nothing
         :rtype: None

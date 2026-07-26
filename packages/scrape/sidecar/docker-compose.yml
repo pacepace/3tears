@@ -23,11 +23,16 @@ services:
       # policy.
       #
       # So the reasoning written at length under 6080 applies to this port too, and the only
-      # difference is that this one has to be reachable by SOMETHING. Bind it to an interface
-      # your platform fronts (`- "127.0.0.1:8088:8088"`), or put it behind whatever already
-      # authenticates the rest of your deployment. Publishing it to 0.0.0.0 on a shared
-      # network hands anyone who can reach it a browser and a cookie jar.
-      - "8088:8088"
+      # difference is that this one has to be reachable by SOMETHING. Publishing it to 0.0.0.0
+      # on a shared network hands anyone who can reach it a browser and a cookie jar.
+      #
+      # Hence loopback by default: the safe binding is the one you get without deciding, and
+      # widening it is the deliberate act. Another container on this compose network reaches
+      # the sidecar by service name over the container network, which this does not affect --
+      # only host-side access is narrowed. A deployment that needs it wider should put it
+      # behind whatever already authenticates the rest of the deployment rather than change
+      # this line.
+      - "127.0.0.1:8088:8088"
       # Deliberately NOT publishing 6080 (websockify / noVNC).
       #
       # Adding `- "6080:6080"` here is a one-line change that looks helpful and is not: the

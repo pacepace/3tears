@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 from typing import Any
 
@@ -72,6 +73,32 @@ class _RobotsDefault:
 
 
 _ROBOTS_DEFAULT = _RobotsDefault()
+
+
+def _accepts_session_state(driver: ScrapeDriver) -> bool:
+    """Whether *driver*'s ``render`` can be passed a human's stored solve.
+
+    ``ScrapeDriver`` is published as a pluggable contract, so a driver written against an
+    earlier release has no such parameter. That is a supported thing to encounter and a
+    configuration fact rather than a fetch outcome, so the caller reports it instead of
+    attempting the call and reading the wreckage.
+
+    ``**kwargs`` counts as accepting: a driver that forwards everything can take it, and
+    deciding otherwise would refuse to use a delegating wrapper that works.
+
+    Returns ``True`` when the signature cannot be read at all. Some callables -- C extensions,
+    exotic proxies -- have no introspectable signature, and a helper whose failure mode is
+    "assume the incompatibility" would block a driver nobody has shown to be broken. Attempting
+    the call is the honest fallback; a genuine mismatch then raises and is reported as a fetch
+    failure, which is the behaviour that existed before this check.
+    """
+    try:
+        params = inspect.signature(driver.render).parameters
+    except TypeError, ValueError:
+        return True
+    if "session_state" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _derive_target_id(url: str, field_schema: dict[str, Any]) -> str:
@@ -443,10 +470,29 @@ class ScrapeTool(TearsTool):
         # parameter -- passing it unconditionally made every fetch through such a driver raise
         # `TypeError`, including the overwhelming majority carrying no stored solve at all.
         #
-        # A solve that DOES exist and a driver that cannot take it is a real incompatibility and
-        # still raises, correctly: rendering unauthenticated in silence would send a person to
-        # solve a challenge they had already cleared.
+        # A solve that DOES exist and a driver that cannot take it is a real incompatibility, and
+        # it is reported rather than rendered around: going ahead unauthenticated in silence
+        # would send a person to solve a challenge they had already cleared.
+        #
+        # Detected by signature rather than by letting the call raise, because the two failures
+        # need different answers and `TypeError` cannot tell them apart -- one raised inside a
+        # driver's own code is a genuine fetch failure, and treating every `TypeError` as
+        # configuration would swallow those. More to the point, the guard below reports any
+        # exception to `record_unreachable`, so a static incompatibility -- identical on every
+        # poll, and unfixable by waiting -- would trip the durable circuit and suppress the
+        # target for hours. Backoff is an answer to a target that has gone away, not to a
+        # deployment that wired two components that do not fit.
         extra: dict[str, Any] = {"session_state": solved_state} if solved_state else {}
+        if extra and not _accepts_session_state(driver):
+            log.warning(
+                "scrape tool: a stored solve exists for this target but the driver cannot accept it",
+                extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
+            )
+            return None, (
+                f"driver {driver_backend!r} does not accept session_state, so the stored solve for "
+                f"this target cannot be applied. Fetching without it would discard a person's work "
+                f"and re-present the challenge they already cleared."
+            )
         try:
             page = await driver.render(
                 url,
