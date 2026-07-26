@@ -235,6 +235,26 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**A cancelled poll gives back the crawl-delay turn it took (`3tears`, `3tears-scrape`).**
+`TokenBucket.claim` consumes and had no inverse, so the only recovery was refill over time: a
+caller cancelled between taking a turn and doing the work held that key's shared budget down for
+nothing. Invisible once, and compounding under repeated cancellation -- a pod restarting in a
+loop can hold a key near zero while doing nothing at all. `TokenBucket.refund()` is the inverse,
+capped at capacity so a double refund cannot mint budget the bucket never had, and it never
+raises: it exists to be called from a handler that is already unwinding, where an exception
+would replace a self-healing throughput dip with a lost error.
+
+`ScrapeTool` returns the origin's turn when a poll is cancelled after claiming it. Fire-and-forget
+rather than awaited, because an `await` inside a cancellation handler re-raises before reaching
+the store.
+
+**`ScrapeTool.execute` has one probe guard instead of two.** The two adjacent
+`except BaseException` blocks had no `await` between them, so there was no live gap -- but that
+shape produced four stranded-probe bugs in a row, each fixed as a symptom, because every new
+`await` had to be placed against whichever guard its author happened to be reading. The render is
+now `_render_once`, returning `(page, error)`, and one guard covers the whole permitted path, so
+the compensation has exactly one home. `execute` is 45 lines shorter.
+
 **A poll that never fetches no longer spends the site's fleet-wide budget.** `TokenBucket.claim`
 consumes atomically, and the crawl-delay pacer was being claimed inside `RobotsGate.check` --
 which is a question, not a commitment. The circuit can suppress the fetch afterwards, the caller

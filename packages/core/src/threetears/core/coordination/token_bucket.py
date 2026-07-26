@@ -279,6 +279,58 @@ class TokenBucket:
                 return result
             await asyncio.sleep(max(0.0, min(result.retry_after_seconds, remaining)))
 
+    async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
+        """Put back tokens claimed for work that never happened. Returns the resulting count.
+
+        :meth:`claim` consumes, and until now the only recovery was refill over time -- so a
+        caller cancelled between claiming its turn and doing the work held the bucket down for
+        as long as the refill rate took to make it up. That is invisible in one instance and
+        compounds under repeated cancellation: a pod restarting in a loop can hold a key's
+        budget near zero while doing nothing at all.
+
+        **Best effort, and never raises.** This exists to be called from an exception handler
+        that is already unwinding, most often a cancellation. Raising there would replace a
+        recoverable throughput dip with a lost error, so every failure -- KV outage, CAS
+        exhaustion -- is logged and swallowed; the bucket then refills on its own, which is
+        exactly the state this method exists to shorten rather than to guarantee.
+
+        Capped at capacity, so a double refund or a refund of tokens that were never claimed
+        cannot mint budget the bucket never had. That makes it safe to call unconditionally in
+        a handler that may or may not have got as far as claiming.
+
+        :param key: bucket key the tokens were claimed from
+        :ptype key: str
+        :param tokens: how many to return; must not exceed capacity
+        :ptype tokens: float
+        :return: tokens available after the refund, or ``-1.0`` when it could not be applied
+        :rtype: float
+        """
+        if tokens <= 0:
+            return -1.0
+        try:
+            bucket = await self._ensure_bucket()
+            for attempt in range(_CAS_MAX_RETRIES):
+                now = datetime.now(UTC)
+                entry = await bucket.get_entry(key=key)
+                if entry is None:
+                    # No key means nothing was ever consumed from it; a refund would be
+                    # inventing budget rather than returning it.
+                    return self._capacity
+                value, revision = entry
+                state = _decode_state(value)
+                elapsed = max(0.0, (now - state.last_refill).total_seconds())
+                current = min(self._capacity, state.tokens + elapsed * self._refill_rate)
+                restored = min(self._capacity, current + tokens)
+                if await bucket.update(key=key, value=_encode_state(restored, now), revision=revision) is not None:
+                    return restored
+                if attempt < _CAS_MAX_RETRIES - 1:
+                    backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
+                    await asyncio.sleep(backoff)
+            log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
+            log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
+        return -1.0
+
     async def _attempt(self, bucket: "NatsKvBucket", key: str, tokens: float) -> TokenClaimResult:
         """one refill-then-maybe-consume pass.
 

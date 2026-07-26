@@ -34,7 +34,12 @@ class _FakeDelayPacer:
         self._claimed = claimed
         self._retry_after = retry_after_seconds
         self.keys: list[str] = []
+        self.refunded: list[str] = []
 
     async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
         self.keys.append(key)
         return SimpleNamespace(claimed=self._claimed, retry_after_seconds=self._retry_after, tokens_remaining=0.0)
+
+    async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
+        self.refunded.append(key)
+        return 0.0

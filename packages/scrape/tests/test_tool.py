@@ -1210,3 +1210,87 @@ class TestTheFleetAndTheSiteBothBind:
         assert slept[0] == pytest.approx(10.0, abs=0.5), (
             f"the site asked 10s and the fleet owed nothing; the tool waited {slept[0]}s"
         )
+
+
+class TestACancelledPollReturnsItsTurn:
+    """SCR-6QF2: the leak the single guard in `execute` finally gave a home to.
+
+    `claim_fleet_turn` consumes, and the sleep straight after it is the point this file's own
+    comments call the EXPECTED cancellation site -- the tool advertises a deadline an honoured
+    Crawl-delay can approach. So the ordinary case held the origin's shared budget down for a
+    fetch that never happened.
+    """
+
+    async def test_a_cancellation_after_the_claim_gives_the_turn_back(self):
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, "User-agent: *\nCrawl-delay: 10\n"
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+        url, schema = "https://example.gov/cancelled-turn", {"employer": "str"}
+        await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+
+        pacer = _FakeDelayPacer()
+        gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
+        gate.note_fetched(url)  # a delay is owed, so the sleep below is real
+        tool = ScrapeTool(
+            recipe_collection=recipes,
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+            robots=gate,
+        )
+
+        with (
+            patch("asyncio.sleep", side_effect=asyncio.CancelledError()),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await tool.execute(url=url, field_schema=schema)
+
+        # `fire_and_forget` schedules the refund as its own task rather than awaiting it, since
+        # an await inside a cancellation handler re-raises before reaching the store. Yield once
+        # so that task runs.
+        await asyncio.sleep(0)
+
+        assert pacer.keys == ["https://example.gov"], "the turn was never taken, so this asserts nothing"
+        assert pacer.refunded == ["https://example.gov"], (
+            "a cancelled poll kept the origin's shared turn, so a restart loop starves every other target on that site"
+        )
+
+    async def test_an_uncancelled_poll_keeps_its_turn(self):
+        """The turn is spent on a fetch that happened, so returning it would be wrong."""
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, "User-agent: *\nCrawl-delay: 10\n"
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+        url, schema = "https://example.gov/kept-turn", {"employer": "str"}
+        await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+
+        pacer = _FakeDelayPacer()
+        tool = ScrapeTool(
+            recipe_collection=recipes,
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+            robots=RobotsGate(fetch=_fetch, delay_pacer=pacer),
+        )
+
+        with patch("asyncio.sleep", _noop_sleep):
+            await tool.execute(url=url, field_schema=schema)
+        await asyncio.sleep(0)
+
+        assert pacer.keys == ["https://example.gov"]
+        assert pacer.refunded == [], "a completed fetch gave back a turn it had legitimately spent"
+
+
+async def _noop_sleep(_seconds: float) -> None:
+    return None

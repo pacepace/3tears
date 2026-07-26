@@ -37,6 +37,7 @@ from threetears.observe import get_logger
 from pydantic import SecretStr
 
 from .circuit import FetchDecision, TargetCircuit
+from threetears.core._bridge import fire_and_forget
 from threetears.core.egress import EgressDriver, EgressRegistry
 
 from .robots import RobotsDecision, RobotsGate
@@ -365,6 +366,74 @@ class ScrapeTool(TearsTool):
         if self._circuit is not None:
             self._circuit.release_probe(target_id)
 
+    async def _render_once(
+        self,
+        driver: ScrapeDriver,
+        url: str,
+        *,
+        wait_for: str | None,
+        nav_steps: list[NavStep] | None,
+        solved_state: dict[str, Any] | None,
+        target_id: str,
+        driver_backend: str,
+    ) -> tuple[RenderedPage | None, str | None]:
+        """Fetch the page once, returning ``(page, error)`` with exactly one of them set.
+
+        Extracted so `execute` has ONE `except BaseException` over the whole permitted path
+        rather than two adjacent ones. That shape produced four stranded-probe bugs in a row,
+        each fixed as a symptom: with two guards and a boundary between them, every new `await`
+        has to be placed against whichever guard its author happened to be reading. There is now
+        one guard and one place the compensation lives.
+
+        Returning the error rather than raising it keeps the driver contract this tool already
+        had -- a backend-specific failure becomes a `ToolResult`, never a crashed tool call --
+        while letting a failure INSIDE the recovery path (most plausibly the
+        `record_unreachable` store write) propagate to the caller's guard, which is what
+        releases the probe.
+
+        :param driver: the backend to render with
+        :ptype driver: ScrapeDriver
+        :param solved_state: a human's stored solve, or ``None``
+        :ptype solved_state: dict[str, Any] | None
+        :return: the rendered page and no error, or no page and the error string
+        :rtype: tuple[RenderedPage | None, str | None]
+        """
+        if self._robots is not None:
+            # The clock starts on the FETCH, not on the check: the circuit can suppress a fetch
+            # after robots was consulted, and a check that led nowhere must not consume the
+            # site's patience.
+            self._robots.note_fetched(url)
+
+        # `session_state` is passed ONLY when there is one. `ScrapeDriver` is published as a
+        # pluggable contract, so an out-of-tree driver written against 0.19.x has no such
+        # parameter -- passing it unconditionally made every fetch through such a driver raise
+        # `TypeError`, including the overwhelming majority carrying no stored solve at all.
+        #
+        # A solve that DOES exist and a driver that cannot take it is a real incompatibility and
+        # still raises, correctly: rendering unauthenticated in silence would send a person to
+        # solve a challenge they had already cleared.
+        extra: dict[str, Any] = {"session_state": solved_state} if solved_state else {}
+        try:
+            page = await driver.render(
+                url,
+                timeout=self._default_timeout,
+                wait_for=wait_for,
+                nav_steps=nav_steps,
+                **extra,
+            )
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
+            log.warning(
+                "scrape tool: render failed",
+                extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
+            )
+            if self._circuit is not None:
+                # A page that never arrived is a fetch failure, exactly like a wall, and a
+                # target that has become unreachable should back off rather than be retried at
+                # full rate. Only the wall stamps `last_blocked_at`.
+                await self._circuit.record_unreachable(target_id)
+            return None, f"fetch failed: {exc}"
+        return page, None
+
     async def _clear_robots_block_if_any(self, target_id: str) -> None:
         """Take a target out of the human queue, but only if it was in it.
 
@@ -546,7 +615,12 @@ class ScrapeTool(TearsTool):
         # -- and each site had to be found and updated by hand when a fourth gate arrived.
         fetch_will_happen = error is None and (decision is None or decision.permitted)
 
+        # Both bound before the guard, not inside it: the flow does guarantee `page` is set on
+        # every path that later reads it, but that guarantee is three branches away from the
+        # read, and an explicit `None` costs nothing to keep it out of the argument.
         solved_state: dict[str, Any] | None = None
+        page: RenderedPage | None = None
+        fleet_wait_claimed = False
         try:
             # The crawl delay is waited only once the circuit has ADMITTED the fetch. Waiting
             # before it would block a caller for up to the delay ceiling only to be told the fetch
@@ -561,14 +635,10 @@ class ScrapeTool(TearsTool):
             fleet_wait = 0.0
             if self._robots is not None and fetch_will_happen:
                 fleet_wait = await self._robots.claim_fleet_turn(url)
-
-            # Known and accepted: a cancellation in the sleep below leaks this token. The
-            # handler around this block returns the circuit probe but cannot return a token,
-            # because `TokenBucket` has no release operation -- claim consumes and refill is
-            # the only recovery. `note_fetched` dodges this by being deferred past the sleep;
-            # the fleet claim cannot, since its answer is what sizes the sleep. Bounded, self
-            # healing, and it errs toward being MORE polite to the site. Tracked rather than
-            # patched here, because the fix that closes it changes a shared core primitive.
+                # Recorded rather than inferred from `fleet_wait`: a GRANTED turn returns 0.0,
+                # which is indistinguishable from never having asked, and the granted turn is
+                # exactly the one worth giving back.
+                fleet_wait_claimed = True
 
             wait_seconds = max(robots_decision.wait_seconds if robots_decision is not None else 0.0, fleet_wait)
             if wait_seconds > 0 and fetch_will_happen:
@@ -606,83 +676,43 @@ class ScrapeTool(TearsTool):
             solved_state = None
             if fetch_will_happen and self._health_collection is not None:
                 solved_state = await self._read_solved_state(target_id)
+
+            if fetch_will_happen:
+                assert driver is not None  # narrowed by `error is None` above
+                page, render_error = await self._render_once(
+                    driver,
+                    url,
+                    wait_for=wait_for,
+                    nav_steps=nav_steps,
+                    solved_state=solved_state,
+                    target_id=target_id,
+                    driver_backend=driver_backend,
+                )
+                if render_error is not None:
+                    error = render_error
         except BaseException:
-            # Same reasoning as the render's own guard, and the same one-line compensation.
+            # ONE home for the compensation, over the whole permitted path. This block holds
+            # every await between the circuit admitting a fetch and the outcome being reported,
+            # so it is where a cancellation lands -- and `_render_once` can also raise from its
+            # own recovery path, most plausibly a store failure in `record_unreachable`, which
+            # reaches here for the same reason.
+            #
+            # Deliberately records no durable outcome: persisting one would back the target off
+            # across every pod, and outlive the process that was cancelled, for something the
+            # target did not do. Releasing the in-process probe does cost that breaker a
+            # failure -- the protocol has no "never mind" -- but that is seconds-scale,
+            # process-local, and dies with the process anyway.
             self._release_probe(target_id)
+            if fleet_wait_claimed and self._robots is not None:
+                # Give the origin's shared turn back too. Fire-and-forget rather than awaited:
+                # this handler runs during a cancellation more often than not, and an `await`
+                # here would re-raise `CancelledError` before the refund ever reached the KV
+                # store. `fire_and_forget` schedules it as its own task and holds a strong
+                # reference, so it is not collected mid-flight; if the loop is going down with
+                # us it does not complete, and the bucket refills on its own -- which is the
+                # behaviour this replaces, so the worst case is no worse than before.
+                fire_and_forget(self._robots.refund_fleet_turn(url))
             raise
-
-        page: RenderedPage | None = None
-        if fetch_will_happen:
-            assert driver is not None  # narrowed by `error is None` above
-            # Nested so the outer handler covers the recovery handler too, not just the
-            # render. `record_unreachable` clears the probe as its first act, but a
-            # cancellation landing in the statements before that would otherwise escape
-            # between the two handlers and strand it again -- a narrow window, and the third
-            # one in this family, which is why the guard is placed to cover the block rather
-            # than the call.
-            try:
-                try:
-                    if self._robots is not None:
-                        # The clock starts on the FETCH, not on the check: the circuit can
-                        # suppress a fetch after robots was consulted, and a check that led
-                        # nowhere must not consume the site's patience.
-                        self._robots.note_fetched(url)
-                    # `session_state` is passed ONLY when there is one. `ScrapeDriver` is
-                    # published as a pluggable contract, so an out-of-tree driver written
-                    # against 0.19.x has no such parameter -- and passing it unconditionally
-                    # made every fetch through such a driver raise `TypeError`, including the
-                    # overwhelming majority that carry no stored solve at all. The egress half
-                    # of this same change reasoned about exactly that consumer and reads its
-                    # attribute through a `getattr`; this half simply forgot, and the
-                    # asymmetry is what makes it an oversight rather than a decision.
-                    #
-                    # A solve that DOES exist and a driver that cannot take it is a real
-                    # incompatibility and still raises -- correctly, since silently rendering
-                    # unauthenticated would send a person to solve a challenge they already
-                    # cleared.
-                    extra: dict[str, Any] = {"session_state": solved_state} if solved_state else {}
-                    page = await driver.render(
-                        url,
-                        timeout=self._default_timeout,
-                        wait_for=wait_for,
-                        nav_steps=nav_steps,
-                        **extra,
-                    )
-                except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
-                    log.warning(
-                        "scrape tool: render failed",
-                        extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
-                    )
-                    error = f"fetch failed: {exc}"
-                    if self._circuit is not None:
-                        # A page that never arrived is a fetch failure, exactly like a wall,
-                        # and a target that has become unreachable should back off rather than
-                        # be retried at full rate. Only the wall stamps `last_blocked_at`.
-                        await self._circuit.record_unreachable(target_id)
-            except BaseException:
-                # Two ways in, now that this guards the block rather than the render alone: a
-                # cancelled poll, which the inner handler does not catch by design, and any
-                # exception raised INSIDE that handler, most plausibly a store failure in
-                # `record_unreachable`. Both leave an admitted probe unresolved -- neither
-                # reports an outcome, and only an outcome clears the flag -- and this block
-                # holds the longest await in the function, so it is where a cancellation most
-                # often lands.
-                #
-                # Deliberately does not record a durable outcome: persisting one would back
-                # the target off across every pod, and outlive the process that was cancelled,
-                # for something the target did not do. Releasing the in-process probe does
-                # cost that breaker a failure -- the protocol has no "never mind" -- but that
-                # is seconds-scale, process-local, and dies with the process anyway.
-                #
-                # On the second path the `error` string the inner handler had already composed
-                # is discarded by the re-raise, so a store failure during the report surfaces
-                # as an exception rather than as the ToolResult the inner pragma promises.
-                # That predates this guard -- such an exception escaped `execute` before too,
-                # just without releasing the probe -- and is left alone rather than widened
-                # into a behaviour change smuggled in under a probe-lifecycle fix.
-                self._release_probe(target_id)
-                raise
-
         if error is not None:
             result = ToolResult(success=False, content="", error=error)
         elif decision is not None and not decision.permitted:

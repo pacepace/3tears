@@ -314,6 +314,32 @@ class RobotsGate:
         while len(store) > self._max_origins:
             store.popitem(last=False)
 
+    async def refund_fleet_turn(self, url: str) -> None:
+        """Give back a turn taken for a fetch that never happened.
+
+        The mirror of :meth:`claim_fleet_turn`, and it exists because that method consumes: a
+        caller cancelled between taking its turn and fetching held this origin's shared budget
+        down for nothing. Under repeated cancellation -- a pod restarting in a loop -- that
+        compounds into a fleet-wide slowdown of a site nobody was even reaching.
+
+        Best effort and never raises: it runs while the caller is already unwinding, and the
+        bucket refills on its own regardless. A pacer without a refund operation is simply a
+        no-op here rather than an error, so an injected stand-in need not grow one.
+
+        :param url: the url whose turn was taken
+        :ptype url: str
+        """
+        refund = getattr(self._delay_pacer, "refund", None)
+        if refund is None:
+            return
+        origin = _origin_of(url)
+        if not origin:
+            return
+        try:
+            await refund(origin)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the caller is unwinding; a failed refund costs throughput that self-heals, where raising would lose the original error. Logged with its traceback below
+            log.exception("scrape robots: could not return %s's fleet turn; it will refill instead", origin)
+
     def _capped_delay(self, origin: str, parser: RobotFileParser, *, announce: bool = True) -> float | None:
         """The ``Crawl-delay`` this origin is governed by after capping, or ``None`` if none.
 

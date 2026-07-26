@@ -1066,3 +1066,41 @@ async def test_a_capped_delay_is_reported_once_per_poll_not_twice(caplog) -> Non
 
     capped = [r for r in caplog.records if "capped at" in r.getMessage()]
     assert len(capped) == 1, f"the cap was announced {len(capped)} times for one poll"
+
+
+async def test_a_turn_taken_for_a_fetch_that_never_happened_is_given_back() -> None:
+    """`claim_fleet_turn` consumes, so a caller that never fetches must return it.
+
+    Without this the only recovery was refill over time: a pod cancelled between taking a turn
+    and rendering held that origin's shared budget down for nothing, and under repeated
+    cancellation -- a restart loop -- it compounds into a fleet-wide slowdown of a site nobody
+    was reaching.
+    """
+    pacer = _FakeDelayPacer()
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=pacer)
+
+    await gate.claim_fleet_turn("https://example.gov/a")
+    await gate.refund_fleet_turn("https://example.gov/a")
+
+    assert pacer.keys == ["https://example.gov"]
+    assert pacer.refunded == ["https://example.gov"], "the turn was taken and never returned"
+
+
+async def test_a_pacer_without_a_refund_operation_is_not_an_error() -> None:
+    """An injected stand-in need not grow one, and a failing refund must not raise.
+
+    This runs while the caller is already unwinding: an exception here would replace a
+    self-healing throughput dip with a lost original error.
+    """
+
+    class _NoRefund:
+        async def claim(self, key: str = "default", **_kw: Any) -> Any:
+            return SimpleNamespace(claimed=True, retry_after_seconds=0.0, tokens_remaining=0.0)
+
+    await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_NoRefund()).refund_fleet_turn("https://x.gov/a")
+
+    class _BrokenRefund(_FakeDelayPacer):
+        async def refund(self, key: str = "default", **_kw: Any) -> float:
+            raise RuntimeError("kv is down")
+
+    await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BrokenRefund()).refund_fleet_turn("https://x.gov/a")

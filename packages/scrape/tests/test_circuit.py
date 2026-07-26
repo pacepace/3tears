@@ -343,6 +343,7 @@ class _FakeProbePacer:
     def __init__(self, *, tokens: int = 1, explode: bool = False) -> None:
         self.tokens = tokens
         self.claims = 0
+        self.refunds = 0
         self._explode = explode
 
     async def claim(self, key: str = "default", **_kwargs: object) -> object:
@@ -354,6 +355,18 @@ class _FakeProbePacer:
             self.tokens -= 1
             return _Claim(claimed=True, retry_after_seconds=0.0)
         return _Claim(claimed=False, retry_after_seconds=45.0)
+
+    async def refund(self, key: str = "default", **_kwargs: object) -> float:
+        """Give a claimed probe slot back.
+
+        The circuit does not call this today -- a probe is resolved by its outcome, not
+        returned -- but the fake carries it because `TokenBucket` declares it, and a fake that
+        silently lacks a production method is the drift the parity walker exists to catch.
+        """
+        del key
+        self.tokens += 1
+        self.refunds += 1
+        return float(self.tokens)
 
 
 # parity-with: threetears.core.coordination.token_bucket.TokenClaimResult
