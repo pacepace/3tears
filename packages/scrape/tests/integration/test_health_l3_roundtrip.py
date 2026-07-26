@@ -35,6 +35,7 @@ from threetears.scrape.health import (
     content_fingerprint,
     record_circuit_state,
     record_classification,
+    record_robots_block,
     record_validated_fetch,
 )
 from threetears.scrape.migrations import apply_migrations
@@ -487,3 +488,30 @@ async def test_an_unstamped_row_reports_no_egress_rather_than_direct(
     row = await health.get(target_id)
     assert row is not None
     assert row.last_egress is None
+
+
+async def test_a_robots_disallowed_target_reaches_the_human_queue(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """The decision has to land on a row, or nobody can be sent to it.
+
+    `list_walled` answers from the health table. A robots block recorded only in a ToolResult
+    is visible to whichever caller happened to run and to nobody else, so a target the scraper
+    itself decided needs a human would never be findable by the platform whose job it is to
+    send one.
+
+    It carries no circuit state on purpose: a policy decision is not a fetch failure, and
+    counting it as one would open the circuit and back off a site that works perfectly.
+    """
+    target_id = _target("robots")
+    await record_robots_block(health, target_id=target_id, reason="example.gov/robots.txt disallows 3tears-scrape")
+
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.robots_blocked_at is not None
+    assert "disallows" in (row.robots_blocked_reason or "")
+    assert row.circuit_state == "closed", "a robots block was counted as a fetch failure"
+    assert row.consecutive_fetch_failures == 0
+
+    queued = {r.target_id for r in await health.list_walled()}
+    assert target_id in queued, "a disallowed target never reached the queue a human works"

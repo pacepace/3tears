@@ -330,13 +330,19 @@ async def test_a_crawl_delay_actually_delays_a_second_fetch() -> None:
 
         await tool.execute(url=url, field_schema=schema)
         assert slept.await_count == 1, "the site asked for 10s between requests and none was waited"
-        assert slept.await_args[0][0] > 0
+        # The docstring claimed this asserted "for how long" while asserting only "> 0".
+        # Ten seconds requested, one fetch ago, so the remainder is the whole delay.
+        assert slept.await_args[0][0] == pytest.approx(10.0, abs=1.0)
 
     assert driver.fetched == [url, url]
 
 
-async def test_without_a_gate_nothing_changes() -> None:
-    """Every pre-existing caller keeps today's behaviour, including consulting no robots.txt."""
+async def test_passing_none_explicitly_consults_nothing() -> None:
+    """The opt-OUT, which now has to be asked for.
+
+    Previously this was what every caller got by omission, so a documented on-by-default
+    setting was off in every deployment while the configuration looked correct.
+    """
     from threetears.scrape.tool import _derive_target_id
 
     url = "https://example.gov/private/list"
@@ -347,3 +353,83 @@ async def test_without_a_gate_nothing_changes() -> None:
     await tool.execute(url=url, field_schema=schema)
 
     assert driver.fetched == [url]
+
+
+async def test_a_tool_built_without_mentioning_robots_still_gets_a_gate() -> None:
+    """ "On by default" has to be true of a tool nobody configured, or it is not a default.
+
+    This is the chunk's own "Watch for" one layer up from where it was first fixed: a config
+    that is on by default while reading a value nothing sets is on in name and off in fact.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.robots import RobotsGate
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={},
+        api_key="k",
+    )
+
+    assert isinstance(tool._robots, RobotsGate), "a tool that never mentioned robots consults none"  # noqa: SLF001
+
+
+async def test_a_gate_with_no_arguments_actually_reads_a_file() -> None:
+    """The other half of the same failure: a default gate with no fetcher reads nothing.
+
+    "Both behaviours on by default" would then be true of a policy object and false of every
+    deployment, with no log line anywhere saying so.
+    """
+    gate = RobotsGate()
+    assert gate._fetch is not None  # noqa: SLF001
+
+
+async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:
+    """Politeness is owed for a request that happens, not for one the circuit refuses.
+
+    Waiting before the circuit check would block a caller for up to the delay ceiling only to
+    be told the fetch was suppressed -- a politeness cost paid to a site that receives nothing.
+    Both gates are still honoured; only the order changed.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+
+    url = "https://example.gov/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    target_id = _derive_target_id(url, schema)
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    circuit = TargetCircuit(health, policy=BackoffPolicy(failure_threshold=1))
+    await circuit.record_blocked(target_id)
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+    gate.note_fetched(url)
+
+    driver = _RecordingDriver()
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        health_collection=health,
+        circuit=circuit,
+        drivers={"nodriver": driver},
+        robots=gate,
+        api_key="k",
+    )
+
+    with patch("threetears.scrape.tool.asyncio.sleep", new=AsyncMock()) as slept:
+        result = await tool.execute(url=url, field_schema=schema)
+
+    assert driver.fetched == [], "the circuit was supposed to suppress this fetch"
+    assert slept.await_count == 0, "a suppressed fetch still paid the crawl delay"
+    assert "backing off" in (result.error or "")

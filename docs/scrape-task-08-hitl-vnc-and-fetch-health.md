@@ -1,13 +1,24 @@
 # scrape-task-08: Human-in-the-loop render sessions (VNC) + fetch-side health learning
 
-**Status:** APPROVED TO START, and partially built. Sections 1 and 2 shipped on
-`feat/scrape-hitl-vnc` as build-plan Chunks 01 and 02: `health.py`
-(`ScrapeTargetHealth` + collection, content fingerprint), migration `v010`,
-`challenge.py` (`PageVerdict`, `classify_failed_page`), the eval-loop failure
-classification and routing, and the `ScrapeTool` opt-in. Sections 3 through 6
-(circuit state and backoff, sealed session reuse, the sidecar VNC and HITL
-session endpoints, RBAC/audit/announcement) are Chunks 03 through 07 and are
-NOT built.
+**Status:** BUILT. Sections 1 through 8 are implemented and tested.
+
+Sections 1 and 2 shipped first (`health.py` with `ScrapeTargetHealth` and the content
+fingerprint, migration `v010`, `challenge.py`'s `PageVerdict` and `classify_failed_page`, the
+eval-loop failure routing and the `ScrapeTool` opt-in). Section 3 is the durable fetch circuit
+in `circuit.py`. Sections 4 through 6 are the sidecar's on-demand VNC, the HITL session with
+isolated per-tab contexts, and the sealed session-state reuse in `session_state.py`. Sections
+7 and 8 are `threetears.core.egress` and `robots.py`, both added after this document was first
+written and both recorded here rather than only in a build plan that clones never receive.
+
+Section 6's "RBAC, audit, announcement" was rewritten during the build and is the one part
+NOT implemented, deliberately. Authorization needs an identity 3tears does not have, and the
+operator conversation and audit trail belong to the platform that uses this library rather
+than to the library. What replaced it is two seams a platform drives -- `list_walled()` to ask
+what is stuck, and `record_human_cleared()` to say a person has fixed it -- with the loop
+documented end to end in the package README.
+
+This header previously said sections 3 through 6 were NOT built while every one of them was,
+which is the state a status line is least useful in: confidently wrong.
 
 This line said "DESIGN, not yet approved to build" for a day after half the
 document had shipped. The go-ahead was a real decision the whole build plan
@@ -49,7 +60,8 @@ package currently cannot answer.
 
 Read directly from the code this session, not recalled. **This section is a snapshot of the
 state BEFORE any of this was built** -- it names functions the strategy collapse has since
-removed (`_reuse_recipe`, `_reuse_row_recipe`) and describes the bug Chunk 02 fixed as live.
+removed (`_reuse_recipe`, `_reuse_row_recipe`) and describes the recipe-destruction bug as live,
+which section 2's classification routing has since fixed.
 It is kept as the evidence the design rested on, not as a description of the code today:
 
 **The container already has everything VNC needs except VNC.** `sidecar/entrypoint.sh` starts

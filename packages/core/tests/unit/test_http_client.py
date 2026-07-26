@@ -277,7 +277,25 @@ class TestEgressWiring:
             egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
         )
         assert client.egress_name == "tor"
-        assert client._client._transport is not None  # noqa: SLF001 -- the bound transport IS the assertion
+
+        # The bound transport must be the PROXIED one, not merely "a transport". httpx binds a
+        # default transport regardless, so both `is not None` and `is not <other instance>`
+        # were true with the egress ignored entirely -- assertions that could not fail, on the
+        # one property this test exists for.
+        #
+        # httpx builds a different POOL for a proxied transport: `AsyncHTTPProxy` rather than
+        # `AsyncConnectionPool`, carrying the proxy url. That is the observable difference, so
+        # it is what gets asserted. Reaching into the pool is reaching into httpx's internals,
+        # which is worth it here: the alternative is an assertion that passes when the feature
+        # is deleted.
+        pool = client._client._transport._pool  # noqa: SLF001 -- the pool type IS the assertion
+        assert type(pool).__name__ != "AsyncConnectionPool", (
+            "the configured exit was ignored; this is the unproxied pool httpx builds by default"
+        )
+        # The scheme decides the pool class -- AsyncSOCKSProxy here, AsyncHTTPProxy for an
+        # http:// exit -- so the url is asserted rather than the class name, which is the part
+        # that says WHICH exit rather than merely that there is one.
+        assert "9050" in str(getattr(pool, "_proxy_url", "")), "proxied, but not through the configured exit"
 
     def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
         """``transport`` is the documented test seam.

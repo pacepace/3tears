@@ -36,6 +36,7 @@ Runs inside the AGPL-3.0 sidecar container and imports nothing from 3tears, exac
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import secrets
@@ -881,12 +882,16 @@ async def _open_isolated(
     """
     import main  # noqa: PLC0415 -- deliberate late import; see docstring
 
-    tab, context_id = await main._create_isolated_tab(browser, url)  # noqa: SLF001
+    tab, context_id = await main._create_isolated_tab(browser, url)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
     if session_state:
         await _apply_context_state(browser, context_id, session_state)
+        # Storage after the cookies and before the reload: the tab is already on the target
+        # origin at this point, which is the only place localStorage can be written, and the
+        # reload is what makes the page load with both in place.
+        await _apply_origin_storage(tab, session_state)
         await tab.reload()
     if nav_steps:
-        await main._execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])  # noqa: SLF001
+        await main._execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
     return tab, context_id
 
 
@@ -941,7 +946,7 @@ async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict
 
 
 async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, Any]) -> None:
-    """Put a previously exported state back into a fresh isolated context.
+    """Put a previously exported state's COOKIES back into a fresh isolated context.
 
     Applied BEFORE the navigation, which is the whole point: a cookie set after the page has
     loaded arrives too late to have been sent with the request that was going to be
@@ -949,6 +954,12 @@ async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, A
 
     Sent on the BROWSER connection for the same reason as the export: ``browserContextId`` is
     rejected on a page session.
+
+    Cookies only. Origin storage cannot be restored here and has its own function --
+    :func:`_apply_origin_storage` -- because ``localStorage`` is origin-scoped and only
+    writable while a page from that origin is loaded, which is not true yet at this point in
+    the sequence. Splitting them keeps that ordering constraint visible instead of hiding it
+    inside a function whose name promises to restore everything.
     """
     import nodriver as uc  # noqa: PLC0415 -- deliberate late import; see _export_context_state
 
@@ -967,6 +978,61 @@ async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, A
         for c in cookies
     ]
     await browser.send(uc.cdp.storage.set_cookies(cookies=params, browser_context_id=context_id))
+
+
+async def _apply_origin_storage(tab: Any, state: dict[str, Any]) -> None:
+    """Restore exported ``localStorage`` into a tab already sitting on the right origin.
+
+    Separate from the cookie restore and deliberately later in the sequence: ``localStorage``
+    belongs to an origin, and the only way to write it is to evaluate script on a page from
+    that origin. There is no browser-level CDP call for it the way there is for cookies.
+
+    The export was written while a human sat on the page, so the entries here are theirs. They
+    are applied one key at a time through a parameterised expression rather than by building a
+    script out of the values: a value is arbitrary text that a human's session put there, and
+    interpolating it into source is how a stray quote becomes a syntax error at best.
+
+    Best-effort, and it never raises. Cookies are what carry a cleared challenge; storage is a
+    bonus, and losing it must not lose them or fail the fetch they were restored for.
+    """
+    origins = state.get("origins") or []
+    if not origins:
+        return
+    current = str(getattr(tab, "url", "") or "")
+    for origin in origins:
+        raw = origin.get("localStorage")
+        if not raw:
+            continue
+        # Only into a page actually on that origin. Writing one origin's storage while sitting
+        # on another either fails or, worse, silently lands somewhere it was never exported
+        # from.
+        recorded = str(origin.get("origin") or "")
+        if recorded and current and not _same_origin(recorded, current):
+            log.debug("hitl: skipping storage for %s; the tab is on %s", recorded, current)
+            continue
+        try:
+            entries = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            log.info("hitl: exported localStorage for %s did not parse; skipping it", recorded)
+            continue
+        if not isinstance(entries, dict):
+            continue
+        for key, value in entries.items():
+            try:
+                await tab.evaluate(
+                    f"window.localStorage.setItem({json.dumps(str(key))}, {json.dumps(str(value))})",
+                    await_promise=False,
+                )
+            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one unwritable key (quota, a page that blocks script, a disabled store) must not cost the other keys or the cookies that actually carry the cleared challenge. Logged with its traceback below
+                log.debug("hitl: could not restore one localStorage key for %s", recorded)
+
+
+def _same_origin(a: str, b: str) -> bool:
+    """Whether two urls share scheme+host+port, which is what an origin is."""
+    from urllib.parse import urlsplit  # noqa: PLC0415 -- deliberate late import, module stays light
+
+    pa, pb = urlsplit(a), urlsplit(b)
+    return (pa.scheme, pa.netloc) == (pb.scheme, pb.netloc)
 
 
 async def _dispose_context(browser: Any, context_id: Any) -> None:

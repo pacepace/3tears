@@ -131,9 +131,12 @@ class RobotsGate:
 
     :param policy: what to honour and as whom
     :ptype policy: RobotsPolicy
-    :param fetch: how to GET a url, returning ``(status, text)``. Injected rather than
-        constructed so this module opens no client of its own and a caller's egress driver,
-        timeouts and tracing all apply to the robots fetch exactly as they do to the real one
+    :param fetch: how to GET a url, returning ``(status, text)``. Defaults to a plain httpx
+        GET, so a gate built with no arguments genuinely honours a site's file. Inject one
+        built on :class:`~threetears.core.http_client.TracedHttpClient` to give the robots
+        request the same egress driver, tracing, retry and circuit breaking as the real fetch
+        -- worth doing, because a robots request that leaves by a different exit than the
+        scrape is asking a different question than the one being answered
     :ptype fetch: Callable[[str], Awaitable[tuple[int, str]]] | None
     :param delay_pacer: optional cross-pod ``TokenBucket``. Without it the crawl delay is
         honoured PER PROCESS, which is a lie in a fleet: five pods each waiting ten seconds
@@ -153,7 +156,11 @@ class RobotsGate:
         cache_seconds: float = _DEFAULT_CACHE_SECONDS,
     ) -> None:
         self._policy = policy or RobotsPolicy()
-        self._fetch = fetch
+        # A default fetcher, so a gate constructed with no arguments actually reads robots.txt.
+        # Without one, "both behaviours on by default" was true of a policy object and false of
+        # every deployment: no fetcher means no file, no file means nothing is ever honoured,
+        # and nothing anywhere would have said so.
+        self._fetch = fetch if fetch is not None else _default_fetch
         self._delay_pacer = delay_pacer
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[RobotFileParser | None, float]] = {}
@@ -277,8 +284,6 @@ class RobotsGate:
         -- the site has not told us anything -- and distinguishing them here would produce
         four ways of saying "allowed".
         """
-        if self._fetch is None:
-            return None
         url = f"{origin}/robots.txt"
         try:
             status, body = await asyncio.wait_for(self._fetch(url), timeout=_FETCH_TIMEOUT_SECONDS)
@@ -295,6 +300,25 @@ class RobotsGate:
             log.info("scrape robots: %s did not parse; proceeding as unrestricted", url)
             return None
         return parser
+
+
+async def _default_fetch(url: str) -> tuple[int, str]:
+    """Plain httpx GET, used when a caller injects no fetcher.
+
+    Deliberately minimal and deliberately present. This module's whole claim is that
+    politeness is on by default, and a default of "no fetcher" would have made that claim
+    false everywhere while looking correct in the configuration. A caller that wants the
+    robots request to share the scrape's egress, tracing and retry injects one; a caller that
+    wants none of that still gets a file read.
+
+    Errors propagate to :meth:`RobotsGate._load`, which treats every one of them as "the site
+    told us nothing".
+    """
+    import httpx  # noqa: PLC0415 -- deliberate late import; keeps this module importable without a client
+
+    async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        response = await client.get(url, headers={"user-agent": DEFAULT_USER_AGENT})
+        return response.status_code, response.text
 
 
 def _origin_of(url: str) -> str | None:

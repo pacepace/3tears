@@ -190,11 +190,19 @@ packages/scrape/src/threetears/scrape/
 │                              failed extraction actually is; no vendor markers
 ├── health.py                  ScrapeTargetHealth + collection, content_fingerprint(),
 │                              record_validated_fetch(), record_classification(),
-│                              record_circuit_state()
+│                              record_circuit_state(), record_robots_block(),
+│                              list_walled() -- the only non-primary-key query here:
+│                              which targets need a human, walls and robots blocks both
 ├── circuit.py                 TargetCircuit, BackoffPolicy -- gates the FETCH of a target
 │                              that keeps coming back walled, so its fetch rate and its
 │                              classification rate both decay. Transitions come from
 │                              models.circuit_breaker.CircuitBreaker via restore()
+├── session_state.py           seal_session_state()/open_session_state()/
+│                              usable_session_state() -- a human's cleared browser state,
+│                              sealed under an operator key, handed back to later
+│                              unattended renders so one solve is not paid for twice
+├── robots.py                  RobotsGate, RobotsPolicy -- waits a site's Crawl-delay and
+│                              escalates a Disallow to a human. Both on by default
 ├── reprobe.py                 ScheduledJobsReprobeScheduler -- books the next probe as a
 │                              scheduled-jobs relative_delay job. Needs the [reprobe] extra
 ├── collections.py             ScrapeTarget/ScrapeRecipe/ScrapeExtraction (BaseEntity)

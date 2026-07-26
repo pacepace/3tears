@@ -46,7 +46,11 @@ CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
 # rather than passed per request for exactly that reason -- a per-request proxy
 # argument would advertise a capability Chromium does not have.
 EGRESS_PROXY = os.environ.get("EGRESS_PROXY") or None
-EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("direct" if not os.environ.get("EGRESS_PROXY") else "configured")
+# "direct" only when there genuinely is no proxy. When one is set without a name, the name is
+# unknown rather than "configured" -- a literal placeholder recorded against results would be
+# indistinguishable from a real exit called that, and the whole point of the name is telling
+# exits apart.
+EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("direct" if not EGRESS_PROXY else "unnamed")
 
 # Browser-forced-download capability (scrape-task-04, 2026-07-15): a fixed profile
 # directory (rather than nodriver's own auto-generated temp one) so the Preferences
@@ -150,6 +154,13 @@ class RenderRequest(BaseModel):
     #: that would be challenged carries the credential that clears it. Raw, not sealed: this
     #: container holds no key and never has.
     session_state: dict[str, Any] | None = None
+    #: Exit for THIS request only, as a proxy url. Renders in its own browser context, so two
+    #: targets in one container can leave by two different exits -- which is what makes egress
+    #: a per-target choice. Omitted uses the container's own route.
+    egress_proxy: str | None = None
+    #: Name recorded against the result, so "walled" can be told apart from "walled from this
+    #: exit". Free-form because the names are the deployment's.
+    egress_name: str | None = None
 
 
 class NetworkCall(BaseModel):
@@ -346,6 +357,7 @@ async def _render(
     nav_steps: list[NavStepModel] | None = None,
     timeout: float = 30.0,
     session_state: dict[str, Any] | None = None,
+    egress_proxy: str | None = None,
 ) -> _RenderResult:
     """Navigate to *url*, optionally drive it through *nav_steps*, wait for a
     selector, and return the rendered page.
@@ -380,9 +392,19 @@ async def _render(
     # would mix two targets' sessions for the same origin. The context is disposed in the
     # same `finally` that closes the tab, so the state lives exactly as long as the fetch.
     render_context_id: Any = None
-    if session_state:
+    if egress_proxy:
+        # An exit for this request alone. Its own context, disposed with the tab, so nothing
+        # about this render's route leaks into the next one.
+        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
+        if session_state:
+            await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
+    elif session_state:
+        # about:blank first so the cookies are in place before the real navigation -- a cookie
+        # set after the page loads arrives too late to have been sent with the request that
+        # was going to be challenged. Storage is applied after that navigation instead, since
+        # localStorage is origin-scoped and about:blank is not the origin.
         tab, render_context_id = await _create_isolated_tab(_browser, "about:blank")
-        await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001
+        await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
     else:
         tab = await _browser.get("about:blank", new_tab=True)
     main_frame_id = str(tab.target.target_id)
@@ -427,6 +449,13 @@ async def _render(
         tab.add_handler(uc.cdp.network.LoadingFinished, _capture_loading_finished)
     try:
         await tab.send(uc.cdp.page.navigate(url))
+        if session_state and render_context_id is not None:
+            # Storage lands after the navigation and the page is then reloaded, because
+            # localStorage is origin-scoped: it can only be written while a page from that
+            # origin is loaded, which about:blank was not. The cookies were already in place
+            # for the navigation above, which is the part that carries a cleared challenge.
+            await hitl._apply_origin_storage(tab, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
+            await tab.send(uc.cdp.page.navigate(url))
         if nav_steps:
             # A settle wait before interacting, not just before the final content
             # capture -- live-reproduced against Maine's real WARN search form:
@@ -548,7 +577,9 @@ class _DownloadResult(NamedTuple):
     data: bytes
 
 
-async def _create_isolated_tab(browser: Any, url: str) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
+async def _create_isolated_tab(
+    browser: Any, url: str, *, proxy_server: str | None = None
+) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
     """Create a fresh, isolated browser context + one tab within it, navigated to *url*.
 
     Live-reproduced (2026-07-15): ``browser.create_context()``'s own internal
@@ -566,7 +597,13 @@ async def _create_isolated_tab(browser: Any, url: str) -> tuple[Any, uc.cdp.brow
     :rtype: tuple[Any, uc.cdp.browser.BrowserContextID]
     :raises RuntimeError: the created target never appeared in ``browser.targets``
     """
-    context_id = await browser.send(uc.cdp.target.create_browser_context())
+    # PER-CONTEXT proxying, which is what makes an exit a per-target choice rather than a
+    # per-container one. `--proxy-server` on the browser command line is process-wide and
+    # cannot vary; `Target.createBrowserContext` takes its own `proxyServer`, so two targets
+    # in one browser can leave by two different exits. Verified against the running image's
+    # own CDP bindings rather than assumed -- the earlier claim that Chromium could only do
+    # this process-wide was true of the flag and wrong about contexts.
+    context_id = await browser.send(uc.cdp.target.create_browser_context(proxy_server=proxy_server))
     target_id = await browser.send(uc.cdp.target.create_target(url, browser_context_id=context_id, new_window=True))
     for attempt in range(_TAB_LOOKUP_ATTEMPTS):
         await browser.update_targets()
@@ -736,6 +773,7 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
                 nav_steps=req.nav_steps,
                 timeout=req.timeout,
                 session_state=req.session_state,
+                egress_proxy=req.egress_proxy,
             ),
             timeout=req.timeout,
         )
@@ -1026,8 +1064,8 @@ async def hitl_tab_complete(
 ) -> dict[str, Any] | JSONResponse:
     """The human says this one is cleared: close the tab and free its slot.
 
-    Exporting the context's cookies before it is dropped is Chunk 06's work, and this is where
-    it goes -- the last moment that context exists.
+    Exporting the context's cookies happens here because this is the last moment the context
+    exists -- once it is disposed the human's work is gone.
     """
     try:
         session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))

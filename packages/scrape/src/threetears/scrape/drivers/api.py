@@ -43,6 +43,7 @@ import time
 from typing import Any
 
 import httpx
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
 from ..driver import NavStep, RenderedPage, ScrapeDriver
@@ -155,13 +156,23 @@ class ApiDriver(ScrapeDriver):
     case via ``wait_for``/``nav_steps``.
     """
 
-    def __init__(self, *, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, *, client: httpx.AsyncClient | None = None, egress: EgressDriver | None = None) -> None:
         """
         :param client: an already-constructed httpx client to reuse (test
             injection); a fresh one is created per call when omitted.
         :ptype client: httpx.AsyncClient | None
+        :param egress: which exit this driver's requests leave by (see
+            :mod:`threetears.core.egress`). Applies only to the per-call client
+            this driver builds -- an injected ``client`` already has whatever
+            transport its owner gave it, and silently rebinding that would
+            override a decision somebody else made deliberately. This is the
+            half of egress a browser flag cannot reach: a deployment routing
+            its scrapes through TOR while its JSON APIs go out direct has one
+            exit in its configuration and two in reality.
+        :ptype egress: EgressDriver | None
         """
         self._client = client
+        self._egress = egress
 
     @property
     def name(self) -> str:
@@ -221,7 +232,10 @@ class ApiDriver(ScrapeDriver):
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                transport=self._egress.httpx_transport() if self._egress is not None else None,
             )
         try:
             try:

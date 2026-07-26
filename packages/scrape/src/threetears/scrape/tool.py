@@ -43,13 +43,18 @@ from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, dec
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
-from .health import ScrapeTargetHealthCollection
+from .health import ScrapeTargetHealthCollection, record_robots_block
 
 __all__ = ["ScrapeTool"]
 
 log = get_logger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
+
+#: Distinguishes "the caller said nothing" from "the caller said no robots". A plain ``None``
+#: default collapses those, and collapsing them is what made a documented on-by-default
+#: setting off in every deployment.
+_ROBOTS_DEFAULT: Any = object()
 
 
 def _derive_target_id(url: str, field_schema: dict[str, Any]) -> str:
@@ -87,7 +92,7 @@ class ScrapeTool(TearsTool):
         health_collection: ScrapeTargetHealthCollection | None = None,
         circuit: TargetCircuit | None = None,
         session_state_key: SecretStr | None = None,
-        robots: RobotsGate | None = None,
+        robots: RobotsGate | None = _ROBOTS_DEFAULT,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -110,11 +115,12 @@ class ScrapeTool(TearsTool):
             no human had ever cleared it -- which is the safe direction, since the alternative
             would be a deployment silently not knowing whether its credentials were readable
         :ptype session_state_key: SecretStr | None
-        :param robots: optional ``robots.txt`` gate. Supplying it opts this tool into waiting
-            as long as a site asks between fetches, and into escalating a disallowed path to a
-            human rather than fetching it unattended. Omitted, no robots file is consulted --
-            which is today's behaviour and is why this is injected rather than constructed:
-            reading it needs an HTTP client, and this tool opens none of its own
+        :param robots: the ``robots.txt`` gate. **Omitted, a default gate is used and both
+            behaviours are ON** -- a crawl delay is waited and a disallowed path is escalated
+            to a human rather than fetched. Pass a configured :class:`RobotsGate` to change the
+            policy or to share the scrape's egress and tracing with the robots request; pass
+            ``None`` explicitly to consult no robots.txt at all, which is the pre-existing
+            behaviour and now has to be asked for rather than being what everyone got
         :ptype robots: RobotsGate | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
@@ -129,7 +135,11 @@ class ScrapeTool(TearsTool):
         self._health_collection = health_collection
         self._circuit = circuit
         self._session_state_key = session_state_key
-        self._robots = robots
+        # `_ROBOTS_DEFAULT` is a sentinel, not None: passing `robots=None` explicitly means
+        # "consult nothing", and omitting the argument means "the default, which is on". Those
+        # are different intentions and a plain `None` default cannot express both -- which is
+        # how a documented on-by-default became off everywhere.
+        self._robots = RobotsGate() if robots is _ROBOTS_DEFAULT else robots
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -343,6 +353,14 @@ class ScrapeTool(TearsTool):
                     url,
                     extra={"extra_data": {"target_id": target_id, "url": url}},
                 )
+                if self._health_collection is not None:
+                    # Recorded on the health row, not just returned. A decision that lives
+                    # only in this ToolResult reaches no queue: `list_walled` answers from the
+                    # row, so a target the scraper itself decided needs a human would never be
+                    # findable by the platform whose job it is to send one.
+                    await record_robots_block(
+                        self._health_collection, target_id=target_id, reason=robots_decision.reason
+                    )
                 return ToolResult(
                     success=False,
                     error=f"needs a human: {robots_decision.reason}",
@@ -356,21 +374,30 @@ class ScrapeTool(TearsTool):
                         "reason": "robots_disallow",
                     },
                 )
-            if robots_decision.wait_seconds > 0:
-                log.info(
-                    "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
-                    robots_decision.wait_seconds,
-                    url,
-                    extra={"extra_data": {"target_id": target_id}},
-                )
-                await asyncio.sleep(robots_decision.wait_seconds)
-
         decision: FetchDecision | None = None
         if error is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)
 
+        # The crawl delay is waited only once the circuit has ADMITTED the fetch. Waiting
+        # before it would block a caller for up to the delay ceiling only to be told the fetch
+        # was suppressed -- paying a politeness cost for a request that never happens. The
+        # floor-vs-ceiling rule is satisfied either way: both gates are still honoured, and a
+        # circuit probe still waits its delay.
+        if (
+            robots_decision is not None
+            and robots_decision.wait_seconds > 0
+            and (decision is None or decision.permitted)
+        ):
+            log.info(
+                "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
+                robots_decision.wait_seconds,
+                url,
+                extra={"extra_data": {"target_id": target_id}},
+            )
+            await asyncio.sleep(robots_decision.wait_seconds)
+
         # The human's solve, read once and passed to the driver. This is the step that makes
-        # chunk 06 a capability rather than plumbing: the columns, the sealing and the driver
+        # the stored solve a capability rather than plumbing: the columns, the sealing and the driver
         # parameter all existed and nothing carried a stored solve into an actual fetch, so a
         # person cleared the same challenge on every poll.
         #

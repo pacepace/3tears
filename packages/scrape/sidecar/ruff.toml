@@ -1,0 +1,33 @@
+# The sidecar is a separate deployable on a DIFFERENT Python than the workspace.
+#
+# The repo root sets `target-version = "py314"`, and ruff rewrites source to match:
+# PEP 758 (3.14) allows `except A, B:` without parentheses, so ruff's autofix strips
+# them. This container runs `python:3.12-slim-bookworm`, where that is a SyntaxError.
+#
+# That combination has silently broken this package twice. Both times the sequence was
+# identical and every workspace gate reported clean: ruff formats the file, mypy skips
+# it (it is outside `[tool.mypy] files`), and the workspace suite carries
+# `--ignore=packages/scrape/sidecar`. Only `./scripts/test-sidecar.sh` catches it, and
+# the first time nothing ran that script at all.
+#
+# A ruff.toml here is a full override rather than an extension, so the settings the
+# workspace sets that still matter are restated. `extend` is deliberately not used:
+# inheriting the root file would inherit its target-version, which is the whole problem.
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["SLF"]
+
+[lint.per-file-ignores]
+# Restated from the repo root, which cannot reach this far once a nested config exists:
+# a ruff.toml is a full override, not an extension. Reinstating the root's setting is
+# deliberate rather than a copy for its own sake -- dropping it silently turns 67 real,
+# already-justified private accesses into failures the moment this file is added.
+#
+# The sidecar's module-level globals (_browser/_ready) and its lazy warm-up hook have no
+# public accessor; tests set and read them directly to drive cold-start, warm-start and
+# retry scenarios without launching a real Chromium. The HITL suites do the same for the
+# lifecycle's process handles and argument builders, where the private thing IS the
+# behaviour under test.
+"tests/*" = ["SLF001"]

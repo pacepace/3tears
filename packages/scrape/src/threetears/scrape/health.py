@@ -47,6 +47,7 @@ __all__ = [
     "content_fingerprint",
     "record_circuit_state",
     "record_classification",
+    "record_robots_block",
     "record_validated_fetch",
 ]
 
@@ -171,6 +172,22 @@ class ScrapeTargetHealth(BaseEntity):
         return result
 
     @property
+    def robots_blocked_at(self) -> datetime | None:
+        """When ``robots.txt`` last held this target back; ``None`` if it never has.
+
+        Deliberately NOT the circuit's columns. A robots block is a policy decision, not a
+        fetch failure: counting it as one would open the circuit, start a backoff and mark a
+        working site unhealthy over a rule that says nothing about whether it works.
+        """
+        return _parse_dt(self._get_raw("robots_blocked_at"))
+
+    @property
+    def robots_blocked_reason(self) -> str | None:
+        """What the file said, in words an operator reads before deciding."""
+        result: str | None = self._get_raw("robots_blocked_reason", None)
+        return result
+
+    @property
     def last_block_kind(self) -> str | None:
         """What kind of wall was last observed, as evidence for an operator; ``None`` if never.
 
@@ -258,6 +275,7 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         "blocked_until",
         "last_blocked_at",
         "session_state_expires_at",
+        "robots_blocked_at",
     }
 
     @property
@@ -278,6 +296,12 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         fifty targets and four walls had to do fifty fetches to find the four -- which is
         precisely what the circuit exists to avoid, so the absence of this made the circuit
         argue against itself.
+
+        **Two ways a target lands here**, and both need a person: a bot wall the scraper
+        cannot pass, and a ``robots.txt`` that disallows us. The second has no circuit state at
+        all -- a policy decision is not a fetch failure -- so filtering on the circuit alone
+        would answer "who is stuck" while omitting every target the scraper itself decided
+        needs a human.
 
         **Walled, not merely failing.** The filter is ``last_blocked_at IS NOT NULL``, because
         the circuit opens on repeated transport failures too and those are nobody's to clear:
@@ -314,11 +338,13 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         rows = await self.l3_pool.fetch(
             "SELECT target_id, content_fingerprint, fingerprint_updated_at, "
             "consecutive_fetch_failures, circuit_state, blocked_until, last_blocked_at, "
-            "last_block_kind, last_egress, classified_fingerprint, classified_verdict, classified_evidence, "
+            "last_block_kind, last_egress, robots_blocked_at, robots_blocked_reason, "
+            "classified_fingerprint, classified_verdict, classified_evidence, "
             "session_state_sealed, session_state_expires_at, date_created, date_updated "
             "FROM scrape_target_health "
-            "WHERE circuit_state <> 'closed' AND last_blocked_at IS NOT NULL "
-            "ORDER BY last_blocked_at DESC LIMIT $1",
+            "WHERE (circuit_state <> 'closed' AND last_blocked_at IS NOT NULL) "
+            "   OR robots_blocked_at IS NOT NULL "
+            "ORDER BY COALESCE(last_blocked_at, robots_blocked_at) DESC LIMIT $1",
             limit,
         )
         return [ScrapeTargetHealth(dict(row), is_new=False, collection=self) for row in rows]
@@ -451,6 +477,43 @@ async def record_circuit_state(
         # recorded", which is different from and more honest than asserting "direct".
         changes["last_egress"] = egress
     return await _merge_health(health_collection, target_id=target_id, changes=changes)
+
+
+async def record_robots_block(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+    reason: str,
+    now: datetime | None = None,
+) -> ScrapeTargetHealth:
+    """Record that ``robots.txt`` is holding *target_id* back, so a human can be sent to it.
+
+    This is what puts a disallowed target in front of a person. Without it the decision lives
+    only in the ToolResult of whichever caller happened to run, and a target the scraper
+    itself decided needs a human reaches no queue at all.
+
+    Writes no circuit column. A robots block is not evidence the site is failing, and treating
+    it as a fetch failure would back off a target that works perfectly.
+
+    :param health_collection: where the durable state lives
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target being held back
+    :ptype target_id: str
+    :param reason: the file's own words, for the operator
+    :ptype reason: str
+    :param now: current time; injected by tests
+    :ptype now: datetime | None
+    :return: the persisted row
+    :rtype: ScrapeTargetHealth
+    """
+    return await _merge_health(
+        health_collection,
+        target_id=target_id,
+        changes={
+            "robots_blocked_at": now or datetime.now(UTC),
+            "robots_blocked_reason": reason,
+        },
+    )
 
 
 async def record_classification(

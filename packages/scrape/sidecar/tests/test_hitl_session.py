@@ -358,3 +358,103 @@ async def test_a_context_that_will_not_dispose_does_not_block_the_rest_of_teardo
 
     assert manager.current() is None
     assert not manager.vnc.health(), "a stuck context left the display running"  # type: ignore[union-attr]
+
+
+async def test_exported_local_storage_is_actually_restored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three docstrings promised a storage round-trip and only cookies made it back.
+
+    The export captured ``origins`` faithfully and the apply path dropped them on the floor,
+    so a solve that depended on a token in ``localStorage`` -- which plenty do -- silently
+    restored half of itself and the target was challenged again for no visible reason.
+    """
+    written: list[tuple[str, str]] = []
+
+    class _Tab:
+        url = "https://example.gov/page"
+
+        async def evaluate(self, expression: str, **_kw: Any) -> None:
+            written.append(("evaluate", expression))
+
+    state = {
+        "cookies": [],
+        "origins": [{"origin": "https://example.gov/page", "localStorage": '{"cf_token": "earned", "n": "2"}'}],
+    }
+
+    await hitl._apply_origin_storage(_Tab(), state)  # noqa: SLF001
+
+    joined = " ".join(e for _, e in written)
+    assert "cf_token" in joined
+    assert "earned" in joined
+    assert len(written) == 2, "only some of the exported keys were restored"
+
+
+async def test_storage_is_not_written_into_the_wrong_origin() -> None:
+    """localStorage belongs to an origin.
+
+    Writing one origin's storage while the tab sits on another either fails or, worse, lands
+    somewhere it was never exported from -- putting a human's token on a site that never saw it.
+    """
+    written: list[str] = []
+
+    class _Tab:
+        url = "https://other.example/page"
+
+        async def evaluate(self, expression: str, **_kw: Any) -> None:
+            written.append(expression)
+
+    state = {"origins": [{"origin": "https://example.gov/page", "localStorage": '{"k": "v"}'}]}
+    await hitl._apply_origin_storage(_Tab(), state)  # noqa: SLF001
+
+    assert written == []
+
+
+async def test_a_value_with_quotes_does_not_break_the_expression() -> None:
+    """A stored value is arbitrary text a human's session put there.
+
+    Building script by interpolating it turns a stray quote into a syntax error at best, and
+    into evaluated source at worst. Both operands go through json.dumps for that reason.
+    """
+    written: list[str] = []
+
+    class _Tab:
+        url = "https://example.gov/"
+
+        async def evaluate(self, expression: str, **_kw: Any) -> None:
+            written.append(expression)
+
+    nasty = '{"k": "va\\"lue\\u0027); alert(1); //"}'
+    await hitl._apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})  # noqa: SLF001
+
+    assert len(written) == 1
+    # The payload is inside a JSON string literal rather than loose in the source.
+    assert written[0].startswith("window.localStorage.setItem(")
+    assert "alert(1)" in written[0]
+    assert written[0].count("setItem") == 1, "the value escaped its literal and became more source"
+
+
+async def test_unparseable_storage_is_skipped_without_losing_the_cookies() -> None:
+    """Storage is a bonus; cookies carry the cleared challenge. Losing one must not lose both."""
+
+    class _Tab:
+        url = "https://example.gov/"
+
+        async def evaluate(self, expression: str, **_kw: Any) -> None:
+            raise AssertionError("should not have been called")
+
+    await hitl._apply_origin_storage(
+        _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]}
+    )  # noqa: SLF001
+
+
+async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
+    """One unwritable key must not cost the other keys or the fetch they were restored for."""
+
+    class _Tab:
+        url = "https://example.gov/"
+
+        async def evaluate(self, expression: str, **_kw: Any) -> None:
+            raise RuntimeError("script evaluation is blocked")
+
+    await hitl._apply_origin_storage(
+        _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": '{"a":"1"}'}]}
+    )  # noqa: SLF001

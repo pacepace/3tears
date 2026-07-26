@@ -1090,3 +1090,38 @@ async def test_clearing_a_target_nobody_ever_blocked_is_harmless(
     circuit = TargetCircuit(health, policy=policy)
     await circuit.record_human_cleared(_T)
     assert (await circuit.check(_T, now=_NOW)).permitted
+
+
+@pytest.mark.asyncio
+async def test_the_circuit_stamps_which_exit_its_observations_came_from(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The column was added, the writer took the argument, and nothing production passed it.
+
+    Worse than the column being absent: `last_egress IS NULL` then reads as "went direct"
+    when it means "nobody ever stamped anything", so a query meant to separate "walled" from
+    "walled from this exit" quietly answers a different question.
+    """
+    circuit = TargetCircuit(health, policy=policy, egress_name="tor")
+    await circuit.record_blocked(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.last_egress == "tor"
+
+
+@pytest.mark.asyncio
+async def test_no_configured_exit_stamps_nothing_rather_than_direct(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A deployment with no egress configured has not OBSERVED an exit.
+
+    Recording "direct" on its behalf asserts something nobody said, and a query later cannot
+    tell the assertion from an observation.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.last_egress is None

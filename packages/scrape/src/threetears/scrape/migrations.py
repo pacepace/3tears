@@ -275,6 +275,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(9)(v009_target_link_selector)
     pkg.version(10)(v010_create_scrape_target_health)
     pkg.version(11)(v011_target_health_last_egress)
+    pkg.version(12)(v012_target_health_robots_block)
     runner.register(pkg)
     return pkg
 
@@ -298,6 +299,23 @@ async def v011_target_health_last_egress(store: DataStore) -> None:
     at all. A default of ``'direct'`` would assert something about rows nobody stamped.
     """
     await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS last_egress TEXT")
+
+
+async def v012_target_health_robots_block(store: DataStore) -> None:
+    """Record that a target is held back by ``robots.txt`` rather than by a wall.
+
+    Without this the decision existed only in the ToolResult of whoever happened to call, so a
+    disallowed target reached no queue at all: ``list_walled`` answers from the health row, and
+    nothing wrote one. A person could not be sent to a target the scraper had decided needed a
+    person.
+
+    A separate column rather than reusing ``circuit_state``: a robots block is not a fetch
+    failure and must not be counted as one. Counting it would open the circuit, start a
+    backoff, and mark a target unhealthy over a policy decision that says nothing about
+    whether the site works -- and the backoff would then decay a target nobody was fetching.
+    """
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_at TIMESTAMPTZ")
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_reason TEXT")
 
 
 async def apply_migrations(pool: Any) -> None:

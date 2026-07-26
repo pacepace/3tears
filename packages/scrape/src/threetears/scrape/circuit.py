@@ -257,6 +257,7 @@ class TargetCircuit:
         policy: BackoffPolicy | None = None,
         breaker_for: Callable[[str], ProbeObservableBreaker] | None = None,
         blocked_attempts: WindowedCounter | None = None,
+        egress_name: str | None = None,
         probe_pacer: TokenBucket | None = None,
         reprobe_scheduler: ReprobeScheduler | None = None,
     ) -> None:
@@ -274,6 +275,13 @@ class TargetCircuit:
         :ptype breaker_for: Callable[[str], ProbeObservableBreaker] | None
         :param blocked_attempts: optional cross-pod counter of blocked observations
         :ptype blocked_attempts: WindowedCounter | None
+        :param egress_name: which exit this circuit's observations left by, e.g. ``"tor"``.
+            Stamped on every write, so a walled target can be told apart from a target walled
+            FROM THIS EXIT -- without which one blocked route makes a target look permanently
+            walled and a working alternative is never tried. ``None`` stamps nothing, which is
+            honest: a deployment with no egress configured has not observed an exit, and
+            recording ``"direct"`` on its behalf would assert something nobody said
+        :ptype egress_name: str | None
         :param probe_pacer: optional capacity-one bucket admitting one probe per fleet
         :ptype probe_pacer: TokenBucket | None
         :param reprobe_scheduler: optional booking of the next probe as a scheduled job
@@ -283,6 +291,7 @@ class TargetCircuit:
         self._policy = policy or BackoffPolicy()
         self._breaker_for = breaker_for
         self._blocked_attempts = blocked_attempts
+        self._egress_name = egress_name
         self._probe_pacer = probe_pacer
         self._reprobe_scheduler = reprobe_scheduler
 
@@ -918,6 +927,7 @@ class TargetCircuit:
                 consecutive_fetch_failures=failures,
                 blocked_until=blocked_until,
                 blocked_at=blocked_at,
+                egress=self._egress_name,
             )
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- same posture as every other health write in this package: a bookkeeping failure must not turn a completed fetch into a failed one. Logged with its traceback below
             log.exception(
