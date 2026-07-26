@@ -314,7 +314,7 @@ class RobotsGate:
         while len(store) > self._max_origins:
             store.popitem(last=False)
 
-    def _capped_delay(self, origin: str, parser: RobotFileParser) -> float | None:
+    def _capped_delay(self, origin: str, parser: RobotFileParser, *, announce: bool = True) -> float | None:
         """The ``Crawl-delay`` this origin is governed by after capping, or ``None`` if none.
 
         ``None`` means "this origin is not delay-governed at all" -- the policy has the
@@ -322,6 +322,11 @@ class RobotsGate:
         local clock and :meth:`claim_fleet_turn` precisely so the two cannot disagree about
         which origins are paced: they did, briefly, and every site that declares no delay was
         being throttled fleet-wide by a pacer the local clock would never have consulted.
+
+        *announce* exists because this is now called twice per fetch -- once deciding the local
+        wait and once deciding whether the origin is paced at all -- and both branches log. The
+        second caller passes ``False`` so a capped or malformed ``Crawl-delay`` is reported once
+        per poll rather than twice, which is the difference between a note and a stutter.
         """
         if not self._policy.respect_crawl_delay:
             return None
@@ -334,10 +339,11 @@ class RobotsGate:
             # A malformed Crawl-delay is not a refusal and not a licence. Ignoring the value
             # while still honouring the rest of the file is the reading that respects what the
             # site could actually express.
-            log.info("scrape robots: %s asked for an unparseable crawl delay %r; ignoring it", origin, raw)
+            if announce:
+                log.info("scrape robots: %s asked for an unparseable crawl delay %r; ignoring it", origin, raw)
             return None
         delay = min(requested, self._policy.max_crawl_delay_seconds)
-        if delay < requested:
+        if delay < requested and announce:
             log.info(
                 "scrape robots: %s asked for %.0fs between requests; capped at %.0fs",
                 origin,
@@ -375,8 +381,10 @@ class RobotsGate:
         # robots.txt, or one declaring no `Crawl-delay` -- which is most sites -- was suddenly
         # paced fleet-wide by a bucket the local clock would never have consulted. A gate that
         # throttles sites which asked for nothing is not politeness.
+        # The parser is the cached one `check` already fetched moments earlier on this path, so
+        # this is a cache read rather than a second network round-trip.
         parser = await self._parser_for(origin, time.monotonic())
-        if parser is None or self._capped_delay(origin, parser) is None:
+        if parser is None or self._capped_delay(origin, parser, announce=False) is None:
             return 0.0
 
         try:

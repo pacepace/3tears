@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from _pacer_fakes import _FakeDelayPacer
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
 
 _ROBOTS_DISALLOW = "User-agent: *\nDisallow: /private\n"
@@ -672,20 +673,6 @@ async def test_a_health_store_failure_does_not_escape_the_clear_down() -> None:
 # ---------------------------------------------------------------------------
 
 
-# parity-with: threetears.core.coordination.token_bucket.TokenBucket
-class _FakeDelayPacer:
-    """The one method `RobotsGate` calls on a pacer, so drift in its signature fails here."""
-
-    def __init__(self, *, claimed: bool = True, retry_after_seconds: float = 0.0) -> None:
-        self._claimed = claimed
-        self._retry_after = retry_after_seconds
-        self.keys: list[str] = []
-
-    async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
-        self.keys.append(key)
-        return SimpleNamespace(claimed=self._claimed, retry_after_seconds=self._retry_after, tokens_remaining=0.0)
-
-
 async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay() -> None:
     """The bug this excludes returns 0.0 the moment a pacer is injected.
 
@@ -1033,3 +1020,23 @@ async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
 
     assert await gate.claim_fleet_turn("https://example.gov/a") == pytest.approx(30.0)
     assert gate.max_wait_seconds == pytest.approx(30.0), "the declared ceiling still bounds it"
+
+
+async def test_a_capped_delay_is_reported_once_per_poll_not_twice(caplog) -> None:
+    """`_capped_delay` runs twice per fetch now -- once for the local wait, once to decide
+    whether the origin is paced at all -- and both of its branches log.
+
+    A note that stutters is a note people learn to skim, and the duplication says nothing new.
+    """
+    gate = RobotsGate(
+        RobotsPolicy(max_crawl_delay_seconds=5.0),
+        fetch=_fetcher("User-agent: *\nCrawl-delay: 900\n"),
+        delay_pacer=_FakeDelayPacer(),
+    )
+
+    with caplog.at_level("INFO", logger="threetears.scrape.robots"):
+        await gate.check("https://example.gov/a")
+        await gate.claim_fleet_turn("https://example.gov/a")
+
+    capped = [r for r in caplog.records if "capped at" in r.getMessage()]
+    assert len(capped) == 1, f"the cap was announced {len(capped)} times for one poll"

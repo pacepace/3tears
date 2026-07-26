@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from _pacer_fakes import _FakeDelayPacer
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
 from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
@@ -1102,17 +1103,8 @@ class TestTheFleetAndTheSiteBothBind:
     """
 
     @staticmethod
-    def _pacer(*, claimed: bool, retry_after: float = 0.0):
-        # parity-with: threetears.core.coordination.token_bucket.TokenBucket
-        class _Pacer:
-            def __init__(self) -> None:
-                self.keys: list[str] = []
-
-            async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0):
-                self.keys.append(key)
-                return SimpleNamespace(claimed=claimed, retry_after_seconds=retry_after, tokens_remaining=0.0)
-
-        return _Pacer()
+    def _pacer(*, claimed: bool, retry_after: float = 0.0) -> _FakeDelayPacer:
+        return _FakeDelayPacer(claimed=claimed, retry_after_seconds=retry_after)
 
     async def _slept_waiting_for(self, pacer) -> list[float]:
         from threetears.core.collections.registry import CollectionRegistry
@@ -1153,6 +1145,48 @@ class TestTheFleetAndTheSiteBothBind:
         assert slept, "nothing was waited"
         assert slept[0] == pytest.approx(25.0, abs=0.5), (
             f"the fleet owed 25s and this pod owed ~10s; the tool waited {slept[0]}s"
+        )
+
+    async def test_a_suppressed_poll_takes_no_turn_at_all(self):
+        """The `and fetch_will_happen` guard, asserted where it lives.
+
+        The gate-level version of this drives `RobotsGate` directly, and its own docstring says
+        the scenario is a `ScrapeTool` one: robots is consulted BEFORE the circuit, so without
+        this guard a walled target inside its backoff claims a token on every poll and delays
+        every sibling target on the origin. Delete the guard and only a tool-level test that
+        builds a real suppressing circuit can notice.
+        """
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, "User-agent: *\nCrawl-delay: 10\n"
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        health = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url, schema = "https://example.gov/walled", {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+
+        circuit = TargetCircuit(health, policy=BackoffPolicy(failure_threshold=1))
+        await circuit.record_blocked(target_id)
+
+        pacer = self._pacer(claimed=True)
+        tool = ScrapeTool(
+            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+            health_collection=health,
+            circuit=circuit,
+            robots=RobotsGate(fetch=_fetch, delay_pacer=pacer),
+        )
+
+        result = await tool.execute(url=url, field_schema=schema)
+
+        assert result.success is False, "the circuit should have suppressed this poll"
+        assert pacer.keys == [], (
+            "a suppressed poll spent the origin's shared token, so one walled target delays every sibling on that site"
         )
 
     async def test_the_sites_longer_wait_wins(self):
