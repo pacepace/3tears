@@ -303,6 +303,14 @@ httpx use" and "what does a browser need on its command line", since a deploymen
 one of those right would send its API calls one way and its scrapes another while reporting a
 single configured exit.
 
+`SocksEgress` and `WarpEgress` produce `socks5://` proxy URLs, which httpx routes through
+`socksio` -- absent, it raises `ImportError` at the first request rather than at import, so it
+surfaces as a runtime fault in a scrape rather than as a missing dependency. Install the extra:
+
+```bash
+pip install '3tears[socks]'
+```
+
 ```python
 from threetears.core.egress import EgressRegistry, SocksEgress, WarpEgress
 

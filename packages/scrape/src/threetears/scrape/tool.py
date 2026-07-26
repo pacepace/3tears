@@ -437,8 +437,13 @@ class ScrapeTool(TearsTool):
         solved_state: dict[str, Any] | None,
         target_id: str,
         driver_backend: str,
-    ) -> tuple[RenderedPage | None, str | None]:
-        """Fetch the page once, returning ``(page, error)`` with exactly one of them set.
+    ) -> tuple[RenderedPage | None, str | None, bool]:
+        """Fetch the page once, returning ``(page, error, fetch_attempted)``.
+
+        Exactly one of *page* and *error* is set. *fetch_attempted* says whether the driver was
+        actually called, which the error alone cannot answer: a render that failed still spent
+        the origin's turn and its crawl-delay, while a refusal issued before the call spent
+        neither. The caller needs the difference to know whether to give the fleet turn back.
 
         Extracted so `execute` has ONE `except BaseException` over the whole permitted path
         rather than two adjacent ones. That shape produced four stranded-probe bugs in a row,
@@ -459,12 +464,6 @@ class ScrapeTool(TearsTool):
         :return: the rendered page and no error, or no page and the error string
         :rtype: tuple[RenderedPage | None, str | None]
         """
-        if self._robots is not None:
-            # The clock starts on the FETCH, not on the check: the circuit can suppress a fetch
-            # after robots was consulted, and a check that led nowhere must not consume the
-            # site's patience.
-            self._robots.note_fetched(url)
-
         # `session_state` is passed ONLY when there is one. `ScrapeDriver` is published as a
         # pluggable contract, so an out-of-tree driver written against 0.19.x has no such
         # parameter -- passing it unconditionally made every fetch through such a driver raise
@@ -488,11 +487,24 @@ class ScrapeTool(TearsTool):
                 "scrape tool: a stored solve exists for this target but the driver cannot accept it",
                 extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
             )
-            return None, (
-                f"driver {driver_backend!r} does not accept session_state, so the stored solve for "
-                f"this target cannot be applied. Fetching without it would discard a person's work "
-                f"and re-present the challenge they already cleared."
+            return (
+                None,
+                (
+                    f"driver {driver_backend!r} does not accept session_state, so the stored solve "
+                    f"for this target cannot be applied. Fetching without it would discard a "
+                    f"person's work and re-present the challenge they already cleared."
+                ),
+                False,
             )
+
+        if self._robots is not None:
+            # The clock starts on the FETCH, not on the check: a check that led nowhere must not
+            # consume the site's patience. BELOW the incompatibility guard for that reason --
+            # that guard returns without calling `render`, so charging the origin there paces
+            # every sibling target on it for a fetch that never happened, forever, since a
+            # signature mismatch is identical on every poll.
+            self._robots.note_fetched(url)
+
         try:
             page = await driver.render(
                 url,
@@ -502,17 +514,30 @@ class ScrapeTool(TearsTool):
                 **extra,
             )
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
+            # `exc_info` and `error_type`, because this is the failure that opens the durable
+            # circuit three lines below and suppresses the target for hours. Without them the
+            # operator asking "why did my fleet back off" cannot tell a timeout from a proxy
+            # refusal from a `TypeError` inside a driver -- and telling a dead exit apart from
+            # genuinely broken targets is the reason `EgressDriver.health()` exists at all. The
+            # cause reached only the returned string, which goes to the ToolResult, not the log.
             log.warning(
                 "scrape tool: render failed",
-                extra={"extra_data": {"url": url, "driver_backend": driver_backend}},
+                exc_info=True,
+                extra={
+                    "extra_data": {
+                        "url": url,
+                        "driver_backend": driver_backend,
+                        "error_type": type(exc).__name__,
+                    }
+                },
             )
             if self._circuit is not None:
                 # A page that never arrived is a fetch failure, exactly like a wall, and a
                 # target that has become unreachable should back off rather than be retried at
                 # full rate. Only the wall stamps `last_blocked_at`.
                 await self._circuit.record_unreachable(target_id)
-            return None, f"fetch failed: {exc}"
-        return page, None
+            return None, f"fetch failed: {exc}", True
+        return page, None, True
 
     async def _clear_robots_block_if_any(self, target_id: str) -> None:
         """Take a target out of the human queue, but only if it was in it.
@@ -571,6 +596,17 @@ class ScrapeTool(TearsTool):
         # independent, sequential things that can go wrong (bad input, an
         # unsupported backend, a transport failure), and this repo's own
         # single-return convention wants one exit point, not one per failure mode.
+        #
+        # ONE case departs, and it is the robots-disallow escalation below. The sentinel holds
+        # an error STRING, and the exit it feeds builds `ToolResult(success=False, content="",
+        # error=error)` -- no content, no metadata. The escalation needs both: it reports
+        # `validation_status="needs_human"` in a JSON body and in metadata, so a caller can
+        # route it to a queue rather than parse a message. Routing it through the sentinel
+        # would mean encoding that structure into a string and decoding it at the exit.
+        #
+        # So the rule for whoever adds the next gate is not "never return early". It is: use
+        # the sentinel if your failure is an error string, and return directly only if you are
+        # producing a result shape the exit cannot build.
         error: str | None = None
 
         url = kwargs.get("url") or ""
@@ -762,7 +798,7 @@ class ScrapeTool(TearsTool):
 
             if fetch_will_happen:
                 assert driver is not None  # narrowed by `error is None` above
-                page, render_error = await self._render_once(
+                page, render_error, fetch_attempted = await self._render_once(
                     driver,
                     url,
                     wait_for=wait_for,
@@ -773,6 +809,17 @@ class ScrapeTool(TearsTool):
                 )
                 if render_error is not None:
                     error = render_error
+                if not fetch_attempted and fleet_wait_claimed and self._robots is not None:
+                    # The turn was claimed for a fetch that then did not happen, so give it
+                    # back. Conditioned on `fetch_attempted` rather than on `render_error`,
+                    # because a render that FAILED still went out: it spent the origin's turn
+                    # and is not owed a refund. Only a refusal issued before the call is.
+                    #
+                    # Fire-and-forget for the same reason the cancellation handler below uses
+                    # it, and with the same worst case: if the refund never lands the bucket
+                    # refills on its own.
+                    fleet_wait_claimed = False
+                    fire_and_forget(self._robots.refund_fleet_turn(url))
         except BaseException:
             # ONE home for the compensation, over the whole permitted path. This block holds
             # every await between the circuit admitting a fetch and the outcome being reported,

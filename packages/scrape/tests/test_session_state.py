@@ -190,7 +190,7 @@ async def test_clearing_removes_both_columns_together(health: ScrapeTargetHealth
     """Half-cleared is worse than either state.
 
     A token with no expiry is a credential of unknown lifetime; an expiry with no token guards
-    nothing. Same pairing argument `record_circuit_state` makes for its four columns.
+    nothing. Same pairing argument `record_circuit_state` makes for the columns a trip writes.
     """
     await record_session_state(health, target_id=_T, state=seal_session_state(_STATE, _KEY, now=_NOW))
     await record_session_state(health, target_id=_T, state=None)

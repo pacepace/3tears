@@ -175,6 +175,41 @@ async def test_both_behaviours_can_be_turned_off_independently() -> None:
     assert (await delay_off.check("https://example.gov/a", now=1000.0)).wait_seconds == 0.0
 
 
+async def test_both_flags_off_does_not_fetch_the_file_at_all() -> None:
+    """The combination, which disabling one flag at a time cannot reach.
+
+    With neither behaviour enabled there is nothing this gate can decide, so reading the file
+    would be a request made purely to discard the answer. That is not a cosmetic saving: the
+    GET announces the deployment to every new origin, from the configured exit, in front of the
+    first real fetch -- exactly the traffic somebody turning both flags off was avoiding.
+
+    Asserted on the FETCHER, not on the decision. A version that fetched and then ignored the
+    result returns an identical `RobotsDecision`, so a decision-only assertion passes against
+    the defect. The sibling above disables one flag at a time and does exactly that, which is
+    how this went uncovered.
+    """
+    fetch = _fetcher(_ROBOTS_BOTH)
+    gate = RobotsGate(RobotsPolicy(flag_disallowed=False, respect_crawl_delay=False), fetch=fetch)
+
+    decision = await gate.check("https://example.gov/private")
+
+    assert decision.allowed is True
+    assert decision.wait_seconds == 0.0
+    assert fetch.calls == [], f"robots.txt was fetched despite both behaviours being off: {fetch.calls}"
+
+
+async def test_one_flag_on_still_fetches_the_file() -> None:
+    """The negative half, so the short-circuit above cannot be an unconditional skip.
+
+    Without this, deleting the flag test and returning permissive for everyone would pass.
+    """
+    fetch = _fetcher(_ROBOTS_BOTH)
+    gate = RobotsGate(RobotsPolicy(respect_crawl_delay=False), fetch=fetch)
+
+    assert (await gate.check("https://example.gov/private")).allowed is False
+    assert fetch.calls, "the gate stopped consulting robots.txt while a behaviour was still enabled"
+
+
 async def test_both_behaviours_are_on_without_configuration() -> None:
     """The default is the whole point. Opt-in politeness is absent wherever nobody configured it."""
     policy = RobotsPolicy()

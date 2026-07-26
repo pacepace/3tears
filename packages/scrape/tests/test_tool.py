@@ -1239,7 +1239,7 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
         robots=None,
     )
 
-    page, error = await tool._render_once(
+    page, error, fetch_attempted = await tool._render_once(
         _PreSessionStateDriver(),  # type: ignore[arg-type]
         "https://example.gov/x",
         wait_for=None,
@@ -1250,12 +1250,116 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
     )
 
     assert page is None
+    assert fetch_attempted is False, "a refusal issued before the driver call reported a fetch"
     assert "does not accept session_state" in (error or ""), (
         f"the incompatibility was reported as something else: {error}"
     )
     assert circuit.unreachable == [], (
         "a driver that cannot take a solve was recorded as an unreachable fetch, so the durable "
         "circuit will back the target off for hours over a wiring mistake time cannot fix"
+    )
+
+
+async def test_a_refused_fetch_does_not_charge_the_origins_clock() -> None:
+    """The site is not owed patience for a request that was never sent.
+
+    `note_fetched` starts the crawl-delay clock and its own docstring says a check that led
+    nowhere must not consume the site's patience -- but it ran as `_render_once`'s first
+    statement, ahead of the guard that returns without calling the driver. The clock is shared
+    per ORIGIN, so a single misconfigured target paced every sibling target on that origin, and
+    a signature mismatch recurs identically on every poll, so it never stopped.
+
+    The sibling incompatibility test builds the tool with `robots=None`, which is exactly why
+    this interaction had no coverage.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.robots import RobotsGate
+
+    class _PreSessionStateDriver:
+        """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+        @property
+        def name(self) -> str:
+            return "old"
+
+        async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None) -> RenderedPage:
+            raise AssertionError("the render must not be attempted once the mismatch is known")
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    gate = RobotsGate()
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"old": _PreSessionStateDriver()},  # type: ignore[dict-item]
+        api_key="k",
+        robots=gate,
+    )
+
+    await tool._render_once(
+        _PreSessionStateDriver(),  # type: ignore[arg-type]
+        "https://example.gov/x",
+        wait_for=None,
+        nav_steps=None,
+        solved_state={"cookies": {"session": "abc"}},
+        target_id="t1",
+        driver_backend="old",
+    )
+
+    assert "https://example.gov" not in gate._last_fetch_at, (
+        "a fetch that was refused before the driver call still started the origin's crawl-delay "
+        "clock, so every sibling target on that origin is paced for a request nobody sent"
+    )
+
+
+async def test_a_render_failure_logs_what_actually_went_wrong(caplog) -> None:
+    """This is the log line an operator reads when the fleet backs off.
+
+    The same guard calls `record_unreachable` three lines down, which opens the durable circuit
+    and suppresses the target for fifteen minutes escalating to six hours. It used to log the
+    url and the backend and nothing else -- so "why did my targets stop" could not distinguish a
+    timeout from a proxy refusal from a `TypeError` inside a driver, and telling a dead exit
+    apart from genuinely broken targets is the entire reason `EgressDriver.health()` exists.
+
+    The cause was not lost, only misrouted: it reached the returned string, which goes to the
+    ToolResult and never to the log.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+        api_key="k",
+        robots=None,
+    )
+    boom = _FakeDriver(_SINGLE_HTML, raise_exc=TimeoutError("upstream did not answer"))
+
+    with caplog.at_level("WARNING", logger="threetears.scrape.tool"):
+        await tool._render_once(
+            boom,  # type: ignore[arg-type]
+            "https://example.gov/x",
+            wait_for=None,
+            nav_steps=None,
+            solved_state=None,
+            target_id="t1",
+            driver_backend="nodriver",
+        )
+
+    failed = [r for r in caplog.records if "render failed" in r.message]
+    assert failed, "the render failure was not logged at all"
+    record = failed[0]
+
+    assert record.exc_info is not None, (
+        "the log line carries no traceback, so the failure that opened the circuit is "
+        "indistinguishable from every other failure that opens it"
+    )
+    assert record.extra_data["error_type"] == "TimeoutError", (
+        f"the error type is not filterable from the record: {getattr(record, 'extra_data', None)}"
     )
 
 

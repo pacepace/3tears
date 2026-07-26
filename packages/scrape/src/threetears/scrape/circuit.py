@@ -21,7 +21,7 @@ seam: the durable row is hydrated into a real breaker, the transition is driven 
 that breaker, and the resulting state is written back. What lives here is storage, backoff
 arithmetic, and the decision of which outcome counts as a fetch failure.
 
-Four collaborators are optional and injected, never constructed, because each belongs to
+The collaborators below are optional and injected, never constructed, because each belongs to
 infrastructure this package does not own:
 
 - ``breaker_for`` -- resolves a :class:`ProbeObservableBreaker` (the

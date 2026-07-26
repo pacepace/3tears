@@ -866,7 +866,8 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         # `ScrapeTargetHealth.last_egress`.
         #
         # Confirming that traffic genuinely leaves by this exit needs an outside observer and
-        # is VRF-004's job; nothing in this process can tell the difference.
+        # needs an outside observer -- something reading the address this container presents to a
+        # third party -- and nothing in this process can tell the difference.
         #
         # `is not None` matches the routing branch above -- a request that selected the default
         # route sends `direct://` and must report `direct`, not the container's name.

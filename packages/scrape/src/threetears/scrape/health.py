@@ -497,8 +497,8 @@ async def clear_robots_block(
     Without this the escalation dead-ends: a blocked target enters
     :meth:`ScrapeTargetHealthCollection.list_walled` and can never leave it, and because the
     queue is ordered by block time and bounded by a limit, a row re-stamped on every poll
-    crowds genuinely walled targets out of it. The chunk says the escalation "closes"; this is
-    what closes it.
+    crowds genuinely walled targets out of it. An escalation is only worth raising if something
+    can retract it; this is the retraction.
 
     Called when a human has worked the target, and when the file stops disallowing us -- both
     mean the same thing, that this target no longer needs a person for this reason.

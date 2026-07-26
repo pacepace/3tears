@@ -507,8 +507,8 @@ Cloudflare WARP as an option, and both behind a driver seam so a third exit late
 rather than a change to the scraper.
 
 **faidh's existing `ProxyStrategy` is prior art, and this seam does NOT migrate it here.**
-The chunk was told to decide this rather than assume it, and the standing rule was that two
-unrelated egress abstractions must not end up in one codebase. They will not, because they are
+This was decided rather than assumed, against the standing rule that two unrelated egress
+abstractions must not end up in one codebase. They will not, because they are
 not in one codebase: faidh is a consuming application, `threetears.core.egress` is library
 code, and the dependency runs one way. What must not happen -- and would have, silently -- is
 faidh keeping `ProxyStrategy` FOREVER alongside this seam, so that a third exit has to be added
@@ -516,8 +516,8 @@ twice.
 
 The decision: faidh migrates onto `EgressDriver` and deletes `ProxyStrategy`/`DirectProxy`/
 `TorProxy`, as a change in faidh's own repo on faidh's own schedule. It is not a precondition
-for this chunk, and it is not optional either; it is tracked as a backlog item so "later" has
-somewhere to live rather than being a word in a design document. The shapes already
+for shipping this seam, and it is not optional either; it is tracked in the backlog so
+"later" has somewhere to live rather than being a word in a design document. The shapes already
 correspond -- `DirectProxy` is `DirectEgress`, `TorProxy` is `SocksEgress("tor")` -- which is
 why this is a deletion rather than a rewrite.
 
@@ -571,7 +571,9 @@ own exit instead of echoing the one it was asked for.
 
 It is not evidence that traffic left that way. A per-context proxy Chromium accepted and then
 ignored would still be recorded under the name it was asked for, and nothing inside the process
-can tell the difference -- confirming it needs an observer outside, which is VRF-004's job.
+can tell the difference. Confirming it needs an observer outside the process, reading the
+address the container presents to a third party; that verification is tracked separately and
+deliberately, because a unit test asserting it would be asserting on its own fake.
 
 `None` means no exit was configured, which is a different fact from choosing the default route.
 That choice is `DirectEgress` and records as `direct`.
@@ -598,7 +600,7 @@ In the gate-proxied shape the warning names the unproxied drivers, which is how 
 cannot honour an exit at all gets reported. Most backends cannot: `CamoufoxDriver` launches a
 browser with no proxy support, and `DocumentDriver`, `ListingDetailDriver` and
 `MultiDocumentDriver`'s listing fetch each build a bare `httpx.AsyncClient`. Threading an exit
-through them is filed as SCR-2WQ7; until then the bypass is loud rather than closed.
+through them is tracked in the backlog; until then the bypass is loud rather than closed.
 
 Note the asymmetry, because it bounds what this warning is worth. In the drivers-proxied shape
 the message names the PROXIED drivers, so a deployment that proxied what it could and left the

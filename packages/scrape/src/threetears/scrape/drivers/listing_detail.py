@@ -238,7 +238,7 @@ class ListingDetailDriver(ScrapeDriver):
         :param session_state: accepted and NOT applied -- only
             :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
             human's exported cookies and storage. Supplying one here logs a warning (once per
-            driver instance) rather than failing, because a target re-solved by a person is a
+            SITE, not per call) rather than failing, because a target re-solved by a person is a
             worse outcome than one rendered unauthenticated, but neither is what was asked for
         :ptype session_state: dict[str, Any] | None
         :return: one synthetic ``<table>`` page, one row per successfully-resolved record

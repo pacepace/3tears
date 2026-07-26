@@ -17,7 +17,7 @@ from typing import Any
 
 import hitl
 import pytest
-from hitl import SessionManager, SessionNotFound, SessionUnavailable, VncSession
+from hitl import HitlSession, HitlTab, SessionManager, SessionNotFound, SessionUnavailable, VncSession
 
 
 # parity-exempt: stands in for this sidecar's own hitl.VncLifecycle, mirroring the members SessionManager calls (start/stop/health); the sidecar is a standalone deployable never installed in the workspace venv, so a parity-with marker cannot resolve there
@@ -540,3 +540,71 @@ async def test_export_state_never_raises_into_a_completion(manager: SessionManag
     state = await manager._export_state(session.tabs[tab.tab_id])
 
     assert state is None, "a failing export returns None rather than raising into the completion"
+
+
+class TestCredentialsAreNotRenderable:
+    """A session token and a raw cookie jar must not walk out in a repr.
+
+    Chunk 06's own criterion is "state is never logged and never appears in a repr", and until
+    now that was enforced only on the MIT side, where `SealedSessionState` redacts the
+    ENCRYPTED form and a test pins it. This container holds the plaintext -- `httpOnly` session
+    cookies included, unencrypted, because it has no key -- so the same guarantee matters more
+    here, not less.
+
+    Latent rather than an active leak: nothing renders these objects today. That is precisely
+    why it is worth pinning, because the next `log.debug("...%s", session)` or a structured
+    handler that serialises `extra` does it silently and nothing fails.
+    """
+
+    def test_a_session_does_not_render_its_token(self) -> None:
+        session = HitlSession(session_id="sess-1", token="super-secret-bearer", expires_at=1.0, max_slots=3)
+
+        for rendered in (repr(session), str(session), f"{session}", "%s" % session):
+            assert "super-secret-bearer" not in rendered, f"the bearer token was rendered: {rendered}"
+            assert "redacted" in rendered
+
+        # The id is deliberately NOT redacted: it is the handle the caller already sent, it is
+        # what makes a log line traceable, and this module answers "no such session" and "wrong
+        # token" with one exception precisely so the id is not the secret.
+        assert "sess-1" in repr(session)
+
+    def test_a_tab_does_not_render_its_exported_cookies(self) -> None:
+        tab = HitlTab(
+            tab_id="tab-1",
+            target_id="t1",
+            url="https://example.gov/x",
+            tab=None,
+            context_id=None,
+            opened_at=1.0,
+            exported_state={"cookies": [{"name": "session", "value": "live-httponly-value"}]},
+        )
+
+        for rendered in (repr(tab), str(tab), f"{tab}"):
+            assert "live-httponly-value" not in rendered, f"an exported cookie was rendered: {rendered}"
+            assert "redacted" in rendered
+
+        assert "tab-1" in repr(tab)
+        assert "https://example.gov/x" in repr(tab)
+
+    def test_a_session_holding_tabs_does_not_leak_through_the_nesting(self) -> None:
+        """The container's repr must not reintroduce what the element's repr removes.
+
+        A dataclass repr recurses, so `HitlSession.tabs` would print each `HitlTab` in full if
+        the session used the default. Redacting only the leaf leaves the parent as a second
+        route to the same plaintext.
+        """
+        tab = HitlTab(
+            tab_id="tab-1",
+            target_id="t1",
+            url="https://example.gov/x",
+            tab=None,
+            context_id=None,
+            opened_at=1.0,
+            exported_state={"cookies": [{"name": "session", "value": "live-httponly-value"}]},
+        )
+        session = HitlSession(session_id="sess-1", token="super-secret-bearer", expires_at=1.0, max_slots=3)
+        session.tabs["tab-1"] = tab
+
+        rendered = repr(session)
+        assert "live-httponly-value" not in rendered
+        assert "super-secret-bearer" not in rendered

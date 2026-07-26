@@ -255,6 +255,19 @@ class RobotsGate:
         if origin in self._policy.overrides:
             return RobotsDecision(allowed=True, reason=f"{origin} is an explicit override in this deployment")
 
+        # Both behaviours off means there is nothing this gate can decide, so the file is not
+        # fetched at all. Checked BEFORE `_parser_for`, because that is what makes the flags
+        # mean what they say: reading the file first and then finding no use for it still
+        # announces this deployment to every new origin -- from the configured exit, in front
+        # of the first real fetch -- which is exactly the traffic a deployment turning both
+        # flags off was trying not to send.
+        #
+        # Distinct from `robots=None` on `ScrapeTool`, which removes the gate entirely. This is
+        # a gate that stays in place, keeps its overrides and its caches, and simply has no
+        # opinion; a deployment that later turns one flag back on gets it without rewiring.
+        if not self._policy.flag_disallowed and not self._policy.respect_crawl_delay:
+            return RobotsDecision(allowed=True, reason="robots.txt handling is disabled; the file was not fetched")
+
         parser = await self._parser_for(origin, moment)
         if parser is None:
             return RobotsDecision(allowed=True, reason="no usable robots.txt; nothing was asked of us")

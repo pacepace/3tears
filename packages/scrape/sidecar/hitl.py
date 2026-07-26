@@ -174,7 +174,8 @@ class VncLifecycle:
 
         Both, not either: websockify alive with x11vnc dead is a page that loads and never
         paints, which is indistinguishable from a broken display to the person looking at it
-        and is the specific failure this chunk exists to avoid shipping.
+        and is the specific failure this check exists to catch: a readiness signal that reports
+        healthy while the display is blank is worse than no signal, because it is believed.
         """
         return self._alive(self._x11vnc) and self._alive(self._websockify)
 
@@ -487,6 +488,31 @@ class HitlTab:
     #: holds no key. The MIT side seals it before anything persists it.
     exported_state: dict[str, Any] | None = None
 
+    def __repr__(self) -> str:
+        """Describe the tab without disclosing what it exported.
+
+        A dataclass repr prints every field, and ``exported_state`` is the RAW cookie and
+        localStorage export -- ``httpOnly`` session cookies included, unencrypted, because this
+        container holds no key. One ``log.debug("...%s", tab)``, one exception rendering, or a
+        structured handler that serialises ``extra`` would carry a live session off the machine.
+
+        The MIT side already redacts the SEALED form for this reason, on the argument that a
+        credential's ciphertext in a log aggregator is still a credential. This side holds the
+        plaintext, so the argument is strictly stronger here.
+
+        Shape rather than content: how many origins were exported is useful when reading a log
+        and discloses nothing.
+        """
+        exported = "None" if self.exported_state is None else f"<{len(self.exported_state)} key(s) redacted>"
+        return (
+            f"HitlTab(tab_id={self.tab_id!r}, target_id={self.target_id!r}, url={self.url!r}, "
+            f"opened_at={self.opened_at!r}, exported_state={exported})"
+        )
+
+    def __str__(self) -> str:
+        """Same redaction as :meth:`__repr__`, for f-strings and ``%s``."""
+        return self.__repr__()
+
 
 @dataclass
 class HitlSession:
@@ -497,6 +523,27 @@ class HitlSession:
     expires_at: float
     max_slots: int
     tabs: dict[str, HitlTab] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        """Describe the session without disclosing its bearer token.
+
+        ``token`` is the whole of the authentication for this session: anything holding it can
+        open tabs on the display and read back completed cookie jars. The default dataclass
+        repr prints it, and `tabs` recurses into :class:`HitlTab`, whose own repr redacts.
+
+        ``session_id`` is NOT redacted. It is the public handle a caller already sent to get
+        here, it is what makes a log line traceable, and the module's own auth failure is
+        deliberately one exception for "no such session" and "wrong token" precisely so the id
+        is not the secret.
+        """
+        return (
+            f"HitlSession(session_id={self.session_id!r}, token=<{len(self.token)} chars redacted>, "
+            f"expires_at={self.expires_at!r}, max_slots={self.max_slots!r}, tabs={len(self.tabs)})"
+        )
+
+    def __str__(self) -> str:
+        """Same redaction as :meth:`__repr__`, for f-strings and ``%s``."""
+        return self.__repr__()
 
     def is_expired(self, now: float) -> bool:
         """Whether the hard TTL has passed."""
@@ -673,8 +720,8 @@ class SessionManager:
     ) -> HitlTab:
         """Bring one target into the session as an isolated tab.
 
-        Isolated per tab, not per session: the acceptance criterion for this chunk is that a
-        second target cannot see the first one's cookies, and a shared context would hand a
+        Isolated per tab, not per session, because a second target must not be able to see the
+        first one's cookies: and a shared context would hand a
         walled site the credentials a human just earned somewhere else.
 
         Occupies a slot from here until :meth:`complete_tab`. Backgrounding a slow target
@@ -995,7 +1042,16 @@ async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict
             await_promise=False,
         )
     except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- storage is a bonus; a page that refuses script evaluation still yields the cookies that actually carry a cleared challenge, and losing the rest must not lose those
-        log.debug("hitl: localStorage was not readable for this context")
+        # WARNING with the traceback, matching `_apply_origin_storage`'s handler for the
+        # mirror-image failure one poll later. The two are the same event -- a page refusing
+        # script evaluation -- and produce the same silent half-result, so logging one at
+        # WARNING and the other at DEBUG means the capture side of a systematic failure leaves
+        # no evidence at default level while the restore side does. The half that goes quiet is
+        # the earlier one, which is the half worth seeing first.
+        #
+        # Still not an error: cookies are the load-bearing half of a cleared challenge and they
+        # exported fine. This says the solve was captured incompletely, not that it was lost.
+        log.warning("hitl: localStorage was not readable for this context", exc_info=True)
         return exported
     if isinstance(local_storage, str) and local_storage not in ("", "{}"):
         exported["origins"].append({"origin": tab.url, "localStorage": local_storage})

@@ -44,7 +44,7 @@ __all__ = [
 ]
 
 # `record_session_state` writes a health row and therefore looks like it belongs in `health.py`
-# beside the other five writers, which share that module's `_merge_health`. It lives here
+# beside the other health writers, which share that module's `_merge_health`. It lives here
 # because the write is the LAST step of sealing and is meaningless without the four functions
 # above it: a caller that has a sealed blob and no way to store it has been handed half an
 # operation. Splitting them would put the encryption in one module and its only destination in
@@ -205,7 +205,7 @@ async def record_session_state(
 
     ``None`` clears both columns together. Clearing one without the other would leave either a
     token nothing knows the lifetime of, or an expiry guarding nothing -- the same pairing
-    argument ``record_circuit_state`` makes for its four columns.
+    argument ``record_circuit_state`` makes for the columns a trip writes together.
 
     :param health_collection: where the durable state lives
     :ptype health_collection: ScrapeTargetHealthCollection
