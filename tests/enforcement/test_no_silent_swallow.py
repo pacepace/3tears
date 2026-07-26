@@ -32,7 +32,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _CONFIG = NoSilentSwallowConfig(
     repo_root=_REPO_ROOT,
-    src_roots=(_REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core",),
+    # Widen one package at a time, as each is actually read. A package appears here only
+    # once every handler in it has been looked at and either marked with a reason or fixed.
+    src_roots=(
+        _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core",
+        _REPO_ROOT / "packages" / "iam" / "src" / "threetears" / "iam",
+        _REPO_ROOT / "packages" / "mcp" / "src" / "threetears" / "mcp",
+    ),
 )
 
 

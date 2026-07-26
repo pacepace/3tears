@@ -252,6 +252,7 @@ def equalize_verify_cost() -> None:
     """
     try:
         _HASHER.verify(_DUMMY_HASH, "")
+    # NOSILENT: the verify is EXPECTED to fail; this call is timed, not consulted
     except VerifyMismatchError, VerificationError, InvalidHashError:
         pass
 
