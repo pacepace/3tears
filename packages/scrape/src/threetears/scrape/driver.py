@@ -156,10 +156,9 @@ class ScrapeDriver(ABC):
 
         Typed ``object | None`` rather than ``EgressDriver``: this module keeps a
         zero-non-stdlib-import discipline, which is what lets it be imported from anywhere
-        without dragging a dependency along, and ``object | None`` needs no import while still
-        accepting every override and supporting the only operation anyone performs on it --
-        asking whether it is there. ``Any`` would have been the lazier version of the same
-        constraint and would have typed nothing.
+        without dragging a dependency along. ``object | None`` needs no import, accepts every
+        override, and supports the only operation anyone performs on it -- asking whether it
+        is there. ``Any`` would satisfy the same constraint while typing nothing.
         """
         return None
 
