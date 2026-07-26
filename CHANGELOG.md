@@ -4,6 +4,29 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.19.3 -- 2026-07-26
+
+**`NoRespondersError` and `RequestTimeoutError`, so callers can tell "nobody is
+subscribed" from "nobody answered."** `RequestError`'s own docstring had said
+"distinct subclasses may be added later if callers need to disambiguate"; a caller
+now does. The two are different operational facts -- the first points at a service
+that never started, was never deployed, or is subscribed on another
+subject/namespace, the second at one that is present and wedged -- and they send an
+operator to different places. Collapsed into a bare `RequestError` carrying only a
+message string, the only way to tell them apart was matching on that text, which is
+why `forward.py` had already resorted to inspecting `__cause__`.
+
+The caller that forced it: an agent registering with the agent router at boot. On a
+cold rollout the router may not have subscribed yet -- an ordinary race worth
+waiting out -- whereas a transport or response-decode failure is not. Without the
+distinction a retry either over-waits a permanent failure and then misreports it as
+unavailability, or reaches around this wrapper into `nats.errors` directly, which
+consumers' own enforcement tests forbid.
+
+Both subclass `RequestError`, so every existing `except RequestError` catches them
+unchanged. This refines the hierarchy; nothing is renamed and no call site must
+move.
+
 ## v0.19.2 -- 2026-07-25
 
 **Image builds use uv, not pip.** `threetears-base` installed with pip and every
