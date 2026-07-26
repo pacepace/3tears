@@ -873,10 +873,12 @@ class ScrapeTool(TearsTool):
                     # fetch that worked. A recipe that keeps missing against a page we received
                     # is `ScrapeRecipe.consecutive_validation_failures`'s business, and backing
                     # off the fetch would only starve the regeneration that fixes it.
-                    # `egress=` carries the exit the page ACTUALLY came through, as reported by
-                    # the fetcher, rather than the circuit's constructor-time name -- which
-                    # describes how the circuit was configured and is wrong for any render
-                    # that chose a different exit.
+                    # `egress=` carries the exit the page was configured to come through, as
+                    # REPORTED BY THE FETCHER rather than the circuit's constructor-time name --
+                    # which describes how the circuit was wired and is wrong for any render that
+                    # chose a different exit. Reported, not observed: it says which exit was
+                    # asked for and confirmed by whoever performed the fetch, not that traffic
+                    # left that way.
                     if blocked:
                         await self._circuit.record_blocked(target_id, egress=page.egress)
                     else:

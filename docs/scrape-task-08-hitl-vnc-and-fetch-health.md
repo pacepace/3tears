@@ -271,7 +271,7 @@ A new `ScrapeTargetHealth` entity carries:
 | `last_blocked_at`, `last_block_kind` | evidence for the operator and for tuning detection |
 | `classified_fingerprint`, `classified_verdict`, `classified_evidence` | the verdict cache: which page was last classified, what it was judged to be, and why |
 | `session_state_sealed`, `session_state_expires_at` | §4 |
-| `last_egress` | which exit the last observation left by (§7). Without it "this target is walled" cannot be told apart from "this target is walled FROM THIS EXIT", and one blocked exit poisons a target permanently |
+| `last_egress` | which exit the last observation was configured to leave by, reported by the fetcher rather than assumed by the caller (§7 -- configured, not observed). Without it "this target is walled" cannot be told apart from "this target is walled FROM THIS EXIT", and one blocked exit poisons a target permanently |
 | `robots_blocked_at`, `robots_blocked_reason` | a `Disallow` that needs a person (§8). Deliberately NOT the circuit's columns: a policy decision is not a fetch failure, and counting it as one would back off a site that works perfectly |
 
 The three `classified_*` columns are what makes "same fingerprint next poll, same verdict, no
@@ -594,11 +594,18 @@ the argument describes what the default gate WOULD have been. It says nothing wh
 disabled, since there is no second request to be split from. A warning rather than a refusal,
 since a deployment may want exactly that, but it should have to be a decision.
 
-The warning also names any driver that cannot honour an exit at all. Most backends cannot:
-`CamoufoxDriver` launches a browser with no proxy support, and `DocumentDriver`,
-`ListingDetailDriver` and `MultiDocumentDriver`'s listing fetch each build a bare
-`httpx.AsyncClient`. Threading an exit through them is filed as SCR-2WQ7; until then the bypass
-is loud rather than closed.
+In the gate-proxied shape the warning names the unproxied drivers, which is how a backend that
+cannot honour an exit at all gets reported. Most backends cannot: `CamoufoxDriver` launches a
+browser with no proxy support, and `DocumentDriver`, `ListingDetailDriver` and
+`MultiDocumentDriver`'s listing fetch each build a bare `httpx.AsyncClient`. Threading an exit
+through them is filed as SCR-2WQ7; until then the bypass is loud rather than closed.
+
+Note the asymmetry, because it bounds what this warning is worth. In the drivers-proxied shape
+the message names the PROXIED drivers, so a deployment that proxied what it could and left the
+rest is told about the `robots.txt` read and told nothing about the backends going direct. That
+shape is only reachable by configuring drivers individually while leaving the gate alone; the
+gate-proxied shape is what `ScrapeTool(egress=...)` produces, and it is the one that reports the
+bypass.
 
 ### 8. robots.txt: wait when asked, escalate when refused
 

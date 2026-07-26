@@ -174,9 +174,9 @@ class RenderRequest(BaseModel):
     egress_proxy: str | None = None
     #: Name recorded against the result, so "walled" can be told apart from "walled from this
     #: exit". Free-form because the names are the deployment's. Echoed back on the response so
-    #: the caller records the exit that was actually used rather than the one it hoped for --
-    #: without the echo, a request whose proxy argument was dropped is indistinguishable from
-    #: one that was honoured.
+    #: the caller records what THIS sidecar reported rather than what it sent: without the echo,
+    #: a request whose proxy argument was dropped is indistinguishable from one that was
+    #: honoured. Reported, not observed -- see :attr:`RenderResponse.egress`.
     egress_name: str | None = None
 
 
@@ -194,10 +194,19 @@ class RenderResponse(BaseModel):
     final_url: str
     timing_ms: float
     network_calls: list[NetworkCall] = []
-    #: The exit this render actually left by: the request's own name when it asked for one,
-    #: otherwise the container's. A caller stamps THIS against its result rather than what it
-    #: sent, so a dropped proxy argument shows up as a mismatch instead of silently recording
-    #: an exit that was never used.
+    #: The exit this render was CONFIGURED to leave by: the request's own name when it selected
+    #: one, otherwise the container's. A caller stamps THIS against its result rather than what
+    #: it sent, so a dropped proxy argument shows up as a mismatch instead of silently recording
+    #: an exit that was never asked for.
+    #:
+    #: Configured, not observed. This value is derived from the request, so a per-context proxy
+    #: Chromium accepted and then ignored is still reported under the name it was asked for.
+    #: Nothing in this process can tell the difference; confirming traffic genuinely leaves by
+    #: an exit needs an observer outside it. Said here rather than only at the construction
+    #: site, because an API consumer reads the model and never sees the handler.
+    #:
+    #: ``null`` means no exit was configured, which is a different fact from choosing the
+    #: default route -- that choice is reported as ``direct``.
     egress: str | None = None
     #: One entry per real ``evaluate`` nav step, in step order -- see
     #: ``threetears.scrape.driver.NavStep``'s own docstring.
