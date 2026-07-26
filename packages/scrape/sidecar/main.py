@@ -412,14 +412,14 @@ async def _render(
         # about this render's route leaks into the next one.
         tab, render_context_id = await _create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
         if session_state:
-            await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
+            await hitl._apply_context_state(_browser, render_context_id, session_state)
     elif session_state:
         # about:blank first so the cookies are in place before the real navigation -- a cookie
         # set after the page loads arrives too late to have been sent with the request that
         # was going to be challenged. Storage is applied after that navigation instead, since
         # localStorage is origin-scoped and about:blank is not the origin.
         tab, render_context_id = await _create_isolated_tab(_browser, "about:blank")
-        await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
+        await hitl._apply_context_state(_browser, render_context_id, session_state)
     else:
         tab = await _browser.get("about:blank", new_tab=True)
     main_frame_id = str(tab.target.target_id)
@@ -469,7 +469,7 @@ async def _render(
             # localStorage is origin-scoped: it can only be written while a page from that
             # origin is loaded, which about:blank was not. The cookies were already in place
             # for the navigation above, which is the part that carries a cleared challenge.
-            await hitl._apply_origin_storage(tab, session_state)  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- main and hitl are two halves of one container and import each other; these helpers are deliberately module-private because nothing OUTSIDE the container may call them, and a public alias would advertise them to consumers that must not have them
+            await hitl._apply_origin_storage(tab, session_state)
             await tab.send(uc.cdp.page.navigate(url))
         if nav_steps:
             # A settle wait before interacting, not just before the final content

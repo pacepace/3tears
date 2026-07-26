@@ -8,13 +8,17 @@ turned this on for, and every log line still looks correct.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from threetears.core.egress import (
     DirectEgress,
     EgressDriver,
     EgressRegistry,
+    EgressHealth,
     ProxyEgress,
     SocksEgress,
+    WarpEgress,
 )
 
 
@@ -115,5 +119,122 @@ def test_a_deployments_own_object_satisfies_the_protocol_structurally() -> None:
         def browser_proxy_arg(self) -> str | None:
             return "socks5://their.host:9050"
 
+        async def health(self, *, timeout: float = 10.0) -> EgressHealth:
+            return EgressHealth(reachable=True, observed_address="203.0.113.9")
+
     assert isinstance(_TheirOwn(), EgressDriver)
     assert EgressRegistry({"theirs": _TheirOwn()}).get("theirs").browser_proxy_arg() is not None
+
+
+async def test_a_driver_that_cannot_report_health_is_unknown_not_healthy() -> None:
+    """The sweep exists so an operator can rule an exit OUT.
+
+    A duck-typed driver written before `health` joined the protocol has no answer. Defaulting
+    it to reachable would put the one exit nobody can check at the top of the "these are fine"
+    list, which is the blind spot the method was added to remove -- so it reports unreachable
+    with a reason naming why, and the operator goes and looks.
+    """
+
+    class _Older:
+        @property
+        def name(self) -> str:
+            return "older"
+
+        def httpx_transport(self) -> None:
+            return None
+
+        def browser_proxy_arg(self) -> str | None:
+            return "socks5://old.host:9050"
+
+    report = await EgressRegistry({"older": _Older()}).health()  # type: ignore[dict-item]
+
+    assert report["older"].reachable is False
+    assert "does not report health" in (report["older"].reason or "")
+    assert report["direct"].reachable is True, "the sweep still answers for the drivers that can"
+
+
+class TestEgressHealth:
+    """A dead exit and a fleet-wide outage produce identical evidence until something asks."""
+
+    async def test_a_reachable_proxy_reports_the_address_it_presents(self):
+        """The address, not just reachability. A proxy that is listening but forwarding
+        directly passes a connectivity check while providing none of the property it exists
+        for, which is precisely the misconfiguration worth catching."""
+        import httpx
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="185.220.101.5\n")
+
+        driver = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        with patch.object(driver, "httpx_transport", return_value=httpx.MockTransport(_handler)):
+            health = await driver.health()
+
+        assert health.reachable is True
+        assert health.observed_address == "185.220.101.5"
+
+    async def test_a_dead_daemon_reports_unreachable_rather_than_raising(self):
+        """The check runs to describe an outage; raising would make it a second one.
+
+        This is the whole point of the method: without it a dead tor daemon fails every render
+        transport-side, opens every circuit, and fills no walled queue -- because unreachable
+        is deliberately not walled -- so the operator queue stays empty while the fleet decays.
+        """
+        import httpx
+
+        def _refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        driver = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        with patch.object(driver, "httpx_transport", return_value=httpx.MockTransport(_refuse)):
+            health = await driver.health()
+
+        assert health.reachable is False
+        assert "ConnectError" in (health.reason or "")
+
+    async def test_direct_is_not_probed(self):
+        """Probing the default route tests the internet, not the exit."""
+        health = await DirectEgress().health()
+        assert health.reachable is True
+
+    async def test_the_registry_answers_for_every_exit_at_once(self):
+        """One place to ask, because the alternative is inferring it from a symptom that
+        looks identical to its opposite."""
+        import httpx
+
+        def _refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("down")
+
+        dead = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        registry = EgressRegistry({"tor": dead})
+        with patch.object(dead, "httpx_transport", return_value=httpx.MockTransport(_refuse)):
+            report = await registry.health()
+
+        assert set(report) == {"direct", "tor"}
+        assert report["direct"].reachable is True
+        assert report["tor"].reachable is False, "a dead exit was reported as healthy"
+
+
+def test_warp_is_a_named_exit_on_its_own_default_port() -> None:
+    """Named rather than "expressible with SocksEgress", which was true and not the same thing.
+
+    A backend nobody can find by name gets reimplemented by the next person who needs it, and
+    the port is the part everyone gets wrong: `warp-cli mode proxy` listens on 40000, not
+    TOR's 9050.
+    """
+    warp = WarpEgress()
+
+    assert warp.name == "warp"
+    assert warp.browser_proxy_arg() == "socks5://127.0.0.1:40000"
+    assert warp.proxy_url != SocksEgress("tor").proxy_url, "warp inherited TOR's port"
+
+
+def test_two_exits_can_run_side_by_side_under_their_own_names() -> None:
+    """The whole point of the registry: results record WHICH exit they came from.
+
+    Without distinct names, "this target is blocked" cannot be told apart from "this target is
+    blocked from this exit", and one blocked exit poisons a target permanently.
+    """
+    registry = EgressRegistry({"tor": SocksEgress("tor"), "warp": WarpEgress()})
+
+    assert registry.names() == ["direct", "tor", "warp"]
+    assert registry.get("warp").browser_proxy_arg() != registry.get("tor").browser_proxy_arg()

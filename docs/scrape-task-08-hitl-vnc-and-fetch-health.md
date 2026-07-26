@@ -115,7 +115,7 @@ already ships. Surveyed before designing; each row is a thing we are **not** wri
 | Deferred re-attempt ("re-check in 6h") | `3tears-scheduled-jobs` -- payload-agnostic, cross-pod-locked tick engine, `relative_delay` / `one_shot_at` schedule types with missed-fire policy | Scheduling a blocked target's next probe. No bespoke retry loop |
 | Inbound callback from an external system | `3tears-agent-wake` -- webhook subscriptions, `hmac_util`, `webhook_adapter`, `dispatch` | The external queue telling us "this one's cleared" |
 | Storing credentials at rest | `core.security.encryption` -- AES-256-GCM under an operator master key via HKDF, `seal()` / `open_secret()`, master key resolved through `core.security.secret_refs` | Solved-session cookies are credentials. Sealed, never plaintext |
-| Per-resource authorization | `threetears.agent.acl.authorize_on_entity` + `AclCache`, following the `memory/authorize.py`, `identity/authorize.py`, `intention/authorize.py` shape (action constants + namespace + package-specific `AccessDenied`) | Gating HITL session open, per queue |
+| Per-resource authorization | `threetears.agent.acl.authorize_on_entity` + `AclCache`, following the `memory/authorize.py`, `identity/authorize.py`, `intention/authorize.py` shape | **Not used -- see §6.** Gating HITL access is the consuming platform's job; this package ships the health-row fact and the hub approval seams instead |
 | Audit trail | `3tears-agent-audit` -- one `AuditEvent` envelope + `publish_audit`, consumed platform-side into `platform_audit.audit_events` | A human driving an authenticated browser is an audit event |
 | Event publication | `3tears-nats` `Subjects` builders + `subject_permissions` | Announcing "this target needs a human" |
 | "Paused for a human" vocabulary | `threetears.langgraph.streaming` -- `detect_interrupt`, `StreamInterruptEvent`, `tool_status='interrupted'` ("not a failure, the graph is pausing for a human decision") | The platform already has a word for this state. Mirror it rather than coining a parallel one |
@@ -271,6 +271,8 @@ A new `ScrapeTargetHealth` entity carries:
 | `last_blocked_at`, `last_block_kind` | evidence for the operator and for tuning detection |
 | `classified_fingerprint`, `classified_verdict`, `classified_evidence` | the verdict cache: which page was last classified, what it was judged to be, and why |
 | `session_state_sealed`, `session_state_expires_at` | §4 |
+| `last_egress` | which exit the last observation left by (§7). Without it "this target is walled" cannot be told apart from "this target is walled FROM THIS EXIT", and one blocked exit poisons a target permanently |
+| `robots_blocked_at`, `robots_blocked_reason` | a `Disallow` that needs a person (§8). Deliberately NOT the circuit's columns: a policy decision is not a fetch failure, and counting it as one would back off a site that works perfectly |
 
 The three `classified_*` columns are what makes "same fingerprint next poll, same verdict, no
 call" implementable. They cannot be folded into `content_fingerprint`, which answers a
@@ -472,24 +474,52 @@ single-display.
 
 ### 6. Authorization, audit, announcement
 
-Authorization lives in the MIT package (`hitl/authorize.py`), never the sidecar, which cannot
-import 3tears. It mirrors `memory/authorize.py` exactly: action constants
-(`scrape.hitl.session.open`, `scrape.hitl.session.view`), a namespace per queue, a package-specific
-`HitlAccessDenied`, evaluated through `authorize_on_entity` with `AclCache`. 3tears ships the
-evaluator; the deployment supplies roles and assignments.
+**This section was rewritten mid-build, and the original plan was WRONG.** It is recorded here
+rather than deleted, because the file inventory below marks two files as deliberately not
+built and this is the reason.
 
-Every session open, tab open, complete, and teardown publishes an `AuditEvent` via
-`publish_audit` -- a human driving a browser holding a target's authenticated session is exactly
-what the unified audit trail is for.
+The original: an RBAC gate at `hitl/authorize.py` mirroring `memory/authorize.py`, a session
+state machine, and audit publishing, all shipped by this package. The error is one of layer.
+3tears is a LIBRARY; the platforms built on it own identity, roles, the operator queue, and
+the conversation that reaches a person. A `HitlAccessDenied` and an `AclCache` lookup here
+would be a second, weaker copy of machinery the hub already runs -- and the one place it would
+diverge is the place that matters, since the sidecar holds no identity and structurally cannot
+evaluate a policy no matter which package the evaluator ships in.
 
-"This target needs a human" is published over NATS using the existing `Subjects` builders. That
-is the whole integration surface with the queue.
+What this package provides instead is the two seams a platform needs, and nothing else:
+
+- **"This target needs a human" is a fact on the health row**, discoverable via
+  `list_walled()`, which answers with both kinds -- a bot wall and a robots refusal. A platform
+  polls it, or subscribes to the existing `Subjects` builders. That is the whole queue surface.
+- **The approval itself is the hub's existing HITL contract**: `Subjects.hub_approval_record()`
+  / `hub_approval_resolve()`, `TearsTool.requires_confirmation`, and the LangGraph interrupt.
+  The hub already does ACL, audit and resume for every other tool that reaches for a person;
+  a scrape reaching for one is not special enough to deserve its own path.
+
+The sidecar's session token proves only that a caller holds something this container minted.
+Deciding who was ENTITLED to it happens where identity lives, which is not here and was never
+going to be.
 
 ### 7. Egress: which exit a request leaves by
 
 **Requirement, raised 2026-07-26, mid-build.** TOR egress is fundamental to the scraper, with
 Cloudflare WARP as an option, and both behind a driver seam so a third exit later is one class
 rather than a change to the scraper.
+
+**faidh's existing `ProxyStrategy` is prior art, and this seam does NOT migrate it here.**
+The chunk was told to decide this rather than assume it, and the standing rule was that two
+unrelated egress abstractions must not end up in one codebase. They will not, because they are
+not in one codebase: faidh is a consuming application, `threetears.core.egress` is library
+code, and the dependency runs one way. What must not happen -- and would have, silently -- is
+faidh keeping `ProxyStrategy` FOREVER alongside this seam, so that a third exit has to be added
+twice.
+
+The decision: faidh migrates onto `EgressDriver` and deletes `ProxyStrategy`/`DirectProxy`/
+`TorProxy`, as a change in faidh's own repo on faidh's own schedule. It is not a precondition
+for this chunk, and it is not optional either; it is tracked as a backlog item so "later" has
+somewhere to live rather than being a word in a design document. The shapes already
+correspond -- `DirectProxy` is `DirectEgress`, `TorProxy` is `SocksEgress("tor")` -- which is
+why this is a deletion rather than a rewrite.
 
 **The goal, settled and not to be relitigated.** TOR serves BOTH non-attribution and block
 evasion, and neither reliably. It is wanted for toolbox completeness -- "just another tool in
@@ -614,18 +644,35 @@ waiting ten seconds present a request every two.
 - `packages/scrape/src/threetears/scrape/health.py` -- `ScrapeTargetHealth` + collection + writers
 - `packages/scrape/src/threetears/scrape/circuit.py` -- `TargetCircuit`, `BackoffPolicy`, the fetch gate
 - `packages/scrape/src/threetears/scrape/reprobe.py` -- scheduled-jobs adapter, `[reprobe]` extra only
-- `packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate
-- `packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine
+- `packages/scrape/src/threetears/scrape/session_state.py` -- seal, open and store a human's solve
+- `packages/scrape/src/threetears/scrape/robots.py` -- `RobotsGate`, `RobotsPolicy` (§8)
+- `packages/core/src/threetears/core/egress.py` -- `EgressDriver` and friends (§7); in core, not
+  in scrape, because an exit is not a scraping concept
 - `packages/scrape/sidecar/hitl.py` -- session endpoints, VNC lifecycle
-- `packages/scrape/sidecar/static/` -- noVNC assets
 - tests alongside each
+
+**Planned and NOT built, deliberately**
+- ~~`packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate~~
+- ~~`packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine~~
+
+  Both were dropped once §6 was rewritten. 3tears is a library; the platforms that consume it
+  own identity, the operator queue and the conversation that reaches a human. An RBAC gate and
+  a session state machine HERE would be a second, weaker copy of what the hub already has --
+  see §6 for the seams that replaced them (`Subjects.hub_approval_record`,
+  `TearsTool.requires_confirmation`). Listed rather than deleted because the file inventory is
+  the first place a reader checks for "was this forgotten or decided".
+- ~~`packages/scrape/sidecar/static/` -- noVNC assets~~ Debian's `novnc` package already ships
+  the client; vendoring a copy would be a fork to maintain for nothing.
 
 **Modify**
 - `eval_loop.py` -- challenge short-circuit, fingerprint routing, fetch-health updates
 - `tool.py` -- the fetch gate and the outcome report; the fetch boundary is where the circuit lives
 - `packages/models/.../circuit_breaker.py` -- `CircuitBreaker.restore()`, the durable-state seam
 - `collections.py` -- re-export only; the health entity and collection live in `health.py`
-- `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed session state)
+- `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed
+  session state); `v011` adds `last_egress`; `v012` adds the robots-block columns. Three
+  migrations rather than one because `v010` had already shipped to `develop` -- an applied
+  migration is immutable, so §7 and §8 add columns rather than editing history
 - `driver.py` + all 8 drivers -- `session_state` parameter (accept-and-ignore except the browser backends)
 - `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc`, `websockify`, noVNC
 - `tests/test_migrations_drift.py` -- already introspection-based as of the current fix branch, so it picks up the new columns automatically

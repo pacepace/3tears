@@ -29,6 +29,8 @@ from pydantic import SecretStr
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
 from threetears.observe import get_logger
 
+from .health import _merge_health
+
 if TYPE_CHECKING:
     from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection
 
@@ -202,7 +204,6 @@ async def record_session_state(
     :return: nothing
     :rtype: None
     """
-    from .health import _merge_health  # noqa: PLC0415 -- avoids a circular import at module scope
 
     await _merge_health(
         health_collection,

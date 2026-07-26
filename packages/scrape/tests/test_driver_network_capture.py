@@ -34,6 +34,7 @@ class _FakeInnerDriver:
         self._html = html
         self.render_calls: list[str] = []
         self.capture_network_calls: list[bool] = []
+        self.session_states: list[dict[str, object] | None] = []
 
     @property
     def name(self) -> str:
@@ -53,6 +54,7 @@ class _FakeInnerDriver:
     ) -> RenderedPage:
         self.render_calls.append(url)
         self.capture_network_calls.append(capture_network)
+        self.session_states.append(session_state)
         return RenderedPage(
             html=self._html,
             status=200,
@@ -207,3 +209,32 @@ class TestNetworkCaptureDriver:
         page = await driver.render("https://example.gov/warn")
 
         assert "<td>1</td>" in page.html
+
+
+class TestNetworkCaptureForwardsTheSolve:
+    async def test_a_session_state_reaches_the_inner_driver(self):
+        """A wrapper that swallows this drops the solve where it would have worked.
+
+        The inner driver is typically `NodriverSidecarDriver`, the one backend that can apply
+        a human's exported session. Withholding it here does not degrade to "renders
+        unauthenticated" quietly -- it captures the login wall's XHR and hands back whatever
+        record list that happens to contain.
+        """
+        inner = _FakeInnerDriver([_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})])
+        driver = NetworkCaptureDriver(inner)
+        state = {"cookies": [{"name": "session", "value": "solved"}]}
+
+        await driver.render("https://example.gov/list", session_state=state)
+
+        assert inner.session_states == [state], (
+            "the wrapper dropped the human's solve on the way to the driver that could use it"
+        )
+
+    async def test_no_session_state_forwards_none(self):
+        """The ordinary path stays ordinary: nothing invented on the way through."""
+        inner = _FakeInnerDriver([_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})])
+        driver = NetworkCaptureDriver(inner)
+
+        await driver.render("https://example.gov/list")
+
+        assert inner.session_states == [None]

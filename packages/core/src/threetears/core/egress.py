@@ -25,7 +25,10 @@ branches on whether egress is configured at all.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from .config import DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     import httpx
@@ -33,10 +36,36 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only
 __all__ = [
     "DirectEgress",
     "EgressDriver",
+    "EgressHealth",
     "EgressRegistry",
     "ProxyEgress",
     "SocksEgress",
+    "WarpEgress",
 ]
+
+
+#: What a probe fetches to learn the address an exit presents. Plain-text and tiny by design.
+#: Overridable per deployment is deliberately NOT offered here: a driver that probed an
+#: attacker-chosen URL through a customer's proxy would be a more interesting bug than the one
+#: this method fixes.
+_HEALTH_PROBE_URL = "https://api.ipify.org"
+
+
+@dataclass(frozen=True)
+class EgressHealth:
+    """Whether an exit is usable, and what it looked like from outside.
+
+    Carries the observed address because that is the only evidence that traffic actually LEFT
+    by this exit rather than merely reaching a proxy that forwarded it directly -- a
+    misconfigured chain answers "up" to anything that only asks whether it is reachable.
+    """
+
+    #: Whether the exit answered at all.
+    reachable: bool
+    #: The public address the exit presents, when a probe could determine one.
+    observed_address: str | None = None
+    #: Why it is unusable, when it is.
+    reason: str | None = None
 
 
 @runtime_checkable
@@ -75,6 +104,22 @@ class EgressDriver(Protocol):
         """
         ...
 
+    async def health(self, *, timeout: float = ...) -> EgressHealth:
+        """Is this exit actually usable right now?
+
+        On the protocol because its absence is a DETECTION gap, not a missing convenience. A
+        dead ``tor`` or ``warp`` daemon fails every render transport-side; each target's
+        circuit then opens and backs off for hours, and those targets are correctly excluded
+        from the walled queue -- unreachability never stamps ``last_blocked_at`` -- so the one
+        operator-facing list stays EMPTY while the entire fleet decays. Every individual
+        signal is behaving correctly and the aggregate is invisible.
+
+        This gives an operator one thing to ask so "every target broke at once" can be told
+        apart from "the exit is down", which are the same observation until something
+        distinguishes them.
+        """
+        ...
+
 
 class DirectEgress:
     """The default route, as a driver.
@@ -96,6 +141,15 @@ class DirectEgress:
     def browser_proxy_arg(self) -> str | None:
         """``None`` -- no ``--proxy-server``."""
         return None
+
+    async def health(self, *, timeout: float = DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS) -> EgressHealth:
+        """Always reachable, by definition.
+
+        The default route is whatever the machine already has; if it is down, nothing in this
+        process is running to ask. Reporting a probe result here would test the internet
+        rather than the exit, and turn an unrelated outage into "your egress is broken".
+        """
+        return EgressHealth(reachable=True, reason="the default route is not probed")
 
 
 class ProxyEgress:
@@ -154,6 +208,27 @@ class ProxyEgress:
         """The proxy URL, which is the form ``--proxy-server`` takes."""
         return self._proxy_url
 
+    async def health(self, *, timeout: float = DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS) -> EgressHealth:
+        """Ask the exit what address it presents.
+
+        Fetches an address-reporting endpoint THROUGH this driver's own transport rather than
+        merely opening a socket to the proxy: a proxy that is listening but forwarding
+        directly answers a connectivity check perfectly while providing none of the property
+        it was configured for, which is the failure worth catching.
+
+        Never raises. An egress health check that can itself fail a caller has replaced one
+        outage with two.
+        """
+        import httpx  # noqa: PLC0415 -- same import discipline as `httpx_transport`
+
+        try:
+            async with httpx.AsyncClient(transport=self.httpx_transport(), timeout=timeout) as client:
+                response = await client.get(_HEALTH_PROBE_URL)
+                response.raise_for_status()
+                return EgressHealth(reachable=True, observed_address=response.text.strip())
+        except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this reports on an outage; raising out of it would make the diagnostic another thing that breaks when the thing it diagnoses does
+            return EgressHealth(reachable=False, reason=f"{type(exc).__name__}: {exc}")
+
 
 def SocksEgress(name: str, host: str = "127.0.0.1", port: int = 9050) -> ProxyEgress:  # noqa: N802 -- constructor-shaped by intent
     """A SOCKS5 exit, which is what both TOR and most VPN sidecars present.
@@ -172,6 +247,40 @@ def SocksEgress(name: str, host: str = "127.0.0.1", port: int = 9050) -> ProxyEg
     :ptype host: str
     :param port: SOCKS port
     :ptype port: int
+    :return: a driver for that exit
+    :rtype: ProxyEgress
+    """
+    return ProxyEgress(name, f"socks5://{host}:{port}")
+
+
+def WarpEgress(host: str = "127.0.0.1", port: int = 40000, *, name: str = "warp") -> ProxyEgress:  # noqa: N802 -- constructor-shaped by intent, matching SocksEgress
+    """Cloudflare WARP, as an exit.
+
+    A named constructor rather than "you can express it with SocksEgress" -- which was true
+    and is not the same thing. A backend nobody can find by name is a backend that gets
+    reimplemented by the next person who needs it, and the port is the part everyone gets
+    wrong.
+
+    ``warp-cli mode proxy`` puts WARP on a local SOCKS5 listener; ``40000`` is its default,
+    which is why it is the default here. This does NOT run ``warp-cli`` -- registering and
+    connecting the daemon is deployment work, exactly as it is for TOR, and a library that
+    tried to own another network's process lifecycle would be wrong about it in every
+    deployment that already had one.
+
+    **What WARP is and is not.** It is a VPN: it changes the address a site sees and hides
+    traffic from the local network. It is not anonymity -- Cloudflare can associate the
+    traffic with the account -- and its ranges are known Cloudflare ranges, so a site that
+    blocks datacentre traffic will block this too. It earns its place for the opposite
+    problem to TOR's: WARP addresses are far less challenged than TOR exits, so this is the
+    one to reach for when a target simply dislikes the container's own address, while TOR is
+    the one for non-attribution.
+
+    :param host: where the WARP SOCKS proxy listens
+    :ptype host: str
+    :param port: SOCKS port; ``warp-cli mode proxy`` defaults to 40000
+    :ptype port: int
+    :param name: identifier recorded against results
+    :ptype name: str
     :return: a driver for that exit
     :rtype: ProxyEgress
     """
@@ -221,3 +330,30 @@ class EgressRegistry:
     def names(self) -> list[str]:
         """Every registered driver name, sorted."""
         return sorted(self._drivers)
+
+    async def health(self, *, timeout: float = DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS) -> dict[str, EgressHealth]:
+        """Every registered exit's health, concurrently. The one place an operator asks.
+
+        Exists because the alternative to asking here is inferring it from the symptom, and
+        the symptom is indistinguishable from its opposite: a dead exit makes every target
+        fail transport-side, which opens every circuit, which fills no walled queue -- since
+        unreachability is deliberately not a wall. "All my targets broke at once" and "one
+        daemon died" produce identical evidence until something asks the exits directly.
+        """
+        import asyncio  # noqa: PLC0415 -- keeps this module importable by the browser half
+
+        async def _ask(driver: EgressDriver) -> EgressHealth:
+            probe = getattr(driver, "health", None)
+            if probe is None:
+                # A duck-typed driver written before `health` joined the protocol. Reported as
+                # NOT reachable with a reason that says why, rather than defaulting to healthy:
+                # this sweep exists so an operator can rule an exit out, and an exit that
+                # cannot answer must not be the one that looks fine. Degrading to "true" here
+                # would reintroduce exactly the blind spot the method was added to remove.
+                return EgressHealth(reachable=False, reason="this driver does not report health")
+            result: EgressHealth = await probe(timeout=timeout)
+            return result
+
+        names = sorted(self._drivers)
+        results = await asyncio.gather(*(_ask(self._drivers[n]) for n in names))
+        return dict(zip(names, results, strict=True))

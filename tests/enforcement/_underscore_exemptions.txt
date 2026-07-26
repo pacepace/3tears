@@ -166,3 +166,22 @@ packages/agent/identity/tests/test_lazy_init.py:51:_LAZY
 packages/core/tests/test_bridge.py:32:_pending_tasks
 # rationale: lifecycle test asserts the done-callback releases the strong reference once the task completes so tasks are not leaked; same internal anchor as line 32
 packages/core/tests/test_bridge.py:42:_pending_tasks
+
+# rationale: main and hitl are two halves of ONE sidecar container and import each other; the
+# shared helpers are module-private because nothing outside the container may call them, and a
+# public alias would advertise them to consumers that must not have them. Paired with the
+# per-file ignores in packages/scrape/sidecar/ruff.toml, which is the config that governs these
+# files -- the repo-root pyproject cannot reach past a nested ruff.toml.
+packages/scrape/sidecar/hitl.py:918:_create_isolated_tab
+# rationale: as above -- hitl replays a target's nav steps through main's own executor rather
+# than reimplementing them, so a step type added in main works in a HITL session for free.
+packages/scrape/sidecar/hitl.py:927:_execute_nav_steps
+# rationale: as above -- main applies a human's exported cookies to a render context using
+# hitl's applier, so the export and the re-apply cannot drift apart into two encodings.
+packages/scrape/sidecar/main.py:415:_apply_context_state
+# rationale: as above -- the unproxied branch of the same call.
+packages/scrape/sidecar/main.py:422:_apply_context_state
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by
+# hitl's own helper rather than duplicated here.
+packages/scrape/sidecar/main.py:472:_apply_origin_storage
+

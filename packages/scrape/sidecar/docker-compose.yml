@@ -7,6 +7,18 @@ services:
     # crashes the renderer process under real page loads.
     shm_size: 2gb
     ports:
+      # 8088 is the API port, and it is published here because a compose file that exposed
+      # nothing would not run. Understand what it now carries before you keep this line in a
+      # deployment: since the HITL endpoints landed, 8088 mints session tokens and RETURNS
+      # RAW COOKIE JARS from a human's solved session. It authenticates nobody, for the same
+      # reason 6080 below does not -- the sidecar holds no identity and cannot evaluate a
+      # policy.
+      #
+      # So the reasoning written at length under 6080 applies to this port too, and the only
+      # difference is that this one has to be reachable by SOMETHING. Bind it to an interface
+      # your platform fronts (`- "127.0.0.1:8088:8088"`), or put it behind whatever already
+      # authenticates the rest of your deployment. Publishing it to 0.0.0.0 on a shared
+      # network hands anyone who can reach it a browser and a cookie jar.
       - "8088:8088"
       # Deliberately NOT publishing 6080 (websockify / noVNC).
       #
@@ -58,4 +70,25 @@ services:
   #
   # tor:
   #   image: osminogin/tor-simple:latest
+  #   restart: unless-stopped
+
+  # Cloudflare WARP, the other exit this package names. Commented out for the same reason as
+  # tor, and reached the same way -- `EGRESS_PROXY: "socks5://warp:40000"` with
+  # `EGRESS_NAME: "warp"`.
+  #
+  # WARP and TOR are for OPPOSITE problems, which is why both exist rather than one. WARP is a
+  # VPN: Cloudflare can associate the traffic with the account, so it is not anonymity, but its
+  # addresses are far less challenged than TOR exits. Reach for WARP when a target simply
+  # dislikes the container's own address; reach for TOR when the point is non-attribution and
+  # a higher challenge rate is an acceptable price.
+  #
+  # No official Cloudflare image publishes a SOCKS listener, so this is a thin wrapper you
+  # build: `warp-cli registration new && warp-cli mode proxy && warp-cli connect`, which puts
+  # WARP on 127.0.0.1:40000 inside that container. Bind it to 0.0.0.0 there for the sidecar to
+  # reach it. Registering and connecting the daemon is deployment work by design -- see the
+  # module docstring in `threetears.core.egress` on why a library does not own another
+  # network's process lifecycle.
+  #
+  # warp:
+  #   build: ./warp
   #   restart: unless-stopped

@@ -235,6 +235,35 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**Cloudflare WARP is a named exit, not a configuration people have to discover.**
+`WarpEgress()` on `warp-cli mode proxy`'s own default SOCKS port, with commented compose
+plumbing beside TOR's. It was expressible via `SocksEgress` all along, which is true and is not
+the same thing: a backend nobody can find by name is one the next person reimplements, and the
+port is the part everyone gets wrong. WARP and TOR are for opposite problems -- WARP changes
+the address a site sees and is far less challenged, while TOR is for non-attribution and raises
+the challenge rate.
+
+**An exit can be asked whether it is up.** `EgressDriver.health()` returns an `EgressHealth`
+carrying the address the exit actually presents, because a proxy that is listening but
+forwarding directly answers a connectivity check perfectly while providing none of the property
+it was configured for. `EgressRegistry.health()` sweeps every registered exit at once.
+
+This closes a detection gap rather than adding a convenience. A dead `tor` or `warp` daemon
+fails every render transport-side; each target's circuit then opens and backs off for hours,
+and those targets are correctly EXCLUDED from the walled queue, since unreachability
+deliberately never stamps `last_blocked_at`. Every individual signal behaves correctly and the
+aggregate is invisible: "all my targets broke at once" and "one daemon died" produce identical
+evidence until something asks the exits directly. A driver that cannot answer reports
+unreachable with a reason rather than defaulting to healthy -- an exit nobody can check must
+not be the one that looks fine.
+
+**Two wrapping drivers stopped swallowing a human's solve.** `NetworkCaptureDriver` delegates
+to an inner driver that is typically the nodriver sidecar -- the one backend that can apply a
+session -- and dropped `session_state` on the way, so a solved session was discarded exactly
+where it would have worked and the capture returned the login wall's XHR.
+`MultiDocumentDriver` forwards it now too. A wrapper that silently withholds a credential makes
+the capability depend on which wrapper happens to be in the way.
+
 **A fleet pacer no longer overrides what a site asked for.** With a `delay_pacer` injected,
 `RobotsGate` returned the bucket's answer alone and discarded the parsed `Crawl-delay`
 entirely -- so a site asking for 30s between requests was fetched at whatever rate the bucket

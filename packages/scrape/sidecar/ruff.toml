@@ -31,3 +31,15 @@ select = ["SLF"]
 # lifecycle's process handles and argument builders, where the private thing IS the
 # behaviour under test.
 "tests/*" = ["SLF001"]
+
+# main.py and hitl.py are two halves of ONE container and import each other. The helpers they
+# share are module-private on purpose: nothing outside the container may call them, and a
+# public alias would advertise them to consumers that must not have them.
+#
+# Declared here rather than as inline `noqa` comments, which is the part that matters. The
+# enforcement walker shells out to ruff, and ruff honours an inline noqa -- so a pragma keeps
+# the gate green while `tests/enforcement/_underscore_exemptions.txt` silently stops being a
+# complete list of the private access in this repo. A per-file ignore paired with a ledger
+# entry is the channel `project-preferences.md` requires precisely so the two agree.
+"main.py" = ["SLF001"]
+"hitl.py" = ["SLF001"]

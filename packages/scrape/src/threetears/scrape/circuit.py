@@ -73,7 +73,7 @@ from threetears.core.http_client import CircuitBreakerLike
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
 from threetears.observe import get_logger
 
-from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection, record_circuit_state
+from .health import ScrapeTargetHealth, ScrapeTargetHealthCollection, clear_robots_block, record_circuit_state
 
 if TYPE_CHECKING:
     # Type-only: both are constructed from a NATS client the caller already holds, and
@@ -965,7 +965,6 @@ class _HealthRead(NamedTuple):
 
 async def _clear_robots_block_quietly(health: ScrapeTargetHealthCollection, target_id: str) -> None:
     """Clear a robots block, never raising into the caller that just fixed something."""
-    from .health import clear_robots_block  # noqa: PLC0415 -- avoids a circular import at module scope
 
     try:
         await clear_robots_block(health, target_id=target_id)

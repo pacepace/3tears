@@ -181,9 +181,9 @@ class NetworkCaptureDriver(ScrapeDriver):
         :ptype fragment_field: str | None
         :param link_selector: accepted for interface conformance; not applicable
         :ptype link_selector: str | None
-        :param session_state: accepted for interface conformance; a human's exported cookies
-            and storage are applied only by
-            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :param session_state: a human's exported cookies and storage, forwarded to the inner
+            driver. Whether it is honoured is the inner driver's business -- this one neither
+            applies nor withholds it, which is the only behaviour that keeps a wrapper honest
         :ptype session_state: dict[str, Any] | None
         :return: synthetic HTML built from the largest captured JSON record
             list, with the inner render's real status/final_url/timing
@@ -192,8 +192,17 @@ class NetworkCaptureDriver(ScrapeDriver):
             body contains a usable record list
         """
         start = time.monotonic()
+        # Forwarded, not dropped. The inner driver is typically `NodriverSidecarDriver` --
+        # the one backend that can actually apply a human's solve -- so swallowing this here
+        # discarded a solved session at the exact point it would have worked, and the symptom
+        # is a capture that returns the login wall's XHR instead of the data's.
         page = await self._inner.render(
-            url, timeout=timeout, wait_for=wait_for, capture_network=True, nav_steps=nav_steps
+            url,
+            timeout=timeout,
+            wait_for=wait_for,
+            capture_network=True,
+            nav_steps=nav_steps,
+            session_state=session_state,
         )
 
         best: list[dict[str, Any]] | None = None
