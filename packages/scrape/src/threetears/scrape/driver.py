@@ -35,7 +35,10 @@ NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_vie
 _SIDECAR_REMEDY = "Use the nodriver sidecar driver to reuse a solved session."
 
 #: Ceiling on remembered origins per driver, so the dedupe set cannot grow without bound in a
-#: long-lived process. Reached, it clears wholesale -- the cost is at most one repeated warning.
+#: long-lived process. Reached, it clears wholesale, and the cost is one repeated warning per
+#: site still being scraped -- not one in total, which an earlier version of this comment
+#: claimed. Wholesale rather than evicting the oldest because the alternative is tracking
+#: recency for a set whose whole job is to be forgotten occasionally.
 _MAX_WARNED_ORIGINS = 512
 
 
@@ -173,10 +176,12 @@ class ScrapeDriver(ABC):
     rendered the page.
     """
 
-    #: Origins this instance has already reported a dropped solve for. Per ORIGIN, not per
-    #: instance: `ScrapeTool` builds its driver map once and reuses it for the life of the
-    #: process, so once-per-instance meant once-per-process -- the first target warned and
-    #: every later one was rendered logged-out in exactly the silence this exists to prevent.
+    #: Origins this instance has already reported a dropped solve for. The state is per
+    #: instance, but the dedupe KEY is the origin, which is the whole point -- keying on the
+    #: instance itself was the bug. `ScrapeTool` builds its driver map once and reuses it for
+    #: the life of the process, so deduping per instance meant per PROCESS: the first target
+    #: warned and every later one was rendered logged-out, in exactly the silence this exists
+    #: to prevent.
     #: Per render was the opposite failure, a warning per document across a whole listing.
     #: An origin is the unit a human's solve actually belongs to, so it is the unit here.
     _warned_dropped_origins: set[str] | None = None
@@ -206,10 +211,10 @@ class ScrapeDriver(ABC):
         with nothing said. An origin is what a human's solve actually belongs to, so it is the
         unit that makes "this site's solve was discarded" true exactly once.
 
-        On the base class rather than a module function so the once-per-instance state has
-        somewhere to live, and so every backend gets it by inheriting rather than by each
-        author remembering the pattern -- the previous version was added to whichever driver a
-        review happened to name.
+        On the base class rather than a module function so the per-instance set of already-
+        reported origins has somewhere to live, and so every backend gets this by inheriting
+        rather than by each author remembering the pattern -- the previous version was added to
+        whichever driver a review happened to name, and the others stayed silent.
 
         :param url: the url being rendered without the solve
         :ptype url: str
@@ -218,15 +223,16 @@ class ScrapeDriver(ABC):
         """
         origin = _origin_of(url)
         if self._warned_dropped_origins is None:
-            # Lazily per instance, so no backend has to remember to initialise it and the
-            # class-level default is never mutated into a shared set across every driver.
+            # Lazily built per instance, so no backend has to remember to initialise it and
+            # the class-level default is never mutated into a set shared by every driver.
             self._warned_dropped_origins = set()
         if origin in self._warned_dropped_origins:
             return
         if len(self._warned_dropped_origins) >= _MAX_WARNED_ORIGINS:
             # Bounded rather than unbounded: a long-lived process scraping a wide set of sites
             # would otherwise hold one string per origin forever, which is the same leak the
-            # robots gate had to fix. Clearing wholesale costs at most one repeated warning.
+            # robots gate had to fix. Clearing wholesale re-warns once for each site still in
+            # play, which is the honest cost -- noisier than "at most one", and still bounded.
             self._warned_dropped_origins.clear()
         self._warned_dropped_origins.add(origin)
         log.warning(

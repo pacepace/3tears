@@ -429,9 +429,15 @@ class TestListingDetailAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
             await driver.render("https://example.gov/warn", session_state={"cookies": [{"name": "s"}]})
 
-        # Keyed on the driver's OWN logger, so a warning emitted by some other module cannot
-        # stand in for this one -- which matters once a wrapping driver delegates to another.
-        mine = [r for r in caplog.records if "cannot apply it" in r.getMessage() and r.name.endswith("listing_detail")]
+        # Exact logger name, not a suffix. `endswith("document")` also matches
+        # `multi_document` -- the wrapping driver that forwards a solve to this one per
+        # document, which is precisely the case this filter exists for, so the loose form was
+        # wrong exactly where it mattered.
+        mine = [
+            r
+            for r in caplog.records
+            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.listing_detail"
+        ]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog):

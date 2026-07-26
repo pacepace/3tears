@@ -304,12 +304,12 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
             await driver.render("https://workforcewv.org/notice.pdf", session_state={"cookies": [{"name": "s"}]})
 
-        # Keyed on this driver's OWN logger, so a warning from another module cannot stand in
-        # for it -- which matters here especially, since this driver talks to the sidecar.
+        # Exact logger name, not a suffix: a suffix match would accept a wrapping driver's
+        # own warning as this one's, which is the case the filter exists for.
         messages = [
             r.getMessage()
             for r in caplog.records
-            if "cannot apply it" in r.getMessage() and r.name.endswith("nodriver_download")
+            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.nodriver_download"
         ]
         assert messages, (
             f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"

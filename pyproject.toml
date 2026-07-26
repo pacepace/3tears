@@ -149,10 +149,23 @@ select = ["SLF"]
 # internal lazy-resolution table; a public accessor would add API
 # surface only these consistency tests need. paired entries live in
 # tests/enforcement/_underscore_exemptions.txt.
-# scrape suites assert on the private state that IS the behaviour under test: RobotsGate's
-# per-origin cache and fetch clocks (bounded retention and `forget` are only observable there),
-# ScrapeTool's resolved egress and robots gate, and the httpx transport's connection pool, which
-# is the only place a configured proxy is visible after construction. Paired entries live in
+# scrape suites assert on the private state that IS the behaviour under test, one reason per
+# file so the list and the reasons cannot drift apart:
+#   test_robots.py               RobotsGate's per-origin cache and fetch clocks -- bounded
+#                                retention and `forget` are observable nowhere else
+#   test_tool.py                 ScrapeTool's resolved egress and robots gate, which have no
+#                                accessors; asserting the constructor argument would assert
+#                                the test's own input
+#   test_driver_api.py           the httpx transport's connection pool, the only place a
+#                                configured proxy is visible after construction
+#   test_driver_listing_detail.py  the pacing delay, which has no accessor and is the
+#                                behaviour under test
+#   test_driver_contract.py      the protected dropped-solve warning and its bounded origin
+#                                set -- this suite asserts the CARDINALITY across every
+#                                backend, where the per-driver call sites are covered at
+#                                render level in each driver's own suite
+#
+# Paired entries live in
 # tests/enforcement/_underscore_exemptions.txt, which the file header requires be kept in
 # lockstep with these ignores.
 #

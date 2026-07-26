@@ -406,3 +406,39 @@ async def test_the_dropped_solve_memory_does_not_grow_without_bound() -> None:
         f"remembered {len(d._warned_dropped_origins)} origins against a cap of "
         f"{driver_mod._MAX_WARNED_ORIGINS}; the set grows with every site the process ever sees"
     )
+
+
+def test_urls_with_no_parseable_origin_stay_distinct() -> None:
+    """The fallback branch the docstring's whole design argument rests on, and it had no test.
+
+    `robots._origin_of` returns None for these, deliberately, so it can decline to apply a
+    site's rules to something that is not a site. Here the value is only ever a dedupe key, so
+    None would collapse every unparseable url into ONE bucket -- the first would be reported
+    and the rest silenced. Falling back to the url keeps them distinct, which is what makes the
+    two helpers' different return types a decision rather than an accident.
+    """
+    from threetears.scrape.driver import _origin_of
+
+    assert _origin_of("not a url at all") == "not a url at all"
+    assert _origin_of("file.pdf") != _origin_of("other.pdf"), (
+        "two unparseable urls collapsed to one dedupe key, so only the first would be reported"
+    )
+    assert _origin_of("https://example.gov/a") == _origin_of("https://example.gov/b"), (
+        "the ordinary case still keys on the origin rather than the path"
+    )
+
+
+async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
+    """The behaviour that branch exists for, asserted through the warning rather than the helper."""
+    driver = ApiDriver()
+    log = logging.getLogger("threetears.scrape.drivers.api")
+
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+        driver._warn_dropped_session_state("garbage-one", log)
+        driver._warn_dropped_session_state("garbage-two", log)
+
+    emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+    assert len(emitted) == 2, (
+        f"reported {len(emitted)} of 2; unparseable urls collapsed into one dedupe key and "
+        "silenced everything after the first"
+    )

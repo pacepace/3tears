@@ -605,9 +605,15 @@ class TestDocumentDriverAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
             await driver.render("https://example.gov/warn.txt", session_state={"cookies": [{"name": "s"}]})
 
-        # Keyed on the driver's OWN logger, so a warning emitted by some other module cannot
-        # stand in for this one -- which matters once a wrapping driver delegates to another.
-        mine = [r for r in caplog.records if "cannot apply it" in r.getMessage() and r.name.endswith("document")]
+        # Exact logger name, not a suffix. `endswith("document")` also matches
+        # `multi_document` -- the wrapping driver that forwards a solve to this one per
+        # document, which is precisely the case this filter exists for, so the loose form was
+        # wrong exactly where it mattered.
+        mine = [
+            r
+            for r in caplog.records
+            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.document"
+        ]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
@@ -627,3 +633,28 @@ class TestDocumentDriverAnnouncesADroppedSolve:
             await driver.render("https://example.gov/warn.txt")
 
         assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+
+
+async def test_a_wrapping_drivers_warning_is_not_mistaken_for_this_ones(caplog, monkeypatch):
+    """The case the logger filter exists for, and the one it was previously wrong about.
+
+    `MultiDocumentDriver`'s logger is `...drivers.multi_document`, which `endswith("document")`
+    matches -- so the loose filter would have accepted the WRAPPER's warning as proof that the
+    inner document driver emitted one. That is the exact substitution the filter was written to
+    prevent, and it went unnoticed because no wrapper is instantiated in this suite.
+    """
+    import logging
+
+    from threetears.scrape.drivers.multi_document import MultiDocumentDriver
+
+    assert MultiDocumentDriver  # the wrapper whose logger name is the hazard
+    wrapper_log = logging.getLogger("threetears.scrape.drivers.multi_document")
+
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.multi_document"):
+        wrapper_log.warning("multi_document driver: session_state cannot apply it (impostor)")
+
+    exact = [r for r in caplog.records if r.name == "threetears.scrape.drivers.document"]
+    loose = [r for r in caplog.records if r.name.endswith("document")]
+
+    assert not exact, "the wrapper's record was counted as the document driver's own"
+    assert loose, "the loose filter would have accepted it, which is why exact matching is used"

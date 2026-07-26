@@ -363,9 +363,15 @@ class TestApiDriverAnnouncesADroppedSolve:
                 session_state={"cookies": [{"name": "s", "value": "solved"}]},
             )
 
-        # Keyed on the driver's OWN logger, so a warning emitted by some other module cannot
-        # stand in for this one -- which matters once a wrapping driver delegates to another.
-        mine = [r for r in caplog.records if "cannot apply it" in r.getMessage() and r.name.endswith("api")]
+        # Exact logger name, not a suffix. `endswith("document")` also matches
+        # `multi_document` -- the wrapping driver that forwards a solve to this one per
+        # document, which is precisely the case this filter exists for, so the loose form was
+        # wrong exactly where it mattered.
+        mine = [
+            r
+            for r in caplog.records
+            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.api"
+        ]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog):
