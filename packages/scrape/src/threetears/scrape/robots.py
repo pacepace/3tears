@@ -207,6 +207,17 @@ class RobotsGate:
         self._generation = 0
         self._lock = asyncio.Lock()
 
+    @property
+    def max_wait_seconds(self) -> float:
+        """The longest this gate can ask a caller to sleep before a fetch.
+
+        Public because a caller that advertises a deadline has to include it: the wait happens
+        BEFORE the render, so a budget derived from the render alone is smaller than the call
+        it describes, and the executor cancels mid-sleep. Reads the live policy rather than the
+        module default, so raising the ceiling raises the declared budget with it.
+        """
+        return self._policy.max_crawl_delay_seconds if self._policy.respect_crawl_delay else 0.0
+
     async def check(self, url: str, *, now: float | None = None) -> RobotsDecision:
         """Decide whether *url* may be fetched, and how long to wait first.
 

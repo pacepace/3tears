@@ -53,10 +53,24 @@ log = get_logger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 
+
 #: Distinguishes "the caller said nothing" from "the caller said no robots". A plain ``None``
 #: default collapses those, and collapsing them is what made a documented on-by-default
 #: setting off in every deployment.
-_ROBOTS_DEFAULT: Any = object()
+class _RobotsDefault:
+    """Marks "the caller said nothing about robots", which `None` cannot.
+
+    `robots=None` is the explicit opt-out, so the absent case needs a third value. A typed
+    singleton rather than `Any = object()`: annotated `Any`, the parameter claimed a default of
+    `RobotsGate | None` while holding neither, which turned off checking for the one
+    distinction the sentinel exists to make -- and `project-preferences.md` requires a real
+    type on a signature sentinel for exactly that reason.
+    """
+
+    __slots__ = ()
+
+
+_ROBOTS_DEFAULT = _RobotsDefault()
 
 
 def _derive_target_id(url: str, field_schema: dict[str, Any]) -> str:
@@ -94,7 +108,7 @@ class ScrapeTool(TearsTool):
         health_collection: ScrapeTargetHealthCollection | None = None,
         circuit: TargetCircuit | None = None,
         session_state_key: SecretStr | None = None,
-        robots: RobotsGate | None = _ROBOTS_DEFAULT,
+        robots: RobotsGate | None | _RobotsDefault = _ROBOTS_DEFAULT,
         egress: EgressDriver | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
@@ -124,7 +138,7 @@ class ScrapeTool(TearsTool):
             policy or to share the scrape's egress and tracing with the robots request; pass
             ``None`` explicitly to consult no robots.txt at all, which is the pre-existing
             behaviour and now has to be asked for rather than being what everyone got
-        :ptype robots: RobotsGate | None
+        :ptype robots: RobotsGate | None | _RobotsDefault
         :param egress: which exit this tool's own requests leave by. Passed to the default
             robots gate so the robots.txt read shares the scrape's route rather than
             disclosing the container's address in front of it. Drivers take their own egress
@@ -150,7 +164,9 @@ class ScrapeTool(TearsTool):
         self._egress = egress
         # The default gate inherits this tool's exit. A robots request on the container's own
         # route, in front of a proxied scrape, discloses the address the proxy exists to hide.
-        self._robots = RobotsGate(egress=egress) if robots is _ROBOTS_DEFAULT else robots
+        self._robots = RobotsGate(egress=egress) if isinstance(robots, _RobotsDefault) else robots
+        # Declared budget has to cover the wait, not just the render -- see `timeout_seconds`.
+        self._max_robots_wait_seconds = self._robots.max_wait_seconds if self._robots is not None else 0.0
         self._warn_on_split_egress(drivers, egress)
         self._drivers = drivers
         self._api_key = api_key
@@ -265,7 +281,18 @@ class ScrapeTool(TearsTool):
                 },
                 "required": ["url", "field_schema"],
             },
-            timeout_seconds=self._default_timeout + 60.0,  # render timeout + eval loop's own LLM-call budget
+            # Render budget + the eval loop's own LLM-call budget + the longest wait an
+            # honoured `Crawl-delay` can impose. That third term is not padding: the robots
+            # gate sleeps BEFORE the render, so a site politely asking for a long delay makes
+            # the whole call outlast a budget derived from the render alone. Advertising the
+            # smaller number told the executor to abandon the call mid-sleep, and that
+            # abandonment is exactly what stranded the probe -- the declared timeout has to
+            # cover everything `execute` can actually wait for, or the deadline manufactures
+            # the cancellation.
+            #
+            # Read off the live policy rather than the module default, so a deployment that
+            # raises its own ceiling does not silently reintroduce the gap.
+            timeout_seconds=self._default_timeout + 60.0 + self._max_robots_wait_seconds,
         )
 
     @staticmethod
@@ -424,9 +451,17 @@ class ScrapeTool(TearsTool):
                     # only in this ToolResult reaches no queue: `list_walled` answers from the
                     # row, so a target the scraper itself decided needs a human would never be
                     # findable by the platform whose job it is to send one.
-                    await record_robots_block(
-                        self._health_collection, target_id=target_id, reason=robots_decision.reason
-                    )
+                    try:
+                        await record_robots_block(
+                            self._health_collection, target_id=target_id, reason=robots_decision.reason
+                        )
+                    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this tool's contract is to return a ToolResult, never to raise; the escalation below is the answer whether or not the queue write lands, and dropping it here loses the queue entry rather than the decision. Logged with its traceback below
+                        log.exception(
+                            "scrape tool: could not record the robots block for %s; it is escalated to "
+                            "the caller but will not appear in list_walled",
+                            target_id,
+                            extra={"extra_data": {"target_id": target_id, "url": url}},
+                        )
                 return ToolResult(
                     success=False,
                     error=f"needs a human: {robots_decision.reason}",
@@ -457,35 +492,56 @@ class ScrapeTool(TearsTool):
         if error is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)
 
-        # The crawl delay is waited only once the circuit has ADMITTED the fetch. Waiting
-        # before it would block a caller for up to the delay ceiling only to be told the fetch
-        # was suppressed -- paying a politeness cost for a request that never happens. The
-        # floor-vs-ceiling rule is satisfied either way: both gates are still honoured, and a
-        # circuit probe still waits its delay.
-        if (
-            robots_decision is not None
-            and robots_decision.wait_seconds > 0
-            and (decision is None or decision.permitted)
-        ):
-            log.info(
-                "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
-                robots_decision.wait_seconds,
-                url,
-                extra={"extra_data": {"target_id": target_id}},
-            )
-            await asyncio.sleep(robots_decision.wait_seconds)
-
-        # The human's solve, read once and passed to the driver. This is the step that makes
-        # the stored solve a capability rather than plumbing: the columns, the sealing and the driver
-        # parameter all existed and nothing carried a stored solve into an actual fetch, so a
-        # person cleared the same challenge on every poll.
+        # From here to the render, an admitted probe is already outstanding. `check` above may
+        # have claimed this target's one in-process probe slot, and only an outcome or an
+        # explicit release ever returns it -- so a cancellation in the two awaits below strands
+        # it, after which `release_probe`'s own docstring says the target is fast-failed with
+        # `retry_after_seconds=0.0` for the life of the process.
         #
-        # Read AFTER the circuit decision, because a suppressed fetch has nothing to carry it
-        # into, and opening a credential for a request that will not be made is work done to
-        # no purpose on the hottest path this tool has.
+        # Not a theoretical window. This tool advertises a deadline of `default_timeout + 60`
+        # while an honoured `Crawl-delay` is capped at 300s, so an executor cancelling inside
+        # that sleep is the EXPECTED case, not a rare one. The render below carries its own
+        # guard for the same reason; this one exists because the sleep and the credential read
+        # sit OUTSIDE it, and an await added here would otherwise strand the probe again --
+        # the fourth member of this family.
         solved_state: dict[str, Any] | None = None
-        if error is None and (decision is None or decision.permitted) and self._health_collection is not None:
-            solved_state = await self._read_solved_state(target_id)
+        try:
+            # The crawl delay is waited only once the circuit has ADMITTED the fetch. Waiting
+            # before it would block a caller for up to the delay ceiling only to be told the fetch
+            # was suppressed -- paying a politeness cost for a request that never happens. The
+            # floor-vs-ceiling rule is satisfied either way: both gates are still honoured, and a
+            # circuit probe still waits its delay.
+            if (
+                robots_decision is not None
+                and robots_decision.wait_seconds > 0
+                and (decision is None or decision.permitted)
+            ):
+                log.info(
+                    "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
+                    robots_decision.wait_seconds,
+                    url,
+                    extra={"extra_data": {"target_id": target_id}},
+                )
+                await asyncio.sleep(robots_decision.wait_seconds)
+
+            # The human's solve, read once and passed to the driver. This is the step that makes
+            # the stored solve a capability rather than plumbing: the columns, the sealing and the driver
+            # parameter all existed and nothing carried a stored solve into an actual fetch, so a
+            # person cleared the same challenge on every poll.
+            #
+            # Read AFTER the circuit decision, because a suppressed fetch has nothing to carry it
+            # into, and opening a credential for a request that will not be made is work done to
+            # no purpose on the hottest path this tool has.
+            solved_state = None
+            if error is None and (decision is None or decision.permitted) and self._health_collection is not None:
+                solved_state = await self._read_solved_state(target_id)
+        except BaseException:
+            # Same reasoning as the render's own guard: release the in-process probe, persist
+            # nothing. A durable outcome here would back the target off across every pod, and
+            # outlive the cancelled process, for something the target never did.
+            if self._circuit is not None:
+                self._circuit.release_probe(target_id)
+            raise
 
         page: RenderedPage | None = None
         if error is None and (decision is None or decision.permitted):

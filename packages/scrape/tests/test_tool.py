@@ -20,6 +20,7 @@ from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.health import ScrapeTargetHealthCollection
+from threetears.scrape.robots import RobotsGate
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.tool import ScrapeTool, _derive_target_id
 from threetears.core.collections.registry import CollectionRegistry
@@ -768,6 +769,59 @@ class TestScrapeToolFetchCircuit:
         assert breaker.state is not CircuitState.HALF_OPEN, (
             "a cancellation inside the failure report escaped between the two handlers and "
             "left the in-process breaker holding a probe"
+        )
+
+    @staticmethod
+    def _robots_fetcher(body: str):
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, body
+
+        return _fetch
+
+    async def test_a_cancellation_during_the_crawl_delay_still_releases_the_probe(self):
+        """The fourth strand in this family, and the first one that is the EXPECTED case.
+
+        The circuit admits a probe, then the crawl delay is waited before the render. That
+        sleep sat outside every guard: the render's own handler starts after it. So a poll
+        cancelled while being polite propagates with the probe still held, and
+        ``release_probe``'s docstring says the target is then fast-failed with
+        ``retry_after_seconds=0.0`` for the life of the process -- a target that is behaving
+        perfectly, punished for the one thing it asked us to do.
+
+        Unlike the three before it this is not a narrow window. The tool advertises a deadline
+        of ``default_timeout + 60`` while an honoured ``Crawl-delay`` is capped at 300s, so an
+        executor cancelling inside the sleep is the ordinary outcome for any site polite
+        enough to ask for a long one.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/slow-and-polite"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+
+        breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
+        breaker.record_failure()
+        circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
+        driver = _FakeDriver(_SINGLE_HTML)
+        gate = RobotsGate(fetch=self._robots_fetcher("User-agent: *\nCrawl-delay: 120\n"))
+        tool = self._tool(driver, circuit, recipe_collection, extraction_collection, health_collection)
+        tool._robots = gate  # noqa: SLF001 -- the subject is the tool's guard, not how it builds a gate
+        gate.note_fetched(url)
+
+        with (
+            patch("asyncio.sleep", side_effect=asyncio.CancelledError()),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await tool.execute(url=url, field_schema=schema)
+
+        assert breaker.state is not CircuitState.HALF_OPEN, (
+            "a cancellation during the crawl delay left the in-process breaker holding a "
+            "probe, so this target fast-fails with retry_after=0 for the life of the process"
+        )
+        assert len(driver.render_calls) == 0, "the fetch never happened, so nothing was observed"
+        row = await health_collection.get(target_id)
+        assert row is None or row.consecutive_fetch_failures == 0, (
+            "a cancellation was persisted as a fetch failure for a target that did nothing wrong"
         )
 
     async def test_without_a_circuit_nothing_is_suppressed(self):

@@ -797,3 +797,157 @@ async def test_a_forget_during_a_fetch_is_not_undone_by_it() -> None:
     assert "https://example.gov" not in gate._cache, (  # noqa: SLF001
         "the in-flight fetch wrote back over the forget, so the next check reuses the file that was discarded"
     )
+
+
+async def test_the_declared_timeout_covers_the_longest_wait_the_gate_can_ask_for() -> None:
+    """Read off the declared budget, not a literal, which is the point.
+
+    The robots wait happens BEFORE the render, so a budget derived from the render alone
+    describes a shorter call than the one that runs. An executor obeying it cancels mid-sleep,
+    and that cancellation is what stranded the circuit's probe -- the deadline manufactured the
+    failure it was supposed to bound.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    gate = RobotsGate(RobotsPolicy(max_crawl_delay_seconds=240.0), fetch=_fetcher(_ROBOTS_DELAY))
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={},
+        api_key="k",
+        robots=gate,
+    )
+
+    declared = tool.mcp_schema().timeout_seconds
+    assert declared is not None
+    assert declared >= gate.max_wait_seconds, (
+        f"the tool advertises {declared}s while its own robots gate can sleep for "
+        f"{gate.max_wait_seconds}s before the render even starts"
+    )
+
+
+async def test_turning_the_crawl_delay_off_stops_charging_the_budget_for_it() -> None:
+    """A ceiling that is never waited must not inflate every declared deadline."""
+    gate = RobotsGate(RobotsPolicy(respect_crawl_delay=False, max_crawl_delay_seconds=300.0))
+    assert gate.max_wait_seconds == 0.0
+
+
+async def test_a_health_store_failure_does_not_escape_the_escalation() -> None:
+    """This tool returns a ToolResult; it does not raise. The queue write is not exempt.
+
+    `record_robots_block` was the one health write in `execute` with no guard, so a store
+    outage turned "this target needs a human" into an exception out of a tool whose contract
+    is that it never raises -- losing the escalation entirely rather than just the queue entry.
+    """
+    from unittest.mock import patch as _patch
+
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": _RecordingDriver()},
+        api_key="k",
+        health_collection=health,
+        robots=RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)),
+    )
+
+    with _patch("threetears.scrape.tool.record_robots_block", side_effect=RuntimeError("store down")):
+        result = await tool.execute(url="https://example.gov/private/x", field_schema={"a": "str"})
+
+    assert result.success is False
+    assert "needs a human" in (result.error or ""), (
+        "a store outage swallowed the escalation instead of costing only the queue entry"
+    )
+
+
+async def test_a_circuit_probe_is_not_exempt_from_the_crawl_delay() -> None:
+    """One of chunk 09's own named traps, and the rule both module docstrings state.
+
+    The two gates are different kinds: `Crawl-delay` is a FLOOR on politeness that applies to
+    a target working perfectly, while the circuit's `blocked_until` is a CEILING on cost that
+    applies to one that is not. Neither may weaken the other. Exempting a probe is the
+    tempting shortcut -- probes are rare and someone wants to know -- and it breaks the
+    politeness contract precisely when the target is already unhappy with us.
+
+    The setup drives the DURABLE row into a probe, not just an in-process breaker: `check`
+    answers from the health row, so a test that only opened a local breaker got a plain closed
+    circuit and asserted nothing about probes at all.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.models.circuit_breaker import CircuitState
+    from threetears.scrape.circuit import TargetCircuit
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection, record_circuit_state
+    from threetears.scrape.tool import ScrapeTool, _derive_target_id
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    health = ScrapeTargetHealthCollection(reg, cfg, nats_client=None)
+    url, schema = "https://example.gov/probed", {"a": "str"}
+    target_id = _derive_target_id(url, schema)
+
+    # An OPEN circuit whose window has already elapsed: the next check promotes it and admits
+    # the single probe. That is the state the rule is about.
+    now = datetime.now(timezone.utc)
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state=CircuitState.OPEN.value,
+        consecutive_fetch_failures=3,
+        blocked_until=now - timedelta(seconds=1),
+    )
+    # Spied rather than pre-checked: a verifying `check()` here would CONSUME the single
+    # probe, after which the tool's own check is suppressed and the delay is legitimately
+    # skipped -- the test would then fail for a reason that has nothing to do with the rule.
+    decisions: list[Any] = []
+
+    class _SpyCircuit(TargetCircuit):
+        async def check(self, target: str, *, now: Any = None) -> Any:
+            decision = await super().check(target, now=now)
+            decisions.append(decision)
+            return decision
+
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+    gate.note_fetched(url)
+    tool = ScrapeTool(
+        recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": _RecordingDriver()},
+        api_key="k",
+        health_collection=health,
+        circuit=_SpyCircuit(health),
+        robots=gate,
+    )
+
+    slept: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    with patch("asyncio.sleep", _record_sleep):
+        await tool.execute(url=url, field_schema=schema)
+
+    # The FIRST wait, and its value. `max(slept) > 0` looked like it asserted this and did
+    # not: the eval loop's retry backoffs (2s, 4s, 8s...) satisfy it whether or not the crawl
+    # delay was waited, so the exemption this test forbids passed straight through it.
+    assert decisions and decisions[0].is_probe, (
+        f"the tool's circuit did not admit a probe, so this asserts nothing about the rule: {decisions}"
+    )
+    assert slept, "nothing was waited at all"
+    assert slept[0] == pytest.approx(10.0, abs=0.5), (
+        f"the first wait was {slept[0]}s, not the ~10s this site asked for: a circuit probe "
+        f"skipped the crawl delay. All waits: {slept}"
+    )
