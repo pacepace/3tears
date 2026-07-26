@@ -60,11 +60,10 @@ def _is_vendored(path: Path) -> bool:
 def _ruff_configs() -> list[Path]:
     """Every file ruff would read a per-file ignore from.
 
-    An earlier version read the root ``pyproject.toml`` plus ``ruff.toml`` and described itself
-    as reading every config -- which is how the sidecar override went unscanned. Being one form
-    short is that same failure again, and the likeliest miss in a 27-package workspace is a
-    package ``pyproject.toml`` growing a ``[tool.ruff]`` section, since every package already
-    ships that file.
+    Being one form short leaves whatever it declares unscanned, and the likeliest way that
+    happens here is a package ``pyproject.toml`` growing a ``[tool.ruff]`` section, since every
+    package already ships that file. One without such a section configures nothing and is
+    skipped.
 
     No count in this prose: the loop below is the list, and it cannot disagree with itself.
     """
