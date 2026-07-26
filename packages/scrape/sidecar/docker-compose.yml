@@ -42,6 +42,16 @@ services:
     environment:
       SCREEN_GEOM: "1920x1080x24"
       PORT: "8088"
+      # Uncomment these two WITH the tor service at the bottom of this file to send this
+      # container's browser out through TOR. They live inside this block deliberately: a second
+      # `environment:` key on the same service is a YAML duplicate, and the later one wins
+      # silently -- so the "obvious" placement next to the tor service would have dropped
+      # SCREEN_GEOM and PORT above without a word.
+      #
+      # EGRESS_NAME is what gets recorded against a result, so "walled" can be told apart from
+      # "walled from this exit".
+      # EGRESS_PROXY: "socks5://tor:9050"
+      # EGRESS_NAME: "tor"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8088/healthz"]
       interval: 10s
@@ -49,12 +59,6 @@ services:
       retries: 5
       start_period: 20s
     restart: unless-stopped
-    # Uncomment with the tor service below to send this container's browser out through TOR.
-    # EGRESS_NAME is what gets recorded against a result, so "walled" can be told apart from
-    # "walled from this exit".
-    # environment:
-    #   EGRESS_PROXY: "socks5://tor:9050"
-    #   EGRESS_NAME: "tor"
 
   # An exit, not a requirement. Commented out because the default route is the default, and a
   # compose file that silently routes every scrape through TOR would be a surprising thing to
