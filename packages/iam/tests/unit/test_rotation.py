@@ -10,6 +10,7 @@ import pytest
 from threetears.iam.rotation import (
     RefreshTokenLedger,
     RotationError,
+    SessionLifetimeCaps,
     SessionRevoker,
     rotate_refresh_token,
 )
@@ -206,7 +207,7 @@ async def test_the_absolute_lifetime_cap_ends_a_session() -> None:
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=_Ledger(),
-            absolute_session_lifetime=timedelta(days=30),
+            lifetime_caps=SessionLifetimeCaps(absolute=timedelta(days=30)),
         )
 
 
@@ -218,7 +219,7 @@ async def test_a_session_within_the_absolute_cap_still_refreshes() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
-        absolute_session_lifetime=timedelta(days=30),
+        lifetime_caps=SessionLifetimeCaps(absolute=timedelta(days=30)),
     )
 
 
@@ -230,7 +231,7 @@ async def test_the_inactivity_timeout_ends_a_session() -> None:
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=_Ledger(),
-            inactivity_timeout=timedelta(hours=1),
+            lifetime_caps=SessionLifetimeCaps(inactivity=timedelta(hours=1)),
         )
 
 
@@ -253,7 +254,7 @@ async def test_a_wrong_holder_key_is_rejected() -> None:
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=_Ledger(),
-            holder_key_thumbprint="thumbprint-xyz",
+            holder_key="thumbprint-xyz",
         )
 
 
@@ -270,7 +271,7 @@ async def test_a_wrong_holder_key_does_not_burn_the_token() -> None:
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=ledger,
-            holder_key_thumbprint="thumbprint-xyz",
+            holder_key="thumbprint-xyz",
         )
     assert not ledger.spent
     # The real holder can still exchange it.
@@ -279,7 +280,7 @@ async def test_a_wrong_holder_key_does_not_burn_the_token() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=ledger,
-        holder_key_thumbprint="thumbprint-abc",
+        holder_key="thumbprint-abc",
     )
     assert rotated.claims.cnf == "thumbprint-abc"
 
@@ -325,3 +326,197 @@ async def test_rotation_chains() -> None:
             ledger=ledger,
         )
     assert len(ledger.spent) == 5
+
+
+# -- the holder key is resolved lazily, at step 5 and not before ---------------------------
+
+
+def _counting_holder_key(thumbprint: str, calls: list[str]) -> Any:
+    """A holder-key resolver that records every time it is actually awaited."""
+
+    async def resolve() -> str:
+        calls.append(thumbprint)
+        return thumbprint
+
+    return resolve
+
+
+async def test_a_holder_key_resolver_is_awaited_for_a_bound_session() -> None:
+    original = _pair(cnf="thumbprint-abc")
+    calls: list[str] = []
+    rotated = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=_Ledger(),
+        holder_key=_counting_holder_key("thumbprint-abc", calls),
+    )
+    assert rotated.claims.cnf == "thumbprint-abc"
+    assert calls == ["thumbprint-abc"]
+
+
+async def test_an_unbound_session_never_resolves_a_holder_key() -> None:
+    # Nothing to match against, so paying for proof validation would be pure waste.
+    calls: list[str] = []
+    await rotate_refresh_token(
+        _pair().refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=_Ledger(),
+        holder_key=_counting_holder_key("thumbprint-abc", calls),
+    )
+    assert calls == []
+
+
+async def test_a_doomed_refresh_never_pays_for_proof_validation() -> None:
+    # THE reason the holder key is a resolver rather than a value: proof validation is a
+    # round trip, and every check that can deny this refresh has already run by step 5.
+    original = _pair(cnf="thumbprint-abc")
+    revoker = _Revoker()
+    await revoker.revoke_session(original.claims.sid)
+    calls: list[str] = []
+    with pytest.raises(RotationError, match="revoked"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=_Ledger(),
+            revoker=revoker,
+            holder_key=_counting_holder_key("thumbprint-abc", calls),
+        )
+    assert calls == []
+
+
+# -- bind on first use ---------------------------------------------------------------------
+
+
+async def test_a_holder_key_binds_on_first_refresh() -> None:
+    # For a login flow that collects no proof of possession: the first refresh is where the
+    # session can start being bound at all.
+    original = _pair()
+    rotated = await rotate_refresh_token(
+        original.refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=_Ledger(),
+        holder_key="thumbprint-abc",
+        bind_holder_key_on_first_use=True,
+    )
+    assert original.claims.cnf is None
+    assert rotated.claims.cnf == "thumbprint-abc"
+
+
+async def test_binding_on_first_use_refuses_a_refresh_that_presents_no_key() -> None:
+    # Otherwise a client could simply decline to bind, indefinitely.
+    with pytest.raises(RotationError, match="binds a holder key"):
+        await rotate_refresh_token(
+            _pair().refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=_Ledger(),
+            bind_holder_key_on_first_use=True,
+        )
+
+
+async def test_an_already_bound_session_still_has_to_match() -> None:
+    # bind-on-first-use widens the FIRST refresh only; it never relaxes a later one.
+    original = _pair(cnf="thumbprint-abc")
+    with pytest.raises(RotationError, match="does not match"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=_Ledger(),
+            holder_key="thumbprint-xyz",
+            bind_holder_key_on_first_use=True,
+        )
+
+
+# -- caller-supplied deny rules ------------------------------------------------------------
+
+
+def _gate(reason: str | None, seen: list[str]) -> Any:
+    async def check(claims: Any) -> str | None:
+        seen.append(claims.sub)
+        return reason
+
+    return check
+
+
+async def test_a_pre_redemption_gate_denies_without_burning_the_token() -> None:
+    # Same guarantee steps 2 and 3 already have: nothing above the redemption step may
+    # consume a token it then refuses to exchange.
+    ledger = _Ledger()
+    with pytest.raises(RotationError, match="principal is blocked"):
+        await rotate_refresh_token(
+            _pair().refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            pre_redemption_checks=[_gate("principal is blocked.", [])],
+        )
+    assert not ledger.spent
+
+
+async def test_pre_redemption_gates_stop_at_the_first_refusal() -> None:
+    seen: list[str] = []
+    with pytest.raises(RotationError, match="first"):
+        await rotate_refresh_token(
+            _pair().refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=_Ledger(),
+            pre_redemption_checks=[_gate("first.", seen), _gate("second.", seen)],
+        )
+    assert len(seen) == 1
+
+
+async def test_a_post_redemption_gate_denies_a_token_that_is_already_spent() -> None:
+    # The placement IS the point: a denial here must still force full re-authentication,
+    # never permit a retry with the same token.
+    ledger = _Ledger()
+    with pytest.raises(RotationError, match="re-check failed"):
+        await rotate_refresh_token(
+            _pair().refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            post_redemption_checks=[_gate("re-check failed.", [])],
+        )
+    assert len(ledger.spent) == 1
+
+
+async def test_a_gate_returning_none_allows_the_refresh() -> None:
+    seen: list[str] = []
+    await rotate_refresh_token(
+        _pair().refresh_token,
+        verifier=_VERIFIER,
+        signer=_SIGNER,
+        ledger=_Ledger(),
+        pre_redemption_checks=[_gate(None, seen)],
+        post_redemption_checks=[_gate(None, seen)],
+    )
+    assert seen == ["user-1", "user-1"]
+
+
+# -- per-session lifetime caps -------------------------------------------------------------
+
+
+async def test_lifetime_caps_can_be_resolved_per_session() -> None:
+    # Caps that come from per-tenant policy cannot be known until the token is verified,
+    # because the tenant is a claim on the token.
+    started = int((datetime.now(UTC) - timedelta(days=40)).timestamp())
+    original = _pair(auth_time=started, session_started_at=started, customer_id="tenant-strict")
+
+    async def caps_for(claims: Any) -> SessionLifetimeCaps:
+        assert claims.customer_id == "tenant-strict"
+        return SessionLifetimeCaps(absolute=timedelta(days=30))
+
+    with pytest.raises(RotationError, match="absolute lifetime"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=_Ledger(),
+            lifetime_caps=caps_for,
+        )

@@ -16,14 +16,23 @@ reason, and reordering them reintroduces a specific bug:
    not pay for a round trip it cannot recover from.
 3. Session lifetime caps. Without an absolute cap a session refreshes forever,
    and "deprovisioned" means nothing.
-4. Validate the proof of possession, if the session is bound.
-5. Match the holder key against the token's ``cnf`` -- **without consuming the
+4. ``pre_redemption_checks`` -- the deployment's own additional deny rules, in
+   the same "cheap, read-only, cannot recover anyway" band as steps 2 and 3.
+5. Validate the proof of possession, if the session is bound. The holder key is
+   resolved LAZILY here rather than passed in already-computed, so a refresh
+   that steps 2-4 were always going to deny never pays for proof validation.
+6. Match the holder key against the token's ``cnf`` -- **without consuming the
    refresh token's ``jti``**. This is the subtle one. If a wrong-key attempt
    burned the ``jti``, anyone holding a COPY of the refresh token bytes could
    deny service to the legitimate holder at will, without ever possessing the
    key. The mismatch must cost the attacker everything and the victim nothing.
-6. Redeem the ``jti``. LAST, and the only consuming step, so nothing above can
-   burn a token it then refuses to exchange.
+7. Redeem the ``jti``. The only consuming step, so nothing above can burn a
+   token it then refuses to exchange.
+8. ``post_redemption_checks`` -- deny rules that must run against a token that
+   is already spent either way. A re-check whose subject may have lost the
+   right to hold the session belongs here rather than at step 4: denying it
+   must still force full re-authentication, never permit a retry with the same
+   token.
 
 **``auth_time`` is carried forward unchanged.** A refresh proves session
 continuity; it does not re-confirm a credential. Letting it move would mean
@@ -34,6 +43,8 @@ password or a second factor.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, runtime_checkable
 
@@ -51,7 +62,16 @@ from threetears.iam.tokens import (
 )
 from threetears.observe import get_logger
 
-__all__ = ["RefreshTokenLedger", "RotationError", "SessionRevoker", "rotate_refresh_token"]
+__all__ = [
+    "HolderKeySource",
+    "LifetimeCapsSource",
+    "RefreshGate",
+    "RefreshTokenLedger",
+    "RotationError",
+    "SessionLifetimeCaps",
+    "SessionRevoker",
+    "rotate_refresh_token",
+]
 
 log = get_logger(__name__)
 
@@ -66,6 +86,34 @@ class RotationError(Exception):
 
     Carries only structural reasons -- never the token or key material.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class SessionLifetimeCaps:
+    """How long a session may live, independently of how long its tokens live.
+
+    :ivar absolute: cap measured from ``session_started_at`` and unmoved by rotation.
+        Without one a session refreshes forever, and deprovisioning means nothing.
+    :ivar inactivity: cap measured from the presented token's ``iat``.
+    """
+
+    absolute: timedelta | None = None
+    inactivity: timedelta | None = None
+
+
+#: A caller-supplied deny rule. Returns the structural reason to refuse the refresh, or
+#: ``None`` to allow it. Raising :class:`RotationError` directly is equivalent; returning a
+#: reason simply saves every gate from constructing the exception itself.
+RefreshGate = Callable[[SessionClaims], Awaitable[str | None]]
+
+#: The holder key proven by an accompanying proof of possession, either already computed or
+#: as a zero-argument coroutine function that produces it. The callable form is what keeps
+#: proof validation at step 5 of the check order instead of before step 1.
+HolderKeySource = str | Callable[[], Awaitable[str]]
+
+#: Fixed caps, or a resolver that reads them per session -- from tenant policy keyed on
+#: ``claims.customer_id``, say, which cannot be known until the token has been verified.
+LifetimeCapsSource = SessionLifetimeCaps | Callable[[SessionClaims], Awaitable[SessionLifetimeCaps]]
 
 
 @runtime_checkable
@@ -103,9 +151,11 @@ async def rotate_refresh_token(
     signer: TokenSigner,
     ledger: RefreshTokenLedger,
     revoker: SessionRevoker | None = None,
-    holder_key_thumbprint: str | None = None,
-    absolute_session_lifetime: timedelta | None = None,
-    inactivity_timeout: timedelta | None = None,
+    holder_key: HolderKeySource | None = None,
+    bind_holder_key_on_first_use: bool = False,
+    lifetime_caps: LifetimeCapsSource | None = None,
+    pre_redemption_checks: Sequence[RefreshGate] = (),
+    post_redemption_checks: Sequence[RefreshGate] = (),
     access_ttl: timedelta = DEFAULT_ACCESS_TTL,
     refresh_ttl: timedelta = DEFAULT_REFRESH_TTL,
     now: datetime | None = None,
@@ -124,15 +174,29 @@ async def rotate_refresh_token(
         reuse. ``None`` disables both -- which means reuse is rejected but NOT escalated, so
         a thief simply retries. Supply one in any deployment that can.
     :ptype revoker: SessionRevoker | None
-    :param holder_key_thumbprint: the thumbprint proven by an accompanying proof of
-        possession, from :func:`~threetears.iam.dpop.validate_dpop_proof`. Required when the
-        presented token carries a ``cnf`` binding.
-    :ptype holder_key_thumbprint: str | None
-    :param absolute_session_lifetime: cap measured from ``session_started_at``. Without one a
-        session refreshes forever.
-    :ptype absolute_session_lifetime: timedelta | None
-    :param inactivity_timeout: cap measured from the presented token's ``iat``.
-    :ptype inactivity_timeout: timedelta | None
+    :param holder_key: the thumbprint proven by an accompanying proof of possession, from
+        :func:`~threetears.iam.dpop.validate_dpop_proof`. Required when the presented token
+        carries a ``cnf`` binding. Pass a coroutine function rather than a string wherever
+        producing it costs anything: the callable is awaited at step 5 of the check order,
+        so a refresh the earlier steps deny never pays for it.
+    :ptype holder_key: HolderKeySource | None
+    :param bind_holder_key_on_first_use: bind ``holder_key`` as the session's ``cnf`` when
+        the presented token carries none. For deployments whose login flow collects no proof
+        of possession, so the first refresh is where binding can happen. With this set, a
+        refresh presenting no holder key at all is refused rather than left unbound --
+        otherwise a client could decline to bind indefinitely.
+    :ptype bind_holder_key_on_first_use: bool
+    :param lifetime_caps: how long the session may live. Pass a resolver where the caps come
+        from per-tenant policy, which cannot be read until ``customer_id`` is known.
+    :ptype lifetime_caps: LifetimeCapsSource | None
+    :param pre_redemption_checks: additional deny rules, run in order at step 4 -- after the
+        standing revocation and lifetime checks, before the proof of possession, and before
+        anything has been consumed. This is where a deployment's own revocation shapes
+        (principal, tenant) and its administrative disable check belong.
+    :ptype pre_redemption_checks: Sequence[RefreshGate]
+    :param post_redemption_checks: deny rules run at step 8, after the presented token has
+        been consumed and before the new pair is minted.
+    :ptype post_redemption_checks: Sequence[RefreshGate]
     :param access_ttl: lifetime of the new access token.
     :ptype access_ttl: timedelta
     :param refresh_ttl: lifetime of the new refresh token.
@@ -156,21 +220,19 @@ async def rotate_refresh_token(
         raise RotationError("session has been revoked.")
 
     # 3. Lifetime caps. The floor that makes deprovisioning mean something.
-    _enforce_lifetime_caps(
+    await _enforce_lifetime_caps(claims, moment=moment, caps=lifetime_caps)
+
+    # 4. The deployment's own deny rules, in the same nothing-consumed-yet band.
+    await _run_gates(pre_redemption_checks, claims)
+
+    # 5/6. Holder-key binding, checked WITHOUT consuming the jti (module docstring, step 6).
+    resolved_cnf = await _resolve_holder_binding(
         claims,
-        moment=moment,
-        absolute_session_lifetime=absolute_session_lifetime,
-        inactivity_timeout=inactivity_timeout,
+        holder_key=holder_key,
+        bind_on_first_use=bind_holder_key_on_first_use,
     )
 
-    # 4/5. Holder-key binding, checked WITHOUT consuming the jti (module docstring, step 5).
-    if claims.cnf is not None:
-        if holder_key_thumbprint is None:
-            raise RotationError("this session is holder-key bound and no proof of possession was presented.")
-        if holder_key_thumbprint != claims.cnf:
-            raise RotationError("proof of possession does not match the session's bound key.")
-
-    # 6. Redemption -- last, and the only consuming step.
+    # 7. Redemption -- the only consuming step.
     if not await ledger.redeem(claims.jti):
         # Already spent. A legitimate client never replays a token it has exchanged, so two
         # parties hold this one and the session is compromised.
@@ -181,6 +243,9 @@ async def rotate_refresh_token(
         if revoker is not None:
             await revoker.revoke_session(claims.sid)
         raise RotationError("refresh token has already been used.")
+
+    # 8. Deny rules that must run against an already-spent token.
+    await _run_gates(post_redemption_checks, claims)
 
     return mint_token_pair(
         subject=claims.sub,
@@ -193,7 +258,7 @@ async def rotate_refresh_token(
         step_up_window=claims.step_up_window,
         session_started_at=claims.session_started_at,
         customer_id=claims.customer_id,
-        cnf=claims.cnf,
+        cnf=resolved_cnf,
         act=claims.act,
         act_reason=claims.act_reason,
         act_restriction=claims.act_restriction,
@@ -203,24 +268,61 @@ async def rotate_refresh_token(
     )
 
 
-def _enforce_lifetime_caps(
+async def _run_gates(gates: Sequence[RefreshGate], claims: SessionClaims) -> None:
+    """Run caller-supplied deny rules in order, stopping at the first refusal."""
+    for gate in gates:
+        reason = await gate(claims)
+        if reason is not None:
+            raise RotationError(reason)
+
+
+async def _resolve_holder_binding(
+    claims: SessionClaims,
+    *,
+    holder_key: HolderKeySource | None,
+    bind_on_first_use: bool,
+) -> str | None:
+    """Settle what ``cnf`` the new pair carries, without consuming anything.
+
+    Returns the thumbprint to bind, or ``None`` for a session that is not holder-key bound.
+    The holder key is only ever resolved when this session actually needs one, so an
+    unbound deployment never awaits a resolver it did not have to.
+    """
+    if claims.cnf is None and not bind_on_first_use:
+        return None
+    if holder_key is None:
+        if claims.cnf is None:
+            raise RotationError("this session binds a holder key on first refresh and none was presented.")
+        raise RotationError("this session is holder-key bound and no proof of possession was presented.")
+
+    thumbprint = holder_key if isinstance(holder_key, str) else await holder_key()
+    if claims.cnf is None:
+        return thumbprint  # bind-on-first-use
+    if thumbprint != claims.cnf:
+        raise RotationError("proof of possession does not match the session's bound key.")
+    return claims.cnf
+
+
+async def _enforce_lifetime_caps(
     claims: SessionClaims,
     *,
     moment: datetime,
-    absolute_session_lifetime: timedelta | None,
-    inactivity_timeout: timedelta | None,
+    caps: LifetimeCapsSource | None,
 ) -> None:
     """Reject a session that has outlived either configured cap.
 
     Both are measured against the token's own claims rather than a stored record, so the
     check costs nothing and cannot be skipped by a caller that forgot to load the session.
     """
+    if caps is None:
+        return
+    resolved = caps if isinstance(caps, SessionLifetimeCaps) else await caps(claims)
     seconds_now = int(moment.timestamp())
-    if absolute_session_lifetime is not None:
+    if resolved.absolute is not None:
         age = seconds_now - claims.session_started_at
-        if age > absolute_session_lifetime.total_seconds():
+        if age > resolved.absolute.total_seconds():
             raise RotationError("session has exceeded its absolute lifetime.")
-    if inactivity_timeout is not None:
+    if resolved.inactivity is not None:
         idle = seconds_now - claims.iat
-        if idle > inactivity_timeout.total_seconds():
+        if idle > resolved.inactivity.total_seconds():
             raise RotationError("session has been idle beyond the inactivity timeout.")
