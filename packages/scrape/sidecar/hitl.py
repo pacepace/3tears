@@ -140,6 +140,21 @@ class VncLifecycle:
         """The X display this shares, in ``:N`` form."""
         return f":{self._display_num}"
 
+    @property
+    def web_port(self) -> int:
+        """The port websockify serves on. The only port a human ever reaches."""
+        return self._web_port
+
+    @property
+    def client_path(self) -> str:
+        """Where to point a browser, query string included.
+
+        Public because callers legitimately need it before a session is running -- the session
+        endpoint publishes it in its response -- and reaching into a private for it made every
+        stand-in for this class have to know about the underscore.
+        """
+        return self._novnc_path()
+
     def health(self) -> bool:
         """Whether both processes are running right now.
 
@@ -394,6 +409,19 @@ class VncLifecycle:
 # ---------------------------------------------------------------------------
 
 
+def _constant_time_equal(known: str, supplied: str) -> bool:
+    """Constant-time compare that cannot be turned into a 500 by the caller.
+
+    ``secrets.compare_digest`` raises ``TypeError`` on a non-ASCII ``str``, and both operands
+    here come straight from a caller: the id is a UTF-8 path segment and the token is a
+    header. Sending one non-ASCII character would otherwise turn a refusal into an unhandled
+    exception -- a 500 where a 404 belongs, which is both a worse answer and a signal that the
+    input reached somewhere it should not have. Comparing UTF-8 bytes keeps the timing
+    property and accepts anything a caller can send.
+    """
+    return secrets.compare_digest(known.encode("utf-8"), supplied.encode("utf-8"))
+
+
 class SessionUnavailable(RuntimeError):
     """A session was asked for and cannot be given.
 
@@ -417,9 +445,11 @@ class HitlTab:
     tab_id: str
     target_id: str
     url: str
-    #: nodriver Tab. Typed loosely because nodriver is AGPL-isolated to this container and
-    #: this module is deliberately importable without it for the lifecycle tests.
+    #: nodriver Tab, or ``None`` while this is still a slot reservation whose navigation is in
+    #: flight. Typed loosely because nodriver is AGPL-isolated to this container and this
+    #: module is deliberately importable without it for the lifecycle tests.
     tab: Any
+    #: The isolated browser context, or ``None`` for a reservation not yet navigated.
     context_id: Any
     opened_at: float
 
@@ -493,26 +523,39 @@ class SessionManager:
         """The live session, if there is one. Does not check expiry."""
         return self._session
 
-    def authorize(self, session_id: str, token: str) -> HitlSession:
+    def authorize(self, session_id: str, token: str, *, now: float | None = None) -> HitlSession:
         """Resolve a session from an id and token, or refuse.
 
         Compared with :func:`secrets.compare_digest` rather than ``==``: the comparison is
         against a secret, and the timing of a short-circuiting equality is a side channel that
         leaks a prefix. Cheap to do correctly, so there is no reason not to.
 
+        **Expiry is checked here, not only by the reaper.** The reaper polls, so between a
+        session expiring and the next tick there is a window where a TTL that has passed is
+        still honoured -- and worse, the reaper is a background task that can die, after which
+        nothing else enforces the ceiling at all. A hard TTL that depends on a task staying
+        alive is not a hard TTL. Checking on the request path makes the reaper an optimisation
+        (it frees the display promptly) rather than the mechanism.
+
         The sidecar authenticates nobody. This checks that the caller holds a token this
         process minted, which is a different and much weaker claim -- who was allowed to be
         given that token is decided on the MIT side, which is the only side that can evaluate
         a policy.
 
-        :raises SessionNotFound: no live session, wrong id, or wrong token
+        :raises SessionNotFound: no live session, wrong id, wrong token, or one past its TTL
         """
+        moment = now if now is not None else time.time()
         session = self._session
         if session is None:
             raise SessionNotFound("no session is open")
-        if not secrets.compare_digest(session.session_id, session_id):
+        if not _constant_time_equal(session.session_id, session_id):
             raise SessionNotFound("no such session")
-        if not secrets.compare_digest(session.token, token):
+        if not _constant_time_equal(session.token, token):
+            raise SessionNotFound("no such session")
+        if session.is_expired(moment):
+            # Same error as an unknown session, deliberately: an expired id is still an id
+            # that existed, and confirming it would leak the thing a guesser is working
+            # towards. The reaper will free the display; this refuses to act on it meanwhile.
             raise SessionNotFound("no such session")
         return session
 
@@ -587,6 +630,14 @@ class SessionManager:
         :raises SessionUnavailable: no slots free
         """
         moment = now if now is not None else time.time()
+        tab_id = secrets.token_urlsafe(8)
+
+        # The slot is RESERVED under the lock and the CDP work happens outside it. Holding the
+        # lock across the navigation would serialise every tab open behind the slowest one,
+        # defer the reaper, and hang a teardown -- which contradicts the model this session is
+        # built on, where backgrounding a slow target is normal and still holds its slot. The
+        # reservation is what keeps the budget honest while the lock is released: a
+        # placeholder occupies the slot, so a concurrent caller sees it taken.
         async with self._lock:
             if session.free_slots() <= 0:
                 raise SessionUnavailable(
@@ -595,26 +646,43 @@ class SessionManager:
             browser = self._browser_provider() if self._browser_provider is not None else None
             if browser is None:
                 raise SessionUnavailable("the browser is not running")
-
-            tab_obj, context_id = await _open_isolated(browser, url, nav_steps)
-            tab = HitlTab(
-                tab_id=secrets.token_urlsafe(8),
+            session.tabs[tab_id] = HitlTab(
+                tab_id=tab_id,
                 target_id=target_id,
                 url=url,
-                tab=tab_obj,
-                context_id=context_id,
+                tab=None,
+                context_id=None,
                 opened_at=moment,
             )
-            session.tabs[tab.tab_id] = tab
+
+        try:
+            tab_obj, context_id = await _open_isolated(browser, url, nav_steps)
+        except BaseException:
+            # The reservation must not outlive the attempt it was reserving for, or a target
+            # that failed to open silently costs the operator a slot for the whole session.
+            async with self._lock:
+                session.tabs.pop(tab_id, None)
+            raise
+
+        async with self._lock:
+            reserved = session.tabs.get(tab_id)
+            if reserved is None:
+                # The session was torn down or reaped while this navigation was in flight.
+                # The context exists and nothing is tracking it, so drop it here rather than
+                # leaving it to the browser's lifetime.
+                await self._dispose_quietly(browser, context_id, tab_id)
+                raise SessionNotFound("the session was closed while this tab was opening")
+            reserved.tab = tab_obj
+            reserved.context_id = context_id
             log.info(
                 "hitl: session %s opened tab %s for target %s (%d/%d slots used)",
                 session.session_id,
-                tab.tab_id,
+                tab_id,
                 target_id,
                 len(session.tabs),
                 session.max_slots,
             )
-            return tab
+            return reserved
 
     async def complete_tab(self, session: HitlSession, tab_id: str) -> HitlTab:
         """Close a tab a human has finished with and free its slot.
@@ -687,7 +755,9 @@ class SessionManager:
     async def _drop_tab(self, tab: HitlTab) -> None:
         """Dispose one tab's browser context, never raising into a teardown."""
         browser = self._browser_provider() if self._browser_provider is not None else None
-        if browser is None:
+        if browser is None or tab.context_id is None:
+            # No context yet means this is a reservation whose navigation is still in flight.
+            # Its own error path drops it, and disposing nothing here is correct.
             return
         try:
             await _dispose_context(browser, tab.context_id)
@@ -697,6 +767,13 @@ class SessionManager:
                 tab.tab_id,
                 extra={"extra_data": {"tab_id": tab.tab_id, "target_id": tab.target_id}},
             )
+
+    async def _dispose_quietly(self, browser: Any, context_id: Any, tab_id: str) -> None:
+        """Drop an orphaned context, logging rather than raising."""
+        try:
+            await _dispose_context(browser, context_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- this runs while already unwinding a torn-down session; the leak is bounded by the browser's lifetime and raising here would replace a clear error with a confusing one. Logged with its traceback below
+            log.exception("hitl: could not dispose the orphaned context for tab %s", tab_id)
 
     def _ensure_reaper(self) -> None:
         """Start the reaper loop if it is not already running."""

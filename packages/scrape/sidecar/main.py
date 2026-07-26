@@ -754,14 +754,18 @@ async def healthz() -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------
-# HITL: the VNC path only.
+# HITL: the bare VNC path.
 #
-# Three endpoints, deliberately not the session API. A session carries an id, a
-# token, isolated tab contexts, a slot budget and a TTL, and none of that exists
-# yet -- shipping an endpoint named /v1/hitl/session that had none of it would
-# claim a contract this container cannot honour. What these do is the one thing
-# this chunk is for: turn the display on, ask whether it is on, turn it off. The
-# session API replaces them rather than wrapping them.
+# These predate the session API below and remain for the case it does not cover:
+# bringing the display up on its own, to look at what the unattended browser is
+# doing, with no session and no target. That is a real diagnostic need and it is
+# why they were not deleted.
+#
+# They no longer act while a session is open, which is the part that matters.
+# The session owns the display for its whole life, so a bare POST bringing it up
+# outside a TTL, or a bare DELETE killing it under a live session that then goes
+# on reporting itself open, is two owners of one resource and a state divergence
+# waiting to happen. Both refuse with 409 and name the session API instead.
 #
 # Unauthenticated, like every other endpoint here: the sidecar holds no identity
 # and authenticates nobody. It is reachable only from inside the deployment, and
@@ -802,6 +806,17 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
     Idempotent: a caller that retries gets the running session rather than a second
     ``x11vnc`` losing a race for the RFB port.
     """
+    live = _sessions.current()
+    if live is not None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": (
+                    "a HITL session owns the display; use POST /v1/hitl/session to open one, "
+                    "or DELETE it before driving the display directly"
+                )
+            },
+        )
     try:
         session = await _vnc.start()
     except hitl.VncUnavailable as exc:
@@ -824,9 +839,19 @@ async def hitl_vnc_status() -> dict[str, Any]:
     return {"running": _vnc.health(), "display": _vnc.display}
 
 
-@app.delete("/v1/hitl/vnc")
-async def hitl_vnc_stop() -> dict[str, Any]:
-    """Stop both processes, leaving nothing listening."""
+@app.delete("/v1/hitl/vnc", response_model=None)
+async def hitl_vnc_stop() -> dict[str, Any] | JSONResponse:
+    """Stop both processes, leaving nothing listening.
+
+    Refuses while a session owns the display: stopping it underneath one would leave a session
+    reporting itself open with nothing for its operator to look at.
+    """
+    live = _sessions.current()
+    if live is not None:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead"},
+        )
     await _vnc.stop()
     return {"running": _vnc.health()}
 
@@ -865,14 +890,13 @@ async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, 
     except hitl.VncUnavailable as exc:
         log.warning("hitl: session refused, no display: %s", exc)
         return JSONResponse(status_code=503, content={"error": str(exc)})
-    vnc = _vnc
     return {
         "session_id": session.session_id,
         "token": session.token,
         "expires_at": session.expires_at,
         "max_slots": session.max_slots,
-        "vnc_path": vnc._novnc_path(),  # noqa: SLF001 -- the client path is this module's to publish
-        "vnc_port": vnc._web_port,  # noqa: SLF001
+        "vnc_path": _vnc.client_path,
+        "vnc_port": _vnc.web_port,
     }
 
 

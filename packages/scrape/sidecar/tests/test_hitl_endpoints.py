@@ -36,6 +36,14 @@ class _FakeLifecycle:
     def display(self) -> str:
         return ":99"
 
+    @property
+    def web_port(self) -> int:
+        return 6080
+
+    @property
+    def client_path(self) -> str:
+        return "/vnc_lite.html?path=websockify"
+
     def health(self) -> bool:
         return self._running
 
@@ -99,3 +107,201 @@ async def test_an_unavailable_vnc_path_is_a_503_not_a_traceback(monkeypatch: pyt
     r = await _call("POST", "/v1/hitl/vnc")
     assert r.status_code == 503
     assert "not installed" in r.json()["error"]
+
+
+# --------------------------------------------------------------------------
+# Session endpoints. The manager's own behaviour is covered in
+# test_hitl_session.py; what is only reachable here is the HTTP surface: the two
+# header forms a token may arrive in, and the status-code mapping a caller
+# branches on.
+# --------------------------------------------------------------------------
+
+
+# parity-exempt: stands in for this sidecar's own hitl.SessionManager, mirroring the members main calls (open/authorize/open_tab/complete_tab/close/current/vnc); the sidecar is a standalone deployable never installed in the workspace venv, so a parity-with marker cannot resolve there
+class _FakeSessions:
+    """A session manager whose outcomes are scripted, to drive each status code."""
+
+    def __init__(self) -> None:
+        self.vnc = _FakeLifecycle()
+        self._session: Any = None
+        self.open_error: Exception | None = None
+        self.tab_error: Exception | None = None
+        self.authorized_with: list[tuple[str, str]] = []
+
+    def current(self) -> Any:
+        return self._session
+
+    def authorize(self, session_id: str, token: str, **_kw: Any) -> Any:
+        self.authorized_with.append((session_id, token))
+        from hitl import SessionNotFound
+
+        if self._session is None or token != self._session.token or session_id != self._session.session_id:
+            raise SessionNotFound("no such session")
+        return self._session
+
+    async def open(self, **_kw: Any) -> Any:
+        if self.open_error is not None:
+            raise self.open_error
+        from hitl import HitlSession
+
+        self._session = HitlSession(session_id="sid", token="tok", expires_at=99.0, max_slots=2)
+        await self.vnc.start()
+        return self._session
+
+    async def open_tab(self, session: Any, *, target_id: str, url: str, nav_steps: Any = None) -> Any:
+        if self.tab_error is not None:
+            raise self.tab_error
+        from hitl import HitlTab
+
+        tab = HitlTab(tab_id="t1", target_id=target_id, url=url, tab=None, context_id="ctx", opened_at=0.0)
+        session.tabs[tab.tab_id] = tab
+        return tab
+
+    async def complete_tab(self, session: Any, tab_id: str) -> Any:
+        from hitl import SessionNotFound
+
+        tab = session.tabs.pop(tab_id, None)
+        if tab is None:
+            raise SessionNotFound("no such tab")
+        return tab
+
+    async def close(self, session: Any = None) -> None:
+        self._session = None
+        await self.vnc.stop()
+
+
+@pytest.fixture()
+def fake_sessions(monkeypatch: pytest.MonkeyPatch) -> _FakeSessions:
+    fake = _FakeSessions()
+    monkeypatch.setattr(main, "_sessions", fake)
+    monkeypatch.setattr(main, "_vnc", fake.vnc)
+    return fake
+
+
+async def _open(fake: _FakeSessions) -> tuple[str, str]:
+    r = await _call("POST", "/v1/hitl/session")
+    assert r.status_code == 200
+    return r.json()["session_id"], r.json()["token"]
+
+
+async def test_opening_returns_the_token_once_and_says_where_the_display_is(
+    fake_sessions: _FakeSessions,
+) -> None:
+    r = await _call("POST", "/v1/hitl/session")
+    body = r.json()
+    assert r.status_code == 200
+    assert body["token"] == "tok"
+    assert body["max_slots"] == 2
+    assert body["vnc_path"].startswith("/vnc_lite.html")
+
+
+async def test_a_second_session_is_409_not_a_queue(fake_sessions: _FakeSessions) -> None:
+    """A caller has to be able to tell "busy" from "broken" to know whether to retry."""
+    from hitl import SessionUnavailable
+
+    await _open(fake_sessions)
+    fake_sessions.open_error = SessionUnavailable("a session is already open")
+    r = await _call("POST", "/v1/hitl/session")
+    assert r.status_code == 409
+
+
+async def test_no_display_is_503_not_409(fake_sessions: _FakeSessions) -> None:
+    """Different cause, different code: 409 says try later, 503 says this container is broken."""
+    from hitl import VncUnavailable
+
+    fake_sessions.open_error = VncUnavailable("x11vnc is not installed")
+    r = await _call("POST", "/v1/hitl/session")
+    assert r.status_code == 503
+
+
+async def test_the_token_is_accepted_in_either_header_form(fake_sessions: _FakeSessions) -> None:
+    """Bearer for anything that speaks HTTP normally, X-HITL-Token for anything that does not."""
+    sid, tok = await _open(fake_sessions)
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        bearer = await client.get(f"/v1/hitl/session/{sid}", headers={"Authorization": f"Bearer {tok}"})
+        custom = await client.get(f"/v1/hitl/session/{sid}", headers={"X-HITL-Token": tok})
+        lower = await client.get(f"/v1/hitl/session/{sid}", headers={"Authorization": f"bearer {tok}"})
+    assert bearer.status_code == 200
+    assert custom.status_code == 200
+    assert lower.status_code == 200, "the scheme is case-insensitive per RFC 7235"
+
+
+async def test_a_missing_or_wrong_token_is_404(fake_sessions: _FakeSessions) -> None:
+    sid, _ = await _open(fake_sessions)
+    assert (await _call("GET", f"/v1/hitl/session/{sid}")).status_code == 404
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.get(f"/v1/hitl/session/{sid}", headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 404
+
+
+async def test_a_tab_that_will_not_open_is_502_and_leaves_the_session_alive(
+    fake_sessions: _FakeSessions,
+) -> None:
+    """One target's nav-step replay failing is that target's problem, not the operator's session.
+
+    A 500 would say the sidecar is broken; the truth is this one URL did not come up, and the
+    other tabs are fine.
+    """
+    sid, tok = await _open(fake_sessions)
+    fake_sessions.tab_error = RuntimeError("nav step timed out")
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.post(
+            f"/v1/hitl/session/{sid}/tab",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"target_id": "a", "url": "https://a.example"},
+        )
+        still = await client.get(f"/v1/hitl/session/{sid}", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 502
+    assert still.status_code == 200, "one failed target tore down the whole session"
+
+
+async def test_slot_exhaustion_is_409_at_the_http_boundary(fake_sessions: _FakeSessions) -> None:
+    from hitl import SessionUnavailable
+
+    sid, tok = await _open(fake_sessions)
+    fake_sessions.tab_error = SessionUnavailable("all 2 slots are occupied")
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.post(
+            f"/v1/hitl/session/{sid}/tab",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"target_id": "a", "url": "https://a.example"},
+        )
+    assert r.status_code == 409, "a full session must be distinguishable from a broken one"
+
+
+async def test_completing_an_unknown_tab_is_404(fake_sessions: _FakeSessions) -> None:
+    sid, tok = await _open(fake_sessions)
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.post(f"/v1/hitl/session/{sid}/tab/nope/complete", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 404
+
+
+async def test_the_bare_vnc_endpoints_refuse_while_a_session_owns_the_display(
+    fake_sessions: _FakeSessions,
+) -> None:
+    """Two owners of one display is a state divergence, not a convenience.
+
+    A bare POST would bring the display up outside any TTL; a bare DELETE would kill it under
+    a live session that then goes on reporting itself open, with nothing for its operator to
+    look at. Both refuse and name the session API.
+    """
+    await _open(fake_sessions)
+
+    started = await _call("POST", "/v1/hitl/vnc")
+    stopped = await _call("DELETE", "/v1/hitl/vnc")
+
+    assert started.status_code == 409
+    assert "session" in started.json()["error"]
+    assert stopped.status_code == 409
+    assert fake_sessions.vnc.health(), "a bare DELETE stopped the display under a live session"
+
+
+async def test_the_bare_vnc_endpoints_still_work_with_no_session(fake_sessions: _FakeSessions) -> None:
+    """The diagnostic case they exist for: look at the unattended browser, no session involved."""
+    assert (await _call("POST", "/v1/hitl/vnc")).status_code == 200
+    assert (await _call("DELETE", "/v1/hitl/vnc")).status_code == 200

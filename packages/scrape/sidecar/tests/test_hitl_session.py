@@ -207,19 +207,120 @@ async def test_an_unknown_id_or_token_is_refused_and_says_nothing_useful(manager
     session = await manager.open(now=1000.0)
 
     with pytest.raises(SessionNotFound) as wrong_token:
-        manager.authorize(session.session_id, "not-the-token")
+        manager.authorize(session.session_id, "not-the-token", now=1001.0)
     with pytest.raises(SessionNotFound) as wrong_id:
-        manager.authorize("not-the-session", session.token)
+        manager.authorize("not-the-session", session.token, now=1001.0)
 
     assert str(wrong_token.value) == str(wrong_id.value), (
         "the two failures are distinguishable, so a wrong token confirms a correct id"
     )
-    assert manager.authorize(session.session_id, session.token) is session
+    assert manager.authorize(session.session_id, session.token, now=1001.0) is session
 
 
 async def test_authorizing_against_no_session_is_refused(manager: SessionManager) -> None:
     with pytest.raises(SessionNotFound):
-        manager.authorize("anything", "anything")
+        manager.authorize("anything", "anything", now=1000.0)
+
+
+async def test_an_expired_session_is_refused_without_waiting_for_the_reaper(
+    manager: SessionManager,
+) -> None:
+    """A hard TTL that depends on a background task staying alive is not a hard TTL.
+
+    The reaper polls, so between expiry and the next tick there is a window in which a passed
+    ceiling is still honoured -- and the reaper is a task that can die, after which nothing
+    else enforces it at all. Checking on the request path makes the reaper an optimisation
+    that frees the display promptly, rather than the mechanism.
+    """
+    session = await manager.open(now=1000.0)
+    assert manager.authorize(session.session_id, session.token, now=1099.0) is session
+
+    with pytest.raises(SessionNotFound):
+        manager.authorize(session.session_id, session.token, now=1100.0)
+    with pytest.raises(SessionNotFound):
+        manager.authorize(session.session_id, session.token, now=9999.0)
+
+
+async def test_an_expired_session_is_refused_indistinguishably_from_an_unknown_one(
+    manager: SessionManager,
+) -> None:
+    """An expired id is still an id that existed, so confirming it leaks the target of a guess."""
+    session = await manager.open(now=1000.0)
+    with pytest.raises(SessionNotFound) as expired:
+        manager.authorize(session.session_id, session.token, now=2000.0)
+    with pytest.raises(SessionNotFound) as unknown:
+        manager.authorize("never-existed", session.token, now=1001.0)
+    assert str(expired.value) == str(unknown.value)
+
+
+async def test_a_non_ascii_id_or_token_is_refused_rather_than_crashing(manager: SessionManager) -> None:
+    """Both operands come straight from a caller, and ``compare_digest`` rejects non-ASCII str.
+
+    The id is a UTF-8 path segment and the token is a header, so one accented character would
+    otherwise turn a refusal into an unhandled ``TypeError`` -- a 500 where a 404 belongs,
+    which is both the wrong answer and a signal that the input reached further than it should.
+    """
+    session = await manager.open(now=1000.0)
+    for bad in ("sessión", "toke\u00e9n", "\U0001f600"):
+        with pytest.raises(SessionNotFound):
+            manager.authorize(bad, session.token, now=1001.0)
+        with pytest.raises(SessionNotFound):
+            manager.authorize(session.session_id, bad, now=1001.0)
+
+
+async def test_a_tab_that_fails_to_open_does_not_keep_its_slot(
+    manager: SessionManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reservation must not outlive the attempt it was reserving for.
+
+    Slots are reserved before the navigation so the budget stays honest while the lock is
+    released. If a failed navigation left its reservation behind, a target that could not be
+    opened would silently cost the operator a slot for the rest of the session.
+    """
+    session = await manager.open(now=1000.0)
+
+    async def _explode(_browser: Any, _url: str, _nav: Any) -> tuple[Any, Any]:
+        await asyncio.sleep(0)
+        raise RuntimeError("navigation failed")
+
+    monkeypatch.setattr(hitl, "_open_isolated", _explode)
+    with pytest.raises(RuntimeError, match="navigation failed"):
+        await manager.open_tab(session, target_id="doomed", url="https://x.example")
+
+    assert session.free_slots() == session.max_slots, "a failed open kept its slot"
+    assert session.tabs == {}
+
+
+async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManager, monkeypatch) -> None:
+    """The lock must not span the navigation, or the model this session documents is false.
+
+    "Backgrounding a slow target still holds its slot" only works if a slow target does not
+    also hold the manager. Holding the lock across the CDP work would serialise every open
+    behind the slowest, defer the reaper, and hang a teardown.
+    """
+    session = await manager.open(now=1000.0)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow(_browser: Any, _url: str, _nav: Any) -> tuple[Any, Any]:
+        started.set()
+        await release.wait()
+        return object(), "ctx-slow"
+
+    monkeypatch.setattr(hitl, "_open_isolated", _slow)
+    task = asyncio.create_task(manager.open_tab(session, target_id="slow", url="https://slow.example"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    # While that one is mid-navigation, the session must still answer.
+    state = await asyncio.wait_for(asyncio.to_thread(lambda: session.free_slots()), timeout=1.0)
+    assert state == session.max_slots - 1, "the in-flight tab did not reserve its slot"
+    assert await asyncio.wait_for(manager.reap(now=1001.0), timeout=1.0) is False, (
+        "the reaper could not run while a tab was opening, so the TTL depends on navigation speed"
+    )
+
+    release.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert session.free_slots() == session.max_slots - 1
 
 
 async def test_teardown_drops_contexts_stops_the_display_and_is_idempotent(manager: SessionManager) -> None:
