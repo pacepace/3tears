@@ -429,9 +429,10 @@ class TestListingDetailAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
             await driver.render("https://example.gov/warn", session_state={"cookies": [{"name": "s"}]})
 
-        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
-            f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
-        )
+        # Keyed on the driver's OWN logger, so a warning emitted by some other module cannot
+        # stand in for this one -- which matters once a wrapping driver delegates to another.
+        mine = [r for r in caplog.records if "cannot apply it" in r.getMessage() and r.name.endswith("listing_detail")]
+        assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog):
         driver = _driver(self._handler)

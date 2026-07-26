@@ -11,6 +11,15 @@
 # maintained in lockstep with ruff's per-file-ignores for SLF001 in
 # pyproject.toml. every exemption here must have a matching ruff ignore
 # so the two systems agree.
+#
+# NOTE ON LINE NUMBERS: entries under a path that also carries a per-file
+# ignore are documentation, not enforcement -- the walker scans
+# packages/*/src only, so nothing checks that these triples still resolve.
+# they drift silently when the file is edited above them. regenerate rather
+# than hand-edit:
+#   uv run ruff check --select SLF001 --isolated --line-length 120 \
+#       --output-format concise <path>
+# and rewrite that path's entries from the result.
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
 packages/observe/src/threetears/observe/logging.py:212:_getframe
@@ -226,9 +235,27 @@ packages/scrape/tests/test_tool.py:1073:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
 packages/scrape/tests/test_tool.py:1074:_egress
 
-# rationale: the dropped-solve warning is protected -- implementations call it and consumers never do -- so exercising it from the contract suite is the only way to assert every backend actually emits it; calling render() per backend would need five different fixtures to assert one shared property
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
 packages/scrape/tests/test_driver_contract.py:318:_warn_dropped_session_state
-# rationale: the dropped-solve warning is protected -- implementations call it and consumers never do -- so exercising it from the contract suite is the only way to assert every backend actually emits it; calling render() per backend would need five different fixtures to assert one shared property
-packages/scrape/tests/test_driver_contract.py:338:_warn_dropped_session_state
-# rationale: the dropped-solve warning is protected -- implementations call it and consumers never do -- so exercising it from the contract suite is the only way to assert every backend actually emits it; calling render() per backend would need five different fixtures to assert one shared property
-packages/scrape/tests/test_driver_contract.py:353:_warn_dropped_session_state
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
+packages/scrape/tests/test_driver_contract.py:335:_warn_dropped_session_state
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
+packages/scrape/tests/test_driver_contract.py:360:_warn_dropped_session_state
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
+packages/scrape/tests/test_driver_contract.py:361:_warn_dropped_session_state
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
+packages/scrape/tests/test_driver_contract.py:379:_warn_dropped_session_state
+# rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
+packages/scrape/tests/test_driver_contract.py:401:_MAX_WARNED_ORIGINS
+# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once. The per-driver call sites are covered separately at render level in each driver's own suite, which is where deleting a call site must fail
+packages/scrape/tests/test_driver_contract.py:402:_warn_dropped_session_state
+# rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
+packages/scrape/tests/test_driver_contract.py:404:_warned_dropped_origins
+# rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
+packages/scrape/tests/test_driver_contract.py:405:_warned_dropped_origins
+# rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
+packages/scrape/tests/test_driver_contract.py:405:_MAX_WARNED_ORIGINS
+# rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
+packages/scrape/tests/test_driver_contract.py:406:_warned_dropped_origins
+# rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
+packages/scrape/tests/test_driver_contract.py:407:_MAX_WARNED_ORIGINS

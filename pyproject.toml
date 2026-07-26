@@ -164,7 +164,7 @@ select = ["SLF"]
 # own commit immediately invalidated.
 #
 # The cost is real and worth stating: a per-file ignore also suppresses every FUTURE
-# private access in these four files, where an inline pragma would not. That is the trade the
+# private access in the files listed below, where an inline pragma would not. That is the trade the
 # ledger exists to offset -- the entries are the record of what was actually justified.
 #
 # It does NOT affect the enforcement walker either way: `find_local_src_roots` scans

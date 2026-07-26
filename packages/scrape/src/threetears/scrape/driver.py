@@ -40,7 +40,20 @@ _MAX_WARNED_ORIGINS = 512
 
 
 def _origin_of(url: str) -> str:
-    """``scheme://host[:port]`` for *url*, or the url itself when it has no parseable origin."""
+    """``scheme://host[:port]`` for *url*, or the url itself when it has no parseable origin.
+
+    Deliberately NOT shared with :func:`threetears.scrape.robots._origin_of`, whose contract is
+    ``str | None``. The two answer the same question for opposite purposes, and the difference
+    is the return type. Robots must distinguish "no usable origin" so it can decline to apply a
+    site's rules to something that is not a site; here the value is only ever a dedupe key, and
+    ``None`` would collapse every unparseable url into one bucket -- so a batch of odd urls
+    would report the first and silence the rest, which is the failure this dedupe exists to
+    avoid. Falling back to the url keeps each one distinct.
+
+    Sharing them would mean one of the two callers handling a case it has no answer for. This
+    module also keeps a zero-non-stdlib-import discipline, so importing from ``robots`` would
+    cost more than the six lines it saved.
+    """
     parts = urlsplit(url)
     if not parts.scheme or not parts.netloc:
         return url
@@ -218,7 +231,7 @@ class ScrapeDriver(ABC):
         self._warned_dropped_origins.add(origin)
         log.warning(
             "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
-            "unauthenticated. %s (reported once per driver instance)",
+            "unauthenticated. %s (reported once per site)",
             self.name,
             url,
             self.dropped_solve_remedy,

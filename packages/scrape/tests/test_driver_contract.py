@@ -336,6 +336,14 @@ class TestADroppedSolveIsNeverSilent:
 
         emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
         assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one origin"
+        # The TAIL, not just the stem. This is the only operator-visible statement of the
+        # cardinality, and it went stale silently once already: every assertion in this branch
+        # matched on "cannot apply it" and none on what followed, so the message kept promising
+        # "once per driver instance" after the behaviour became once per site -- telling an
+        # operator that a second site's silence was expected.
+        assert "once per site" in emitted[0].getMessage(), (
+            f"the message describes a cardinality the code no longer has: {emitted[0].getMessage()}"
+        )
 
     @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
     def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str) -> None:
@@ -373,3 +381,28 @@ class TestADroppedSolveIsNeverSilent:
         message = caplog.records[0].getMessage()
         assert "/v1/download" in message, f"the remedy was not made specific to this driver: {message}"
         assert "Use the nodriver sidecar driver" not in message
+
+
+async def test_the_dropped_solve_memory_does_not_grow_without_bound() -> None:
+    """The resource guard, which was the one added branch nothing asserted.
+
+    A long-lived process scraping a wide set of sites would otherwise hold one origin string
+    per site it had ever touched, forever -- the same leak the robots gate had to fix. Deleting
+    the cap left the suite green while the CHANGELOG claimed the bound, which is the shape where
+    a documented guarantee quietly stops being true.
+
+    Asserted on the observed size after exceeding the cap, not on the constant: a bound that is
+    configured and never enforced is exactly the failure worth excluding.
+    """
+    from threetears.scrape import driver as driver_mod
+
+    d = ApiDriver()
+    log = logging.getLogger("threetears.scrape.drivers.api")
+    for i in range(driver_mod._MAX_WARNED_ORIGINS + 25):
+        d._warn_dropped_session_state(f"https://s{i}.example/a", log)
+
+    assert d._warned_dropped_origins is not None
+    assert len(d._warned_dropped_origins) <= driver_mod._MAX_WARNED_ORIGINS, (
+        f"remembered {len(d._warned_dropped_origins)} origins against a cap of "
+        f"{driver_mod._MAX_WARNED_ORIGINS}; the set grows with every site the process ever sees"
+    )

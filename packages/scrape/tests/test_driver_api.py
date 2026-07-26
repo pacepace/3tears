@@ -363,9 +363,10 @@ class TestApiDriverAnnouncesADroppedSolve:
                 session_state={"cookies": [{"name": "s", "value": "solved"}]},
             )
 
-        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
-            f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
-        )
+        # Keyed on the driver's OWN logger, so a warning emitted by some other module cannot
+        # stand in for this one -- which matters once a wrapping driver delegates to another.
+        mine = [r for r in caplog.records if "cannot apply it" in r.getMessage() and r.name.endswith("api")]
+        assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog):
         """A warning on every render is noise that teaches the reader to skip it."""

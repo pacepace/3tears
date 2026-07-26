@@ -304,8 +304,16 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
             await driver.render("https://workforcewv.org/notice.pdf", session_state={"cookies": [{"name": "s"}]})
 
-        messages = [r.getMessage() for r in caplog.records if "cannot apply it" in r.getMessage()]
-        assert messages, f"render() dropped a solve silently; records: {[r.getMessage() for r in caplog.records]}"
+        # Keyed on this driver's OWN logger, so a warning from another module cannot stand in
+        # for it -- which matters here especially, since this driver talks to the sidecar.
+        messages = [
+            r.getMessage()
+            for r in caplog.records
+            if "cannot apply it" in r.getMessage() and r.name.endswith("nodriver_download")
+        ]
+        assert messages, (
+            f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
+        )
         assert "/v1/download" in messages[0], f"the generic remedy leaked through: {messages[0]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
