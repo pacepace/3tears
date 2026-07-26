@@ -19,6 +19,7 @@ from uuid import uuid7
 
 __all__ = [
     "atomic_write",
+    "atomic_write_sync",
 ]
 
 
@@ -83,3 +84,24 @@ async def atomic_write(path: Path, content: bytes | str) -> None:
     """
     payload = content.encode("utf-8") if isinstance(content, str) else content
     await asyncio.to_thread(_write_atomically, path, payload)
+
+
+def atomic_write_sync(path: Path, content: bytes | str) -> None:
+    """write content to path atomically, BLOCKING the calling thread.
+
+    same tmp + fsync + rename + dir-fsync sequence as :func:`atomic_write`, for callers that
+    genuinely have no event loop to await on. prefer :func:`atomic_write` from async code --
+    the fsync pair here is the slow part, and running it inline stalls every coroutine in the
+    process.
+
+    :param path: destination filesystem path for final file
+    :ptype path: Path
+    :param content: raw bytes, or str encoded as UTF-8 before writing
+    :ptype content: bytes | str
+    :return: None
+    :rtype: None
+    :raises OSError: if filesystem operation fails at any step
+    :raises UnicodeEncodeError: if str content cannot be encoded as UTF-8
+    """
+    payload = content.encode("utf-8") if isinstance(content, str) else content
+    _write_atomically(path, payload)
