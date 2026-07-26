@@ -199,3 +199,151 @@ async def test_an_explicit_origin_override_skips_the_file_entirely() -> None:
 
 async def test_a_non_http_url_has_no_robots_to_consult() -> None:
     assert (await RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW)).check("file:///etc/passwd")).allowed is True
+
+
+# ---------------------------------------------------------------------------
+# The wiring. These are the tests whose absence let chunk 09 be marked done
+# while nothing consulted a robots.txt -- the same defect as chunk 06, against
+# a rule this plan had already recorded: any chunk that widens a contract names
+# the caller that closes it.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDriver:
+    """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+    def __init__(self) -> None:
+        self.fetched: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "recording"
+
+    async def render(
+        self,
+        url: str,
+        *,
+        timeout: float = 30.0,
+        wait_for: str | None = None,
+        capture_network: bool = False,
+        nav_steps: list | None = None,
+        session_state: dict | None = None,
+    ):
+        from threetears.scrape.driver import RenderedPage
+
+        self.fetched.append(url)
+        return RenderedPage(
+            html="<html><body><table><tr><td>Acme Corp</td><td>42</td></tr></table></body></html>",
+            status=200,
+            final_url=url,
+            timing_ms=1.0,
+        )
+
+
+async def _tool_with_robots(driver, gate, *, target_id: str):
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": target_id,
+                "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
+    )
+    return ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": driver},
+        robots=gate,
+        api_key="k",
+    )
+
+
+async def test_a_disallowed_target_is_never_fetched_and_asks_for_a_human() -> None:
+    """The whole chunk, at the only boundary that can prove it.
+
+    Every piece of `robots.py` was built and tested and NOTHING consulted it, so no crawl
+    delay was ever waited and no Disallow ever escalated -- and nothing in a log or a column
+    would have shown it. The driver's call list is the assertion, because "we did not fetch"
+    is the claim.
+    """
+    from threetears.scrape.tool import _derive_target_id
+
+    url = "https://example.gov/private/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    driver = _RecordingDriver()
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))
+    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+
+    result = await tool.execute(url=url, field_schema=schema)
+
+    assert driver.fetched == [], "a disallowed target was fetched anyway"
+    assert result.success is False
+    assert result.metadata["needs_human"] is True
+    assert result.metadata["reason"] == "robots_disallow"
+
+
+async def test_an_allowed_target_is_fetched_normally() -> None:
+    """A Disallow on one path must not stop the rest of a site."""
+    from threetears.scrape.tool import _derive_target_id
+
+    url = "https://example.gov/public/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    driver = _RecordingDriver()
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))
+    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+
+    await tool.execute(url=url, field_schema=schema)
+
+    assert driver.fetched == [url]
+
+
+async def test_a_crawl_delay_actually_delays_a_second_fetch() -> None:
+    """Observed timing, not a stored setting.
+
+    A politeness flag that reads "on" while every fetch goes out immediately is worse than one
+    that is off, because it is believed. The sleep is patched so the test asserts the wait was
+    REQUESTED and for how long, without spending it.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from threetears.scrape.tool import _derive_target_id
+
+    url = "https://example.gov/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    driver = _RecordingDriver()
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+    tool = await _tool_with_robots(driver, gate, target_id=_derive_target_id(url, schema))
+
+    with patch("threetears.scrape.tool.asyncio.sleep", new=AsyncMock()) as slept:
+        await tool.execute(url=url, field_schema=schema)
+        assert slept.await_count == 0, "nothing is owed before the first fetch"
+
+        await tool.execute(url=url, field_schema=schema)
+        assert slept.await_count == 1, "the site asked for 10s between requests and none was waited"
+        assert slept.await_args[0][0] > 0
+
+    assert driver.fetched == [url, url]
+
+
+async def test_without_a_gate_nothing_changes() -> None:
+    """Every pre-existing caller keeps today's behaviour, including consulting no robots.txt."""
+    from threetears.scrape.tool import _derive_target_id
+
+    url = "https://example.gov/private/list"
+    schema = {"employer": "str", "affected_count": "int"}
+    driver = _RecordingDriver()
+    tool = await _tool_with_robots(driver, None, target_id=_derive_target_id(url, schema))
+
+    await tool.execute(url=url, field_schema=schema)
+
+    assert driver.fetched == [url]

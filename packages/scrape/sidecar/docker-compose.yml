@@ -11,10 +11,15 @@ services:
       # Deliberately NOT publishing 6080 (websockify / noVNC).
       #
       # Adding `- "6080:6080"` here is a one-line change that looks helpful and is not: the
-      # HITL endpoints authenticate nobody. The sidecar holds no identity and cannot evaluate
-      # a policy, so anything that reaches 6080 gets full mouse and keyboard on a browser that
-      # may be holding a target's authenticated session. The token check is Chunk 05 and the
-      # authorization that mints it is Chunk 07, both on the MIT side.
+      # HITL endpoints authenticate nobody, and they never will. The sidecar holds no identity
+      # and cannot evaluate a policy, so anything that reaches 6080 gets full mouse and
+      # keyboard on a browser that may be holding a target's authenticated session.
+      #
+      # The session token proves only that a caller holds something this container minted --
+      # deciding who was ENTITLED to it is the consuming platform's job, evaluated where
+      # identity actually lives. This is not a control that is coming later; it is one that
+      # belongs somewhere else. Put this port behind whatever fronts the rest of your
+      # deployment.
       #
       # For a local look at it, publish the port on the command line where the decision is
       # visible and temporary, rather than committing it into the compose file:
@@ -32,3 +37,20 @@ services:
       retries: 5
       start_period: 20s
     restart: unless-stopped
+    # Uncomment with the tor service below to send this container's browser out through TOR.
+    # EGRESS_NAME is what gets recorded against a result, so "walled" can be told apart from
+    # "walled from this exit".
+    # environment:
+    #   EGRESS_PROXY: "socks5://tor:9050"
+    #   EGRESS_NAME: "tor"
+
+  # An exit, not a requirement. Commented out because the default route is the default, and a
+  # compose file that silently routes every scrape through TOR would be a surprising thing to
+  # inherit. TOR exits are public, enumerable and heavily challenged by exactly the bot walls
+  # this package works around -- it is a tool for non-attribution, and it raises the challenge
+  # rate rather than lowering it. Chromium takes --proxy-server process-wide, so one container
+  # is one exit; running two exits means running two of these.
+  #
+  # tor:
+  #   image: osminogin/tor-simple:latest
+  #   restart: unless-stopped

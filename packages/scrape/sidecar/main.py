@@ -669,6 +669,21 @@ async def _warm_up() -> None:
     _ready = True
 
 
+def _browser_args() -> list[str]:
+    """Chromium's launch arguments, including the egress exit when one is configured.
+
+    A function rather than a literal inside ``_lifespan`` so a test can assert on the arguments
+    PRODUCTION builds. The first version of that test rebuilt the list itself and asserted on
+    its own copy, which stayed green with the production line deleted -- a test of the test.
+    """
+    args = ["--disable-dev-shm-usage", "--disable-gpu"]
+    if EGRESS_PROXY:
+        # Process-wide by nature: Chromium takes --proxy-server for the whole browser, so it
+        # cannot vary per tab and one container is one exit.
+        args.append(f"--proxy-server={EGRESS_PROXY}")
+    return args
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _browser
@@ -690,11 +705,7 @@ async def _lifespan(_app: FastAPI):
         # only via browser_args is not sufficient -- nodriver's own
         # connect-back check still refuses to start without this.
         sandbox=False,
-        browser_args=[
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            *([f"--proxy-server={EGRESS_PROXY}"] if EGRESS_PROXY else []),
-        ],
+        browser_args=_browser_args(),
     )
     await _warm_up()
     yield

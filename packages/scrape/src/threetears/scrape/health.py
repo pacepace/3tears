@@ -153,6 +153,24 @@ class ScrapeTargetHealth(BaseEntity):
         return _parse_dt(self._get_raw("last_blocked_at"))
 
     @property
+    def last_egress(self) -> str | None:
+        """Which exit the last recorded observation left by; ``None`` when none was recorded.
+
+        With more than one exit configured, this is what separates "this target is walled"
+        from "this target is walled FROM THIS EXIT". Without it a target blocked through one
+        route looks permanently walled, its circuit backs it off, and a working alternative is
+        never tried -- the backoff learning a lesson about the exit rather than the target.
+
+        ``None`` is a real state, not a gap: every row written before this column existed, and
+        every deployment that configures no egress at all. See
+        :data:`threetears.core.egress.DirectEgress` for why "direct" is a named exit rather
+        than the absence of one -- a caller that stamps it is saying something, and a caller
+        that stamps nothing is not.
+        """
+        result: str | None = self._get_raw("last_egress", None)
+        return result
+
+    @property
     def last_block_kind(self) -> str | None:
         """What kind of wall was last observed, as evidence for an operator; ``None`` if never.
 
@@ -210,8 +228,9 @@ class ScrapeTargetHealth(BaseEntity):
         operator-supplied master key, because these are live session credentials: never
         stored in the clear, never logged, never included in a debug dump.
 
-        **Nothing writes this yet.** The column ships in ``v010``; the code that populates it
-        lands with the human-in-the-loop session work. Read it as absent, not as observed.
+        Written by :func:`threetears.scrape.session_state.record_session_state` when a human
+        clears a target in a HITL session and their exported browser state is sealed for reuse.
+        Absent means no human has cleared this target, or the stored solve has been cleared.
         """
         result: str | None = self._get_raw("session_state_sealed", None)
         return result
@@ -223,7 +242,9 @@ class ScrapeTargetHealth(BaseEntity):
         Treated as advisory: past this point the state is ignored and a human is needed
         again, which degrades to "ask for help", never to bad data.
 
-        **Nothing writes this yet**, alongside :attr:`session_state_sealed`.
+        Written together with :attr:`session_state_sealed`, always. A token with no expiry is a
+        credential of unknown lifetime, so a missing one here is read as expired rather than as
+        eternal -- see :func:`threetears.scrape.session_state.usable_session_state`.
         """
         return _parse_dt(self._get_raw("session_state_expires_at"))
 
@@ -293,7 +314,7 @@ class ScrapeTargetHealthCollection(ScrapeCollection[ScrapeTargetHealth]):
         rows = await self.l3_pool.fetch(
             "SELECT target_id, content_fingerprint, fingerprint_updated_at, "
             "consecutive_fetch_failures, circuit_state, blocked_until, last_blocked_at, "
-            "last_block_kind, classified_fingerprint, classified_verdict, classified_evidence, "
+            "last_block_kind, last_egress, classified_fingerprint, classified_verdict, classified_evidence, "
             "session_state_sealed, session_state_expires_at, date_created, date_updated "
             "FROM scrape_target_health "
             "WHERE circuit_state <> 'closed' AND last_blocked_at IS NOT NULL "
@@ -387,6 +408,7 @@ async def record_circuit_state(
     consecutive_fetch_failures: int,
     blocked_until: datetime | None,
     blocked_at: datetime | None = None,
+    egress: str | None = None,
 ) -> ScrapeTargetHealth:
     """Persist where *target_id*'s fetch circuit now stands.
 
@@ -411,6 +433,9 @@ async def record_circuit_state(
     :ptype blocked_until: datetime | None
     :param blocked_at: when this block was observed; omitted leaves the previous value
     :ptype blocked_at: datetime | None
+    :param egress: which exit this observation left by, e.g. ``"tor"``; omitted leaves the
+        previous value, so a caller with no egress configured never stamps one
+    :ptype egress: str | None
     :return: the persisted health row
     :rtype: ScrapeTargetHealth
     """
@@ -421,6 +446,10 @@ async def record_circuit_state(
     }
     if blocked_at is not None:
         changes["last_blocked_at"] = blocked_at
+    if egress is not None:
+        # Only written when the caller actually knows: an unstamped row means "no exit was
+        # recorded", which is different from and more honest than asserting "direct".
+        changes["last_egress"] = egress
     return await _merge_health(health_collection, target_id=target_id, changes=changes)
 
 

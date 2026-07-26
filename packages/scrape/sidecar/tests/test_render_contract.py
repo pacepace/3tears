@@ -1288,20 +1288,19 @@ class TestEgressReporting:
         assert body["egress"] == "direct"
 
     def test_a_configured_proxy_reaches_the_browser_args(self, monkeypatch) -> None:
-        """The launch argument is the whole mechanism, so it is what gets asserted.
+        """Reads the list PRODUCTION builds, which the first version of this test did not.
 
-        Chromium accepts --proxy-server silently and ignores nothing about it; the failure
-        this guards is the argument never being built, which looks identical from inside the
-        container and only differs at the far end.
+        That version rebuilt the argument list inside itself and asserted on its own copy, so
+        deleting the production line left it green -- a test of the test. The failure being
+        guarded is the argument never being built, which looks identical from inside the
+        container and only differs at the far end, where nobody is watching.
         """
         monkeypatch.setattr(main, "EGRESS_PROXY", "socks5://tor:9050")
-        args = [
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            *([f"--proxy-server={main.EGRESS_PROXY}"] if main.EGRESS_PROXY else []),
-        ]
-        assert "--proxy-server=socks5://tor:9050" in args
+        assert "--proxy-server=socks5://tor:9050" in main._browser_args()  # noqa: SLF001
 
+    def test_no_proxy_configured_adds_no_argument(self, monkeypatch) -> None:
+        """The default route stays the default route, with no empty --proxy-server."""
         monkeypatch.setattr(main, "EGRESS_PROXY", None)
-        args = [*([f"--proxy-server={main.EGRESS_PROXY}"] if main.EGRESS_PROXY else [])]
-        assert args == []
+        args = main._browser_args()  # noqa: SLF001
+        assert not any(a.startswith("--proxy-server") for a in args)
+        assert "--disable-dev-shm-usage" in args, "the other launch arguments were lost"

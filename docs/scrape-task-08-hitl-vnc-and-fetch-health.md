@@ -473,6 +473,96 @@ what the unified audit trail is for.
 "This target needs a human" is published over NATS using the existing `Subjects` builders. That
 is the whole integration surface with the queue.
 
+### 7. Egress: which exit a request leaves by
+
+**Requirement, raised 2026-07-26, mid-build.** TOR egress is fundamental to the scraper, with
+Cloudflare WARP as an option, and both behind a driver seam so a third exit later is one class
+rather than a change to the scraper.
+
+**The goal, settled and not to be relitigated.** TOR serves BOTH non-attribution and block
+evasion, and neither reliably. It is wanted for toolbox completeness -- "just another tool in
+our tool box that we need to have so we're complete" -- with the limits understood up front:
+TOR exits are public, enumerable, heavily challenged by bot walls, and frequently blocked
+outright by exactly the attribution-averse sites someone would reach for it against. Routing a
+target through TOR RAISES the challenge rate that sections 1 through 3 exist to lower, and the
+human path in sections 4 through 6 is what pays for that. This is a reason to make the exit
+selectable per target, not a reason to omit it.
+
+**Built in `threetears.core.egress`, not in this package.** Every app on this framework
+eventually wants a request to leave by something other than the container's default route, and
+putting it where it was first needed is how ten apps end up with ten of them. The reuse was
+already there: `core.http_client` calls itself "the one transport" for outbound HTTP and
+already exposed an `httpx.AsyncBaseTransport` seam -- and httpx proxying IS a transport, so an
+exit needed no new plumbing, only a driver that produces one. An explicit transport still wins
+over a configured egress, because that seam is documented as the test seam.
+
+`EgressDriver` has two halves on purpose. An exit is not an HTTP concept, so a driver answers
+both "what transport should httpx bind" and "what does a browser need on its command line". A
+driver that could only do the first would let a deployment proxy its API calls while its
+scrapes went out direct, both reporting the same configured exit -- worse than no proxying,
+because the deployment believes it has the property.
+
+`DirectEgress` is a driver rather than a special case, so "direct" cannot quietly mean "the
+seam was bypassed". An unknown driver name raises rather than falling back to direct, and an
+exit with no address or no name is refused at construction: both are the same failure, an exit
+that reports itself as `tor` in every log and leaves by the container's own IP.
+
+**Nothing here starts a daemon.** A driver describes an exit; running `tor` or `warp-cli` is
+deployment work, and a library owning process lifecycle for someone else's network would be
+wrong about it in every deployment that already had one.
+
+**Per-container, not per-target, and this is a real limitation.** Chromium takes
+`--proxy-server` process-wide, so one sidecar container is one exit; a deployment wanting two
+runs two containers and routes targets between them. Per-browser-context proxying is a CDP
+capability and would be the way to lift this, but it was not built here and the honest
+statement is that per-target selection today means per-container selection. `last_egress` on
+the health row is what makes that usable: with more than one exit, the useful fact stops being
+"this target is walled" and becomes "walled FROM THIS EXIT", without which a target blocked
+through one route looks permanently walled and a working alternative is never tried.
+
+### 8. robots.txt: wait when asked, escalate when refused
+
+**Requirement, raised 2026-07-26, mid-build.** The option to check `robots.txt` and honour it:
+respect rate limits, and flag a target for a human if it says no bots. Both configurable, both
+enabled by default -- a scraper whose politeness is opt-in is impolite in every deployment
+nobody configured, and those are the deployments nobody is watching.
+
+**The two halves are different decisions.** `Crawl-delay` asks us to be slower and changes
+scheduling only; the target still gets fetched. `Disallow` asks us not to fetch at all, and
+neither obeying nor ignoring it is right: obeying makes a target permanently invisible with no
+way to say "we have an agreement with this site", and ignoring is what gives crawlers their
+reputation. So it escalates, through the same human path a bot wall already takes.
+
+**A human working the page over VNC is not a bot.** The Robots Exclusion Protocol governs
+automated agents, not people operating browsers, so a `Disallow` that stops the unattended
+fetcher does not stop an operator who opens a session and works the target themselves. That is
+what makes the escalation close rather than dead-end. Two things keep it a position rather
+than a loophole: the exemption is for a session a person is actually IN, not "open a session
+and let the robot drive through it", and `Crawl-delay` does NOT get the exemption, because
+load on someone's server is caused equally by either.
+
+**Composition with the fetch circuit.** Both gate the fetch and they are different kinds of
+gate. `Crawl-delay` is a FLOOR on politeness that applies to a target working perfectly;
+`blocked_until` is a CEILING on cost that applies to one that is not. A fetch satisfies both,
+and neither may weaken the other -- in particular a circuit probe is not exempt from the crawl
+delay, or the politeness contract breaks precisely when a target is already unhappy with us.
+
+**Every unusable `robots.txt` means "allowed".** Missing, 500, empty, garbage, unreachable,
+unparseable: they all mean the site has not told us anything, and treating any as a refusal
+lets one bad response to a text file stop a scrape silently -- which looks exactly like a
+target that quietly stopped producing data. The crawl clock starts on a FETCH rather than a
+check, because the circuit can suppress a fetch after robots was consulted and a check that
+led nowhere must not consume the site's patience.
+
+Parsing is `urllib.robotparser` from the standard library. The grammar is looser than its
+reputation and implementations disagree about wildcards and `Allow` precedence; the stdlib's
+reading is defensible, already installed, and adding a package to read a text file fetched
+once per origin is a poor trade. The optional cross-pod pacer is
+`core.coordination.TokenBucket`, the same primitive and reasoning as the circuit's probe pacer:
+without it the delay is honoured per process, which is a lie in a fleet, because five pods each
+waiting ten seconds present a request every two.
+
+
 ---
 
 ## Explicitly out of scope

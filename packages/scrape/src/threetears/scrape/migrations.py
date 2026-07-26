@@ -274,8 +274,30 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(8)(v008_target_timeout_seconds)
     pkg.version(9)(v009_target_link_selector)
     pkg.version(10)(v010_create_scrape_target_health)
+    pkg.version(11)(v011_target_health_last_egress)
     runner.register(pkg)
     return pkg
+
+
+async def v011_target_health_last_egress(store: DataStore) -> None:
+    """Record which exit an observation came from.
+
+    An ALTER rather than another column on v010, because v010 has shipped: it is on
+    ``develop``, so a database that has applied it records version 10 as done and would never
+    pick up an edit to it. v010's own docstring says exactly this, and following it is the
+    whole reason this is a separate version.
+
+    With more than one egress available, "this target is walled" stops being the useful fact
+    and "this target is walled FROM THIS EXIT" starts being it. Without the column, a target
+    blocked through one TOR exit looks permanently walled, its circuit backs it off, and
+    nothing records that a different exit was never tried -- so the backoff learns the wrong
+    lesson and a working route goes unused.
+
+    Nullable with no default, because "we did not record an exit" is a real and common state:
+    every row written before this migration, and every deployment that never configures egress
+    at all. A default of ``'direct'`` would assert something about rows nobody stamped.
+    """
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS last_egress TEXT")
 
 
 async def apply_migrations(pool: Any) -> None:

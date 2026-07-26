@@ -26,6 +26,7 @@ real config/collections/drivers belongs.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -36,6 +37,7 @@ from threetears.observe import get_logger
 from pydantic import SecretStr
 
 from .circuit import FetchDecision, TargetCircuit
+from .robots import RobotsDecision, RobotsGate
 from .session_state import usable_session_state
 from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, decode_field_schema, decode_nav_steps
 from .driver import NavStep, RenderedPage, ScrapeDriver
@@ -85,6 +87,7 @@ class ScrapeTool(TearsTool):
         health_collection: ScrapeTargetHealthCollection | None = None,
         circuit: TargetCircuit | None = None,
         session_state_key: SecretStr | None = None,
+        robots: RobotsGate | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -107,6 +110,12 @@ class ScrapeTool(TearsTool):
             no human had ever cleared it -- which is the safe direction, since the alternative
             would be a deployment silently not knowing whether its credentials were readable
         :ptype session_state_key: SecretStr | None
+        :param robots: optional ``robots.txt`` gate. Supplying it opts this tool into waiting
+            as long as a site asks between fetches, and into escalating a disallowed path to a
+            human rather than fetching it unattended. Omitted, no robots file is consulted --
+            which is today's behaviour and is why this is injected rather than constructed:
+            reading it needs an HTTP client, and this tool opens none of its own
+        :ptype robots: RobotsGate | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -120,6 +129,7 @@ class ScrapeTool(TearsTool):
         self._health_collection = health_collection
         self._circuit = circuit
         self._session_state_key = session_state_key
+        self._robots = robots
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -314,6 +324,47 @@ class ScrapeTool(TearsTool):
         # Asked before the driver is touched, because a suppressed fetch is the entire point:
         # a target inside its backoff window must reach neither the candidate generator nor
         # the page classifier, and both of those live downstream of a page being fetched.
+        # Consulted BEFORE the circuit, and both gates must be satisfied. They are different
+        # kinds: a crawl delay is a FLOOR on politeness that applies to a target working
+        # perfectly, and the circuit's window is a CEILING on cost that applies to one that is
+        # not. Neither may be used to weaken the other -- in particular a circuit probe is not
+        # exempt from the delay, or the politeness contract breaks exactly when a target is
+        # already unhappy with us.
+        robots_decision: RobotsDecision | None = None
+        if error is None and self._robots is not None:
+            robots_decision = await self._robots.check(url)
+            if not robots_decision.allowed:
+                # A disallowed path is not fetched unattended and not silently skipped: it is
+                # reported as needing a person, through the same shape a bot wall takes, so a
+                # queue can pick it up. The exclusion protocol governs automated agents; an
+                # operator who opens a session and works it themselves is not one.
+                log.info(
+                    "scrape tool: %s is disallowed by robots.txt; escalating rather than fetching",
+                    url,
+                    extra={"extra_data": {"target_id": target_id, "url": url}},
+                )
+                return ToolResult(
+                    success=False,
+                    error=f"needs a human: {robots_decision.reason}",
+                    content=json.dumps({"target_id": target_id, "validation_status": "needs_human", "records": []}),
+                    metadata={
+                        "target_id": target_id,
+                        "validation_status": "needs_human",
+                        "record_count": 0,
+                        "source_url": url,
+                        "needs_human": True,
+                        "reason": "robots_disallow",
+                    },
+                )
+            if robots_decision.wait_seconds > 0:
+                log.info(
+                    "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
+                    robots_decision.wait_seconds,
+                    url,
+                    extra={"extra_data": {"target_id": target_id}},
+                )
+                await asyncio.sleep(robots_decision.wait_seconds)
+
         decision: FetchDecision | None = None
         if error is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)
@@ -341,6 +392,11 @@ class ScrapeTool(TearsTool):
             # than the call.
             try:
                 try:
+                    if self._robots is not None:
+                        # The clock starts on the FETCH, not on the check: the circuit can
+                        # suppress a fetch after robots was consulted, and a check that led
+                        # nowhere must not consume the site's patience.
+                        self._robots.note_fetched(url)
                     page = await driver.render(
                         url,
                         timeout=self._default_timeout,

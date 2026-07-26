@@ -153,6 +153,61 @@ it is sized against the poll interval it protects rather than any vendor's undoc
 cooldown, six hours because a doubling curve otherwise passes a day within a working shift
 and a target blocked overnight should be probed by morning without anyone intervening.
 
+**A human can now clear a wall the scraper cannot, and their work is reused
+(`3tears-scrape`, `3tears-core`).** The rest of the human-in-the-loop path, plus two
+capabilities that are not scrape-specific and are not in this package.
+
+The sidecar's Xvfb display is reachable on demand: `x11vnc` and `websockify` start when a
+person arrives and stop when they leave, x11vnc bound to loopback so websockify is the single
+route in, and the display number a parameter so a display pool is later configuration rather
+than a rewrite. On top of that sits one session against that one display -- a bounded number
+of targets at a time, each in its own isolated browser context so a second target cannot see
+the first's cookies, behind a hard TTL and a token this container minted. The token proves
+only that; deciding who was entitled to it belongs where identity lives, which is not here.
+
+Nothing is held while a target waits for a person. It is reported and forgotten, and
+re-driven from `url` plus `nav_steps` when an operator actually arrives, so waiting costs no
+container resources at all.
+
+When they finish, the context's cookies and storage are exported, sealed with
+`core.security.encryption` under an operator master key, and stored on the health row with an
+expiry. Later unattended renders send them, so the target extracts normally without anyone
+watching. The sidecar holds no key and seals nothing -- the container driving a browser for
+arbitrary targets is the one you least want holding a decryption key. Every way the stored
+state can fail (wrong key, tamper, format change, missing or passed expiry, no key configured)
+degrades to "this target needs a human again", never to sending a dead cookie and believing
+the answer.
+
+Two seams make that loop usable by a platform, which owns the queue and the operator.
+`ScrapeTargetHealthCollection.list_walled()` answers "which targets need a person" -- the only
+non-primary-key query in the package, filtered so a host that merely stopped answering does
+not queue somebody who arrives with nothing to clear. `TargetCircuit.record_human_cleared()`
+lifts the suppression afterwards, which nothing else can: `record_reachable` reports a FETCH
+that succeeded, and a success from a request the breaker never admitted deliberately leaves
+the circuit open. Without it the solve is stored and the next poll is still suppressed.
+
+**`threetears.core.egress` is new, and deliberately in core.** An `EgressDriver` seam with
+`direct`, any proxy URL, and a SOCKS constructor covering TOR and most VPN sidecars, wired
+into `core.http_client` -- which already called itself "the one transport" and already had a
+transport seam, and httpx proxying IS a transport. A driver answers both what httpx needs and
+what a browser needs, because a deployment whose API calls proxy while its scrapes go out
+direct is worse off than one with no proxying: it believes it has the property. An unknown
+driver name raises rather than falling back to direct, and an exit with no address is refused
+at construction -- both are the same silent failure, an exit that reports itself as `tor` and
+leaves by the container's own IP. Nothing here starts a daemon. Chromium takes
+`--proxy-server` process-wide, so one sidecar container is one exit; `last_egress` on the
+health row (migration `v011`) is what lets "walled" be told apart from "walled from this
+exit".
+
+**`robots.txt` is honoured, both halves on by default.** `Crawl-delay` is waited between
+fetches of an origin; a `Disallow` is escalated for a person rather than fetched unattended or
+silently skipped. A human working the page over VNC is not an automated agent, which is what
+makes that escalation close rather than dead-end -- and `Crawl-delay` deliberately does not get
+that exemption, because load on someone's server is caused equally by either. Every unusable
+robots file means "allowed": treating an unreachable text file as a refusal lets one bad
+response stop a scrape silently. Parsing is `urllib.robotparser`, so no new dependency.
+
+
 ## v0.19.1 -- 2026-07-25
 
 **Every intra-family dependency is now version-bounded.** The packages release in

@@ -429,3 +429,61 @@ async def test_list_walled_carries_what_an_operator_needs(health: ScrapeTargetHe
     assert row.classified_evidence == "the page asks the visitor to verify a browser"
     assert row.blocked_until == blocked_at + timedelta(hours=6)
     assert row.consecutive_fetch_failures == 3
+
+
+async def test_the_egress_column_records_which_exit_an_observation_came_from(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """v011, and the reason it is a separate migration rather than another v010 column.
+
+    With more than one exit configured, "this target is walled" stops being the useful fact
+    and "walled FROM THIS EXIT" starts being it -- otherwise a target blocked through one route
+    looks permanently walled, its circuit backs it off, and a working alternative is never
+    tried, the backoff having learned a lesson about the exit rather than the target.
+
+    Against real Postgres because this is an ALTER on a shipped table: v010 is on develop, so
+    a database that applied it records version 10 as done and would never pick up an edit to
+    it. The thing worth proving is that the migration runner actually adds the column.
+    """
+    target_id = _target("egress")
+    blocked_at = datetime.now(UTC).replace(microsecond=0)
+
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=blocked_at + timedelta(hours=1),
+        blocked_at=blocked_at,
+        egress="tor",
+    )
+
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.last_egress == "tor"
+    # And it survives into the queue, which is where a caller decides whether to try another.
+    (queued,) = [r for r in await health.list_walled() if r.target_id == target_id]
+    assert queued.last_egress == "tor"
+
+
+async def test_an_unstamped_row_reports_no_egress_rather_than_direct(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """ "We did not record an exit" is a real state, not a gap.
+
+    Every row written before this column existed, and every deployment that configures no
+    egress at all. A default of ``'direct'`` would assert something about rows nobody stamped,
+    and a query later could not tell the assertion from an observation.
+    """
+    target_id = _target("noegress")
+    await record_circuit_state(
+        health,
+        target_id=target_id,
+        circuit_state="open",
+        consecutive_fetch_failures=3,
+        blocked_until=datetime.now(UTC),
+        blocked_at=datetime.now(UTC),
+    )
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.last_egress is None
