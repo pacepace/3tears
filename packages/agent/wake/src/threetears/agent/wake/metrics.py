@@ -265,11 +265,21 @@ class WakeMetricsEmitter:
             except KeyError:
                 # collector wasn't actually on the registry -- benign
                 # race with another test's teardown path; continue.
+                log.debug(
+                    "wake metrics collector was already off the registry",
+                    extra={"extra_data": {"collector": type(collector).__name__}},
+                )
                 continue
             except ValueError:
                 # prometheus_client raises ValueError when a collector
                 # is registered against a different registry than ours;
-                # also benign for the unregister-best-effort flow.
+                # also benign for the unregister-best-effort flow, though
+                # a steady stream of it means the collectors and the
+                # resolved registry were wired up from different places.
+                log.debug(
+                    "wake metrics collector belongs to a different registry; left in place",
+                    extra={"extra_data": {"collector": type(collector).__name__}},
+                )
                 continue
         self._fires = None
         self._failures = None

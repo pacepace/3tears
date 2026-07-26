@@ -399,7 +399,13 @@ class AnalyzeMediaTool(TearsTool):
             try:
                 await self._on_analysis(mid_str, content_type, text)
             except Exception:
-                pass
+                # The analysis itself succeeded; only the caller's notification failed, so this
+                # does not fail the tool. But whatever the callback was meant to do -- persist,
+                # index, notify -- did not happen, and the traceback is the only diagnosis.
+                _log.exception(
+                    "analysis callback failed; the result was produced but not delivered",
+                    extra={"extra_data": {"media_id": mid_str, "content_type": content_type}},
+                )
 
     async def _handle_document(
         self,

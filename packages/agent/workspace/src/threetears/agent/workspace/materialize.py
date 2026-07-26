@@ -996,10 +996,10 @@ async def _watch_loop(
                 )
                 await asyncio.sleep(0)
     except asyncio.CancelledError:
-        # bind's teardown cancels us on clean or exception-path exit;
-        # returning instead of re-raising lets the awaiting wait_for
-        # observe a completed task rather than a CancelledError that
-        # would propagate into bind's outer frame.
+        # NOSILENT: bind's teardown cancels us on clean or exception-path exit, so this IS the
+        # requested cancellation. Returning instead of re-raising lets the awaiting wait_for
+        # observe a completed task rather than a CancelledError that would propagate into
+        # bind's outer frame.
         return
 
 
@@ -1443,9 +1443,9 @@ async def bind(
                         "root_name": root_name,
                     },
                 )
-            # NOSILENT: CancelledError on the awaited task is expected;
-            # any other exception is programmer error we want visible.
             except asyncio.CancelledError:
+                # NOSILENT: this IS the watcher cancellation requested on the line above; any
+                # other exception is programmer error and falls to the handler below.
                 pass
             except Exception as cancel_exc:
                 log.exception(
