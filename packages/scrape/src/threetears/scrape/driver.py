@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver", "warn_dropped_session_state"]
+__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 
 #: The closed set of browser actions a ``NavStep`` can describe. Kept small
 #: and generic on purpose -- a per-target sequence of these is enough to
@@ -29,32 +29,9 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver", "warn_dropp
 #: (multi-step navigation, 2026-07-14).
 NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page", "evaluate"]
 
-
-def warn_dropped_session_state(driver_name: str, url: str, log: Any) -> None:
-    """Say that a human's solve is being discarded, from whichever driver discards it.
-
-    One helper rather than the same four lines in each accept-and-ignore driver, because the
-    alternative already happened: the warning was added to the one driver a review happened to
-    name, and the other four kept dropping the credential in silence -- which is the same
-    defect, differing only in which file it lives in.
-
-    Silence is the failure worth preventing. A caller hands over a session a person spent real
-    time solving, gets a successful render back, and learns nothing until extraction fails on a
-    login wall and the target is escalated to a human who already did the work.
-
-    :param driver_name: the driver doing the dropping, so the log says which one
-    :ptype driver_name: str
-    :param url: the url rendered without the solve
-    :ptype url: str
-    :param log: the calling module's own logger, so the record carries its name
-    :ptype log: Any
-    """
-    log.warning(
-        "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
-        "unauthenticated. Use the nodriver sidecar driver to reuse a solved session.",
-        driver_name,
-        url,
-    )
+#: Default advice when a driver drops a solve. Wrong for the sidecar-backed download driver,
+#: which is why :meth:`ScrapeDriver.warn_dropped_session_state` takes an override.
+_SIDECAR_REMEDY = "Use the nodriver sidecar driver to reuse a solved session."
 
 
 @dataclass(frozen=True)
@@ -169,6 +146,54 @@ class ScrapeDriver(ABC):
     this boundary, so callers can swap backends without caring which one
     rendered the page.
     """
+
+    #: Set once this instance has reported dropping a human's solve. A class-level default so
+    #: no backend has to remember to initialise it, flipped per instance on first use.
+    _warned_dropped_solve: bool = False
+
+    #: What to tell an operator instead. PUBLIC and a class attribute: subclasses are meant to
+    #: override it, which the repo's underscore rule rightly forbids for a private name -- an
+    #: underscore attribute is implementation detail of the class that declares it. A class
+    #: attribute rather than a call-site keyword so it is a property of the DRIVER: the download driver's own remedy is different, and a
+    #: keyword passed at the point of call made that difference invisible to any test that did
+    #: not go through that exact line.
+    dropped_solve_remedy: str = _SIDECAR_REMEDY
+
+    def _warn_dropped_session_state(self, url: str, log: Any) -> None:
+        """Report ONCE that this driver is discarding a human's exported session.
+
+        Silence is the failure this prevents: a caller hands over a session a person spent real
+        time solving, gets a successful render back, and learns nothing until extraction fails
+        on a login wall and the target is escalated to a human who already did the work.
+
+        **Once per driver instance, not once per render**, because the fact being reported is a
+        property of the DRIVER -- it cannot apply session state, and that does not change
+        between calls. Per-render was a real storm: :class:`MultiDocumentDriver` forwards a
+        solve to its inner document driver once per document, so a single listing with a solve
+        emitted one warning per document up to its cap, and a warning that repeats that way
+        trains its reader to filter it out. That is the same reasoning as the sibling test
+        asserting an ordinary render stays silent.
+
+        On the base class rather than a module function so the once-per-instance state has
+        somewhere to live, and so every backend gets it by inheriting rather than by each
+        author remembering the pattern -- the previous version was added to whichever driver a
+        review happened to name.
+
+        :param url: the url being rendered without the solve
+        :ptype url: str
+        :param log: the calling module's own logger, so the record carries its name
+        :ptype log: Any
+        """
+        if self._warned_dropped_solve:
+            return
+        self._warned_dropped_solve = True
+        log.warning(
+            "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
+            "unauthenticated. %s (reported once per driver instance)",
+            self.name,
+            url,
+            self.dropped_solve_remedy,
+        )
 
     @property
     def egress(self) -> object | None:

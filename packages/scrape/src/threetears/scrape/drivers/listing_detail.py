@@ -70,7 +70,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
+from ..driver import NavStep, RenderedPage, ScrapeDriver
 from .api import _records_to_synthetic_table
 
 __all__ = ["ListingDetailDriver", "ListingDetailDriverError"]
@@ -235,16 +235,18 @@ class ListingDetailDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not applicable
             (this driver's own *row_selector*/*detail_link_column* replace it)
         :ptype link_selector: str | None
-        :param session_state: accepted for interface conformance; a human's exported cookies
-            and storage are applied only by
-            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            driver instance) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
         :ptype session_state: dict[str, Any] | None
         :return: one synthetic ``<table>`` page, one row per successfully-resolved record
         :rtype: RenderedPage
         :raises ListingDetailDriverError: the listing fetch itself fails outright
         """
         if session_state:
-            warn_dropped_session_state("listing-detail", url, log)
+            self._warn_dropped_session_state(url, log)
         start = time.monotonic()
         client = self._client
         owns_client = client is None

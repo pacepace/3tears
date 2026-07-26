@@ -20,12 +20,17 @@ assertion doesn't apply to it the same way).
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
 
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
+from threetears.scrape.drivers.api import ApiDriver
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
+from threetears.scrape.drivers.document import DocumentDriver
+from threetears.scrape.drivers.listing_detail import ListingDetailDriver
+from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
 _PAGE_HTML = "<html><body>contract test page</body></html>"
@@ -269,3 +274,84 @@ def test_every_render_implementation_declares_session_state():
 
     assert "session_state" in inspect.signature(ScrapeDriver.render).parameters
     assert len(checked) >= 8, f"the sweep only found {len(checked)} render implementations: {checked}"
+
+
+# ---------------------------------------------------------------------------
+# Dropping a human's solve, tested at the level of the BASE CLASS rather than
+# per driver. Three consecutive reviews found this defect one driver at a time:
+# the behaviour was added to whichever backend a review named, and the others
+# kept discarding a person's credential in silence. Asserting it against every
+# accept-and-ignore backend at once is what stops the fourth round.
+# ---------------------------------------------------------------------------
+
+_DROPS_THE_SOLVE = [
+    pytest.param(lambda: ApiDriver(), "api", id="api"),
+    pytest.param(lambda: DocumentDriver(), "document", id="document"),
+    pytest.param(
+        lambda: ListingDetailDriver(
+            row_selector="tr",
+            listing_field_columns={0: "employer"},
+            detail_link_column=0,
+            detail_field_labels={"Employer": "employer"},
+        ),
+        "listing_detail",
+        id="listing-detail",
+    ),
+    pytest.param(lambda: NodriverDownloadDriver("http://sidecar:8088"), "nodriver_download", id="nodriver-download"),
+    pytest.param(lambda: CamoufoxDriver(), "camoufox", id="camoufox"),
+]
+
+
+class TestADroppedSolveIsNeverSilent:
+    """Every backend that cannot apply a session must say so, not just the reviewed one."""
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_it_warns_when_a_solve_is_dropped(self, caplog, make_driver, module: str) -> None:
+        """Asserted on the emitted record, so deleting the call fails this.
+
+        The failure being excluded is silent: a successful render is returned, the page is the
+        login wall, extraction fails, and the target is escalated to a person who already
+        cleared it.
+        """
+        driver = make_driver()
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            driver._warn_dropped_session_state(
+                "https://example.gov/x", logging.getLogger(f"threetears.scrape.drivers.{module}")
+            )
+
+        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
+            f"{module} dropped a human's solve without saying so; records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_it_says_so_once_per_instance_not_once_per_render(self, caplog, make_driver, module: str) -> None:
+        """A per-render warning is a storm, and a storm trains its reader to filter it.
+
+        `MultiDocumentDriver` forwards a solve to its inner document driver once per document,
+        so per-render meant one warning per document up to the cap. The fact reported is a
+        property of the driver and does not change between calls.
+        """
+        driver = make_driver()
+        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            for _ in range(5):
+                driver._warn_dropped_session_state("https://example.gov/x", log)
+
+        emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one instance"
+
+    def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
+        """It IS sidecar-backed, so the default advice names what it already is.
+
+        The endpoint it posts to carries no session state, which is the actual reason and the
+        actual remedy -- generic advice that happens to be wrong is worse than none, because a
+        reader who follows it changes nothing and concludes the warning was noise.
+        """
+        driver = NodriverDownloadDriver("http://sidecar:8088")
+        log = logging.getLogger("threetears.scrape.drivers.nodriver_download")
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
+            driver._warn_dropped_session_state("https://example.gov/f.pdf", log)
+
+        message = caplog.records[0].getMessage()
+        assert "/v1/download" in message, f"the remedy was not made specific to this driver: {message}"
+        assert "Use the nodriver sidecar driver" not in message

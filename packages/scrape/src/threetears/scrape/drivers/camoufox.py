@@ -34,7 +34,7 @@ from playwright.async_api import Response as PlaywrightResponse
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from threetears.observe import get_logger
 
-from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver, warn_dropped_session_state
+from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
 
 __all__ = ["CamoufoxDriver", "CamoufoxDriverError"]
 
@@ -186,7 +186,7 @@ class CamoufoxDriver(ScrapeDriver):
             # spent real time solving, got a successful render back, and had no way to learn
             # the page was fetched logged-out. The extraction then fails on a login wall and
             # the target is escalated to a human who already did the work.
-            warn_dropped_session_state("camoufox", url, log)
+            self._warn_dropped_session_state(url, log)
 
         browser = await self._ensure_browser()
         timeout_ms = timeout * 1000

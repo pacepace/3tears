@@ -35,7 +35,7 @@ from threetears.agent.tools.document import (
 )
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
+from ..driver import NavStep, RenderedPage, ScrapeDriver
 from ..extraction import OCR_PAGE_IMAGE_CLASS
 
 __all__ = ["OCR_PAGE_IMAGE_CLASS", "DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
@@ -375,9 +375,11 @@ class DocumentDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
-        :param session_state: accepted for interface conformance; a human's exported cookies
-            and storage are applied only by
-            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            driver instance) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
         :ptype session_state: dict[str, Any] | None
         :return: the parsed document's content as synthetic HTML
         :rtype: RenderedPage
@@ -385,7 +387,7 @@ class DocumentDriver(ScrapeDriver):
             response, or a document the parser couldn't handle
         """
         if session_state:
-            warn_dropped_session_state("document", url, log)
+            self._warn_dropped_session_state(url, log)
         start = time.monotonic()
         client = self._client
         owns_client = client is None

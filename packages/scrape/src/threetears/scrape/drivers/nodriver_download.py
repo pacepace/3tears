@@ -31,7 +31,7 @@ import httpx
 from threetears.agent.tools.document import OcrConfig
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
+from ..driver import NavStep, RenderedPage, ScrapeDriver
 from .document import parse_document_bytes_to_html
 
 __all__ = ["NodriverDownloadDriver", "NodriverDownloadError"]
@@ -55,6 +55,14 @@ class NodriverDownloadError(Exception):
 
 class NodriverDownloadDriver(ScrapeDriver):
     """``ScrapeDriver`` backed by the sidecar's browser-forced-download endpoint."""
+
+    #: The base class's default advice -- "use the nodriver sidecar driver" -- names the thing
+    #: this driver already IS, so it would send a reader to change nothing and conclude the
+    #: warning was noise. The real constraint is the endpoint, not the backend.
+    dropped_solve_remedy = (
+        "This driver posts to the sidecar's /v1/download endpoint, which carries no session "
+        "state; fetch the document through a render instead if it is behind a wall."
+    )
 
     def __init__(
         self,
@@ -132,9 +140,11 @@ class NodriverDownloadDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
-        :param session_state: accepted for interface conformance; a human's exported cookies
-            and storage are applied only by
-            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            driver instance) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
         :ptype session_state: dict[str, Any] | None
         :return: the parsed document's content as synthetic HTML
         :rtype: RenderedPage
@@ -148,7 +158,7 @@ class NodriverDownloadDriver(ScrapeDriver):
             the right semantic type for "downloaded fine, couldn't parse"
         """
         if session_state:
-            warn_dropped_session_state("nodriver-download", url, log)
+            self._warn_dropped_session_state(url, log)
         start = time.monotonic()
         payload = {"url": url, "timeout": timeout}
         client = self._client

@@ -46,7 +46,7 @@ import httpx
 from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
+from ..driver import NavStep, RenderedPage, ScrapeDriver
 
 __all__ = ["ApiDriver", "ApiDriverError"]
 
@@ -223,9 +223,11 @@ class ApiDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
-        :param session_state: accepted for interface conformance; a human's exported cookies
-            and storage are applied only by
-            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            driver instance) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
         :ptype session_state: dict[str, Any] | None
         :return: the concatenated fragments, or the synthetic table (structured mode), as HTML
         :rtype: RenderedPage
@@ -234,7 +236,7 @@ class ApiDriver(ScrapeDriver):
             JSON, or *results_path* not resolving to a list
         """
         if session_state:
-            warn_dropped_session_state("api", url, log)
+            self._warn_dropped_session_state(url, log)
         if results_path is None:
             raise ApiDriverError("missing_config", "results_path is required for ApiDriver.render()")
 

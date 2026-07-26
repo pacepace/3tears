@@ -240,6 +240,10 @@ class TestNetworkCaptureForwardsTheSolve:
         `session_states == [None]` and therefore PINNED the broken form.
         """
 
+        # Deliberately NOT named `_Fake<Name>`: the fake-parity enforcement walker keys on that
+        # prefix, and a parity declaration here would defeat the point. This stands in for a
+        # driver whose surface is INTENTIONALLY narrower than the current protocol -- declaring
+        # parity with `ScrapeDriver` would make it track the very parameter it exists to lack.
         class _PreSessionStateInner:
             @property
             def name(self) -> str:

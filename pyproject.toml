@@ -156,9 +156,11 @@ select = ["SLF"]
 # tests/enforcement/_underscore_exemptions.txt, which the file header requires be kept in
 # lockstep with these ignores.
 #
-# Declared here rather than as inline `noqa` to match how every other test suite in this repo is
-# already exempted, and so the reasons live in one reviewable list instead of scattered across
-# call sites. The cost is real and worth stating: a per-file ignore also suppresses every FUTURE
+# Declared here rather than as inline `noqa` to match the suites already exempted this way in
+# the block below, and so the reasons live in one reviewable list instead of scattered across
+# call sites. NOT because it is the repo-wide norm: inline is in fact the majority here (212
+# pragmas across 45 files against 26 per-file entries), and an earlier version of this comment
+# claimed otherwise without counting. The cost is real and worth stating: a per-file ignore also suppresses every FUTURE
 # private access in these four files, where an inline pragma would not. That is the trade the
 # ledger exists to offset -- the entries are the record of what was actually justified.
 #
@@ -169,6 +171,7 @@ select = ["SLF"]
 "packages/scrape/tests/test_tool.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_api.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_listing_detail.py" = ["SLF001"]
+"packages/scrape/tests/test_driver_contract.py" = ["SLF001"]
 "packages/core/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
 "packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
