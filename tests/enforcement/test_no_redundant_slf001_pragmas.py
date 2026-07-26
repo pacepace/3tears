@@ -47,11 +47,28 @@ _BLANKET_NOQA = re.compile(
 )
 
 
+def _is_vendored(path: Path) -> bool:
+    return any(part in {".venv", "node_modules", ".git", "__pycache__"} for part in path.parts)
+
+
 def _ruff_configs() -> list[Path]:
-    """Every ruff config in the tree that could declare a per-file ignore."""
-    configs = [_REPO_ROOT / "pyproject.toml"]
-    configs.extend(p for p in _REPO_ROOT.rglob("ruff.toml") if ".venv" not in p.parts and "node_modules" not in p.parts)
-    return configs
+    """Every file ruff would read a per-file ignore from: all four forms it recognises.
+
+    An earlier version read the root ``pyproject.toml`` plus ``ruff.toml`` and described itself
+    as reading every config -- which is how the sidecar override went unscanned in the first
+    place. Enumerating all four is cheap; being one form short is the same failure again, and
+    the likeliest miss in a 27-package workspace is a package ``pyproject.toml`` growing a
+    ``[tool.ruff]`` section, since every package already ships that file.
+    """
+    configs: list[Path] = []
+    for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
+        for path in _REPO_ROOT.rglob(name):
+            if _is_vendored(path):
+                continue
+            if path.name == "pyproject.toml" and "[tool.ruff" not in path.read_text(errors="replace"):
+                continue  # a pyproject with no ruff section configures nothing
+            configs.append(path)
+    return sorted(configs)
 
 
 def _slf001_globs(config: Path) -> list[str]:
@@ -66,9 +83,20 @@ def _slf001_globs(config: Path) -> list[str]:
     return [key for key, codes in per_file.items() if "SLF001" in codes]
 
 
-def _exempted_files(config: Path, glob: str) -> list[Path]:
-    """Python files matched by *glob*, resolved the way ruff resolves it."""
-    return sorted(p for p in config.parent.glob(glob) if p.suffix == ".py")
+def _exempted_files(config: Path, pattern: str) -> list[Path]:
+    """Python files matched by *pattern*, following ruff's own two-way matching.
+
+    ruff matches a pattern containing no separator against the file's BASENAME anywhere beneath
+    the config -- which is why its documented ``"__init__.py"`` example covers a whole tree --
+    and matches a pattern containing one against the relative path. `Path.glob` only does the
+    second, so a bare-name key would have matched whatever single file sat at the config's root
+    and left every other file of that name unscanned: a partial match, which the empty-match
+    assertion cannot see because it is not empty.
+    """
+    base = config.parent
+    if "/" in pattern:
+        return sorted(p for p in base.glob(pattern) if p.suffix == ".py" and not _is_vendored(p))
+    return sorted(p for p in base.rglob(pattern) if p.suffix == ".py" and not _is_vendored(p))
 
 
 class TestNoRedundantSlf001Pragmas:

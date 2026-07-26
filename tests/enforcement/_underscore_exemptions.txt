@@ -8,9 +8,11 @@
 #   # rationale: why this access has no public alternative
 #   path/relative/to/repo-root.py:42:_private_symbol
 #
-# maintained in lockstep with ruff's per-file-ignores for SLF001 in
-# pyproject.toml. every exemption here must have a matching ruff ignore
-# so the two systems agree.
+# maintained in lockstep with ruff's per-file-ignores for SLF001, wherever
+# ruff reads them from -- the root pyproject.toml for most entries, and
+# packages/scrape/sidecar/ruff.toml for the five sidecar ones, since a nested
+# ruff.toml is a full override the root file cannot reach past. every exemption
+# here must have a matching ruff ignore so the two systems agree.
 #
 # NOTE ON LINE NUMBERS: entries under a path that also carries a per-file
 # ignore are documentation, not enforcement -- the walker scans
