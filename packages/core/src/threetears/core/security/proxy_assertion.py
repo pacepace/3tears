@@ -15,14 +15,32 @@ assertion to choose how to check the signature.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import jwt
+from threetears.observe import get_logger
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from threetears.core.security.identity_token import IdentityTokenError
 
 __all__ = ["ProxyAssertionClaims", "mint_proxy_assertion", "verify_proxy_assertion"]
+
+
+log = get_logger(__name__)
+
+
+def _reject(reason: str) -> NoReturn:
+    """Log the rejection, then raise it.
+
+    Every failure path goes through here so the log line and the exception cannot drift
+    apart, and so a rejection added later cannot silently log nothing.
+
+    A rejected assertion means something is presenting a proxy identity it cannot prove.
+    Only the structural reason is recorded -- never the assertion or key material.
+    """
+    log.warning("proxy assertion rejected", extra={"extra_data": {"reason": reason}})
+    raise IdentityTokenError(reason) from None
+
 
 _ALG = "EdDSA"
 _ISSUER = "registry"
@@ -132,12 +150,12 @@ def verify_proxy_assertion(
     try:
         header = jwt.get_unverified_header(assertion)
     except jwt.PyJWTError as exc:
-        raise IdentityTokenError(f"malformed proxy assertion header ({type(exc).__name__}).") from None
+        _reject(f"malformed proxy assertion header ({type(exc).__name__}).")
     if header.get("alg") != _ALG:
-        raise IdentityTokenError("unexpected proxy assertion algorithm; only EdDSA is accepted.")
+        _reject("unexpected proxy assertion algorithm; only EdDSA is accepted.")
     kid = header.get("kid")
     if not isinstance(kid, str) or not kid:
-        raise IdentityTokenError("proxy assertion is missing a string kid header.")
+        _reject("proxy assertion is missing a string kid header.")
     public_key = _select_public_key(jwks, kid)
     try:
         payload = jwt.decode(
@@ -150,9 +168,9 @@ def verify_proxy_assertion(
             options={"require": list(_REQUIRED)},
         )
     except jwt.PyJWTError as exc:
-        raise IdentityTokenError(f"proxy assertion verification failed ({type(exc).__name__}).") from None
+        _reject(f"proxy assertion verification failed ({type(exc).__name__}).")
     if payload.get("bh") != body_hash:
-        raise IdentityTokenError("proxy assertion bh does not match the call body.")
+        _reject("proxy assertion bh does not match the call body.")
     user_id = payload.get("user_id")
     return ProxyAssertionClaims(
         sub=_require_nonempty_str(payload, "sub"),
@@ -178,19 +196,19 @@ def _select_public_key(jwks: dict[str, Any], kid: str) -> Ed25519PublicKey:
         TypeError,
         ValueError,
     ) as exc:
-        raise IdentityTokenError(f"malformed JWKS ({type(exc).__name__}).") from None
+        _reject(f"malformed JWKS ({type(exc).__name__}).")
     for jwk in key_set.keys:
         if jwk.key_id == kid:
             key = jwk.key
             if not isinstance(key, Ed25519PublicKey):
-                raise IdentityTokenError("JWKS key for kid is not an Ed25519 public key.")
+                _reject("JWKS key for kid is not an Ed25519 public key.")
             return key
-    raise IdentityTokenError("no JWKS key matches the proxy assertion kid.")
+    _reject("no JWKS key matches the proxy assertion kid.")
 
 
 def _require_nonempty_str(payload: dict[str, Any], claim: str) -> str:
     """return ``payload[claim]`` iff it is a non-empty string, else reject (claim NAME only)."""
     value = payload.get(claim)
     if not isinstance(value, str) or not value:
-        raise IdentityTokenError(f"proxy assertion claim {claim!r} must be a non-empty string.")
+        _reject(f"proxy assertion claim {claim!r} must be a non-empty string.")
     return value
