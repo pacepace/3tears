@@ -57,7 +57,7 @@ infrastructure this package does not own:
   ``relative_delay`` job (see :mod:`threetears.scrape.reprobe`), for a caller that is
   event-driven rather than polling. No sleep-and-retry loop is written here.
 
-All four are ``None`` by default, and with all four absent the circuit still decays a blocked
+Each is ``None`` by default, and with all of them absent the circuit still decays a blocked
 target's fetch rate using nothing but the health row. They add cross-pod correctness and
 event-driven wake-up, not the core behaviour.
 """

@@ -47,7 +47,7 @@ never evicts and a scrape target is a far larger key space than the provider nam
 built for), a `WindowedCounter` so several pods polling one target reach the threshold
 together instead of each carrying a share that never gets there, a capacity-one `TokenBucket`
 for the cross-pod single-probe admission a restored breaker structurally cannot give, and a
-`ReprobeScheduler`. With all four absent the circuit still decays a blocked target's fetch
+`ReprobeScheduler`. With every one of them absent the circuit still decays a blocked target's fetch
 rate off the health row alone.
 
 Two consequences of the durable and in-process circuits running on different clocks are
