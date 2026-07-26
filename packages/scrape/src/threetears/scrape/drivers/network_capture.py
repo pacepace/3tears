@@ -144,6 +144,19 @@ class NetworkCaptureDriver(ScrapeDriver):
         """Stable string key for this driver."""
         return "network_capture"
 
+    @property
+    def egress(self) -> object | None:
+        """The wrapped driver's exit -- this one performs no fetch of its own.
+
+        Delegated rather than inherited. The base class returns ``None`` for backends with no
+        concept of an exit, which is right for them and wrong here: a wrapper around a proxied
+        driver reports the truth about itself and a lie about the fetch. ``ScrapeTool`` reads
+        this to warn about a split configuration, so the lie lands on the safe-looking side --
+        a genuinely proxied sidecar wrapped in this class looked unconfigured, and the warning
+        it should have suppressed fired while the one it should have raised did not.
+        """
+        return self._inner.egress
+
     async def render(
         self,
         url: str,

@@ -278,6 +278,97 @@ def test_every_render_implementation_declares_session_state():
 
 
 # ---------------------------------------------------------------------------
+# Reporting the exit back. A driver that accepts an egress and does not report
+# it leaves `ScrapeTargetHealth.last_egress` empty for every target it serves,
+# which collapses "walled" and "walled FROM THIS EXIT" -- the distinction that
+# column and its migration exist for. ApiDriver honoured an exit and reported
+# nothing for exactly as long as nothing asked it to.
+# ---------------------------------------------------------------------------
+
+
+async def _render_api_driver(egress):
+    return await ApiDriver(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=[{"a": 1}]))),
+        egress=egress,
+    ).render("https://example.gov/api", results_path="")
+
+
+async def _render_sidecar_driver(egress):
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        # The sidecar reports the exit itself, so a driver test that invented the value would
+        # assert its own arithmetic. This echoes what a sidecar honouring the request would say.
+        body = json.loads(_request.content)
+        return httpx.Response(
+            200,
+            json={
+                "html": _PAGE_HTML,
+                "status": 200,
+                "final_url": _PAGE_FINAL_URL,
+                "timing_ms": 1.0,
+                "egress": body.get("egress_name"),
+            },
+        )
+
+    return await NodriverSidecarDriver(
+        "http://sidecar:8088", client=httpx.AsyncClient(transport=httpx.MockTransport(_handler)), egress=egress
+    ).render("https://example.gov/x")
+
+
+_REPORTS_ITS_EXIT = {
+    "api": _render_api_driver,
+    "nodriver_sidecar": _render_sidecar_driver,
+}
+
+
+@pytest.mark.parametrize("module_name", sorted(_REPORTS_ITS_EXIT), ids=sorted(_REPORTS_ITS_EXIT))
+async def test_a_driver_given_an_exit_reports_it_back(module_name: str) -> None:
+    """Both halves: a configured exit comes back by name, and an unconfigured one comes back None.
+
+    Asserting only the first would pass against a driver that hard-coded any string; asserting
+    only the second would pass against one that reported nothing at all.
+    """
+    from threetears.core.egress import ProxyEgress
+
+    tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+    assert (await _REPORTS_ITS_EXIT[module_name](tor)).egress == "tor", (
+        f"the {module_name} driver honours an exit but does not say which, so every health row "
+        f"it produces records no exit at all"
+    )
+    assert (await _REPORTS_ITS_EXIT[module_name](None)).egress is None, (
+        f"the {module_name} driver claims an exit nobody configured"
+    )
+
+
+def test_every_driver_that_accepts_an_exit_is_covered_above() -> None:
+    """The list is checked rather than maintained by hope.
+
+    A driver gaining an `egress` parameter is exactly when this contract starts applying to it,
+    and that is the moment nobody thinks to add it to a hand-written list. The sweep fails then,
+    naming the driver, instead of the omission surfacing as an empty column months later.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import threetears.scrape.drivers as drivers_pkg
+
+    accepting: set[str] = set()
+    for mod_name in (m.name for m in pkgutil.iter_modules(drivers_pkg.__path__)):
+        module = importlib.import_module(f"threetears.scrape.drivers.{mod_name}")
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != module.__name__ or not callable(getattr(obj, "render", None)):
+                continue
+            if "egress" in inspect.signature(obj.__init__).parameters:
+                accepting.add(mod_name)
+
+    assert accepting == set(_REPORTS_ITS_EXIT), (
+        "these drivers take an egress but no round-trip test asserts they report it: "
+        f"{sorted(accepting - set(_REPORTS_ITS_EXIT))}; and these are covered but no longer take "
+        f"one: {sorted(set(_REPORTS_ITS_EXIT) - accepting)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dropping a human's solve, tested at the level of the BASE CLASS rather than
 # per driver. Three consecutive reviews found this defect one driver at a time:
 # the behaviour was added to whichever backend a review named, and the others

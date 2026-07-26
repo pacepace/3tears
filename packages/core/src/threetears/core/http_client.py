@@ -196,14 +196,16 @@ class TracedHttpClient:
         )
 
     @property
-    def egress_name(self) -> str:
+    def egress_name(self) -> str | None:
         """Which exit this client leaves by, for recording against a result.
 
-        ``"direct"`` when none was configured rather than ``None``: a caller writing this
-        against an outcome wants a value meaning "the default route", and "nobody said" would
-        be indistinguishable from it in a query later.
+        ``None`` when none was configured, because that is a different fact from choosing the
+        default route and the two must stay distinguishable in a table. :class:`DirectEgress`
+        exists so "direct" can be a stated choice; a client given it reports ``"direct"``, and
+        one given nothing reports ``None``. Collapsing them here would make every row of an
+        unconfigured deployment claim a decision nobody made.
         """
-        return self._egress.name if self._egress is not None else "direct"
+        return self._egress.name if self._egress is not None else None
 
     async def __aenter__(self) -> TracedHttpClient:
         """return self for ``async with`` ergonomics.

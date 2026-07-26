@@ -911,6 +911,111 @@ def test_matching_egress_on_both_says_nothing(caplog) -> None:
     assert not any("container's own address" in r.message for r in caplog.records)
 
 
+def _build_tool(caplog, **kwargs):
+    """Construct a ScrapeTool with the collections these warning tests do not care about.
+
+    Returns the WARNING records emitted during construction, which is the only thing under test
+    in the four cases below.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.tool import ScrapeTool
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    with caplog.at_level("WARNING", logger="threetears.scrape.tool"):
+        ScrapeTool(
+            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            api_key="k",
+            **kwargs,
+        )
+    return [r.message for r in caplog.records]
+
+
+def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
+    """The mirror case, and the more damaging one.
+
+    With the gate proxied and the driver not, what leaves by the container's own address is the
+    PAGE FETCH -- the request the exit was configured for -- rather than a robots.txt read. The
+    check covered only the other direction, so this configuration passed in silence while the
+    noisier and less consequential one was reported.
+    """
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.drivers.api import ApiDriver
+
+    messages = _build_tool(
+        caplog,
+        drivers={"api": ApiDriver()},
+        egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+    )
+
+    assert any("the page fetch itself goes out on the container's own address" in m for m in messages), (
+        "a tool proxied in front of an unproxied driver passed silently"
+    )
+
+
+def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog) -> None:
+    """Reading the constructor argument called a correct configuration wrong.
+
+    Passing a `RobotsGate` built with its own egress is the documented way to control how the
+    robots read leaves, and it makes `ScrapeTool(egress=...)` unnecessary. The check branched on
+    that unused argument, so this pair -- proxied on both halves -- was reported as leaking on a
+    request that was in fact proxied. A security warning that fires on correct configuration is
+    one readers learn to filter, which costs the warnings that are true.
+    """
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.drivers.api import ApiDriver
+    from threetears.scrape.robots import RobotsGate
+
+    tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+    messages = _build_tool(caplog, drivers={"api": ApiDriver(egress=tor)}, robots=RobotsGate(egress=tor))
+
+    assert not any("container's own address" in m for m in messages), (
+        f"a correctly proxied gate and driver were reported as split: {messages}"
+    )
+
+
+def test_a_disabled_gate_has_no_split_to_report(caplog) -> None:
+    """With robots off there is no second request, so there is nothing to be split about.
+
+    The old check would warn here, describing a robots.txt read that never happens.
+    """
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.drivers.api import ApiDriver
+
+    messages = _build_tool(
+        caplog,
+        drivers={"api": ApiDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))},
+        robots=None,
+    )
+
+    assert not any("container's own address" in m for m in messages), (
+        f"warned about robots.txt reads for a tool with no robots gate: {messages}"
+    )
+
+
+def test_a_wrapper_driver_does_not_hide_its_inner_exit(caplog) -> None:
+    """A wrapper reporting the base class's `None` lands on the safe-looking side.
+
+    `NetworkCaptureDriver` wraps a real browser driver and performs no fetch of its own, so the
+    exit that matters is the inner one. Inheriting the default made a genuinely proxied sidecar
+    read as unconfigured -- and because the reading is used to decide whether a configuration is
+    split, the wrapper silently suppressed the warning it should have raised.
+    """
+    from threetears.core.egress import ProxyEgress
+    from threetears.scrape.drivers.network_capture import NetworkCaptureDriver
+    from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+    tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+    wrapped = NetworkCaptureDriver(NodriverSidecarDriver("http://s:8088", egress=tor))
+    assert wrapped.egress is tor, "the wrapper does not report the exit its fetches actually use"
+
+    messages = _build_tool(caplog, drivers={"capture": wrapped})
+
+    assert any("container's own address" in m for m in messages), "a proxied driver behind a wrapper passed silently"
+
+
 async def test_the_exit_a_page_came_through_reaches_the_health_row() -> None:
     """The last unasserted link in the egress round trip.
 

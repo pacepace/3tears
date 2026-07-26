@@ -288,4 +288,14 @@ class ApiDriver(ScrapeDriver):
             status=response.status_code,
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            # This driver binds its transport from `self._egress` a few lines up, so it is one
+            # of the backends that genuinely honours an exit -- and it was the only one not
+            # saying which. Left unreported, `ScrapeTool` passes `None` to the circuit and every
+            # API target's health row records no exit, so "walled" and "walled FROM THIS EXIT"
+            # -- the distinction the column and its migration exist for -- are indistinguishable
+            # for the one non-browser backend that can tell them apart.
+            #
+            # `None` when nothing was configured, matching the convention `last_egress` keeps
+            # everywhere: a name means somebody chose an exit.
+            egress=self._egress.name if self._egress is not None else None,
         )

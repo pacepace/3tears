@@ -190,7 +190,9 @@ class ScrapeTool(TearsTool):
         self._robots = RobotsGate(egress=egress) if isinstance(robots, _RobotsDefault) else robots
         # Declared budget has to cover the wait, not just the render -- see `timeout_seconds`.
         self._max_robots_wait_seconds = self._robots.max_wait_seconds if self._robots is not None else 0.0
-        self._warn_on_split_egress(drivers, egress)
+        # After `self._robots`, deliberately: the gate this tool ACTUALLY uses is what the
+        # check is about, and a caller can supply its own with an egress of its choosing.
+        self._warn_on_split_egress(drivers, self._robots)
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -319,36 +321,68 @@ class ScrapeTool(TearsTool):
         )
 
     @staticmethod
-    def _warn_on_split_egress(drivers: dict[str, ScrapeDriver], egress: EgressDriver | None) -> None:
-        """Say something when the scrape is proxied and this tool's own requests are not.
+    def _warn_on_split_egress(drivers: dict[str, ScrapeDriver], robots: RobotsGate | None) -> None:
+        """Say something when some of what this tool sends leaves by a configured exit and some does not.
 
         Safe configuration otherwise needs two independent wiring points for one security
-        property, and getting only the driver right reproduces the disclosure exactly: the
-        page leaves by TOR while the robots.txt read that precedes it leaves by the container's
-        own address. Nothing about that is visible -- both halves work, and the target learns
-        the real address from the request nobody was thinking about.
+        property, and getting only one right reproduces the disclosure: the target learns the
+        real address from whichever request nobody was thinking about. Nothing about that is
+        visible -- both halves work.
 
-        A warning rather than a refusal, because a deployment may genuinely want it (a robots
-        read through a shared exit that the target is not the audience for), and refusing would
-        be this library overriding a decision it cannot see the reasons for. But it should have
-        to be a decision.
+        **Both directions, because the untested one is the worse one.** Drivers proxied with an
+        unproxied gate leaks the address on a ``robots.txt`` read. Gate proxied with an
+        unproxied driver leaks it on the PAGE FETCH -- the request the exit was configured for.
+        A check that only looked one way stayed silent on the second, which is the configuration
+        a reader is most likely to believe is safe.
+
+        **The gate, not the constructor argument.** A caller can build its own
+        :class:`RobotsGate` with its own egress and pass it in, so ``ScrapeTool(egress=...)``
+        describes what the DEFAULT gate would have been, not what this tool actually does. A
+        check reading the argument called a correctly-proxied pair split, and a warning that
+        fires on correct configuration is one readers learn to filter.
+
+        Nothing is said when *robots* is ``None``: with the gate disabled there is no second
+        request, so there is no split to have.
+
+        A warning rather than a refusal, because a deployment may genuinely want it -- a robots
+        read through a shared exit the target is not the audience for -- and refusing would be
+        this library overriding a decision it cannot see the reasons for. But it should have to
+        be a decision.
         """
-        if egress is not None:
+        if robots is None:
             return
-        # `egress` is declared on `ScrapeDriver` with a `None` default, so the name is
-        # promised by the protocol rather than invented here. That buys a documented name, not
-        # an enforced one: the protocol is satisfied STRUCTURALLY as well as by inheritance, so
-        # a consuming application's own driver, or a stand-in written before this attribute
-        # existed, is a valid `ScrapeDriver` without it. Hence the `getattr` -- a constructor
-        # raising `AttributeError` here would turn a security warning into an outage.
-        proxied = sorted(name for name, d in drivers.items() if getattr(d, "egress", None) is not None)
-        if proxied:
+
+        # `egress` is declared on `ScrapeDriver` and on `RobotsGate` as a concrete property, so
+        # the name is promised rather than invented here. That buys a documented name, not an
+        # enforced one: `ScrapeDriver` is satisfied structurally as well as by inheritance, so a
+        # consuming application's own driver -- or one written before this attribute existed --
+        # is valid without it. Hence `getattr`: a constructor raising `AttributeError` would
+        # turn a security warning into an outage.
+        #
+        # A wrapper driver that forwards nothing would report `None` for a genuinely proxied
+        # inner driver and land on the wrong side of this comparison, so `NetworkCaptureDriver`
+        # and `MultiDocumentDriver` delegate the property to what they wrap.
+        unproxied = sorted(name for name, d in drivers.items() if getattr(d, "egress", None) is None)
+        proxied = sorted(name for name in drivers if name not in unproxied)
+        gate_proxied = getattr(robots, "egress", None) is not None
+
+        if proxied and not gate_proxied:
             log.warning(
-                "scrape tool: driver(s) %s leave by a configured exit but this tool does not, so its "
-                "robots.txt reads go out on the container's own address in front of every proxied "
-                "fetch. Pass the same egress driver to ScrapeTool(egress=...) unless that is intended.",
+                "scrape tool: driver(s) %s leave by a configured exit but this tool's robots.txt "
+                "reads do not, so they go out on the container's own address in front of every "
+                "proxied fetch. Pass the same egress driver to ScrapeTool(egress=...) unless that "
+                "is intended.",
                 ", ".join(proxied),
-                extra={"extra_data": {"proxied_drivers": proxied}},
+                extra={"extra_data": {"proxied_drivers": proxied, "gate_proxied": False}},
+            )
+        elif unproxied and gate_proxied:
+            log.warning(
+                "scrape tool: this tool's robots.txt reads leave by a configured exit but driver(s) "
+                "%s do not, so the page fetch itself goes out on the container's own address -- the "
+                "request the exit was configured for. Give those drivers the same egress driver "
+                "unless that is intended.",
+                ", ".join(unproxied),
+                extra={"extra_data": {"unproxied_drivers": unproxied, "gate_proxied": True}},
             )
 
     def _release_probe(self, target_id: str) -> None:

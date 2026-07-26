@@ -1288,17 +1288,33 @@ class TestDownloadContract:
 class TestEgressReporting:
     """Which exit this container leaves by, visible from outside it."""
 
-    async def test_healthz_reports_direct_when_nothing_is_configured(self) -> None:
+    async def test_healthz_reports_nothing_when_nothing_is_configured(self) -> None:
         """A deployment running one container per exit needs to confirm which one it reached.
 
         Without this the only way to tell a TOR container from a direct one is to fetch an
         address-echo service through it, which is a network round trip to answer a question
         the container already knows.
+
+        ``null`` rather than ``"direct"``: this value is written through to
+        ``ScrapeTargetHealth.last_egress``, whose convention is that a name means somebody chose
+        an exit. An unconfigured container reporting "direct" stamped that claim on every row.
         """
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
             body = (await client.get("/healthz")).json()
-        assert body["egress"] == "direct"
+        assert body["egress"] is None
+
+    async def test_healthz_reports_the_name_a_deployment_chose(self, monkeypatch) -> None:
+        """The other half: a stated choice is reported, so ``null`` above means absence not silence.
+
+        Without this the assertion above passes just as well against a ``/healthz`` that never
+        reports an egress at all.
+        """
+        monkeypatch.setattr(main, "EGRESS_NAME", "tor")
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+            body = (await client.get("/healthz")).json()
+        assert body["egress"] == "tor"
 
     def test_a_configured_proxy_reaches_the_browser_args(self, monkeypatch) -> None:
         """Reads the list PRODUCTION builds, which the first version of this test did not.
@@ -1341,9 +1357,14 @@ class TestEgressReporting:
         [
             ({"egress_proxy": "socks5://tor:9050", "egress_name": "tor"}, "tor"),
             ({"egress_proxy": "socks5://tor:9050"}, "unnamed"),
+            # `DirectEgress`. The container here has an exit configured, so this is the case
+            # that distinguishes honouring the selection from ignoring it: falling through to
+            # the shared browser would report "container-default" AND route the request out
+            # through the container's `--proxy-server`, while the caller had asked for neither.
+            ({"egress_proxy": "direct://", "egress_name": "direct"}, "direct"),
             ({}, "container-default"),
         ],
-        ids=["named-request-exit", "unnamed-request-exit", "container-default"],
+        ids=["named-request-exit", "unnamed-request-exit", "explicit-direct", "container-default"],
     )
     async def test_the_response_reports_the_exit_the_render_used(
         self, client, monkeypatch, body: dict, expected: str
@@ -1378,7 +1399,10 @@ class TestEgressReporting:
 
         assert r.status_code == 200
         assert r.json()["egress"] == expected
-        if body.get("egress_proxy"):
+        if "egress_proxy" in body:
+            # Membership rather than truthiness, mirroring production's `is not None`. A
+            # truthiness test here would quietly stop asserting for any exit whose proxy
+            # argument is falsy, which is exactly the class of bug the direct case covers.
             assert captured["proxy_server"] == body["egress_proxy"], (
                 "the request's exit never reached the browser context, so the echo names an exit that was not used"
             )

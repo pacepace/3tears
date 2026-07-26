@@ -105,10 +105,14 @@ class EgressDriver(Protocol):
         ...
 
     def browser_proxy_arg(self) -> str | None:
-        """What a Chromium-family browser needs, or ``None`` for the default route.
+        """What a Chromium-family browser needs, or ``None`` to express no opinion.
 
         Returned as the value for ``--proxy-server`` rather than a full argument, so a caller
         that builds its own argument list is not made to string-match this one.
+
+        ``None`` means "leave the browser's proxy configuration alone", NOT "use the default
+        route" -- a consumer with an inherited proxy keeps it. An exit that wants the default
+        route must say so with a value that overrides: see :meth:`DirectEgress.browser_proxy_arg`.
         """
         ...
 
@@ -147,8 +151,19 @@ class DirectEgress:
         return None
 
     def browser_proxy_arg(self) -> str | None:
-        """``None`` -- no ``--proxy-server``."""
-        return None
+        """``"direct://"`` -- Chromium's own spelling of "never use a proxy".
+
+        Not ``None``. ``None`` on this protocol means "this exit has no opinion about the
+        browser's proxy", and a consumer is right to leave whatever it already had in place --
+        which for the sidecar is a container-wide ``--proxy-server`` applied at launch. A
+        request that explicitly selected the default route would then leave by the container's
+        proxy anyway, silently, which is the exact bypass this class exists to make impossible.
+
+        ``direct://`` is a proxy URI that resolves to no proxy, so it overrides an inherited one
+        rather than declining to express a view. Chromium accepts it both as ``--proxy-server``
+        and as ``Target.createBrowserContext``'s ``proxyServer``, which take the same grammar.
+        """
+        return "direct://"
 
     async def health(self, *, timeout: float = DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS) -> EgressHealth:
         """Always reachable, by definition.

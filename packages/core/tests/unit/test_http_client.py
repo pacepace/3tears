@@ -316,8 +316,17 @@ class TestEgressWiring:
         )
         assert client._client._transport is pinned  # noqa: SLF001
 
-    def test_no_egress_reports_direct_rather_than_nothing(self) -> None:
-        """A result recorded against ``None`` cannot be told apart from one nobody stamped."""
+    def test_no_egress_reports_nothing_and_direct_egress_reports_direct(self) -> None:
+        """The two facts stay apart: nobody configured an exit, versus somebody chose the default.
+
+        Both are asserted together because the value of either is entirely in its contrast with
+        the other. An earlier convention returned ``"direct"`` for both, which made every row of
+        an unconfigured deployment indistinguishable from a deliberate choice of the default
+        route -- and :class:`DirectEgress` exists precisely so that choice can be stated.
+        """
+        from threetears.core.egress import DirectEgress
         from threetears.core.http_client import TracedHttpClient
 
-        assert TracedHttpClient(upstream_base_url="https://upstream.example").egress_name == "direct"
+        assert TracedHttpClient(upstream_base_url="https://upstream.example").egress_name is None
+        chosen = TracedHttpClient(upstream_base_url="https://upstream.example", egress=DirectEgress())
+        assert chosen.egress_name == "direct"

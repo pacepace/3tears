@@ -31,8 +31,18 @@ def test_direct_is_a_driver_not_a_special_case() -> None:
     direct = DirectEgress()
     assert isinstance(direct, EgressDriver)
     assert direct.name == "direct"
+
+    # `direct://` rather than `None`, and the two are not interchangeable. A browser consumer
+    # that already carries a proxy -- the sidecar applies one container-wide at launch -- reads
+    # `None` as "no opinion" and keeps it, so an explicitly-direct request left by the
+    # container's proxy while still being reported as `direct`. A value that overrides is the
+    # only way for this class to mean what its name says.
+    assert direct.browser_proxy_arg() == "direct://"
+
+    # httpx has no inherited proxy to override -- a transport is constructed per client, not
+    # applied process-wide -- so `None` there genuinely is the default route. The asymmetry is
+    # in the consumers, not in this class.
     assert direct.httpx_transport() is None
-    assert direct.browser_proxy_arg() is None
 
 
 def test_a_proxy_driver_serves_both_consumers() -> None:

@@ -476,6 +476,51 @@ class TestSidecarDriverEgress:
         # And the reported exit reaches the caller, rather than being assumed from what was sent.
         assert page.egress == "tor"
 
+    async def test_selecting_the_default_route_is_sent_as_a_selection(self) -> None:
+        """`DirectEgress` has to reach the wire as an instruction, not as an omission.
+
+        The sidecar applies a container-wide `--proxy-server` at launch, so anything it reads as
+        "the caller expressed no preference" falls through to that proxy. If this driver sent
+        `egress_proxy: null` for `DirectEgress`, a target explicitly configured to leave by the
+        default route would leave by the container's exit instead -- silently, and while the
+        response still said `direct`.
+
+        Contrast `test_no_egress_configured_sends_no_proxy_argument` above: omitting the key
+        entirely is the correct wire form for "nothing was configured", and this is the correct
+        one for "the default route was chosen". The whole value of `DirectEgress` is that those
+        are different requests.
+        """
+        import httpx
+        from threetears.core.egress import DirectEgress
+        from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+        sent: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "html": "<html></html>",
+                    "status": 200,
+                    "final_url": "https://x",
+                    "timing_ms": 1.0,
+                    "egress": "direct",
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        driver = NodriverSidecarDriver("http://sidecar:8088", client=client, egress=DirectEgress())
+
+        page = await driver.render("https://example.gov/x")
+
+        assert sent.get("egress_proxy") is not None, (
+            "the default route was sent as an absent proxy, which the sidecar reads as "
+            "'no preference' and answers with the container's own exit"
+        )
+        assert sent["egress_name"] == "direct"
+        assert page.egress == "direct"
+
     async def test_the_reported_exit_is_the_sidecars_not_the_drivers_assumption(self) -> None:
         """An older sidecar that ignores the proxy argument reports its own exit.
 

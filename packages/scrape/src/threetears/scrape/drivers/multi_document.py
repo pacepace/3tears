@@ -224,6 +224,22 @@ class MultiDocumentDriver(ScrapeDriver):
         """Stable string key for this driver."""
         return "multi_document"
 
+    @property
+    def egress(self) -> object | None:
+        """The document driver's exit.
+
+        Delegated for the reason given on :meth:`NetworkCaptureDriver.egress`: a wrapper that
+        inherited the base class's ``None`` would report itself as unproxied while every
+        document it fetches went out through a configured exit, and ``ScrapeTool`` reads this
+        to decide whether a configuration is split.
+
+        The listing fetch is this class's own ``httpx`` client and is NOT covered -- see the
+        ``client`` parameter, which says the document driver's fetching is its own concern. A
+        deployment proxying documents is not thereby proxying the listing request, and this
+        property does not claim otherwise.
+        """
+        return self._document_driver.egress
+
     async def render(
         self,
         url: str,

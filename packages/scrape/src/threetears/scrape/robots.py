@@ -208,6 +208,22 @@ class RobotsGate:
         self._lock = asyncio.Lock()
 
     @property
+    def egress(self) -> EgressDriver | None:
+        """The exit this gate's ``robots.txt`` reads leave by, or ``None`` for the default route.
+
+        Public because whether this gate is proxied is a security property of the surrounding
+        configuration, not an internal detail: :class:`~threetears.scrape.tool.ScrapeTool` warns
+        when its gate and its drivers leave by different kinds of route, and a check that had to
+        reach for ``_egress`` would be reading private state to answer a question the object
+        should be willing to answer.
+
+        Reading it back matters more than it looks. A caller can build the gate itself, with its
+        own egress, and hand it in -- so what this tool was CONSTRUCTED with says nothing about
+        what its robots reads actually do.
+        """
+        return self._egress
+
+    @property
     def max_wait_seconds(self) -> float:
         """The longest this gate can ask a caller to sleep before a fetch.
 

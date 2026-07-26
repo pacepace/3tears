@@ -53,11 +53,18 @@ CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
 # contexts, which is why per-target egress is a request field rather than a second
 # container.
 EGRESS_PROXY = os.environ.get("EGRESS_PROXY") or None
-# "direct" only when there genuinely is no proxy. When one is set without a name, the name is
-# unknown rather than "configured" -- a literal placeholder recorded against results would be
-# indistinguishable from a real exit called that, and the whole point of the name is telling
-# exits apart.
-EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("direct" if not EGRESS_PROXY else "unnamed")
+# `None` when the deployment configured no exit at all, because that is what the consumers of
+# this value mean by it: `ScrapeTargetHealth.last_egress` and `TargetCircuit` both treat `None`
+# as "nobody said" and reserve a name for a stated choice. Stamping "direct" here would fill
+# every row of an unconfigured deployment with the one value that convention exists to withhold,
+# and a reader could no longer tell a deployment that chose the default route from one that
+# never considered the question. A deployment that HAS chosen it says so with `EGRESS_NAME`, or
+# by passing `DirectEgress` per request.
+#
+# When a proxy is set without a name the name is unknown rather than absent, and "unnamed" says
+# so. A literal placeholder like "direct" would be indistinguishable from a real exit called
+# that, and telling exits apart is the whole point of the name.
+EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("unnamed" if EGRESS_PROXY else None)
 
 # Browser-forced-download capability (scrape-task-04, 2026-07-15): a fixed profile
 # directory (rather than nodriver's own auto-generated temp one) so the Preferences
@@ -407,9 +414,16 @@ async def _render(
     # would mix two targets' sessions for the same origin. The context is disposed in the
     # same `finally` that closes the tab, so the state lives exactly as long as the fetch.
     render_context_id: Any = None
-    if egress_proxy:
+    if egress_proxy is not None:
         # An exit for this request alone. Its own context, disposed with the tab, so nothing
         # about this render's route leaks into the next one.
+        #
+        # `is not None` rather than truthiness, because the caller selecting the DEFAULT route
+        # is a selection and has to be honoured like any other. It arrives as `direct://` --
+        # Chromium's own no-proxy URI -- so it takes this branch and gets a context whose proxy
+        # setting overrides the container-wide `--proxy-server` applied at launch. Falling
+        # through to the shared browser instead would route an explicitly-direct request out
+        # through the container's proxy while still reporting `direct` back to the caller.
         tab, render_context_id = await _create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
         if session_state:
             await hitl._apply_context_state(_browser, render_context_id, session_state)
@@ -830,16 +844,18 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
         eval_results=result.eval_results,
-        # The exit this render was CONFIGURED to use -- the request's own name when it supplied
-        # a proxy, otherwise the container's. Deliberately not described as the exit observed:
-        # this value is derived from the request, so a per-context proxy that Chromium accepted
-        # and ignored would still be reported as `tor` here, and that string is written to
-        # `ScrapeTargetHealth.last_egress`. An earlier comment claimed this recorded "what
-        # happened instead of what it asked for", which was the reverse of what it does.
+        # The exit this render was CONFIGURED to use -- the request's own name when it selected
+        # one, otherwise the container's. Deliberately not the exit OBSERVED: this value is
+        # derived from the request, so a per-context proxy that Chromium accepted and ignored
+        # would still be reported as `tor` here, and that string is written through to
+        # `ScrapeTargetHealth.last_egress`.
         #
         # Confirming that traffic genuinely leaves by this exit needs an outside observer and
-        # is OV-004's job; nothing in this process can tell the difference.
-        egress=(req.egress_name or "unnamed") if req.egress_proxy else EGRESS_NAME,
+        # is VRF-004's job; nothing in this process can tell the difference.
+        #
+        # `is not None` matches the routing branch above -- a request that selected the default
+        # route sends `direct://` and must report `direct`, not the container's name.
+        egress=(req.egress_name or "unnamed") if req.egress_proxy is not None else EGRESS_NAME,
     )
 
 
@@ -877,12 +893,15 @@ async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
+async def healthz() -> dict[str, str | None]:
     """Liveness/readiness probe for docker-compose healthcheck.
 
     Reports the configured egress so a caller can tell WHICH exit a result came from. A
     deployment running one container per exit otherwise has no way to confirm, from outside,
     that the container it is talking to is the one it thinks it is.
+
+    ``null`` when the deployment configured no exit -- the same "nobody said" this value carries
+    everywhere else, rather than a claim that the default route was chosen.
     """
     return {"status": "ok" if _ready else "starting", "egress": EGRESS_NAME}
 
