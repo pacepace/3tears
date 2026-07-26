@@ -254,6 +254,7 @@ class NatsKvBucket:
         try:
             entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         except Exception as exc:
             raise KvError(f"KV get failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -271,6 +272,7 @@ class NatsKvBucket:
         try:
             entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         except Exception as exc:
             raise KvError(f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -311,6 +313,14 @@ class NatsKvBucket:
                 lambda: self._kv.create(key, value), passthrough=(KeyWrongLastSequenceError,)
             )
         except KeyWrongLastSequenceError:
+            # A lost create is a documented result (None), but a burst of them is contention on
+            # one key -- two writers racing a lock or a leader election -- which only shows up
+            # here. The value is not logged; the key is structural, the same identifier already
+            # carried by the KvError below.
+            log.debug(
+                "KV create lost: key already exists",
+                extra={"extra_data": {"bucket": self._full_name, "key": key}},
+            )
             return None
         except Exception as exc:
             raise KvError(f"KV create failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -334,6 +344,12 @@ class NatsKvBucket:
                 lambda: self._kv.update(key, value, revision), passthrough=(KeyWrongLastSequenceError,)
             )
         except KeyWrongLastSequenceError:
+            # A lost CAS is a documented result (None), but a burst of them is contention on one
+            # key, and a caller that never retries would otherwise drop the write in silence.
+            log.debug(
+                "KV update lost: revision mismatch",
+                extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
+            )
             return None
         except Exception as exc:
             raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
