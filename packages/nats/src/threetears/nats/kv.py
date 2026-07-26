@@ -24,7 +24,7 @@ design notes
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
@@ -373,3 +373,73 @@ class NatsKvBucket:
         except Exception as exc:
             raise KvError(f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}") from exc
         return True
+
+
+@runtime_checkable
+class KvBucketLike(Protocol):
+    """The bucket surface a KV consumer actually uses.
+
+    Structurally identical to :class:`NatsKvBucket`'s public operations, and to the
+    in-memory ``FakeKvBucket`` the testing package ships. It exists so a consumer can
+    declare the slice it needs instead of the concrete class: the two are interchangeable
+    at every call site in the platform, and a signature naming the concrete one forces a
+    ``cast`` or a ``type: ignore`` on every test that passes the double.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def ttl(self) -> timedelta | None: ...
+
+    async def get(self, *, key: str) -> bytes | None: ...
+
+    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None: ...
+
+    async def put(self, *, key: str, value: bytes) -> int: ...
+
+    async def create(self, *, key: str, value: bytes) -> int | None: ...
+
+    async def update(self, *, key: str, value: bytes, revision: int) -> int | None: ...
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool: ...
+
+
+@runtime_checkable
+class KvCapable(Protocol):
+    """A client that can open KV buckets -- the slice of :class:`NatsClient` that KV code needs.
+
+    Most consumers of a NATS client only ever call ``kv_bucket``: a rate limiter, a replay
+    guard, a distributed lock. Naming this instead of ``NatsClient`` says what is actually
+    required, and lets the shipped in-memory double satisfy the signature by construction
+    rather than by exemption.
+
+    The full ``kv_bucket`` signature is declared rather than a two-argument subset: several
+    coordination primitives pass ``storage`` / ``create_if_missing`` / ``history``, and a
+    Protocol that omitted them would reject those callers. The shipped in-memory double
+    mirrors the same signature, so both satisfy this by construction.
+    """
+
+    async def kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        create_if_missing: bool = True,
+        history: int = 1,
+    ) -> KvBucketLike: ...
+
+
+@runtime_checkable
+class JetStreamPublisher(Protocol):
+    """The slice of :class:`NatsClient` a durable-publish caller needs.
+
+    One method, because that is genuinely all an audit emitter or any other
+    fire-and-persist producer uses. Sits beside :class:`KvCapable` for the same reason:
+    a signature naming the whole client forces every test that passes a recording double
+    to launder it through a cast, which is a hole in exactly the tests that exist to prove
+    the right thing was published.
+    """
+
+    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None: ...

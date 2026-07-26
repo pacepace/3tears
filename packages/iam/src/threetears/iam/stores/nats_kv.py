@@ -53,8 +53,8 @@ from datetime import timedelta
 from typing import Any, Final
 
 from threetears.core.coordination import WindowedCounter, WindowState
-from threetears.nats import NatsClient
-from threetears.nats.kv import NatsKvBucket
+from threetears.nats import KvCapable
+from threetears.nats.kv import KvBucketLike
 from threetears.observe import get_logger
 
 from threetears.iam.stores.base import (
@@ -129,11 +129,11 @@ class NatsKvTicketStore:
     longest ticket lifetime the caller issues.
     """
 
-    def __init__(self, bucket: NatsKvBucket, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, bucket: KvBucketLike, *, clock: Callable[[], float] = time.time) -> None:
         """
         :param bucket: a bucket already opened with a TTL at least as long as the longest
             ticket this store will issue.
-        :ptype bucket: NatsKvBucket
+        :ptype bucket: KvBucketLike
         :param clock: injectable wall clock, unix seconds. Wall rather than monotonic
             because the process that reads an entry is not the one that wrote it.
         :ptype clock: Callable[[], float]
@@ -180,11 +180,11 @@ class NatsKvStateStore:
     the bucket TTL is the reaper behind it.
     """
 
-    def __init__(self, bucket: NatsKvBucket, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, bucket: KvBucketLike, *, clock: Callable[[], float] = time.time) -> None:
         """
         :param bucket: a bucket already opened with a TTL at least as long as the longest
             entry this store will hold.
-        :ptype bucket: NatsKvBucket
+        :ptype bucket: KvBucketLike
         :param clock: injectable wall clock, unix seconds.
         :ptype clock: Callable[[], float]
         """
@@ -238,7 +238,7 @@ class NatsKvAttemptLimiter:
 
     def __init__(
         self,
-        nats_client: NatsClient,
+        nats_client: KvCapable,
         *,
         bucket_name: str,
         max_attempts: int = 5,
@@ -247,7 +247,7 @@ class NatsKvAttemptLimiter:
     ) -> None:
         """
         :param nats_client: the connected client; the counter opens its own bucket.
-        :ptype nats_client: NatsClient
+        :ptype nats_client: KvCapable
         :param bucket_name: bucket suffix, namespace-prefixed by the client. Give each
             protected surface its own, so unrelated counters never share a budget.
         :ptype bucket_name: str
@@ -297,15 +297,15 @@ class NatsKvAttemptLimiter:
         await self._counter.clear(key)
 
 
-async def state_store(nc: NatsClient, *, name: str, ttl: timedelta) -> NatsKvStateStore:
+async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStateStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvStateStore`.
 
-    Resolved per call rather than held: :meth:`~threetears.nats.NatsClient.kv_bucket` caches
+    Resolved per call rather than held: :meth:`~threetears.nats.KvCapable.kv_bucket` caches
     the handle itself, so this costs nothing and stays correct across a broker reconnect --
     where a handle captured once at construction would not.
 
     :param nc: the connected client.
-    :ptype nc: NatsClient
+    :ptype nc: KvCapable
     :param name: bucket suffix, namespace-prefixed by the client.
     :ptype name: str
     :param ttl: bucket TTL -- the storage reaper, and the ceiling on any per-call ``ttl``
@@ -318,13 +318,13 @@ async def state_store(nc: NatsClient, *, name: str, ttl: timedelta) -> NatsKvSta
     return NatsKvStateStore(await nc.kv_bucket(name=name, ttl=ttl))
 
 
-async def ticket_store(nc: NatsClient, *, name: str, ttl: timedelta) -> NatsKvTicketStore:
+async def ticket_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvTicketStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvTicketStore`.
 
     Same per-call resolution as :func:`state_store`, for the same reason.
 
     :param nc: the connected client.
-    :ptype nc: NatsClient
+    :ptype nc: KvCapable
     :param name: bucket suffix, namespace-prefixed by the client.
     :ptype name: str
     :param ttl: bucket TTL -- the storage reaper, and the ceiling on every ticket issued

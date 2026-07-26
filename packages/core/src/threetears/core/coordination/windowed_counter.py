@@ -50,7 +50,7 @@ from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    from threetears.nats import KvBucketLike, KvCapable
 
 __all__ = ["WindowState", "WindowedCounter"]
 
@@ -99,7 +99,7 @@ class WindowedCounter:
 
     def __init__(
         self,
-        nats_client: "NatsClient",
+        nats_client: "KvCapable",
         *,
         bucket_name: str,
         window_seconds: int,
@@ -108,8 +108,8 @@ class WindowedCounter:
     ) -> None:
         """configure the counter; defer bucket binding until the first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one throttle purpose (e.g. ``login_ip_throttle``) so unrelated
             counters never collide across surfaces, and so two independent counters (e.g. an
@@ -139,7 +139,7 @@ class WindowedCounter:
         self._window = timedelta(seconds=window_seconds)
         self._fail_open = fail_open
         self._clock = clock
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -308,7 +308,7 @@ class WindowedCounter:
             return None
         return state
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the windowed KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket

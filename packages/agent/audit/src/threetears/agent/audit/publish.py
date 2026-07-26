@@ -25,7 +25,7 @@ idempotency indexes on ``audit_events``.
 
 from __future__ import annotations
 
-from threetears.nats import NatsClient, Subject
+from threetears.nats import JetStreamPublisher, Subject
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
@@ -39,7 +39,7 @@ log = get_logger(__name__)
 async def publish_audit(
     event: AuditEvent,
     *,
-    nats_client: NatsClient | None,
+    nats_client: JetStreamPublisher | None,
     namespace: str,
 ) -> None:
     """
@@ -67,7 +67,7 @@ async def publish_audit(
     :ptype event: AuditEvent
     :param nats_client: connected canonical
         :class:`threetears.nats.NatsClient` wrapper; ``None`` is a no-op
-    :ptype nats_client: NatsClient | None
+    :ptype nats_client: JetStreamPublisher | None
     :param namespace: NATS subject namespace (environment-scoped
         prefix from ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str

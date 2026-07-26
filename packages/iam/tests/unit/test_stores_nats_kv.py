@@ -28,7 +28,7 @@ def nats() -> FakeNatsClient:
 def _limiter(nats: FakeNatsClient, **overrides: object) -> NatsKvAttemptLimiter:
     kwargs: dict[str, object] = {"bucket_name": "lockout", "max_attempts": 3, "window": _WINDOW}
     kwargs.update(overrides)
-    return NatsKvAttemptLimiter(nats, **kwargs)  # type: ignore[arg-type]
+    return NatsKvAttemptLimiter(nats, **kwargs)
 
 
 async def _bucket(nats: FakeNatsClient, name: str = "state") -> object:

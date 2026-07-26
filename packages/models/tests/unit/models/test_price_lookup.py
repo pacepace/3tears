@@ -166,7 +166,7 @@ class _FakeResponse:
         return self._payload
 
 
-# parity-with: threetears.models.price_lookup._HttpClient
+# parity-with: threetears.models.price_lookup.HttpClient
 class _FakeClient:
     def __init__(self, payload: dict[str, Any] | None = None, *, text: str = "") -> None:
         self._payload = payload

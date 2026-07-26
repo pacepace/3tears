@@ -28,6 +28,8 @@ is bucket-local and monotonic per bucket.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from collections.abc import Generator
 from dataclasses import dataclass
 
@@ -61,17 +63,34 @@ class FakeKvBucket:
     fixtures exercise the same call shape production code uses.
     """
 
-    def __init__(self, bucket_name: str) -> None:
+    def __init__(self, bucket_name: str, ttl: timedelta | None = None) -> None:
         """initialize empty fake bucket with zero revision counter.
 
         :param bucket_name: full bucket name (with namespace prefix)
         :ptype bucket_name: str
+        :param ttl: the bucket TTL this bucket was opened with. Recorded and
+            reported by :attr:`ttl` rather than applied -- the fake does not
+            expire entries. It is carried because production code reads it back
+            (``nats_distributed_lock`` compares the bucket's TTL against the one
+            it asked for), and a double that cannot answer a question the real
+            bucket answers is a double that hides the call.
+        :ptype ttl: timedelta | None
         :return: None
         :rtype: None
         """
         self._bucket_name = bucket_name
+        self._ttl = ttl
         self._entries: dict[str, _Entry] = {}
         self._revision = 0
+
+    @property
+    def ttl(self) -> timedelta | None:
+        """the TTL this bucket was opened with; ``None`` means no expiry.
+
+        :return: the bucket TTL
+        :rtype: timedelta | None
+        """
+        return self._ttl
 
     @property
     def name(self) -> str:
@@ -217,7 +236,7 @@ class FakeNatsClient:
         :param name: bucket suffix; the fake skips the namespace
             prefix the real wrapper layers on top
         :ptype name: str
-        :param ttl: ignored by fake
+        :param ttl: recorded and reported by :attr:`FakeKvBucket.ttl`; not applied
         :ptype ttl: object | None
         :param storage: ignored by fake
         :ptype storage: str
@@ -229,11 +248,11 @@ class FakeNatsClient:
         :rtype: FakeKvBucket
         :raises KeyError: when ``create_if_missing=False`` and bucket absent
         """
-        del ttl, storage, history
+        del storage, history
         bucket = self._buckets.get(name)
         if bucket is None:
             if not create_if_missing:
                 raise KeyError(f"bucket {name!r} not found")
-            bucket = FakeKvBucket(bucket_name=name)
+            bucket = FakeKvBucket(bucket_name=name, ttl=ttl if isinstance(ttl, timedelta) else None)
             self._buckets[name] = bucket
         return bucket

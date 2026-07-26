@@ -43,7 +43,7 @@ from threetears.nats.errors import (
     RequestError,
     SubscribeError,
 )
-from threetears.nats.kv import NatsKvBucket
+from threetears.nats.kv import JetStreamPublisher, KvBucketLike, KvCapable, NatsKvBucket
 from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 from threetears.nats.auth_callout import (
     AuthCalloutRequest,
@@ -94,6 +94,9 @@ __all__ = [
     "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_STARTUP_TIMEOUT",
     "JetStreamPullConsumer",
+    "JetStreamPublisher",
+    "KvBucketLike",
+    "KvCapable",
     "JetStreamPushConsumer",
     "NatsClient",
     "Subscription",

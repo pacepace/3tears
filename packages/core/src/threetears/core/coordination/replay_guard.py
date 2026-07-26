@@ -13,7 +13,7 @@ window.
 
 FAIL-CLOSED, unlike the L2 cache facade (:class:`threetears.core.cache.kv.NatsKvClient`, which is
 deliberately fail-open): a transport failure that the backing
-:class:`~threetears.nats.NatsKvBucket` cannot self-heal propagates as
+:class:`~threetears.nats.KvBucketLike` cannot self-heal propagates as
 :class:`~threetears.nats.KvError`, so the caller DENIES rather than silently admitting a possible
 replay. The bucket uses ``file`` storage so a normal NATS restart re-binds the intact on-disk
 bucket and recorded nonces survive within their TTL (with the default ``memory`` storage a restart
@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    from threetears.nats import KvBucketLike, KvCapable
 
 __all__ = ["ReplayGuard", "RevocationGuard"]
 
@@ -46,12 +46,12 @@ log = get_logger(__name__)
 class ReplayGuard:
     """records single-use nonces in a shared, TTL'd KV bucket; rejects any second sighting."""
 
-    def __init__(self, nats_client: "NatsClient", *, bucket_name: str, ttl_seconds: int) -> None:
+    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl_seconds: int) -> None:
         """configure the guard; defer bucket binding until the first record.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`; the guard
-            opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`; the guard
+            opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one assertion kind (e.g. ``pop_nonces``) so unrelated nonces never
             collide across surfaces
@@ -67,7 +67,7 @@ class ReplayGuard:
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -97,7 +97,7 @@ class ReplayGuard:
         revision = await bucket.create(key=self._key(nonce), value=b"1")
         return revision is not None  # None == key already existed == replay
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket
@@ -107,7 +107,7 @@ class ReplayGuard:
                     name=self._bucket_name,
                     ttl=self._ttl,
                     # file storage (NOT the default "memory"): the replay cache must survive a NATS
-                    # restart. with memory storage a restart wipes the stream, and NatsKvBucket's
+                    # restart. with memory storage a restart wipes the stream, and KvBucketLike's
                     # self-heal (kv.py _run_with_reopen) would recreate the bucket EMPTY -- so a
                     # pre-restart nonce would be admitted as "fresh" for one accept-window, a
                     # fail-OPEN replay hole. file storage rebinds the intact on-disk bucket instead,
@@ -150,12 +150,12 @@ class RevocationGuard:
         blocked = await guard.is_revoked_before("sub:<principal_id>", moment=session_started_at)
     """
 
-    def __init__(self, nats_client: "NatsClient", *, bucket_name: str, ttl_seconds: int) -> None:
+    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl_seconds: int) -> None:
         """configure the guard; defer bucket binding until the first record.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`; the guard
-            opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`; the guard
+            opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to revocation entries, distinct from any :class:`ReplayGuard` bucket
             sharing the same process, so the two key shapes never collide
@@ -173,7 +173,7 @@ class RevocationGuard:
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = timedelta(seconds=ttl_seconds)
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -252,7 +252,7 @@ class RevocationGuard:
             return False
         return moment < stored
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket
