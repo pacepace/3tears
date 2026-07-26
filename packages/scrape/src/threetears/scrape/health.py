@@ -163,6 +163,13 @@ class ScrapeTargetHealth(BaseEntity):
         route looks permanently walled, its circuit backs it off, and a working alternative is
         never tried -- the backoff learning a lesson about the exit rather than the target.
 
+        **Configured, not observed.** The value comes from what the render was set up to use,
+        not from watching where the traffic went -- a proxy that was accepted and ignored is
+        recorded here as though it had been honoured. Nothing inside this process can tell the
+        difference; that check needs an outside observer and is deliberately operator work.
+        Treat this as "which exit we believe this came from", which is exactly what is needed
+        to separate the two kinds of block, and not as evidence the exit worked.
+
         ``None`` is a real state, not a gap: every row written before this column existed, and
         every deployment that configures no egress at all. See
         :data:`threetears.core.egress.DirectEgress` for why "direct" is a named exit rather

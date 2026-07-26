@@ -553,14 +553,24 @@ class ScrapeTool(TearsTool):
             # was suppressed -- paying a politeness cost for a request that never happens. The
             # floor-vs-ceiling rule is satisfied either way: both gates are still honoured, and a
             # circuit probe still waits its delay.
-            if robots_decision is not None and robots_decision.wait_seconds > 0 and fetch_will_happen:
+            # The FLEET's turn is taken here rather than during `check`, and only once the
+            # fetch is committed. `TokenBucket.claim` consumes: asking earlier charged this
+            # origin's shared budget for polls that never fetched, so one walled target inside
+            # its backoff delayed every sibling target on the same site. Same rule the local
+            # clock already followed -- the site pays when we actually visit it.
+            fleet_wait = 0.0
+            if self._robots is not None and fetch_will_happen:
+                fleet_wait = await self._robots.claim_fleet_turn(url)
+
+            wait_seconds = max(robots_decision.wait_seconds if robots_decision is not None else 0.0, fleet_wait)
+            if wait_seconds > 0 and fetch_will_happen:
                 log.info(
                     "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
-                    robots_decision.wait_seconds,
+                    wait_seconds,
                     url,
                     extra={"extra_data": {"target_id": target_id}},
                 )
-                await asyncio.sleep(robots_decision.wait_seconds)
+                await asyncio.sleep(wait_seconds)
 
             # The human's solve, read once and passed to the driver. This is the step that makes
             # the stored solve a capability rather than plumbing: the columns, the sealing and the driver

@@ -36,8 +36,12 @@ RUN chmod +x /app/entrypoint.sh
 # EGRESS_PROXY / EGRESS_NAME are unset by default: the default route, named
 # "direct". A deployment that wants this container to leave by TOR or a VPN sets
 # EGRESS_PROXY to a --proxy-server value and EGRESS_NAME to the identifier it
-# records results against. Chromium takes --proxy-server process-wide, so one
-# container is one exit; two exits are two containers.
+# records results against.
+#
+# That sets the container's DEFAULT exit, not its only one: a render can ask for a
+# different one per request, because a browser context carries its own proxy even
+# though the --proxy-server flag is process-wide. One container therefore serves
+# several exits, and a second copy is not how you get a second exit.
 ENV DISPLAY_NUM=99 \
     NOVNC_ROOT=/usr/share/novnc \
     SCREEN_GEOM=1920x1080x24 \

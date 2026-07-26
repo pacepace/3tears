@@ -293,6 +293,47 @@ cookies with the request that would otherwise have been challenged, and the targ
 normally. When the solve expires, it is ignored rather than sent -- the target simply needs a
 human again, which degrades to asking for help rather than to bad data.
 
+### 8. Which exit a request leaves by
+
+Every fetch here can leave by a chosen exit -- the default route, a TOR circuit, a Cloudflare
+WARP tunnel, any proxy URL. The seam is `threetears.core.egress`, in core rather than here
+because an exit is not a scraping concept: `EgressDriver` answers both "what transport should
+httpx use" and "what does a browser need on its command line", since a deployment that got only
+one of those right would send its API calls one way and its scrapes another while reporting a
+single configured exit.
+
+```python
+from threetears.core.egress import EgressRegistry, SocksEgress, WarpEgress
+
+registry = EgressRegistry({"tor": SocksEgress("tor"), "warp": WarpEgress()})
+tool = ScrapeTool(..., egress="tor", egress_registry=registry)
+```
+
+**Three things worth knowing before reaching for it.**
+
+*It is wired in two places, and getting one right hides the other.* Drivers take their own
+`egress=` because a driver may be shared between tools; `ScrapeTool` takes one for its own
+requests, including the `robots.txt` read that happens in FRONT of every fetch. Proxy the
+driver alone and the page leaves by TOR while the robots read discloses the container's real
+address to the same origin moments earlier. `ScrapeTool` logs a warning when it sees that
+shape.
+
+*An unknown name raises rather than falling back to the default route.* A deployment that asked
+for `tor` and silently got direct would look correct in every log line while being wrong about
+the only property it configured this for.
+
+*TOR and WARP are for opposite problems.* TOR is non-attribution, and its exits are public,
+enumerable and heavily challenged by exactly the bot walls this package works around -- expect
+a HIGHER challenge rate through it. WARP changes the address a site sees and is far less
+challenged, but Cloudflare can associate the traffic with the account, so it is not anonymity.
+
+`ScrapeTargetHealth.last_egress` records which exit an observation came from, so "this target
+is walled" can be told apart from "this target is walled FROM THIS EXIT" -- without it, one
+blocked exit poisons a target permanently and the circuit backs it off having learned the wrong
+lesson. That value is what the render was CONFIGURED to use, not an observation of where the
+traffic went; confirming the latter needs an outside observer, which is why
+`EgressDriver.health()` exists and reports the address an exit actually presents.
+
 
 ## License
 

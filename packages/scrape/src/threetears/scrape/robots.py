@@ -301,25 +301,13 @@ class RobotsGate:
                 delay,
             )
 
-        if self._delay_pacer is not None:
-            # Fleet-wide: without this each pod honours the delay alone and the site sees the
-            # sum. Degrades to the per-process clock below rather than blocking, on the same
-            # posture as every other optional coordination primitive in this package.
-            try:
-                claim = await self._delay_pacer.claim(origin)
-            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
-                log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
-            else:
-                # The pacer coordinates the FLEET; it is a rate primitive and knows nothing
-                # about what THIS site asked for. Returning its answer alone would discard the
-                # parsed Crawl-delay entirely -- so a site asking for 30s between requests
-                # would be fetched at whatever rate the bucket happened to be configured for,
-                # and the more pods there were the more certainly that would happen. Both
-                # constraints bind, so the wait is the longer of the two: the fleet's turn to
-                # go, and this origin's own clock.
-                paced = 0.0 if claim.claimed else float(claim.retry_after_seconds)
-                return max(paced, self._local_delay_owed(origin, delay, now))
-
+        # The FLEET's turn is deliberately not asked for here. `TokenBucket.claim` consumes a
+        # token atomically, and `check` is a question, not a commitment: the circuit can
+        # suppress the fetch afterwards, the caller can change its mind, the driver can be
+        # missing. Charging the site's fleet-wide budget for a fetch that never happens is the
+        # same defect `note_fetched` exists to prevent for the local clock -- and it is worse
+        # here, because the token is shared, so polling one walled target inside its backoff
+        # delayed every sibling target on that origin. See :meth:`claim_fleet_turn`.
         return self._local_delay_owed(origin, delay, now)
 
     def forget(self, url_or_origin: str) -> None:
@@ -343,6 +331,36 @@ class RobotsGate:
         """Hold *store* to ``max_origins`` entries, dropping least-recently-touched first."""
         while len(store) > self._max_origins:
             store.popitem(last=False)
+
+    async def claim_fleet_turn(self, url: str) -> float:
+        """Take this origin's turn from the cross-pod pacer, and say how long is still owed.
+
+        Split from :meth:`check` because claiming CONSUMES. Call it once the fetch is committed
+        -- after every other gate has admitted it -- and honour the returned wait alongside
+        :attr:`RobotsDecision.wait_seconds`; the two are different constraints and the longer
+        one binds. Without a pacer configured this is a no-op returning ``0.0``, so a caller
+        need not branch on whether fleet coordination exists.
+
+        Never raises. A KV outage costs fleet-wide precision and falls back to this pod's own
+        clock, which is stricter per pod rather than looser -- the same posture as every other
+        optional coordination primitive in this package.
+
+        :param url: the url about to be fetched
+        :ptype url: str
+        :return: additional seconds to wait before fetching, ``0.0`` when the turn is granted
+        :rtype: float
+        """
+        if self._delay_pacer is None or not self._policy.respect_crawl_delay:
+            return 0.0
+        origin = _origin_of(url)
+        if not origin:
+            return 0.0
+        try:
+            claim = await self._delay_pacer.claim(origin)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
+            log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
+            return 0.0
+        return 0.0 if claim.claimed else float(claim.retry_after_seconds)
 
     def _local_delay_owed(self, origin: str, delay: float, now: float) -> float:
         """Seconds owed by this process's own clock alone, ignoring any fleet coordination."""

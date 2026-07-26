@@ -238,3 +238,34 @@ def test_two_exits_can_run_side_by_side_under_their_own_names() -> None:
 
     assert registry.names() == ["direct", "tor", "warp"]
     assert registry.get("warp").browser_proxy_arg() != registry.get("tor").browser_proxy_arg()
+
+
+async def test_one_raising_driver_does_not_take_down_the_sweep() -> None:
+    """The sweep is a diagnostic, so it must survive the thing it diagnoses.
+
+    `EgressDriver` is `runtime_checkable` and deliberately invites foreign implementations.
+    `ProxyEgress.health` promises never to raise; a third-party driver promises nothing. Without
+    `return_exceptions=True` one such driver replaced the whole report with an exception -- so
+    an operator asking "which of my exits is down" got nothing back, precisely when something
+    already was.
+    """
+
+    class _Exploding:
+        @property
+        def name(self) -> str:
+            return "boom"
+
+        def httpx_transport(self) -> None:
+            return None
+
+        def browser_proxy_arg(self) -> str | None:
+            return None
+
+        async def health(self, *, timeout: float = 10.0) -> EgressHealth:
+            raise RuntimeError("the driver itself is broken")
+
+    report = await EgressRegistry({"boom": _Exploding()}).health()
+
+    assert report["boom"].reachable is False
+    assert "RuntimeError" in (report["boom"].reason or "")
+    assert report["direct"].reachable is True, "one broken driver hid every other exit's status"

@@ -700,9 +700,10 @@ async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay(
 
     gate.note_fetched("https://example.gov/a", now=1000.0)
     decision = await gate.check("https://example.gov/b", now=1004.0)
+    fleet = await gate.claim_fleet_turn("https://example.gov/b")
 
     assert pacer.keys == ["https://example.gov"], "the pacer is keyed per origin"
-    assert decision.wait_seconds == pytest.approx(6.0), (
+    assert max(decision.wait_seconds, fleet) == pytest.approx(6.0), (
         "the site asked for 10s and 4 had passed; a granted fleet claim must not shorten that"
     )
 
@@ -714,8 +715,9 @@ async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower()
 
     gate.note_fetched("https://example.gov/a", now=1000.0)
     decision = await gate.check("https://example.gov/b", now=1004.0)
+    fleet = await gate.claim_fleet_turn("https://example.gov/b")
 
-    assert decision.wait_seconds == pytest.approx(25.0), "the fleet's 25s outlasts this pod's 6s"
+    assert max(decision.wait_seconds, fleet) == pytest.approx(25.0), "the fleet's 25s outlasts this pod's 6s"
 
 
 async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
@@ -729,8 +731,10 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
     gate.note_fetched("https://example.gov/a", now=1000.0)
 
     decision = await gate.check("https://example.gov/b", now=1004.0)
+    fleet = await gate.claim_fleet_turn("https://example.gov/b")
     assert decision.allowed is True, "an outage must not stop the scrape"
-    assert decision.wait_seconds == pytest.approx(6.0), "and must not stop the politeness either"
+    assert fleet == 0.0, "an outage yields no fleet wait rather than raising"
+    assert max(decision.wait_seconds, fleet) == pytest.approx(6.0), "and must not stop the politeness either"
 
 
 # ---------------------------------------------------------------------------
@@ -951,3 +955,34 @@ async def test_a_circuit_probe_is_not_exempt_from_the_crawl_delay() -> None:
         f"the first wait was {slept[0]}s, not the ~10s this site asked for: a circuit probe "
         f"skipped the crawl delay. All waits: {slept}"
     )
+
+
+async def test_a_check_that_never_fetches_does_not_spend_the_sites_fleet_budget() -> None:
+    """`TokenBucket.claim` CONSUMES, so asking during `check` charges for a visit that may
+    never happen.
+
+    This is the same rule `note_fetched` enforces for the local clock -- the site pays when we
+    actually visit it -- and it matters more here, because the token is shared across pods.
+    `ScrapeTool` consults robots before the circuit, so a walled target polled inside its
+    backoff was draining a token per poll and delaying every SIBLING target on that origin: a
+    target that is behaving perfectly, slowed down by one that is not.
+    """
+    pacer = _FakeDelayPacer(claimed=True)
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=pacer)
+
+    for _ in range(5):
+        await gate.check("https://example.gov/a", now=1000.0)
+
+    assert pacer.keys == [], (
+        f"checking spent {len(pacer.keys)} fleet token(s) without fetching; a suppressed poll "
+        "now delays every other target on that site"
+    )
+
+    await gate.claim_fleet_turn("https://example.gov/a")
+    assert pacer.keys == ["https://example.gov"], "committing to a fetch does take the turn"
+
+
+async def test_claiming_a_turn_without_a_pacer_is_a_no_op() -> None:
+    """So a caller never has to branch on whether fleet coordination is configured."""
+    gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
+    assert await gate.claim_fleet_turn("https://example.gov/a") == 0.0

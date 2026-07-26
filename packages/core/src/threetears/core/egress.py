@@ -362,5 +362,20 @@ class EgressRegistry:
             return result
 
         names = sorted(self._drivers)
-        results = await asyncio.gather(*(_ask(self._drivers[n]) for n in names))
-        return dict(zip(names, results, strict=True))
+        # `return_exceptions=True` because this is a diagnostic over a `runtime_checkable`
+        # Protocol that deliberately invites foreign implementations. `ProxyEgress.health`
+        # promises never to raise and explains why; a third-party driver promises nothing, and
+        # without this one such driver takes down the whole sweep -- so the operator asking
+        # "which of my exits is down" gets an exception instead of the answer, at exactly the
+        # moment something is already broken.
+        results = await asyncio.gather(*(_ask(self._drivers[n]) for n in names), return_exceptions=True)
+        report: dict[str, EgressHealth] = {}
+        for name, result in zip(names, results, strict=True):
+            if isinstance(result, BaseException):
+                report[name] = EgressHealth(
+                    reachable=False,
+                    reason=f"health check raised: {type(result).__name__}: {result}",
+                )
+            else:
+                report[name] = result
+        return report

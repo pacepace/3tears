@@ -811,9 +811,15 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
         eval_results=result.eval_results,
-        # The exit actually used: the request's own name when it supplied a proxy, otherwise
-        # the container's. Reported rather than assumed, so a caller records what happened
-        # instead of what it asked for.
+        # The exit this render was CONFIGURED to use -- the request's own name when it supplied
+        # a proxy, otherwise the container's. Deliberately not described as the exit observed:
+        # this value is derived from the request, so a per-context proxy that Chromium accepted
+        # and ignored would still be reported as `tor` here, and that string is written to
+        # `ScrapeTargetHealth.last_egress`. An earlier comment claimed this recorded "what
+        # happened instead of what it asked for", which was the reverse of what it does.
+        #
+        # Confirming that traffic genuinely leaves by this exit needs an outside observer and
+        # is OV-004's job; nothing in this process can tell the difference.
         egress=(req.egress_name or "unnamed") if req.egress_proxy else EGRESS_NAME,
     )
 

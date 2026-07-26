@@ -235,6 +235,24 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**A poll that never fetches no longer spends the site's fleet-wide budget.** `TokenBucket.claim`
+consumes atomically, and the crawl-delay pacer was being claimed inside `RobotsGate.check` --
+which is a question, not a commitment. The circuit can suppress the fetch afterwards, the caller
+can change its mind, the driver can be missing. Because the token is shared across pods, polling
+one walled target inside its backoff drained a token per poll and delayed every SIBLING target
+on that origin: a target behaving perfectly, slowed by one that is not. Taking the turn is now
+`claim_fleet_turn`, called only once the fetch is committed, which is the rule `note_fetched`
+already enforced for the local clock -- the site pays when we actually visit it.
+
+`EgressRegistry.health()` survives a driver that raises. It is a diagnostic over a
+`runtime_checkable` Protocol that invites foreign implementations, so one broken driver replaced
+the whole report with an exception -- leaving an operator asking "which exit is down" with no
+answer at the moment one already was.
+
+`threetears.core.egress` is reachable from `threetears.core` directly. It was described as new
+public API while being absent from the package's lazy export map, so it could only be imported
+by its full module path.
+
 **A driver that cannot use a human's solve now says so, once per site.** Only the nodriver
 sidecar can apply exported cookies and storage; the other five accept the parameter and render
 unauthenticated. In silence that is a trap -- the caller gets a successful page back and learns

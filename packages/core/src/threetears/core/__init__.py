@@ -43,6 +43,15 @@ if TYPE_CHECKING:
     from threetears.core.data.store import DataStore
     from threetears.core.entities.base import BaseEntity
     from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
+    from threetears.core.egress import (
+        DirectEgress,
+        EgressDriver,
+        EgressHealth,
+        EgressRegistry,
+        ProxyEgress,
+        SocksEgress,
+        WarpEgress,
+    )
     from threetears.core.http_client import TracedHttpClient, UpstreamHttpError
     from threetears.core.namespaces import PLURAL_PREFIX_BY_NAMESPACE_TYPE, build_namespace_name, sanitize_segment
     from threetears.core.pagination import CursorError, Keyset, Page, decode_cursor, encode_cursor
@@ -88,6 +97,13 @@ _LAZY: dict[str, tuple[str, str]] = {
     "SandboxDecision": ("threetears.core.security", "SandboxDecision"),
     "SandboxDenied": ("threetears.core.security", "SandboxDenied"),
     "TableDef": ("threetears.core.data.schema", "TableDef"),
+    "DirectEgress": ("threetears.core.egress", "DirectEgress"),
+    "EgressDriver": ("threetears.core.egress", "EgressDriver"),
+    "EgressHealth": ("threetears.core.egress", "EgressHealth"),
+    "EgressRegistry": ("threetears.core.egress", "EgressRegistry"),
+    "ProxyEgress": ("threetears.core.egress", "ProxyEgress"),
+    "SocksEgress": ("threetears.core.egress", "SocksEgress"),
+    "WarpEgress": ("threetears.core.egress", "WarpEgress"),
     "TracedHttpClient": ("threetears.core.http_client", "TracedHttpClient"),
     "UnknownFormatError": ("threetears.core.serialization", "UnknownFormatError"),
     "UpstreamHttpError": ("threetears.core.http_client", "UpstreamHttpError"),
@@ -132,7 +148,14 @@ __all__ = [
     "SandboxDecision",
     "SandboxDenied",
     "TableDef",
+    "DirectEgress",
+    "EgressDriver",
+    "EgressHealth",
+    "EgressRegistry",
+    "ProxyEgress",
+    "SocksEgress",
     "TracedHttpClient",
+    "WarpEgress",
     "UnknownFormatError",
     "UpstreamHttpError",
     "atomic_write",
