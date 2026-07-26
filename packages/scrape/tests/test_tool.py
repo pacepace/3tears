@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest

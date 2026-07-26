@@ -285,12 +285,15 @@ class ScrapeTool(TearsTool):
         """
         if egress is not None:
             return
-        # `egress` is declared on `ScrapeDriver` with a ``None`` default, so the name is
-        # promised rather than guessed at and mypy can see it. The read stays defensive
-        # because this protocol is satisfied STRUCTURALLY as well as by inheritance -- a
-        # consuming application's own driver, or a stand-in written before this attribute
-        # existed, is a valid `ScrapeDriver` without it, and a constructor that raised
-        # `AttributeError` on one would turn a security warning into an outage.
+        # `egress` is declared on `ScrapeDriver` with a `None` default, so the name is
+        # promised by the protocol rather than invented here -- but this read gets no static
+        # guarantee from that, and an earlier version of this comment claimed it did. The
+        # protocol is satisfied STRUCTURALLY as well as by inheritance: a consuming
+        # application's own driver, or a stand-in written before this attribute existed, is a
+        # valid `ScrapeDriver` without it. So the read stays a `getattr`, because a
+        # constructor raising `AttributeError` would turn a security warning into an outage,
+        # and the declaration's value is that the name is documented rather than that it is
+        # enforced.
         proxied = sorted(name for name, d in drivers.items() if getattr(d, "egress", None) is not None)
         if proxied:
             log.warning(
