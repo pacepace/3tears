@@ -58,16 +58,17 @@ def _is_vendored(path: Path) -> bool:
 
 
 def _ruff_configs() -> list[Path]:
-    """Every file ruff would read a per-file ignore from: the three forms it recognises.
+    """Every file ruff would read a per-file ignore from.
 
     An earlier version read the root ``pyproject.toml`` plus ``ruff.toml`` and described itself
-    as reading every config -- which is how the sidecar override went unscanned. Enumerating all
-    three is cheap; being one form short is the same failure again, and the likeliest miss in a
-    27-package workspace is a package ``pyproject.toml`` growing a ``[tool.ruff]`` section,
-    since every package already ships that file.
+    as reading every config -- which is how the sidecar override went unscanned. Being one form
+    short is that same failure again, and the likeliest miss in a 27-package workspace is a
+    package ``pyproject.toml`` growing a ``[tool.ruff]`` section, since every package already
+    ships that file.
 
-    (The correction to that overclaim then said "all four forms", over a loop reading three.
-    Hence the count is now stated once, next to the tuple it describes.)
+    No count in this prose. Two attempts to state one were wrong in opposite directions, and a
+    third claimed to have fixed that by stating it once while stating it twice. The loop below
+    is the list; it cannot disagree with itself.
     """
     configs: list[Path] = []
     for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
@@ -122,10 +123,11 @@ class TestNoRedundantSlf001Pragmas:
         configs = _ruff_configs()
         assert (_REPO_ROOT / "pyproject.toml") in configs, "the root ruff config was not discovered"
         assert (_REPO_ROOT / "packages/scrape/sidecar/ruff.toml") in configs, (
-            "the sidecar's nested override was not discovered, which is what R-1 was about"
+            "the sidecar's nested override was not discovered, so every path it exempts is "
+            "unscanned while this suite still reports success"
         )
 
-        scanned = {p for c in _ruff_configs() for g in _slf001_globs(c) for p in _exempted_files(c, g)}
+        scanned = {p for c in configs for g in _slf001_globs(c) for p in _exempted_files(c, g)}
         assert len(scanned) > 25, f"only {len(scanned)} files scanned; discovery has silently collapsed"
 
     def test_every_slf001_exemption_glob_matches_something(self) -> None:

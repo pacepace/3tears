@@ -285,7 +285,7 @@ markers = [
 # upstream library code at import time, and `langchain_core/__init__.py`
 # itself prepends a `default`-action filter for
 # `LangChainPendingDeprecationWarning` via
-# `surface_langchain_deprecation_warnings()` — which trumps a generic
+# `surface_langchain_deprecation_warnings()` -- which trumps a generic
 # pyproject-level `PendingDeprecationWarning` ignore. The filter that
 # actually catches it is installed in `conftest.py` against the exact
 # subclass after `langchain_core` has imported. Revisit when
