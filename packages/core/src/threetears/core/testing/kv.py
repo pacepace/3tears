@@ -1,6 +1,9 @@
-"""in-memory fake of :class:`threetears.nats.NatsKvBucket` + :class:`NatsClient`.
+"""in-memory fake of :class:`threetears.nats.NatsKvBucket` + :class:`~threetears.nats.NatsClient`.
 
-mirrors the wrapper surface :class:`KVLease` actually consumes:
+published rather than kept per-repo: every consumer that touches KV was
+writing its own double of this same narrow surface, and a double that
+drifts from the wrapper is how a KV bug ships green. mirrors the wrapper
+surface consumers actually use:
 
 - :meth:`FakeKvBucket.create` returns the new revision on success or
   ``None`` on CAS conflict (key already present).
@@ -19,6 +22,8 @@ is bucket-local and monotonic per bucket.
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+__all__ = ["FakeKvBucket", "FakeNatsClient"]
 
 
 @dataclass
@@ -154,7 +159,7 @@ class FakeKvBucket:
 class FakeNatsClient:
     """fake NATS wrapper exposing :meth:`kv_bucket` returning :class:`FakeKvBucket`.
 
-    matches the narrow surface :class:`KVLease` depends on. the bucket
+    matches the narrow surface KV consumers depend on. the bucket
     cache mirrors :class:`NatsClient`'s internal cache: repeat
     ``kv_bucket`` calls for the same name return the same instance.
     """

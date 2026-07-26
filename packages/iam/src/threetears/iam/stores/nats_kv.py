@@ -13,19 +13,28 @@ concurrent redemptions of one ticket must produce exactly one winner. Reading
 the value and then deleting it lets both callers read before either deletes,
 which for a password-reset ticket means two parties both get to set the
 password. So the delete is guarded by the revision the read observed, and only
-the caller whose revision still matches wins.
+the caller whose revision still matches wins. :meth:`NatsKvStateStore.get` is
+the deliberate exception -- it does not consume, and is only correct where a
+separate replay guard enforces single use.
+
+**Counting is not implemented here.** :class:`NatsKvAttemptLimiter` adapts
+:class:`~threetears.core.coordination.WindowedCounter` to the
+:class:`~threetears.iam.stores.base.AttemptLimiter` Protocol. There is one
+windowed-counter implementation in the platform and it lives in
+``threetears.core.coordination``, next to the other distributed security
+primitives.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Final
 
-from threetears.nats.errors import KvError
+from threetears.core.coordination import WindowedCounter, WindowState
+from threetears.nats import NatsClient
 from threetears.nats.kv import NatsKvBucket
 from threetears.observe import get_logger
 
@@ -36,14 +45,15 @@ from threetears.iam.stores.base import (
     new_ticket_secret,
 )
 
-__all__ = ["NatsKvAttemptLimiter", "NatsKvStateStore", "NatsKvTicketStore"]
+__all__ = [
+    "NatsKvAttemptLimiter",
+    "NatsKvStateStore",
+    "NatsKvTicketStore",
+    "state_store",
+    "ticket_store",
+]
 
 log = get_logger(__name__)
-
-#: How many times a counter increment retries when it loses a compare-and-swap race.
-#: Bounded rather than unbounded: under genuine contention an unbounded retry loop turns a
-#: credential-stuffing burst into a spin, which is the attacker's goal.
-_CAS_ATTEMPTS: Final[int] = 5
 
 
 def _encode(payload: Mapping[str, Any]) -> bytes:
@@ -102,10 +112,7 @@ class NatsKvTicketStore:
         # winner. A racing caller's delete fails and it correctly sees an unredeemable ticket.
         if not await self._bucket.delete(key=key, revision=revision):
             return None
-        payload = _decode(raw)
-        if payload is None:
-            return None
-        return {name: value for name, value in payload.items() if name != "_ttl_seconds"}
+        return _strip_internal(_decode(raw))
 
 
 class NatsKvStateStore:
@@ -135,98 +142,118 @@ class NatsKvStateStore:
 
 
 class NatsKvAttemptLimiter:
-    """KV-backed :class:`~threetears.iam.stores.base.AttemptLimiter`, fixed-window.
+    """:class:`~threetears.iam.stores.base.AttemptLimiter` over a
+    :class:`~threetears.core.coordination.WindowedCounter`.
 
-    **The window is bucketed into the key, not left to the bucket TTL.** A JetStream KV TTL
-    expires a key some interval after its last WRITE, which makes a TTL-only counter a
-    sliding window: an attacker pacing attempts just inside the interval keeps one counter
-    alive indefinitely and never gets a fresh window, while a legitimate user who fails a few
-    times has their lockout silently extended by each attempt. Stamping the window ordinal
-    into the key gives a true fixed window -- a new ordinal is simply a different key, which
-    starts at zero -- and the bucket TTL then serves only to reap old ordinals.
+    The counting, the window, the CAS loop and the fail-open decision are all the counter's;
+    this class only supplies the threshold and shapes the answer into an
+    :class:`~threetears.iam.stores.base.AttemptWindow`. A second counting implementation
+    would be a second set of window semantics to get wrong, which is exactly how a lockout
+    ends up lasting a hundred milliseconds.
 
-    **Keys are hashed before they reach KV.** Callers key on an email address or a client IP,
-    and neither belongs in a bucket listing an operator can dump. The hash is truncated
-    because this is a partitioning key, not a security boundary: the value it protects is
-    already known to whoever is being rate-limited.
+    **The window is anchored at the first failure, not at a wall-clock boundary.** Five
+    failures buy a full window of lockout measured from the fifth attempt. An epoch-aligned
+    window -- ``floor(now / window)`` -- looks equivalent and is not: every key's window
+    rolls at the same instant, so an attacker who straddles a boundary gets ``2 x
+    max_attempts`` back to back and a victim's lockout can expire almost immediately.
 
-    **Fails open.** A KV outage reports "not limited" rather than raising. That is a real
-    trade -- a broker outage suspends rate limiting -- but the alternative is that the same
-    outage locks every user out of every service, turning a degraded dependency into a total
-    one. Rate limiting is a hardening layer, not a correctness gate. Every instance of it is
-    logged, so the degradation is visible rather than assumed.
+    **Fail-open is the caller's choice and defaults to closed.** It is defensible for a cheap
+    edge throttle sitting in front of an authoritative check. It is not defensible for
+    credential lockout, which has nothing behind it: there, a KV outage that reports "not
+    limited" is an unlimited password-guessing window.
     """
 
     def __init__(
-        self, bucket: NatsKvBucket, *, max_attempts: int = 5, window: timedelta = timedelta(minutes=15)
+        self,
+        nats_client: NatsClient,
+        *,
+        bucket_name: str,
+        max_attempts: int = 5,
+        window: timedelta = timedelta(minutes=15),
+        fail_open: bool = False,
     ) -> None:
-        self._bucket = bucket
+        """
+        :param nats_client: the connected client; the counter opens its own bucket.
+        :ptype nats_client: NatsClient
+        :param bucket_name: bucket suffix, namespace-prefixed by the client. Give each
+            protected surface its own, so unrelated counters never share a budget.
+        :ptype bucket_name: str
+        :param max_attempts: failures within one window before :attr:`AttemptWindow.limited`.
+        :ptype max_attempts: int
+        :param window: the window length, and the bucket TTL that reaps abandoned counters.
+        :ptype window: timedelta
+        :param fail_open: whether a KV transport failure reports "not limited" instead of
+            raising. Defaults to ``False`` -- pass ``True`` only with an authoritative check
+            behind this one.
+        :ptype fail_open: bool
+        """
         self._max_attempts = max_attempts
         self._window = window
+        self._counter = WindowedCounter(
+            nats_client,
+            bucket_name=bucket_name,
+            window_seconds=int(window.total_seconds()),
+            fail_open=fail_open,
+        )
 
-    def _key(self, key: str) -> str:
-        """Hash the caller's key and stamp the current window ordinal onto it."""
-        digest = hashlib.sha256(key.lower().encode("utf-8")).hexdigest()[:32]
-        ordinal = int(time.time()) // max(int(self._window.total_seconds()), 1)
-        return f"attempt.{digest}.{ordinal}"
-
-    def _verdict(self, count: int) -> AttemptWindow:
-        limited = count >= self._max_attempts
-        return AttemptWindow(count=count, limited=limited, retry_after=self._window if limited else None)
+    def _verdict(self, state: WindowState | None) -> AttemptWindow:
+        if state is None:
+            return AttemptWindow(count=0, limited=False)
+        limited = state.count >= self._max_attempts
+        if not limited:
+            return AttemptWindow(count=state.count, limited=False)
+        # Time actually remaining, not the window length: a caller surfacing `Retry-After`
+        # should not tell a user to wait fifteen minutes when three are left.
+        elapsed = time.time() - state.window_start
+        remaining = max(self._window.total_seconds() - elapsed, 0.0)
+        return AttemptWindow(count=state.count, limited=True, retry_after=timedelta(seconds=remaining))
 
     async def record_failure(self, key: str) -> AttemptWindow:
-        bucket_key = self._key(key)
-        try:
-            for _ in range(_CAS_ATTEMPTS):
-                entry = await self._bucket.get_entry(key=bucket_key)
-                if entry is None:
-                    if await self._bucket.create(key=bucket_key, value=b"1") is not None:
-                        return self._verdict(1)
-                    continue
-                raw, revision = entry
-                count = _parse_count(raw) + 1
-                updated = await self._bucket.update(key=bucket_key, value=str(count).encode("ascii"), revision=revision)
-                if updated is not None:
-                    return self._verdict(count)
-        except KvError as exc:
-            log.warning(
-                "attempt-limiter record failed (KV unavailable); failing open",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+        count = await self._counter.record_attempt(key)
+        if count == 0:
+            # fail-open: the counter swallowed a KvError and recorded nothing.
             return AttemptWindow(count=0, limited=False)
-        # Losing every CAS attempt means heavy concurrent failures against ONE key, which is
-        # itself the attack signal. Report limited rather than dropping the increment.
-        log.warning("attempt-limiter contention: reporting limited without a recorded increment")
-        return AttemptWindow(count=self._max_attempts, limited=True, retry_after=self._window)
+        return self._verdict(await self._counter.state(key))
 
     async def check(self, key: str) -> AttemptWindow:
-        try:
-            entry = await self._bucket.get_entry(key=self._key(key))
-        except KvError as exc:
-            log.warning(
-                "attempt-limiter check failed (KV unavailable); failing open",
-                extra={"extra_data": {"error": str(exc)}},
-            )
-            return AttemptWindow(count=0, limited=False)
-        # get_entry rather than get: the increment path already needs the revision, so using
-        # one accessor for both keeps the bucket surface this class depends on as small as
-        # possible -- which is also what lets a caller's test double stay small.
-        return self._verdict(_parse_count(entry[0]) if entry is not None else 0)
+        return self._verdict(await self._counter.state(key))
 
     async def clear(self, key: str) -> None:
-        try:
-            await self._bucket.delete(key=self._key(key))
-        except KvError as exc:
-            log.warning(
-                "attempt-limiter clear failed (KV unavailable)",
-                extra={"extra_data": {"error": str(exc)}},
-            )
+        await self._counter.clear(key)
 
 
-def _parse_count(raw: bytes) -> int:
-    """Read a counter value, treating corruption as zero rather than raising."""
-    try:
-        return int(raw.decode("ascii"))
-    except UnicodeDecodeError, ValueError:
-        log.warning("discarding an unparseable attempt counter")
-        return 0
+async def state_store(nc: NatsClient, *, name: str, ttl: timedelta) -> NatsKvStateStore:
+    """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvStateStore`.
+
+    Resolved per call rather than held: :meth:`~threetears.nats.NatsClient.kv_bucket` caches
+    the handle itself, so this costs nothing and stays correct across a broker reconnect --
+    where a handle captured once at construction would not.
+
+    :param nc: the connected client.
+    :ptype nc: NatsClient
+    :param name: bucket suffix, namespace-prefixed by the client.
+    :ptype name: str
+    :param ttl: bucket TTL. This, not the per-call ``ttl`` on :meth:`NatsKvStateStore.put`,
+        is what actually expires entries.
+    :ptype ttl: timedelta
+    :return: the store.
+    :rtype: NatsKvStateStore
+    """
+    return NatsKvStateStore(await nc.kv_bucket(name=name, ttl=ttl))
+
+
+async def ticket_store(nc: NatsClient, *, name: str, ttl: timedelta) -> NatsKvTicketStore:
+    """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvTicketStore`.
+
+    Same per-call resolution as :func:`state_store`, for the same reason.
+
+    :param nc: the connected client.
+    :ptype nc: NatsClient
+    :param name: bucket suffix, namespace-prefixed by the client.
+    :ptype name: str
+    :param ttl: bucket TTL, which bounds every ticket issued from the store.
+    :ptype ttl: timedelta
+    :return: the store.
+    :rtype: NatsKvTicketStore
+    """
+    return NatsKvTicketStore(await nc.kv_bucket(name=name, ttl=ttl))

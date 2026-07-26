@@ -44,8 +44,11 @@ Everything else follows from that:
   proof does not get to say which algorithm verifies it. An `id_token` does not
   get to select `none`. This mirrors `threetears.core.security.identity_token`'s
   discipline, and the pins are written so a static reader can audit them.
-- **Fail closed, and without a side channel.** A malformed stored hash is an
-  authentication failure, not a 500. A rejected password never says *which*
+- **Fail closed by default, and without a side channel.** A malformed stored hash is an
+  authentication failure, not a 500. The one place a caller may choose otherwise is
+  `NatsKvAttemptLimiter`'s `fail_open`, which exists for a cheap throttle sitting in front
+  of an authoritative check -- it defaults to closed, and a counter with nothing behind it
+  must leave it that way. A rejected password never says *which*
   rule it broke when saying so would build an oracle. Errors carry structural
   reasons only -- never token strings, key material, or credentials -- so they
   are safe to log at a verification boundary.
@@ -56,25 +59,36 @@ Everything else follows from that:
 
 ## Public surface
 
-`from threetears.iam import ...`
+Imported per module -- `threetears.iam` itself exports only `__version__`, so reach for the
+submodule that owns the thing:
 
-- **Passwords** -- `hash_password`, `verify_password`, `validate_new_password`,
+```python
+from threetears.iam.passwords import hash_password
+from threetears.iam.tokens import SessionClaims, mint_session_token
+from threetears.iam.stores.nats_kv import state_store, ticket_store
+```
+
+- **Passwords** (`.passwords`, `.breach`) -- `hash_password`, `verify_password`, `validate_new_password`,
   `normalize_password`, `PasswordVerifyResult`, `PasswordPolicyError`, plus
   `BreachCorpus` for k-anonymity breach screening. argon2id for new hashes,
   bcrypt verify-then-upgrade for migrated ones, NFKC normalization always.
-- **OAuth2 / OIDC** -- `PkceChallenge` and the RFC 7636 verifier, `OidcDiscoveryClient`,
+- **OAuth2 / OIDC** (`.pkce`, `.oidc`, `.github`) -- `PkceChallenge` and the RFC 7636 verifier, `OidcDiscoveryClient`,
   `verify_id_token`, `OidcIdentity`, `GithubOAuth2Client`, `GithubProfile`.
-- **SAML** (extra: `saml`) -- `SamlMetadataResolver`, assertion identity
+- **SAML** (`.saml`, extra: `saml`) -- `SamlMetadataResolver`, assertion identity
   extraction, relay-state validation.
-- **Sessions** -- `SessionClaims`, `mint_session_token`, `verify_session_token`
-  over EdDSA or HS256, `TokenPair`, refresh rotation with reuse detection.
-- **Proof of possession** -- `validate_dpop_proof` (RFC 9449, ES256/P-256).
-- **Second factors** -- TOTP enrolment and verification, backup codes, and
+- **Sessions** (`.tokens`, `.rotation`) -- `SessionClaims`, `mint_session_token`,
+  `verify_session_token` over EdDSA or HS256, `mint_token_pair`, `TokenPair`,
+  `sole_audience`, and `rotate_refresh_token` with reuse detection.
+- **Proof of possession** (`.dpop`) -- `validate_dpop_proof` (RFC 9449, ES256/P-256).
+- **Second factors** (`.totp`, `.webauthn`) -- TOTP enrolment and verification, backup codes, and
   (extra: `webauthn`) passkey registration/assertion helpers.
-- **Anti-automation** -- `AttemptLimiter`, `LockoutTracker`, `SprayCounter`,
-  and `resolve_client_ip` for trusted-proxy-aware rate-limit keying.
-- **Storage seams** -- `SingleUseTicketStore`, `StateStore` Protocols and their
-  `threetears.iam.stores.nats_kv` implementations.
+- **Anti-automation** (`.stores`, `.clientip`) -- the `AttemptLimiter` Protocol and its
+  `NatsKvAttemptLimiter` implementation over `threetears.core.coordination.WindowedCounter`,
+  plus `resolve_client_ip` for trusted-proxy-aware rate-limit keying.
+- **Storage seams** (`.stores`) -- `SingleUseTicketStore` and `StateStore` Protocols,
+  `hash_ticket`/`new_ticket_secret`, the `threetears.iam.stores.nats_kv` implementations with
+  their `state_store`/`ticket_store` factories, and in-memory doubles in
+  `threetears.iam.stores.memory` for consumer tests.
 
 ## Install
 

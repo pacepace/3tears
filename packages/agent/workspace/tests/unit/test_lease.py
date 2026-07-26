@@ -13,7 +13,7 @@ import re
 import pytest
 from uuid import UUID, uuid4
 
-from _fake_kv import FakeNatsClient  # type: ignore[import-not-found]
+from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.core.coordination import LeaseHandle, LeaseUnavailable
 

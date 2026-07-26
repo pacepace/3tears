@@ -50,7 +50,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, NatsKvBucket
 
-__all__ = ["WindowedCounter"]
+__all__ = ["WindowState", "WindowedCounter"]
 
 log = get_logger(__name__)
 
@@ -58,18 +58,24 @@ _MAX_CAS_ATTEMPTS = 5
 
 
 @dataclass(frozen=True, slots=True)
-class _WindowState:
+class WindowState:
+    """A key's live window: how many attempts, and when the window opened.
+
+    ``window_start`` is exposed so a caller can report a truthful "retry after" -- the time
+    remaining, not the whole window length.
+    """
+
     count: int
     window_start: float
 
 
-def _encode(state: _WindowState) -> bytes:
+def _encode(state: WindowState) -> bytes:
     return json.dumps({"count": state.count, "window_start": state.window_start}).encode("utf-8")
 
 
-def _decode(value: bytes) -> _WindowState:
+def _decode(value: bytes) -> WindowState:
     payload = json.loads(value)
-    return _WindowState(count=int(payload["count"]), window_start=float(payload["window_start"]))
+    return WindowState(count=int(payload["count"]), window_start=float(payload["window_start"]))
 
 
 class WindowedCounter:
@@ -180,6 +186,44 @@ class WindowedCounter:
             raise
         return 0 if state is None else state.count
 
+    async def state(self, key: str) -> WindowState | None:
+        """the live window for ``key``, or ``None`` if absent or expired.
+
+        Unlike :meth:`count`, this exposes ``window_start`` too, so a caller reporting a
+        ``Retry-After`` can say how long is actually left rather than restating the window.
+
+        :param key: the identifier to look up
+        :ptype key: str
+        :return: the live window state, or ``None``
+        :rtype: WindowState | None
+        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        """
+        try:
+            return await self._read_live_state(key)
+        except KvError:
+            if self._fail_open:
+                log.warning("WindowedCounter %s fail-open on KvError for state", self._bucket_name)
+                return None
+            raise
+
+    async def clear(self, key: str) -> None:
+        """drop ``key``'s counter entirely -- the "successful authentication" reset.
+
+        Always fail-open on a `KvError`, regardless of the configured posture: failing to
+        clear leaves a stale counter that can only ever deny too much, and raising here would
+        turn a successful login into an error.
+
+        :param key: the identifier to reset
+        :ptype key: str
+        """
+        try:
+            bucket = await self._ensure_bucket()
+            await bucket.delete(key=self._key(key))
+        except KvError:
+            log.warning(
+                "WindowedCounter %s could not clear a counter; it will expire with the window", self._bucket_name
+            )
+
     async def is_over_threshold(self, key: str, *, threshold: int) -> bool:
         """``True`` if ``key``'s live count is at or above ``threshold``, without recording a new
         attempt.
@@ -201,16 +245,16 @@ class WindowedCounter:
         for _ in range(_MAX_CAS_ATTEMPTS):
             entry = await bucket.get_entry(key=kv_key)
             if entry is None:
-                created = await bucket.create(key=kv_key, value=_encode(_WindowState(count=1, window_start=now)))
+                created = await bucket.create(key=kv_key, value=_encode(WindowState(count=1, window_start=now)))
                 if created is not None:
                     return 1
                 continue  # lost the create race -- next loop iteration falls into the update path
             value, revision = entry
             state = _decode(value)
             if now - state.window_start > self._window.total_seconds():
-                next_state = _WindowState(count=1, window_start=now)
+                next_state = WindowState(count=1, window_start=now)
             else:
-                next_state = _WindowState(count=state.count + 1, window_start=state.window_start)
+                next_state = WindowState(count=state.count + 1, window_start=state.window_start)
             if await bucket.update(key=kv_key, value=_encode(next_state), revision=revision) is not None:
                 return next_state.count
         # CAS retries exhausted under heavy concurrent contention on the SAME key -- exceedingly
@@ -219,7 +263,7 @@ class WindowedCounter:
         live_state = await self._read_live_state(key)
         return 1 if live_state is None else live_state.count
 
-    async def _read_live_state(self, key: str) -> _WindowState | None:
+    async def _read_live_state(self, key: str) -> WindowState | None:
         bucket = await self._ensure_bucket()
         value = await bucket.get(key=self._key(key))
         if value is None:

@@ -163,6 +163,25 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "reason: a pod that misses just pays one extra embedding call, same "
         "shape as the already-allowlisted HubObjectResolver._cache above",
     ),
+    # -- core.testing: the published in-memory NATS KV double --
+    (
+        "core/testing/kv.py",
+        "FakeKvBucket",
+        "_entries",
+        "an in-memory test double's entire storage, standing in for a JetStream KV bucket. "
+        "It exists precisely so a test needs no backend at all, so routing it through an "
+        "L1/L2/L3 backend would defeat its purpose. Published rather than kept per-repo "
+        "because every consumer was hand-rolling this same double and drifting from the "
+        "wrapper it stands in for",
+    ),
+    (
+        "core/testing/kv.py",
+        "FakeNatsClient",
+        "_buckets",
+        "the double's bucket registry, mirroring NatsClient's own internal bucket cache so "
+        "repeat kv_bucket calls return the same instance -- same test-double rationale as "
+        "FakeKvBucket._entries above",
+    ),
     # -- agent-tools: DynamicToolPod per-spec live-registration bookkeeping --
     (
         "agent-tools/dynamic_pod.py",

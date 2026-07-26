@@ -26,7 +26,7 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
-from _fake_kv import FakeNatsClient  # type: ignore[import-not-found]
+from threetears.core.testing.kv import FakeNatsClient
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.agent.workspace.materialize import bind
 from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction

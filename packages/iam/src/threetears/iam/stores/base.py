@@ -137,10 +137,15 @@ class StateStore(Protocol):
 class AttemptLimiter(Protocol):
     """Count failures against a key and report when it is over the line.
 
-    The key is opaque -- a hashed username, a client IP, a tenant. Implementations must not
-    assume it is any of those, and callers should hash anything identifying before it
-    becomes a key, since keys are far more likely than values to end up in an operator's
-    terminal.
+    The key is opaque -- a username, a client IP, a tenant, or a compound of them.
+    Implementations must not assume it is any of those.
+
+    **Hashing is the implementation's job, not the caller's.** Keys are far likelier than
+    values to end up in an operator's terminal, so an implementation MUST hash before the key
+    reaches storage; a caller that pre-hashes is merely hashing twice. Callers should pass the
+    raw identifier, and should NOT case-fold it -- an implementation that normalises case
+    would silently merge two distinct credentials, and a base64 challenge is not the same
+    value as its lowercase spelling.
     """
 
     async def record_failure(self, key: str) -> AttemptWindow:

@@ -4,6 +4,50 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+**One windowed counter, not two.** `threetears.iam.stores.nats_kv.NatsKvAttemptLimiter`
+is now an adapter over `threetears.core.coordination.WindowedCounter` rather than a second
+implementation beside it. The two had diverged on the properties that matter: the iam one
+keyed its window by wall-clock ordinal (`floor(now / window)`), so every key's window rolled
+at the same instant -- an attacker straddling a boundary got twice the attempt budget back to
+back, and a victim's lockout could expire almost immediately. `WindowedCounter` anchors the
+window at the first failure, which is what makes a lockout last as long as it claims.
+
+Two consequences for callers. `NatsKvAttemptLimiter` now takes a `NatsClient` and a
+`bucket_name` instead of an already-opened bucket, and it takes `fail_open`, which
+**defaults to `False`**. The previous implementation always failed open; that is defensible
+for a cheap throttle in front of an authoritative check and indefensible for a lockout
+counter with nothing behind it, so the choice is now the caller's and the safe answer is the
+default. It also no longer case-folds keys -- normalising case silently merges two distinct
+credentials.
+
+`WindowedCounter` gains `state()` (the live window, so a caller can report a truthful
+`Retry-After` rather than restating the window length) and `clear()`.
+
+**`StateStore.get`** reads without consuming, alongside `take`. A redirect flow that
+enforces single use with a separate replay guard needs a non-destructive read, and keeping
+the mechanisms distinct is what lets it tell "never issued" from "already spent". `take`
+remains the safe default and the docstring says so.
+
+**`sole_audience`** reads back the single audience of a token whose issuer has a closed
+audience vocabulary -- `SessionClaims.aud` is an open tuple because a token in general may
+serve several, and services issuing exactly one were each re-deriving the check.
+
+**`state_store` / `ticket_store` factories** in `threetears.iam.stores.nats_kv`. Consumers
+were open-coding `Store(await nc.kv_bucket(name=..., ttl=...))` at every call site.
+
+**`threetears.core.testing.kv`** publishes `FakeKvBucket` / `FakeNatsClient`. These had been
+hand-rolled at least twice inside this repo and again in each consumer, which is exactly the
+drift `threetears.core.testing` exists to prevent.
+
+**New enforcement domain: `threetears.enforcement.jwt_alg_pinning`.** Structural checks that
+a JWS verifier pins its algorithms from literals or module constants, names exactly one per
+decode, never disables signature/expiry verification, and never imports `jwt.decode` bare.
+`packages/core` had a hand-rolled AST test for this and a near-identical copy had been made
+for `packages/iam`; both are now thin shells over the shared walker. The shared walker also
+covers `jwt.decode_complete`, which both copies were blind to.
+
 ## v0.20.0 -- 2026-07-25
 
 **New package: `3tears-iam`.** Identity and access primitives, factored out of two
