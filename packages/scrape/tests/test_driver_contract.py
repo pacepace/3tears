@@ -198,3 +198,74 @@ class TestScrapeDriverContract:
         )
 
         assert page.eval_results == [_CONTRACT_EVAL_RESULT]
+
+    @pytest.mark.parametrize("make_driver", _BACKENDS)
+    async def test_a_parametrized_backend_accepts_and_ignores_session_state(self, make_driver):
+        """The "accept the full signature, use what you need" rule, applied to a new parameter.
+
+        A backend that cannot restore a browser session has nothing to do with one, but it
+        must still ACCEPT it: the alternative is every caller branching on which driver it
+        happens to hold, which is the coupling this protocol exists to prevent. The same rule
+        already governs ``link_selector``, ``results_path`` and ``seen_urls``.
+
+        This covers the two backends this suite parametrizes, which is a behavioural check
+        against real objects. ``test_every_render_implementation_declares_session_state``
+        below covers all nine by signature, because constructing every composite backend here
+        would be a different and much heavier test than this file is for.
+        """
+        driver = make_driver()
+
+        page = await driver.render(
+            "https://example.gov/contract-page",
+            session_state={"cookies": [{"name": "cf_clearance", "value": "x", "domain": ".example.gov"}]},
+        )
+
+        assert isinstance(page, RenderedPage)
+
+    @pytest.mark.parametrize("make_driver", _BACKENDS)
+    async def test_session_state_defaults_to_absent(self, make_driver):
+        """Every pre-existing caller keeps working without knowing this parameter exists."""
+        driver = make_driver()
+        page = await driver.render("https://example.gov/contract-page")
+        assert isinstance(page, RenderedPage)
+
+
+def test_every_render_implementation_declares_session_state():
+    """All nine ``render`` implementations, by signature rather than by construction.
+
+    The parametrized contract tests above instantiate two representative backends. The other
+    seven are composites and wrappers whose construction needs collections, HTTP clients or a
+    parent driver, so exercising them here would make this file about fixtures rather than
+    about the contract. A signature check is weaker than a call, but it covers the whole set
+    and it catches the failure that actually happens: a new parameter added to the protocol
+    and to some of its implementers, leaving one that raises ``TypeError`` the first time a
+    caller passes it -- at runtime, in whichever deployment happens to use that backend.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import threetears.scrape.drivers as drivers_pkg
+    from threetears.scrape.driver import ScrapeDriver
+
+    checked: list[str] = []
+    modules = [m.name for m in pkgutil.iter_modules(drivers_pkg.__path__)]
+    for mod_name in modules:
+        module = importlib.import_module(f"threetears.scrape.drivers.{mod_name}")
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != module.__name__:
+                continue
+            render = getattr(obj, "render", None)
+            if render is None or not callable(render):
+                continue
+            params = inspect.signature(render).parameters
+            if "url" not in params:
+                continue
+            checked.append(f"{mod_name}.{obj.__name__}")
+            assert "session_state" in params, (
+                f"{mod_name}.{obj.__name__}.render does not accept session_state, so a caller "
+                f"passing it gets a TypeError at runtime rather than a driver that ignores it"
+            )
+
+    assert "session_state" in inspect.signature(ScrapeDriver.render).parameters
+    assert len(checked) >= 8, f"the sweep only found {len(checked)} render implementations: {checked}"

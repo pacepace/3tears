@@ -452,6 +452,10 @@ class HitlTab:
     #: The isolated browser context, or ``None`` for a reservation not yet navigated.
     context_id: Any
     opened_at: float
+    #: Cookies and origin storage read out of the context at completion, or ``None`` when the
+    #: tab has not been completed or the export failed. Raw and unencrypted: this container
+    #: holds no key. The MIT side seals it before anything persists it.
+    exported_state: dict[str, Any] | None = None
 
 
 @dataclass
@@ -634,6 +638,7 @@ class SessionManager:
         target_id: str,
         url: str,
         nav_steps: Any = None,
+        session_state: dict[str, Any] | None = None,
         now: float | None = None,
     ) -> HitlTab:
         """Bring one target into the session as an isolated tab.
@@ -675,7 +680,7 @@ class SessionManager:
             )
 
         try:
-            tab_obj, context_id = await _open_isolated(browser, url, nav_steps)
+            tab_obj, context_id = await _open_isolated(browser, url, nav_steps, session_state)
         except BaseException:
             # The reservation must not outlive the attempt it was reserving for, or a target
             # that failed to open silently costs the operator a slot for the whole session.
@@ -708,10 +713,11 @@ class SessionManager:
             return reserved
 
     async def complete_tab(self, session: HitlSession, tab_id: str) -> HitlTab:
-        """Close a tab a human has finished with and free its slot.
+        """Close a tab a human has finished with, exporting its state, and free its slot.
 
-        Exporting that context's cookies before it is dropped is Chunk 06's job, and the seam
-        for it is this method: it is the last moment the context exists.
+        The export happens here because this is the last moment the context exists. What comes
+        back is the raw cookie and storage state -- this container never seals anything, having
+        no key and no business holding one; the MIT side encrypts it before it is stored.
 
         :raises SessionNotFound: no such tab in this session
         """
@@ -719,6 +725,7 @@ class SessionManager:
             tab = session.tabs.pop(tab_id, None)
             if tab is None:
                 raise SessionNotFound(f"no tab {tab_id} in this session")
+            tab.exported_state = await self._export_state(tab)
             await self._drop_tab(tab)
             log.info(
                 "hitl: session %s completed tab %s (%d/%d slots used)",
@@ -791,6 +798,29 @@ class SessionManager:
                 extra={"extra_data": {"tab_id": tab.tab_id, "target_id": tab.target_id}},
             )
 
+    async def _export_state(self, tab: HitlTab) -> dict[str, Any] | None:
+        """Read the cookies and origin storage a human's work left in *tab*'s context.
+
+        Never raises into the completion. A human has just finished real work; losing the
+        export costs the reuse this exists for, but failing the completion would also lose
+        them the slot and leave the tab open, which is strictly worse.
+
+        Cookies come from the browser context rather than the page, so ``HttpOnly`` ones are
+        included -- those are usually the session cookie, and a cookie-jar export that
+        silently omitted exactly the credential worth keeping would look like it worked.
+        """
+        browser = self._browser_provider() if self._browser_provider is not None else None
+        if tab.tab is None or tab.context_id is None or browser is None:
+            return None
+        try:
+            return await _export_context_state(browser, tab.tab, tab.context_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an export that fails costs the reuse, where raising would additionally cost the operator their completed tab and its slot; the human's work is already done either way. Logged with its traceback below
+            log.exception(
+                "hitl: could not export session state for tab %s; the solve will not be reusable",
+                tab.tab_id,
+            )
+            return None
+
     async def _release_reservation(self, session: HitlSession, tab_id: str) -> None:
         """Drop a slot reservation whose navigation never landed."""
         async with self._lock:
@@ -834,8 +864,15 @@ class SessionManager:
         await self.close()
 
 
-async def _open_isolated(browser: Any, url: str, nav_steps: Any) -> tuple[Any, Any]:
+async def _open_isolated(
+    browser: Any, url: str, nav_steps: Any, session_state: dict[str, Any] | None = None
+) -> tuple[Any, Any]:
     """Create an isolated context+tab at *url* and replay *nav_steps* in it.
+
+    When *session_state* is given, it is applied to the context and the page is then reloaded,
+    so the navigation that matters carries the cookies. Creating the tab at ``about:blank``
+    first would be tidier, but the existing helper navigates on creation and reusing it is
+    worth more than saving one reload.
 
     Indirected through ``main`` at call time rather than imported at module scope: ``main``
     imports this module, so importing it back at the top would be a cycle, and this module is
@@ -845,9 +882,91 @@ async def _open_isolated(browser: Any, url: str, nav_steps: Any) -> tuple[Any, A
     import main  # noqa: PLC0415 -- deliberate late import; see docstring
 
     tab, context_id = await main._create_isolated_tab(browser, url)  # noqa: SLF001
+    if session_state:
+        await _apply_context_state(browser, context_id, session_state)
+        await tab.reload()
     if nav_steps:
         await main._execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])  # noqa: SLF001
     return tab, context_id
+
+
+async def _export_context_state(browser: Any, tab: Any, context_id: Any) -> dict[str, Any]:
+    """Read cookies and origin storage out of one isolated browser context.
+
+    Split out so tests can substitute it, and because the CDP surface is the part most likely
+    to need revisiting: cookie handling has moved between the Network and Storage domains
+    across Chrome versions, and this is the seam to change when it moves again.
+
+    **The storage call goes to the BROWSER connection, not the tab's.** Chrome rejects
+    ``browserContextId`` on a page session outright -- "browserContextId is only allowed for
+    Browser target" -- which is easy to miss because the tab has the context and looks like
+    the natural place to ask. Verified against a running container, not assumed. The
+    ``localStorage`` read below is the opposite: it is page script, so it belongs to the tab.
+
+    ``localStorage`` is read through the page rather than a CDP domain, because CDP's
+    ``DOMStorage`` requires enabling a domain and enumerating frames for something a single
+    expression answers. It is best-effort: a page that blocks script evaluation still yields
+    its cookies, which are the part that carries a cleared challenge.
+    """
+    import nodriver as uc  # noqa: PLC0415 -- deliberate late import; nodriver is AGPL-isolated to this container
+
+    cookies = await browser.send(uc.cdp.storage.get_cookies(browser_context_id=context_id))
+    exported: dict[str, Any] = {
+        "cookies": [
+            {
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path,
+                "expires": getattr(c, "expires", None),
+                "httpOnly": getattr(c, "http_only", False),
+                "secure": getattr(c, "secure", False),
+                "sameSite": getattr(getattr(c, "same_site", None), "value", None),
+            }
+            for c in (cookies or [])
+        ],
+        "origins": [],
+    }
+    try:
+        local_storage = await tab.evaluate(
+            "JSON.stringify(Object.fromEntries(Object.entries(window.localStorage)))",
+            await_promise=False,
+        )
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- storage is a bonus; a page that refuses script evaluation still yields the cookies that actually carry a cleared challenge, and losing the rest must not lose those
+        log.debug("hitl: localStorage was not readable for this context")
+        return exported
+    if isinstance(local_storage, str) and local_storage not in ("", "{}"):
+        exported["origins"].append({"origin": tab.url, "localStorage": local_storage})
+    return exported
+
+
+async def _apply_context_state(browser: Any, context_id: Any, state: dict[str, Any]) -> None:
+    """Put a previously exported state back into a fresh isolated context.
+
+    Applied BEFORE the navigation, which is the whole point: a cookie set after the page has
+    loaded arrives too late to have been sent with the request that was going to be
+    challenged.
+
+    Sent on the BROWSER connection for the same reason as the export: ``browserContextId`` is
+    rejected on a page session.
+    """
+    import nodriver as uc  # noqa: PLC0415 -- deliberate late import; see _export_context_state
+
+    cookies = state.get("cookies") or []
+    if not cookies:
+        return
+    params = [
+        uc.cdp.network.CookieParam(
+            name=c["name"],
+            value=c["value"],
+            domain=c.get("domain"),
+            path=c.get("path"),
+            secure=c.get("secure"),
+            http_only=c.get("httpOnly"),
+        )
+        for c in cookies
+    ]
+    await browser.send(uc.cdp.storage.set_cookies(cookies=params, browser_context_id=context_id))
 
 
 async def _dispose_context(browser: Any, context_id: Any) -> None:

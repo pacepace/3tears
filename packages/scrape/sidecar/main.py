@@ -136,6 +136,10 @@ class RenderRequest(BaseModel):
     #: settle-wait -- drives the browser to a page not reachable by a bare
     #: navigation (a search form, a second page in a listing).
     nav_steps: list[NavStepModel] | None = None
+    #: A human's previously cleared browser state, applied before navigating so the request
+    #: that would be challenged carries the credential that clears it. Raw, not sealed: this
+    #: container holds no key and never has.
+    session_state: dict[str, Any] | None = None
 
 
 class NetworkCall(BaseModel):
@@ -331,6 +335,7 @@ async def _render(
     capture_network: bool = False,
     nav_steps: list[NavStepModel] | None = None,
     timeout: float = 30.0,
+    session_state: dict[str, Any] | None = None,
 ) -> _RenderResult:
     """Navigate to *url*, optionally drive it through *nav_steps*, wait for a
     selector, and return the rendered page.
@@ -359,7 +364,17 @@ async def _render(
     frame received or sent". Opening a throwaway tab per request and closing
     only that one avoids it.
     """
-    tab = await _browser.get("about:blank", new_tab=True)
+    # With a human's session state, the render runs in an ISOLATED browser context rather
+    # than the shared profile. Applying one target's cleared cookies to the profile every
+    # other target also renders through would hand them to sites that never earned them, and
+    # would mix two targets' sessions for the same origin. The context is disposed in the
+    # same `finally` that closes the tab, so the state lives exactly as long as the fetch.
+    render_context_id: Any = None
+    if session_state:
+        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank")
+        await hitl._apply_context_state(_browser, render_context_id, session_state)  # noqa: SLF001
+    else:
+        tab = await _browser.get("about:blank", new_tab=True)
     main_frame_id = str(tab.target.target_id)
     last_response: dict[str, Any] = {}
     # Network-capture bookkeeping (only populated when capture_network=True):
@@ -484,6 +499,11 @@ async def _render(
             tab.remove_handler(uc.cdp.network.RequestWillBeSent, _capture_request)
             tab.remove_handler(uc.cdp.network.LoadingFinished, _capture_loading_finished)
         await tab.close()
+        if render_context_id is not None:
+            try:
+                await _browser.send(uc.cdp.target.dispose_browser_context(render_context_id))
+            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the page has already been rendered and returned; a context that will not dispose is a bounded leak, where raising here would discard a good result. Logged with its traceback below
+                log.exception("scrape sidecar: could not dispose the session-state render context")
     # Fails open to 200/the originally requested url rather than raising or
     # blocking on a request whose DOCUMENT response genuinely never fired
     # (e.g. a same-document navigation) -- a render that produced real content
@@ -690,6 +710,7 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
                 capture_network=req.capture_network,
                 nav_steps=req.nav_steps,
                 timeout=req.timeout,
+                session_state=req.session_state,
             ),
             timeout=req.timeout,
         )
@@ -794,6 +815,9 @@ class HitlTabRequest(BaseModel):
     target_id: str
     url: str
     nav_steps: list[NavStepModel] | None = None
+    #: A previously exported state, applied to the isolated context BEFORE navigating. Raw,
+    #: not sealed: this container holds no key. Whoever calls this has already opened it.
+    session_state: dict[str, Any] | None = None
 
 
 # response_model=None: the union of a dict and a JSONResponse is not a Pydantic
@@ -977,7 +1001,15 @@ async def hitl_tab_complete(
         tab = await _sessions.complete_tab(session, tab_id)
     except hitl.SessionNotFound as exc:
         return JSONResponse(status_code=404, content={"error": str(exc)})
-    return {"tab_id": tab.tab_id, "target_id": tab.target_id, "free_slots": session.free_slots()}
+    # `session_state` is the human's work, raw and unsealed. It is returned exactly once, to
+    # the caller that completed the tab, and never logged: the MIT side seals it before it
+    # touches a database. A cookie jar for a cleared challenge is a credential.
+    return {
+        "tab_id": tab.tab_id,
+        "target_id": tab.target_id,
+        "free_slots": session.free_slots(),
+        "session_state": tab.exported_state,
+    }
 
 
 @app.delete("/v1/hitl/session/{session_id}", response_model=None)

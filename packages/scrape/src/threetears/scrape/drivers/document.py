@@ -22,7 +22,7 @@ import html as html_lib
 import re
 import time
 from pathlib import PurePosixPath
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -349,6 +349,7 @@ class DocumentDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch and parse the document at *url*.
 

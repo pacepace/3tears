@@ -137,6 +137,7 @@ class CamoufoxDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through a fresh, in-process Camoufox page.
 

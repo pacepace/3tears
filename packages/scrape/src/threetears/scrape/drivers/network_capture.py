@@ -156,6 +156,7 @@ class NetworkCaptureDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through the inner driver and synthesize HTML from its largest captured record list.
 

@@ -180,6 +180,7 @@ class ApiDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch *url*'s JSON response and concatenate per-record fragments into synthetic HTML.
 

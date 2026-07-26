@@ -22,6 +22,8 @@ itself, which stays inside the sidecar's own AGPL-3.0-licensed process.
 
 from __future__ import annotations
 
+from typing import Any
+
 import base64
 import time
 
@@ -106,6 +108,7 @@ class NodriverDownloadDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Download *url*'s real file bytes through the sidecar, then parse and convert them.
 

@@ -156,6 +156,7 @@ class ScrapeDriver(ABC):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* and return the resulting page.
 
@@ -201,6 +202,14 @@ class ScrapeDriver(ABC):
             capability, 2026-07-15); every other backend accepts and
             ignores it
         :ptype link_selector: str | None
+        :param session_state: a human's previously cleared browser state -- cookies and origin
+            storage exported from a HITL session -- to apply BEFORE navigating, so the request
+            that would have been challenged carries the credential that clears it. Raw and
+            already opened; sealing is the caller's business, not a driver's. Every non-browser
+            backend accepts and ignores it, per this protocol's established convention: a
+            driver that cannot restore a browser session has nothing to do with one, and the
+            alternative is a capability flag every caller has to branch on
+        :ptype session_state: dict[str, Any] | None
         :param seen_urls: document URLs the caller already has real data
             for -- only meaningful to :class:`~threetears.scrape.drivers.
             multi_document.MultiDocumentDriver` (document-dedup capability,

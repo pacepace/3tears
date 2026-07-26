@@ -236,6 +236,7 @@ class MultiDocumentDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch the listing at *url*, discover document URLs, fetch and combine up to *max_documents*.
 

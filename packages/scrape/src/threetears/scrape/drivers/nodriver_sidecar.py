@@ -10,6 +10,8 @@ code, never read from the environment here.
 
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import asdict
 
 import httpx
@@ -74,6 +76,7 @@ class NodriverSidecarDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through the sidecar's ``POST /v1/render`` endpoint.
 
@@ -112,6 +115,11 @@ class NodriverSidecarDriver(ScrapeDriver):
             "wait_for": wait_for,
             "capture_network": capture_network,
             "nav_steps": [asdict(step) for step in nav_steps] if nav_steps else None,
+            # The one backend that can actually use this: it drives a real browser, so a
+            # human's cleared cookies can be put into the context before the navigation that
+            # would otherwise be challenged. Sent only when present, so a sidecar built before
+            # this existed still accepts the payload.
+            **({"session_state": session_state} if session_state else {}),
         }
         client = self._client
         owns_client = client is None

@@ -61,7 +61,7 @@ def manager(monkeypatch: pytest.MonkeyPatch) -> SessionManager:
     """A manager with the browser and display faked, and CDP calls intercepted."""
     browser = _FakeBrowser()
 
-    async def _fake_open(_browser: Any, url: str, nav_steps: Any) -> tuple[Any, Any]:
+    async def _fake_open(_browser: Any, url: str, nav_steps: Any, session_state: Any = None) -> tuple[Any, Any]:
         # Yields, and that is load-bearing rather than incidental. The real helper does
         # several CDP round trips, so it suspends here; a fake that returns without ever
         # awaiting lets every task run to completion uninterrupted, and the read-then-write
@@ -279,7 +279,7 @@ async def test_a_tab_that_fails_to_open_does_not_keep_its_slot(
     """
     session = await manager.open(now=1000.0)
 
-    async def _explode(_browser: Any, _url: str, _nav: Any) -> tuple[Any, Any]:
+    async def _explode(_browser: Any, _url: str, _nav: Any, _state: Any = None) -> tuple[Any, Any]:
         await asyncio.sleep(0)
         raise RuntimeError("navigation failed")
 
@@ -302,7 +302,7 @@ async def test_a_slow_tab_open_does_not_block_the_session(manager: SessionManage
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _slow(_browser: Any, _url: str, _nav: Any) -> tuple[Any, Any]:
+    async def _slow(_browser: Any, _url: str, _nav: Any, _state: Any = None) -> tuple[Any, Any]:
         started.set()
         await release.wait()
         return object(), "ctx-slow"
