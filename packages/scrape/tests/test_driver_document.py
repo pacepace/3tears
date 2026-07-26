@@ -641,7 +641,6 @@ async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog
     """
     import logging
 
-    logging.getLogger("threetears.scrape.drivers.multi_document").propagate = True
     with caplog.at_level("WARNING", logger="threetears.scrape.drivers.multi_document"):
         logging.getLogger("threetears.scrape.drivers.multi_document").warning(
             "multi_document driver: cannot apply it (the wrapper's own record)"

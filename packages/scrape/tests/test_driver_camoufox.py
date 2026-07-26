@@ -10,6 +10,7 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
+from _driver_log_helpers import driver_warnings
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -237,8 +238,11 @@ class TestCamoufoxDriverRender:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
             await driver.render("https://example.gov", session_state={"cookies": [{"name": "s"}]})
 
-        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
-            f"a dropped session state was not announced; saw {[r.getMessage() for r in caplog.records]}"
+        # Through the shared helper like every other driver suite, so this asserts the record
+        # came from camoufox's own logger rather than from whatever happened to be captured.
+        mine = [r for r in driver_warnings(caplog, "camoufox") if "cannot apply it" in r.getMessage()]
+        assert mine, (
+            f"a dropped session state was not announced; saw {[(r.name, r.getMessage()) for r in caplog.records]}"
         )
 
     async def test_no_session_state_says_nothing(self, caplog):
@@ -249,7 +253,7 @@ class TestCamoufoxDriverRender:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
             await driver.render("https://example.gov")
 
-        assert caplog.records == []
+        assert driver_warnings(caplog, "camoufox") == []
 
     async def test_render_converts_seconds_to_milliseconds(self):
         page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))

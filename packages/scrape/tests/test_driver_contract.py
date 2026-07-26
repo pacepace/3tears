@@ -24,6 +24,7 @@ import logging
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.api import ApiDriver
@@ -319,8 +320,8 @@ class TestADroppedSolveIsNeverSilent:
                 "https://example.gov/x", logging.getLogger(f"threetears.scrape.drivers.{module}")
             )
 
-        assert any("cannot apply it" in r.getMessage() for r in caplog.records), (
-            f"{module} dropped a human's solve without saying so; records: {[r.getMessage() for r in caplog.records]}"
+        assert [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()], (
+            f"{module} dropped a human's solve without saying so; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
         )
 
     @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
@@ -334,7 +335,7 @@ class TestADroppedSolveIsNeverSilent:
             for i in range(5):
                 driver._warn_dropped_session_state(f"https://example.gov/doc{i}.pdf", log)
 
-        emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
         assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one origin"
         # The TAIL, not just the stem. This is the only operator-visible statement of the
         # cardinality, and it went stale silently once already: every assertion in this branch
@@ -360,7 +361,7 @@ class TestADroppedSolveIsNeverSilent:
             driver._warn_dropped_session_state("https://first.example/a", log)
             driver._warn_dropped_session_state("https://second.example/a", log)
 
-        emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
         assert len(emitted) == 2, (
             f"{module} reported {len(emitted)} of 2 sites; a driver reused across targets goes "
             "silent after the first, which is the failure this cardinality exists to avoid"
@@ -437,7 +438,7 @@ async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
         driver._warn_dropped_session_state("garbage-one", log)
         driver._warn_dropped_session_state("garbage-two", log)
 
-    emitted = [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+    emitted = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
     assert len(emitted) == 2, (
         f"reported {len(emitted)} of 2; unparseable urls collapsed into one dedupe key and "
         "silenced everything after the first"
