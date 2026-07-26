@@ -604,6 +604,10 @@ class TargetCircuit:
             failures=0,
             blocked_until=None,
         )
+        # A robots block is the other way a target lands in the human queue, and a human who
+        # cleared this target cleared it whichever way it got there. Leaving it stamped would
+        # keep the target queued forever, which is the dead-end this method exists to prevent.
+        await _clear_robots_block_quietly(self._health, target_id)
         # Nothing is due a probe any more, and a booking that survives would wake a dispatcher
         # for a target that is already working.
         await self._cancel_reprobe(target_id)
@@ -947,6 +951,20 @@ class _HealthRead(NamedTuple):
 
     row: ScrapeTargetHealth | None
     readable: bool
+
+
+async def _clear_robots_block_quietly(health: ScrapeTargetHealthCollection, target_id: str) -> None:
+    """Clear a robots block, never raising into the caller that just fixed something."""
+    from .health import clear_robots_block  # noqa: PLC0415 -- avoids a circular import at module scope
+
+    try:
+        await clear_robots_block(health, target_id=target_id)
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a human has already done the work; failing here would report their fix as an error and leave the circuit half-updated. The stale queue entry is visible and self-corrects on the next successful poll. Logged with its traceback below
+        log.exception(
+            "scrape circuit: could not clear the robots block for target %s; it may stay queued",
+            target_id,
+            extra={"extra_data": {"target_id": target_id}},
+        )
 
 
 def _stored_state(value: str) -> CircuitState:

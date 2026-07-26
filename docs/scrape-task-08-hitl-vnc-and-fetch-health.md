@@ -523,14 +523,18 @@ that reports itself as `tor` in every log and leaves by the container's own IP.
 deployment work, and a library owning process lifecycle for someone else's network would be
 wrong about it in every deployment that already had one.
 
-**Per-container, not per-target, and this is a real limitation.** Chromium takes
-`--proxy-server` process-wide, so one sidecar container is one exit; a deployment wanting two
-runs two containers and routes targets between them. Per-browser-context proxying is a CDP
-capability and would be the way to lift this, but it was not built here and the honest
-statement is that per-target selection today means per-container selection. `last_egress` on
-the health row is what makes that usable: with more than one exit, the useful fact stops being
-"this target is walled" and becomes "walled FROM THIS EXIT", without which a target blocked
-through one route looks permanently walled and a working alternative is never tried.
+**Per-target, via browser contexts rather than the command-line flag.** An earlier version of
+this section said per-target selection was not possible and one container was one exit. That
+was true of `--proxy-server`, which Chromium applies process-wide, and wrong about contexts:
+`Target.createBrowserContext` takes its own `proxyServer`, so two targets in one browser can
+leave by two exits. The claim was corrected after probing the running image's own CDP
+bindings rather than recalling the flag's behaviour.
+
+So the container's `EGRESS_PROXY` is a DEFAULT, and `RenderRequest.egress_proxy` overrides it
+for one render, which gets its own context and disposes it with the tab. `last_egress` on the
+health row records which was used: with more than one exit, the useful fact stops being "this
+target is walled" and becomes "walled FROM THIS EXIT", without which a target blocked through
+one route looks permanently walled and a working alternative is never tried.
 
 ### 8. robots.txt: wait when asked, escalate when refused
 

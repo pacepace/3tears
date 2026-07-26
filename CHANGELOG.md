@@ -194,10 +194,14 @@ what a browser needs, because a deployment whose API calls proxy while its scrap
 direct is worse off than one with no proxying: it believes it has the property. An unknown
 driver name raises rather than falling back to direct, and an exit with no address is refused
 at construction -- both are the same silent failure, an exit that reports itself as `tor` and
-leaves by the container's own IP. Nothing here starts a daemon. Chromium takes
-`--proxy-server` process-wide, so one sidecar container is one exit; `last_egress` on the
-health row (migration `v011`) is what lets "walled" be told apart from "walled from this
-exit".
+leaves by the container's own IP. Nothing here starts a daemon.
+
+Egress is per target, not per container. The sidecar's `EGRESS_PROXY` is a default applied at
+browser launch, and a render may override it with `egress_proxy`, which gets its own browser
+context -- `Target.createBrowserContext` accepts a `proxyServer`, where the `--proxy-server`
+flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an
+observation came from, so "walled" can be told apart from "walled from this exit" and a
+working alternative is not left untried.
 
 **`robots.txt` is honoured, both halves on by default.** `Crawl-delay` is waited between
 fetches of an origin; a `Disallow` is escalated for a person rather than fetched unattended or
@@ -206,6 +210,25 @@ makes that escalation close rather than dead-end -- and `Crawl-delay` deliberate
 that exemption, because load on someone's server is caused equally by either. Every unusable
 robots file means "allowed": treating an unreachable text file as a refusal lets one bad
 response stop a scrape silently. Parsing is `urllib.robotparser`, so no new dependency.
+
+
+**`robots.txt` is consulted by default, and a disallowed target becomes a queue item.**
+`ScrapeTool` builds a gate unless one is passed; `robots=None` is the explicit opt-out.
+Migration `v012` adds `robots_blocked_at`/`robots_blocked_reason`, and `list_walled()` now
+answers with BOTH kinds of target a human is needed for -- a bot wall and a robots refusal --
+which widens what that method returns. The robots columns are deliberately not the circuit's:
+a policy decision is not a fetch failure, and counting it as one would back off a site that
+works perfectly. A block is stamped once rather than per poll, and is cleared both when a
+human clears the target and when the file stops disallowing us, so the queue empties as well
+as fills.
+
+The default robots fetcher leaves by the tool's configured exit. On-by-default politeness with
+an unproxied read would have disclosed the container's real address to every origin
+immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
+configured and two in reality.
+
+Exported `localStorage` is restored alongside cookies, which the export always captured and
+the apply path had been dropping.
 
 
 ## v0.19.1 -- 2026-07-25

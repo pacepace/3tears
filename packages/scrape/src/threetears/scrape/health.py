@@ -45,6 +45,7 @@ __all__ = [
     "ScrapeTargetHealth",
     "ScrapeTargetHealthCollection",
     "content_fingerprint",
+    "clear_robots_block",
     "record_circuit_state",
     "record_classification",
     "record_robots_block",
@@ -479,6 +480,36 @@ async def record_circuit_state(
     return await _merge_health(health_collection, target_id=target_id, changes=changes)
 
 
+async def clear_robots_block(
+    health_collection: ScrapeTargetHealthCollection,
+    *,
+    target_id: str,
+) -> ScrapeTargetHealth:
+    """Take *target_id* back out of the human queue after its robots block is resolved.
+
+    Without this the escalation dead-ends: a blocked target enters
+    :meth:`ScrapeTargetHealthCollection.list_walled` and can never leave it, and because the
+    queue is ordered by block time and bounded by a limit, a row re-stamped on every poll
+    crowds genuinely walled targets out of it. The chunk says the escalation "closes"; this is
+    what closes it.
+
+    Called when a human has worked the target, and when the file stops disallowing us -- both
+    mean the same thing, that this target no longer needs a person for this reason.
+
+    :param health_collection: where the durable state lives
+    :ptype health_collection: ScrapeTargetHealthCollection
+    :param target_id: the target no longer held back
+    :ptype target_id: str
+    :return: the persisted row
+    :rtype: ScrapeTargetHealth
+    """
+    return await _merge_health(
+        health_collection,
+        target_id=target_id,
+        changes={"robots_blocked_at": None, "robots_blocked_reason": None},
+    )
+
+
 async def record_robots_block(
     health_collection: ScrapeTargetHealthCollection,
     *,
@@ -495,6 +526,11 @@ async def record_robots_block(
     Writes no circuit column. A robots block is not evidence the site is failing, and treating
     it as a fetch failure would back off a target that works perfectly.
 
+    **Stamps once, not once per poll.** An already-blocked target keeps its original timestamp
+    unless the reason has changed. The queue is ordered by block time and bounded by a limit,
+    so a row refreshed on every poll would climb to the top and stay there, pushing genuinely
+    walled targets off the end of a list somebody is working through.
+
     :param health_collection: where the durable state lives
     :ptype health_collection: ScrapeTargetHealthCollection
     :param target_id: the target being held back
@@ -506,6 +542,9 @@ async def record_robots_block(
     :return: the persisted row
     :rtype: ScrapeTargetHealth
     """
+    existing = await health_collection.get(target_id)
+    if existing is not None and existing.robots_blocked_at is not None and existing.robots_blocked_reason == reason:
+        return existing
     return await _merge_health(
         health_collection,
         target_id=target_id,

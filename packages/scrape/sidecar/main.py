@@ -38,13 +38,20 @@ logging.basicConfig(level=logging.INFO)
 
 CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
 
-# Egress: the exit this container's browser leaves by, as a --proxy-server value
-# (e.g. "socks5://tor:9050"). Set by the deployment, because which exits exist is
+# Egress: this container's DEFAULT exit, as a --proxy-server value (e.g.
+# "socks5://tor:9050"). Set by the deployment, because which exits exist is
 # deployment knowledge -- this container only needs to be told which one to use.
-# Applied at browser launch: Chromium takes it process-wide, so it cannot be varied
-# per tab, and a container that needs two exits runs two containers. Named here
-# rather than passed per request for exactly that reason -- a per-request proxy
-# argument would advertise a capability Chromium does not have.
+#
+# Applied at browser launch, which Chromium takes process-wide: every render that
+# does not ask for something else leaves by this one.
+#
+# A render CAN ask for something else. `RenderRequest.egress_proxy` renders in its
+# own browser context, and `Target.createBrowserContext` accepts its own
+# `proxyServer` -- verified against this image's own CDP bindings. An earlier
+# version of this comment said a per-request proxy would advertise a capability
+# Chromium does not have; that was true of the command-line flag and wrong about
+# contexts, which is why per-target egress is a request field rather than a second
+# container.
 EGRESS_PROXY = os.environ.get("EGRESS_PROXY") or None
 # "direct" only when there genuinely is no proxy. When one is set without a name, the name is
 # unknown rather than "configured" -- a literal placeholder recorded against results would be
@@ -715,8 +722,9 @@ def _browser_args() -> list[str]:
     """
     args = ["--disable-dev-shm-usage", "--disable-gpu"]
     if EGRESS_PROXY:
-        # Process-wide by nature: Chromium takes --proxy-server for the whole browser, so it
-        # cannot vary per tab and one container is one exit.
+        # Process-wide by nature: Chromium applies --proxy-server to the whole browser, so this
+        # is the DEFAULT exit rather than the only one. A render that wants a different exit
+        # gets its own browser context, which takes its own proxyServer.
         args.append(f"--proxy-server={EGRESS_PROXY}")
     return args
 

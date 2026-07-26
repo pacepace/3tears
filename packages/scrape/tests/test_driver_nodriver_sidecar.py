@@ -9,6 +9,8 @@ to whoever operates one.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -391,3 +393,51 @@ class TestScrapeTargetCollection:
         fetched = await collection.get("warn_act_ca")
         assert fetched is not None
         assert fetched.url == "https://edd.ca.gov/warn"
+
+
+class TestSidecarDriverEgress:
+    async def test_a_configured_exit_is_sent_with_the_render(self) -> None:
+        """The producer for `egress_proxy`, which had none.
+
+        A request field with no producer is a field nothing can reach: the sidecar honoured it
+        and no driver in this package ever set it, so per-target egress was reachable only by
+        hand-building a payload.
+        """
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+        sent: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(
+                200, json={"html": "<html></html>", "status": 200, "final_url": "https://x", "timing_ms": 1.0}
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        driver = NodriverSidecarDriver(
+            "http://sidecar:8088", client=client, egress=ProxyEgress("tor", "socks5://tor:9050")
+        )
+
+        await driver.render("https://example.gov/x")
+
+        assert sent.get("egress_proxy") == "socks5://tor:9050"
+
+    async def test_no_exit_configured_sends_no_field(self) -> None:
+        """A sidecar built before per-context proxying still accepts the payload."""
+        import httpx
+        from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
+
+        sent: dict = {}
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            sent.update(json.loads(request.content))
+            return httpx.Response(
+                200, json={"html": "<html></html>", "status": 200, "final_url": "https://x", "timing_ms": 1.0}
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        await NodriverSidecarDriver("http://sidecar:8088", client=client).render("https://example.gov/x")
+
+        assert "egress_proxy" not in sent

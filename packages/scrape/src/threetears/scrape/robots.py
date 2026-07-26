@@ -48,6 +48,7 @@ from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.core.coordination.token_bucket import TokenBucket
+    from threetears.core.egress import EgressDriver
 
 __all__ = [
     "DEFAULT_USER_AGENT",
@@ -131,7 +132,11 @@ class RobotsGate:
 
     :param policy: what to honour and as whom
     :ptype policy: RobotsPolicy
-    :param fetch: how to GET a url, returning ``(status, text)``. Defaults to a plain httpx
+    :param egress: exit the DEFAULT fetcher leaves by, so the robots request shares the
+        scrape's route. Ignored when ``fetch`` is supplied, since an injected fetcher already
+        carries whatever transport its owner chose
+    :ptype egress: EgressDriver | None
+    :param fetch: how to GET a url, returning ``(status, text)``. Defaults to an httpx
         GET, so a gate built with no arguments genuinely honours a site's file. Inject one
         built on :class:`~threetears.core.http_client.TracedHttpClient` to give the robots
         request the same egress driver, tracing, retry and circuit breaking as the real fetch
@@ -152,6 +157,7 @@ class RobotsGate:
         policy: RobotsPolicy | None = None,
         *,
         fetch: Any = None,
+        egress: EgressDriver | None = None,
         delay_pacer: TokenBucket | None = None,
         cache_seconds: float = _DEFAULT_CACHE_SECONDS,
     ) -> None:
@@ -160,7 +166,14 @@ class RobotsGate:
         # Without one, "both behaviours on by default" was true of a policy object and false of
         # every deployment: no fetcher means no file, no file means nothing is ever honoured,
         # and nothing anywhere would have said so.
-        self._fetch = fetch if fetch is not None else _default_fetch
+        # The default fetcher leaves by the SAME exit as the scrape it precedes. Without that
+        # it is a bare client on the container's own route, and a deployment that configured
+        # TOR would disclose its real address to every target origin moments before the
+        # proxied fetch -- worse than no proxying, because it believes it has the property.
+        # The robots request also has to ask the same question the scrape asks: a file fetched
+        # from a different address can be a different file.
+        self._egress = egress
+        self._fetch = fetch if fetch is not None else _default_fetch_via(egress)
         self._delay_pacer = delay_pacer
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[RobotFileParser | None, float]] = {}
@@ -302,23 +315,31 @@ class RobotsGate:
         return parser
 
 
-async def _default_fetch(url: str) -> tuple[int, str]:
-    """Plain httpx GET, used when a caller injects no fetcher.
+def _default_fetch_via(egress: EgressDriver | None) -> Any:
+    """Build the default fetcher, bound to *egress*.
 
-    Deliberately minimal and deliberately present. This module's whole claim is that
-    politeness is on by default, and a default of "no fetcher" would have made that claim
-    false everywhere while looking correct in the configuration. A caller that wants the
-    robots request to share the scrape's egress, tracing and retry injects one; a caller that
-    wants none of that still gets a file read.
+    Deliberately present: this module's whole claim is that politeness is on by default, and a
+    default of "no fetcher" made that claim false everywhere while looking correct in the
+    configuration. Deliberately egress-bound: a default that ignored the configured exit would
+    disclose the container's real address to every origin, on by default, immediately before
+    the proxied fetch that was supposed to hide it.
 
     Errors propagate to :meth:`RobotsGate._load`, which treats every one of them as "the site
     told us nothing".
     """
-    import httpx  # noqa: PLC0415 -- deliberate late import; keeps this module importable without a client
 
-    async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
-        response = await client.get(url, headers={"user-agent": DEFAULT_USER_AGENT})
-        return response.status_code, response.text
+    async def _fetch(url: str) -> tuple[int, str]:
+        import httpx  # noqa: PLC0415 -- deliberate late import; module stays importable without a client
+
+        async with httpx.AsyncClient(
+            timeout=_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=True,
+            transport=egress.httpx_transport() if egress is not None else None,
+        ) as client:
+            response = await client.get(url, headers={"user-agent": DEFAULT_USER_AGENT})
+            return response.status_code, response.text
+
+    return _fetch
 
 
 def _origin_of(url: str) -> str | None:

@@ -32,6 +32,7 @@ from threetears.core.config import DefaultCoreConfig
 
 from threetears.scrape.health import (
     ScrapeTargetHealthCollection,
+    clear_robots_block,
     content_fingerprint,
     record_circuit_state,
     record_classification,
@@ -515,3 +516,62 @@ async def test_a_robots_disallowed_target_reaches_the_human_queue(
 
     queued = {r.target_id for r in await health.list_walled()}
     assert target_id in queued, "a disallowed target never reached the queue a human works"
+
+
+async def test_a_robots_block_can_leave_the_queue_again(health: ScrapeTargetHealthCollection) -> None:
+    """The escalation has to close, or the queue only ever grows.
+
+    A blocked target entered `list_walled` and nothing could take it out: the circuit's
+    clear-down touched only circuit columns. And because the queue is ordered by block time and
+    bounded by a limit, a row re-stamped on every poll would climb to the top and stay there,
+    pushing genuinely walled targets off the end of a list somebody is working through.
+    """
+    target_id = _target("robotsclear")
+    await record_robots_block(health, target_id=target_id, reason="disallowed")
+    assert target_id in {r.target_id for r in await health.list_walled()}
+
+    await clear_robots_block(health, target_id=target_id)
+
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.robots_blocked_at is None
+    assert row.robots_blocked_reason is None
+    assert target_id not in {r.target_id for r in await health.list_walled()}
+
+
+async def test_re_blocking_the_same_target_does_not_refresh_its_position(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """Stamped once, not once per poll.
+
+    The queue is time-ordered and limited, so a row refreshed every poll outranks every real
+    wall and the list a human works becomes one target repeated.
+    """
+    target_id = _target("robotsstamp")
+    await record_robots_block(health, target_id=target_id, reason="disallowed")
+    first = await health.get(target_id)
+    assert first is not None
+    original = first.robots_blocked_at
+
+    await record_robots_block(health, target_id=target_id, reason="disallowed")
+
+    again = await health.get(target_id)
+    assert again is not None
+    assert again.robots_blocked_at == original, "an unchanged block was re-stamped and jumped the queue"
+
+
+async def test_a_human_clearing_a_target_also_clears_its_robots_block(
+    health: ScrapeTargetHealthCollection,
+) -> None:
+    """A person who cleared this target cleared it whichever way it got into the queue."""
+    from threetears.scrape.circuit import TargetCircuit
+
+    target_id = _target("bothways")
+    await record_robots_block(health, target_id=target_id, reason="disallowed")
+
+    await TargetCircuit(health).record_human_cleared(target_id)
+
+    row = await health.get(target_id)
+    assert row is not None
+    assert row.robots_blocked_at is None
+    assert target_id not in {r.target_id for r in await health.list_walled()}

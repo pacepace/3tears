@@ -12,6 +12,8 @@ is "on" while nothing waits is worse than one that is off, because it is believe
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
 
@@ -375,17 +377,79 @@ async def test_a_tool_built_without_mentioning_robots_still_gets_a_gate() -> Non
         api_key="k",
     )
 
-    assert isinstance(tool._robots, RobotsGate), "a tool that never mentioned robots consults none"  # noqa: SLF001
+    # Asserted by BEHAVIOUR, not by isinstance. "Watch for: a config that is on by default but
+    # reads a value nothing sets" is this chunk's own warning, and a test that checks the
+    # attribute exists would pass against a gate that never consults anything.
+    tool._robots = RobotsGate(fetch=_fetcher(_ROBOTS_DISALLOW))  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- substituting the gate's FETCHER while keeping the tool's own default wiring is the only way to prove the default path consults a file
+    driver = _RecordingDriver()
+    tool._drivers = {"nodriver": driver}  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
+    await _seed(tool, "https://example.gov/private/list", {"employer": "str", "affected_count": "int"})
+
+    result = await tool.execute(
+        url="https://example.gov/private/list", field_schema={"employer": "str", "affected_count": "int"}
+    )
+
+    assert driver.fetched == [], "a tool that never mentioned robots fetched a disallowed path"
+    assert result.metadata["needs_human"] is True
 
 
-async def test_a_gate_with_no_arguments_actually_reads_a_file() -> None:
-    """The other half of the same failure: a default gate with no fetcher reads nothing.
+async def test_a_gate_with_no_arguments_actually_reaches_for_a_file() -> None:
+    """The other half of the same failure, also asserted behaviourally.
 
-    "Both behaviours on by default" would then be true of a policy object and false of every
-    deployment, with no log line anywhere saying so.
+    A default gate with no fetcher reads nothing, so "both behaviours on by default" would be
+    true of a policy object and false of every deployment. The conftest replaces the default
+    fetcher with one that raises, so what this proves is that a bare gate CALLS it -- reaching
+    the "site told us nothing" path rather than skipping the read entirely.
     """
-    gate = RobotsGate()
-    assert gate._fetch is not None  # noqa: SLF001
+    reached: list[str] = []
+
+    def _offline(_egress=None):
+        async def _fetch(url: str) -> tuple[int, str]:
+            reached.append(url)
+            raise RuntimeError("no network")
+
+        return _fetch
+
+    with patch("threetears.scrape.robots._default_fetch_via", _offline):
+        decision = await RobotsGate().check("https://example.gov/x")
+
+    assert reached == ["https://example.gov/robots.txt"], "a bare gate never went looking for a file"
+    assert decision.allowed is True, "an unreachable file must not block the work"
+
+
+async def test_the_default_fetcher_leaves_by_the_configured_exit() -> None:
+    """A robots read on the container's own route, in front of a proxied scrape, discloses the
+    address the proxy exists to hide.
+
+    This was introduced BY making robots on-by-default: before that, no request went out at
+    all. It is the failure design section 7 names -- a deployment with one exit configured and
+    two in reality, believing it has the property.
+    """
+    from threetears.core.egress import ProxyEgress
+
+    gate = RobotsGate(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
+    # The fetcher is a closure over the egress; what is observable is the transport it builds.
+    assert gate._egress is not None  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- the bound exit is the property under test
+    pool = gate._egress.httpx_transport()._pool  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- as above
+    assert "9050" in str(getattr(pool, "_proxy_url", "")), "the robots read would leave by the wrong exit"
+
+
+async def _seed(tool, url: str, schema: dict) -> None:
+    """Give the tool a winning recipe so no test here reaches a model."""
+    from threetears.scrape.tool import _derive_target_id
+
+    recipes = tool._recipe_collection  # noqa: SLF001 -- prawduct:allow prawduct/private-access -- test setup for a constructor-injected collection
+    await recipes.save_entity(
+        recipes.create(
+            {
+                "target_id": _derive_target_id(url, schema),
+                "extraction_strategy": {"employer": "td:nth-child(1)", "affected_count": "td:nth-child(2)"},
+                "won_at": None,
+                "last_validated_at": None,
+                "consecutive_validation_failures": 0,
+            }
+        )
+    )
 
 
 async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:

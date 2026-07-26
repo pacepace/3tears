@@ -37,13 +37,15 @@ from threetears.observe import get_logger
 from pydantic import SecretStr
 
 from .circuit import FetchDecision, TargetCircuit
+from threetears.core.egress import EgressDriver
+
 from .robots import RobotsDecision, RobotsGate
 from .session_state import usable_session_state
 from .collections import ScrapeExtractionCollection, ScrapeRecipeCollection, decode_field_schema, decode_nav_steps
 from .driver import NavStep, RenderedPage, ScrapeDriver
 from .eval_loop import StrategyType, run_eval_loop, run_eval_loop_multi_row
 from .extraction import FieldSchema
-from .health import ScrapeTargetHealthCollection, record_robots_block
+from .health import ScrapeTargetHealthCollection, clear_robots_block, record_robots_block
 
 __all__ = ["ScrapeTool"]
 
@@ -93,6 +95,7 @@ class ScrapeTool(TearsTool):
         circuit: TargetCircuit | None = None,
         session_state_key: SecretStr | None = None,
         robots: RobotsGate | None = _ROBOTS_DEFAULT,
+        egress: EgressDriver | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -122,6 +125,11 @@ class ScrapeTool(TearsTool):
             ``None`` explicitly to consult no robots.txt at all, which is the pre-existing
             behaviour and now has to be asked for rather than being what everyone got
         :ptype robots: RobotsGate | None
+        :param egress: which exit this tool's own requests leave by. Passed to the default
+            robots gate so the robots.txt read shares the scrape's route rather than
+            disclosing the container's address in front of it. Drivers take their own egress
+            separately, because a driver may be shared between tools
+        :ptype egress: EgressDriver | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -139,7 +147,10 @@ class ScrapeTool(TearsTool):
         # "consult nothing", and omitting the argument means "the default, which is on". Those
         # are different intentions and a plain `None` default cannot express both -- which is
         # how a documented on-by-default became off everywhere.
-        self._robots = RobotsGate() if robots is _ROBOTS_DEFAULT else robots
+        self._egress = egress
+        # The default gate inherits this tool's exit. A robots request on the container's own
+        # route, in front of a proxied scrape, discloses the address the proxy exists to hide.
+        self._robots = RobotsGate(egress=egress) if robots is _ROBOTS_DEFAULT else robots
         self._drivers = drivers
         self._api_key = api_key
         self._default_timeout = default_timeout
@@ -374,6 +385,12 @@ class ScrapeTool(TearsTool):
                         "reason": "robots_disallow",
                     },
                 )
+        if robots_decision is not None and robots_decision.allowed and self._health_collection is not None:
+            # The file no longer disallows us, so this target stops needing a person for that
+            # reason. A site that lifts its rule would otherwise sit in the queue forever, and
+            # nobody working that queue would know why it was still there.
+            await clear_robots_block(self._health_collection, target_id=target_id)
+
         decision: FetchDecision | None = None
         if error is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)

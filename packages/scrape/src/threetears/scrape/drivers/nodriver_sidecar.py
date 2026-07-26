@@ -15,6 +15,7 @@ from typing import Any
 from dataclasses import asdict
 
 import httpx
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
 from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
@@ -47,17 +48,29 @@ class NodriverSidecarDriver(ScrapeDriver):
     imports ``nodriver`` as a library.
     """
 
-    def __init__(self, base_url: str, *, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        egress: EgressDriver | None = None,
+    ) -> None:
         """
         :param base_url: the sidecar's base URL (e.g. ``"http://localhost:8088"``),
             with no trailing slash assumed either way.
         :ptype base_url: str
+        :param egress: exit the RENDERED PAGE should leave by. Sent to the sidecar per
+            request, which renders it in its own browser context -- so two targets served by
+            one container can leave by two exits. Distinct from the exit this driver's own
+            HTTP call to the sidecar takes, which is an internal hop and stays direct
+        :ptype egress: EgressDriver | None
         :param client: an already-constructed httpx client to reuse (e.g. for
             test injection); a fresh one is created per call when omitted.
         :ptype client: httpx.AsyncClient | None
         """
         self._base_url = base_url.rstrip("/")
         self._client = client
+        self._egress = egress
 
     @property
     def name(self) -> str:
@@ -120,6 +133,11 @@ class NodriverSidecarDriver(ScrapeDriver):
             # would otherwise be challenged. Sent only when present, so a sidecar built before
             # this existed still accepts the payload.
             **({"session_state": session_state} if session_state else {}),
+            # The exit for THIS render. Sent only when configured, so a sidecar built before
+            # per-context proxying existed still accepts the payload. The sidecar renders it in
+            # its own browser context, which is what makes an exit a per-target choice rather
+            # than a per-container one.
+            **({"egress_proxy": self._egress.browser_proxy_arg()} if self._egress is not None else {}),
         }
         client = self._client
         owns_client = client is None

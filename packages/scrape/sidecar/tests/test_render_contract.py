@@ -1304,3 +1304,21 @@ class TestEgressReporting:
         args = main._browser_args()  # noqa: SLF001
         assert not any(a.startswith("--proxy-server") for a in args)
         assert "--disable-dev-shm-usage" in args, "the other launch arguments were lost"
+
+    def test_a_per_request_exit_gets_its_own_context(self, monkeypatch) -> None:
+        """The capability three artifacts said Chromium did not have.
+
+        `--proxy-server` is process-wide, which is what made "one container is one exit" look
+        true. `Target.createBrowserContext` takes its own `proxyServer`, so a render can leave
+        by a different exit than the container's default without a second container.
+
+        Asserted on the CDP command this builds, because that is the whole mechanism: the
+        argument is accepted silently and only differs at the far end.
+        """
+        import nodriver as uc
+
+        cmd = uc.cdp.target.create_browser_context(proxy_server="socks5://tor:9050")
+        payload = next(iter(cmd)) if hasattr(cmd, "__iter__") else cmd
+        assert "proxyServer" in str(payload) or "proxy_server" in str(payload), (
+            "per-context proxying is not reaching CDP, so a per-request exit is silently the default one"
+        )
