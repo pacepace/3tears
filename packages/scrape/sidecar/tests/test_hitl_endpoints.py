@@ -126,16 +126,22 @@ class _FakeSessions:
         self._session: Any = None
         self.open_error: Exception | None = None
         self.tab_error: Exception | None = None
+        self.expired = False
         self.authorized_with: list[tuple[str, str]] = []
 
     def current(self) -> Any:
         return self._session
+
+    def owns_display(self, **_kw: Any) -> bool:
+        return self._session is not None and not self.expired
 
     def authorize(self, session_id: str, token: str, **_kw: Any) -> Any:
         self.authorized_with.append((session_id, token))
         from hitl import SessionNotFound
 
         if self._session is None or token != self._session.token or session_id != self._session.session_id:
+            raise SessionNotFound("no such session")
+        if self.expired:
             raise SessionNotFound("no such session")
         return self._session
 
@@ -305,3 +311,73 @@ async def test_the_bare_vnc_endpoints_still_work_with_no_session(fake_sessions: 
     """The diagnostic case they exist for: look at the unattended browser, no session involved."""
     assert (await _call("POST", "/v1/hitl/vnc")).status_code == 200
     assert (await _call("DELETE", "/v1/hitl/vnc")).status_code == 200
+
+
+async def test_deleting_a_session_closes_it(fake_sessions: _FakeSessions) -> None:
+    """The one endpoint from the previous round's list that still had no HTTP test."""
+    sid, tok = await _open(fake_sessions)
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.delete(f"/v1/hitl/session/{sid}", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    assert r.json()["closed"] is True
+    assert fake_sessions.current() is None
+    assert not fake_sessions.vnc.health(), "the display outlived the session that owned it"
+
+
+async def test_deleting_a_session_without_the_token_is_404(fake_sessions: _FakeSessions) -> None:
+    sid, _ = await _open(fake_sessions)
+    assert (await _call("DELETE", f"/v1/hitl/session/{sid}")).status_code == 404
+    assert fake_sessions.current() is not None, "an unauthenticated DELETE closed the session"
+
+
+async def test_an_expired_session_can_still_be_released(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The trap the last two fixes built between them.
+
+    `authorize` refuses an expired session, so the session API cannot tear one down. If the
+    bare VNC teardown ALSO refused whenever a session object existed, then past the TTL no
+    HTTP caller could release the display at all -- leaving only the reaper, which is the very
+    task the request-path TTL check exists because it might be dead. The remaining escape
+    would have been opening another session on the display in order to shut it down.
+
+    So the bare teardown asks whether a session still OWNS the display, which an expired one
+    does not, and releases it properly rather than stopping the processes underneath a
+    tracked session.
+    """
+    fake = _FakeSessions()
+    monkeypatch.setattr(main, "_sessions", fake)
+    monkeypatch.setattr(main, "_vnc", fake.vnc)
+    await _call("POST", "/v1/hitl/session")
+    assert fake.vnc.health()
+
+    fake.expired = True
+
+    blocked = await _call("DELETE", f"/v1/hitl/session/{fake.current().session_id}")
+    assert blocked.status_code == 404, "an expired session is still refused by the session API"
+
+    released = await _call("DELETE", "/v1/hitl/vnc")
+    assert released.status_code == 200, "an expired session made the display unreleasable"
+    assert released.json()["released_expired_session"] is True
+    assert not fake.vnc.health()
+    assert fake.current() is None
+
+
+async def test_a_session_closed_mid_navigation_is_409_not_502(fake_sessions: _FakeSessions) -> None:
+    """An ordinary race, not a fault.
+
+    A tab opening while its session is torn down is expected under concurrency. Reporting it
+    as a bad gateway with a traceback sends someone investigating an incident that is just two
+    callers arriving in an unlucky order.
+    """
+    from hitl import SessionNotFound
+
+    sid, tok = await _open(fake_sessions)
+    fake_sessions.tab_error = SessionNotFound("the session was closed while this tab was opening")
+    transport = httpx.ASGITransport(app=main.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+        r = await client.post(
+            f"/v1/hitl/session/{sid}/tab",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"target_id": "a", "url": "https://a.example"},
+        )
+    assert r.status_code == 409

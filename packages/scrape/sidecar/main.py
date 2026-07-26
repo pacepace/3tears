@@ -806,8 +806,7 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
     Idempotent: a caller that retries gets the running session rather than a second
     ``x11vnc`` losing a race for the RFB port.
     """
-    live = _sessions.current()
-    if live is not None:
+    if _sessions.owns_display():
         return JSONResponse(
             status_code=409,
             content={
@@ -846,12 +845,19 @@ async def hitl_vnc_stop() -> dict[str, Any] | JSONResponse:
     Refuses while a session owns the display: stopping it underneath one would leave a session
     reporting itself open with nothing for its operator to look at.
     """
-    live = _sessions.current()
-    if live is not None:
+    # `owns_display`, not `current`: an EXPIRED session is refused by `authorize`, so it cannot
+    # be torn down through the session API -- and if it also blocked here, nothing but the
+    # reaper could ever release the display. This is the escape hatch for exactly that, so it
+    # closes the session too rather than stopping the display out from under a tracked one.
+    if _sessions.owns_display():
         return JSONResponse(
             status_code=409,
             content={"error": "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead"},
         )
+    if _sessions.current() is not None:
+        log.info("hitl: releasing the display held by an expired session")
+        await _sessions.close()
+        return {"running": _vnc.health(), "released_expired_session": True}
     await _vnc.stop()
     return {"running": _vnc.health()}
 
@@ -938,6 +944,12 @@ async def hitl_tab_open(
     try:
         tab = await _sessions.open_tab(session, target_id=req.target_id, url=req.url, nav_steps=req.nav_steps)
     except hitl.SessionUnavailable as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except hitl.SessionNotFound as exc:
+        # The session was closed or reaped while this navigation was in flight. An ordinary
+        # race, not a fault: INFO and 409, where the broad handler below would call it a bad
+        # gateway and log a traceback for something nobody needs to investigate.
+        log.info("hitl: session closed while opening a tab for target %s", req.target_id)
         return JSONResponse(status_code=409, content={"error": str(exc)})
     except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a nav-step replay or a CDP timing failure is this target's problem, not the session's; surfacing it as a ToolResult-shaped error keeps the operator's other tabs alive. Logged with its traceback below
         log.exception("hitl: could not open a tab for target %s", req.target_id)

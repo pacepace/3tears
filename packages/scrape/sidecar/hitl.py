@@ -520,8 +520,27 @@ class SessionManager:
         return self._vnc
 
     def current(self) -> HitlSession | None:
-        """The live session, if there is one. Does not check expiry."""
+        """The tracked session, if any, expired or not.
+
+        Deliberately does NOT filter by expiry: a caller cleaning up needs to see a session
+        that is past its TTL, because that is exactly the one still holding the display.
+        Use :meth:`owns_display` for the "is this resource spoken for" question.
+        """
         return self._session
+
+    def owns_display(self, *, now: float | None = None) -> bool:
+        """Whether a session is live enough to still own the display.
+
+        Expiry is the whole point. An expired session is refused by :meth:`authorize`, so no
+        caller can tear it down through the session API -- and if this also reported the
+        display as spoken for, the bare VNC teardown would refuse too and nothing but the
+        reaper could ever release it. Which is precisely the task the TTL check exists because
+        it might be dead. Two correct-looking guards, one unreachable resource.
+        """
+        session = self._session
+        if session is None:
+            return False
+        return not session.is_expired(now if now is not None else time.time())
 
     def authorize(self, session_id: str, token: str, *, now: float | None = None) -> HitlSession:
         """Resolve a session from an id and token, or refuse.
@@ -660,8 +679,12 @@ class SessionManager:
         except BaseException:
             # The reservation must not outlive the attempt it was reserving for, or a target
             # that failed to open silently costs the operator a slot for the whole session.
-            async with self._lock:
-                session.tabs.pop(tab_id, None)
+            #
+            # Shielded because acquiring the lock is itself an await, and this handler already
+            # runs on the cancellation path: a second cancellation delivered while waiting for
+            # it would skip the rollback and burn the slot for the rest of the session, which
+            # is the exact outcome the rollback exists to prevent.
+            await asyncio.shield(self._release_reservation(session, tab_id))
             raise
 
         async with self._lock:
@@ -767,6 +790,11 @@ class SessionManager:
                 tab.tab_id,
                 extra={"extra_data": {"tab_id": tab.tab_id, "target_id": tab.target_id}},
             )
+
+    async def _release_reservation(self, session: HitlSession, tab_id: str) -> None:
+        """Drop a slot reservation whose navigation never landed."""
+        async with self._lock:
+            session.tabs.pop(tab_id, None)
 
     async def _dispose_quietly(self, browser: Any, context_id: Any, tab_id: str) -> None:
         """Drop an orphaned context, logging rather than raising."""
