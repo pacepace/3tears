@@ -268,8 +268,10 @@ class VncLifecycle:
         - ``-localhost`` binds 127.0.0.1, so websockify is the only route in.
         - ``-nopw`` because there is no password to check: the sidecar authenticates nobody
           (it cannot -- it holds no identity), and pretending otherwise with a shared
-          password would be security theatre over a loopback socket. The real gate is the
-          token check that goes in front of websockify in a later chunk.
+          password would be security theatre over a loopback socket. Authorization belongs
+          in front of websockify, in the platform that owns an identity -- this container has
+          none and cannot evaluate a policy. Nothing here enforces it today, so treat the
+          port as unauthenticated and put it behind something that is not.
         - ``-forever`` so the first disconnect does not end the session; a human who closes a
           tab by accident should be able to come back.
         - ``-shared`` so a second viewer does not evict the first.
@@ -721,8 +723,8 @@ class SessionManager:
         """Bring one target into the session as an isolated tab.
 
         Isolated per tab, not per session, because a second target must not be able to see the
-        first one's cookies: and a shared context would hand a
-        walled site the credentials a human just earned somewhere else.
+        first one's cookies: a shared context would hand a walled site the credentials a human
+        just earned somewhere else.
 
         Occupies a slot from here until :meth:`complete_tab`. Backgrounding a slow target
         still holds its slot -- that is what makes the working set bounded rather than merely

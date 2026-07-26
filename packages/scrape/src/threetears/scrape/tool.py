@@ -461,8 +461,9 @@ class ScrapeTool(TearsTool):
         :ptype driver: ScrapeDriver
         :param solved_state: a human's stored solve, or ``None``
         :ptype solved_state: dict[str, Any] | None
-        :return: the rendered page and no error, or no page and the error string
-        :rtype: tuple[RenderedPage | None, str | None]
+        :return: the rendered page and no error, or no page and the error string, plus
+            whether the driver was actually called
+        :rtype: tuple[RenderedPage | None, str | None, bool]
         """
         # `session_state` is passed ONLY when there is one. `ScrapeDriver` is published as a
         # pluggable contract, so an out-of-tree driver written against 0.19.x has no such

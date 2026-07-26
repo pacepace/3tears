@@ -443,13 +443,27 @@ class RobotsGate:
         if not origin or origin in self._policy.overrides:
             return 0.0
 
+        # Pacing IS the crawl-delay behaviour, so the flag that turns that behaviour off turns
+        # this off with it. Checked here as well as in `check`, because this is a SECOND entry
+        # point onto the same fetch: `check` short-circuits before consulting the file, so a
+        # guard placed only there leaves this one calling `_parser_for` on a cold origin and
+        # performing the very GET the flag was meant to prevent. `max_wait_seconds` already
+        # reports 0.0 under this flag, so without this the gate could also sleep for longer
+        # than the budget it advertises.
+        if not self._policy.respect_crawl_delay:
+            return 0.0
+
         # The SAME preconditions the local clock applies. Moving the claim out of `check`
         # accidentally dropped them: an origin with a written agreement, one serving no
         # robots.txt, or one declaring no `Crawl-delay` -- which is most sites -- was suddenly
         # paced fleet-wide by a bucket the local clock would never have consulted. A gate that
         # throttles sites which asked for nothing is not politeness.
-        # The parser is the cached one `check` already fetched moments earlier on this path, so
-        # this is a cache read rather than a second network round-trip.
+        #
+        # Usually a cache read, since `check` fetched this origin moments earlier on the same
+        # path -- but not always, and this must not assume it: with `flag_disallowed` off and
+        # `respect_crawl_delay` on, `check` consults the file for the delay and caches it,
+        # while the reverse combination short-circuits `check` entirely and is handled by the
+        # guard above.
         parser = await self._parser_for(origin, time.monotonic())
         if parser is None or self._capped_delay(origin, parser, announce=False) is None:
             return 0.0

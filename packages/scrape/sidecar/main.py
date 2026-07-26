@@ -865,9 +865,9 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         # would still be reported as `tor` here, and that string is written through to
         # `ScrapeTargetHealth.last_egress`.
         #
-        # Confirming that traffic genuinely leaves by this exit needs an outside observer and
-        # needs an outside observer -- something reading the address this container presents to a
-        # third party -- and nothing in this process can tell the difference.
+        # Confirming that traffic genuinely leaves by this exit needs an outside observer --
+        # something reading the address this container presents to a third party. Nothing in
+        # this process can tell the difference.
         #
         # `is not None` matches the routing branch above -- a request that selected the default
         # route sends `direct://` and must report `direct`, not the container's name.

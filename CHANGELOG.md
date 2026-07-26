@@ -37,7 +37,7 @@ should not also keep its own copy of the rules, because a second copy is a secon
 that can disagree. `restore()` deliberately does not restore an in-flight probe: that
 belongs to the process that issued it and no other process can observe it.
 
-Four collaborators are optional and injected, never constructed, because each belongs to
+The collaborators below are optional and injected, never constructed, because each belongs to
 infrastructure `3tears-scrape` does not own: a per-target `CircuitBreakerLike` lookup for a
 free in-process fast-fail before any I/O (the same structural seam `core.http_client`
 already uses, taken as a lookup because one `TargetCircuit` serves many targets and a shared
@@ -225,7 +225,10 @@ robots file means "allowed": treating an unreachable text file as a refusal lets
 response stop a scrape silently. Parsing is `urllib.robotparser`, so no new dependency.
 
 A disallowed target becomes a queue item rather than a dead end.
-`ScrapeTool` builds a gate unless one is passed; `robots=None` is the explicit opt-out.
+`ScrapeTool` builds a gate unless one is passed. There are two ways off: `robots=None`
+removes the gate entirely, and a gate whose policy has both behaviours disabled stays in
+place, keeps its overrides, and does not fetch the file at all -- so turning politeness off
+does not leave a request going out to every new origin purely to discard the answer.
 Migration `v012` adds `robots_blocked_at`/`robots_blocked_reason`, and `list_walled()` now
 answers with BOTH kinds of target a human is needed for -- a bot wall and a robots refusal --
 which widens what that method returns. The robots columns are deliberately not the circuit's:

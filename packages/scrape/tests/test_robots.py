@@ -189,12 +189,22 @@ async def test_both_flags_off_does_not_fetch_the_file_at_all() -> None:
     how this went uncovered.
     """
     fetch = _fetcher(_ROBOTS_BOTH)
-    gate = RobotsGate(RobotsPolicy(flag_disallowed=False, respect_crawl_delay=False), fetch=fetch)
+    # WITH a pacer configured. `claim_fleet_turn` is a second entry point onto the same fetch,
+    # and it reaches `_parser_for` independently -- so a gate built without a pacer cannot
+    # exercise it, and a test that omits one passes against a fix applied to `check` alone.
+    # That is the same single-entry-point blind spot that let the original defect through.
+    gate = RobotsGate(
+        RobotsPolicy(flag_disallowed=False, respect_crawl_delay=False),
+        fetch=fetch,
+        delay_pacer=_FakeDelayPacer(),
+    )
 
     decision = await gate.check("https://example.gov/private")
-
     assert decision.allowed is True
     assert decision.wait_seconds == 0.0
+
+    assert await gate.claim_fleet_turn("https://example.gov/private") == 0.0
+
     assert fetch.calls == [], f"robots.txt was fetched despite both behaviours being off: {fetch.calls}"
 
 
