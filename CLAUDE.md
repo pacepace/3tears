@@ -62,6 +62,7 @@ uv sync                    # install all packages in dev mode
 | Script | Purpose |
 |---|---|
 | `./scripts/test.sh` | Run tests (all packages, or specify one: `./scripts/test.sh core`) |
+| `./scripts/test-sidecar.sh` | Run the nodriver sidecar's own tests. Separate because nodriver is AGPL-3.0 and never enters the workspace venv, so `test.sh` carries `--ignore` for the sidecar and cannot run these. Separate but not optional -- `check-all.sh` runs it, and until it existed a ruff autofix wrote a syntax error into `hitl.py` that passed lint, mypy and the entire workspace suite |
 | `./scripts/lint.sh` | Run ruff check + format check (`--fix` to auto-fix) |
 | `./scripts/typecheck.sh` | Run mypy on all packages |
 | `./scripts/check-all.sh` | Run lint + typecheck + tests |

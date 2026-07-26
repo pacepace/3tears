@@ -200,17 +200,21 @@ leaves by the container's own IP. Nothing here starts a daemon.
 Egress is per target, not per container. The sidecar's `EGRESS_PROXY` is a default applied at
 browser launch, and a render may override it with `egress_proxy`, which gets its own browser
 context -- `Target.createBrowserContext` accepts a `proxyServer`, where the `--proxy-server`
-flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an observation came
-from -- reported by the sidecar and carried back on `RenderedPage.egress`, so it is the exit
-actually used rather than the one configured or the one asked for. That lets "walled" be told
-apart from "walled from this exit", so a working alternative is not left untried, and it
-surfaces an older sidecar that ignored the proxy argument instead of recording an exit that
-was never taken.
+flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an
+observation was CONFIGURED to come from -- reported by the fetcher rather than assumed by the
+caller, so a dropped proxy argument shows up as a mismatch. It is not evidence that traffic
+left that way: a per-context proxy Chromium accepted and then ignored would still be recorded
+under the name it was asked for, and confirming otherwise needs an observer outside the
+process. What it buys is telling "walled" apart from "walled from this exit", so a working
+alternative is not left untried. `None` means no exit was configured, which is a different fact
+from choosing the default route; that choice is `DirectEgress` and records as `direct`.
 
-Egress is wired separately on the drivers and on `ScrapeTool`. Getting only the drivers right
-means the page leaves by the configured exit while the `robots.txt` read in front of it leaves
-by the container's own address, which is invisible because both halves work. `ScrapeTool` logs
-a warning when it sees a proxied driver and no exit of its own.
+Egress is wired separately on the drivers and on `ScrapeTool`, and `ScrapeTool` warns on either
+half being wrong. Drivers proxied with an unproxied gate leaks the container's address on the
+`robots.txt` read in front of every fetch; the gate proxied with an unproxied driver leaks it on
+the page fetch itself. Both are invisible otherwise, because both halves work. The backends that
+honour an exit are `ApiDriver` and `NodriverSidecarDriver`, plus the wrappers that delegate to
+them -- the warning names any driver that cannot.
 
 **`robots.txt` is honoured, both halves on by default.** `Crawl-delay` is waited between
 fetches of an origin; a `Disallow` is escalated for a person rather than fetched unattended or

@@ -955,6 +955,34 @@ def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
     )
 
 
+def test_the_backends_that_cannot_honour_an_exit_are_named(caplog) -> None:
+    """The README points an operator at this warning, so the warning has to be worth pointing at.
+
+    Most backends construct their own bare `httpx.AsyncClient` or launch a browser with no proxy
+    support, and reach the target on the container's default route no matter what this tool is
+    configured with. Nothing in this package can route them; what it CAN do is refuse to let the
+    bypass be quiet, and say which drivers are responsible so the message is actionable rather
+    than a general disclaimer.
+
+    Named-driver assertions rather than "some warning fired": an operator reading `document,
+    camoufox` knows what to change, and a message that only said "some drivers" would pass this
+    test while telling them nothing.
+    """
+    from threetears.core.egress import SocksEgress
+    from threetears.scrape.drivers.camoufox import CamoufoxDriver
+    from threetears.scrape.drivers.document import DocumentDriver
+
+    messages = _build_tool(
+        caplog,
+        drivers={"document": DocumentDriver(), "camoufox": CamoufoxDriver()},
+        egress=SocksEgress("tor"),
+    )
+
+    assert any("camoufox, document" in m for m in messages), (
+        f"the drivers that cannot honour the configured exit were not named: {messages}"
+    )
+
+
 def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog) -> None:
     """Reading the constructor argument called a correct configuration wrong.
 

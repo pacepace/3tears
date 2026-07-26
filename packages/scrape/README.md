@@ -208,7 +208,7 @@ packages/scrape/src/threetears/scrape/
 ├── collections.py             ScrapeTarget/ScrapeRecipe/ScrapeExtraction (BaseEntity)
 │                              + BaseCollection subclasses (L1/L2/L3 via
 │                              threetears.core.backends.protocol.DurableStore)
-├── migrations.py               v001-v010, PACKAGE_NAME="3tears_scrape"
+├── migrations.py               v001-v012, PACKAGE_NAME="3tears_scrape"
 ├── target_source.py            TargetSource ABC, YamlTargetSource, CollectionTargetSource,
 │                              StaticTargetSource, bootstrap_targets()
 ├── page_finder.py              find_target_page() -- bounded-turn search/fetch research agent
@@ -295,8 +295,9 @@ human again, which degrades to asking for help rather than to bad data.
 
 ### 8. Which exit a request leaves by
 
-Every fetch here can leave by a chosen exit -- the default route, a TOR circuit, a Cloudflare
-WARP tunnel, any proxy URL. The seam is `threetears.core.egress`, in core rather than here
+A fetch can leave by a chosen exit -- the default route, a TOR circuit, a Cloudflare
+WARP tunnel, any proxy URL -- on the backends that honour one. The seam is
+`threetears.core.egress`, in core rather than here
 because an exit is not a scraping concept: `EgressDriver` answers both "what transport should
 httpx use" and "what does a browser need on its command line", since a deployment that got only
 one of those right would send its API calls one way and its scrapes another while reporting a
@@ -309,14 +310,24 @@ registry = EgressRegistry({"tor": SocksEgress("tor"), "warp": WarpEgress()})
 tool = ScrapeTool(..., egress="tor", egress_registry=registry)
 ```
 
-**Three things worth knowing before reaching for it.**
+**Worth knowing before reaching for it.**
+
+*Not every backend honours one.* `ApiDriver` and `NodriverSidecarDriver` accept an
+`EgressDriver`; `NetworkCaptureDriver` and `MultiDocumentDriver` inherit whichever driver they
+wrap. The rest -- `CamoufoxDriver`, `DocumentDriver`, `ListingDetailDriver`, and
+`MultiDocumentDriver`'s own listing fetch -- reach the target on the container's default route
+regardless of what this tool is configured with. Configuring an exit and selecting one of those
+backends therefore proxies the `robots.txt` read and sends the page fetch direct. `ScrapeTool`
+names the offending drivers in a warning at construction rather than letting that happen
+quietly, so check your logs; there is no way for this package to route a backend that has no
+proxy support.
 
 *It is wired in two places, and getting one right hides the other.* Drivers take their own
 `egress=` because a driver may be shared between tools; `ScrapeTool` takes one for its own
 requests, including the `robots.txt` read that happens in FRONT of every fetch. Proxy the
 driver alone and the page leaves by TOR while the robots read discloses the container's real
-address to the same origin moments earlier. `ScrapeTool` logs a warning when it sees that
-shape.
+address to the same origin moments earlier. Proxy the tool alone and it is the page fetch that
+goes out direct, which is worse. `ScrapeTool` warns on both shapes.
 
 *An unknown name raises rather than falling back to the default route.* A deployment that asked
 for `tor` and silently got direct would look correct in every log line while being wrong about
