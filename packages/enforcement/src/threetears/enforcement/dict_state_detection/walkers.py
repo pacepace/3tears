@@ -276,7 +276,7 @@ def _scan_init_body(
                     category=_DETECTOR_CATEGORY,
                     file=module_path,
                     line=stmt.lineno,
-                    symbol=attr_name,
+                    symbol=f"{class_node.name}.{attr_name}",
                     reason=(
                         f"{class_node.name}.{attr_name} initialised as "
                         f"{shape}; use a 3tears L1 backend "
@@ -300,7 +300,7 @@ def _scan_init_body(
                         category=_DETECTOR_CATEGORY,
                         file=module_path,
                         line=stmt.lineno,
-                        symbol=attr_name,
+                        symbol=f"{class_node.name}.{attr_name}",
                         reason=(
                             f"{class_node.name}.{attr_name} initialised "
                             f"as {shape}; use a 3tears L1 backend "
@@ -412,17 +412,17 @@ def filter_against_allowlist(
         original order
     :rtype: tuple[list[Violation], list[Violation]]
     """
-    keys: set[tuple[str, int, str]] = set()
+    keys: set[tuple[str, str]] = set()
     for entry in allowlist:
-        keys.add((entry.file, entry.line, entry.attr_name))
+        keys.add((entry.file, f"{entry.class_name}.{entry.attr_name}"))
     for entry in known_violations:
-        keys.add((entry.file, entry.line, entry.attr_name))
+        keys.add((entry.file, f"{entry.class_name}.{entry.attr_name}"))
 
     true_violations: list[Violation] = []
     allowed: list[Violation] = []
     for violation in violations:
         rel = relative_posix_path(violation.file, repo_root)
-        if (rel, violation.line, violation.symbol) in keys:
+        if (rel, violation.symbol) in keys:
             allowed.append(violation)
         else:
             true_violations.append(violation)
@@ -438,7 +438,7 @@ def find_stale_allowlist_entries(
     """meta-walker: report allowlist / known-violation entries with no match.
 
     runs :func:`find_dict_state_violations` once, builds the
-    ``(rel_path, line, attr_name)`` set of real violations, then emits
+    ``(rel_path, "Class.attr")`` set of real violations, then emits
     one :class:`Violation` per allowlist or known-violation entry that
     is *not* in that set. the emitted violation's ``category`` is:
 
@@ -469,11 +469,11 @@ def find_stale_allowlist_entries(
     :rtype: list[Violation]
     """
     real = find_dict_state_violations(src_roots, repo_root)
-    real_keys: set[tuple[str, int, str]] = {(relative_posix_path(v.file, repo_root), v.line, v.symbol) for v in real}
+    real_keys: set[tuple[str, str]] = {(relative_posix_path(v.file, repo_root), v.symbol) for v in real}
 
     stale: list[Violation] = []
     for entry in allowlist:
-        if (entry.file, entry.line, entry.attr_name) in real_keys:
+        if (entry.file, f"{entry.class_name}.{entry.attr_name}") in real_keys:
             continue
         stale.append(
             _stale_violation(
@@ -484,7 +484,7 @@ def find_stale_allowlist_entries(
             )
         )
     for entry in known_violations:
-        if (entry.file, entry.line, entry.attr_name) in real_keys:
+        if (entry.file, f"{entry.class_name}.{entry.attr_name}") in real_keys:
             continue
         stale.append(
             _stale_violation(
@@ -520,11 +520,13 @@ def _stale_violation(
     """
     return Violation(
         category=category,
+        # line 1: the entry names a class and an attribute, not a position, so there is no
+        # meaningful line to point at -- the file as a whole is the offender.
         file=repo_root / entry.file,
-        line=entry.line,
-        symbol=entry.attr_name,
+        line=1,
+        symbol=f"{entry.class_name}.{entry.attr_name}",
         reason=(
-            f"{list_label} entry {entry.file}:{entry.line}:"
+            f"{list_label} entry {entry.file}:{entry.class_name}."
             f"{entry.attr_name} no longer matches a real violation; "
             f"the referenced code may have been refactored, removed, "
             f"or migrated. drop the entry."
