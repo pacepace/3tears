@@ -10,24 +10,23 @@ Rationales are carried forward by `(path, symbol)`, so the reasoning survives a 
 only a genuinely new access needs new text. Any access it cannot map is reported and given a
 placeholder, so it is visible rather than silently templated.
 
-Discovery is shared with the enforcement tests (`tests/enforcement/_ruff_config_discovery.py`)
-and reads EVERY ruff config, not just the root `pyproject.toml`. Reading only the root is how
-five reviewed sidecar entries were deleted without anything noticing: the nested
-`packages/scrape/sidecar/ruff.toml` is a full override the root cannot reach past.
+Discovery and AST walking come from `threetears.enforcement.underscore_access`, the same
+canonical domain the enforcement tests are thin shells over, so this script and the checks that
+police its output cannot answer "which files are exempted" differently. That discovery reads
+EVERY ruff config, not just the root `pyproject.toml` -- reading only the root is how a set of
+reviewed sidecar entries were deleted without anything noticing, since a nested `ruff.toml` is a
+full override the root cannot reach past.
 
     uv run python scripts/regen-underscore-exemptions.py
 """
 
 from __future__ import annotations
 
-import ast
-import sys
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_REPO_ROOT / "tests" / "enforcement"))
+from threetears.enforcement.underscore_access import all_exempted_files, private_accesses
 
-from _ruff_config_discovery import exempted_files, ruff_configs, slf001_globs  # noqa: E402
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_underscore_exemptions.txt"
 _PLACEHOLDER = "TODO: no rationale carried forward -- write why this access is acceptable"
@@ -72,32 +71,15 @@ def _header() -> list[str]:
     return lines
 
 
-def _accesses(path: Path) -> set[tuple[int, str]]:
-    try:
-        tree = ast.parse(path.read_text(errors="replace"))
-    except SyntaxError:
-        return set()
-    found: set[tuple[int, str]] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute) or not node.attr.startswith("_") or node.attr.startswith("__"):
-            continue
-        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
-            continue
-        found.add((node.lineno, node.attr))
-    return found
-
-
 def main() -> int:
     rationales = _existing_rationales()
-    paths = sorted(
-        {p for c in ruff_configs(_REPO_ROOT) for g in slf001_globs(c) for p in exempted_files(c, g, _REPO_ROOT)}
-    )
+    paths = all_exempted_files(_REPO_ROOT)
 
     out = _header()
     unmapped: list[str] = []
     for source in paths:
         rel = source.relative_to(_REPO_ROOT).as_posix()
-        accesses = sorted(_accesses(source))
+        accesses = sorted(private_accesses(source))
         if not accesses:
             continue
         out.append("")

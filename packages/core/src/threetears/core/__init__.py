@@ -98,6 +98,16 @@ _LAZY: dict[str, tuple[str, str]] = {
     "SandboxDecision": ("threetears.core.security", "SandboxDecision"),
     "SandboxDenied": ("threetears.core.security", "SandboxDenied"),
     "TableDef": ("threetears.core.data.schema", "TableDef"),
+    # Supported public API, deliberately, even though `_bridge` is private. A sibling
+    # distribution needs to schedule a coroutine it must not await -- `3tears-scrape` does it
+    # inside a cancellation handler, where an await re-raises before reaching the store -- and
+    # the alternative is every consumer importing `threetears.core._bridge` across a package
+    # boundary, which is worse: it binds them to a module whose name says it may change.
+    # Exporting the one symbol they need is the narrower promise.
+    #
+    # `_bridge`'s other exports (sync_await, drain, shutdown) are NOT promoted and carry no
+    # compatibility promise. They drive the bridge's lifecycle, which belongs to whoever owns
+    # the loop, and a consumer calling shutdown would be ending something it does not own.
     "fire_and_forget": ("threetears.core._bridge", "fire_and_forget"),
     "DirectEgress": ("threetears.core.egress", "DirectEgress"),
     "EgressDriver": ("threetears.core.egress", "EgressDriver"),

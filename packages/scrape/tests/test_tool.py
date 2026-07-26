@@ -1239,7 +1239,7 @@ async def test_a_driver_that_cannot_take_a_solve_is_not_backed_off() -> None:
         robots=None,
     )
 
-    page, error = await tool._render_once(  # noqa: SLF001
+    page, error = await tool._render_once(
         _PreSessionStateDriver(),  # type: ignore[arg-type]
         "https://example.gov/x",
         wait_for=None,

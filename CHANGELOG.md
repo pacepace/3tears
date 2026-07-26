@@ -399,6 +399,38 @@ meant a caller handed over a session a person had spent real time solving, got a
 render back, and learned nothing until extraction failed on a login wall and the target was
 escalated to a human who had already done the work. Now a warning, and a documented one.
 
+**`fire_and_forget` is now supported public API on `3tears`.** It moves from
+`threetears.core._bridge` into `threetears.core`'s export surface because a sibling
+distribution needs to schedule a coroutine it must not await, and the alternative was every
+consumer reaching across a package boundary into a module whose underscore says it may change.
+`_bridge`'s other exports -- `sync_await`, `drain`, `shutdown` -- are deliberately not promoted
+and carry no compatibility promise: they drive the bridge's lifecycle, which belongs to whoever
+owns the loop.
+
+**The gate can now see the sidecar, and the SLF001 ledger is checked in both directions.**
+`nodriver` is AGPL-3.0 and never enters the workspace venv, so the workspace suite carries
+`--ignore` for `packages/scrape/sidecar` -- which meant ruff formatted the sidecar's source
+while nothing executed the result. An autofix wrote `except OSError, ProcessLookupError:` into
+`hitl.py`, a syntax error that passed lint, passed mypy (the sidecar is outside its file list
+too) and passed the entire workspace suite. `scripts/test-sidecar.sh` runs that suite against
+the sidecar's own interpreter and `check-all.sh` calls it, so it is separate but not optional.
+
+`tests/enforcement/_underscore_exemptions.txt` records why each exempted private access was
+judged acceptable, and nothing read it back: the underscore walker scans `packages/*/src` and
+never enters a `tests/` tree. It had rotted in both directions -- entries pointing at code that
+had moved or gone, and accesses with no entry at all. Both directions are now checked, and they
+have to be separate checks, because a missing entry is not a stale one. The reconciliation, the
+AST walking and the ruff-config discovery live in
+`threetears.enforcement.underscore_access` alongside the walkers whose exemptions they describe,
+with thin shells in `tests/enforcement/`.
+
+That discovery reads every ruff config rather than the root `pyproject.toml` alone. A nested
+`ruff.toml` is a full override, so a checker built on the root cannot see what the subtree
+exempts -- which is how a set of reviewed sidecar entries were deleted with nothing noticing.
+Regenerate with `uv run python scripts/regen-underscore-exemptions.py`, which carries rationales
+forward by `(path, symbol)` so a line shift loses nothing; hand-editing the line numbers is what
+the checks exist to catch.
+
 ## v0.19.1 -- 2026-07-25
 
 **Every intra-family dependency is now version-bounded.** The packages release in

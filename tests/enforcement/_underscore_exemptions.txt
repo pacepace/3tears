@@ -375,11 +375,11 @@ packages/scrape/sidecar/hitl.py:942:_create_isolated_tab
 packages/scrape/sidecar/hitl.py:951:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:415:_apply_context_state
+packages/scrape/sidecar/main.py:429:_apply_context_state
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:422:_apply_context_state
+packages/scrape/sidecar/main.py:436:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/main.py:472:_apply_origin_storage
+packages/scrape/sidecar/main.py:486:_apply_origin_storage
 
 # rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
 packages/scrape/sidecar/tests/test_hitl_lifecycle.py:147:_x11vnc
@@ -546,11 +546,11 @@ packages/scrape/sidecar/tests/test_render_contract.py:1264:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
 packages/scrape/sidecar/tests/test_render_contract.py:1274:_browser
 # rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
-packages/scrape/sidecar/tests/test_render_contract.py:1312:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:1328:_browser_args
 # rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
-packages/scrape/sidecar/tests/test_render_contract.py:1317:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:1333:_browser_args
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1364:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:1385:_browser
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows
@@ -577,33 +577,33 @@ packages/scrape/tests/test_driver_api.py:327:_egress
 packages/scrape/tests/test_driver_api.py:344:_client
 
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:319:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:410:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:336:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:427:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:361:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:452:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:362:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:453:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:380:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:471:_warn_dropped_session_state
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:402:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:493:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:403:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:494:_warn_dropped_session_state
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:405:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:496:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:406:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:497:_MAX_WARNED_ORIGINS
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:406:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:497:_warned_dropped_origins
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:407:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:498:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:408:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:499:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:438:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:529:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:439:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:530:_warn_dropped_session_state
 
 # rationale: the pacing delay has no accessor and is itself the behaviour under test
 packages/scrape/tests/test_driver_listing_detail.py:410:_pace_delay_seconds
@@ -647,9 +647,11 @@ packages/scrape/tests/test_robots.py:1044:_capped_delay
 
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
 packages/scrape/tests/test_tool.py:808:_robots
+# rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
+packages/scrape/tests/test_tool.py:1242:_render_once
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1073:_egress
+packages/scrape/tests/test_tool.py:1314:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1074:_egress
+packages/scrape/tests/test_tool.py:1315:_egress
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:1189:_robots
+packages/scrape/tests/test_tool.py:1430:_robots
