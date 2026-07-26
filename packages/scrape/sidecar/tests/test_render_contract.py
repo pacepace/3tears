@@ -49,7 +49,7 @@ class _FakeElement:
 
 # parity-exempt: hand-rolled subset stub of nodriver's third-party Tab (only the CDP surface _render uses: .target.target_id/send()/add_handler()/remove_handler()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeTab:
-    """SCR-7L4M: also fakes the CDP surface ``_render`` uses to capture the
+    """Also fakes the CDP surface ``_render`` uses to capture the
     real HTTP status -- ``.target.target_id``, ``.send()``, ``.add_handler()``/
     ``.remove_handler()``. ``fire_response`` lets a test simulate the browser
     emitting ``Network.responseReceived`` for the registered handler, the way
@@ -394,7 +394,7 @@ class TestRenderContract:
 
 
 class TestRenderRealStatus:
-    """SCR-7L4M: the sidecar must surface the real top-level HTTP status
+    """The sidecar must surface the real top-level HTTP status
     (a successfully-rendered 404/500 page is not the same as a driver crash)
     instead of always reporting 200."""
 

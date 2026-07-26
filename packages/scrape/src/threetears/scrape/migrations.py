@@ -87,7 +87,7 @@ async def v001_create_scrape_tables(store: DataStore) -> None:
 
 
 async def v002_target_multi_row_flag(store: DataStore) -> None:
-    """SCR-6P2X -- ``ScrapeTarget.multi_row`` selects which eval loop
+    """``ScrapeTarget.multi_row`` selects which eval loop
     ``poll_scrape_targets`` runs (``run_eval_loop_multi_row`` vs. the
     original single-record ``run_eval_loop``). Defaults ``false`` so every
     pre-existing target keeps its current (single-record) behavior.
@@ -96,7 +96,7 @@ async def v002_target_multi_row_flag(store: DataStore) -> None:
 
 
 async def v003_target_wait_for(store: DataStore) -> None:
-    """SCR-2N8W follow-up -- ``ScrapeTarget.wait_for`` is a CSS selector the
+    """``ScrapeTarget.wait_for`` is a CSS selector the
     driver waits for before considering the page settled, passed straight
     through to ``ScrapeDriver.render(..., wait_for=...)``. Nullable; ``None``
     keeps every pre-existing target's current behavior (a plain settle

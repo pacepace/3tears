@@ -37,7 +37,7 @@ from threetears.observe import get_logger
 from pydantic import SecretStr
 
 from .circuit import FetchDecision, TargetCircuit
-from threetears.core.egress import EgressDriver
+from threetears.core.egress import EgressDriver, EgressRegistry
 
 from .robots import RobotsDecision, RobotsGate
 from .session_state import usable_session_state
@@ -109,7 +109,8 @@ class ScrapeTool(TearsTool):
         circuit: TargetCircuit | None = None,
         session_state_key: SecretStr | None = None,
         robots: RobotsGate | None | _RobotsDefault = _ROBOTS_DEFAULT,
-        egress: EgressDriver | None = None,
+        egress: EgressDriver | str | None = None,
+        egress_registry: EgressRegistry | None = None,
         default_timeout: float = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         """
@@ -139,11 +140,20 @@ class ScrapeTool(TearsTool):
             ``None`` explicitly to consult no robots.txt at all, which is the pre-existing
             behaviour and now has to be asked for rather than being what everyone got
         :ptype robots: RobotsGate | None | _RobotsDefault
-        :param egress: which exit this tool's own requests leave by. Passed to the default
-            robots gate so the robots.txt read shares the scrape's route rather than
-            disclosing the container's address in front of it. Drivers take their own egress
-            separately, because a driver may be shared between tools
-        :ptype egress: EgressDriver | None
+        :param egress: which exit this tool's own requests leave by -- a constructed
+            :class:`~threetears.core.egress.EgressDriver`, or the NAME of one to resolve
+            through *egress_registry* so a deployment can write ``egress: "tor"`` in its own
+            config. Passed to the default robots gate so the robots.txt read shares the
+            scrape's route rather than disclosing the container's address in front of it.
+            Drivers take their own egress separately, because a driver may be shared between
+            tools
+        :ptype egress: EgressDriver | str | None
+        :param egress_registry: where a NAME is looked up; defaults to a registry carrying
+            ``direct`` alone. An unknown name raises rather than falling back to the default
+            route, because a deployment that asked for ``tor`` and silently got direct would
+            look correct in every log line while being wrong about the one property it
+            configured
+        :ptype egress_registry: EgressRegistry | None
         :param drivers: ``driver_backend`` name -> ``ScrapeDriver`` instance
             (e.g. ``{"nodriver": ..., "camoufox": ..., "document": ...}``)
         :ptype drivers: dict[str, ScrapeDriver]
@@ -161,6 +171,18 @@ class ScrapeTool(TearsTool):
         # "consult nothing", and omitting the argument means "the default, which is on". Those
         # are different intentions and a plain `None` default cannot express both -- which is
         # how a documented on-by-default became off everywhere.
+        # A NAME is accepted, not just a constructed driver, because that is the whole reason
+        # `EgressRegistry` exists: configuration says `egress: "tor"` and the seam resolves it,
+        # rather than every caller growing its own `if name == "tor"` branch in front of the
+        # fetch. Without this the registry had no consumer at all, which made it a capability
+        # that was true of an object nobody built.
+        #
+        # An unknown name RAISES here rather than falling back to the default route. A
+        # deployment that asked for `tor` and silently got direct would be told nothing, would
+        # look correct in every log line, and would be wrong about the single property it
+        # configured this for.
+        if isinstance(egress, str):
+            egress = (egress_registry or EgressRegistry()).get(egress)
         self._egress = egress
         # The default gate inherits this tool's exit. A robots request on the container's own
         # route, in front of a proxied scrape, discloses the address the proxy exists to hide.
@@ -327,6 +349,21 @@ class ScrapeTool(TearsTool):
                 ", ".join(proxied),
                 extra={"extra_data": {"proxied_drivers": proxied}},
             )
+
+    def _release_probe(self, target_id: str) -> None:
+        """Give back an in-process probe that will now never report an outcome.
+
+        One definition rather than the same two lines repeated in each guard. The compensation
+        being scattered is what let a fourth stranding bug appear in a family the code's own
+        comments already called "the third one": every new await near this path needed someone
+        to remember the pattern, and the pattern lived in two places to copy from.
+
+        Deliberately releases and persists NOTHING. A durable outcome here would back the
+        target off across every pod and outlive the cancelled process, for something the
+        target never did.
+        """
+        if self._circuit is not None:
+            self._circuit.release_probe(target_id)
 
     async def _clear_robots_block_if_any(self, target_id: str) -> None:
         """Take a target out of the human queue, but only if it was in it.
@@ -504,6 +541,11 @@ class ScrapeTool(TearsTool):
         # guard for the same reason; this one exists because the sleep and the credential read
         # sit OUTSIDE it, and an await added here would otherwise strand the probe again --
         # the fourth member of this family.
+        # Named once. Spelled out inline three times, this predicate was doing the work of a
+        # concept the function never gave a name to -- "the fetch is actually going to happen"
+        # -- and each site had to be found and updated by hand when a fourth gate arrived.
+        fetch_will_happen = error is None and (decision is None or decision.permitted)
+
         solved_state: dict[str, Any] | None = None
         try:
             # The crawl delay is waited only once the circuit has ADMITTED the fetch. Waiting
@@ -511,11 +553,7 @@ class ScrapeTool(TearsTool):
             # was suppressed -- paying a politeness cost for a request that never happens. The
             # floor-vs-ceiling rule is satisfied either way: both gates are still honoured, and a
             # circuit probe still waits its delay.
-            if (
-                robots_decision is not None
-                and robots_decision.wait_seconds > 0
-                and (decision is None or decision.permitted)
-            ):
+            if robots_decision is not None and robots_decision.wait_seconds > 0 and fetch_will_happen:
                 log.info(
                     "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
                     robots_decision.wait_seconds,
@@ -533,18 +571,15 @@ class ScrapeTool(TearsTool):
             # into, and opening a credential for a request that will not be made is work done to
             # no purpose on the hottest path this tool has.
             solved_state = None
-            if error is None and (decision is None or decision.permitted) and self._health_collection is not None:
+            if fetch_will_happen and self._health_collection is not None:
                 solved_state = await self._read_solved_state(target_id)
         except BaseException:
-            # Same reasoning as the render's own guard: release the in-process probe, persist
-            # nothing. A durable outcome here would back the target off across every pod, and
-            # outlive the cancelled process, for something the target never did.
-            if self._circuit is not None:
-                self._circuit.release_probe(target_id)
+            # Same reasoning as the render's own guard, and the same one-line compensation.
+            self._release_probe(target_id)
             raise
 
         page: RenderedPage | None = None
-        if error is None and (decision is None or decision.permitted):
+        if fetch_will_happen:
             assert driver is not None  # narrowed by `error is None` above
             # Nested so the outer handler covers the recovery handler too, not just the
             # render. `record_unreachable` clears the probe as its first act, but a
@@ -559,12 +594,26 @@ class ScrapeTool(TearsTool):
                         # suppress a fetch after robots was consulted, and a check that led
                         # nowhere must not consume the site's patience.
                         self._robots.note_fetched(url)
+                    # `session_state` is passed ONLY when there is one. `ScrapeDriver` is
+                    # published as a pluggable contract, so an out-of-tree driver written
+                    # against 0.19.x has no such parameter -- and passing it unconditionally
+                    # made every fetch through such a driver raise `TypeError`, including the
+                    # overwhelming majority that carry no stored solve at all. The egress half
+                    # of this same change reasoned about exactly that consumer and reads its
+                    # attribute through a `getattr`; this half simply forgot, and the
+                    # asymmetry is what makes it an oversight rather than a decision.
+                    #
+                    # A solve that DOES exist and a driver that cannot take it is a real
+                    # incompatibility and still raises -- correctly, since silently rendering
+                    # unauthenticated would send a person to solve a challenge they already
+                    # cleared.
+                    extra: dict[str, Any] = {"session_state": solved_state} if solved_state else {}
                     page = await driver.render(
                         url,
                         timeout=self._default_timeout,
                         wait_for=wait_for,
                         nav_steps=nav_steps,
-                        session_state=solved_state,
+                        **extra,
                     )
                 except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- any backend-specific driver error surfaces as a ToolResult, never crashes the tool call
                     log.warning(
@@ -598,8 +647,7 @@ class ScrapeTool(TearsTool):
                 # That predates this guard -- such an exception escaped `execute` before too,
                 # just without releasing the probe -- and is left alone rather than widened
                 # into a behaviour change smuggled in under a probe-lifecycle fix.
-                if self._circuit is not None:
-                    self._circuit.release_probe(target_id)
+                self._release_probe(target_id)
                 raise
 
         if error is not None:
@@ -700,8 +748,7 @@ class ScrapeTool(TearsTool):
                 # `BaseException`, not `Exception`, because a cancelled poll strands the probe
                 # exactly as thoroughly as a failing one. Deliberately does not swallow: a
                 # failing eval loop is not a fetch outcome and must not be recorded as one.
-                if self._circuit is not None:
-                    self._circuit.release_probe(target_id)
+                self._release_probe(target_id)
                 raise
             result = ToolResult(
                 success=extraction.validation_status == "validated",

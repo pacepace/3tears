@@ -96,6 +96,9 @@ dependencies = [
 duckdb = [
     { name = "duckdb" },
 ]
+socks = [
+    { name = "httpx", extra = ["socks"] },
+]
 testing = [
     { name = "docker" },
     { name = "pytest" },
@@ -115,6 +118,7 @@ requires-dist = [
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "httpx" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
@@ -123,7 +127,7 @@ requires-dist = [
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
 ]
-provides-extras = ["tracing", "duckdb", "testing"]
+provides-extras = ["tracing", "socks", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"

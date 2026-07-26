@@ -219,9 +219,15 @@ This design's own regex assumption didn't survive contact with real data, twice:
    `extract_fields_directly_chunked` for a born-digital one. Hawaii's own `affected_count` field
    was dropped from its schema after vision confirmed (not just OCR failing to find) the real
    source redacts or omits it in three distinct, live-verified ways -- New Jersey's own
-   missing-field precedent, not a gap this rearchitecture claims to close. See backlog `SCR-8M3H`
-   for the real remaining gap (table-structure recognition from scanned images) and its trigger
-   condition.
+   missing-field precedent, not a gap this rearchitecture claims to close.
+
+   **The real remaining gap is table-structure recognition from scanned images**: a vision pass
+   reads values off a scanned page but does not reliably recover which column a value belonged
+   to, so a scanned multi-column table still needs a human or a different tool. The trigger for
+   doing something about it is a target whose data is BOTH scanned and genuinely tabular --
+   none of the current ones are, which is why it stays unbuilt rather than deferred. (This
+   previously cited a backlog id that no longer resolves; the condition is written out here
+   because a pointer is only as durable as the item it names.)
 
 ## Verification
 

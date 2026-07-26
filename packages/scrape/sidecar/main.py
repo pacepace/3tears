@@ -377,7 +377,7 @@ async def _render(
     """Navigate to *url*, optionally drive it through *nav_steps*, wait for a
     selector, and return the rendered page.
 
-    ``status`` -- SCR-7L4M fix (2026-07-14): a plain ``browser.get(url,
+    ``status`` -- fixed 2026-07-14: a plain ``browser.get(url,
     new_tab=True)`` gives no way to observe the real top-level HTTP response
     status -- nodriver's ``Tab`` exposes no ``.status`` attribute (checked
     live against nodriver 0.50.3's ``Tab``/CDP bindings), and the browser
@@ -567,7 +567,7 @@ async def _render(
     # `Tab.__getattr__` forwarding to `self.target.url`) does not reliably
     # reflect the post-navigate URL when navigating via raw `cdp.page.navigate`
     # instead of the higher-level `browser.get()` wrapper this function used
-    # before the SCR-7L4M status fix -- reproduced live against a real running
+    # before the status fix above -- reproduced live against a real running
     # container (empty string returned for both a 200 and a 404 real fetch).
     # The captured response's own URL is the actual URL that document came
     # from, redirects included, with no dependency on that internal tracking.

@@ -250,6 +250,20 @@ answering are excluded -- the circuit opens on those too, and a person sent to o
 with nothing to clear. This is the only non-primary-key query in the package, and it exists so
 you do not have to fetch fifty targets to find four.
 
+It returns **two kinds of queue item, and they need different decisions from the operator.**
+Check which one you have before routing it:
+
+| | `last_blocked_at` set | `robots_blocked_at` set |
+|---|---|---|
+| What happened | a bot wall stood where the content should be | the site's `robots.txt` disallows this path |
+| What the human does | clears the challenge in the browser; the solved session is reused unattended after that | decides whether we may fetch it AT ALL -- which is a policy call, not a puzzle |
+| Reaching for the browser | is the answer | is not, on its own. A person working the page over VNC is exempt from `Disallow` because the exclusion protocol governs automated agents, but that exemption is for a session a human is genuinely in -- not for opening one and letting the robot drive through it |
+| The other exit | `RobotsPolicy.overrides` records a per-origin agreement with a site, which is the honest way to say "we have permission for this one" without turning robots off everywhere |
+
+Both are cleared by `record_human_cleared`. Treating them as one queue sends an operator to
+solve a challenge that is not there, and -- worse -- quietly converts a policy decision into a
+puzzle someone clicks through.
+
 **4. Nothing is held while it waits.** No browser, no session, no tab. The queue item carries
 `url` plus `nav_steps`, and the target is re-driven from those when an operator actually
 arrives, so waiting costs nothing.

@@ -235,6 +235,24 @@ an unproxied read would have disclosed the container's real address to every ori
 immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
 configured and two in reality.
 
+**A driver written before this release keeps working.** `ScrapeDriver` ships as a pluggable
+contract, and `session_state` was being passed on EVERY fetch -- so an out-of-tree driver
+written against 0.19.x raised `TypeError` on every call, including the overwhelming majority
+carrying no stored solve at all. It is passed only when one exists. The egress half of the
+same change had reasoned about exactly this consumer and reads its attribute through a
+`getattr`; the asymmetry is what made this an oversight rather than a decision.
+
+**`egress` accepts a NAME, not just a constructed driver.** `ScrapeTool(egress="tor",
+egress_registry=...)` resolves through `EgressRegistry`, which is what that class was built
+for and, until now, what nothing did with it. An unknown name raises rather than falling back
+to the default route: a deployment that asked for TOR and silently got the container's own
+address would look correct in every log line while being wrong about the one property it
+configured.
+
+`3tears[socks]` declares `httpx[socks]`, which `SocksEgress` and `WarpEgress` need. It was
+reachable only as an ImportError on the first request, which makes a packaging requirement
+look like a runtime bug.
+
 **Cloudflare WARP is a named exit, not a configuration people have to discover.**
 `WarpEgress()` on `warp-cli mode proxy`'s own default SOCKS port, with commented compose
 plumbing beside TOR's. It was expressible via `SocksEgress` all along, which is true and is not

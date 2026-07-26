@@ -245,7 +245,7 @@ class ScrapeTarget(BaseEntity):
         behavior (a plain settle sleep). Some real pages need this: e.g. a
         target whose real content loads asynchronously well past the
         driver's default settle wait returns a near-empty page without it
-        (live-verified, Nebraska's WARN listing, SCR-2N8W follow-up). A
+        (live-verified against Nebraska's WARN listing). A
         genuine input variable like ``url``/``cadence``, not a per-target
         extraction hack -- the eval loop still discovers its own selectors
         from whatever HTML this produces.

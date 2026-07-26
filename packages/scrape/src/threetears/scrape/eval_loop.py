@@ -1046,7 +1046,7 @@ async def _judge_row_candidates(
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
     Shares :func:`_judge_candidates`'s retry/logging shape via the shared
-    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14). The multi-row judge
+    :func:`_judge`. The multi-row judge
     was first written as a deliberate copy of the single-record one rather
     than a shared abstraction -- two callers did not justify the indirection.
     A third judge use (per-document grounding) is what tipped it: at that

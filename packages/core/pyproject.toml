@@ -36,6 +36,13 @@ dependencies = [
 
 [project.optional-dependencies]
 tracing = ["opentelemetry-api>=1.20"]
+# needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
+# ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without
+# it. Declared as an extra rather than a hard dependency because the overwhelming majority of
+# consumers use the default route or an http(s) proxy and should not carry it -- but declared
+# at all, because "install 3tears, reach for SocksEgress, get an ImportError on the first
+# request" makes a packaging requirement look like a runtime bug.
+socks = ["httpx[socks]"]
 duckdb = ["duckdb>=1.0"]
 # pulled by anything importing :mod:`threetears.core.testing.fixtures`
 # (the centralized testcontainer harness for downstream integration

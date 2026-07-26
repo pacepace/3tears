@@ -994,3 +994,99 @@ async def test_the_exit_a_page_came_through_reaches_the_health_row() -> None:
     assert row.last_egress == "tor", (
         "the tool recorded the circuit's configured exit rather than the one the page came through"
     )
+
+
+async def test_a_driver_predating_session_state_still_works() -> None:
+    """`ScrapeDriver` ships on PyPI as a pluggable contract, so out-of-tree drivers exist.
+
+    One written against 0.19.x has no `session_state` parameter. Passing it unconditionally
+    made EVERY fetch through such a driver raise TypeError -- including the overwhelming
+    majority that carry no stored solve at all. The egress half of the same change reasoned
+    about precisely this consumer and reads its attribute through a getattr; this half did not,
+    which is what makes it an oversight rather than a judgement.
+    """
+    from threetears.core.collections.registry import CollectionRegistry
+    from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+    class _PreSessionStateDriver:
+        """A driver as it would have been written before this bundle. Deliberately NOT
+        declaring session_state, which is the whole point."""
+
+        @property
+        def name(self) -> str:
+            return "old"
+
+        async def render(
+            self,
+            url: str,
+            *,
+            timeout: float = 30.0,
+            wait_for: str | None = None,
+            capture_network: bool = False,
+            nav_steps: list[NavStep] | None = None,
+            results_path: str | None = None,
+            fragment_field: str | None = None,
+            link_selector: str | None = None,
+            seen_urls: set[str] | None = None,
+        ) -> RenderedPage:
+            return RenderedPage(html=_SINGLE_HTML, status=200, final_url=url, timing_ms=1.0)
+
+    reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+    recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+    url, schema = "https://example.gov/old-driver", {"employer": "str"}
+    await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+
+    tool = ScrapeTool(
+        recipe_collection=recipes,
+        extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+        drivers={"nodriver": _PreSessionStateDriver()},  # type: ignore[dict-item]
+        api_key="k",
+        robots=None,
+    )
+
+    result = await tool.execute(url=url, field_schema=schema)
+
+    assert result.success, f"a pre-existing driver broke on an ordinary fetch: {result.error}"
+
+
+class TestEgressByName:
+    """The registry's reason to exist: configuration names an exit, nothing branches on it."""
+
+    def test_a_name_resolves_through_the_registry(self) -> None:
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.core.egress import EgressRegistry, SocksEgress
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        tool = ScrapeTool(
+            recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={},
+            api_key="k",
+            egress="tor",
+            egress_registry=EgressRegistry({"tor": SocksEgress("tor")}),
+            robots=None,
+        )
+
+        assert tool._egress is not None  # noqa: SLF001
+        assert tool._egress.name == "tor"  # noqa: SLF001
+
+    def test_an_unknown_name_raises_rather_than_quietly_going_direct(self) -> None:
+        """The failure this forbids is silent and total: a deployment that asked for TOR,
+        got the container's own address, and was told nothing by anything."""
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        with pytest.raises(KeyError, match="no egress driver named"):
+            ScrapeTool(
+                recipe_collection=ScrapeRecipeCollection(reg, cfg, nats_client=None),
+                extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+                drivers={},
+                api_key="k",
+                egress="tor",
+                robots=None,
+            )
