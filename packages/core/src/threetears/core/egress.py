@@ -32,6 +32,7 @@ branches on whether egress is configured at all.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -347,7 +348,6 @@ class EgressRegistry:
         unreachability is deliberately not a wall. "All my targets broke at once" and "one
         daemon died" produce identical evidence until something asks the exits directly.
         """
-        import asyncio  # noqa: PLC0415 -- deferred purely to keep this module's import surface flat; asyncio is stdlib and costs nothing, so this is consistency with the httpx imports above rather than a constraint
 
         async def _ask(driver: EgressDriver) -> EgressHealth:
             probe = getattr(driver, "health", None)

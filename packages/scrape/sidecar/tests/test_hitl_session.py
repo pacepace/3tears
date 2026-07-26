@@ -380,7 +380,7 @@ async def test_exported_local_storage_is_actually_restored(monkeypatch: pytest.M
         "origins": [{"origin": "https://example.gov/page", "localStorage": '{"cf_token": "earned", "n": "2"}'}],
     }
 
-    await hitl._apply_origin_storage(_Tab(), state)  # noqa: SLF001
+    await hitl._apply_origin_storage(_Tab(), state)
 
     joined = " ".join(e for _, e in written)
     assert "cf_token" in joined
@@ -403,7 +403,7 @@ async def test_storage_is_not_written_into_the_wrong_origin() -> None:
             written.append(expression)
 
     state = {"origins": [{"origin": "https://example.gov/page", "localStorage": '{"k": "v"}'}]}
-    await hitl._apply_origin_storage(_Tab(), state)  # noqa: SLF001
+    await hitl._apply_origin_storage(_Tab(), state)
 
     assert written == []
 
@@ -423,7 +423,7 @@ async def test_a_value_with_quotes_does_not_break_the_expression() -> None:
             written.append(expression)
 
     nasty = '{"k": "va\\"lue\\u0027); alert(1); //"}'
-    await hitl._apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})  # noqa: SLF001
+    await hitl._apply_origin_storage(_Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": nasty}]})
 
     assert len(written) == 1
     # The payload is inside a JSON string literal rather than loose in the source.
@@ -443,7 +443,7 @@ async def test_unparseable_storage_is_skipped_without_losing_the_cookies() -> No
 
     await hitl._apply_origin_storage(
         _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": "{oh no"}]}
-    )  # noqa: SLF001
+    )
 
 
 async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
@@ -457,7 +457,7 @@ async def test_a_page_that_refuses_script_does_not_fail_the_restore() -> None:
 
     await hitl._apply_origin_storage(
         _Tab(), {"origins": [{"origin": "https://example.gov/", "localStorage": '{"a":"1"}'}]}
-    )  # noqa: SLF001
+    )
 
 
 async def test_a_wedged_export_does_not_defer_the_reaper(manager: SessionManager, monkeypatch) -> None:
@@ -537,6 +537,6 @@ async def test_export_state_never_raises_into_a_completion(manager: SessionManag
         raise RuntimeError("the browser stopped answering")
 
     monkeypatch.setattr(hitl, "_export_context_state", _boom)
-    state = await manager._export_state(session.tabs[tab.tab_id])  # noqa: SLF001
+    state = await manager._export_state(session.tabs[tab.tab_id])
 
     assert state is None, "a failing export returns None rather than raising into the completion"

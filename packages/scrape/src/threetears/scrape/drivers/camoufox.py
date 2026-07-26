@@ -34,7 +34,7 @@ from playwright.async_api import Response as PlaywrightResponse
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from threetears.observe import get_logger
 
-from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
+from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver, warn_dropped_session_state
 
 __all__ = ["CamoufoxDriver", "CamoufoxDriverError"]
 
@@ -186,11 +186,7 @@ class CamoufoxDriver(ScrapeDriver):
             # spent real time solving, got a successful render back, and had no way to learn
             # the page was fetched logged-out. The extraction then fails on a login wall and
             # the target is escalated to a human who already did the work.
-            log.warning(
-                "camoufox driver: session_state was supplied but this driver cannot apply it; "
-                "rendering %s unauthenticated. Use the nodriver sidecar driver to reuse a solved session.",
-                url,
-            )
+            warn_dropped_session_state("camoufox", url, log)
 
         browser = await self._ensure_browser()
         timeout_ms = timeout * 1000

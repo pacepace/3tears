@@ -35,7 +35,7 @@ from threetears.agent.tools.document import (
 )
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
 from ..extraction import OCR_PAGE_IMAGE_CLASS
 
 __all__ = ["OCR_PAGE_IMAGE_CLASS", "DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
@@ -384,6 +384,8 @@ class DocumentDriver(ScrapeDriver):
         :raises DocumentDriverError: on a transport failure, a non-2xx HTTP
             response, or a document the parser couldn't handle
         """
+        if session_state:
+            warn_dropped_session_state("document", url, log)
         start = time.monotonic()
         client = self._client
         owns_client = client is None

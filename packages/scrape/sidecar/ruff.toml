@@ -36,10 +36,18 @@ select = ["SLF"]
 # share are module-private on purpose: nothing outside the container may call them, and a
 # public alias would advertise them to consumers that must not have them.
 #
-# Declared here rather than as inline `noqa` comments, which is the part that matters. The
-# enforcement walker shells out to ruff, and ruff honours an inline noqa -- so a pragma keeps
-# the gate green while `tests/enforcement/_underscore_exemptions.txt` silently stops being a
-# complete list of the private access in this repo. A per-file ignore paired with a ledger
-# entry is the channel `project-preferences.md` requires precisely so the two agree.
+# Declared here rather than as inline `noqa`, with entries in
+# `tests/enforcement/_underscore_exemptions.txt`, because that is the channel the exemptions
+# file's own header requires: every entry there must have a matching ruff ignore so the two
+# stay in step, and the reasons then live in one reviewable list instead of at five call sites.
+#
+# The cost, stated rather than glossed: a per-file ignore also suppresses every FUTURE private
+# access in these two files, which an inline pragma would not. The ledger entries are what
+# offsets that -- they record what was actually justified, so a new access is visible as an
+# undocumented one rather than as silence.
+#
+# It makes no difference to the enforcement walker: `find_local_src_roots` scans
+# `packages/*/src` only, so neither this container's files nor any `tests/` tree is ever walked
+# by it. Ruff at the repo root is the only thing that reads these.
 "main.py" = ["SLF001"]
 "hitl.py" = ["SLF001"]

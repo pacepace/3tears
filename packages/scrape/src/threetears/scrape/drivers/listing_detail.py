@@ -70,7 +70,7 @@ import httpx
 from bs4 import BeautifulSoup, Tag
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
 from .api import _records_to_synthetic_table
 
 __all__ = ["ListingDetailDriver", "ListingDetailDriverError"]
@@ -243,6 +243,8 @@ class ListingDetailDriver(ScrapeDriver):
         :rtype: RenderedPage
         :raises ListingDetailDriverError: the listing fetch itself fails outright
         """
+        if session_state:
+            warn_dropped_session_state("listing-detail", url, log)
         start = time.monotonic()
         client = self._client
         owns_client = client is None

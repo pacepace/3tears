@@ -144,14 +144,14 @@ async def test_start_is_idempotent(lifecycle: VncLifecycle) -> None:
     exit, leaving a lifecycle holding a handle to a dead process while reporting healthy.
     """
     first = await lifecycle.start()
-    x11vnc_pid = lifecycle._x11vnc.pid  # noqa: SLF001 -- the identity of the process IS the assertion
-    websockify_pid = lifecycle._websockify.pid  # noqa: SLF001
+    x11vnc_pid = lifecycle._x11vnc.pid
+    websockify_pid = lifecycle._websockify.pid
 
     second = await lifecycle.start()
 
     assert second == first
-    assert lifecycle._x11vnc.pid == x11vnc_pid, "a second x11vnc was spawned over the running one"  # noqa: SLF001
-    assert lifecycle._websockify.pid == websockify_pid  # noqa: SLF001
+    assert lifecycle._x11vnc.pid == x11vnc_pid, "a second x11vnc was spawned over the running one"
+    assert lifecycle._websockify.pid == websockify_pid
     assert lifecycle.health()
 
 
@@ -248,7 +248,7 @@ def test_x11vnc_is_bound_to_loopback_so_websockify_is_the_only_way_in(stub_path:
     websockify -- and it would do so silently, because the noVNC path would keep working.
     """
     del stub_path
-    argv = VncLifecycle(display_num=99)._x11vnc_argv()  # noqa: SLF001 -- the argv IS the security property
+    argv = VncLifecycle(display_num=99)._x11vnc_argv()
     assert "-localhost" in argv
     assert "-display" in argv and ":99" in argv
     assert "-nopw" in argv, "a password prompt with no password to check would stall the connection"
@@ -261,9 +261,9 @@ def test_websockify_proxies_the_loopback_rfb_port_in_the_documented_argument_ord
     loads, and the error names a port rather than an ordering.
     """
     del stub_path
-    argv = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)._websockify_argv()  # noqa: SLF001
+    argv = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)._websockify_argv()
     assert argv[-2] == f"0.0.0.0:{_WEB_TEST_PORT}", "source must precede target"
-    assert argv[-1] == f"127.0.0.1:{hitl._RFB_PORT}", "target must be the loopback RFB port"  # noqa: SLF001
+    assert argv[-1] == f"127.0.0.1:{hitl._RFB_PORT}", "target must be the loopback RFB port"
     assert "--web" in argv and hitl.NOVNC_ROOT in argv, "the static client would not be served"
 
 
@@ -344,7 +344,7 @@ async def test_neither_process_gets_an_undrained_pipe(stub_path: Path, monkeypat
     monkeypatch.setattr(hitl.asyncio, "create_subprocess_exec", _fake_exec)
     vnc = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)
     with pytest.raises(VncUnavailable):
-        await vnc._spawn(["x11vnc"], what="x11vnc")  # noqa: SLF001
+        await vnc._spawn(["x11vnc"], what="x11vnc")
 
     assert captured.get("stderr") is not asyncio.subprocess.PIPE, (
         "stderr is a pipe nobody reads, which caps the child's life at 64 KiB of output"

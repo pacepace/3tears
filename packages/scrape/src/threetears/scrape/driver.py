@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
+__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver", "warn_dropped_session_state"]
 
 #: The closed set of browser actions a ``NavStep`` can describe. Kept small
 #: and generic on purpose -- a per-target sequence of these is enough to
@@ -28,6 +28,33 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 #: without the core needing to know anything about what's being searched for
 #: (multi-step navigation, 2026-07-14).
 NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page", "evaluate"]
+
+
+def warn_dropped_session_state(driver_name: str, url: str, log: Any) -> None:
+    """Say that a human's solve is being discarded, from whichever driver discards it.
+
+    One helper rather than the same four lines in each accept-and-ignore driver, because the
+    alternative already happened: the warning was added to the one driver a review happened to
+    name, and the other four kept dropping the credential in silence -- which is the same
+    defect, differing only in which file it lives in.
+
+    Silence is the failure worth preventing. A caller hands over a session a person spent real
+    time solving, gets a successful render back, and learns nothing until extraction fails on a
+    login wall and the target is escalated to a human who already did the work.
+
+    :param driver_name: the driver doing the dropping, so the log says which one
+    :ptype driver_name: str
+    :param url: the url rendered without the solve
+    :ptype url: str
+    :param log: the calling module's own logger, so the record carries its name
+    :ptype log: Any
+    """
+    log.warning(
+        "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
+        "unauthenticated. Use the nodriver sidecar driver to reuse a solved session.",
+        driver_name,
+        url,
+    )
 
 
 @dataclass(frozen=True)

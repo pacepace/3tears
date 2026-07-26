@@ -1309,12 +1309,12 @@ class TestEgressReporting:
         container and only differs at the far end, where nobody is watching.
         """
         monkeypatch.setattr(main, "EGRESS_PROXY", "socks5://tor:9050")
-        assert "--proxy-server=socks5://tor:9050" in main._browser_args()  # noqa: SLF001
+        assert "--proxy-server=socks5://tor:9050" in main._browser_args()
 
     def test_no_proxy_configured_adds_no_argument(self, monkeypatch) -> None:
         """The default route stays the default route, with no empty --proxy-server."""
         monkeypatch.setattr(main, "EGRESS_PROXY", None)
-        args = main._browser_args()  # noqa: SLF001
+        args = main._browser_args()
         assert not any(a.startswith("--proxy-server") for a in args)
         assert "--disable-dev-shm-usage" in args, "the other launch arguments were lost"
 

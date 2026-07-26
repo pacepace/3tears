@@ -46,7 +46,7 @@ import httpx
 from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
 
 __all__ = ["ApiDriver", "ApiDriverError"]
 
@@ -233,6 +233,8 @@ class ApiDriver(ScrapeDriver):
             response, missing *results_path*, a response that isn't valid
             JSON, or *results_path* not resolving to a list
         """
+        if session_state:
+            warn_dropped_session_state("api", url, log)
         if results_path is None:
             raise ApiDriverError("missing_config", "results_path is required for ApiDriver.render()")
 

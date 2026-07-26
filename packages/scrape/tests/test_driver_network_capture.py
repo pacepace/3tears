@@ -268,4 +268,8 @@ class TestNetworkCaptureForwardsTheSolve:
 
         page = await driver.render("https://example.gov/list")
 
-        assert page.status == 200, "a wrapper broke an inner driver that predates session_state"
+        # Asserts the captured DATA, not merely that a page came back. `status == 200` alone
+        # would pass on a wrapper that silently stopped capturing altogether, which is the
+        # failure this whole driver exists to prevent.
+        assert "<table" in page.html, "the capture produced no table, so nothing was captured"
+        assert page.html.count("<tr") >= 3, f"expected the three captured records, got: {page.html[:200]}"

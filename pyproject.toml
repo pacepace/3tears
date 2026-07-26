@@ -153,11 +153,18 @@ select = ["SLF"]
 # per-origin cache and fetch clocks (bounded retention and `forget` are only observable there),
 # ScrapeTool's resolved egress and robots gate, and the httpx transport's connection pool, which
 # is the only place a configured proxy is visible after construction. Paired entries live in
-# tests/enforcement/_underscore_exemptions.txt.
+# tests/enforcement/_underscore_exemptions.txt, which the file header requires be kept in
+# lockstep with these ignores.
 #
-# Declared here rather than as inline `noqa` comments deliberately: the enforcement walker shells
-# out to ruff, and ruff honours an inline pragma -- so a pragma keeps the gate green while the
-# exemptions ledger silently stops being a complete list of private access in this repo.
+# Declared here rather than as inline `noqa` to match how every other test suite in this repo is
+# already exempted, and so the reasons live in one reviewable list instead of scattered across
+# call sites. The cost is real and worth stating: a per-file ignore also suppresses every FUTURE
+# private access in these four files, where an inline pragma would not. That is the trade the
+# ledger exists to offset -- the entries are the record of what was actually justified.
+#
+# It does NOT affect the enforcement walker either way: `find_local_src_roots` scans
+# `packages/*/src` only, so no `tests/` tree is ever walked. Verified by deleting an entry and
+# watching the gate stay green.
 "packages/scrape/tests/test_robots.py" = ["SLF001"]
 "packages/scrape/tests/test_tool.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_api.py" = ["SLF001"]

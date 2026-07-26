@@ -31,7 +31,7 @@ import httpx
 from threetears.agent.tools.document import OcrConfig
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, warn_dropped_session_state
 from .document import parse_document_bytes_to_html
 
 __all__ = ["NodriverDownloadDriver", "NodriverDownloadError"]
@@ -147,6 +147,8 @@ class NodriverDownloadDriver(ScrapeDriver):
             parse_document_bytes_to_html`, not wrapped, since it's already
             the right semantic type for "downloaded fine, couldn't parse"
         """
+        if session_state:
+            warn_dropped_session_state("nodriver-download", url, log)
         start = time.monotonic()
         payload = {"url": url, "timeout": timeout}
         client = self._client

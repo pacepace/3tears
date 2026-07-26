@@ -30,6 +30,10 @@ class _FakeDocumentDriver(ScrapeDriver):
         self._fail_urls = fail_urls or set()
         self._was_ocr_urls = was_ocr_urls or set()
         self.fetched_urls: list[str] = []
+        # Records the keywords each call actually received. `**kwargs: object` alone absorbed
+        # every one of them silently, which is why neither the forwarding of a human's solve
+        # nor its conditional omission was observable from this suite at all.
+        self.render_kwargs: list[dict[str, object]] = []
 
     @property
     def name(self) -> str:
@@ -37,6 +41,7 @@ class _FakeDocumentDriver(ScrapeDriver):
 
     async def render(self, url: str, **kwargs: object) -> RenderedPage:
         self.fetched_urls.append(url)
+        self.render_kwargs.append(kwargs)
         if url in self._fail_urls:
             raise RuntimeError(f"simulated fetch failure for {url}")
         html = self._pages.get(url, f"<html><body><p>content for {url}</p></body></html>")
@@ -400,3 +405,40 @@ class TestDiscoverLinksLabeled:
 
         html = '<a class="doc">no href</a><a class="doc" href="/z.pdf">z</a>'
         assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == [("https://h/z.pdf", "z")]
+
+
+class TestMultiDocumentSessionStateForwarding:
+    """The wrapper neither applies a human's solve nor withholds it -- both halves pinned.
+
+    Neither was checkable before: the fake absorbed every keyword, so forwarding and dropping
+    looked identical from here, and the defect and its fix were equally invisible.
+    """
+
+    async def test_a_solve_reaches_the_inner_document_driver(self):
+        inner = _FakeDocumentDriver()
+        client = _listing_client(_html_listing_handler(["https://example.gov/doc1.pdf"]))
+        driver = MultiDocumentDriver(document_driver=inner, client=client)
+        state = {"cookies": [{"name": "session", "value": "solved"}]}
+
+        await driver.render("https://example.gov/listing", link_selector="a", session_state=state)
+
+        assert inner.render_kwargs, "the inner driver was never called"
+        assert inner.render_kwargs[0].get("session_state") == state, (
+            "the wrapper swallowed the solve on the way to the driver that could use it"
+        )
+
+    async def test_no_solve_means_the_keyword_is_not_passed_at_all(self):
+        """Not passed, rather than passed as None. The inner driver is INJECTED, so it may be
+        an out-of-tree implementation written before this parameter existed, and an
+        unconditional keyword makes every ordinary render through such a driver raise
+        TypeError -- the same defect this wrapper's sibling had to have fixed twice."""
+        inner = _FakeDocumentDriver()
+        client = _listing_client(_html_listing_handler(["https://example.gov/doc1.pdf"]))
+        driver = MultiDocumentDriver(document_driver=inner, client=client)
+
+        await driver.render("https://example.gov/listing", link_selector="a")
+
+        assert inner.render_kwargs, "the inner driver was never called"
+        assert "session_state" not in inner.render_kwargs[0], (
+            "the keyword was passed with no solve to carry, which breaks any driver predating it"
+        )
