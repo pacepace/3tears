@@ -302,7 +302,9 @@ class TokenBucket:
         :ptype key: str
         :param tokens: how many to return; must not exceed capacity
         :ptype tokens: float
-        :return: tokens available after the refund, or ``-1.0`` when it could not be applied
+        :return: tokens available after the refund. ``-1.0`` means it could not be applied and
+            the bucket will refill instead -- a KV failure or CAS exhaustion. An untouched key
+            returns capacity, since nothing was consumed from it to give back
         :rtype: float
         """
         if tokens <= 0:

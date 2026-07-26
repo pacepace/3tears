@@ -740,14 +740,14 @@ class TestScrapeToolFetchCircuit:
         assert row is None or row.circuit_state == "closed"
 
     async def test_a_cancellation_while_recording_the_failure_still_releases_the_probe(self):
-        """The narrow window between the two handlers, and the third strand in this family.
+        """A cancellation inside the failure REPORT, and the third strand in this family.
 
         A render that fails with an ordinary exception is handled by reporting the fetch
-        failure, and ``record_unreachable`` clears the probe as its first act. But it awaits,
-        so a cancellation can land inside it before that happens -- escaping the
-        ``except Exception`` handler it is running in, and never reaching an
-        ``except BaseException`` placed only around the render. Nesting the handlers so the
-        outer one covers the recovery path is what closes it.
+        failure, and ``record_unreachable`` clears the probe as its first act. But it awaits, so
+        a cancellation can land inside it before that happens -- escaping the ``except
+        Exception`` handler it is running in. `_render_once` returns its error rather than
+        raising it precisely so this path stays inside the single guard: a failure in the
+        recovery propagates out of the call, and the one handler releases the probe.
         """
         recipe_collection, extraction_collection = _collections()
         health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
@@ -768,8 +768,7 @@ class TestScrapeToolFetchCircuit:
             await tool.execute(url=url, field_schema=schema)
 
         assert breaker.state is not CircuitState.HALF_OPEN, (
-            "a cancellation inside the failure report escaped between the two handlers and "
-            "left the in-process breaker holding a probe"
+            "a cancellation inside the failure report escaped the guard and left the in-process breaker holding a probe"
         )
 
     @staticmethod

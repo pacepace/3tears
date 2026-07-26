@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from threetears.core.data.store import DataStore
     from threetears.core.entities.base import BaseEntity
     from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
+    from threetears.core._bridge import fire_and_forget
     from threetears.core.egress import (
         DirectEgress,
         EgressDriver,
@@ -97,6 +98,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "SandboxDecision": ("threetears.core.security", "SandboxDecision"),
     "SandboxDenied": ("threetears.core.security", "SandboxDenied"),
     "TableDef": ("threetears.core.data.schema", "TableDef"),
+    "fire_and_forget": ("threetears.core._bridge", "fire_and_forget"),
     "DirectEgress": ("threetears.core.egress", "DirectEgress"),
     "EgressDriver": ("threetears.core.egress", "EgressDriver"),
     "EgressHealth": ("threetears.core.egress", "EgressHealth"),
@@ -149,6 +151,7 @@ __all__ = [
     "SandboxDenied",
     "TableDef",
     "DirectEgress",
+    "fire_and_forget",
     "EgressDriver",
     "EgressHealth",
     "EgressRegistry",

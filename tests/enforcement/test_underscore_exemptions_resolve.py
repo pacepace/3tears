@@ -25,8 +25,9 @@ directly rather than shelling out to ruff, so it does not inherit the blind spot
 from __future__ import annotations
 
 import ast
-import tomllib
 from pathlib import Path
+
+from _ruff_config_discovery import exempted_files, ruff_configs, slf001_globs
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXEMPTIONS = _REPO_ROOT / "tests" / "enforcement" / "_underscore_exemptions.txt"
@@ -68,12 +69,24 @@ def _accesses(path: Path) -> set[tuple[int, str]]:
     return found
 
 
-def _exempted_test_paths() -> list[Path]:
-    """Test files carrying a per-file ``SLF001`` ignore, which is where the ledger applies."""
-    config = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
-    per_file = config["tool"]["ruff"]["lint"]["per-file-ignores"]
-    paths = [_REPO_ROOT / key for key, codes in per_file.items() if "SLF001" in codes]
-    return [p for p in paths if p.exists() and "/tests/" in p.as_posix()]
+def _exempted_paths() -> list[Path]:
+    """Every file carrying a per-file ``SLF001`` ignore, from every config ruff reads.
+
+    Not just the root ``pyproject.toml``, and not just ``/tests/`` paths. Reading only the root
+    is exactly how five reviewed sidecar entries were deleted without anything noticing: the
+    nested ``packages/scrape/sidecar/ruff.toml`` is a full override, so a checker built on the
+    root config cannot see what it governs -- and the underscore walker never enters the
+    sidecar either, since it scans ``packages/*/src``.
+
+    Filtering to ``/tests/`` had the same shape: `sidecar/hitl.py` and `main.py` are production
+    files that carry per-file ignores, and their five accesses are precisely the ones the ledger
+    exists to record.
+    """
+    found: list[Path] = []
+    for config in ruff_configs(_REPO_ROOT):
+        for pattern in slf001_globs(config):
+            found.extend(exempted_files(config, pattern, _REPO_ROOT))
+    return sorted(set(found))
 
 
 class TestUnderscoreExemptionsResolve:
@@ -111,7 +124,7 @@ class TestUnderscoreExemptionsResolve:
         """
         entries = {(path, number, symbol) for path, number, symbol in _entries()}
         unlisted: list[str] = []
-        for source in _exempted_test_paths():
+        for source in _exempted_paths():
             rel = source.relative_to(_REPO_ROOT).as_posix()
             for number, symbol in sorted(_accesses(source)):
                 if (rel, number, symbol) not in entries:

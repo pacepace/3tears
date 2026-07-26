@@ -329,14 +329,19 @@ class RobotsGate:
         :param url: the url whose turn was taken
         :ptype url: str
         """
-        refund = getattr(self._delay_pacer, "refund", None)
-        if refund is None:
+        if self._delay_pacer is None:
             return
         origin = _origin_of(url)
         if not origin:
             return
         try:
-            await refund(origin)
+            # Called directly rather than through a `getattr` guard. The field is typed
+            # `TokenBucket`, which declares `refund`, so making the call conditional would be
+            # weakening production behaviour to accommodate a stand-in the type already
+            # excludes -- the opposite of what the fake-parity rule is for. A structural
+            # stand-in that lacks it raises `AttributeError`, which lands in the same handler
+            # as a KV outage and for the same reason: this runs while the caller is unwinding.
+            await self._delay_pacer.refund(origin)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the caller is unwinding; a failed refund costs throughput that self-heals, where raising would lose the original error. Logged with its traceback below
             log.exception("scrape robots: could not return %s's fleet turn; it will refill instead", origin)
 

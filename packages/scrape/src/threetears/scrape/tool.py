@@ -37,7 +37,7 @@ from threetears.observe import get_logger
 from pydantic import SecretStr
 
 from .circuit import FetchDecision, TargetCircuit
-from threetears.core._bridge import fire_and_forget
+from threetears.core import fire_and_forget
 from threetears.core.egress import EgressDriver, EgressRegistry
 
 from .robots import RobotsDecision, RobotsGate
@@ -606,10 +606,13 @@ class ScrapeTool(TearsTool):
         #
         # Not a theoretical window. This tool advertises a deadline of `default_timeout + 60`
         # while an honoured `Crawl-delay` is capped at 300s, so an executor cancelling inside
-        # that sleep is the EXPECTED case, not a rare one. The render below carries its own
-        # guard for the same reason; this one exists because the sleep and the credential read
-        # sit OUTSIDE it, and an await added here would otherwise strand the probe again --
-        # the fourth member of this family.
+        # that sleep is the EXPECTED case, not a rare one.
+        #
+        # There is ONE guard over the whole permitted path -- the sleep, the credential read and
+        # the render. There used to be two adjacent ones with a boundary between them, which is
+        # how this family reached four members: each new await had to be placed against
+        # whichever guard its author happened to be reading. Anything added below this line is
+        # covered without anyone having to notice.
         # Named once. Spelled out inline three times, this predicate was doing the work of a
         # concept the function never gave a name to -- "the fetch is actually going to happen"
         # -- and each site had to be found and updated by hand when a fourth gate arrived.

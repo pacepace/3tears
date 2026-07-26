@@ -328,3 +328,55 @@ class TestRefund:
         monkeypatch.setattr(bucket, "_ensure_bucket", _explode)
 
         assert await bucket.refund("k") == -1.0, "a broken refund must report failure, not raise"
+
+    @pytest.mark.asyncio
+    async def test_a_refund_retries_a_lost_cas_race(self) -> None:
+        """Another claimer touching the key mid-refund must not lose the returned tokens.
+
+        Mocked at the client, matching `TestCasContention` above, so the test reaches no
+        private attribute to observe the retry.
+        """
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock
+
+        # A RECENT last_refill, so continuous refill contributes nothing measurable and the
+        # assertion is about the refund. Dated 2026-01-01 the bucket has months of refill behind
+        # it and sits at capacity regardless, which would have made this pass for the wrong
+        # reason -- or, as it did, fail against a correct implementation.
+        now = datetime.now(UTC).isoformat()
+        entry = (f'{{"tokens": 3.0, "last_refill": "{now}"}}'.encode(), 1)
+        bucket_mock = AsyncMock()
+        bucket_mock.get_entry = AsyncMock(side_effect=[entry, entry])
+        bucket_mock.update = AsyncMock(side_effect=[None, 3])  # first CAS loses, second wins
+        client = AsyncMock()
+        client.kv_bucket = AsyncMock(return_value=bucket_mock)
+
+        store = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=10.0)
+        remaining = await store.refund("k", tokens=2.0)
+
+        assert bucket_mock.update.await_count == 2, "the lost CAS race was not retried"
+        assert remaining == pytest.approx(5.0, abs=0.01), "the refund was dropped by the race"
+
+    @pytest.mark.asyncio
+    async def test_exhausting_the_cas_budget_reports_rather_than_raising(self) -> None:
+        """`claim` raises `TokenBucketConflict` here; `refund` deliberately does not.
+
+        The contracts differ because the callers do: a claim that cannot be made must stop its
+        caller, while a refund runs from a handler already unwinding -- raising there would
+        replace a self-healing throughput dip with a lost original error.
+        """
+        from unittest.mock import AsyncMock
+
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC).isoformat()
+        entry = (f'{{"tokens": 3.0, "last_refill": "{now}"}}'.encode(), 1)
+        bucket_mock = AsyncMock()
+        bucket_mock.get_entry = AsyncMock(return_value=entry)
+        bucket_mock.update = AsyncMock(return_value=None)  # every CAS attempt loses
+        client = AsyncMock()
+        client.kv_bucket = AsyncMock(return_value=bucket_mock)
+
+        store = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=10.0)
+
+        assert await store.refund("k", tokens=2.0) == -1.0, "exhaustion must report, not raise"

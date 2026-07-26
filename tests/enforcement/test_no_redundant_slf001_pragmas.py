@@ -32,8 +32,9 @@ shape of the original defect.
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
+
+from _ruff_config_discovery import exempted_files, ruff_configs, slf001_globs
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,63 +48,16 @@ _BLANKET_NOQA = re.compile(
 )
 
 
-def _is_vendored(path: Path) -> bool:
-    """Whether *path* sits under a vendored directory INSIDE the repo.
-
-    Relative to the repo root, deliberately. Testing an absolute path's parts meant a checkout
-    living under any directory named `.venv` or `.git` -- a plausible place to clone one --
-    excluded the entire tree, and both assertions below would then pass on a scan of nothing.
-    """
-    return any(part in {".venv", "node_modules", ".git", "__pycache__"} for part in path.relative_to(_REPO_ROOT).parts)
-
-
 def _ruff_configs() -> list[Path]:
-    """Every file ruff would read a per-file ignore from.
-
-    Being one form short leaves whatever it declares unscanned, and the likeliest way that
-    happens here is a package ``pyproject.toml`` growing a ``[tool.ruff]`` section, since every
-    package already ships that file. One without such a section configures nothing and is
-    skipped.
-
-    No count in this prose: the loop below is the list, and it cannot disagree with itself.
-    """
-    configs: list[Path] = []
-    for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
-        for path in _REPO_ROOT.rglob(name):
-            if _is_vendored(path):
-                continue
-            if path.name == "pyproject.toml" and "[tool.ruff" not in path.read_text(errors="replace"):
-                continue  # a pyproject with no ruff section configures nothing
-            configs.append(path)
-    return sorted(configs)
+    return ruff_configs(_REPO_ROOT)
 
 
 def _slf001_globs(config: Path) -> list[str]:
-    """The ``per-file-ignores`` keys in *config* whose code list includes ``SLF001``."""
-    data = tomllib.loads(config.read_text())
-    section = (
-        data.get("tool", {}).get("ruff", {}).get("lint", {})
-        if config.name == "pyproject.toml"
-        else data.get("lint", {})
-    )
-    per_file = section.get("per-file-ignores", {})
-    return [key for key, codes in per_file.items() if "SLF001" in codes]
+    return slf001_globs(config)
 
 
 def _exempted_files(config: Path, pattern: str) -> list[Path]:
-    """Python files matched by *pattern*, following ruff's own two-way matching.
-
-    ruff matches a pattern containing no separator against the file's BASENAME anywhere beneath
-    the config -- which is why its documented ``"__init__.py"`` example covers a whole tree --
-    and matches a pattern containing one against the relative path. `Path.glob` only does the
-    second, so a bare-name key would have matched whatever single file sat at the config's root
-    and left every other file of that name unscanned: a partial match, which the empty-match
-    assertion cannot see because it is not empty.
-    """
-    base = config.parent
-    if "/" in pattern:
-        return sorted(p for p in base.glob(pattern) if p.suffix == ".py" and not _is_vendored(p))
-    return sorted(p for p in base.rglob(pattern) if p.suffix == ".py" and not _is_vendored(p))
+    return exempted_files(config, pattern, _REPO_ROOT)
 
 
 class TestNoRedundantSlf001Pragmas:

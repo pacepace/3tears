@@ -24,10 +24,13 @@
 #
 # They still drift when a file is edited above them; the difference is that
 # the drift now fails a test instead of sitting unnoticed. Regenerate rather
-# than hand-edit:
-#   uv run ruff check --select SLF001 --isolated --line-length 120 \
-#       --output-format concise <path>
-# and rewrite that path's entries from the result.
+# than hand-edit -- one command, which carries every rationale forward by
+# (path, symbol) so only a genuinely new access needs new text:
+#   uv run python scripts/regen-underscore-exemptions.py
+# It reads EVERY ruff config, not just the root pyproject.toml. Reading only
+# the root is how five reviewed sidecar entries were deleted without anything
+# noticing: packages/scrape/sidecar/ruff.toml is a full override the root
+# cannot reach past.
 #
 # One trap in that procedure, learned the hard way: an inline `# noqa: SLF001`
 # in a file that ALSO has a per-file ignore is redundant to ruff and invisible
@@ -40,6 +43,10 @@
 # never flagged in the first place.
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
+
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
 packages/agent/identity/tests/test_lazy_init.py:47:_LAZY
@@ -365,6 +372,189 @@ packages/observe/tests/test_tracing.py:190:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
 packages/observe/tests/test_tracing.py:205:_otel_available
 
+# rationale: main and hitl are two halves of ONE sidecar container and import each other; hitl opens a target through main's own isolated-tab helper rather than reimplementing it. Module-private on purpose -- nothing outside the container may call it, and a public alias would advertise it to consumers that must not have it. Paired with the per-file ignores in packages/scrape/sidecar/ruff.toml, the config that governs these files, since the repo-root pyproject cannot reach past a nested ruff.toml.
+packages/scrape/sidecar/hitl.py:918:_create_isolated_tab
+# rationale: as above -- hitl replays a target's nav steps through main's executor rather than reimplementing them, so a step type added in main works in a HITL session for free.
+packages/scrape/sidecar/hitl.py:927:_execute_nav_steps
+
+# rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
+packages/scrape/sidecar/main.py:415:_apply_context_state
+# rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
+packages/scrape/sidecar/main.py:422:_apply_context_state
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/main.py:472:_apply_origin_storage
+
+# rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:147:_x11vnc
+# rationale: as above, for the websockify half -- the single route in, so whether it is running IS the exposure surface.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:148:_websockify
+# rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:153:_x11vnc
+# rationale: as above, for the websockify half -- the single route in, so whether it is running IS the exposure surface.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:154:_websockify
+# rationale: the argv the lifecycle builds; the flags ARE the security property (loopback bind, no view-only), so asserting on the built arguments is the only way to check them without a running server.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:251:_x11vnc_argv
+# rationale: as above -- the port and bind address it is launched with are the exposure decision.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:264:_websockify_argv
+# rationale: the module's own loopback RFB port, read so the test scales with it rather than hardcoding a number that would silently stop matching.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:266:_RFB_PORT
+# rationale: the process-spawn seam, patched so the lifecycle can be driven without launching real x11vnc and websockify binaries.
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:347:_spawn
+
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/tests/test_hitl_session.py:383:_apply_origin_storage
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/tests/test_hitl_session.py:406:_apply_origin_storage
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/tests/test_hitl_session.py:426:_apply_origin_storage
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/tests/test_hitl_session.py:444:_apply_origin_storage
+# rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
+packages/scrape/sidecar/tests/test_hitl_session.py:458:_apply_origin_storage
+# rationale: the session's state export has no public accessor and is the step under test: what a human's solve hands back is exactly what this suite asserts.
+packages/scrape/sidecar/tests/test_hitl_session.py:540:_export_state
+
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:316:_browser
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:317:_ready
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:319:_browser
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:320:_ready
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:334:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:340:_browser
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:341:_ready
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:356:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:372:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:379:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:388:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:403:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:416:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:435:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:455:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:470:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:487:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:505:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:528:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:552:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:574:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:595:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:616:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:632:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:649:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:664:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:672:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:688:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:704:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:720:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:736:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:753:_browser
+# rationale: the module's own scroll constant, read so the assertion tracks the value rather than restating it.
+packages/scrape/sidecar/tests/test_render_contract.py:765:_DEFAULT_SCROLL_PAGE_AMOUNT
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:769:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:785:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:802:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:821:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:829:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:845:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:864:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:883:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:903:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:919:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:946:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:967:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:991:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1001:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1024:_browser
+# rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
+packages/scrape/sidecar/tests/test_render_contract.py:1027:_warm_up
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:1029:_ready
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1036:_browser
+# rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
+packages/scrape/sidecar/tests/test_render_contract.py:1039:_warm_up
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:1041:_ready
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1049:_browser
+# rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
+packages/scrape/sidecar/tests/test_render_contract.py:1053:_warm_up
+# rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
+packages/scrape/sidecar/tests/test_render_contract.py:1055:_ready
+# rationale: a test-side navigation stub on the fake browser, not production state.
+packages/scrape/sidecar/tests/test_render_contract.py:1081:_simulate_navigation
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1178:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1191:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1198:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1207:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1229:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1237:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1247:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1256:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1264:_browser
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1274:_browser
+# rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
+packages/scrape/sidecar/tests/test_render_contract.py:1312:_browser_args
+# rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
+packages/scrape/sidecar/tests/test_render_contract.py:1317:_browser_args
+# rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
+packages/scrape/sidecar/tests/test_render_contract.py:1364:_browser
+
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
@@ -459,10 +649,10 @@ packages/scrape/tests/test_robots.py:1043:_capped_delay
 packages/scrape/tests/test_robots.py:1044:_capped_delay
 
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:809:_robots
+packages/scrape/tests/test_tool.py:808:_robots
+# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
+packages/scrape/tests/test_tool.py:1073:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
 packages/scrape/tests/test_tool.py:1074:_egress
-# rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1075:_egress
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:1190:_robots
+packages/scrape/tests/test_tool.py:1189:_robots
