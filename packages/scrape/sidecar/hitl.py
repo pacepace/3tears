@@ -136,17 +136,25 @@ class VncLifecycle:
         # remains down first means `start` has exactly two outcomes rather than three.
         await self.stop()
 
-        self._x11vnc = await self._spawn(
-            self._x11vnc_argv(),
-            what="x11vnc",
-        )
-        await self._await_port(_RFB_PORT, what="x11vnc")
+        # The guard is around the whole sequence, not around each await, because "exactly two
+        # outcomes" is a property of the METHOD. `_await_port` cleans up after itself, but it
+        # is not the only thing here that can fail after x11vnc is already up and listening:
+        # `_websockify_argv()` resolves a binary and raises when the image lacks it, and a
+        # cancelled start raises without going through any of it. Both would otherwise leave
+        # an x11vnc holding the RFB port behind a lifecycle that reports not-running.
+        # Checked before anything is spawned: a missing client tree is a certain failure, and
+        # finding out before there are processes to clean up is strictly better.
+        self._require_novnc()
 
-        self._websockify = await self._spawn(
-            self._websockify_argv(),
-            what="websockify",
-        )
-        await self._await_port(self._web_port, what="websockify")
+        try:
+            self._x11vnc = await self._spawn(self._x11vnc_argv(), what="x11vnc")
+            await self._await_port(_RFB_PORT, what="x11vnc")
+
+            self._websockify = await self._spawn(self._websockify_argv(), what="websockify")
+            await self._await_port(self._web_port, what="websockify")
+        except BaseException:
+            await self.stop()
+            raise
 
         log.info(
             "hitl: vnc session up on display %s, noVNC on port %d",
@@ -225,6 +233,23 @@ class VncLifecycle:
         ]
 
     @staticmethod
+    def _require_novnc() -> None:
+        """Fail if the client the returned path points at is not actually on disk.
+
+        ``_require`` guards the two binaries, but the noVNC tree is an unguarded distro
+        layout, and its failure mode is worse than a missing binary: both processes come up,
+        ``start`` returns happily, and the path it hands back 404s. To the person told to open
+        it that is indistinguishable from the black rectangle everything else here is written
+        to avoid -- and unlike a crash it produces no log line anywhere.
+        """
+        page = os.path.join(NOVNC_ROOT, NOVNC_PAGE)
+        if not os.path.isfile(page):
+            raise VncUnavailable(
+                f"the noVNC client is not at {page}; the image was built without the novnc "
+                f"package, or the distro moved its asset tree"
+            )
+
+    @staticmethod
     def _require(binary: str) -> str:
         """Resolve *binary* or fail with the reason, rather than with ``FileNotFoundError``.
 
@@ -245,7 +270,15 @@ class VncLifecycle:
             return await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                # DEVNULL, not PIPE. A pipe nobody reads is a 64 KiB ceiling on the child's
+                # life: websockify logs a line per connection and this session is built for
+                # reconnects (-forever, -shared), so a long-lived operator session would
+                # eventually fill it and block websockify inside a write -- surfacing as a
+                # page that loads and never paints, which is the exact failure this module
+                # exists to prevent. Draining it properly means a reader task per process for
+                # output nothing consumes; discarding it is the honest trade, and the
+                # diagnosis that matters (did it listen?) comes from the port wait.
+                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
             raise VncUnavailable(f"could not start {what}: {exc}") from exc

@@ -75,10 +75,25 @@ while True:
     path.chmod(0o755)
 
 
+def _write_novnc(directory: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Install a fake noVNC tree and point the module at it.
+
+    The real one is a distro path that exists only inside the container. Faking it keeps the
+    suite runnable on a developer machine without weakening the guard: the guard asserts the
+    CLIENT PAGE is on disk, and this puts a real file there.
+    """
+    root = directory / "novnc"
+    root.mkdir(exist_ok=True)
+    (root / hitl.NOVNC_PAGE).write_text("<html><!-- stand-in noVNC client --></html>")
+    monkeypatch.setattr(hitl, "NOVNC_ROOT", str(root))
+    return root
+
+
 @pytest.fixture()
 def stub_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Put working stubs for both binaries at the front of PATH, on a free RFB port."""
     monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
+    _write_novnc(tmp_path, monkeypatch)
     _write_stub(tmp_path, "x11vnc")
     _write_stub(tmp_path, "websockify")
     monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
@@ -185,6 +200,7 @@ async def test_a_process_that_never_listens_fails_loudly_and_leaves_nothing_runn
     """
     monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
     monkeypatch.setattr(hitl, "_START_TIMEOUT_SECONDS", 1.0)
+    _write_novnc(tmp_path, monkeypatch)
     _write_stub(tmp_path, "x11vnc", listens=False, exit_code=1)
     _write_stub(tmp_path, "websockify")
     monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
@@ -203,6 +219,7 @@ async def test_a_missing_binary_says_the_image_lacks_vnc(tmp_path: Path, monkeyp
     ``FileNotFoundError: x11vnc`` sends whoever reads it looking for a bug in the spawn code,
     when the actual cause is an image built without the packages.
     """
+    _write_novnc(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(tmp_path))
     vnc = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)
     with pytest.raises(VncUnavailable, match="built without VNC support"):
@@ -248,3 +265,87 @@ def test_websockify_proxies_the_loopback_rfb_port_in_the_documented_argument_ord
     assert argv[-2] == f"0.0.0.0:{_WEB_TEST_PORT}", "source must precede target"
     assert argv[-1] == f"127.0.0.1:{hitl._RFB_PORT}", "target must be the loopback RFB port"  # noqa: SLF001
     assert "--web" in argv and hitl.NOVNC_ROOT in argv, "the static client would not be served"
+
+
+async def test_a_missing_websockify_does_not_leak_the_x11vnc_already_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Exactly two outcomes" is a property of the method, not of one helper inside it.
+
+    ``_await_port`` tears down after itself, so the port-timeout path was covered. This is the
+    other ordering: x11vnc spawns and listens, and THEN resolving websockify fails because the
+    image lacks it. Without a guard around the whole sequence, that leaves an x11vnc holding
+    the RFB port behind a lifecycle reporting not-running -- self-healing only because the next
+    ``start`` happens to call ``stop`` first, which is luck rather than design.
+
+    The pre-existing missing-binary test empties PATH entirely, so x11vnc goes missing first
+    and there is nothing yet to leak. That is the one ordering of the two that cannot catch it.
+    """
+    monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
+    _write_novnc(tmp_path, monkeypatch)
+    _write_stub(tmp_path, "x11vnc")  # present and working
+    monkeypatch.setenv("PATH", str(tmp_path))  # websockify absent
+
+    vnc = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)
+    with pytest.raises(VncUnavailable, match="websockify"):
+        await vnc.start()
+
+    assert not vnc.health()
+    for _ in range(50):
+        if _free_port_is_free(_RFB_TEST_PORT):
+            break
+        await asyncio.sleep(0.1)
+    assert _free_port_is_free(_RFB_TEST_PORT), (
+        "a failed start left x11vnc holding the RFB port while reporting not-running"
+    )
+
+
+async def test_a_missing_novnc_tree_fails_before_anything_is_spawned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worst failure here is the one that reports success.
+
+    Both processes can come up perfectly against a client tree that is not there, and the path
+    handed back then 404s -- indistinguishable, to the person told to open it, from the black
+    rectangle everything else in this module is written to avoid, and with no log line to
+    explain it. Checked before any spawn, since a certain failure should not first create
+    processes to clean up.
+    """
+    monkeypatch.setattr(hitl, "_RFB_PORT", _RFB_TEST_PORT)
+    monkeypatch.setattr(hitl, "NOVNC_ROOT", str(tmp_path / "not-installed"))
+    _write_stub(tmp_path, "x11vnc")
+    _write_stub(tmp_path, "websockify")
+    monkeypatch.setenv("PATH", str(tmp_path), prepend=":")
+
+    vnc = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)
+    with pytest.raises(VncUnavailable, match="noVNC client is not at"):
+        await vnc.start()
+
+    assert not vnc.health()
+    assert _free_port_is_free(_RFB_TEST_PORT), "a doomed start spawned processes anyway"
+
+
+async def test_neither_process_gets_an_undrained_pipe(stub_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pipe nobody reads is a 64 KiB ceiling on how long the child survives.
+
+    websockify logs a line per connection and this session is explicitly built for reconnects
+    (``-forever``, ``-shared``), so a long operator session fills the buffer and blocks
+    websockify inside a write. The visible result is a page that loads and never paints, which
+    is precisely the failure this module claims to prevent -- so the claim and the plumbing
+    have to agree.
+    """
+    del stub_path
+    captured: dict[str, object] = {}
+
+    async def _fake_exec(*argv: str, **kwargs: object) -> object:
+        captured.update(kwargs)
+        raise OSError("not actually spawning")
+
+    monkeypatch.setattr(hitl.asyncio, "create_subprocess_exec", _fake_exec)
+    vnc = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)
+    with pytest.raises(VncUnavailable):
+        await vnc._spawn(["x11vnc"], what="x11vnc")  # noqa: SLF001
+
+    assert captured.get("stderr") is not asyncio.subprocess.PIPE, (
+        "stderr is a pipe nobody reads, which caps the child's life at 64 KiB of output"
+    )

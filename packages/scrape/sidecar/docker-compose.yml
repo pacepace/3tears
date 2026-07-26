@@ -8,6 +8,20 @@ services:
     shm_size: 2gb
     ports:
       - "8088:8088"
+      # Deliberately NOT publishing 6080 (websockify / noVNC).
+      #
+      # Adding `- "6080:6080"` here is a one-line change that looks helpful and is not: the
+      # HITL endpoints authenticate nobody. The sidecar holds no identity and cannot evaluate
+      # a policy, so anything that reaches 6080 gets full mouse and keyboard on a browser that
+      # may be holding a target's authenticated session. The token check is Chunk 05 and the
+      # authorization that mints it is Chunk 07, both on the MIT side.
+      #
+      # For a local look at it, publish the port on the command line where the decision is
+      # visible and temporary, rather than committing it into the compose file:
+      #   docker run -p 6080:6080 ...
+      #
+      # x11vnc itself binds loopback inside the container regardless, so websockify is the
+      # only thing that could ever be exposed.
     environment:
       SCREEN_GEOM: "1920x1080x24"
       PORT: "8088"
