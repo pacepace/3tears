@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.iam.stores import AttemptLimiter, SingleUseTicketStore, StateStore, hash_ticket
-from threetears.iam.stores.nats_kv import NatsKvAttemptLimiter, NatsKvStateStore, NatsKvTicketStore
+from threetears.iam.stores.nats_kv import (
+    NatsKvAttemptLimiter,
+    NatsKvStateStore,
+    NatsKvTicketStore,
+    state_store,
+    ticket_store,
+)
 
 _WINDOW = timedelta(minutes=15)
 
@@ -402,3 +409,66 @@ async def test_the_kv_store_and_the_memory_double_agree_on_expiry(nats: FakeNats
 
     assert await kv.redeem(kv_ticket.secret) is None
     assert await memory.redeem(memory_ticket.secret) is None
+
+
+# -- the paths a real broker reaches and a happy-path test does not ------------------------
+
+
+async def test_a_corrupt_payload_reads_as_absent_not_as_an_error(nats: FakeNatsClient) -> None:
+    """Documented behaviour, and security-relevant: a value that will not parse is unusable
+    either way, and raising would turn it into a 500 on an authentication path where the
+    correct answer is simply "this ticket is not valid"."""
+    bucket = await nats.kv_bucket(name="tickets")
+    store = NatsKvTicketStore(bucket)  # type: ignore[arg-type]
+    issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    await bucket.put(key=issued.hashed, value=b"\xff\xfe not json at all")
+    assert await store.redeem(issued.secret) is None
+
+
+async def test_a_non_object_payload_reads_as_absent_too(nats: FakeNatsClient) -> None:
+    # Valid JSON, wrong shape: a bare list is not a payload mapping.
+    bucket = await nats.kv_bucket(name="state")
+    store = NatsKvStateStore(bucket)  # type: ignore[arg-type]
+    await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
+    await bucket.put(key="s1", value=b'["not", "a", "mapping"]')
+    assert await store.get("s1") is None
+
+
+class _CollidingBucket:
+    """A bucket whose ``create`` always reports the key as already present.
+
+    # parity-with: threetears.nats.kv.KvBucketLike
+
+    Delegates everything else, so the store under test is exercised normally: only the
+    SET-NX outcome is forced, because a real 256-bit collision cannot be arranged.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def create(self, *, key: str, value: bytes) -> int | None:
+        return None
+
+
+async def test_a_hash_collision_refuses_to_overwrite_a_live_ticket(nats: FakeNatsClient) -> None:
+    """`create`, not `put`: at 256 bits a collision is vanishingly unlikely, and the SET-NX
+    form turns "impossible" into "detected" for free. Overwriting would silently destroy a
+    live ticket -- for a password reset, someone else's."""
+    bucket = _CollidingBucket(await nats.kv_bucket(name="tickets"))
+    store = NatsKvTicketStore(bucket)  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+
+
+async def test_the_factories_open_a_bucket_and_wrap_it(nats: FakeNatsClient) -> None:
+    # The factories resolve the bucket per call rather than holding one, so a broker
+    # reconnect does not leave a stale handle behind.
+    tickets = await ticket_store(nats, name="tickets", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+    states = await state_store(nats, name="state", ttl=timedelta(hours=1))  # type: ignore[arg-type]
+    issued = await tickets.issue({"user": "u1"}, ttl=timedelta(minutes=5))
+    assert await tickets.redeem(issued.secret) == {"user": "u1"}
+    await states.put("k", {"v": 1}, ttl=timedelta(minutes=5))
+    assert await states.take("k") == {"v": 1}
