@@ -375,11 +375,11 @@ packages/scrape/sidecar/hitl.py:942:_create_isolated_tab
 packages/scrape/sidecar/hitl.py:951:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:429:_apply_context_state
+packages/scrape/sidecar/main.py:438:_apply_context_state
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:436:_apply_context_state
+packages/scrape/sidecar/main.py:445:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/main.py:486:_apply_origin_storage
+packages/scrape/sidecar/main.py:495:_apply_origin_storage
 
 # rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
 packages/scrape/sidecar/tests/test_hitl_lifecycle.py:147:_x11vnc
