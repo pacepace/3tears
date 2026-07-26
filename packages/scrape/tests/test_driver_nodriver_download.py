@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import RenderedPage
 from threetears.scrape.drivers.document import DocumentDriverError, ParsedDocumentHtml
@@ -304,12 +305,10 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
             await driver.render("https://workforcewv.org/notice.pdf", session_state={"cookies": [{"name": "s"}]})
 
-        # Exact logger name, not a suffix: a suffix match would accept a wrapping driver's
-        # own warning as this one's, which is the case the filter exists for.
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
         messages = [
-            r.getMessage()
-            for r in caplog.records
-            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.nodriver_download"
+            r.getMessage() for r in driver_warnings(caplog, "nodriver_download") if "cannot apply it" in r.getMessage()
         ]
         assert messages, (
             f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
@@ -322,4 +321,4 @@ class TestNodriverDownloadAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
             await driver.render("https://workforcewv.org/notice.pdf")
 
-        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert not [r for r in driver_warnings(caplog, "nodriver_download") if "cannot apply it" in r.getMessage()]

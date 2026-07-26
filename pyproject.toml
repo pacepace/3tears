@@ -149,6 +149,13 @@ select = ["SLF"]
 # internal lazy-resolution table; a public accessor would add API
 # surface only these consistency tests need. paired entries live in
 # tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/identity/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/intention/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
+
 # scrape suites assert on the private state that IS the behaviour under test, one reason per
 # file so the list and the reasons cannot drift apart:
 #   test_robots.py               RobotsGate's per-origin cache and fetch clocks -- bounded
@@ -188,12 +195,6 @@ select = ["SLF"]
 "packages/scrape/tests/test_driver_api.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_listing_detail.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_contract.py" = ["SLF001"]
-"packages/core/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/identity/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/intention/tests/test_lazy_init.py" = ["SLF001"]
-"packages/agent/knowledge/tests/test_lazy_init.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
 # (callbacks, validation); calling delegate.arun/run would double-fire

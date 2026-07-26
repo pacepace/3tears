@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 from threetears.agent.tools.document import DocumentResult, DocumentSection, OcrConfig
 
 from threetears.scrape.driver import RenderedPage
@@ -605,15 +606,9 @@ class TestDocumentDriverAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
             await driver.render("https://example.gov/warn.txt", session_state={"cookies": [{"name": "s"}]})
 
-        # Exact logger name, not a suffix. `endswith("document")` also matches
-        # `multi_document` -- the wrapping driver that forwards a solve to this one per
-        # document, which is precisely the case this filter exists for, so the loose form was
-        # wrong exactly where it mattered.
-        mine = [
-            r
-            for r in caplog.records
-            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.document"
-        ]
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
+        mine = [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
@@ -632,29 +627,28 @@ class TestDocumentDriverAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
             await driver.render("https://example.gov/warn.txt")
 
-        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert not [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
 
 
-async def test_a_wrapping_drivers_warning_is_not_mistaken_for_this_ones(caplog, monkeypatch):
-    """The case the logger filter exists for, and the one it was previously wrong about.
+async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog) -> None:
+    """Drives the shared filter, so loosening it fails HERE rather than silently everywhere.
 
-    `MultiDocumentDriver`'s logger is `...drivers.multi_document`, which `endswith("document")`
-    matches -- so the loose filter would have accepted the WRAPPER's warning as proof that the
-    inner document driver emitted one. That is the exact substitution the filter was written to
-    prevent, and it went unnoticed because no wrapper is instantiated in this suite.
+    `MultiDocumentDriver` logs under `...drivers.multi_document`, which `endswith("document")`
+    matches -- so a suffix filter would accept the WRAPPER's record as proof that the inner
+    document driver emitted one. An earlier version of this test asserted
+    `"...multi_document".endswith("document")`, which is a property of `str`: it passed whether
+    the production filter was exact or loose, and therefore guarded nothing.
     """
     import logging
 
-    from threetears.scrape.drivers.multi_document import MultiDocumentDriver
-
-    assert MultiDocumentDriver  # the wrapper whose logger name is the hazard
-    wrapper_log = logging.getLogger("threetears.scrape.drivers.multi_document")
-
+    logging.getLogger("threetears.scrape.drivers.multi_document").propagate = True
     with caplog.at_level("WARNING", logger="threetears.scrape.drivers.multi_document"):
-        wrapper_log.warning("multi_document driver: session_state cannot apply it (impostor)")
+        logging.getLogger("threetears.scrape.drivers.multi_document").warning(
+            "multi_document driver: cannot apply it (the wrapper's own record)"
+        )
 
-    exact = [r for r in caplog.records if r.name == "threetears.scrape.drivers.document"]
-    loose = [r for r in caplog.records if r.name.endswith("document")]
-
-    assert not exact, "the wrapper's record was counted as the document driver's own"
-    assert loose, "the loose filter would have accepted it, which is why exact matching is used"
+    assert driver_warnings(caplog, "document") == [], (
+        "the wrapper's record was attributed to the inner document driver, so a suffix filter "
+        "would let the wrapper's warning stand in for one this driver never emitted"
+    )
+    assert driver_warnings(caplog, "multi_document"), "the record was emitted and should be findable under its own name"

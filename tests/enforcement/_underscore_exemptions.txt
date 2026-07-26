@@ -195,11 +195,11 @@ packages/scrape/sidecar/main.py:422:_apply_context_state
 packages/scrape/sidecar/main.py:472:_apply_origin_storage
 
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
-packages/scrape/tests/test_driver_api.py:324:_pool
+packages/scrape/tests/test_driver_api.py:325:_pool
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_driver_api.py:326:_egress
+packages/scrape/tests/test_driver_api.py:327:_egress
 # rationale: the pinned httpx client has no accessor; the test asserts an injected client is reused rather than replaced
-packages/scrape/tests/test_driver_api.py:343:_client
+packages/scrape/tests/test_driver_api.py:344:_client
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
 packages/scrape/tests/test_driver_contract.py:318:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
@@ -229,7 +229,7 @@ packages/scrape/tests/test_driver_contract.py:437:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
 packages/scrape/tests/test_driver_contract.py:438:_warn_dropped_session_state
 # rationale: the pacing delay has no accessor and is itself the behaviour under test
-packages/scrape/tests/test_driver_listing_detail.py:409:_pace_delay_seconds
+packages/scrape/tests/test_driver_listing_detail.py:410:_pace_delay_seconds
 # rationale: module-private factory for the default robots fetcher; which exit that default binds is the whole subject and is unobservable from outside
 packages/scrape/tests/test_robots.py:471:_default_fetch_via
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced

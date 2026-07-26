@@ -22,6 +22,7 @@ import json
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError, _resolve_path
@@ -363,15 +364,9 @@ class TestApiDriverAnnouncesADroppedSolve:
                 session_state={"cookies": [{"name": "s", "value": "solved"}]},
             )
 
-        # Exact logger name, not a suffix. `endswith("document")` also matches
-        # `multi_document` -- the wrapping driver that forwards a solve to this one per
-        # document, which is precisely the case this filter exists for, so the loose form was
-        # wrong exactly where it mattered.
-        mine = [
-            r
-            for r in caplog.records
-            if "cannot apply it" in r.getMessage() and r.name == "threetears.scrape.drivers.api"
-        ]
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
+        mine = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
     async def test_an_ordinary_render_stays_quiet(self, caplog):
@@ -382,4 +377,4 @@ class TestApiDriverAnnouncesADroppedSolve:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
             await driver.render("https://example.gov/api/search", results_path="Results", fragment_field="Html")
 
-        assert not [r for r in caplog.records if "cannot apply it" in r.getMessage()]
+        assert not [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]

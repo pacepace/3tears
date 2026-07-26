@@ -18,9 +18,22 @@ given.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+# Expose this suite's shared test infrastructure, matching how the workspace suite exposes its
+# own (`packages/agent/workspace/tests/conftest.py`). Import sites read::
+#
+#     from _driver_log_helpers import driver_warnings
+#
+# A sibling module rather than `from conftest import ...`: a root-level `conftest.py` exists and
+# shadows this one, so that import resolves to the wrong file entirely.
+_SCRAPE_TESTS_ROOT = Path(__file__).resolve().parent
+if str(_SCRAPE_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRAPE_TESTS_ROOT))
 
 
 @pytest.fixture(autouse=True)
