@@ -1365,9 +1365,14 @@ class TestEgressReporting:
             # A name with no proxy to take it. `RenderRequest.egress_name` documents this to
             # consumers as reporting the CONTAINER's exit rather than the name sent, because
             # nothing routed the render anywhere -- so a consumer that assumed an echo would
-            # record a route never used. The in-repo driver always sends the pair, which is
-            # why this branch had no producer and no test; a stated contract with no test is
-            # how the previous version of that same comment drifted into being wrong.
+            # record a route never used.
+            #
+            # No producer among the SHIPPED drivers, which is why it had no test. It is not
+            # unreachable: `EgressDriver.browser_proxy_arg()` is documented as returning
+            # `None` to express no opinion about the browser's proxy, and the driver forwards
+            # that verbatim alongside the name -- so a third-party exit written to the
+            # protocol posts exactly this body. A stated contract with no test is how the
+            # comment this row pins drifted into being wrong once already.
             ({"egress_name": "tor"}, "container-default"),
             ({}, "container-default"),
         ],
