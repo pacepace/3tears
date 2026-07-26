@@ -1187,7 +1187,7 @@ class TestTheFleetAndTheSiteBothBind:
         # delay before being told it will not fetch: a caller blocked for up to the delay
         # ceiling to be handed a backoff result. The previous version never called
         # `note_fetched`, so the wait was zero either way and that guard was deletable green.
-        tool._robots.note_fetched(url)  # noqa: SLF001
+        tool._robots.note_fetched(url)
         slept: list[float] = []
 
         async def _record(seconds: float) -> None:

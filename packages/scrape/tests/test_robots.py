@@ -990,11 +990,11 @@ async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
     """
     no_delay = RobotsGate(fetch=_fetcher("User-agent: *\nDisallow: /nope\n"), delay_pacer=_FakeDelayPacer())
     assert await no_delay.claim_fleet_turn("https://example.gov/a") == 0.0
-    assert no_delay._delay_pacer.keys == []  # noqa: SLF001
+    assert no_delay._delay_pacer.keys == []
 
     unreachable = RobotsGate(fetch=_fetcher("", status=500), delay_pacer=_FakeDelayPacer())
     assert await unreachable.claim_fleet_turn("https://example.gov/a") == 0.0
-    assert unreachable._delay_pacer.keys == []  # noqa: SLF001
+    assert unreachable._delay_pacer.keys == []
 
     agreed = RobotsGate(
         RobotsPolicy(overrides=frozenset({"https://example.gov"})),
@@ -1002,7 +1002,7 @@ async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
         delay_pacer=_FakeDelayPacer(),
     )
     assert await agreed.claim_fleet_turn("https://example.gov/a") == 0.0
-    assert agreed._delay_pacer.keys == [], "an origin we have an agreement with was still throttled"  # noqa: SLF001
+    assert agreed._delay_pacer.keys == [], "an origin we have an agreement with was still throttled"
 
 
 async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
@@ -1037,14 +1037,11 @@ async def test_a_malformed_delay_is_reported_once_per_poll_not_twice(caplog) -> 
         def crawl_delay(self, _agent: str) -> str:
             return "soon"
 
-        def can_fetch(self, _agent: str, _url: str) -> bool:
-            return True
-
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
 
     with caplog.at_level("INFO", logger="threetears.scrape.robots"):
-        first = gate._capped_delay("https://example.gov", _RawDelayParser())  # noqa: SLF001
-        second = gate._capped_delay("https://example.gov", _RawDelayParser(), announce=False)  # noqa: SLF001
+        first = gate._capped_delay("https://example.gov", _RawDelayParser())
+        second = gate._capped_delay("https://example.gov", _RawDelayParser(), announce=False)
 
     assert first is None and second is None, "an unparseable delay is ignored, not honoured"
     said = [r for r in caplog.records if "unparseable crawl delay" in r.getMessage()]
