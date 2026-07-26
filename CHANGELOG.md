@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**New: `threetears.iam.stores.postgres`.** `PostgresTicketStore` and `PostgresStateStore`,
+for the case the package's "none of this belongs in a table" argument does not cover: a
+service whose broker is OPTIONAL, where a reset ticket or an OAuth handoff must survive the
+broker being unreachable. Expiry is enforced INSIDE the claim (`AND expires_at > now`), so an
+expired row is unredeemable whether or not anything has swept it -- `purge_expired` bounds
+table size and nothing else. The claim itself is one `DELETE ... RETURNING`, so two concurrent
+redemptions produce exactly one winner.
+
+The package still owns no schema: the caller creates the table in its own migration and names
+it, with the assumed column set published as `TICKET_TABLE_DDL` / `STATE_TABLE_DDL` so it is
+stated once rather than reconstructed per consumer. Table names are validated before
+interpolation, because SQL has no placeholder for an identifier.
+
+**`atomic_write_sync`** exposes the tmp + fsync + rename + dir-fsync sequence for callers with
+no event loop to await on.
+
 **One windowed counter, not two.** `threetears.iam.stores.nats_kv.NatsKvAttemptLimiter`
 is now an adapter over `threetears.core.coordination.WindowedCounter` rather than a second
 implementation beside it. The two had diverged on the properties that matter: the iam one
