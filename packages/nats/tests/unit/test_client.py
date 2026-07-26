@@ -22,7 +22,9 @@ from threetears.nats import (
     IncomingMessage,
     NatsClient,
     PublishError,
+    NoRespondersError,
     RequestError,
+    RequestTimeoutError,
     Subject,
     Subjects,
     SubscribeError,
@@ -1852,3 +1854,107 @@ async def test_is_healthy_trips_on_persistent_auth_violation(
     # a successful reconnect clears the wedged-auth signal.
     await reconnected_cb()
     assert client.is_healthy
+
+
+# "nobody is subscribed" and "somebody is, but did not answer" are different
+# operational facts: the first points at a service that never started or is on
+# another subject/namespace, the second at one that is present and wedged. Both
+# used to arrive as a bare RequestError carrying only a message string, so a
+# caller wanting to tell them apart had to match on that text.
+#
+# The caller that forced this: an agent registering with the agent router at boot.
+# On a cold rollout the router may not have subscribed yet -- an ordinary race
+# worth waiting out -- whereas a transport failure is not. Both subclasses still
+# ARE RequestError, so every existing `except RequestError` is unaffected.
+
+
+@pytest.mark.asyncio
+async def test_no_responders_raises_the_no_responders_subclass() -> None:
+    from nats.errors import NoRespondersError as NatsNoResponders
+
+    class _NoRespondersClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsNoResponders()
+
+    client = NatsClient(raw=_NoRespondersClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(NoRespondersError) as exc_info:
+        await client.request_raw(
+            subject=Subjects.tools_call(),
+            payload=b"x",
+            timeout=timedelta(seconds=1),
+        )
+    assert "no responders" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_timeout_raises_the_timeout_subclass() -> None:
+    from nats.errors import TimeoutError as NatsTimeout
+
+    class _TimeoutClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsTimeout()
+
+    client = NatsClient(raw=_TimeoutClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(RequestTimeoutError):
+        await client.request_raw(
+            subject=Subjects.tools_call(),
+            payload=b"x",
+            timeout=timedelta(seconds=1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_two_conditions_are_distinguishable_from_each_other() -> None:
+    """The whole point: catching one must not catch the other."""
+    from nats.errors import NoRespondersError as NatsNoResponders
+
+    class _NoRespondersClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsNoResponders()
+
+    client = NatsClient(raw=_NoRespondersClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(NoRespondersError):
+        await client.request_raw(subject=Subjects.tools_call(), payload=b"x", timeout=timedelta(seconds=1))
+    # and it is NOT a timeout
+    try:
+        await client.request_raw(subject=Subjects.tools_call(), payload=b"x", timeout=timedelta(seconds=1))
+    except RequestTimeoutError:  # pragma: no cover - would be the regression
+        pytest.fail("no-responders must not surface as RequestTimeoutError")
+    except NoRespondersError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_both_subclasses_remain_catchable_as_request_error() -> None:
+    """Existing `except RequestError` call sites must be unaffected -- this is a
+    refinement of the hierarchy, not a breaking rename."""
+    from nats.errors import NoRespondersError as NatsNoResponders
+
+    class _NoRespondersClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsNoResponders()
+
+    client = NatsClient(raw=_NoRespondersClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(RequestError):
+        await client.request_raw(subject=Subjects.tools_call(), payload=b"x", timeout=timedelta(seconds=1))
+    assert issubclass(NoRespondersError, RequestError)
+    assert issubclass(RequestTimeoutError, RequestError)
+
+
+@pytest.mark.asyncio
+async def test_the_typed_request_path_also_raises_the_subclasses() -> None:
+    """`request(subject=, message=, response_type=)` goes through request_raw, so
+    it must carry the same distinction -- that is the path agent registration uses."""
+    from nats.errors import NoRespondersError as NatsNoResponders
+
+    class _NoRespondersClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsNoResponders()
+
+    client = NatsClient(raw=_NoRespondersClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(NoRespondersError):
+        await client.request(
+            subject=Subjects.tools_call(),
+            message=_Hello(greeting="x", count=1),
+            response_type=_Reply,
+        )
