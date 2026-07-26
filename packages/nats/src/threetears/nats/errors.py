@@ -13,10 +13,12 @@ __all__ = [
     "KvError",
     "NamespaceNotConfiguredError",
     "NatsClientError",
+    "NoRespondersError",
     "OpLogError",
     "OpLogSequenceConflict",
     "PublishError",
     "RequestError",
+    "RequestTimeoutError",
     "StreamSubjectsOverlapError",
     "SubscribeError",
 ]
@@ -80,8 +82,38 @@ class RequestError(NatsClientError):
     """raised when a request/reply round-trip fails.
 
     covers timeout, no-responders, transport failure, and response
-    decode failure. distinct subclasses may be added later if callers
-    need to disambiguate.
+    decode failure. the two failures a caller most often needs to tell
+    apart -- nobody is subscribed, versus somebody is but did not answer
+    in time -- have their own subclasses below. every one of them still
+    IS a ``RequestError``, so an existing ``except RequestError`` keeps
+    catching all of them unchanged.
+    """
+
+
+class NoRespondersError(RequestError):
+    """raised when a request reaches NATS but nothing is subscribed to the subject.
+
+    distinct from :class:`RequestTimeoutError`, and the distinction is
+    operationally load-bearing: "nobody is listening" points at a service
+    that never started, was never deployed, or is subscribed on a different
+    subject/namespace, while a timeout points at one that IS there and is
+    slow or wedged. those send an operator to different places.
+
+    the caller that motivated splitting these apart is an agent registering
+    with the agent router at boot: on a cold rollout the router may not have
+    subscribed yet, which is an ordinary startup race worth waiting out,
+    where a transport failure is not. collapsing both into ``RequestError``
+    left "wait and retry" indistinguishable from "give up" except by
+    matching on message text.
+    """
+
+
+class RequestTimeoutError(RequestError):
+    """raised when a request is delivered but no reply arrives within the timeout.
+
+    the responder exists (contrast :class:`NoRespondersError`) and either did
+    not answer, answered too slowly, or answered to a reply subject that never
+    got back. retrying is often right; retrying forever is not.
     """
 
 

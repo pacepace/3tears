@@ -37,10 +37,12 @@ from threetears.nats.errors import (
     KvError,
     NamespaceNotConfiguredError,
     NatsClientError,
+    NoRespondersError,
     OpLogError,
     OpLogSequenceConflict,
     PublishError,
     RequestError,
+    RequestTimeoutError,
     SubscribeError,
 )
 from threetears.nats.kv import NatsKvBucket
@@ -159,6 +161,8 @@ __all__ = [
     "OpLogError",
     "OpLogSequenceConflict",
     "PublishError",
+    "NoRespondersError",
     "RequestError",
+    "RequestTimeoutError",
     "SubscribeError",
 ]
