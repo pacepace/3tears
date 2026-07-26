@@ -6,6 +6,55 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**`rotate_refresh_token` gained the hooks its real caller needed.** It had zero callers
+while identity-core ran a 358-line reimplementation of the same check order beside it, and
+that copy had already drifted: an ordinary session could refresh forever, because only the
+impersonation branch enforced an absolute cap. Four things kept the shared function from
+being adoptable and each is now a documented step rather than a reason to fork it. The
+holder key is a resolver rather than a value, so proof-of-possession validation happens at
+step 5 instead of before step 1 and a refresh the cheap checks were always going to deny
+never pays a round trip for it. `bind_holder_key_on_first_use` serves a login flow that
+collects no proof at all. `pre_redemption_checks` and `post_redemption_checks` split at the
+redemption boundary, because that is exactly where the guarantee changes: a pre-redemption
+denial must cost the legitimate holder nothing, a post-redemption one must force full
+re-authentication rather than permit a retry. And `lifetime_caps` accepts a resolver, since
+per-tenant policy is keyed on a claim that cannot be read until the token is verified.
+
+Breaking, for a function with no callers: `holder_key_thumbprint` is now `holder_key`, and
+`absolute_session_lifetime` / `inactivity_timeout` collapse into one `SessionLifetimeCaps`
+-- a smaller surface than the pair it replaces, and the only shape that can express the
+per-tenant case.
+
+**`ttl` now means something in the KV stores.** `NatsKvTicketStore` and `NatsKvStateStore`
+took a per-call `ttl`, recorded it into the stored payload, and read it back nowhere, so
+every entry stayed redeemable for the whole bucket TTL -- a ten-minute reset ticket in an
+hour-long bucket lived an hour. `MemoryTicketStore` honoured the same argument faithfully,
+which meant the shipped double enforced an expiry production did not. Each entry now
+carries its own absolute expiry, checked on every read, wall-clock because these entries are
+read by a different process from the one that wrote them. The check runs BEFORE the delete,
+so an expired ticket is refused without being consumed, matching the Postgres store.
+
+**New: `resolve_request_client_ip`.** The ASGI adapter for `resolve_client_ip`, typed
+against a Protocol naming the two attributes it reads rather than importing any web
+framework, so this package still depends on no server. Both consumers had written or were
+about to write the same six lines. The Protocol names `getlist` rather than `get`, which is
+the detail worth having in one place: `get` returns only the first occurrence of a repeated
+header, and for `X-Forwarded-For` the first occurrence is the part the client controls.
+
+**New enforcement domain: `single_return`.** A function's business logic returns at most
+once, with leading guard clauses exempt and unlimited. Lifted out of a consumer repo that
+carried two 124-line verbatim copies of the analyzer differing only in a path constant; the
+nested-scope bug, where a nested `def`'s returns were charged to its parent, had to be found
+once and fixed twice.
+
+**One digest, two names.** `hash_ticket` and `hash_api_key_secret` had the same body written
+out twice. The names stay separate because they are separate contracts, but a change to how
+this package hashes can no longer land in one and miss the other.
+
+**`py.typed` for `3tears-enforcement`, `3tears-models` and `3tears-channels`** -- the last
+three of twenty-nine packages shipping without the marker, so every downstream consumer had
+to carry a mypy override naming them untyped.
+
 **New: `threetears.iam.stores.postgres`.** `PostgresTicketStore` and `PostgresStateStore`,
 for the case the package's "none of this belongs in a table" argument does not cover: a
 service whose broker is OPTIONAL, where a reset ticket or an OAuth handoff must survive the
