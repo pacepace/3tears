@@ -26,6 +26,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, NamedTuple
 
+import hitl
 import nodriver as uc
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -663,6 +664,10 @@ async def _lifespan(_app: FastAPI):
     )
     await _warm_up()
     yield
+    # Before the browser, because the VNC processes are children of this one and a
+    # container stopping should not leave an x11vnc holding the RFB port for whatever
+    # restarts into the same namespace.
+    await _vnc.stop()
     if _browser is not None:
         _browser.stop()
 
@@ -746,3 +751,61 @@ async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
 async def healthz() -> dict[str, str]:
     """Liveness/readiness probe for docker-compose healthcheck."""
     return {"status": "ok" if _ready else "starting"}
+
+
+# --------------------------------------------------------------------------
+# HITL: the VNC path only.
+#
+# Three endpoints, deliberately not the session API. A session carries an id, a
+# token, isolated tab contexts, a slot budget and a TTL, and none of that exists
+# yet -- shipping an endpoint named /v1/hitl/session that had none of it would
+# claim a contract this container cannot honour. What these do is the one thing
+# this chunk is for: turn the display on, ask whether it is on, turn it off. The
+# session API replaces them rather than wrapping them.
+#
+# Unauthenticated, like every other endpoint here: the sidecar holds no identity
+# and authenticates nobody. It is reachable only from inside the deployment, and
+# the token check that fronts it belongs on the MIT side, which is the only side
+# that can evaluate a policy.
+# --------------------------------------------------------------------------
+
+_vnc = hitl.VncLifecycle()
+
+
+# response_model=None: the union of a dict and a JSONResponse is not a Pydantic
+# field type, and FastAPI infers a response model from the annotation unless told not
+# to -- the same reason the render/download endpoints name theirs explicitly.
+@app.post("/v1/hitl/vnc", response_model=None)
+async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
+    """Start the VNC path, or return the one already running.
+
+    Idempotent: a caller that retries gets the running session rather than a second
+    ``x11vnc`` losing a race for the RFB port.
+    """
+    try:
+        session = await _vnc.start()
+    except hitl.VncUnavailable as exc:
+        log.warning("hitl: could not start the vnc path: %s", exc)
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+    return {
+        "display": session.display,
+        "web_port": session.web_port,
+        "path": session.path,
+    }
+
+
+@app.get("/v1/hitl/vnc")
+async def hitl_vnc_status() -> dict[str, Any]:
+    """Whether both processes are up right now.
+
+    Both, because websockify alive with x11vnc dead is a page that loads and never paints --
+    which looks to a human exactly like a broken display.
+    """
+    return {"running": _vnc.health(), "display": _vnc.display}
+
+
+@app.delete("/v1/hitl/vnc")
+async def hitl_vnc_stop() -> dict[str, Any]:
+    """Stop both processes, leaving nothing listening."""
+    await _vnc.stop()
+    return {"running": _vnc.health()}
