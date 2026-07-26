@@ -60,6 +60,9 @@ class PinnedModule:
     :ivar allowed_algorithms: the algorithm names this module may name and decode with.
         Usually one; two only where a module deliberately supports both an asymmetric and a
         symmetric scheme.
+    :ivar require_audience: require an ``audience=`` argument on every decode. PyJWT skips
+        audience validation entirely when none is supplied, so omitting it is equivalent to
+        ``verify_aud=False``.
     :ivar pinned_constants: module-level constant name -> the literal it must hold, e.g.
         ``{"_EDDSA": "EdDSA"}``. Read from the AST rather than imported, so the check cannot
         be satisfied by anything computed at runtime. Empty means the module pins inline
@@ -69,6 +72,10 @@ class PinnedModule:
     path: Path
     allowed_algorithms: frozenset[str]
     pinned_constants: dict[str, str] = field(default_factory=dict)
+    #: whether every decode in this module must pass ``audience=``. True for anything
+    #: verifying a token minted for a named consumer; False for proof-of-possession formats
+    #: (DPoP, RFC 9449) which carry no ``aud`` at all.
+    require_audience: bool = False
 
 
 @dataclass(frozen=True)

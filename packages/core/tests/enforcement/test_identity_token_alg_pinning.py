@@ -23,14 +23,39 @@ from threetears.enforcement.jwt_alg_pinning import (
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_identity_token_module_pins_eddsa() -> None:
+def test_every_jws_verifier_in_this_package_pins_eddsa() -> None:
+    """All three, not just the identity token.
+
+    `pop.py` and `proxy_assertion.py` verify JWS on the request path and were outside this
+    gate. `_ALG` is pinned by name in each because it is what `jwt.encode` uses -- the walker
+    checks decode calls, so without the constant pin the SIGNING algorithm could be repointed
+    without tripping anything.
+    """
+    security = _PACKAGE_ROOT / "src" / "threetears" / "core" / "security"
     run_jwt_alg_pinning_enforcement(
         JwtAlgPinningConfig(
             repo_root=_PACKAGE_ROOT,
             modules=(
                 PinnedModule(
-                    path=_PACKAGE_ROOT / "src" / "threetears" / "core" / "security" / "identity_token.py",
+                    # A pod-identity token carries no `aud`: `IdentityClaims` has no such
+                    # field, and the binding is issuer + kid + the pod/user split.
+                    path=security / "identity_token.py",
                     allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=False,
+                ),
+                PinnedModule(
+                    # A proof-of-possession JWS carries no `aud`; it is bound by ath/bh.
+                    path=security / "pop.py",
+                    allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=False,
+                ),
+                PinnedModule(
+                    path=security / "proxy_assertion.py",
+                    allowed_algorithms=frozenset({"EdDSA"}),
+                    pinned_constants={"_ALG": "EdDSA"},
+                    require_audience=True,
                 ),
             ),
         )

@@ -2,8 +2,15 @@
 
 published rather than kept per-repo: every consumer that touches KV was
 writing its own double of this same narrow surface, and a double that
-drifts from the wrapper is how a KV bug ships green. mirrors the wrapper
-surface consumers actually use:
+drifts from the wrapper is how a KV bug ships green.
+
+**every operation yields to the event loop before it touches state.** a
+double whose methods never await cannot interleave, so `asyncio.gather`
+runs each call to completion in turn and a read-then-write store passes
+the concurrency test a real broker would fail. that is not hypothetical:
+it is how a non-atomic redemption and a dropped revision guard both
+survived a full suite. mirrors the wrapper surface consumers actually
+use:
 
 - :meth:`FakeKvBucket.create` returns the new revision on success or
   ``None`` on CAS conflict (key already present).
@@ -21,9 +28,22 @@ is bucket-local and monotonic per bucket.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from dataclasses import dataclass
 
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
+
+
+class _yield_once:
+    """suspend the coroutine once, handing control back to the event loop.
+
+    deliberately NOT ``asyncio.sleep(0)``: several suites spy on ``asyncio.sleep`` to assert a
+    code path does not back off, and a double that slept would be counted as the code under
+    test sleeping.
+    """
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
 
 
 @dataclass
@@ -72,6 +92,7 @@ class FakeKvBucket:
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
         """
+        await _yield_once()  # so gather() genuinely interleaves
         if key in self._entries:
             return None
         self._revision += 1
@@ -86,6 +107,7 @@ class FakeKvBucket:
         :return: stored bytes or ``None``
         :rtype: bytes | None
         """
+        await _yield_once()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -99,6 +121,7 @@ class FakeKvBucket:
         :return: ``(value, revision)`` tuple or ``None``
         :rtype: tuple[bytes, int] | None
         """
+        await _yield_once()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -116,6 +139,7 @@ class FakeKvBucket:
         :return: new revision, or ``None`` on conflict / missing key
         :rtype: int | None
         """
+        await _yield_once()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None or entry.revision != revision:
             return None
@@ -130,12 +154,18 @@ class FakeKvBucket:
         :ptype key: str
         :param revision: expected current revision; ``None`` skips CAS
         :ptype revision: int | None
-        :return: ``True`` on success or absent key, ``False`` on CAS mismatch
+        :return: ``True`` on success; ``False`` on CAS mismatch, INCLUDING when the key is
+            already gone. an unguarded delete of an absent key is still ``True`` (idempotent).
         :rtype: bool
         """
+        await _yield_once()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
-            return True
+            # A revision-guarded delete of a key that is no longer there LOST the race -- it
+            # cannot have been the caller whose revision matched. Returning True here made
+            # every concurrent redemption look like a winner, which is how a non-atomic claim
+            # passed a concurrency test.
+            return revision is None
         if revision is not None and entry.revision != revision:
             return False
         del self._entries[key]
@@ -151,6 +181,7 @@ class FakeKvBucket:
         :return: new revision number
         :rtype: int
         """
+        await _yield_once()  # so gather() genuinely interleaves
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision)
         return self._revision

@@ -121,17 +121,37 @@ def _check_constants(module: PinnedModule, resolved: dict[str, str]) -> list[Vio
     return violations
 
 
+def _decode_aliases(tree: ast.Module) -> set[str]:
+    """names bound to a decode function, e.g. ``_dec = jwt.decode``.
+
+    Without this, rebinding the entry point to a local name hides every call behind it from
+    the matcher below -- and the legitimate decodes elsewhere keep the "no decode found"
+    check quiet, so the module looks fully pinned while an unpinned path runs.
+    """
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            if node.value.attr in _DECODE_NAMES:
+                aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name):
+            if node.value.id in _DECODE_NAMES:
+                aliases.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return aliases
+
+
 def _decode_calls(tree: ast.Module) -> list[ast.Call]:
-    """every decode call: ``jwt.decode(...)``, ``<alias>.decode_complete(...)``, and the bare
-    ``decode(...)`` form, so switching call style cannot dodge the checks."""
+    """every decode call: ``jwt.decode(...)``, ``<alias>.decode_complete(...)``, the bare
+    ``decode(...)`` form, AND any name bound to one of those, so neither switching call style
+    nor rebinding the function can dodge the checks."""
+    names = _DECODE_NAMES | _decode_aliases(tree)
     calls: list[ast.Call] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in _DECODE_NAMES:
+        if isinstance(func, ast.Attribute) and func.attr in names:
             calls.append(node)
-        elif isinstance(func, ast.Name) and func.id in _DECODE_NAMES:
+        elif isinstance(func, ast.Name) and func.id in names:
             calls.append(node)
     return calls
 
@@ -188,35 +208,98 @@ def _check_one_decode(module: PinnedModule, call: ast.Call, resolved: dict[str, 
         violations.extend(_check_algorithm_entries(module, call, algorithms, resolved))
 
     options = _kwarg(call, "options")
-    if isinstance(options, ast.Dict):
-        for key, value in zip(options.keys, options.values, strict=True):
-            if (
-                isinstance(key, ast.Constant)
-                and key.value in _REQUIRED_CHECKS
-                and isinstance(value, ast.Constant)
-                and value.value is False
-            ):
-                violations.append(
-                    Violation(
-                        category="jwt_alg_pinning.disabled_check",
-                        file=module.path,
-                        line=call.lineno,
-                        symbol=str(key.value),
-                        reason=f"decode must not disable {key.value}",
-                    )
+    if options is not None:
+        if not isinstance(options, ast.Dict):
+            # `options=SOME_NAME` or `options=dict(...)` puts the verification flags somewhere
+            # this walker cannot read. That is indistinguishable from disabling them.
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.opaque_options",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol="options",
+                    reason="decode options must be a literal dict, so the verification flags are auditable",
                 )
+            )
+        else:
+            violations.extend(_check_options_dict(module, call, options))
+
     for keyword in call.keywords:
-        if keyword.arg in {"verify", *_REQUIRED_CHECKS} and isinstance(keyword.value, ast.Constant):
-            if keyword.value.value is False:
-                violations.append(
-                    Violation(
-                        category="jwt_alg_pinning.disabled_check",
-                        file=module.path,
-                        line=call.lineno,
-                        symbol=str(keyword.arg),
-                        reason=f"decode must not pass {keyword.arg}=False",
-                    )
+        if keyword.arg not in {"verify", *_REQUIRED_CHECKS}:
+            continue
+        if not isinstance(keyword.value, ast.Constant):
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.disabled_check",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol=str(keyword.arg),
+                    reason=f"{keyword.arg} must be a literal, not a name whose value this walker cannot read",
                 )
+            )
+        elif keyword.value.value is False:
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.disabled_check",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol=str(keyword.arg),
+                    reason=f"decode must not pass {keyword.arg}=False",
+                )
+            )
+
+    # 4. Audience validation is skipped entirely by PyJWT when no `audience` is supplied, so
+    #    deleting the argument is equivalent to `verify_aud=False` and must be caught too.
+    if module.require_audience and _kwarg(call, "audience") is None:
+        violations.append(
+            Violation(
+                category="jwt_alg_pinning.disabled_check",
+                file=module.path,
+                line=call.lineno,
+                symbol="audience",
+                reason="decode must pass an audience; PyJWT skips aud validation entirely without one",
+            )
+        )
+    return violations
+
+
+def _check_options_dict(module: PinnedModule, call: ast.Call, options: ast.Dict) -> list[Violation]:
+    """every entry of a literal options dict, including ``**spread`` which hides its keys."""
+    violations: list[Violation] = []
+    for key, value in zip(options.keys, options.values, strict=True):
+        if key is None:
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.opaque_options",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol="**",
+                    reason="decode options must not be spread from another mapping; the flags become unreadable",
+                )
+            )
+            continue
+        if not (isinstance(key, ast.Constant) and key.value in _REQUIRED_CHECKS):
+            continue
+        if not isinstance(value, ast.Constant):
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.disabled_check",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol=str(key.value),
+                    reason=f"{key.value} must be a literal, not a name whose value this walker cannot read",
+                )
+            )
+        elif value.value is False:
+            violations.append(
+                Violation(
+                    category="jwt_alg_pinning.disabled_check",
+                    file=module.path,
+                    line=call.lineno,
+                    symbol=str(key.value),
+                    reason=f"decode must not disable {key.value}",
+                )
+            )
     return violations
 
 

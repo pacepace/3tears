@@ -207,7 +207,9 @@ class NatsKvAttemptLimiter:
             return AttemptWindow(count=state.count, limited=False)
         # Time actually remaining, not the window length: a caller surfacing `Retry-After`
         # should not tell a user to wait fifteen minutes when three are left.
-        elapsed = time.time() - state.window_start
+        # Read through the counter's own clock, not `time.time()` -- two clocks in one
+        # verdict is two answers, and the retry_after is the one a user is shown.
+        elapsed = self._counter.clock() - state.window_start
         remaining = max(self._window.total_seconds() - elapsed, 0.0)
         return AttemptWindow(count=state.count, limited=True, retry_after=timedelta(seconds=remaining))
 

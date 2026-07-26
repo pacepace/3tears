@@ -221,3 +221,76 @@ async def test_an_absent_key_reads_as_none(nats: FakeNatsClient) -> None:
     store = NatsKvStateStore(await _bucket(nats))  # type: ignore[arg-type]
     assert await store.get("never-put") is None
     assert await store.take("never-put") is None
+
+
+# --- window semantics, driven through the clock seam ------------------------------------
+
+
+class _Clock:
+    """A movable time source, so the window boundary is a thing a test can stand on."""
+
+    def __init__(self, now: float = 1_000_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _clocked_limiter(nats: FakeNatsClient, clock: _Clock, **overrides: object) -> NatsKvAttemptLimiter:
+    limiter = _limiter(nats, **overrides)
+    limiter._counter._clock = clock  # noqa: SLF001 - the seam exists for exactly this
+    return limiter
+
+
+async def test_the_window_is_anchored_at_the_first_failure_not_the_wall_clock(
+    nats: FakeNatsClient,
+) -> None:
+    """The property an epoch-aligned window cannot provide, asserted where it differs.
+
+    With a window keyed by ``floor(now / window)``, the counter resets at absolute instants
+    regardless of when the failures happened -- so failing 3 times just before a boundary and
+    3 times just after yields six attempts with no lockout, and every key in the system rolls
+    at the same moment. Anchored at the first failure, the second burst is still inside the
+    first window and trips.
+
+    This test FAILS against an epoch-aligned implementation, which is the whole point: the
+    previous version of it passed against both.
+    """
+    clock = _Clock(now=899.0)  # 1s before a 900s epoch boundary
+    limiter = _clocked_limiter(nats, clock)
+    for _ in range(3):
+        await limiter.record_failure("someone")
+    assert (await limiter.check("someone")).limited is True
+
+    clock.advance(2.0)  # across the boundary an epoch-aligned window would reset on
+    assert (await limiter.check("someone")).limited is True
+
+
+async def test_the_window_does_reset_once_it_has_genuinely_elapsed(nats: FakeNatsClient) -> None:
+    """The other half: anchored does not mean permanent."""
+    clock = _Clock()
+    limiter = _clocked_limiter(nats, clock)
+    for _ in range(3):
+        await limiter.record_failure("someone")
+    assert (await limiter.check("someone")).limited is True
+
+    clock.advance(_WINDOW.total_seconds() + 1)
+    assert (await limiter.check("someone")).limited is False
+
+
+async def test_retry_after_shrinks_as_the_window_elapses(nats: FakeNatsClient) -> None:
+    """A stub that returned the whole window would satisfy "not near zero" but not this."""
+    clock = _Clock()
+    limiter = _clocked_limiter(nats, clock)
+    for _ in range(3):
+        await limiter.record_failure("someone")
+    first = (await limiter.check("someone")).retry_after
+    clock.advance(300)
+    second = (await limiter.check("someone")).retry_after
+
+    assert first is not None and second is not None
+    assert second < first
+    assert abs((first - second).total_seconds() - 300) < 1

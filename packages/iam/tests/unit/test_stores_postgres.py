@@ -51,6 +51,11 @@ class _FakePool:
                     f"payload must reach asyncpg as a dict, not {type(payload).__name__} -- "
                     "the pool's JSONB codec is the only json.dumps step"
                 )
+            # Model the PRIMARY KEY. Without this a plain INSERT and an upsert are
+            # indistinguishable here, and dropping `ON CONFLICT` from the state store passes
+            # a test that real Postgres would fail with a UniqueViolation on every re-put.
+            if key in self.rows and "ON CONFLICT" not in collapsed:
+                raise AssertionError(f"duplicate key {key!r} violates the primary key")
             self.rows[key] = {"payload": payload, "expires_at": expires}
         elif collapsed.startswith("DELETE") and "expires_at <= $1" in collapsed:
             cutoff = args[0]
@@ -207,3 +212,28 @@ async def test_a_payload_from_a_pool_without_the_codec_still_decodes(pool: _Fake
     await store.put("state-1", {"nonce": "n"}, ttl=_TTL)
     pool.rows["state-1"]["payload"] = json.dumps({"nonce": "n"})
     assert await store.get("state-1") == {"nonce": "n"}
+
+
+async def test_state_put_upserts_rather_than_violating_the_primary_key(pool: _FakePool) -> None:
+    """`put` must be an upsert. The key is the caller's `state` value, and a re-put of a live
+    key is ordinary (a retried authorize), so a plain INSERT would raise UniqueViolation on a
+    real database. Asserted against a double that models the constraint."""
+    store = PostgresStateStore(pool, table="state")
+    await store.put("state-1", {"nonce": "first"}, ttl=_TTL)
+    await store.put("state-1", {"nonce": "second"}, ttl=_TTL)
+    assert await store.get("state-1") == {"nonce": "second"}
+
+
+async def test_issuing_a_ticket_twice_under_one_hash_is_refused(pool: _FakePool) -> None:
+    """The ticket store uses a plain INSERT deliberately: a hash collision must surface, not
+    silently overwrite a live ticket."""
+    store = PostgresTicketStore(pool, table="tickets")
+    issued = await store.issue({"n": 1}, ttl=_TTL)
+    pool.rows[issued.hashed] = {"payload": {"n": 1}, "expires_at": datetime.now(UTC) + _TTL}
+    with pytest.raises(AssertionError, match="primary key"):
+        await pool.execute(
+            "INSERT INTO tickets (hashed, payload, expires_at) VALUES ($1, $2, $3)",
+            issued.hashed,
+            {"n": 2},
+            datetime.now(UTC) + _TTL,
+        )

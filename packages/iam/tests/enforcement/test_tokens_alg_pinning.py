@@ -19,7 +19,18 @@ from threetears.enforcement.jwt_alg_pinning import (
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_tokens_module_pins_its_algorithms() -> None:
+def test_every_jws_verifier_in_this_package_pins_its_algorithms() -> None:
+    """Both modules, not just the session tokens.
+
+    `dpop.py` was outside this gate while the package README claimed "a DPoP proof does not
+    get to say which algorithm verifies it" -- which is precisely the property a gate is for.
+
+    `oidc.py` is deliberately absent and stays absent: it verifies through `joserfc`, not
+    PyJWT, and its allow-list is per-connection by design (a tenant's IdP chooses RS256 or
+    ES256). It rejects anything symmetric or `none` before decoding, in its own code, and
+    that check has its own tests -- forcing it into this walker's literal-list rule would be
+    a false positive, not a tightening.
+    """
     run_jwt_alg_pinning_enforcement(
         JwtAlgPinningConfig(
             repo_root=_PACKAGE_ROOT,
@@ -28,6 +39,14 @@ def test_tokens_module_pins_its_algorithms() -> None:
                     path=_PACKAGE_ROOT / "src" / "threetears" / "iam" / "tokens.py",
                     allowed_algorithms=frozenset({"EdDSA", "HS256"}),
                     pinned_constants={"_EDDSA": "EdDSA", "_HS256": "HS256"},
+                    require_audience=True,
+                ),
+                PinnedModule(
+                    # A DPoP proof carries no `aud` -- RFC 9449 binds it to htm/htu instead.
+                    path=_PACKAGE_ROOT / "src" / "threetears" / "iam" / "dpop.py",
+                    allowed_algorithms=frozenset({"ES256"}),
+                    pinned_constants={"_ALG": "ES256"},
+                    require_audience=False,
                 ),
             ),
         )

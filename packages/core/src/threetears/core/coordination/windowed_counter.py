@@ -41,6 +41,7 @@ import hashlib
 import random
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -103,6 +104,7 @@ class WindowedCounter:
         bucket_name: str,
         window_seconds: int,
         fail_open: bool = False,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         """configure the counter; defer bucket binding until the first use.
 
@@ -118,6 +120,10 @@ class WindowedCounter:
             attempt in it. MUST be positive: a
             non-positive window would mean the count never resets
         :ptype window_seconds: int
+        :param clock: the time source, injectable so a test can stand on the window boundary.
+            without a seam here the window semantics are untestable, which is how a
+            wall-clock-ordinal implementation once passed for an anchored one
+        :ptype clock: Callable[[], float]
         :param fail_open: on a :class:`~threetears.nats.KvError` (KV transport failure), whether
             to treat the key as NOT over any threshold (``fail_open=True`` -- `record_attempt`
             returns ``0``, `count` returns ``0``, a warning is logged) rather than propagating the
@@ -132,6 +138,7 @@ class WindowedCounter:
         self._bucket_name = bucket_name
         self._window = timedelta(seconds=window_seconds)
         self._fail_open = fail_open
+        self._clock = clock
         self._bucket: "NatsKvBucket | None" = None
         self._bucket_lock = asyncio.Lock()
 
@@ -143,6 +150,18 @@ class WindowedCounter:
         :rtype: str
         """
         return self._bucket_name
+
+    @property
+    def clock(self) -> "Callable[[], float]":
+        """the time source this counter reads.
+
+        exposed so an adapter computing a "retry after" uses the SAME clock the window is
+        measured with; two clocks in one verdict is two answers.
+
+        :return: the configured clock
+        :rtype: Callable[[], float]
+        """
+        return self._clock
 
     @property
     def fail_open(self) -> bool:
@@ -252,7 +271,7 @@ class WindowedCounter:
     async def _record_attempt(self, key: str) -> int:
         bucket = await self._ensure_bucket()
         kv_key = self._key(key)
-        now = time.time()
+        now = self._clock()
         for _ in range(_MAX_CAS_ATTEMPTS):
             entry = await bucket.get_entry(key=kv_key)
             if entry is None:
@@ -285,7 +304,7 @@ class WindowedCounter:
         if value is None:
             return None
         state = _decode(value)
-        if time.time() - state.window_start > self._window.total_seconds():
+        if self._clock() - state.window_start > self._window.total_seconds():
             return None
         return state
 
