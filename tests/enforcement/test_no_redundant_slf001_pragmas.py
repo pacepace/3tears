@@ -19,9 +19,9 @@ covered.
 
 **Every ruff config, not just the root one.** The first version read only the root
 ``pyproject.toml``, which left the sidecar uncovered -- and ``packages/scrape/sidecar/ruff.toml``
-is a full override declaring its own ``SLF001`` exemptions, with five ledger entries pointing
-into it. A pragma added there reproduced the trap in full while this test stayed green: the
-failure it exists to end, wearing the guard's own uniform.
+is a full override declaring its own ``SLF001`` exemptions, which the ledger records. A pragma
+added there reproduced the trap in full while this test stayed green: the failure it exists to
+end, wearing the guard's own uniform.
 
 **Keys are globs, and one matching nothing is a failure rather than a skip.** ruff resolves
 ``per-file-ignores`` keys as globs relative to the config declaring them; the first version

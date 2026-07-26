@@ -22,8 +22,8 @@ select = ["SLF"]
 [lint.per-file-ignores]
 # Restated from the repo root, which cannot reach this far once a nested config exists:
 # a ruff.toml is a full override, not an extension. Reinstating the root's setting is
-# deliberate rather than a copy for its own sake -- dropping it silently turns 67 real,
-# already-justified private accesses into failures the moment this file is added.
+# deliberate rather than a copy for its own sake -- dropping it would silently turn every real,
+# already-justified private access in this container into a failure the moment this file exists.
 #
 # The sidecar's module-level globals (_browser/_ready) and its lazy warm-up hook have no
 # public accessor; tests set and read them directly to drive cold-start, warm-start and
@@ -42,7 +42,7 @@ select = ["SLF"]
 # stay in step, and the reasons then live in one reviewable list instead of at five call sites.
 #
 # The cost, stated rather than glossed: a per-file ignore also suppresses every FUTURE private
-# access in these two files, which an inline pragma would not. The ledger entries are what
+# access in the files listed below, which an inline pragma would not. The ledger entries are what
 # offsets that -- they record what was actually justified, so a new access is visible as an
 # undocumented one rather than as silence.
 #

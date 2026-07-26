@@ -12,8 +12,10 @@
 # ruff reads them from -- the root pyproject.toml, and any nested ruff.toml,
 # which is a FULL override the root file cannot reach past. every exemption
 # here must have a matching ruff ignore so the two systems agree. no count of
-# entries or configs in this header: it promised "the five sidecar ones" when
-# the file had none, and again when it had eighty-nine.
+# what this file CURRENTLY holds, anywhere in this header: it promised "the five
+# sidecar ones" when the file had none, and again when it had eighty-nine.
+# Figures describing a past state are fine -- they report what was, and cannot
+# go stale.
 #
 # NOTE ON LINE NUMBERS: these triples ARE checked now, in both directions,
 # by tests/enforcement/test_underscore_exemptions_resolve.py -- every entry

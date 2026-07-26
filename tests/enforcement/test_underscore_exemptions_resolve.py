@@ -91,18 +91,25 @@ def _exempted_paths() -> list[Path]:
 
 class TestUnderscoreExemptionsResolve:
     def test_every_rationale_is_attached_to_an_entry(self) -> None:
-        """The file's own "each entry requires a preceding rationale" rule, enforced.
+        """No rationale floats free of the entry it justifies.
 
-        It was enforced by nothing, and that gap let a bug in the regeneration script
-        accumulate silently: `_header()` stopped at the first ENTRY rather than the first
-        rationale, so a rationale line was captured as header and re-emitted with its entry,
-        leaving one orphan at the top of the file per run. Three had built up. Neither
-        direction of the resolve check pairs a rationale with an entry, so neither could see it.
+        Note the direction: this asserts every RATIONALE has an entry, not that every entry has
+        a rationale. The converse would be the file header's stated rule, and it is a different
+        check that nothing performs -- worth knowing before trusting this one to cover it.
+
+        This direction is the one that caught a real bug: `_header()` in the regeneration script
+        stopped at the first ENTRY rather than the first rationale, so a rationale line was
+        captured as header AND re-emitted with its entry, leaving one orphan at the top per run.
+        Three accumulated. Neither direction of the resolve checks pairs the two, so nothing saw
+        it.
         """
         lines = _EXEMPTIONS.read_text().split("\n")
         orphans: list[str] = []
         for number, raw in enumerate(lines, 1):
-            if not raw.startswith("# rationale:"):
+            # `strip()` first, matching the regeneration script's own header scan: an indented
+            # rationale is invisible to a bare `startswith`, and the two disagreeing is how a
+            # line goes unseen by one of them.
+            if not raw.strip().startswith("# rationale:"):
                 continue
             following = lines[number] if number < len(lines) else ""
             if not following.strip() or following.startswith("#"):
@@ -114,7 +121,11 @@ class TestUnderscoreExemptionsResolve:
         )
 
     def test_every_entry_names_a_file_that_exists(self) -> None:
-        """Five entries named a directory deleted from the tree entirely."""
+        """An exemption for a path that is gone documents a decision about nothing.
+
+        Entries survived here for a `packages/agent-tools/` directory that had been deleted
+        outright, still reading as reviewed judgements about code no longer in the tree.
+        """
         missing = sorted({path for path, _, _ in _entries() if not (_REPO_ROOT / path).exists()})
 
         assert not missing, (
