@@ -63,7 +63,7 @@ dependencies = [
 # polling. Optional because 3tears-scheduled-jobs brings NATS and
 # APScheduler with it, and a polling caller needs none of that: its next
 # poll is the re-probe, gated by `blocked_until` on the health row.
-# circuit.py depends on the one-method ReprobeScheduler Protocol, never on
+# circuit.py depends on the two-method ReprobeScheduler Protocol, never on
 # this package, so nothing in the default install imports it.
 reprobe = ["3tears-scheduled-jobs>=0.19.0,<0.20.0"]
 

@@ -629,6 +629,29 @@ async def test_forgetting_a_target_reclaims_both_rows_it_owns(
 
 
 @pytest.mark.asyncio
+async def test_forgetting_a_target_does_not_raise_when_the_store_cannot_delete(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Retiring a target is housekeeping, and housekeeping must not raise into its caller.
+
+    The waiver on that delete makes a behavioural claim -- that a store outage leaves a
+    harmless row rather than an exception -- and a waiver whose reason is a claim about
+    behaviour is worth only as much as the test behind it. A caller tidying up after a
+    retired target has nothing useful to do with a failure here; the row is inert until the
+    next attempt.
+    """
+    scheduler = _FakeReprobeScheduler()
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    with patch.object(type(health), "delete", side_effect=RuntimeError("L3 pool is gone")):
+        await circuit.forget_target(_T)
+
+    assert scheduler.cancelled == [_T], "the booking was not cancelled before the delete failed"
+    assert await health.get(_T) is not None, "the row was somehow removed by a delete that raised"
+
+
+@pytest.mark.asyncio
 async def test_a_success_against_an_open_row_does_not_erase_its_backoff(
     health: ScrapeTargetHealthCollection, policy: BackoffPolicy
 ) -> None:

@@ -419,15 +419,11 @@ class TargetCircuit:
         # `reprobe.py` exists to serve. The booking is keyed by target, so the outcome report
         # that normally follows replaces it rather than adding to it.
         #
-        # A recovery is the one outcome that cannot replace it: `record_reachable` closes the
-        # circuit and `ReprobeScheduler` has no cancel, so a target that comes back gets one
-        # unasked wake-up about `reservation` seconds later. It self-terminates -- the
-        # dispatcher finds a closed circuit and never books another -- but it is a whole poll,
-        # fetch and eval loop included, not a bare fetch. Accepted rather than solved with a
-        # cancel seam: that costs every `ReprobeScheduler` implementer a second method, and
-        # buys one poll per recovery of a target that is by then healthy, which is work that
-        # produces real data rather than work that is wasted. If recoveries ever become
-        # frequent enough for that to matter, the cancel seam is the fix.
+        # A recovery is the one outcome that books nothing, and so the one that cannot
+        # supersede this by replacing it. `record_reachable` therefore cancels explicitly
+        # through `ReprobeScheduler.cancel_reprobe`; without that, the booking made here
+        # fires against a target that already came back, which is a whole poll including its
+        # eval loop rather than a bare fetch.
 
         await self._book_reprobe(target_id, reservation)
         log.info(

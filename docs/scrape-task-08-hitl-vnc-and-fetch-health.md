@@ -351,7 +351,9 @@ Two protocols ARE new, which an earlier draft of this section denied. `ProbeObse
 narrows `CircuitBreakerLike` with a readable `state`, because releasing a probe requires first
 knowing one was admitted, and a breaker that cannot answer that gets wedged rather than
 released -- the constraint belongs in the signature, not in a `getattr`. `ReprobeScheduler` is
-the one-method seam `reprobe.py` satisfies, so the polling caller never takes on
+the two-method seam `reprobe.py` satisfies -- book a probe, and cancel one when the circuit
+closes, since a close is the one outcome that books nothing and so cannot supersede an
+outstanding booking by replacing it, so the polling caller never takes on
 `3tears-scheduled-jobs`. Neither adds a dependency: the LangChain-weight argument above is
 about `core`'s reason for the original seam, and `circuit.py` already imports
 `threetears.models.circuit_breaker` at module top, since `3tears-models` is a hard dependency

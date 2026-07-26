@@ -9,6 +9,7 @@ replaces its outstanding probe instead of queuing another one.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from threetears.scheduled_jobs.collections import (
     ScheduledJobCollection,
     _job_insert_params,
 )
+from threetears.scheduled_jobs.migrations.v001_create_scheduled_jobs import _CREATE_SCHEDULED_JOBS_SQL
 from threetears.scheduled_jobs.entities import ScheduledJobEntity
 
 from threetears.scrape.reprobe import REPROBE_JOB_KIND, ScheduledJobsReprobeScheduler, reprobe_job_id
@@ -52,23 +54,21 @@ class _FakeJobCollection(ScheduledJobCollection):
         self.saved.pop(self.normalize_pk(entity_id), None)
 
 
-#: Every ``scheduled_jobs`` column declared ``NOT NULL`` in v001. The upsert binds all of
-#: them positionally, so a server-side DEFAULT never applies -- a key this adapter forgets
-#: to set is bound as an explicit NULL and the constraint fires at the border.
-_NOT_NULL_JOB_COLUMNS = frozenset(
-    {
-        "partition_key",
-        "job_id",
-        "kind",
-        "payload",
-        "schedule_type",
-        "schedule_config",
-        "status",
-        "missed_fire_policy",
-        "date_created",
-        "date_updated",
-    }
-)
+def _not_null_job_columns() -> frozenset[str]:
+    """Every ``scheduled_jobs`` column the migration declares ``NOT NULL``, read from the DDL.
+
+    Derived rather than transcribed. A hand-copied list is a second copy of a schema that
+    lives in another package, and the failure mode of a stale copy is the quiet one: a column
+    added there with ``NOT NULL`` would simply not be checked here, which is precisely the
+    class of bug this test exists to catch.
+
+    The upsert binds every column positionally, so a server-side DEFAULT never applies -- a
+    key this adapter forgets to set is bound as an explicit NULL and the constraint fires.
+    """
+    body = _CREATE_SCHEDULED_JOBS_SQL[_CREATE_SCHEDULED_JOBS_SQL.index("(") :]
+    return frozenset(re.findall(r"^\s*([a-z_]+)\s+[A-Z]", body, re.MULTILINE)) & frozenset(
+        re.findall(r"^\s*([a-z_]+)\s+\S+\s+NOT NULL", body, re.MULTILINE)
+    )
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_the_booked_row_binds_a_value_for_every_not_null_column() -> None:
     (row,) = jobs.saved.values()
 
     bound = dict(zip(_JOB_INSERT_COLUMNS, _job_insert_params(row), strict=True))
-    nulls = sorted(col for col in _NOT_NULL_JOB_COLUMNS if bound.get(col) is None)
+    nulls = sorted(col for col in _not_null_job_columns() if bound.get(col) is None)
     assert not nulls, f"NOT NULL column(s) bound as NULL, so every booking raises at the border: {nulls}"
 
 
@@ -196,13 +196,27 @@ async def test_cancelling_deletes_the_booking_rather_than_leaving_it_expired() -
 
 
 @pytest.mark.asyncio
-async def test_cancelling_a_booking_that_is_not_there_is_silent() -> None:
+async def test_cancelling_a_booking_that_is_not_there_neither_raises_nor_announces_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The caller closing a circuit does not know whether a booking was ever made.
 
-    Asking first would be a round trip to answer a question the delete already answers, and
-    raising would turn ordinary cleanup into a failure on the path where a target just came
-    back healthy.
+    Asking first would be a round trip to answer what the delete already handles, and raising
+    would turn ordinary cleanup into a failure on the path where a target just came back
+    healthy. So the delete is issued blind.
+
+    The consequence that needs pinning is the log. ``Collection.delete`` is idempotent and
+    documents itself as returning ``True`` unconditionally, so the return value cannot tell a
+    real cancellation from a no-op -- and ``record_reachable`` calls this on EVERY close. An
+    INFO line here would therefore announce a cancelled re-probe for the many targets that
+    never tripped at all, which is a log that lies at whatever volume the fleet polls.
     """
     jobs = _FakeJobCollection()
-    await ScheduledJobsReprobeScheduler(jobs).cancel_reprobe(target_id="never_booked")
+    with caplog.at_level("INFO", logger="threetears.scrape.reprobe"):
+        await ScheduledJobsReprobeScheduler(jobs).cancel_reprobe(target_id="never_booked")
+
     assert jobs.saved == {}
+    assert caplog.records == [], (
+        "cancelling a booking that never existed announced a cancellation at INFO, which "
+        "every close would then do for every target that never tripped"
+    )

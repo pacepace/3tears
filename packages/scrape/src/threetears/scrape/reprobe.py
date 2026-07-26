@@ -11,8 +11,9 @@ sleep-and-retry loop next to it would be re-solving all of that, worse.
 **This module is behind the ``reprobe`` extra**, and imported by nothing else in the package.
 ``3tears-scheduled-jobs`` pulls NATS and APScheduler behind it, which is real weight for a
 capability most consumers of a scraping library will never switch on, so
-:class:`~threetears.scrape.circuit.TargetCircuit` depends on the one-method
-:class:`~threetears.scrape.circuit.ReprobeScheduler` Protocol instead and this satisfies it.
+:class:`~threetears.scrape.circuit.TargetCircuit` depends on the two-method
+:class:`~threetears.scrape.circuit.ReprobeScheduler` Protocol instead (book and cancel) and
+this satisfies it.
 Import this module only when you have installed ``3tears-scrape[reprobe]``.
 """
 
@@ -148,9 +149,17 @@ class ScheduledJobsReprobeScheduler:
         ever tripped. The job id is derived from the target, so this addresses whichever
         booking is currently outstanding without needing to have kept a handle on it.
 
-        Silent when there is nothing to delete -- ``delete`` reports that as ``False`` rather
-        than raising, and a caller closing a circuit does not know or need to know whether a
-        booking was outstanding.
+        Safe when there is nothing to delete: ``Collection.delete`` is idempotent across tiers
+        and documents itself as returning ``True`` unconditionally, so a booking that was
+        never made costs one no-op rather than an exception. A caller closing a circuit does
+        not know whether a booking was outstanding, and asking first would be a round trip to
+        answer what the delete already handles.
+
+        That same contract is why nothing is logged at INFO here. The return value cannot
+        distinguish "cancelled a real booking" from "there was nothing to cancel", and
+        ``record_reachable`` calls this on every close -- so an INFO line would announce a
+        cancellation for the many targets that never tripped at all. DEBUG says what is
+        actually known: a delete was issued.
 
         :param target_id: the target whose booking should be dropped
         :ptype target_id: str
@@ -159,10 +168,9 @@ class ScheduledJobsReprobeScheduler:
         """
         job_id = reprobe_job_id(target_id)
         partition_key = self._partition_key or uuid5(_REPROBE_NAMESPACE, f"partition:{target_id}")
-        deleted = await self._jobs.delete((partition_key, job_id))
-        if deleted:
-            log.info(
-                "scrape circuit: cancelled the outstanding re-probe of target %s",
-                target_id,
-                extra={"extra_data": {"target_id": target_id, "job_id": str(job_id)}},
-            )
+        await self._jobs.delete((partition_key, job_id))
+        log.debug(
+            "scrape circuit: cleared any outstanding re-probe booking for target %s",
+            target_id,
+            extra={"extra_data": {"target_id": target_id, "job_id": str(job_id)}},
+        )
