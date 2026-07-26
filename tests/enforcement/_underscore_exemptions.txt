@@ -25,7 +25,11 @@
 # in a file that ALSO has a per-file ignore is redundant to ruff and invisible
 # to this regeneration -- ruff honours the pragma and reports nothing, so the
 # access silently never reaches this file. Six entries went missing that way.
-# Check a path has no inline SLF001 pragmas before regenerating it.
+#
+# tests/enforcement/test_no_redundant_slf001_pragmas.py now enforces this: a
+# path with a per-file SLF001 ignore may not also carry an inline pragma. It is
+# the one direction a consistency check cannot cover, since a blinded access is
+# never flagged in the first place.
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
 packages/observe/src/threetears/observe/logging.py:212:_getframe
