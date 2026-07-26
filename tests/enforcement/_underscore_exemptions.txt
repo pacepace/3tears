@@ -9,10 +9,11 @@
 #   path/relative/to/repo-root.py:42:_private_symbol
 #
 # maintained in lockstep with ruff's per-file-ignores for SLF001, wherever
-# ruff reads them from -- the root pyproject.toml for most entries, and
-# packages/scrape/sidecar/ruff.toml for the five sidecar ones, since a nested
-# ruff.toml is a full override the root file cannot reach past. every exemption
-# here must have a matching ruff ignore so the two systems agree.
+# ruff reads them from -- the root pyproject.toml, and any nested ruff.toml,
+# which is a FULL override the root file cannot reach past. every exemption
+# here must have a matching ruff ignore so the two systems agree. no count of
+# entries or configs in this header: it promised "the five sidecar ones" when
+# the file had none, and again when it had eighty-nine.
 #
 # NOTE ON LINE NUMBERS: these triples ARE checked now, in both directions,
 # by tests/enforcement/test_underscore_exemptions_resolve.py -- every entry
@@ -41,12 +42,6 @@
 # path with a per-file SLF001 ignore may not also carry an inline pragma. It is
 # the one direction a consistency check cannot cover, since a blinded access is
 # never flagged in the first place.
-
-# rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
 packages/agent/identity/tests/test_lazy_init.py:47:_LAZY

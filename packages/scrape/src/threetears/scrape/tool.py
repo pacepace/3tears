@@ -600,8 +600,8 @@ class ScrapeTool(TearsTool):
 
         # From here to the render, an admitted probe is already outstanding. `check` above may
         # have claimed this target's one in-process probe slot, and only an outcome or an
-        # explicit release ever returns it -- so a cancellation in the two awaits below strands
-        # it, after which `release_probe`'s own docstring says the target is fast-failed with
+        # explicit release ever returns it -- so a cancellation anywhere below strands it,
+        # after which `release_probe`'s own docstring says the target is fast-failed with
         # `retry_after_seconds=0.0` for the life of the process.
         #
         # Not a theoretical window. This tool advertises a deadline of `default_timeout + 60`

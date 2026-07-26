@@ -4,17 +4,18 @@ The pragma is redundant to ruff -- the per-file ignore already covers it -- so o
 would be a tidiness rule not worth a test. It is here because of what the redundancy does to
 the exemptions ledger.
 
-``tests/enforcement/_underscore_exemptions.txt`` is maintained by re-running ruff over an
-exempted path and rewriting that path's entries from the output. Ruff honours an inline
-``noqa`` even under ``--isolated``, so any access carrying one is reported by nothing and
-silently never reaches the ledger. Six accesses in the scrape suites went missing exactly that
-way, and the loss is invisible from both ends: the gate passes (the underscore walker scans
-``packages/*/src`` only and never enters a ``tests/`` tree), and the regeneration command
-produces a short list without complaining.
+``tests/enforcement/_underscore_exemptions.txt`` was once maintained by re-running ruff over an
+exempted path and rewriting that path's entries from the output. Ruff honours an inline ``noqa``
+even under ``--isolated``, so any access carrying one was reported by nothing and silently never
+reached the ledger -- six accesses in the scrape suites went missing exactly that way, and the
+loss was invisible from both ends, since the underscore walker scans ``packages/*/src`` and
+never enters a ``tests/`` tree.
 
-That is why this guards the ledger rather than style. A bidirectional consistency check --
-every entry resolves, every flagged access has an entry -- cannot catch it either, because the
-blinded access is never flagged in the first place. This has to be checked at the source.
+``scripts/regen-underscore-exemptions.py`` walks the AST instead, so it no longer inherits that
+blind spot. This test remains because the pragma is still a hazard for anyone reaching for ruff
+directly, and because a redundant suppression on an already-exempted path is a claim about the
+code that is not true: nothing is being suppressed that the per-file ignore has not already
+covered.
 
 **Every ruff config, not just the root one.** The first version read only the root
 ``pyproject.toml``, which left the sidecar uncovered -- and ``packages/scrape/sidecar/ruff.toml``

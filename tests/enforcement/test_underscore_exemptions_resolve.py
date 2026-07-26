@@ -17,9 +17,9 @@ reads back.
 **Why this needs both directions.** A stale-entry check alone would have missed all six missing
 ones, because a missing entry is not a stale entry. And the missing-direction check has to see
 accesses that ruff would not report: an inline ``# noqa: SLF001`` on a per-file-ignored path
-suppresses the finding, so the access reaches neither ruff nor this ledger. That precondition is
-enforced separately by ``test_no_redundant_slf001_pragmas.py``; this module walks the AST
-directly rather than shelling out to ruff, so it does not inherit the blind spot either way.
+suppresses the finding, so the access would reach neither ruff nor this ledger. This module and
+``scripts/regen-underscore-exemptions.py`` both walk the AST, so neither inherits that blind
+spot; ``test_no_redundant_slf001_pragmas.py`` keeps the pragmas out regardless.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def _exempted_paths() -> list[Path]:
     sidecar either, since it scans ``packages/*/src``.
 
     Filtering to ``/tests/`` had the same shape: `sidecar/hitl.py` and `main.py` are production
-    files that carry per-file ignores, and their five accesses are precisely the ones the ledger
+    files that carry per-file ignores, and their accesses are precisely the kind the ledger
     exists to record.
     """
     found: list[Path] = []
@@ -90,6 +90,29 @@ def _exempted_paths() -> list[Path]:
 
 
 class TestUnderscoreExemptionsResolve:
+    def test_every_rationale_is_attached_to_an_entry(self) -> None:
+        """The file's own "each entry requires a preceding rationale" rule, enforced.
+
+        It was enforced by nothing, and that gap let a bug in the regeneration script
+        accumulate silently: `_header()` stopped at the first ENTRY rather than the first
+        rationale, so a rationale line was captured as header and re-emitted with its entry,
+        leaving one orphan at the top of the file per run. Three had built up. Neither
+        direction of the resolve check pairs a rationale with an entry, so neither could see it.
+        """
+        lines = _EXEMPTIONS.read_text().split("\n")
+        orphans: list[str] = []
+        for number, raw in enumerate(lines, 1):
+            if not raw.startswith("# rationale:"):
+                continue
+            following = lines[number] if number < len(lines) else ""
+            if not following.strip() or following.startswith("#"):
+                orphans.append(f"line {number}")
+
+        assert not orphans, (
+            "these rationale lines are not followed by the entry they justify, so they document "
+            f"nothing and accumulate on every regeneration: {orphans}"
+        )
+
     def test_every_entry_names_a_file_that_exists(self) -> None:
         """Five entries named a directory deleted from the tree entirely."""
         missing = sorted({path for path, _, _ in _entries() if not (_REPO_ROOT / path).exists()})

@@ -52,8 +52,17 @@ def _existing_rationales() -> dict[tuple[str, str], str]:
 
 
 def _header() -> list[str]:
+    """The file's leading commentary, stopping BEFORE the first entry's rationale.
+
+    Stopping at the first entry is not the same thing, and the difference compounds: a
+    `# rationale:` line is a comment, so it was captured as header AND re-emitted with its
+    entry, leaving one orphan rationale at the top of the file per run. Three had accumulated
+    before anything noticed, because nothing pairs a rationale with an entry.
+    """
     lines: list[str] = []
     for raw in _LEDGER.read_text().split("\n"):
+        if raw.strip().startswith("# rationale:"):
+            break
         if raw.strip().startswith("#") or not raw.strip():
             lines.append(raw)
         else:
