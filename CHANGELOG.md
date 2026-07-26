@@ -121,9 +121,11 @@ the outstanding booking. `ReprobeScheduler` therefore gains `cancel_reprobe`, ca
 circuit closes: without it the last booking survives and fires against a target that already
 came back, which is a whole poll including its eval loop rather than a bare fetch, and it
 leaves a job row behind for every target that ever tripped. The cancel deletes rather than
-expires, and is silent when there is nothing to delete -- a caller closing a circuit does not
-know whether a booking was outstanding, and asking would be a round trip to answer what the
-delete already answers.
+expires, and is safe to issue blind -- `Collection.delete` is idempotent and returns `True` on
+every path, so a booking that was never made costs one no-op rather than an exception, and a
+caller closing a circuit never has to find out which it was. Nothing is logged above DEBUG for
+the same reason: the return value cannot tell a real cancellation from a no-op, and a close
+happens for every target that recovers, including the many that never tripped.
 
 **A success reported against a circuit the breaker leaves OPEN no longer erases its backoff.**
 `CircuitBreaker` answers a success from a request it never admitted by leaving the circuit

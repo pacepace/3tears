@@ -64,11 +64,29 @@ def _not_null_job_columns() -> frozenset[str]:
 
     The upsert binds every column positionally, so a server-side DEFAULT never applies -- a
     key this adapter forgets to set is bound as an explicit NULL and the constraint fires.
+
+    Anchored, because a parser feeding ``assert not nulls`` fails open: an empty or shortened
+    derivation is indistinguishable from a pass, which would move the quiet drift this exists
+    to prevent from the copy into the parser. A multi-word type (``TIMESTAMP WITH TIME ZONE``,
+    ``NUMERIC(10, 2)``), a wrapped ``NOT NULL``, or a DDL built by concatenation would each
+    shrink the set silently. The anchors are three columns whose absence means the regex, not
+    the schema, has changed.
+
+    Reads three private names across a package boundary (this, plus ``_JOB_INSERT_COLUMNS``
+    and ``_job_insert_params``). Accepted deliberately: the alternative is a second copy of
+    another package's schema, and a stale copy fails silently where a renamed private symbol
+    fails at import.
     """
     body = _CREATE_SCHEDULED_JOBS_SQL[_CREATE_SCHEDULED_JOBS_SQL.index("(") :]
-    return frozenset(re.findall(r"^\s*([a-z_]+)\s+[A-Z]", body, re.MULTILINE)) & frozenset(
+    derived = frozenset(re.findall(r"^\s*([a-z_]+)\s+[A-Z]", body, re.MULTILINE)) & frozenset(
         re.findall(r"^\s*([a-z_]+)\s+\S+\s+NOT NULL", body, re.MULTILINE)
     )
+    anchors = {"partition_key", "job_id", "date_updated"}
+    assert anchors <= derived, (
+        f"the NOT NULL derivation lost known columns {sorted(anchors - derived)}, so it would "
+        f"pass vacuously -- the DDL's shape changed under the regex"
+    )
+    return derived
 
 
 @pytest.mark.asyncio
