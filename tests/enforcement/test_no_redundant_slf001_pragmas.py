@@ -66,9 +66,7 @@ def _ruff_configs() -> list[Path]:
     package ``pyproject.toml`` growing a ``[tool.ruff]`` section, since every package already
     ships that file.
 
-    No count in this prose. Two attempts to state one were wrong in opposite directions, and a
-    third claimed to have fixed that by stating it once while stating it twice. The loop below
-    is the list; it cannot disagree with itself.
+    No count in this prose: the loop below is the list, and it cannot disagree with itself.
     """
     configs: list[Path] = []
     for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
