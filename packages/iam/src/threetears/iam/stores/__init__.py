@@ -13,11 +13,21 @@ have produced an abstraction neither could use. So state sits behind the
 Protocols here, with implementations supplied rather than assumed:
 
 - :mod:`threetears.iam.stores.nats_kv` -- JetStream KV, the production default.
-  TTLs are the bucket's job, so expiry is not something application code can
-  forget.
+  The bucket TTL reaps storage and each entry carries its own expiry on top, so
+  the per-call ``ttl`` means what the Protocol says it means and expiry is not
+  something application code can forget.
+- :mod:`threetears.iam.stores.postgres` -- for a service that already has a
+  pool and wants the expiry predicate inside the claiming statement.
 - :mod:`threetears.iam.stores.memory` -- in-memory, for tests. Shipped rather
   than left to each consumer, because a hand-rolled fake KV that quietly
   diverges from the real one is how a store bug reaches production green.
+
+**All three honour the per-call ``ttl`` identically**, and that uniformity is
+the point of shipping the double rather than describing it. The KV store once
+recorded the argument and ignored it while the double enforced it, so a service
+tested against the double shipped an expiry production did not have -- a double
+disagreeing with production about a security property, which is the one thing a
+double must never do.
 
 **Tickets are stored hashed, and redeemed atomically.** A ticket store holds
 SHA-256 of the secret, never the secret, so a store dump is not a set of usable

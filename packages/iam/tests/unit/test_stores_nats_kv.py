@@ -294,3 +294,111 @@ async def test_retry_after_shrinks_as_the_window_elapses(nats: FakeNatsClient) -
     assert first is not None and second is not None
     assert second < first
     assert abs((first - second).total_seconds() - 300) < 1
+
+
+# -- per-entry TTL -------------------------------------------------------------------------
+#
+# The bucket TTL is one number for every entry in it. The Protocol promises a per-call
+# `ttl` -- "how long the ticket stays redeemable" -- and until this landed, that argument was
+# recorded into the payload and read by nothing, so every entry stayed redeemable for the
+# whole bucket lifetime. The in-memory double honoured it faithfully, so the double enforced
+# an expiry production did not: precisely the drift a double is supposed to make impossible.
+
+
+class _WallClock:
+    """A hand-wound wall clock, in unix seconds."""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+async def test_a_ticket_expires_at_its_own_ttl_not_the_buckets(nats: FakeNatsClient) -> None:
+    clock = _WallClock()
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    clock.advance(timedelta(minutes=11).total_seconds())
+    assert await store.redeem(issued.secret) is None
+
+
+async def test_a_ticket_within_its_ttl_still_redeems(nats: FakeNatsClient) -> None:
+    clock = _WallClock()
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    clock.advance(timedelta(minutes=9).total_seconds())
+    assert await store.redeem(issued.secret) == {"user": "u1"}
+
+
+async def test_an_expired_ticket_is_refused_without_being_consumed(nats: FakeNatsClient) -> None:
+    # The expiry check runs BEFORE the delete, matching the Postgres store's predicate-inside-
+    # the-DELETE ordering. Consuming first would let anyone holding an expired secret destroy
+    # the record of it, and would make "expired" indistinguishable from "already redeemed".
+    clock = _WallClock()
+    bucket = await nats.kv_bucket(name="tickets")
+    store = NatsKvTicketStore(bucket, clock=clock)  # type: ignore[arg-type]
+    issued = await store.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    clock.advance(timedelta(minutes=11).total_seconds())
+    assert await store.redeem(issued.secret) is None
+    assert await bucket.get(key=issued.hashed) is not None  # type: ignore[attr-defined]
+
+
+async def test_two_tickets_in_one_bucket_expire_independently(nats: FakeNatsClient) -> None:
+    # THE property a bucket TTL cannot express: one bucket, two lifetimes.
+    clock = _WallClock()
+    store = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    short = await store.issue({"kind": "short"}, ttl=timedelta(minutes=5))
+    long_lived = await store.issue({"kind": "long"}, ttl=timedelta(hours=2))
+    clock.advance(timedelta(minutes=30).total_seconds())
+    assert await store.redeem(short.secret) is None
+    assert await store.redeem(long_lived.secret) == {"kind": "long"}
+
+
+async def test_state_take_honours_the_per_entry_ttl(nats: FakeNatsClient) -> None:
+    clock = _WallClock()
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
+    clock.advance(timedelta(minutes=3).total_seconds())
+    assert await store.take("s1") is None
+
+
+async def test_state_get_honours_the_per_entry_ttl(nats: FakeNatsClient) -> None:
+    # `get` is the non-consuming read, and an expired value must not leak through it either.
+    clock = _WallClock()
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
+    assert await store.get("s1") == {"nonce": "n"}
+    clock.advance(timedelta(minutes=3).total_seconds())
+    assert await store.get("s1") is None
+
+
+async def test_the_expiry_stamp_never_reaches_the_caller(nats: FakeNatsClient) -> None:
+    clock = _WallClock()
+    store = NatsKvStateStore(await nats.kv_bucket(name="state"), clock=clock)  # type: ignore[arg-type]
+    await store.put("s1", {"nonce": "n"}, ttl=timedelta(minutes=2))
+    assert await store.take("s1") == {"nonce": "n"}
+
+
+async def test_the_kv_store_and_the_memory_double_agree_on_expiry(nats: FakeNatsClient) -> None:
+    """The double and production must answer the same question the same way.
+
+    This is the test the whole change exists for: before it, `MemoryTicketStore` expired a
+    ticket at its `ttl` and `NatsKvTicketStore` did not, so a service tested against the
+    double shipped an expiry it did not have.
+    """
+    from threetears.iam.stores.memory import MemoryTicketStore
+
+    clock = _WallClock()
+    kv = NatsKvTicketStore(await nats.kv_bucket(name="tickets"), clock=clock)  # type: ignore[arg-type]
+    memory = MemoryTicketStore(clock=clock)
+
+    kv_ticket = await kv.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    memory_ticket = await memory.issue({"user": "u1"}, ttl=timedelta(minutes=10))
+    clock.advance(timedelta(minutes=11).total_seconds())
+
+    assert await kv.redeem(kv_ticket.secret) is None
+    assert await memory.redeem(memory_ticket.secret) is None
