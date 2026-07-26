@@ -173,10 +173,16 @@ class RenderRequest(BaseModel):
     #: a per-target choice. Omitted uses the container's own route.
     egress_proxy: str | None = None
     #: Name recorded against the result, so "walled" can be told apart from "walled from this
-    #: exit". Free-form because the names are the deployment's. Echoed back on the response so
-    #: the caller records what THIS sidecar reported rather than what it sent: without the echo,
-    #: a request whose proxy argument was dropped is indistinguishable from one that was
-    #: honoured. Reported, not observed -- see :attr:`RenderResponse.egress`.
+    #: exit". Free-form because the names are the deployment's.
+    #:
+    #: Echoed back on the response ONLY when sent alongside :attr:`egress_proxy`. Sent alone it
+    #: names an exit this render did not take -- there is no proxy to take it -- so the response
+    #: reports the container's own exit instead, and a consumer that assumed an echo would
+    #: record a route that was never used. The two travel together or neither is meaningful.
+    #:
+    #: The echo exists so a caller records what THIS sidecar reported rather than what it sent:
+    #: without it, a request whose proxy argument was dropped is indistinguishable from one that
+    #: was honoured. Reported, not observed -- see :attr:`RenderResponse.egress`.
     egress_name: str | None = None
 
 

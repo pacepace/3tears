@@ -602,10 +602,12 @@ through them is filed as SCR-2WQ7; until then the bypass is loud rather than clo
 
 Note the asymmetry, because it bounds what this warning is worth. In the drivers-proxied shape
 the message names the PROXIED drivers, so a deployment that proxied what it could and left the
-rest is told about the `robots.txt` read and told nothing about the backends going direct. That
-shape is only reachable by configuring drivers individually while leaving the gate alone; the
-gate-proxied shape is what `ScrapeTool(egress=...)` produces, and it is the one that reports the
-bypass.
+rest is told about the `robots.txt` read and told nothing about the backends going direct. Two
+configurations reach that shape: proxying drivers individually while leaving the gate alone, and
+passing a gate explicitly, since `ScrapeTool(egress=X, robots=RobotsGate())` gives a gate with no
+exit -- the default gate inherits `egress` only through the absent-argument sentinel, so
+supplying any gate opts out of the inheritance. The gate-proxied shape is what a plain
+`ScrapeTool(egress=...)` produces, and it is the one that reports the bypass.
 
 ### 8. robots.txt: wait when asked, escalate when refused
 
