@@ -9,7 +9,9 @@ optional wall-clock ``timeout``, and — critically — **never leave a child ru
 aborts, the operation times out, or the input stream errors, the child is killed before the helper
 returns (otherwise a child blocked on a full stdout pipe would wedge ``proc.wait()`` forever). A
 non-zero exit raises :class:`BackupToolError` carrying the captured stderr; when a restore child
-dies early and breaks the stdin pipe, the exit-code diagnosis wins over the raw ``BrokenPipeError``.
+dies early and breaks the stdin pipe, the exit-code diagnosis wins over the raw ``BrokenPipeError``
+-- and if that child nonetheless exited ``0``, the short feed is itself raised, because an archive
+that was only partly written must never be reported as a completed restore.
 """
 
 from __future__ import annotations
@@ -19,7 +21,11 @@ import os
 import signal
 from collections.abc import AsyncIterator, Mapping
 
+from threetears.observe import get_logger
+
 __all__ = ["BackupToolError", "feed_stdin", "stream_stdout"]
+
+log = get_logger(__name__)
 
 _READ_CHUNK = 1 << 16  # 64 KiB
 _TIMED_OUT = -1  # synthetic returncode used in the timeout message
@@ -55,6 +61,7 @@ def _kill(proc: asyncio.subprocess.Process) -> None:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
+            # NOSILENT: the group is already gone, which is the state killpg was called to reach
             pass
 
 
@@ -136,11 +143,12 @@ async def feed_stdin(
     )
     stderr_task = asyncio.ensure_future(_drain(proc.stderr))
     pumped = False
+    fully_fed = False
     try:
         if timeout is None:
-            await _pump_stdin(proc, source)
+            fully_fed = await _pump_stdin(proc, source)
         else:
-            await asyncio.wait_for(_pump_stdin(proc, source), timeout=timeout)
+            fully_fed = await asyncio.wait_for(_pump_stdin(proc, source), timeout=timeout)
         pumped = True
     except TimeoutError:
         _kill(proc)
@@ -155,20 +163,35 @@ async def feed_stdin(
         returncode = await proc.wait()
     if returncode != 0:
         raise BackupToolError(argv[0], returncode, stderr_final)
+    if not fully_fed:
+        # Exit 0 on a short feed: the tool is happy, but it never received the whole archive, so
+        # the restore is partial. Reporting success here would lose data with nothing to show it.
+        raise BackupToolError(argv[0], returncode, f"stdin closed before the archive was fully written. {stderr_final}")
 
 
-async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[bytes]) -> None:
+async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[bytes]) -> bool:
+    """Write ``source`` into the child's stdin.
+
+    :return: True if the whole source reached the child; False if the child closed the pipe first.
+    """
     assert proc.stdin is not None
+    fully_fed = True
     try:
         async for chunk in source:
             proc.stdin.write(chunk)
             await proc.stdin.drain()
         proc.stdin.close()
         await proc.stdin.wait_closed()
-    except BrokenPipeError, ConnectionResetError:
-        # the child died early; it will have a non-zero exit + stderr, so let the caller's
-        # returncode check surface BackupToolError (the real diagnosis) rather than this pipe error.
-        pass
+    except (BrokenPipeError, ConnectionResetError) as exc:
+        # The child died early. Its exit code + stderr are the better diagnosis, so the pipe error
+        # itself is not raised -- but the caller is told the feed was short, because a child that
+        # dies early and still exits 0 would otherwise pass off a partial archive as a full restore.
+        log.warning(
+            "restore child closed its stdin before the archive was fully written",
+            extra={"extra_data": {"pid": proc.pid, "error": str(exc), "error_type": type(exc).__name__}},
+        )
+        fully_fed = False
     # wait for the child to finish INSIDE the timed region, so ``timeout`` bounds the whole
     # restore (a child that reads its stdin fast but then processes for a long time is still capped).
     await proc.wait()
+    return fully_fed

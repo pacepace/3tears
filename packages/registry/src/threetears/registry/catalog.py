@@ -362,15 +362,23 @@ class ToolCatalog:
         :ptype full_name: str
         """
         self._entries.pop(full_name, None)
+        kv_deleted = True
         if self._kv is not None:
             try:
                 kv_key = _sanitize_kv_key(full_name)
                 await self._kv.delete(kv_key)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- the local drop above already succeeded
+                # The local entry is gone but the shared KV copy is not, so every other node still
+                # discovers this tool. Deregistration is not complete, and saying so at info would
+                # have read as a clean removal.
+                kv_deleted = False
+                _logger.warning(
+                    "deregistered tool locally but failed to remove its shared KV entry",
+                    extra={"extra_data": {"full_name": full_name, "error": str(exc)}},
+                )
         _logger.info(
             "deregistered tool from catalog",
-            extra={"extra_data": {"full_name": full_name}},
+            extra={"extra_data": {"full_name": full_name, "kv_deleted": kv_deleted}},
         )
 
     async def deregister_pod(self, pod_id: str) -> list[str]:

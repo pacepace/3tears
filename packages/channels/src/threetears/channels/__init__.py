@@ -103,19 +103,45 @@ __all__ = [
     "should_use_rich_formatting",
 ]
 
+
+def _log_missing_adapter(name: str, extra: str, exc: ImportError) -> None:
+    """Record an optional adapter that did not load.
+
+    A missing extra and a genuinely broken adapter module raise the same ``ImportError`` here, and
+    both end with ``name`` simply absent from this package. Without the underlying error the two
+    are indistinguishable: the symptom surfaces much later as an ``AttributeError`` at whatever
+    call site expected the adapter to exist, pointing nowhere near the real cause.
+
+    :param name: the symbol that did not become available
+    :ptype name: str
+    :param extra: the packaging extra that provides it
+    :ptype extra: str
+    :param exc: the import failure being recorded
+    :ptype exc: ImportError
+    :return: nothing
+    :rtype: None
+    """
+    from threetears.observe import get_logger
+
+    get_logger(__name__).debug(
+        "optional channel adapter not loaded",
+        extra={"extra_data": {"adapter": name, "packaging_extra": extra, "error": str(exc)}},
+    )
+
+
 try:
     from threetears.channels.slack import SlackAdapter  # noqa: F401
 
     __all__.append("SlackAdapter")
-except ImportError:
-    pass
+except ImportError as _exc:
+    _log_missing_adapter("SlackAdapter", "slack", _exc)
 
 try:
     from threetears.channels.discord import DiscordAdapter  # noqa: F401
 
     __all__.append("DiscordAdapter")
-except ImportError:
-    pass
+except ImportError as _exc:
+    _log_missing_adapter("DiscordAdapter", "discord", _exc)
 
 # The webhook receiver requires the ``webhook`` extra (fastapi +
 # 3tears-agent-wake). Guarded the same way as the slack / discord
@@ -129,5 +155,5 @@ try:
     )
 
     __all__.extend(["Verifier", "WebhookReceiver", "verify_generic_hmac_sha256"])
-except ImportError:
-    pass
+except ImportError as _exc:
+    _log_missing_adapter("WebhookReceiver", "webhook", _exc)

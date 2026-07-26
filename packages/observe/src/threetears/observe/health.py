@@ -400,14 +400,22 @@ class HealthServer:
                     "text/plain; charset=utf-8",
                 )
                 await writer.drain()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- the failure above is already the diagnosis
+                # Could not even deliver the 500; the peer is almost certainly gone. Debug, not
+                # warning: the warning above already carries why the request failed.
+                log.debug(
+                    "could not send the health server's error response",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- teardown of an already-answered connection
+                log.debug(
+                    "health server connection did not close cleanly",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
 
     def _evaluate_checks_text(self) -> tuple[int, str]:
         """plain-text response: ``(status, body)``.

@@ -98,6 +98,15 @@ async def test_feed_stdin_early_exit_surfaces_backup_tool_error_not_broken_pipe(
 
 
 @pytest.mark.asyncio
+async def test_feed_stdin_short_feed_with_exit_zero_still_raises() -> None:
+    # child exits 0 WITHOUT reading its stdin -> the write side breaks but the exit code says
+    # success. That combination is a partial restore, and must not be reported as a completed one.
+    big = _emit(b"x" * (5 * 1024 * 1024), chunk=64 * 1024)
+    with pytest.raises(BackupToolError, match="stdin closed before the archive was fully written"):
+        await feed_stdin(["sh", "-c", "exit 0"], big)
+
+
+@pytest.mark.asyncio
 async def test_feed_stdin_timeout_kills_a_hung_child() -> None:
     import asyncio
 

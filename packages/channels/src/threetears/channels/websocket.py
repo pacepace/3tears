@@ -233,7 +233,13 @@ class ConnectionRegistry:
             try:
                 connections.remove(websocket)
             except ValueError:
-                return
+                # Not in this user's list: a double-unregister, or a socket registered under a
+                # different user_id. Falls through to the empty-list cleanup below rather than
+                # returning early, which used to strand an empty list keyed by user_id forever.
+                log.debug(
+                    "unregister for a socket that was not in the user's connection list",
+                    extra={"extra_data": {"user_id": user_id}},
+                )
             if not connections:
                 del self._connections[user_id]
 
@@ -1034,9 +1040,17 @@ class WebSocketHandler:
         """
         try:
             await websocket.send_text(json.dumps({"type": "error", "message": error_message}))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- the close below still has to happen
+            # The peer never received the reason it is being disconnected, so from its side the
+            # connection simply drops. Only this log connects the two.
+            log.debug(
+                "could not deliver websocket error message before closing",
+                extra={"extra_data": {"reason": error_message, "error": str(exc)}},
+            )
         try:
             await websocket.close(code=1008)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- nothing further to try
+            log.debug(
+                "websocket close failed",
+                extra={"extra_data": {"error": str(exc)}},
+            )

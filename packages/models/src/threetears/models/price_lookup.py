@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from threetears.observe import get_logger
+
 __all__ = [
     "OPENROUTER_MODELS_URL",
     "HttpClient",
@@ -50,6 +52,8 @@ __all__ = [
     "match_price",
     "register_price_source",
 ]
+
+log = get_logger(__name__)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 VOYAGE_PRICING_URL = "https://docs.voyageai.com/docs/pricing"
@@ -143,6 +147,10 @@ def _to_per_million(per_token: object) -> Decimal | None:
     try:
         value = Decimal(str(per_token)) * _PER_MILLION
     except InvalidOperation, ValueError:
+        # An upstream price that is present but unreadable. The model ends up unpriced, which the
+        # caller handles, but a run of these means the upstream price encoding changed and every
+        # cost figure downstream is quietly missing.
+        log.debug("upstream per-token price did not parse", extra={"extra_data": {"raw": str(per_token)[:64]}})
         return None
     return value if value > 0 else None
 
@@ -375,7 +383,14 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
         try:
             price_col = headers.index(_PER_MILLION_HEADER)
         except ValueError:
-            continue  # not a per-1M-token table (e.g. multimodal per-pixel) — skip it.
+            # Not a per-1M-token table (e.g. multimodal per-pixel), so skipping is right. Recorded
+            # because if the page's column label ever changes, EVERY table skips here and the
+            # parser returns an empty price map that reads exactly like "no prices published".
+            log.debug(
+                "pricing table has no per-1M column; skipped",
+                extra={"extra_data": {"headers": headers[:8]}},
+            )
+            continue
         for row_html in rows[1:]:
             cells = _TD_RE.findall(row_html)
             if len(cells) <= price_col:
@@ -389,6 +404,14 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
             try:
                 price = Decimal(price_match.group(1))
             except InvalidOperation:
+                # The cell matched the price regex but is not a number. Skipping leaves those
+                # models unpriced, which the "never a near price" contract prefers to guessing --
+                # but unpriced-because-unparsed and unpriced-because-absent look identical to the
+                # caller, so the difference is recorded here.
+                log.debug(
+                    "pricing cell matched the price pattern but did not parse",
+                    extra={"extra_data": {"raw": price_match.group(1)[:32], "model_ids": model_ids[:4]}},
+                )
                 continue
             if price <= 0:
                 continue
@@ -416,6 +439,9 @@ def _extract_voyage_body(page_html: str) -> str | None:
     try:
         decoded = json.loads(f'"{match.group(1)}"')
     except json.JSONDecodeError, ValueError:
+        # The pricing page's embedded body field is no longer a JSON string literal. Voyage prices
+        # go empty from here on, so record the shape change rather than returning a bare None.
+        log.debug("voyage pricing page body field did not decode as JSON")
         return None
     return decoded if isinstance(decoded, str) and decoded else None
 
