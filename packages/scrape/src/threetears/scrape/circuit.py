@@ -540,6 +540,70 @@ class TargetCircuit:
             # target that ever tripped.
             await self._cancel_reprobe(target_id)
 
+    async def record_human_cleared(self, target_id: str, *, now: datetime | None = None) -> None:
+        """A person cleared this target's wall out of band. Stop suppressing it.
+
+        The step that closes the human-in-the-loop loop, and without it the loop does not
+        close: a target is walled, its circuit opens for hours, a human clears it in a session
+        and their solve is stored -- and the very next poll is still suppressed, so the work
+        they just did sits unused until a timer they know nothing about elapses.
+
+        :meth:`record_reachable` cannot do this job, and that is not an oversight in it. It
+        reports a FETCH that succeeded, and ``CircuitBreaker``'s answer to a success from a
+        request it never admitted is to leave the circuit open -- correct, because a success
+        nobody was permitted to attempt is not evidence the target recovered. A human saying
+        "I cleared it" is different evidence: it did not come from a fetch, it came from a
+        person who looked at the page.
+
+        So this writes the closed state directly rather than driving the breaker. That is the
+        one place in this module that does, and the reason is that the breaker models fetch
+        outcomes and this is not one. Everything a trip wrote is cleared together --
+        ``consecutive_fetch_failures`` back to zero and ``blocked_until`` removed -- because
+        clearing three of four is what leaves a target reading closed while a stale window
+        goes on gating it.
+
+        ``last_blocked_at`` is deliberately KEPT. It is the evidence this target was walled,
+        an operator looking at a recovered target wants to see it, and it is what
+        :meth:`~threetears.scrape.health.ScrapeTargetHealthCollection.list_walled` pairs with
+        the circuit state to decide the queue -- so keeping it costs nothing and erasing it
+        would lose the history.
+
+        Storing the human's sealed session state is the caller's separate step
+        (:func:`threetears.scrape.session_state.record_session_state`). Kept separate because
+        a human can clear a wall without producing reusable state -- a session that exported
+        nothing still un-sticks the target -- and folding them would make the useful half
+        conditional on the optional one.
+
+        :param target_id: the target a human just cleared
+        :ptype target_id: str
+        :param now: current time; injected by tests, defaults to now
+        :ptype now: datetime | None
+        :return: nothing
+        :rtype: None
+        """
+        del now
+        breaker = self._breaker(target_id)
+        if breaker is not None:
+            # The in-process breaker is fetch-shaped and may be holding its own opinion from
+            # before the human arrived. A success is the honest report here: as far as this
+            # process is concerned the target is now reachable.
+            breaker.record_success()
+
+        await self._write(
+            target_id,
+            state=CircuitState.CLOSED,
+            failures=0,
+            blocked_until=None,
+        )
+        # Nothing is due a probe any more, and a booking that survives would wake a dispatcher
+        # for a target that is already working.
+        await self._cancel_reprobe(target_id)
+        log.info(
+            "scrape circuit: target %s was cleared by a human; suppression lifted",
+            target_id,
+            extra={"extra_data": {"target_id": target_id, "circuit_state": CircuitState.CLOSED.value}},
+        )
+
     def release_probe(self, target_id: str) -> None:
         """Resolve a permitted fetch that will never report an outcome.
 

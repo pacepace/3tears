@@ -1009,3 +1009,84 @@ async def test_an_unreadable_health_store_does_not_erase_an_open_circuit(
     assert row.circuit_state == CircuitState.OPEN.value, "a failed read was written back as a closed circuit"
     assert row.consecutive_fetch_failures == 4
     assert row.blocked_until == _NOW + timedelta(seconds=300)
+
+
+@pytest.mark.asyncio
+async def test_a_human_clearing_a_wall_lifts_the_suppression(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """The step that closes the HITL loop, and without which the loop does not close.
+
+    A target is walled, its circuit opens for hours, a human clears it in a session and their
+    solve is stored -- and the next poll is still suppressed. The work they just did sits
+    unused until a timer they know nothing about elapses, and the target looks broken to
+    everyone watching.
+    """
+    scheduler = _FakeReprobeScheduler()
+    circuit = TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+    assert not (await circuit.check(_T, now=_NOW + timedelta(seconds=1))).permitted
+
+    await circuit.record_human_cleared(_T)
+
+    decision = await circuit.check(_T, now=_NOW + timedelta(seconds=2))
+    assert decision.permitted, "a human cleared the wall and the next fetch was still suppressed"
+    assert decision.state is CircuitState.CLOSED
+    assert scheduler.cancelled == [_T], "a probe was still booked for a target that is already working"
+
+
+@pytest.mark.asyncio
+async def test_record_reachable_cannot_do_that_job(health: ScrapeTargetHealthCollection, policy: BackoffPolicy) -> None:
+    """Why `record_human_cleared` exists at all, pinned so nobody collapses the two.
+
+    `record_reachable` reports a FETCH that succeeded, and the breaker's answer to a success
+    from a request it never admitted is to leave the circuit open -- which is correct, because
+    a success nobody was permitted to attempt is not evidence a target recovered. A human
+    saying "I cleared it" did not come from a fetch at all. If these were one method, either
+    the human's word would be ignored or a stray success would lift a real backoff.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    await circuit.record_reachable(_T, now=_NOW + timedelta(seconds=1))
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.OPEN.value, "the inherited leave-it-open answer changed"
+    assert not (await circuit.check(_T, now=_NOW + timedelta(seconds=2))).permitted
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_target_keeps_its_block_history(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """Everything a trip wrote is cleared except the evidence it happened.
+
+    `last_blocked_at` is what `list_walled` pairs with the circuit state, and an operator
+    looking at a recovered target wants to see that it was walled. Clearing it would lose the
+    history; leaving the window would keep gating a target that reads as closed.
+    """
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_blocked(_T, now=_NOW)
+    await circuit.record_blocked(_T, now=_NOW)
+
+    await circuit.record_human_cleared(_T)
+
+    row = await health.get(_T)
+    assert row is not None
+    assert row.circuit_state == CircuitState.CLOSED.value
+    assert row.consecutive_fetch_failures == 0
+    assert row.blocked_until is None
+    assert row.last_blocked_at == _NOW, "the evidence this target was ever walled was erased"
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_target_nobody_ever_blocked_is_harmless(
+    health: ScrapeTargetHealthCollection, policy: BackoffPolicy
+) -> None:
+    """A platform may call this without checking, and checking first is a round trip."""
+    circuit = TargetCircuit(health, policy=policy)
+    await circuit.record_human_cleared(_T)
+    assert (await circuit.check(_T, now=_NOW)).permitted

@@ -220,6 +220,58 @@ faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/
 
 **Call chain, one live poll cycle (faidh's WARN Act consumer):** `runner.publish_observations()` → `WarnActPlugin.collect()` (inherited `PluginBase`) → `WarnActPlugin._produce()` → resolves `self._drivers[target.driver_backend]` → `driver.render(...)` → `run_eval_loop_multi_row(...)` (or `run_eval_loop` if `multi_row=False`) → `_run_reuse_cycle` (re-runs the stored strategy; on a miss, classifies the page and routes) or `_regenerate` → `_persist_extraction()` writes `scrape_extractions` → back in `_produce()`, each record becomes an `ArbitrarySignalEntity` → `collect()`'s `save_entity()` writes `faidh_arbitrary_signals` → `publish_arbitrary_signals()` re-drives `collect()` and publishes each yielded entity to `arbitrary_signals()` on NATS.
 
+### 7. When a target needs a human: the whole loop
+
+3tears returns outcomes and stores state. It does not own a queue, a conversation, or an
+operator -- your platform does. This is every seam it offers, in the order a platform uses
+them, because reconstructing it from four modules is how a step gets missed.
+
+**1. Scrape as normal.** Most targets return a recipe and reuse it forever with no model
+call. A walled one returns `validation_status="blocked"` with the classifier's own words,
+and its recipe is left byte-identical -- a wall says nothing about whether your selectors
+still work.
+
+**2. Stop paying for it.** Repeated blocks open the target's circuit, after which the fetch
+does not happen at all: subsequent calls return `"backoff"` with `retry_after_seconds` and
+never touch the browser. That is what stops a walled target costing a classifier call on
+every poll forever.
+
+**3. Ask what is stuck.** `ScrapeTargetHealthCollection.list_walled()` returns the targets a
+human can actually help, with the evidence and the backoff. Targets whose host merely stopped
+answering are excluded -- the circuit opens on those too, and a person sent to one arrives
+with nothing to clear. This is the only non-primary-key query in the package, and it exists so
+you do not have to fetch fifty targets to find four.
+
+**4. Nothing is held while it waits.** No browser, no session, no tab. The queue item carries
+`url` plus `nav_steps`, and the target is re-driven from those when an operator actually
+arrives, so waiting costs nothing.
+
+**5. A human arrives.** Your platform opens a session on the sidecar
+(`POST /v1/hitl/session`), pulls the target in (`POST .../tab` -- its own isolated browser
+context, so one target never sees another's cookies), and hands the operator the returned
+noVNC path. Bounded slots, a hard TTL, and a token the sidecar minted. The sidecar
+authenticates nobody: who was entitled to that token is your platform's decision, evaluated
+where identity lives.
+
+**6. They clear it, and you keep the work.** `POST .../tab/{id}/complete` returns the
+context's cookies and storage. Seal it with `seal_session_state` and store it with
+`record_session_state`; the sidecar holds no key and never seals anything, which is the point
+-- the container driving a browser for arbitrary targets is the one you least want holding a
+decryption key.
+
+**7. Lift the suppression.** `TargetCircuit.record_human_cleared(target_id)`. **This step is
+not optional and not implied by step 6.** Storing the solve does not reopen the target: its
+circuit is still open, so the next poll is still suppressed and the operator's work sits
+unused until a timer they know nothing about elapses. `record_reachable` cannot do it either
+-- it reports a *fetch* that succeeded, and a success from a request the breaker never
+admitted deliberately leaves the circuit open. A human's word is different evidence.
+
+**8. It rejoins the healthy ones.** The next scrape reads the stored solve, sends those
+cookies with the request that would otherwise have been challenged, and the target extracts
+normally. When the solve expires, it is ignored rather than sent -- the target simply needs a
+human again, which degrades to asking for help rather than to bad data.
+
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The bundled sidecar (`sidecar/`) wraps nodriver (AGPL-3.0) as a genuinely separate process, under its own [`sidecar/LICENSE`](sidecar/LICENSE).
