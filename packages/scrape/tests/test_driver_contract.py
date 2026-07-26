@@ -379,7 +379,7 @@ class TestADroppedSolveIsNeverSilent:
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
             driver._warn_dropped_session_state("https://example.gov/f.pdf", log)
 
-        message = caplog.records[0].getMessage()
+        message = driver_warnings(caplog, "nodriver_download")[0].getMessage()
         assert "/v1/download" in message, f"the remedy was not made specific to this driver: {message}"
         assert "Use the nodriver sidecar driver" not in message
 

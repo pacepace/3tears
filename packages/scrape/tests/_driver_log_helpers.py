@@ -5,11 +5,18 @@ Extracted because the decision is where a bug lived: filtering with
 forwards a human's solve to the inner document driver -- so the loose form was wrong precisely
 in the case the filter exists for.
 
-Sharing it is what makes the rule guardable. Four suites assert through this function, and
-``test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver`` drives it directly, so
-loosening the match fails there rather than quietly weakening four assertions elsewhere. The
-previous attempt at that guard asserted ``"...multi_document".endswith("document")``, which is
-a property of :class:`str`: it held whether production was exact or loose.
+Sharing it is what makes the rule guardable. EVERY driver suite asserts through this function,
+and ``test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver`` drives it directly, so
+loosening the match fails there rather than quietly weakening the assertions elsewhere.
+
+No count of suites or call sites here, deliberately: the sentence above this one was itself
+rewritten to fix a false claim, and that rewrite introduced a "four suites" figure its own
+commit made wrong. A number in prose is a fact that has to be maintained, and this file has
+now proved twice that it will not be.
+
+The previous attempt at that guard asserted ``"...multi_document".endswith("document")``,
+which is a property of :class:`str`: it held whether production was exact or loose, and so
+guarded nothing.
 """
 
 from __future__ import annotations
