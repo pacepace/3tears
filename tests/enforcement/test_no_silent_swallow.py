@@ -4,13 +4,19 @@ An exception handler logs, re-raises, or carries a ``# NOSILENT: <reason>`` mark
 handler whose body is only ``pass`` hides the failure until the failure is the outage, and
 a ``contextlib.suppress`` is the same thing with better manners.
 
-**Scoped to ``threetears.core`` for now, deliberately.** The walker reports 94 handlers
-across the workspace; core's 11 are marked, and every one turned out to be legitimate --
-optional-dependency probes, best-effort teardown, an awaited cancellation, and temp-file
-cleanup on a path that re-raises two lines later. The remaining 83 are the same review
-done thirteen more times, and marking them unread would produce exactly the rubber-stamp
-this rule exists to prevent. Widening one package at a time keeps each batch small enough
-to actually read.
+**RELEASE GATE: this must scan the whole workspace before v0.20.0 ships.** These are
+security packages; a handler that swallows silently is an outage that reports nothing, and
+shipping one is not a thing to trade against convenience.
+
+**Scoped to ``threetears.core`` today, deliberately.** Every handler it reports there is
+marked, and every one turned out to be legitimate -- optional-dependency probes, best-effort
+teardown, an awaited cancellation, and temp-file cleanup on a path that re-raises two lines
+later. The rest of the workspace is the same review repeated per package, and marking those
+unread would produce exactly the rubber-stamp this rule exists to prevent, in the rule that
+can least afford one.
+
+Widen ``_CONFIG.src_roots`` one package at a time as each is actually read. Run the walker
+for the current count; it prints one. The release ships when this file names every package.
 """
 
 from __future__ import annotations

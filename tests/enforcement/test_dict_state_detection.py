@@ -5,12 +5,13 @@ dict is per-process, so two pods disagree and a restart forgets. The walker, the
 machinery and the stale-entry meta-check all live in
 :mod:`threetears.enforcement.dict_state_detection`.
 
-This replaces a 604-line hand-rolled copy. The copy was not wrong -- it was the only one of
-the two that worked, because the shared domain keyed its allowlist on ``(file, exact line,
-attr)`` and had never had a caller to prove that unusable. A line number is invalidated by
-any edit ABOVE the assignment, so all 23 entries below would have gone stale the first time
-someone added an import. The shared domain now keys on ``(file, class_name, attr)``, which
-is what the copy always did and what survives a refactor that does not move the attribute.
+This replaces a hand-rolled copy that lived in ``packages/core/tests/``. The copy was not
+wrong -- it was the only one of the two that worked, because the shared domain keyed its
+allowlist on ``(file, exact line, attr)`` and had never had a caller to prove that unusable.
+A line number is invalidated by any edit ABOVE the assignment, so every entry below would
+have gone stale the first time someone added an import. The shared domain keys on
+``(file, class_name, attr)`` now, which is what the copy always did and what survives a
+refactor that does not move the attribute.
 
 **ALLOWLIST is forever; KNOWN_VIOLATIONS is a debt list.** The first is state that
 genuinely cannot live in a backend -- live ``asyncio`` handles, the collection

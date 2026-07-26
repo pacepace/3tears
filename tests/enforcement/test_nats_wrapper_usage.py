@@ -5,7 +5,7 @@ Every package reaches NATS through :class:`threetears.nats.NatsClient`; nothing 
 helpers live, so a direct import is a package quietly opting out of all three.
 
 ``packages/nats`` is absent from the scanned roots rather than exempted inside them: it
-holds all 29 direct imports in the workspace, and it is supposed to. It is not an
+holds every direct ``nats`` import in the workspace, and it is supposed to. It is not an
 exception to the rule, it is the thing the rule points at.
 
 The walker has been in ``packages/enforcement`` with no caller since it was written, so

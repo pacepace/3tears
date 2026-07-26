@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**RELEASE GATE -- `no_silent_swallow` must be clean workspace-wide before this ships.** The
+walker currently runs against `threetears.core` only, where every handler is marked and
+every one was legitimate. The rest of the workspace is unscanned. These are security
+packages, and a handler that swallows silently is an outage that reports nothing, so this
+is a blocker rather than a nice-to-have. Run
+`tests/enforcement/test_no_silent_swallow.py` widened to a package for its current count.
+
+**Dict-state enforcement is keyed on the class, not the line.** The shared domain matched
+its allowlist on `(file, exact line, attr)` and had never had a caller to prove that
+unusable -- a line number is invalidated by any edit ABOVE the assignment, so an allowlist
+went stale the first time anyone added an import. It keys on `(file, class_name, attr)`
+now, which is what the hand-rolled copy in `packages/core/tests/` always did, and that copy
+is retired. Violations report `Class.attr` rather than a bare attribute name, and
+the shared exemption grammar accepts dotted symbols.
+
 **`rotate_refresh_token` gained the hooks its real caller needed.** It had zero callers
 while identity-core ran a 358-line reimplementation of the same check order beside it, and
 that copy had already drifted: an ordinary session could refresh forever, because only the

@@ -4,13 +4,11 @@ Four AST-level conventions, applied to **every** package in the workspace: no ba
 ``print()``, no stdlib ``logging.getLogger``, ``from __future__ import annotations`` at
 module top, and a return annotation on every non-dunder, non-test function.
 
-This replaces a 146-line hand-rolled copy that lived in
-``packages/core/tests/enforcement/`` and scanned ``threetears.core`` alone. The scanners
-themselves have been in ``packages/enforcement`` the whole time with no caller at all, so
-the monorepo was simultaneously shipping the shared implementation and running a private
-one over a fifth of the tree. Widening to every package cost one real fix
-(``threetears.observe.resilience`` had no future-import) and two exemptions, both of which
-name a module that legitimately does the thing.
+This replaces a hand-rolled copy that lived in ``packages/core/tests/enforcement/`` and
+scanned ``threetears.core`` alone. The scanners themselves have been in
+``packages/enforcement`` the whole time with no caller at all, so the monorepo was
+simultaneously shipping the shared implementation and running a private one over part of
+the tree. The exemptions below each name a module that legitimately does the thing.
 """
 
 from __future__ import annotations
