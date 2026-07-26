@@ -1090,3 +1090,76 @@ class TestEgressByName:
                 egress="tor",
                 robots=None,
             )
+
+
+class TestTheFleetAndTheSiteBothBind:
+    """The `max(local, fleet)` lives in `ScrapeTool`, so it is asserted here.
+
+    The gate's own tests deliberately assert each half separately. Writing `max(...)` in a test
+    body moves the combination into the test -- it then computes what production is supposed to
+    compute, and deleting the `max` in the tool leaves the suite green. That is exactly what
+    happened, and this class is the fix.
+    """
+
+    @staticmethod
+    def _pacer(*, claimed: bool, retry_after: float = 0.0):
+        # parity-with: threetears.core.coordination.token_bucket.TokenBucket
+        class _Pacer:
+            def __init__(self) -> None:
+                self.keys: list[str] = []
+
+            async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0):
+                self.keys.append(key)
+                return SimpleNamespace(claimed=claimed, retry_after_seconds=retry_after, tokens_remaining=0.0)
+
+        return _Pacer()
+
+    async def _slept_waiting_for(self, pacer) -> list[float]:
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, "User-agent: *\nCrawl-delay: 10\n"
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+        url, schema = "https://example.gov/paced", {"employer": "str"}
+        await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+
+        gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
+        gate.note_fetched(url)  # this pod owes the site ~10s
+        tool = ScrapeTool(
+            recipe_collection=recipes,
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+            robots=gate,
+        )
+
+        slept: list[float] = []
+
+        async def _record(seconds: float) -> None:
+            slept.append(seconds)
+
+        with patch("asyncio.sleep", _record):
+            await tool.execute(url=url, field_schema=schema)
+        return slept
+
+    async def test_the_fleets_longer_wait_wins(self):
+        """Deleting the `max` silently discards the fleet's answer."""
+        slept = await self._slept_waiting_for(self._pacer(claimed=False, retry_after=25.0))
+
+        assert slept, "nothing was waited"
+        assert slept[0] == pytest.approx(25.0, abs=0.5), (
+            f"the fleet owed 25s and this pod owed ~10s; the tool waited {slept[0]}s"
+        )
+
+    async def test_the_sites_longer_wait_wins(self):
+        """And a granted fleet turn must not shorten what the site itself asked for."""
+        slept = await self._slept_waiting_for(self._pacer(claimed=True))
+
+        assert slept, "nothing was waited"
+        assert slept[0] == pytest.approx(10.0, abs=0.5), (
+            f"the site asked 10s and the fleet owed nothing; the tool waited {slept[0]}s"
+        )

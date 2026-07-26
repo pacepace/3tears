@@ -279,27 +279,9 @@ class RobotsGate:
 
     async def _delay_owed(self, origin: str, parser: RobotFileParser, now: float) -> float:
         """Seconds still owed to *origin* before another fetch is polite."""
-        if not self._policy.respect_crawl_delay:
+        delay = self._capped_delay(origin, parser)
+        if delay is None:
             return 0.0
-        raw = parser.crawl_delay(self._policy.user_agent)
-        if raw is None:
-            return 0.0
-        try:
-            requested = float(raw)
-        except TypeError, ValueError:
-            # A malformed Crawl-delay is not a refusal and not a licence. Ignoring the value
-            # while still honouring the rest of the file is the reading that respects what the
-            # site could actually express.
-            log.info("scrape robots: %s asked for an unparseable crawl delay %r; ignoring it", origin, raw)
-            return 0.0
-        delay = min(requested, self._policy.max_crawl_delay_seconds)
-        if delay < requested:
-            log.info(
-                "scrape robots: %s asked for %.0fs between requests; capped at %.0fs",
-                origin,
-                requested,
-                delay,
-            )
 
         # The FLEET's turn is deliberately not asked for here. `TokenBucket.claim` consumes a
         # token atomically, and `check` is a question, not a commitment: the circuit can
@@ -332,6 +314,38 @@ class RobotsGate:
         while len(store) > self._max_origins:
             store.popitem(last=False)
 
+    def _capped_delay(self, origin: str, parser: RobotFileParser) -> float | None:
+        """The ``Crawl-delay`` this origin is governed by after capping, or ``None`` if none.
+
+        ``None`` means "this origin is not delay-governed at all" -- the policy has the
+        behaviour off, the file declares no delay, or the value will not parse. Shared by the
+        local clock and :meth:`claim_fleet_turn` precisely so the two cannot disagree about
+        which origins are paced: they did, briefly, and every site that declares no delay was
+        being throttled fleet-wide by a pacer the local clock would never have consulted.
+        """
+        if not self._policy.respect_crawl_delay:
+            return None
+        raw = parser.crawl_delay(self._policy.user_agent)
+        if raw is None:
+            return None
+        try:
+            requested = float(raw)
+        except TypeError, ValueError:
+            # A malformed Crawl-delay is not a refusal and not a licence. Ignoring the value
+            # while still honouring the rest of the file is the reading that respects what the
+            # site could actually express.
+            log.info("scrape robots: %s asked for an unparseable crawl delay %r; ignoring it", origin, raw)
+            return None
+        delay = min(requested, self._policy.max_crawl_delay_seconds)
+        if delay < requested:
+            log.info(
+                "scrape robots: %s asked for %.0fs between requests; capped at %.0fs",
+                origin,
+                requested,
+                delay,
+            )
+        return delay
+
     async def claim_fleet_turn(self, url: str) -> float:
         """Take this origin's turn from the cross-pod pacer, and say how long is still owed.
 
@@ -350,17 +364,33 @@ class RobotsGate:
         :return: additional seconds to wait before fetching, ``0.0`` when the turn is granted
         :rtype: float
         """
-        if self._delay_pacer is None or not self._policy.respect_crawl_delay:
+        if self._delay_pacer is None:
             return 0.0
         origin = _origin_of(url)
-        if not origin:
+        if not origin or origin in self._policy.overrides:
             return 0.0
+
+        # The SAME preconditions the local clock applies. Moving the claim out of `check`
+        # accidentally dropped them: an origin with a written agreement, one serving no
+        # robots.txt, or one declaring no `Crawl-delay` -- which is most sites -- was suddenly
+        # paced fleet-wide by a bucket the local clock would never have consulted. A gate that
+        # throttles sites which asked for nothing is not politeness.
+        parser = await self._parser_for(origin, time.monotonic())
+        if parser is None or self._capped_delay(origin, parser) is None:
+            return 0.0
+
         try:
             claim = await self._delay_pacer.claim(origin)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
             log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
             return 0.0
-        return 0.0 if claim.claimed else float(claim.retry_after_seconds)
+        if claim.claimed:
+            return 0.0
+        # Capped by the same ceiling as a declared delay. `retry_after_seconds` is the bucket's
+        # own number and is otherwise unbounded, which would let it exceed `max_wait_seconds` --
+        # the value that sizes `ScrapeTool`'s advertised deadline, so an uncapped wait puts the
+        # call back outside the budget it was just taught to declare.
+        return min(float(claim.retry_after_seconds), self._policy.max_crawl_delay_seconds)
 
     def _local_delay_owed(self, origin: str, delay: float, now: float) -> float:
         """Seconds owed by this process's own clock alone, ignoring any fleet coordination."""

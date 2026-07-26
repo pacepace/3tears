@@ -703,9 +703,12 @@ async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay(
     fleet = await gate.claim_fleet_turn("https://example.gov/b")
 
     assert pacer.keys == ["https://example.gov"], "the pacer is keyed per origin"
-    assert max(decision.wait_seconds, fleet) == pytest.approx(6.0), (
-        "the site asked for 10s and 4 had passed; a granted fleet claim must not shorten that"
-    )
+    # Each half asserted on its own. Writing `max(...)` here would move the combination into
+    # the test body -- the test would then compute what production is supposed to compute, and
+    # deleting the `max` in `ScrapeTool` would leave it green. That combination is asserted
+    # where it lives, in test_tool.py.
+    assert decision.wait_seconds == pytest.approx(6.0), "the site asked 10s and 4 had passed"
+    assert fleet == 0.0, "a granted claim owes nothing, and must not shorten the site's own delay"
 
 
 async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower() -> None:
@@ -717,7 +720,8 @@ async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower()
     decision = await gate.check("https://example.gov/b", now=1004.0)
     fleet = await gate.claim_fleet_turn("https://example.gov/b")
 
-    assert max(decision.wait_seconds, fleet) == pytest.approx(25.0), "the fleet's 25s outlasts this pod's 6s"
+    assert decision.wait_seconds == pytest.approx(6.0), "this pod's own clock still owes 6s"
+    assert fleet == pytest.approx(25.0), "and the fleet owes 25s; the caller takes the longer"
 
 
 async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
@@ -734,7 +738,7 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
     fleet = await gate.claim_fleet_turn("https://example.gov/b")
     assert decision.allowed is True, "an outage must not stop the scrape"
     assert fleet == 0.0, "an outage yields no fleet wait rather than raising"
-    assert max(decision.wait_seconds, fleet) == pytest.approx(6.0), "and must not stop the politeness either"
+    assert decision.wait_seconds == pytest.approx(6.0), "and must not stop the politeness either"
 
 
 # ---------------------------------------------------------------------------
@@ -986,3 +990,46 @@ async def test_claiming_a_turn_without_a_pacer_is_a_no_op() -> None:
     """So a caller never has to branch on whether fleet coordination is configured."""
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
     assert await gate.claim_fleet_turn("https://example.gov/a") == 0.0
+
+
+async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
+    """The preconditions the local clock applies, applied to the fleet claim too.
+
+    Moving the claim out of `check` dropped them: an origin with a written agreement, one
+    serving no robots.txt, or one declaring no `Crawl-delay` -- which is most sites -- was
+    paced fleet-wide by a bucket the local clock would never have consulted. Throttling sites
+    that asked for nothing is not politeness, and it is invisible because the pacer's own tests
+    all use a file that DOES declare a delay.
+    """
+    no_delay = RobotsGate(fetch=_fetcher("User-agent: *\nDisallow: /nope\n"), delay_pacer=_FakeDelayPacer())
+    assert await no_delay.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert no_delay._delay_pacer.keys == []  # noqa: SLF001
+
+    unreachable = RobotsGate(fetch=_fetcher("", status=500), delay_pacer=_FakeDelayPacer())
+    assert await unreachable.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert unreachable._delay_pacer.keys == []  # noqa: SLF001
+
+    agreed = RobotsGate(
+        RobotsPolicy(overrides=frozenset({"https://example.gov"})),
+        fetch=_fetcher(_ROBOTS_DELAY),
+        delay_pacer=_FakeDelayPacer(),
+    )
+    assert await agreed.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert agreed._delay_pacer.keys == [], "an origin we have an agreement with was still throttled"  # noqa: SLF001
+
+
+async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
+    """`retry_after_seconds` is the bucket's own number and otherwise unbounded.
+
+    `max_wait_seconds` sizes `ScrapeTool`'s advertised deadline, so an uncapped fleet wait puts
+    the call back outside the very budget the tool was taught to declare -- the deadline then
+    manufactures the cancellation, which is the bug that stranded a probe.
+    """
+    gate = RobotsGate(
+        RobotsPolicy(max_crawl_delay_seconds=30.0),
+        fetch=_fetcher(_ROBOTS_DELAY),
+        delay_pacer=_FakeDelayPacer(claimed=False, retry_after_seconds=9999.0),
+    )
+
+    assert await gate.claim_fleet_turn("https://example.gov/a") == pytest.approx(30.0)
+    assert gate.max_wait_seconds == pytest.approx(30.0), "the declared ceiling still bounds it"

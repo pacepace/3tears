@@ -562,13 +562,36 @@ class ScrapeTool(TearsTool):
             if self._robots is not None and fetch_will_happen:
                 fleet_wait = await self._robots.claim_fleet_turn(url)
 
+            # Known and accepted: a cancellation in the sleep below leaks this token. The
+            # handler around this block returns the circuit probe but cannot return a token,
+            # because `TokenBucket` has no release operation -- claim consumes and refill is
+            # the only recovery. `note_fetched` dodges this by being deferred past the sleep;
+            # the fleet claim cannot, since its answer is what sizes the sleep. Bounded, self
+            # healing, and it errs toward being MORE polite to the site. Tracked rather than
+            # patched here, because the fix that closes it changes a shared core primitive.
+
             wait_seconds = max(robots_decision.wait_seconds if robots_decision is not None else 0.0, fleet_wait)
             if wait_seconds > 0 and fetch_will_happen:
+                # Says which constraint is binding. "as its robots.txt asks" was wrong whenever
+                # the fleet pacer was the longer of the two -- an operator reading it would go
+                # looking at the site's file for a wait the site never asked for.
+                because = (
+                    "its robots.txt asks"
+                    if wait_seconds > fleet_wait
+                    else "the fleet pacer has not yet given this origin a turn"
+                )
                 log.info(
-                    "scrape tool: waiting %.0fs before fetching %s, as its robots.txt asks",
+                    "scrape tool: waiting %.0fs before fetching %s, because %s",
                     wait_seconds,
                     url,
-                    extra={"extra_data": {"target_id": target_id}},
+                    because,
+                    extra={
+                        "extra_data": {
+                            "target_id": target_id,
+                            "site_wait_seconds": robots_decision.wait_seconds if robots_decision is not None else 0.0,
+                            "fleet_wait_seconds": fleet_wait,
+                        }
+                    },
                 )
                 await asyncio.sleep(wait_seconds)
 
