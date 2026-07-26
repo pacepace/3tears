@@ -28,7 +28,7 @@ from typing import Any, NamedTuple
 
 import hitl
 import nodriver as uc
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 from nodriver.core.connection import ProtocolException
 from pydantic import BaseModel
@@ -667,7 +667,7 @@ async def _lifespan(_app: FastAPI):
     # Before the browser, because the VNC processes are children of this one and a
     # container stopping should not leave an x11vnc holding the RFB port for whatever
     # restarts into the same namespace.
-    await _vnc.stop()
+    await _sessions.shutdown()
     if _browser is not None:
         _browser.stop()
 
@@ -769,7 +769,27 @@ async def healthz() -> dict[str, str]:
 # that can evaluate a policy.
 # --------------------------------------------------------------------------
 
-_vnc = hitl.VncLifecycle()
+_sessions = hitl.SessionManager(browser_provider=lambda: _browser)
+_vnc = _sessions.vnc
+
+
+class HitlSessionRequest(BaseModel):
+    """Nothing to supply: one display means the session's shape is not negotiable."""
+
+
+class HitlTabRequest(BaseModel):
+    """Pull one target into the session.
+
+    Carries `url` + `nav_steps` rather than any handle to an earlier fetch, because nothing is
+    held while a target waits for a human. It is reported and forgotten, and re-driven from
+    these two fields when an operator actually arrives -- so waiting costs no container
+    resources, and the replay is deterministic because nav-step replay is already how this
+    package reaches gated pages.
+    """
+
+    target_id: str
+    url: str
+    nav_steps: list[NavStepModel] | None = None
 
 
 # response_model=None: the union of a dict and a JSONResponse is not a Pydantic
@@ -809,3 +829,131 @@ async def hitl_vnc_stop() -> dict[str, Any]:
     """Stop both processes, leaving nothing listening."""
     await _vnc.stop()
     return {"running": _vnc.health()}
+
+
+# --------------------------------------------------------------------------
+# HITL sessions.
+#
+# The token is returned once, by the create call, and every later call carries
+# it. It is checked with a constant-time compare against a session this process
+# minted -- which is a weaker claim than authentication and is deliberately all
+# the sidecar makes: it holds no identity and cannot evaluate a policy. Who was
+# entitled to be handed the token is the MIT side's question.
+# --------------------------------------------------------------------------
+
+
+def _token_from(authorization: str | None, x_hitl_token: str | None) -> str:
+    """Read the session token from either header, preferring the standard one."""
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return (x_hitl_token or "").strip()
+
+
+@app.post("/v1/hitl/session", response_model=None)
+async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, Any] | JSONResponse:
+    """Open the session and bring up the display.
+
+    409 rather than a queue when one is already open. One display means one operator, and
+    queueing would hold an HTTP request open for however long the first operator takes --
+    minutes to hours, which is not a thing to do to a caller.
+    """
+    del req
+    try:
+        session = await _sessions.open()
+    except hitl.SessionUnavailable as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except hitl.VncUnavailable as exc:
+        log.warning("hitl: session refused, no display: %s", exc)
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+    vnc = _vnc
+    return {
+        "session_id": session.session_id,
+        "token": session.token,
+        "expires_at": session.expires_at,
+        "max_slots": session.max_slots,
+        "vnc_path": vnc._novnc_path(),  # noqa: SLF001 -- the client path is this module's to publish
+        "vnc_port": vnc._web_port,  # noqa: SLF001
+    }
+
+
+@app.get("/v1/hitl/session/{session_id}", response_model=None)
+async def hitl_session_get(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Session state and the tabs currently open in it."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    return {
+        "session_id": session.session_id,
+        "expires_at": session.expires_at,
+        "max_slots": session.max_slots,
+        "free_slots": session.free_slots(),
+        "tabs": [
+            {"tab_id": t.tab_id, "target_id": t.target_id, "url": t.url, "opened_at": t.opened_at}
+            for t in session.tabs.values()
+        ],
+    }
+
+
+@app.post("/v1/hitl/session/{session_id}/tab", response_model=None)
+async def hitl_tab_open(
+    session_id: str,
+    req: HitlTabRequest,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Bring one target into the session, in its own isolated context."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    try:
+        tab = await _sessions.open_tab(session, target_id=req.target_id, url=req.url, nav_steps=req.nav_steps)
+    except hitl.SessionUnavailable as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a nav-step replay or a CDP timing failure is this target's problem, not the session's; surfacing it as a ToolResult-shaped error keeps the operator's other tabs alive. Logged with its traceback below
+        log.exception("hitl: could not open a tab for target %s", req.target_id)
+        return JSONResponse(status_code=502, content={"error": f"could not open the target: {exc}"})
+    return {"tab_id": tab.tab_id, "target_id": tab.target_id, "url": tab.url, "free_slots": session.free_slots()}
+
+
+@app.post("/v1/hitl/session/{session_id}/tab/{tab_id}/complete", response_model=None)
+async def hitl_tab_complete(
+    session_id: str,
+    tab_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """The human says this one is cleared: close the tab and free its slot.
+
+    Exporting the context's cookies before it is dropped is Chunk 06's work, and this is where
+    it goes -- the last moment that context exists.
+    """
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    try:
+        tab = await _sessions.complete_tab(session, tab_id)
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    return {"tab_id": tab.tab_id, "target_id": tab.target_id, "free_slots": session.free_slots()}
+
+
+@app.delete("/v1/hitl/session/{session_id}", response_model=None)
+async def hitl_session_close(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Tear the session down: drop every context, stop the display."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    await _sessions.close(session)
+    return {"closed": True, "session_id": session_id}

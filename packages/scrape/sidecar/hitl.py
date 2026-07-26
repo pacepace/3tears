@@ -2,10 +2,17 @@
 
 The container already runs a real headful Chromium against Xvfb -- what it has never had is
 any way for a person to SEE that display, let alone drive it. This module is that path, and
-nothing more: it starts ``x11vnc`` against the display and ``websockify`` in front of it,
-serving noVNC's static client, and it stops both again. There are no sessions here, no tab
-isolation, no tokens and no authorization; those are later work and deliberately absent
-rather than half-present.
+the session that sits on it.
+
+Two layers, and the split is deliberate. :class:`VncLifecycle` is the display: it starts
+``x11vnc`` and ``websockify`` in front of it, serves noVNC's static client, and stops both
+again. :class:`SessionManager` is what a human actually works in: one session against the one
+display, a bounded number of targets in it at a time, each in its own isolated browser
+context, behind a token and a hard TTL.
+
+Still no authorization here, and there will not be any: the sidecar holds no identity and
+cannot evaluate a policy. It honours a token it minted; deciding who should have been given
+one happens on the MIT side.
 
 **Started on demand, not at boot.** An idle VNC surface is an attack surface that exists for
 the 99% of the container's life when nobody is looking at it. The processes come up when a
@@ -31,8 +38,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import shutil
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import Any
 
 log = logging.getLogger("nodriver_sidecar.hitl")
 
@@ -59,6 +71,25 @@ _START_TIMEOUT_SECONDS = 10.0
 
 #: Poll interval while waiting for a port to accept a connection.
 _POLL_INTERVAL_SECONDS = 0.1
+
+#: How many targets may occupy one session at once. A bounded working set is the point: a
+#: target holds its slot from the moment it is opened until a human says it is done, including
+#: while it sits in the background being slow, so this is a real ceiling on concurrent tabs
+#: rather than a number that is usually not reached.
+DEFAULT_MAX_SLOTS = int(os.environ.get("HITL_MAX_SLOTS", "4"))
+
+#: Hard session lifetime. A ceiling rather than an idle timeout, because an operator who walks
+#: away mid-solve leaves a live browser holding a target's authenticated session, and "idle"
+#: cannot tell that apart from "reading carefully".
+DEFAULT_SESSION_TTL_SECONDS = float(os.environ.get("HITL_SESSION_TTL_SECONDS", "1800"))
+
+#: How often the reaper checks. Well under the TTL, and not so often that an unattended
+#: container spends its life waking up.
+REAPER_INTERVAL_SECONDS = float(os.environ.get("HITL_REAPER_INTERVAL_SECONDS", "30"))
+
+#: Budget for replaying a target's nav steps when pulling it into a session. Generous: a human
+#: is already waiting by this point, and failing the replay costs them the whole target.
+_NAV_STEP_TIMEOUT_SECONDS = 30.0
 
 
 class VncUnavailable(RuntimeError):
@@ -142,8 +173,10 @@ class VncLifecycle:
         # `_websockify_argv()` resolves a binary and raises when the image lacks it, and a
         # cancelled start raises without going through any of it. Both would otherwise leave
         # an x11vnc holding the RFB port behind a lifecycle that reports not-running.
-        # Checked before anything is spawned: a missing client tree is a certain failure, and
-        # finding out before there are processes to clean up is strictly better.
+        #
+        # The client tree is checked first, before anything is spawned at all: a missing one is
+        # a certain failure, and finding out before there are processes to clean up is better
+        # than finding out after.
         self._require_novnc()
 
         try:
@@ -349,3 +382,371 @@ class VncLifecycle:
             # Already dead between the liveness check and the signal. Nothing to do, and
             # nothing worth telling a caller who asked for it to be stopped.
             return
+
+
+# ---------------------------------------------------------------------------
+# The HITL session.
+#
+# One display means one session, so this is a single-session manager rather
+# than a pool -- stated rather than implied, because the shape a reader expects
+# from "session manager" is a dict of many and that is exactly the thing this
+# is not, until a display pool exists to make it true.
+# ---------------------------------------------------------------------------
+
+
+class SessionUnavailable(RuntimeError):
+    """A session was asked for and cannot be given.
+
+    Separate from :class:`VncUnavailable`, which is about the display plumbing. This is about
+    the session policy: something is already in progress, or a slot budget is spent.
+    """
+
+
+class SessionNotFound(RuntimeError):
+    """The session id or token does not match a live session.
+
+    One exception for both, deliberately: telling a caller "that session exists but your token
+    is wrong" confirms the id, and the id is the thing a guesser is trying to learn.
+    """
+
+
+@dataclass
+class HitlTab:
+    """One target occupying one slot of a session."""
+
+    tab_id: str
+    target_id: str
+    url: str
+    #: nodriver Tab. Typed loosely because nodriver is AGPL-isolated to this container and
+    #: this module is deliberately importable without it for the lifecycle tests.
+    tab: Any
+    context_id: Any
+    opened_at: float
+
+
+@dataclass
+class HitlSession:
+    """One operator working session against the single display."""
+
+    session_id: str
+    token: str
+    expires_at: float
+    max_slots: int
+    tabs: dict[str, HitlTab] = field(default_factory=dict)
+
+    def is_expired(self, now: float) -> bool:
+        """Whether the hard TTL has passed."""
+        return now >= self.expires_at
+
+    def free_slots(self) -> int:
+        """Slots not currently occupied by a tab."""
+        return self.max_slots - len(self.tabs)
+
+
+class SessionManager:
+    """Creates, tracks and reaps the one live HITL session.
+
+    Holds the VNC lifecycle rather than being held by it: a session IS the display being
+    reachable plus the tabs on it, so tying their lifetimes together in one place is what
+    stops a session outliving its VNC or a VNC outliving its session.
+
+    The browser is injected as a zero-argument callable rather than an object, because
+    ``main`` binds its browser during lifespan startup and this is constructed at import
+    time -- taking the browser eagerly would capture ``None`` forever.
+    """
+
+    def __init__(
+        self,
+        *,
+        vnc: VncLifecycle | None = None,
+        browser_provider: Callable[[], Any] | None = None,
+        max_slots: int = DEFAULT_MAX_SLOTS,
+        ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS,
+    ) -> None:
+        """
+        :param vnc: the display lifecycle a session opens and closes
+        :ptype vnc: VncLifecycle | None
+        :param browser_provider: returns the live nodriver Browser, or None before startup
+        :ptype browser_provider: Callable[[], Any] | None
+        :param max_slots: how many targets may occupy the session at once
+        :ptype max_slots: int
+        :param ttl_seconds: hard lifetime; the reaper closes a session past it
+        :ptype ttl_seconds: float
+        """
+        self._vnc = vnc if vnc is not None else VncLifecycle()
+        self._browser_provider = browser_provider
+        self._max_slots = max_slots
+        self._ttl_seconds = ttl_seconds
+        self._session: HitlSession | None = None
+        self._reaper: asyncio.Task[None] | None = None
+        # Every mutation of _session and its tabs runs under this. Slot accounting is a
+        # read-then-write, and two concurrent /tab calls that both read "one slot free" would
+        # both take it -- which is how a bounded working set stops being bounded.
+        self._lock = asyncio.Lock()
+
+    @property
+    def vnc(self) -> VncLifecycle:
+        """The display lifecycle this manager owns."""
+        return self._vnc
+
+    def current(self) -> HitlSession | None:
+        """The live session, if there is one. Does not check expiry."""
+        return self._session
+
+    def authorize(self, session_id: str, token: str) -> HitlSession:
+        """Resolve a session from an id and token, or refuse.
+
+        Compared with :func:`secrets.compare_digest` rather than ``==``: the comparison is
+        against a secret, and the timing of a short-circuiting equality is a side channel that
+        leaks a prefix. Cheap to do correctly, so there is no reason not to.
+
+        The sidecar authenticates nobody. This checks that the caller holds a token this
+        process minted, which is a different and much weaker claim -- who was allowed to be
+        given that token is decided on the MIT side, which is the only side that can evaluate
+        a policy.
+
+        :raises SessionNotFound: no live session, wrong id, or wrong token
+        """
+        session = self._session
+        if session is None:
+            raise SessionNotFound("no session is open")
+        if not secrets.compare_digest(session.session_id, session_id):
+            raise SessionNotFound("no such session")
+        if not secrets.compare_digest(session.token, token):
+            raise SessionNotFound("no such session")
+        return session
+
+    async def open(self, *, now: float | None = None) -> HitlSession:
+        """Open a session and bring up the display.
+
+        Refuses rather than queues when one is already live. One Xvfb display means one
+        operator; queueing here would mean holding a request open for however long the first
+        operator takes, which is minutes to hours and is not a thing to do to an HTTP caller.
+        The refusal names the expiry so a caller knows when to try again.
+
+        :raises SessionUnavailable: a session is already open
+        :raises VncUnavailable: the display could not be brought up
+        """
+        moment = now if now is not None else time.time()
+        async with self._lock:
+            live = self._session
+            if live is not None and not live.is_expired(moment):
+                raise SessionUnavailable(
+                    f"a session is already open and expires in {live.expires_at - moment:.0f}s; "
+                    f"one display means one operator at a time"
+                )
+            if live is not None:
+                # Expired but not yet reaped. Closing it here rather than waiting for the
+                # reaper means an operator arriving exactly then is not told "busy" by a
+                # session nobody is using.
+                await self._close_locked(live)
+
+            # The display comes up BEFORE the session is recorded. A session whose VNC failed
+            # is not a session, and recording it first would leave one that must then be
+            # rolled back -- the same two-outcomes discipline `start` itself follows.
+            await self._vnc.start()
+
+            session = HitlSession(
+                session_id=secrets.token_urlsafe(16),
+                # 32 bytes, not a uuid: this is the bearer of the whole session and a uuid4 is
+                # 122 bits of a format whose shape invites people to treat it as an
+                # identifier rather than a secret.
+                token=secrets.token_urlsafe(32),
+                expires_at=moment + self._ttl_seconds,
+                max_slots=self._max_slots,
+            )
+            self._session = session
+            self._ensure_reaper()
+            log.info(
+                "hitl: session %s open with %d slots, expiring in %.0fs",
+                session.session_id,
+                session.max_slots,
+                self._ttl_seconds,
+            )
+            return session
+
+    async def open_tab(
+        self,
+        session: HitlSession,
+        *,
+        target_id: str,
+        url: str,
+        nav_steps: Any = None,
+        now: float | None = None,
+    ) -> HitlTab:
+        """Bring one target into the session as an isolated tab.
+
+        Isolated per tab, not per session: the acceptance criterion for this chunk is that a
+        second target cannot see the first one's cookies, and a shared context would hand a
+        walled site the credentials a human just earned somewhere else.
+
+        Occupies a slot from here until :meth:`complete_tab`. Backgrounding a slow target
+        still holds its slot -- that is what makes the working set bounded rather than merely
+        usually small.
+
+        :raises SessionUnavailable: no slots free
+        """
+        moment = now if now is not None else time.time()
+        async with self._lock:
+            if session.free_slots() <= 0:
+                raise SessionUnavailable(
+                    f"all {session.max_slots} slots are occupied; complete a tab before opening another"
+                )
+            browser = self._browser_provider() if self._browser_provider is not None else None
+            if browser is None:
+                raise SessionUnavailable("the browser is not running")
+
+            tab_obj, context_id = await _open_isolated(browser, url, nav_steps)
+            tab = HitlTab(
+                tab_id=secrets.token_urlsafe(8),
+                target_id=target_id,
+                url=url,
+                tab=tab_obj,
+                context_id=context_id,
+                opened_at=moment,
+            )
+            session.tabs[tab.tab_id] = tab
+            log.info(
+                "hitl: session %s opened tab %s for target %s (%d/%d slots used)",
+                session.session_id,
+                tab.tab_id,
+                target_id,
+                len(session.tabs),
+                session.max_slots,
+            )
+            return tab
+
+    async def complete_tab(self, session: HitlSession, tab_id: str) -> HitlTab:
+        """Close a tab a human has finished with and free its slot.
+
+        Exporting that context's cookies before it is dropped is Chunk 06's job, and the seam
+        for it is this method: it is the last moment the context exists.
+
+        :raises SessionNotFound: no such tab in this session
+        """
+        async with self._lock:
+            tab = session.tabs.pop(tab_id, None)
+            if tab is None:
+                raise SessionNotFound(f"no tab {tab_id} in this session")
+            await self._drop_tab(tab)
+            log.info(
+                "hitl: session %s completed tab %s (%d/%d slots used)",
+                session.session_id,
+                tab_id,
+                len(session.tabs),
+                session.max_slots,
+            )
+            return tab
+
+    async def close(self, session: HitlSession | None = None) -> None:
+        """Tear a session down: drop every context, stop the display.
+
+        Idempotent, and safe with no session open, because teardown is what an error handler
+        and a reaper both call.
+        """
+        async with self._lock:
+            target = session if session is not None else self._session
+            if target is None:
+                # Still stop the display: a VNC running with no session is the leak this
+                # method exists to prevent, and reaching it means something already went wrong.
+                await self._vnc.stop()
+                return
+            await self._close_locked(target)
+
+    async def reap(self, *, now: float | None = None) -> bool:
+        """Close the session if its hard TTL has passed. Returns whether it did.
+
+        A TTL rather than an idle timeout: an operator who walks away mid-solve leaves a live
+        browser holding a target's authenticated session, and "idle" cannot tell that apart
+        from "reading carefully". A hard ceiling is the only bound that does not depend on
+        guessing intent.
+        """
+        moment = now if now is not None else time.time()
+        async with self._lock:
+            session = self._session
+            if session is None or not session.is_expired(moment):
+                return False
+            log.warning(
+                "hitl: reaping session %s past its TTL with %d tab(s) still open",
+                session.session_id,
+                len(session.tabs),
+            )
+            await self._close_locked(session)
+            return True
+
+    async def _close_locked(self, session: HitlSession) -> None:
+        """Teardown, with the lock already held."""
+        for tab in list(session.tabs.values()):
+            await self._drop_tab(tab)
+        session.tabs.clear()
+        if self._session is session:
+            self._session = None
+        await self._vnc.stop()
+        log.info("hitl: session %s closed", session.session_id)
+
+    async def _drop_tab(self, tab: HitlTab) -> None:
+        """Dispose one tab's browser context, never raising into a teardown."""
+        browser = self._browser_provider() if self._browser_provider is not None else None
+        if browser is None:
+            return
+        try:
+            await _dispose_context(browser, tab.context_id)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a context that will not dispose must not stop the other tabs being dropped or the display being stopped; the leak is bounded by the browser's own lifetime. Logged with its traceback below
+            log.exception(
+                "hitl: could not dispose the browser context for tab %s",
+                tab.tab_id,
+                extra={"extra_data": {"tab_id": tab.tab_id, "target_id": tab.target_id}},
+            )
+
+    def _ensure_reaper(self) -> None:
+        """Start the reaper loop if it is not already running."""
+        if self._reaper is not None and not self._reaper.done():
+            return
+        self._reaper = asyncio.create_task(self._reap_loop())
+
+    async def _reap_loop(self) -> None:
+        """Poll for an expired session until there is none left to reap.
+
+        Exits when no session is open rather than sleeping forever, so a container with no
+        operator has no task. `_ensure_reaper` starts a fresh one with the next session.
+        """
+        try:
+            while self._session is not None:
+                await asyncio.sleep(REAPER_INTERVAL_SECONDS)
+                await self.reap()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the reaper is a background supervisor; letting it die silently would leave every later session unbounded, so it logs and the next session restarts it. Logged with its traceback below
+            log.exception("hitl: the session reaper stopped unexpectedly")
+
+    async def shutdown(self) -> None:
+        """Stop the reaper and close whatever is open. For container teardown."""
+        if self._reaper is not None:
+            self._reaper.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reaper
+            self._reaper = None
+        await self.close()
+
+
+async def _open_isolated(browser: Any, url: str, nav_steps: Any) -> tuple[Any, Any]:
+    """Create an isolated context+tab at *url* and replay *nav_steps* in it.
+
+    Indirected through ``main`` at call time rather than imported at module scope: ``main``
+    imports this module, so importing it back at the top would be a cycle, and this module is
+    deliberately importable without nodriver so the lifecycle tests can run outside the
+    container.
+    """
+    import main  # noqa: PLC0415 -- deliberate late import; see docstring
+
+    tab, context_id = await main._create_isolated_tab(browser, url)  # noqa: SLF001
+    if nav_steps:
+        await main._execute_nav_steps(tab, nav_steps, _NAV_STEP_TIMEOUT_SECONDS, [])  # noqa: SLF001
+    return tab, context_id
+
+
+async def _dispose_context(browser: Any, context_id: Any) -> None:
+    """Dispose a browser context. Split out so tests can substitute it."""
+    import nodriver as uc  # noqa: PLC0415 -- deliberate late import; see _open_isolated
+
+    await browser.send(uc.cdp.target.dispose_browser_context(context_id))
