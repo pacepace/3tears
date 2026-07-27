@@ -24,7 +24,7 @@ from threetears.core.security import (
     resolve_secret,
 )
 from threetears.nats import NatsClient
-from threetears.observe import HealthCheck, HealthServer, InflightRequestsGauge, get_logger
+from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
@@ -594,31 +594,41 @@ class RegistryServer:
             "registry.call_proxy.start",
         )
 
-        # canonical /healthz endpoint -- consumed by docker compose +
-        # k8s liveness probes + the consumer's devx preflight. port 8000
-        # matches the inherited upstream hub Dockerfile HEALTHCHECK so
-        # the same probe works whether the container runs as the hub,
-        # the registry, or any other consumer of that base.
+        # canonical health endpoints -- consumed by docker compose + k8s probes +
+        # the consumer's devx preflight. port 8000 matches the inherited upstream
+        # hub Dockerfile HEALTHCHECK so the same probe works whether the container
+        # runs as the hub, the registry, or any other consumer of that base.
         health_server = HealthServer(
             port=self._health_port,
             service_name="registry",
             metrics_provider=inflight_gauge.render,
             checks=[
+                # key liveness on REAL NATS health (is_closed / is_healthy), NOT
+                # is_connected -- the latter is a stale-socket flag that stays True
+                # through a terminal close or a persistent auth / overflow wedge, so
+                # a probe on it reports healthy forever with a dead registry (the
+                # silent-zombie bug). a transient reconnect keeps this True so
+                # forever-reconnect never flaps liveness into a restart loop.
                 HealthCheck(
                     name="nats",
-                    probe=lambda: self._nc is not None and self._nc.is_connected,
+                    probe=lambda: self._nc is not None and not self._nc.is_closed and self._nc.is_healthy,
+                    tier=HealthTier.LIVE,
+                ),
+                # a replica whose intake or routing subscription is unbound cannot
+                # learn about tool pods or route a call, so it leaves rotation. NOT
+                # liveness: the usual cause is a NATS outage, which a restart does
+                # not fix and which self-heals on reconnect.
+                HealthCheck(
+                    name="registration_subscribed",
+                    probe=lambda: (
+                        self._registration_handler is not None and self._registration_handler.subscription_active
+                    ),
+                    tier=HealthTier.READY,
                 ),
                 HealthCheck(
-                    name="catalog",
-                    probe=lambda: self._catalog is not None,
-                ),
-                HealthCheck(
-                    name="registration_handler",
-                    probe=lambda: self._registration_handler is not None,
-                ),
-                HealthCheck(
-                    name="call_proxy",
-                    probe=lambda: self._call_proxy is not None,
+                    name="call_proxy_subscribed",
+                    probe=lambda: self._call_proxy is not None and self._call_proxy.subscription_active,
+                    tier=HealthTier.READY,
                 ),
                 # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
                 # successful fetch. before it warms, the proxy verifies every identity token against
@@ -629,6 +639,7 @@ class RegistryServer:
                 HealthCheck(
                     name="jwks_warmed",
                     probe=lambda: self._jwks_provider is not None and self._jwks_provider.is_warmed,
+                    tier=HealthTier.READY,
                 ),
             ],
         )
