@@ -17,7 +17,7 @@ host application's process. It brings infrastructure dependencies --
 PostgreSQL always, NATS JetStream once you scale past one pod -- but those
 are services you stand up and own. 3tears just talks to them.
 
-It ships as ~26 independently-versioned packages under one `threetears.*`
+It ships as independently-versioned packages under one `threetears.*`
 import namespace, each installable and each pinned on its own. Take the whole
 stack, or take one package and ignore the rest. Nothing in the family requires
 the rest of the family.
@@ -174,6 +174,7 @@ at commit time.
 | [`enforcement`](enforcement.md) | Shared static-analysis scanners that enforce architectural invariants at commit time. |
 | [`backup`](backup.md) | Encrypted, GFS-rotated, restore-verified database backups to any object store. |
 | [`object-store`](object-store.md) | Streaming S3-compatible storage for large binary artifacts. |
+| [`scrape`](scrape.md) | Self-healing web scraping: LLM-proposed extraction validated against the real page, a circuit that stops paying for a walled target, and a human-handover surface for the pages no unattended fetch will pass. |
 
 ### Agent framework
 

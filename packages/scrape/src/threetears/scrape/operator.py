@@ -78,6 +78,19 @@ _RELAY_CHUNK_BYTES = 65536
 #: ``wsProtocols``. The alternatives are worse in specific ways rather than merely different: a
 #: cookie is state this platform does not use, and a query parameter writes a live credential
 #: into access logs, browser history and referrer headers.
+#:
+#: **THIS CONSTRAINS WHAT A TOKEN MAY CONTAIN, and a platform mints the token.** RFC 6455
+#: subprotocol names are HTTP tokens, so a value carrying ``/``, ``=``, a comma or whitespace is
+#: not merely untidy -- it breaks, and it breaks in the worst place. Standard base64 uses ``/``
+#: and ``=``; a comma is how the offered list is separated, so one inside a token truncates it
+#: server-side. Either way the browser's ``new WebSocket(...)`` raises, or the handler is never
+#: entered, and the operator reads "Could not open the display" with NO server-side trace at all.
+#:
+#: So a token must be URL-safe-alphabet material: ``secrets.token_urlsafe`` (which is what the
+#: sidecar uses), a base64URL value with padding stripped, or a hex digest. A JWT is fine -- its
+#: three segments are base64URL and its separator is ``.`` -- but a signature encoded with standard
+#: base64 is not. This is a constraint on the PLATFORM, which is why it is stated on the constant
+#: a platform reads rather than left in a test.
 TOKEN_SUBPROTOCOL_PREFIX = "hitl-token."
 
 
@@ -272,7 +285,10 @@ def build_operator_router(
     """Build the router a platform mounts to give its operators a display.
 
     :param authorize: decides whether a token entitles its bearer to a session, and to which
-        one. The platform's own concern -- see :class:`SessionAuthorizer`.
+        one. The platform's own concern -- see :class:`SessionAuthorizer`. Note the constraint on
+        what the platform may MINT, recorded at :data:`TOKEN_SUBPROTOCOL_PREFIX`: the token rides a
+        WebSocket subprotocol name, so it must use the URL-safe alphabet. A standard-base64 token
+        fails in the browser before this is ever called, and leaves no server-side trace.
     :ptype authorize: SessionAuthorizer
     :param display: resolves a session to the RFB server serving it.
     :ptype display: DisplayEndpoint

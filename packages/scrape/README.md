@@ -297,10 +297,19 @@ app.include_router(
 )
 ```
 
-Pass `claim` on any deployment running more than one pod. Without it the operator's stream
-outlives the lease that entitled it: a pod that loses a session to a handover keeps a live
-browser and a live display in front of a person for the rest of the session's TTL, while the pod
-that actually owns it serves somebody else against the same session id.
+Pass `claim` on any deployment running more than one pod. Without it a pod never learns it has
+lost a session, so two things fail to happen: the operator's stream does not end, and the pod does
+not release what it is holding -- an `x11vnc` on a live display and browser contexts carrying the
+cookies of whatever the human was part way through. Both survive until the sidecar's own session
+TTL reaps them, while the pod that actually owns the session serves somebody else against the same
+id. With `claim` supplied, the stream ends and the display is released at the moment ownership
+moves.
+
+**The token must use the URL-safe alphabet.** It rides a WebSocket subprotocol name, and RFC 6455
+subprotocol names are HTTP tokens, so `/`, `=`, a comma or whitespace breaks the upgrade in the
+browser before anything server-side runs -- and the operator sees only "Could not open the
+display". `secrets.token_urlsafe`, a padding-stripped base64URL value, or a hex digest are all
+fine; a standard-base64 value is not.
 
 The deployment this is shaped for is a Kubernetes pod with two containers: yours, which holds
 identity, coordination and the operator's socket, and the AGPL nodriver sidecar beside it, which

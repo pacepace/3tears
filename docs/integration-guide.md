@@ -700,6 +700,18 @@ from threetears.core import (
     ConcurrentModificationError, DataLayerUnavailableError,
     create_dynamic_collection,
     KVLease, LeaseHandle,                      # coordination (multi-pod locks)
+    Keyset, Page, decode_cursor, encode_cursor, CursorError,   # cursor pagination
+    fire_and_forget,                           # submit a coroutine without awaiting it
+)
+
+# Egress -- HOW traffic leaves. A seam, not a proxy: `EgressDriver` is a
+# runtime_checkable Protocol, so a consumer may supply its own exit. Nothing
+# here polls, so wiring `EgressRegistry.health()` is the platform's job -- and
+# it is worth doing, because a dead exit fails every fetch transport-side while
+# looking exactly like an application problem.
+from threetears.core.egress import (
+    EgressDriver, EgressRegistry, EgressHealth,
+    DirectEgress, ProxyEgress, SocksEgress, WarpEgress,
 )
 
 # Migrations (canonical runner)

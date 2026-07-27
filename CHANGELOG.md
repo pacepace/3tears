@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+> **This release must be a MINOR bump (0.20.0), not a patch.** `threetears.scrape` imports
+> `threetears.core.egress`, and `threetears.scrape.operator*` ships four new public contract
+> surfaces -- new public API on two distributions, which is a minor by this project's own rule.
+> The reason this sentence is here rather than only in a build plan: `.prawduct/` is gitignored and
+> build plans are deleted when work ships, so `bump-version.sh` and whoever runs it would see
+> neither. Releasing this as 0.19.4 would leave `3tears-scrape` declaring `3tears>=0.19.0,<0.20.0`
+> while importing a module no published 0.19.x contains -- resolvable by pip and broken at import,
+> which is exactly the mixed-family failure this project bounds versions to make impossible.
+
 **Fix: four names were public in practice and absent from the declared surface (`3tears`).**
 `threetears.core` resolves `Keyset`, `Page`, `decode_cursor` and `encode_cursor` through its lazy
 PEP 562 map -- they import, and this package's own pagination tests use them through
