@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**One pod holds a session's display, and knows when it stops (`3tears-scrape`).** A session is
+one operator working one display, and on Kubernetes that display lives in exactly one pod while
+the operator's WebSocket lands on whichever pod the ingress routed it to. Nothing stopped a
+second pod deciding it also served the session, and the cost is not a race that resolves: two
+Xvfb displays, two browsers, and a human driving whichever one their socket reached while the
+other collects half a solve. `claim_session` is the claim, and it refuses rather than queues --
+the holder is a person working a page, so waiting would hold a caller open for minutes to hours
+and tell nobody anything.
+
+**It is built on `KVLease` rather than `nats_distributed_lock`, which is the closer-looking
+fit.** The lock is one context manager, owns its own heartbeat, and its own docstring pairs it
+with `serve_owner`. It is still the wrong primitive here for one specific reason: its heartbeat
+is an unconditional `bucket.put`. A holder that stalls long enough for its entry to expire, and
+whose key another pod then wins, overwrites the winner's entry on its next heartbeat -- two
+holders, no error. `LeaseHandle.refresh` is a compare-and-swap against the recorded holder and
+raises `LeaseLost` instead. What KVLease lacks is only the renewal loop, and that loop is short
+because its whole job is to react to the exception the lock cannot raise.
+
+**A claim is given up on evidence or on time, never on one failed call.** `LeaseLost` is
+authoritative and acts immediately. An unreachable coordination layer is not evidence of
+anything, so a blip is ridden out -- but a claim un-renewed past its TTL has expired whether or
+not this pod noticed, and another pod may already hold it, so the deadline gives it up. Holding
+on *because* renewals are failing is the exact inversion of the safe reading.
+
+Three sharp edges are refused rather than reinterpreted. A sub-second TTL truncates to zero at
+the coordination layer, writing an entry stale the instant it lands, so it raises. A refresh
+interval longer than the TTL lapses a live claim under its own holder, so it raises. And a
+deployment with no lease -- which the compose file in this repo is -- still runs, but says so at
+WARNING: silence there means two operators on two displays believing they share one, with
+nothing anywhere saying why.
+
+Releasing is best-effort by design. The likeliest reason a release fails is that the
+coordination layer is unreachable, which is the same reason the claim was just given up -- so it
+is the ordinary path out of a lost claim, and raising would replace the operator's real failure
+with a cleanup error exactly when the original was the informative one. The TTL frees the entry
+regardless; that is what it is for.
+
 **The noVNC client now ships in the wheel, under a licence notice that says so
 (`3tears-scrape`).** The human-handover router hands a platform a working display instead of
 instructions for installing one. A seam that requires the consumer to go and fetch noVNC

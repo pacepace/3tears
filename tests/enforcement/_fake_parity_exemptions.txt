@@ -205,3 +205,9 @@ packages/channels/tests/unit/channels/test_websocket_task03.py:45:_FakeRoomState
 packages/channels/tests/unit/channels/test_websocket_task03.py:59:_FakeFanout
 # rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
 packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandler
+
+# canonical shared fakes under packages/scrape/tests
+# rationale: subset shim for nats.js.KeyValue carrying only the create/get_entry/update/delete surface KVLease calls while a session claim is held; put and get are deliberately absent so a claim renewed by an unconditional write fails here instead of passing
+packages/scrape/tests/_kv_shims.py:31:FakeKvBucket
+# rationale: subset shim for nats.aio.Client exposing kv_bucket alone, which is the entire surface KVLease reaches through; the full client's two dozen publish/subscribe/jetstream methods are unreachable from a lease
+packages/scrape/tests/_kv_shims.py:92:FakeNatsClient
