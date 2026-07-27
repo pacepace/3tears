@@ -28,6 +28,7 @@ from threetears.enforcement.underscore_access.ruff_config import all_exempted_fi
 
 __all__ = [
     "blanket_noqa_offenders",
+    "enclosing_scopes",
     "ledger_entries",
     "missing_files",
     "orphan_rationales",
@@ -84,6 +85,47 @@ def private_accesses(path: Path) -> set[tuple[int, str]]:
             continue
         found.add((node.lineno, node.attr))
     return found
+
+
+def enclosing_scopes(path: Path) -> dict[int, str]:
+    """Map each line in *path* to the dotted name of the function or class enclosing it.
+
+    Exists so a rationale can be tied to the ACCESS it describes rather than to the symbol name.
+    A file commonly touches the same private name from several places -- three tests each
+    reaching for the same helper, for different reasons -- and a ledger keyed on
+    ``(path, symbol)`` collapses those into one, silently giving every entry the first
+    entry's reason.
+
+    That failure is not correctable by hand: rewriting the wrong one is reverted by the next
+    regeneration, because the regeneration is what applied it. A scope is the smallest thing
+    that distinguishes them and survives the line drift the ledger exists to absorb.
+
+    Innermost wins, so a nested helper is named rather than the function containing it. Lines
+    outside any function or class are absent from the mapping; module-level accesses key on the
+    symbol alone, which is unambiguous there because there is only one such scope.
+    """
+    try:
+        tree = ast.parse(path.read_text(errors="replace"))
+    except SyntaxError:
+        return {}
+
+    scopes: dict[int, str] = {}
+
+    def _walk(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                qualname = f"{prefix}.{child.name}" if prefix else child.name
+                end = child.end_lineno or child.lineno
+                for line in range(child.lineno, end + 1):
+                    # Assigned unconditionally so an inner definition overwrites the outer one
+                    # it sits inside; iteration is outside-in, so innermost wins.
+                    scopes[line] = qualname
+                _walk(child, qualname)
+            else:
+                _walk(child, prefix)
+
+    _walk(tree, "")
+    return scopes
 
 
 def orphan_rationales(exemptions_path: Path) -> list[int]:

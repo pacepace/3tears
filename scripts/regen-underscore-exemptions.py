@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from threetears.enforcement.underscore_access import all_exempted_files, private_accesses
+from threetears.enforcement.underscore_access import all_exempted_files, enclosing_scopes, private_accesses
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,9 +32,23 @@ _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_underscore_exemptions.txt"
 _PLACEHOLDER = "TODO: no rationale carried forward -- write why this access is acceptable"
 
 
-def _existing_rationales() -> dict[tuple[str, str], str]:
-    """Map ``(path, symbol)`` to its recorded rationale, so a line shift loses nothing."""
-    found: dict[tuple[str, str], str] = {}
+def _existing_rationales(repo_root: Path) -> dict[tuple[str, str, str], str]:
+    """Map ``(path, scope, symbol)`` to its recorded rationale, so a line shift loses nothing.
+
+    Keyed on the enclosing function as well as the symbol, because a file routinely reaches for
+    the same private name from several places for different reasons. Keyed on ``(path, symbol)``
+    alone, the first rationale was applied to every one of them -- so three tests touching the
+    same helper all documented whichever reason happened to come first, and the two wrong ones
+    could not be corrected by hand: rewriting them was reverted by the next run, which was the
+    thing that wrote them.
+
+    The scope is resolved against the CURRENT file at the entry's recorded line. That is exact
+    while the ledger is fresh, which is the normal case, and degrades to the old behaviour when
+    a line has drifted far enough to land outside its original function -- no worse than before,
+    and better whenever the entry still resolves.
+    """
+    scopes_by_path: dict[str, dict[int, str]] = {}
+    found: dict[tuple[str, str, str], str] = {}
     rationale: str | None = None
     for raw in _LEDGER.read_text().split("\n"):
         line = raw.strip()
@@ -45,8 +59,13 @@ def _existing_rationales() -> dict[tuple[str, str], str]:
             continue
         path, _, rest = line.partition(":")
         number, _, symbol = rest.partition(":")
-        if number.isdigit() and rationale:
-            found.setdefault((path, symbol), rationale)
+        if not number.isdigit() or not rationale:
+            continue
+        source = repo_root / path
+        if path not in scopes_by_path:
+            scopes_by_path[path] = enclosing_scopes(source) if source.exists() else {}
+        scope = scopes_by_path[path].get(int(number), "")
+        found.setdefault((path, scope, symbol), rationale)
     return found
 
 
@@ -72,7 +91,7 @@ def _header() -> list[str]:
 
 
 def main() -> int:
-    rationales = _existing_rationales()
+    rationales = _existing_rationales(_REPO_ROOT)
     paths = all_exempted_files(_REPO_ROOT)
 
     out = _header()
@@ -82,9 +101,10 @@ def main() -> int:
         accesses = sorted(private_accesses(source))
         if not accesses:
             continue
+        scopes = enclosing_scopes(source)
         out.append("")
         for number, symbol in accesses:
-            reason = rationales.get((rel, symbol))
+            reason = rationales.get((rel, scopes.get(number, ""), symbol))
             if reason is None:
                 unmapped.append(f"{rel}:{number}:{symbol}")
                 reason = _PLACEHOLDER

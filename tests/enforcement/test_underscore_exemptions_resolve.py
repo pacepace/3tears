@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from threetears.enforcement.underscore_access import (
+    enclosing_scopes,
+    ledger_entries,
     missing_files,
     orphan_rationales,
     unlisted_accesses,
@@ -68,6 +70,41 @@ class TestUnderscoreExemptionsResolve:
             "these exemptions point at a line that no longer contains the symbol they name. "
             "Regenerate that path's entries -- see the procedure in the exemptions file header "
             f"-- rather than editing the numbers by hand: {unresolved}"
+        )
+
+    def test_the_regeneration_can_tell_two_accesses_of_one_symbol_apart(self) -> None:
+        """A rationale describes one ACCESS, and a file may touch a symbol for several reasons.
+
+        Keyed on ``(path, symbol)``, the regeneration carried the FIRST rationale onto every
+        access of that name in the file: three tests reaching for the same helper all documented
+        whichever reason came first. Worse than ordinary staleness, because it was not
+        correctable -- writing the right one by hand was reverted by the next run, which was
+        what wrote the wrong one.
+
+        Asserted on the MECHANISM rather than on the ledger's contents, and that distinction is
+        the point. Scanning the file cannot detect the collapse: it destroys the evidence, so
+        after it happens there is exactly one rationale where there should be several, and
+        nothing left to compare. A version of this test that scanned the ledger passed against
+        the reintroduced bug.
+        """
+        source = _REPO_ROOT / "packages" / "scrape" / "tests" / "test_tool.py"
+        scopes = enclosing_scopes(source)
+        assert scopes, "no scopes resolved; the keying would degrade to symbol-only everywhere"
+
+        # The real entries this was found on: three accesses of one symbol, in three tests.
+        render_once = sorted(
+            line
+            for path, line, symbol in ledger_entries(_EXEMPTIONS)
+            if path.endswith("scrape/tests/test_tool.py") and symbol == "_render_once"
+        )
+        assert len(render_once) > 1, (
+            "this file no longer has multiple accesses of that symbol, so it no longer "
+            "exercises the case; point the assertion at another multi-access symbol"
+        )
+        distinct = {scopes.get(line, "") for line in render_once}
+        assert len(distinct) == len(render_once), (
+            f"two accesses resolve to the same scope, so the regeneration cannot keep their "
+            f"rationales apart: lines {render_once} map to {sorted(distinct)}"
         )
 
     def test_every_exempted_access_has_an_entry(self) -> None:
