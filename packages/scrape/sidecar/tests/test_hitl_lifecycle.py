@@ -131,8 +131,12 @@ async def test_start_brings_up_both_processes_and_reports_where_to_look(lifecycl
     assert not _free_port_is_free(_RFB_TEST_PORT), "x11vnc is not accepting connections"
     assert session.web_port == _WEB_TEST_PORT
     assert session.display == ":99"
-    assert session.path.startswith(f"/{hitl.NOVNC_PAGE}"), "the client URL does not name a page that exists"
-    assert "path=websockify" in session.path, (
+    assert session.path.startswith(hitl.NOVNC_PAGE), "the client URL does not name a page that exists"
+    assert not session.path.startswith("/"), (
+        "the client URL is absolute, so it resolves against the origin root and breaks the moment "
+        "this service is mounted under a prefix belonging to somebody else's API"
+    )
+    assert "path=vnc/ws" in session.path, (
         "the client would load without knowing where to connect, so a human gets a form instead of a screen"
     )
 
@@ -283,7 +287,11 @@ def test_websockify_proxies_the_loopback_rfb_port_in_the_documented_argument_ord
     """
     del stub_path
     argv = VncLifecycle(display_num=99, web_port=_WEB_TEST_PORT)._websockify_argv()
-    assert argv[-2] == f"0.0.0.0:{_WEB_TEST_PORT}", "source must precede target"
+    assert argv[-2] == f"127.0.0.1:{_WEB_TEST_PORT}", (
+        "websockify is bound wide, so it is a second unauthenticated route to the same display "
+        "reachable by anything on the container network -- offering exactly what the in-app "
+        "relay exists to put a capability in front of"
+    )
     assert argv[-1] == f"127.0.0.1:{hitl._RFB_PORT}", "target must be the loopback RFB port"
     assert "--web" in argv and hitl.NOVNC_ROOT in argv, "the static client would not be served"
 
@@ -370,3 +378,26 @@ async def test_neither_process_gets_an_undrained_pipe(stub_path: Path, monkeypat
     assert captured.get("stderr") is not asyncio.subprocess.PIPE, (
         "stderr is a pipe nobody reads, which caps the child's life at 64 KiB of output"
     )
+
+
+def test_no_path_handed_to_a_client_is_absolute() -> None:
+    """This service expects to be mounted under somebody else's API, at a depth it never learns.
+
+    A relative path is resolved by the operator's browser against wherever the page was actually
+    served, so mounting at the root and mounting under a prefix behave identically with no
+    configuration and nothing counting segments. A leading slash resolves against the origin
+    root instead, and the failure is invisible until the day somebody proxies this -- it works
+    perfectly in every local test.
+
+    The route DECLARATIONS are absolute and must stay so; that is how a framework registers a
+    path. What must not be absolute is anything handed back for a client to follow.
+    """
+    path = VncLifecycle(display_num=99).client_path
+
+    assert not path.startswith("/"), f"the client path is absolute and will break behind a prefix: {path!r}"
+    for parameter in path.split("?", 1)[-1].split("&"):
+        key, _, value = parameter.partition("=")
+        assert not value.startswith("/"), (
+            f"the {key!r} parameter points at an absolute path, so the client would open it "
+            f"against the origin root rather than against this service: {value!r}"
+        )

@@ -11,10 +11,13 @@ approach of importing it directly -- the sidecar's conftest puts it on the path.
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any
 
 import httpx
 import main
+from fastapi.testclient import TestClient
 import pytest
 import hitl
 from hitl import VncSession, VncUnavailable
@@ -420,3 +423,90 @@ async def test_the_tab_endpoint_forwards_the_session_state_it_accepts(fake_sessi
     assert fake_sessions.session_states == [state], (
         "the endpoint accepted a human's solve and dropped it, so the tab opens unauthenticated"
     )
+
+
+class TestTheVncStreamSharesTheApiPort:
+    """The port-collapsing half: one origin carries the client, the stream and the auth.
+
+    Before this the RFB stream was a second process on a second port, so a platform exposing
+    the display over the internet had to front two surfaces and correlate them -- and only one
+    of the two knew what a session was.
+    """
+
+    def test_an_unauthenticated_upgrade_is_refused_before_any_rfb_connection(self, monkeypatch) -> None:
+        """Refused at the door, not after connecting to the display on a stranger's behalf.
+
+        Order matters here rather than only the outcome: accepting first and checking after
+        would open an RFB socket for a caller who never had a capability, which is a resource
+        an unauthenticated request must not be able to cause.
+        """
+        opened: list[tuple[str, int]] = []
+
+        async def _never(host, port):  # pragma: no cover - must not run
+            opened.append((host, port))
+            raise AssertionError("an RFB connection was opened for an unauthenticated caller")
+
+        monkeypatch.setattr(main.asyncio, "open_connection", _never)
+        client = TestClient(main.app)
+
+        with pytest.raises(Exception):  # noqa: B017 - starlette raises on a rejected handshake
+            with client.websocket_connect("/vnc/ws"):
+                pass
+
+        assert opened == []
+
+    def test_the_session_cookie_authenticates_the_stream(self, monkeypatch) -> None:
+        """The cookie is the only credential a browser can present on a WebSocket upgrade.
+
+        A browser cannot set an `Authorization` header on an upgrade, so the header every other
+        endpoint here reads is unavailable to the noVNC client. This asserts the cookie route
+        works end to end, because if it does not the display is a black rectangle and nothing
+        says why.
+        """
+        sent: list[bytes] = []
+
+        # parity-exempt: stands in for the four calls the relay makes on a StreamWriter, not for the class. Full parity would mean implementing transport plumbing the relay never touches, and a fake that large stops showing what the code under test actually depends on.
+        class _FakeWriter:
+            def write(self, data: bytes) -> None:
+                sent.append(data)
+
+            async def drain(self) -> None: ...
+            def close(self) -> None: ...
+            async def wait_closed(self) -> None: ...
+
+        # parity-exempt: stands in for the single `read` the relay makes on a StreamReader. Same reason as the writer above.
+        class _FakeReader:
+            """Sends the handshake, then stays open rather than reporting EOF.
+
+            A reader that returns b"" ends the relay, which is right in production -- the
+            display going away ends the session -- but it would cancel the browser-to-display
+            pump before this test could exercise it, and the test would then be asserting the
+            teardown rather than the relay.
+            """
+
+            def __init__(self) -> None:
+                self._chunks = [b"RFB 003.008\n"]
+
+            async def read(self, _n: int) -> bytes:
+                if self._chunks:
+                    return self._chunks.pop(0)
+                await asyncio.Event().wait()
+                return b""  # pragma: no cover - unreachable, the wait never returns
+
+        async def _connect(host, port):
+            assert (host, port) == hitl.rfb_endpoint()
+            return _FakeReader(), _FakeWriter()
+
+        monkeypatch.setattr(main.asyncio, "open_connection", _connect)
+        session = main._sessions
+        monkeypatch.setattr(session, "authorize_token", lambda token, **_: None)
+
+        client = TestClient(main.app)
+        client.cookies.set(main._VNC_COOKIE, "a-minted-token")
+        with client.websocket_connect("/vnc/ws") as ws:
+            assert ws.receive_bytes() == b"RFB 003.008\n", (
+                "the RFB handshake did not reach the browser, so the client shows nothing"
+            )
+            ws.send_bytes(b"RFB 003.008\n")
+
+        assert sent, "nothing the operator sent reached the display, so the session is read-only"

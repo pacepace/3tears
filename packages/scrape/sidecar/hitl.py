@@ -106,6 +106,17 @@ _NAV_STEP_TIMEOUT_SECONDS = 30.0
 _COMPLETE_TAB_TIMEOUT_SECONDS = 20.0
 
 
+#: Where the in-container RFB server listens. Exposed so the app that relays to it does not
+#: restate the port, which is the kind of duplicate constant that survives one of its copies
+#: being changed.
+RFB_HOST = "127.0.0.1"
+
+
+def rfb_endpoint() -> tuple[str, int]:
+    """Host and port of the loopback RFB server a WebSocket relay should connect to."""
+    return RFB_HOST, _RFB_PORT
+
+
 class VncUnavailable(RuntimeError):
     """Raised when the VNC path cannot be brought up.
 
@@ -260,7 +271,17 @@ class VncLifecycle:
         # this screen of all screens. Making the desktop genuinely follow the viewport needs an
         # X server that can resize -- TigerVNC's Xvnc, which would replace both Xvfb and x11vnc
         # -- and that is a container change rather than a flag.
-        return f"/{NOVNC_PAGE}?path=websockify&autoconnect=true&resize=scale"
+        # RELATIVE, with no leading slash, and that is a requirement rather than a style
+        # choice. This service is expected to be mounted under an arbitrary prefix belonging
+        # to somebody else's API, at a depth it does not know. A relative path is resolved by
+        # the operator's browser against wherever the page was actually served, so mounting at
+        # the root and mounting under a prefix behave identically with no configuration and
+        # nothing counting path segments.
+        #
+        # `path=vnc/ws` is likewise relative, and is where this app's own WebSocket relay
+        # listens -- the RFB stream now shares the API's port, so a platform fronts one origin
+        # with one TLS endpoint and one authentication point instead of correlating two.
+        return f"{NOVNC_PAGE}?path=vnc/ws&autoconnect=true&resize=scale"
 
     def _x11vnc_argv(self) -> list[str]:
         """``x11vnc`` invocation.
@@ -309,7 +330,14 @@ class VncLifecycle:
             self._require("websockify"),
             "--web",
             NOVNC_ROOT,
-            f"0.0.0.0:{self._web_port}",
+            # Loopback, not `0.0.0.0`. This app now serves the noVNC tree and relays the RFB
+            # stream on its own port, so nothing outside this container should reach websockify
+            # -- it is kept running only so reverting to it is a code change rather than an
+            # image rebuild while the in-app relay is still young. Bound wide it would be a
+            # second, unauthenticated route to the same display, reachable by anything on the
+            # container network, offering exactly what the relay exists to put a capability in
+            # front of.
+            f"127.0.0.1:{self._web_port}",
             f"127.0.0.1:{_RFB_PORT}",
         ]
 
@@ -624,6 +652,25 @@ class SessionManager:
         if session is None:
             return False
         return not session.is_expired(now if now is not None else time.time())
+
+    def authorize_token(self, token: str, *, now: float | None = None) -> HitlSession:
+        """Resolve the live session from its token alone, or refuse.
+
+        For the VNC stream, where the caller is a browser opening a WebSocket and cannot send a
+        session id anywhere the other endpoints read one from. There is exactly one display and
+        therefore exactly one live session, so the id adds no selectivity here -- it identifies
+        the only thing it could have identified.
+
+        Every property :meth:`authorize` provides is preserved: constant-time comparison, the
+        TTL enforced on the request path rather than left to the reaper, and one refusal for
+        every way of failing so a caller learns nothing from which one it got.
+
+        :raises SessionNotFound: no live session, wrong token, or one past its TTL
+        """
+        live = self._session
+        if live is None:
+            raise SessionNotFound("no session is open")
+        return self.authorize(live.session_id, token, now=now)
 
     def authorize(self, session_id: str, token: str, *, now: float | None = None) -> HitlSession:
         """Resolve a session from an id and token, or refuse.

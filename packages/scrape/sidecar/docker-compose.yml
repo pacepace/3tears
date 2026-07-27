@@ -33,7 +33,11 @@ services:
       # behind whatever already authenticates the rest of the deployment rather than change
       # this line.
       - "127.0.0.1:8088:8088"
-      # Deliberately NOT publishing 6080 (websockify / noVNC).
+      # Deliberately NOT publishing 6080, and it no longer matters as much as it did: the
+      # noVNC client and the RFB stream are both served by the API on 8088 now, behind the
+      # session token, so 6080 carries nothing a caller needs. websockify still runs, bound to
+      # loopback inside the container, purely so reverting to it is a code change rather than
+      # an image rebuild.
       #
       # Adding `- "6080:6080"` here is a one-line change that looks helpful and is not: the
       # HITL endpoints authenticate nobody, and they never will. The sidecar holds no identity
