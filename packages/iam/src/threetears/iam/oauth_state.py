@@ -1,9 +1,8 @@
 """OAuth ``state``: a signed, short-TTL, single-use CSRF token for the redirect round-trip.
 
 An OAuth authorization redirect hands the provider a ``state`` value and gets it back on the
-callback. Its job is to prove the callback belongs to a flow *this* deployment started, so an
-attacker cannot walk a victim's browser into a callback carrying the attacker's authorization
-code. That needs two properties, and they are not the same property:
+callback. Its job is to prove the callback belongs to a flow *this* deployment started, and to
+prove it is used once. That needs two properties, and they are not the same property:
 
 **Authenticity and freshness** come from signing. The state is a JWT (HS256 under the
 deployment's secret) with its own issuer, audience and a short expiry, so any pod validates it
@@ -26,12 +25,27 @@ The algorithm is pinned twice: once on the DECLARED header before a key is selec
 as a literal in the decode. The first stops an ``alg: none`` or an asymmetric-confusion header
 from ever reaching signature verification; the second is the statically auditable pin. This is
 the same two-stage discipline :mod:`threetears.iam.tokens` applies to session tokens.
+
+**What this does NOT give you: binding to the user agent.** A state minted here proves only that
+*some* flow this deployment started produced it. It does not prove it was *this browser's* flow,
+so on its own it does not stop login-CSRF: an attacker can start a real flow, obtain a validly
+minted-and-recorded state plus their own authorization code, and walk a victim's browser to the
+callback carrying both. Verification passes and the nonce is genuinely unused, and the victim ends
+up signed into the attacker's account. RFC 6749 section 10.12 requires the state be bound to the
+user agent's authenticated state.
+
+:func:`record_state_nonce` takes a ``payload`` for exactly this: put a value derived from
+something only that browser has -- a cookie's hash, a pre-session id -- and compare it against the
+live request in the callback. The store round-trips it and :func:`consume_state_nonce` returns it
+rather than discarding it. Callers that do not need the property can pass nothing; callers that
+do are not forced to bypass this module to get it.
 """
 
 from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -40,6 +54,7 @@ import jwt
 from threetears.iam.stores.base import StateStore
 
 __all__ = [
+    "DEFAULT_CLOCK_SKEW_SECONDS",
     "DEFAULT_STATE_TTL",
     "DEFAULT_STATE_TYPE",
     "NONCE_BYTES",
@@ -61,6 +76,12 @@ DEFAULT_STATE_TYPE: Final[str] = "oauth_state"
 
 #: Entropy in the single-use nonce.
 NONCE_BYTES: Final[int] = 16
+
+#: Default clock-skew tolerance, matching :mod:`threetears.iam.oidc`. NOT zero: PyJWT validates
+#: ``iat`` as not-in-the-future, so with no leeway a mint on a pod one second ahead of the pod
+#: handling the callback is rejected -- and rejected with the same message as a forged state, by
+#: this module's own deliberate design, so an NTP drift reads as an attack.
+DEFAULT_CLOCK_SKEW_SECONDS: Final[int] = 60
 
 _ALGORITHM: Final[str] = "HS256"
 
@@ -136,6 +157,7 @@ def verify_oauth_state(
     issuer: str,
     audience: str,
     state_type: str = DEFAULT_STATE_TYPE,
+    clock_skew_seconds: int = DEFAULT_CLOCK_SKEW_SECONDS,
 ) -> OAuthState:
     """Validate a returned ``state`` -- signature, issuer, audience, type and expiry.
 
@@ -152,6 +174,9 @@ def verify_oauth_state(
     :ptype audience: str
     :param state_type: the required ``type``.
     :ptype state_type: str
+    :param clock_skew_seconds: leeway on ``iat`` and ``exp``. See
+        :data:`DEFAULT_CLOCK_SKEW_SECONDS` for why this is not zero.
+    :ptype clock_skew_seconds: int
     :return: the verified payload.
     :rtype: OAuthState
     :raises OAuthStateError: on any verification failure.
@@ -173,8 +198,13 @@ def verify_oauth_state(
             issuer=issuer,
             audience=audience,
             options={"require": ["iss", "aud", "iat", "exp"]},
+            leeway=clock_skew_seconds,
         )
-    except jwt.InvalidTokenError as exc:  # bad signature, malformed, expired, wrong iss/aud
+    # PyJWTError, not InvalidTokenError: InvalidKeyError derives from the former only, so an empty
+    # or malformed secret escaped as a raw jwt exception past the `:raises OAuthStateError:`
+    # contract -- a deployment booted with an unset secret got a 500 from every callback instead
+    # of a clean rejection, and callers catching OAuthStateError could not contain it.
+    except jwt.PyJWTError as exc:  # bad signature, malformed, expired, wrong iss/aud, bad key
         raise OAuthStateError("invalid or expired OAuth state") from exc
     if payload.get("type") != state_type:
         raise OAuthStateError("wrong token type for OAuth state")
@@ -196,6 +226,8 @@ async def record_state_nonce(
     issuer: str,
     audience: str,
     state_type: str = DEFAULT_STATE_TYPE,
+    clock_skew_seconds: int = DEFAULT_CLOCK_SKEW_SECONDS,
+    payload: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> None:
     """Persist a freshly-minted state's nonce so :func:`consume_state_nonce` can enforce single use.
@@ -216,15 +248,29 @@ async def record_state_nonce(
     :ptype audience: str
     :param state_type: the required ``type``.
     :ptype state_type: str
+    :param clock_skew_seconds: leeway on ``iat`` and ``exp``.
+    :ptype clock_skew_seconds: int
+    :param payload: bound to the nonce and returned by :func:`consume_state_nonce`. Put a value
+        derived from something only the initiating browser has (a cookie hash, a pre-session id)
+        and compare it in the callback -- that is what makes the state resistant to login-CSRF,
+        which the signature alone does not provide.
+    :ptype payload: Mapping[str, Any] | None
     :param now: the recording instant; defaults to the current time.
     :ptype now: datetime | None
     :return: nothing
     :rtype: None
     :raises OAuthStateError: if the state does not verify.
     """
-    verified = verify_oauth_state(state, secret=secret, issuer=issuer, audience=audience, state_type=state_type)
+    verified = verify_oauth_state(
+        state,
+        secret=secret,
+        issuer=issuer,
+        audience=audience,
+        state_type=state_type,
+        clock_skew_seconds=clock_skew_seconds,
+    )
     moment = now or datetime.now(UTC)
-    await store.put(verified.nonce, {}, ttl=max(verified.expires_at - moment, timedelta(0)))
+    await store.put(verified.nonce, dict(payload or {}), ttl=max(verified.expires_at - moment, timedelta(0)))
 
 
 async def consume_state_nonce(
@@ -235,8 +281,9 @@ async def consume_state_nonce(
     issuer: str,
     audience: str,
     state_type: str = DEFAULT_STATE_TYPE,
-) -> None:
-    """Validate ``state`` and consume its nonce exactly once.
+    clock_skew_seconds: int = DEFAULT_CLOCK_SKEW_SECONDS,
+) -> Mapping[str, Any]:
+    """Validate ``state`` and consume its nonce exactly once, returning what was recorded with it.
 
     One atomic take, never a read-then-delete: two callbacks racing on the same captured state
     could both pass a presence check before either removed it, silently defeating the single-use
@@ -254,10 +301,24 @@ async def consume_state_nonce(
     :ptype audience: str
     :param state_type: the required ``type``.
     :ptype state_type: str
-    :return: nothing
-    :rtype: None
+    :param clock_skew_seconds: leeway on ``iat`` and ``exp``.
+    :ptype clock_skew_seconds: int
+    :return: whatever :func:`record_state_nonce` stored alongside the nonce -- the browser binding,
+        for a caller that supplied one. ``{}`` when nothing was recorded.
+    :rtype: Mapping[str, Any]
     :raises OAuthStateError: if the state does not verify, or its nonce is unknown or spent.
     """
-    verified = verify_oauth_state(state, secret=secret, issuer=issuer, audience=audience, state_type=state_type)
-    if await store.take(verified.nonce) is None:
+    verified = verify_oauth_state(
+        state,
+        secret=secret,
+        issuer=issuer,
+        audience=audience,
+        state_type=state_type,
+        clock_skew_seconds=clock_skew_seconds,
+    )
+    # `is None`, never a truthiness test: the recorded payload is `{}` for a caller that binds
+    # nothing, and `if not await store.take(...)` would reject every valid callback.
+    taken = await store.take(verified.nonce)
+    if taken is None:
         raise OAuthStateError("OAuth state already used or unknown (replay)")
+    return taken

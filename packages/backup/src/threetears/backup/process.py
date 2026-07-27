@@ -12,6 +12,16 @@ non-zero exit raises :class:`BackupToolError` carrying the captured stderr; when
 dies early and breaks the stdin pipe, the exit-code diagnosis wins over the raw ``BrokenPipeError``
 -- and if that child nonetheless exited ``0``, the short feed is itself raised, because an archive
 that was only partly written must never be reported as a completed restore.
+
+**The limit of that guarantee.** A short feed is detected only when the write side actually
+breaks, which needs the unwritten remainder to exceed the OS pipe buffer (~64 KiB). Below that the
+kernel absorbs the whole archive, a child that never reads a byte exits cleanly, and nothing here
+can tell that apart from a successful restore. Detecting it by polling for a child that exited
+before EOF was tried and does NOT work: ``pg_restore`` legitimately exits ``0`` at the archive's
+end-of-archive marker without waiting for EOF, so that check failed every real restore. From
+outside the process, "ignored the archive" and "consumed it and exited early" are the same
+observation. A caller that needs certainty for small archives must verify the restored database --
+which is what :mod:`threetears.backup.verify` is for.
 """
 
 from __future__ import annotations
@@ -29,13 +39,15 @@ log = get_logger(__name__)
 
 _READ_CHUNK = 1 << 16  # 64 KiB
 _TIMED_OUT = -1  # synthetic returncode used in the timeout message
+_SHORT_FEED = -2  # synthetic returncode: the child exited 0 without consuming the whole archive
 
 
 class BackupToolError(RuntimeError):
     """A dump/restore subprocess exited non-zero (or timed out).
 
     :param tool: the command that failed (argv[0]).
-    :param returncode: the process exit code (``-1`` for a timeout).
+    :param returncode: the process exit code, or a synthetic sentinel: ``-1`` for a timeout,
+        ``-2`` for a child that exited without consuming the whole archive.
     :param stderr: the captured standard error (decoded, best-effort).
     """
 
@@ -166,7 +178,12 @@ async def feed_stdin(
     if not fully_fed:
         # Exit 0 on a short feed: the tool is happy, but it never received the whole archive, so
         # the restore is partial. Reporting success here would lose data with nothing to show it.
-        raise BackupToolError(argv[0], returncode, f"stdin closed before the archive was fully written. {stderr_final}")
+        # _SHORT_FEED rather than the real (zero) exit code: a consumer branching on
+        # ``exc.returncode`` would read 0 as "no failure", which is precisely the reading this
+        # error exists to prevent. Mirrors the _TIMED_OUT convention already in this module.
+        raise BackupToolError(
+            argv[0], _SHORT_FEED, f"stdin closed before the archive was fully written. {stderr_final}"
+        )
 
 
 async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[bytes]) -> bool:
@@ -180,12 +197,23 @@ async def _pump_stdin(proc: asyncio.subprocess.Process, source: AsyncIterator[by
         async for chunk in source:
             proc.stdin.write(chunk)
             await proc.stdin.drain()
+        # The child cannot have finished reading yet: EOF is delivered by the close() below, and a
+        # tool that consumes an archive reads to EOF. So an ALREADY-EXITED child here did not read
+        # what we wrote.
+        #
+        # This is what catches a short feed the pipe buffer swallowed. Below ~64 KiB the writes sit
+        # in the kernel buffer, the child never reads them, and no BrokenPipeError is ever raised --
+        # so BrokenPipeError alone reported a partial restore of a small archive as a clean one,
+        # which is the exact failure the guard was added for. `proc.returncode` is not usable here
+        # (it stays None until the child is reaped), hence the bounded poll.
         proc.stdin.close()
         await proc.stdin.wait_closed()
     except (BrokenPipeError, ConnectionResetError) as exc:
         # The child died early. Its exit code + stderr are the better diagnosis, so the pipe error
         # itself is not raised -- but the caller is told the feed was short, because a child that
         # dies early and still exits 0 would otherwise pass off a partial archive as a full restore.
+        # This is the ONLY signal available: it needs the unwritten remainder to exceed the pipe
+        # buffer. See the module docstring for why the obvious alternative does not work.
         log.warning(
             "restore child closed its stdin before the archive was fully written",
             extra={"extra_data": {"pid": proc.pid, "error": str(exc), "error_type": type(exc).__name__}},

@@ -26,7 +26,7 @@ hole in exactly the tests that exist to prove the right thing was published.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -71,7 +71,7 @@ class AclInvalidationSubscriber(Protocol):
 async def publish_membership_invalidation(
     nats: AclInvalidationPublisher | None,
     *,
-    actor_type: str,
+    actor_type: Literal["user", "agent"],
     actor_id: UUID,
 ) -> None:
     """Announce that an actor's group membership changed.
@@ -79,8 +79,11 @@ async def publish_membership_invalidation(
     :param nats: the publisher; ``None`` is an explicit no-op for a deployment with no broker,
         which then falls back to TTL expiry.
     :ptype nats: AclInvalidationPublisher | None
-    :param actor_type: ``"user"`` or ``"agent"``.
-    :ptype actor_type: str
+    :param actor_type: ``"user"`` or ``"agent"``. Typed as the payload's own ``Literal`` rather
+        than ``str``: declaring ``str`` and silencing the mismatch with a ``type: ignore`` removed
+        the only static signal that would catch a bad value at a call site, and turned it into a
+        pydantic ``ValidationError`` raised AFTER the caller's DB write had already committed.
+    :ptype actor_type: Literal["user", "agent"]
     :param actor_id: the actor whose memberships changed.
     :ptype actor_id: UUID
     :return: nothing
@@ -88,7 +91,7 @@ async def publish_membership_invalidation(
     """
     if nats is None:
         return
-    payload = MembershipInvalidatePayload(actor_type=actor_type, actor_id=actor_id)  # type: ignore[arg-type]
+    payload = MembershipInvalidatePayload(actor_type=actor_type, actor_id=actor_id)
     await nats.publish(subject=Subjects.acl_invalidate("membership"), message=payload)
 
 
@@ -156,20 +159,29 @@ async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: Acl
         cache.invalidate_all()
         log.info("acl cache fully invalidated (a role definition changed)")
 
-    return [
-        await nats.subscribe_typed(
-            subject=Subjects.acl_invalidate("membership"),
-            cb=_on_membership,
-            message_type=MembershipInvalidatePayload,
-        ),
-        await nats.subscribe_typed(
-            subject=Subjects.acl_invalidate("assignment"),
-            cb=_on_assignment,
-            message_type=AssignmentInvalidatePayload,
-        ),
-        await nats.subscribe_typed(
-            subject=Subjects.acl_invalidate("role"),
-            cb=_on_role,
-            message_type=RoleInvalidatePayload,
-        ),
-    ]
+    bindings: tuple[tuple[Literal["membership", "assignment", "role"], Any, Any], ...] = (
+        ("membership", _on_membership, MembershipInvalidatePayload),
+        ("assignment", _on_assignment, AssignmentInvalidatePayload),
+        ("role", _on_role, RoleInvalidatePayload),
+    )
+    bound: list[Any] = []
+    try:
+        for kind, handler, payload_type in bindings:
+            bound.append(
+                await nats.subscribe_typed(
+                    subject=Subjects.acl_invalidate(kind),
+                    cb=handler,
+                    message_type=payload_type,
+                )
+            )
+    except BaseException:
+        # Unwind, or a failed startup orphans the subscriptions that DID bind: the caller receives
+        # no handles (the exception propagates instead of a list), so nothing can ever unsubscribe
+        # them and they hold the AclCache alive for the process lifetime.
+        for subscription in bound:
+            try:
+                await subscription.unsubscribe()
+            except Exception:  # noqa: BLE001 -- the original failure is the one worth raising
+                log.warning("could not unwind an acl invalidation subscription", exc_info=True)
+        raise
+    return bound

@@ -53,15 +53,13 @@ and let the threads drain naturally.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypedDict, TypeVar
-
-import asyncio
 
 from threetears.observe import get_logger
 

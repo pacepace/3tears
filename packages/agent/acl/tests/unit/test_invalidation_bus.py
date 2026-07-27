@@ -139,3 +139,38 @@ async def test_a_role_broadcast_clears_every_layer() -> None:
     await sub.bound["t.acl.role.invalidate"](RoleInvalidatePayload())
 
     assert cache.get_membership(key) is None
+
+
+async def test_a_failed_bind_unwinds_the_subscriptions_already_made() -> None:
+    """A partial bind must not orphan live subscriptions.
+
+    The three binds used to be elements of a list literal, so a failure on the second or third
+    propagated and the caller received NO handles for the ones that had succeeded -- nothing could
+    ever unsubscribe them, and they held the AclCache alive for the process lifetime.
+    """
+
+    class _FailsOnSecond:
+        """# parity-with: threetears.agent.acl.invalidation_bus.AclInvalidationSubscriber"""
+
+        def __init__(self) -> None:
+            self.made: list[_Unsubscribable] = []
+
+        async def subscribe_typed(self, **_kw: Any) -> Any:
+            if len(self.made) == 1:
+                raise RuntimeError("broker went away mid-bind")
+            sub = _Unsubscribable()
+            self.made.append(sub)
+            return sub
+
+    class _Unsubscribable:
+        def __init__(self) -> None:
+            self.unsubscribed = False
+
+        async def unsubscribe(self) -> None:
+            self.unsubscribed = True
+
+    nats = _FailsOnSecond()
+    with pytest.raises(RuntimeError):
+        await subscribe_acl_invalidation(nats, make_cache(FakeStore()))
+
+    assert nats.made and all(s.unsubscribed for s in nats.made), "the first bind must be unwound"
