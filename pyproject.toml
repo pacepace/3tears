@@ -190,6 +190,12 @@ select = ["SLF"]
 # It does NOT affect the enforcement walker either way: `find_local_src_roots` scans
 # `packages/*/src` only, so no `tests/` tree is ever walked. Verified by deleting an entry and
 # watching the gate stay green.
+# Both assert the L2 timestamp contract across the serialize/rehydrate boundary. The
+# rehydration is `BaseCollection`'s internal read-path step rather than a public seam, and
+# asserting the property through a live KV round-trip instead would make these tests about
+# NATS fixtures rather than about the contract. Entries in the exemptions ledger.
+"packages/scrape/tests/test_health.py" = ["SLF001"]
+"packages/channels/tests/unit/channels/presence/test_collection.py" = ["SLF001"]
 "packages/scrape/tests/test_robots.py" = ["SLF001"]
 "packages/scrape/tests/test_tool.py" = ["SLF001"]
 "packages/scrape/tests/test_driver_api.py" = ["SLF001"]

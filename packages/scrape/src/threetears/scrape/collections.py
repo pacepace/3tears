@@ -737,23 +737,19 @@ class ScrapeCollection(BaseCollection[EntityT]):
         non-fatal handling would have swallowed it. Both are repaired by fixing the read,
         which is why this belongs here rather than in each writer.
 
-        A value that does not parse is left exactly as found rather than nulled: losing a
-        timestamp silently is worse than carrying a malformed one to a border that will
-        reject it loudly.
+        The rehydration itself is `BaseCollection`'s, driven by the `datetime_columns` this
+        class declares. It lived here until three packages had each written their own and the
+        three disagreed about what "rehydrate" means.
+
+        One behaviour changed in that move, deliberately. This copy preserved an unparseable
+        value verbatim, on the reasoning that losing a timestamp silently is worse than
+        carrying a malformed one to a border that rejects it loudly. True as far as it went,
+        and it left the row reaching the caller with a string in a column typed `datetime` --
+        the exact fault the paragraph above says this rehydration exists to prevent. The base
+        now treats an undecodable value as a corrupt CACHE entry and falls through to L3,
+        which is authoritative, so nothing is lost and nothing malformed is served.
         """
         result: dict[str, Any] = json.loads(data)
-        for column in self.datetime_columns:
-            raw = result.get(column)
-            if isinstance(raw, str) and raw:
-                try:
-                    result[column] = datetime.fromisoformat(raw)
-                except ValueError:  # NOSILENT: unparseable timestamp is preserved verbatim
-                    log.warning(
-                        "%s: %r in column %r did not parse as a timestamp; left as-is",
-                        type(self).__name__,
-                        raw,
-                        column,
-                    )
         return result
 
     async def list_all(self) -> list[EntityT]:

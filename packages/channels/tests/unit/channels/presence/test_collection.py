@@ -137,7 +137,11 @@ class TestSerialization:
             "date_created": now,
             "date_updated": now,
         }
-        restored = coll.deserialize(coll.serialize(row))
+        # `_rehydrate_datetimes` after `deserialize` is exactly what `BaseCollection`'s L2
+        # read path does. The rehydration used to live inside this collection's own
+        # `deserialize`; it moved to the base so three packages stopped each having their own
+        # answer, and this asserts the same property one layer out.
+        restored = coll._rehydrate_datetimes(coll.deserialize(coll.serialize(row)))
         assert restored["connection_id"] == "conn-x"
         # datetimes come back as aware-UTC datetime objects, not strings
         assert isinstance(restored["date_last_heartbeat"], datetime)
@@ -149,7 +153,7 @@ class TestSerialization:
         coll = collection.connections
         naive_iso = "2024-06-01T12:00:00"
         payload = json.dumps({"connection_id": "c", "date_last_heartbeat": naive_iso}).encode()
-        restored = coll.deserialize(payload)
+        restored = coll._rehydrate_datetimes(coll.deserialize(payload))
         assert restored["date_last_heartbeat"].tzinfo is UTC
 
     async def test_room_members_round_trip(self, bus: InMemoryNatsBus) -> None:
