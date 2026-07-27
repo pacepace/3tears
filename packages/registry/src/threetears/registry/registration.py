@@ -122,6 +122,22 @@ class RegistrationHandler:
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
 
+    @property
+    def subscription_active(self) -> bool:
+        """whether the registration subscription is currently bound.
+
+        readiness signal: a registry whose registration intake is not
+        subscribed cannot learn about tool pods, so it must leave rotation --
+        but a restart would not help if the cause is a NATS outage, which is
+        why this is readiness and not liveness.
+
+        ``True`` between a successful :meth:`start` and :meth:`stop`.
+
+        :return: true while the registration subject is subscribed
+        :rtype: bool
+        """
+        return self._sub is not None
+
     async def start(self, nc: "NatsClient") -> None:
         """start listening for registration requests.
 
