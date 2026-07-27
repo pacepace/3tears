@@ -349,7 +349,6 @@ def _observed(driver_type: str) -> Callable[[F], F]:
             datasource_name = getattr(self, "_datasource_name", "unknown")
             attrs = {"driver_type": driver_type, "datasource_name": datasource_name}
             start = time.monotonic()
-            error_raised: BaseException | None = None
             try:
                 result = await fn(self, *args, **kwargs)
             except asyncio.CancelledError:
@@ -358,7 +357,6 @@ def _observed(driver_type: str) -> Callable[[F], F]:
                 # by concrete drivers from _with_cancellation hooks
                 raise
             except Exception as exc:
-                error_raised = exc
                 error_counter.add(
                     1,
                     attributes={

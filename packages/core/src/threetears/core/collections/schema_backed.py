@@ -39,7 +39,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
-from uuid import UUID
 
 from threetears.core.backends.protocol import DurableStore
 from threetears.core.backends.schema_sql import (

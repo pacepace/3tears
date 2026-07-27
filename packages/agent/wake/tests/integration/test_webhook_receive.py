@@ -10,7 +10,6 @@ verified end-to-end without an LLM.
 from __future__ import annotations
 
 import hmac
-from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 from uuid import UUID

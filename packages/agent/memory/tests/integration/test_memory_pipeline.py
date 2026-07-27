@@ -25,7 +25,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest

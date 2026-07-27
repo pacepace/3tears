@@ -24,7 +24,6 @@ from _helpers.workspace_shims import (
     FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

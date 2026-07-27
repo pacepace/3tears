@@ -23,13 +23,8 @@ import importlib
 materialize_module = importlib.import_module("threetears.agent.workspace.materialize")
 from threetears.agent.workspace.materialize import materialize  # noqa: E402
 from _helpers.workspace_shims import (
-    FakeWorkspaceCollection,
-    FakeWorkspaceContext,
-    FakeWorkspaceEntity,
     FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
-    FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

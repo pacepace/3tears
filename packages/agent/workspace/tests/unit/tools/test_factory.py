@@ -17,14 +17,9 @@ from threetears.agent.acl import (
 )
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.workspace.factory import _TOOL_BUILDERS, build_workspace_tools
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.asyncpg_shims import FakeAsyncpgPool
 from _helpers.workspace_shims import (
-    FakeWorkspaceCollection,
     FakeWorkspaceContext,
-    FakeWorkspaceEntity,
-    FakeWorkspaceFile,
-    FakeWorkspaceFileCollection,
-    FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
 )
 

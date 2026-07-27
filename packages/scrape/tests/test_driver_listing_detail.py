@@ -8,7 +8,6 @@ the consuming application's own live suite (faidh repo).
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import httpx

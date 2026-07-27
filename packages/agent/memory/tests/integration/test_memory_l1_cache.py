@@ -22,7 +22,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 from sqlalchemy import (
-    Boolean,
     Column,
     DateTime,
     Integer,

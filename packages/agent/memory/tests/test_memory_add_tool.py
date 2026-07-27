@@ -7,7 +7,7 @@ build a registry-bound collection around an in-memory mock pool.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 

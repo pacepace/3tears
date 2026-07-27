@@ -29,7 +29,6 @@ if a second 3tears consumer needs them.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID

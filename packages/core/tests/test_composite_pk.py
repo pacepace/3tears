@@ -22,7 +22,7 @@ import json
 import uuid
 from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
@@ -35,7 +35,6 @@ from threetears.core.collections.registry import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.nats import Subjects
 
 
 # ---------------------------------------------------------------------------

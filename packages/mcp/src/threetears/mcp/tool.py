@@ -17,7 +17,7 @@ enforcement test forbids ``required_permission=None`` in production
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = [

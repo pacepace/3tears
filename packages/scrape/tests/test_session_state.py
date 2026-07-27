@@ -22,7 +22,6 @@ from unittest.mock import patch
 
 from threetears.scrape.session_state import (
     DEFAULT_SESSION_STATE_TTL,
-    SealedSessionState,
     open_session_state,
     record_session_state,
     seal_session_state,

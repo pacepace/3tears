@@ -30,7 +30,7 @@ these tests exercise:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.agent.acl import (
@@ -43,7 +43,6 @@ from threetears.agent.acl import (
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.registry.auth import (
     AllowAllAuthorizer,
     DenyAllAuthorizer,
@@ -55,7 +54,6 @@ from threetears.registry.l1_cache import (
 from threetears.registry.rbac_stack import (
     PLATFORM_RBAC_READ_NAMESPACE,
     REGISTRY_SERVICE_SENTINEL_AGENT_ID,
-    RegistryRbacStack,
     build_registry_rbac_stack,
 )
 from threetears.registry.server import RegistryServer

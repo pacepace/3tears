@@ -26,7 +26,6 @@ from threetears.agent.tools.server import ToolServer
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
-    Subject,
     Subjects,
     set_default_namespace,
 )

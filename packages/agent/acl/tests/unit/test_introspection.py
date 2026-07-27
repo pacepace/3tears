@@ -37,7 +37,6 @@ from threetears.agent.acl import (
     Role,
     RoleAssignment,
     ScopeType,
-    WILDCARD_RESOURCE_TYPE,
     evaluate_with_trail,
 )
 

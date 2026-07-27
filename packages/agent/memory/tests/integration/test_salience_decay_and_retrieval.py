@@ -16,7 +16,7 @@ retrieval split against real Postgres:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -94,7 +94,6 @@ async def _insert_memory(
 ) -> uuid.UUID:
     """insert one memory row; returns its memory_id."""
     memory_id = uuid.uuid4()
-    now = datetime.now(UTC)
     embedding_sql = "$11::text::public.vector" if with_embedding else "NULL"
     params: list[Any] = [
         memory_id,

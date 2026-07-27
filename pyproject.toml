@@ -93,7 +93,27 @@ line-length = 120
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["SLF"]
+# F as well as SLF, enabled 2026-07-27 after an undefined name reached a RUNNING container.
+#
+# `suppress` was used in packages/scrape/sidecar/main.py after an earlier change removed its
+# import. `./scripts/lint.sh` passed and `./scripts/typecheck.sh` passed -- because ruff's default
+# rules were in force nowhere (this line selected SLF alone, and a nested ruff.toml is a full
+# override rather than an extension, so the one other config restated the same), and mypy's file
+# list covers `src` trees only. F821, undefined-name, was running in no directory at all.
+#
+# Enabling it across the repo immediately found TWO MORE live undefined names, in a channels test's
+# method annotations. Harmless only because `from __future__ import annotations` never evaluates
+# them -- which is the same mechanism that left this branch's operator WebSocket route dead for
+# every request, so the harmless instances are worth closing rather than noting.
+#
+# Adoption cost, measured rather than feared: 149 auto-fixable unused imports and 5 unused
+# variables. Two of the five were real -- a flag set and never read in a shipped driver, and an
+# exclusion set a test built and then ignored, so the module its comment named was never actually
+# excluded. The unused imports were mostly one copy-paste pattern in one package's test suite.
+#
+# Turned on only once every finding was cleared. A gate that fails on a clean checkout is a gate
+# people learn to skip.
+select = ["SLF", "F"]
 
 [tool.ruff.lint.per-file-ignores]
 # OpenTelemetry SDK >=1.39 guards set_tracer_provider behind an internal

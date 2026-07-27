@@ -30,7 +30,6 @@ from threetears.agent.wake.collections import WebhookSubscriptionCollection
 from threetears.agent.wake.entities import EncryptionService
 from threetears.agent.wake.tools.resolve import parse_subscription_id
 from threetears.agent.wake.tools.schedule_tools import (
-    NAME_MAX_LEN,
     WakeRegistryClient,
     _tool_error,
     _validate_name,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from uuid_utils import uuid7

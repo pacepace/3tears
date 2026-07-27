@@ -48,13 +48,7 @@ from threetears.agent.workspace.authorize import (
     authorize_workspace_access,
 )
 from _helpers.workspace_shims import (
-    FakeWorkspaceCollection,
-    FakeWorkspaceContext,
     FakeWorkspaceEntity,
-    FakeWorkspaceFile,
-    FakeWorkspaceFileCollection,
-    FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

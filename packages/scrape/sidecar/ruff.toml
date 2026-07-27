@@ -29,6 +29,10 @@ line-length = 120
 # imports to adopt. This is the second time this directory's lint has let something through that
 # ran -- the first was a formatter autofix writing a syntax error -- which is why the answer is a
 # rule rather than more care.
+#
+# The repo root now selects F too, and this still has to say so: a nested ruff.toml REPLACES the
+# root's configuration rather than extending it, so dropping F here would switch it back off for
+# exactly the directory that earned it.
 select = ["SLF", "F"]
 
 [lint.per-file-ignores]

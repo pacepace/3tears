@@ -44,9 +44,7 @@ from threetears.agent.workspace.materialize import bind
 from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
 from _helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceContext,
     FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,

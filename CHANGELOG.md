@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**Fix: four names were public in practice and absent from the declared surface (`3tears`).**
+`threetears.core` resolves `Keyset`, `Page`, `decode_cursor` and `encode_cursor` through its lazy
+PEP 562 map -- they import, and this package's own pagination tests use them through
+`from threetears.core import ...` -- while `__all__` listed only `CursorError` beside them. So
+`import *` missed them and anything reading `__all__` did not know they existed.
+
+The test meant to catch this asserted `set(__all__) <= set(_LAZY)`, a subset, while its module
+docstring claimed to pin a "three-way agreement". A name reachable but undeclared passed. It now
+asserts set EQUALITY in both directions, because `_LAZY` is the mechanism and `__all__` is the
+declaration, and a name in one and not the other is a surface nobody decided on.
+
+Found by enabling ruff's `F` rules, which recognised the four as undeclared re-exports.
+
+**`F` is now on repo-wide, and clearing it found two more real defects.** A flag set and never read
+in a shipped datasources driver (`error_raised`, whose apparent intent was to label a latency
+histogram by outcome -- deleted rather than wired, because adding a metric label is a decision
+about dashboards, not a lint fix); and an exclusion set that a tools enforcement test built and
+then ignored, its return statement carrying a hardcoded set instead, so the module its own comment
+named was never actually excluded.
+
+The rest was volume rather than substance: 149 unused imports, mostly one copy-paste pattern in one
+package's test suite, plus three dead locals. Every finding was cleared BEFORE the rule was turned
+on -- a gate that fails on a clean checkout is a gate people learn to skip.
+
+**Two ledgers are keyed on `path:line:symbol`**, so an autofix of that size invalidated both:
+fifteen entries across `_underscore_exemptions.txt` and `_fake_parity_exemptions.txt` were
+realigned, and five rationales that carry-forward could not match were recovered from git rather
+than rewritten from scratch.
+
 **Fix: an undefined name reached a container past both lint and type checking (`3tears-scrape`
 sidecar).** `suppress` was used after an earlier change removed its import. `./scripts/lint.sh`
 passed, `./scripts/typecheck.sh` passed, and the container would have raised `NameError` on the

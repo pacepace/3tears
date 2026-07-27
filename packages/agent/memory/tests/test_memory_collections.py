@@ -14,10 +14,10 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, Text
+from sqlalchemy import Column, DateTime, MetaData, String, Table, Text
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry

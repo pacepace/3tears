@@ -71,7 +71,7 @@ packages/agent/tools/tests/test_lazy_init.py:48:_LAZY
 packages/agent/tools/tests/test_lazy_init.py:52:_LAZY
 
 # rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
-packages/agent/workspace/tests/unit/test_validators.py:149:_RESOLVED
+packages/agent/workspace/tests/unit/test_validators.py:143:_RESOLVED
 
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
 packages/channels/tests/unit/channels/presence/test_collection.py:144:_rehydrate_datetimes
@@ -91,9 +91,9 @@ packages/core/tests/test_duckdb_backend.py:67:_HAS_DUCKDB
 packages/core/tests/test_duckdb_backend.py:71:_HAS_DUCKDB
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:48:_LAZY
-# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:52:_LAZY
+packages/core/tests/test_lazy_init.py:63:_LAZY
+# rationale: lazy-surface consistency test asserts the package's _LAZY resolution table and __all__ are the SAME set, in both directions -- it previously asserted only a subset, which let four names be reachable and undeclared. _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+packages/core/tests/test_lazy_init.py:70:_LAZY
 
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
 packages/core/tests/unit/data/test_collection_factory.py:176:_nats_client
@@ -601,11 +601,11 @@ packages/scrape/tests/test_collections.py:402:_durable_store
 packages/scrape/tests/test_collections.py:413:_durable_store
 
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
-packages/scrape/tests/test_driver_api.py:325:_pool
+packages/scrape/tests/test_driver_api.py:324:_pool
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_driver_api.py:327:_egress
+packages/scrape/tests/test_driver_api.py:326:_egress
 # rationale: the pinned httpx client has no accessor; the test asserts an injected client is reused rather than replaced
-packages/scrape/tests/test_driver_api.py:344:_client
+packages/scrape/tests/test_driver_api.py:343:_client
 
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
 packages/scrape/tests/test_driver_contract.py:410:_warn_dropped_session_state
@@ -637,12 +637,12 @@ packages/scrape/tests/test_driver_contract.py:529:_warn_dropped_session_state
 packages/scrape/tests/test_driver_contract.py:530:_warn_dropped_session_state
 
 # rationale: the pacing delay has no accessor and is itself the behaviour under test
-packages/scrape/tests/test_driver_listing_detail.py:410:_pace_delay_seconds
+packages/scrape/tests/test_driver_listing_detail.py:409:_pace_delay_seconds
 
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/scrape/tests/test_health.py:422:_rehydrate_datetimes
+packages/scrape/tests/test_health.py:421:_rehydrate_datetimes
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/scrape/tests/test_health.py:457:_rehydrate_datetimes
+packages/scrape/tests/test_health.py:456:_rehydrate_datetimes
 
 # rationale: module-private factory for the default robots fetcher; which exit that default binds is the whole subject and is unobservable from outside
 packages/scrape/tests/test_robots.py:517:_default_fetch_via

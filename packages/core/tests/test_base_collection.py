@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table

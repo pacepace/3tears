@@ -315,7 +315,6 @@ class TestApiDriverEgress:
         that the request reached it, which is the same claim one layer down and does not depend
         on someone else's uptime.
         """
-        import httpx
         from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.api import ApiDriver
 

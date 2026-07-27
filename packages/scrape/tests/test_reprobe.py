@@ -21,7 +21,6 @@ from threetears.scheduled_jobs.collections import (
     _job_insert_params,
 )
 from threetears.scheduled_jobs.migrations.v001_create_scheduled_jobs import _CREATE_SCHEDULED_JOBS_SQL
-from threetears.scheduled_jobs.entities import ScheduledJobEntity
 
 from threetears.scrape.reprobe import REPROBE_JOB_KIND, ScheduledJobsReprobeScheduler, reprobe_job_id
 

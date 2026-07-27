@@ -28,7 +28,6 @@ from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
-    ScrapeTargetHealth,
     ScrapeTargetHealthCollection,
     content_fingerprint,
     record_validated_fetch,
