@@ -270,10 +270,37 @@ arrives, so waiting costs nothing.
 
 **5. A human arrives.** Your platform opens a session on the sidecar
 (`POST /v1/hitl/session`), pulls the target in (`POST .../tab` -- its own isolated browser
-context, so one target never sees another's cookies), and hands the operator the returned
-noVNC path. Bounded slots, a hard TTL, and a token the sidecar minted. The sidecar
-authenticates nobody: who was entitled to that token is your platform's decision, evaluated
-where identity lives.
+context, so one target never sees another's cookies), and points the operator at the router you
+mounted. Bounded slots, a hard TTL, and a token the sidecar minted. The sidecar authenticates
+nobody: who was entitled to that token is your platform's decision, evaluated where identity
+lives.
+
+**The operator's half is a router you mount, not a service we run.** `build_operator_router()`
+returns a FastAPI `APIRouter` carrying the operator page, the vendored noVNC client and the
+WebSocket that relays RFB from the display. Mount it under any prefix you like, at any depth:
+every URL it emits is relative, so it never needs to know where it ended up.
+
+```python
+from threetears.scrape.operator import build_operator_router
+
+app.include_router(
+    build_operator_router(authorize=my_session_authorizer, display=my_display_endpoint),
+    prefix="/scrape/hitl",           # yours to choose; the router never learns it
+)
+```
+
+The deployment this is shaped for is a Kubernetes pod with two containers: yours, which holds
+identity, coordination and the operator's socket, and the AGPL nodriver sidecar beside it, which
+holds Xvfb, Chromium and `x11vnc` and nothing else. They share a network namespace, so your
+container reaches the display on `127.0.0.1` and nothing outside the pod can.
+
+Two more seams go with it, both optional and both there for the same reason -- one display lives
+in one pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods
+cannot both serve one session, and `serve_session()` answers that session's control messages
+(open a tab, complete a tab, close the session, read its state) on a subject keyed to the session
+id, so a caller addresses the session and never a pod. A completed tab's reply carries the
+human's solve **sealed**, because a raw cookie jar is a live credential and a bus is not the place
+for one.
 
 **6. They clear it, and you keep the work.** `POST .../tab/{id}/complete` returns the
 context's cookies and storage. Seal it with `seal_session_state` and store it with

@@ -23,14 +23,13 @@ import os
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import Any, NamedTuple
 
 import hitl
 import nodriver as uc
-from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from nodriver.core.connection import ProtocolException
 from pydantic import BaseModel
 
@@ -994,19 +993,15 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
     except hitl.VncUnavailable as exc:
         log.warning("hitl: could not start the vnc path: %s", exc)
         return JSONResponse(status_code=503, content={"error": str(exc)})
-    return {
-        "display": session.display,
-        "web_port": session.web_port,
-        "path": session.path,
-    }
+    return {"display": session.display}
 
 
 @app.get("/v1/hitl/vnc")
 async def hitl_vnc_status() -> dict[str, Any]:
-    """Whether both processes are up right now.
+    """Whether the display is being served right now.
 
-    Both, because websockify alive with x11vnc dead is a page that loads and never paints --
-    which looks to a human exactly like a broken display.
+    Asks about the process that actually serves it: a readiness signal reporting healthy over a
+    blank display is worse than none, because it is believed.
     """
     return {"running": _vnc.health(), "display": _vnc.display}
 
@@ -1053,135 +1048,6 @@ def _token_from(authorization: str | None, x_hitl_token: str | None) -> str:
     return (x_hitl_token or "").strip()
 
 
-#: WebSocket subprotocol carrying the session token.
-#:
-#: A subprotocol rather than a cookie, and rather than a query parameter, because it is the only
-#: one of the three that is both cookieless and safe. A browser cannot set arbitrary headers on
-#: a WebSocket upgrade -- `Sec-WebSocket-Protocol` is the single exception, reachable as the
-#: second argument to `new WebSocket(url, protocols)` and as noVNC's `wsProtocols` option. A
-#: query parameter is the other thing a browser can do, and it writes a live credential into
-#: access logs, browser history and referrer headers.
-#:
-#: The token is still one this container minted and compares by value. It performs no signature
-#: verification and reads no claims: this container holds no identity, cannot evaluate a policy,
-#: and -- being the AGPL-isolated half -- cannot import the family's `identity_token` module to
-#: do it properly. A platform-issued token is verified by the platform, in front of this.
-_TOKEN_SUBPROTOCOL_PREFIX = "hitl-token."
-
-_RELAY_CHUNK_BYTES = 65536
-
-
-def _token_from_subprotocols(offered: str) -> str:
-    """Pull the session token out of the offered WebSocket subprotocols.
-
-    A client offers a list -- noVNC offers `binary`, and this arrangement adds one more carrying
-    the token behind a fixed prefix so the two are told apart by shape rather than by position.
-    Returns an empty string when none is offered, which fails the check below like any other
-    wrong value.
-    """
-    for entry in offered.split(","):
-        name = entry.strip()
-        if name.startswith(_TOKEN_SUBPROTOCOL_PREFIX):
-            return name[len(_TOKEN_SUBPROTOCOL_PREFIX) :]
-    return ""
-
-
-@app.websocket("/vnc/ws")
-async def hitl_vnc_stream(websocket: WebSocket) -> None:
-    """Relay the RFB stream between the operator's browser and the in-container VNC server.
-
-    This is the port-collapsing half of the HITL surface. The stream used to be served by a
-    separate `websockify` on its own port, which meant a platform exposing this over the
-    internet had to front two ports and correlate them -- and only one of the two knew anything
-    about a session. Now there is one origin, one TLS endpoint and one place where a request is
-    authenticated.
-
-    Authenticated by the session token this sidecar itself minted, which is a CAPABILITY check
-    and not authorization. This container holds no identity and cannot evaluate a policy; the
-    platform decides who may be given a token, exactly as the module docstring in `hitl.py`
-    describes. Nothing about that decision changes here.
-
-    The relay is byte-for-byte and interprets nothing. RFB is a stateful binary protocol whose
-    framing this has no business knowing about: anything it understood, it could get wrong.
-    """
-    token = _token_from_subprotocols(websocket.headers.get("sec-websocket-protocol", ""))
-    try:
-        _sessions.authorize_token(token)
-    except hitl.SessionNotFound:
-        # Closed before accepting, so no RFB connection is ever opened for a caller that cannot
-        # have one. 1008 is "policy violation", the closest code to "your capability is not
-        # good here"; the reason string stays vague for the same purpose the HTTP side does,
-        # since distinguishing "no session" from "wrong token" confirms an id to a guesser.
-        await websocket.close(code=1008, reason="not authorised for this display")
-        return
-
-    # ONE seam, deliberately narrow: bytes in, bytes out, and nothing above this line knows
-    # what carries them. Today it is a loopback TCP socket to the RFB server in this container.
-    #
-    # WHY THE SEAM IS WORTH KEEPING NARROW. On Kubernetes a WebSocket pins to whichever pod the
-    # ingress happened to route it to, and the display lives in exactly one pod. Landing on the
-    # wrong one is therefore possible, and the cheap answer -- the one taken here -- is to make
-    # any pod the right pod: claim the session, bring this pod's display up, and re-open the
-    # targets that had not been completed. A completed tab is already durable, because its state
-    # is exported and sealed the moment the human says done, so what a reconnect costs is one
-    # in-flight challenge rather than a session.
-    #
-    # IF THAT TURNS OUT TO BE TOO EXPENSIVE, the alternative is to relay these same bytes to the
-    # pod that does hold the display, over NATS, keyed on the session id. Only the transport
-    # below changes; the pumps, the framing (there is none) and the caller stay as they are.
-    # Before reaching for it, know what it costs:
-    #
-    #   - RFB is a stateful stream with no resync. Core NATS is at-most-once, so a single
-    #     dropped message under slow-consumer conditions corrupts the stream permanently, and
-    #     it presents to the operator as a frozen or garbled screen rather than an error.
-    #     JetStream fixes delivery at the price of persisting pixel data and adding latency to
-    #     an interactive path.
-    #   - A full-screen update at this resolution is megabytes, and it is continuous while
-    #     somebody is working. That is a bulk stream on the cluster's control bus, competing
-    #     with every other subject on it.
-    #
-    # So the trade is real work saved against a worse failure mode, and it should be decided on
-    # measurements rather than taste: how often these sockets actually drop and land elsewhere,
-    # and how long a tab stays open before completion. Both are observable once this is in use.
-    host, port = hitl.rfb_endpoint()
-    try:
-        reader, writer = await asyncio.open_connection(host, port)
-    except OSError as exc:
-        log.warning("hitl: VNC stream could not reach the RFB server", extra={"extra_data": {"error": str(exc)}})
-        await websocket.close(code=1011, reason="the display is not available")
-        return
-
-    # Echo the transport subprotocol, never the token-bearing one. Accepting the credential
-    # back would put it in a response header for anything logging the handshake.
-    await websocket.accept(subprotocol="binary")
-
-    async def _to_browser() -> None:
-        while data := await reader.read(_RELAY_CHUNK_BYTES):
-            await websocket.send_bytes(data)
-
-    async def _to_display() -> None:
-        while True:
-            writer.write(await websocket.receive_bytes())
-            await writer.drain()
-
-    pumps = [asyncio.create_task(_to_browser()), asyncio.create_task(_to_display())]
-    try:
-        # Either direction ending ends the session: a half-open RFB stream is not a state the
-        # protocol recovers from, and leaving the other pump running would hold both a socket
-        # and a task for a connection that can no longer carry anything.
-        await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
-    except WebSocketDisconnect:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an operator closing the tab is the ordinary end of this, not a failure
-        pass
-    finally:
-        for pump in pumps:
-            pump.cancel()
-        writer.close()
-        with suppress(
-            Exception
-        ):  # prawduct:allow prawduct/broad-except -- the peer is already gone; a close that fails changes nothing and must not mask the disconnect
-            await writer.wait_closed()
-
-
 @app.post("/v1/hitl/session", response_model=None)
 async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, Any] | JSONResponse:
     """Open the session and bring up the display.
@@ -1203,7 +1069,6 @@ async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, 
         "token": session.token,
         "expires_at": session.expires_at,
         "max_slots": session.max_slots,
-        "vnc_path": _vnc.client_path,
     }
 
 
@@ -1308,21 +1173,3 @@ async def hitl_session_close(
         return JSONResponse(status_code=404, content={"error": str(exc)})
     await _sessions.close(session)
     return {"closed": True, "session_id": session_id}
-
-
-# noVNC's own tree, served by this app rather than by a second process on a second port, so the
-# client page and the WebSocket it opens share an origin: that is what lets one cookie
-# authenticate the upgrade.
-#
-# REGISTERED LAST, and that is load-bearing. Starlette matches routes in registration order, and
-# a mount matches every path beneath it -- including `/vnc/ws`, which is a WebSocket. Mounted
-# first, `StaticFiles` claimed the upgrade and died on its own `assert scope["type"] == "http"`,
-# which surfaces to the operator as a 500 on connect and a client that says only "Failed to
-# connect to server". Every explicit route above therefore wins over the static tree.
-#
-# Registered defensively because the sidecar's tests import this module without the image's
-# filesystem, and a missing directory is a container packaging fault rather than a reason for
-# the API to refuse to start -- `VncLifecycle` already fails loudly, with a better message, when
-# a session is actually requested.
-if os.path.isdir(hitl.NOVNC_ROOT):
-    app.mount("/vnc", StaticFiles(directory=hitl.NOVNC_ROOT, html=True), name="novnc")

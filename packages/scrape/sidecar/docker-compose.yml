@@ -16,15 +16,13 @@ services:
     shm_size: 2gb
     ports:
       # 8088 is the API port, and it is published here because a compose file that exposed
-      # nothing would not run. Understand what it now carries before you keep this line in a
-      # deployment: since the HITL endpoints landed, 8088 mints session tokens and RETURNS
-      # RAW COOKIE JARS from a human's solved session. It authenticates nobody, for the same
-      # reason 6080 below does not -- the sidecar holds no identity and cannot evaluate a
-      # policy.
+      # nothing would not run. Understand what it carries before you keep this line in a
+      # deployment: 8088 mints session tokens and RETURNS RAW COOKIE JARS from a human's
+      # solved session. It authenticates nobody -- the sidecar holds no identity and cannot
+      # evaluate a policy, and that is a decided position rather than a gap to fill later.
       #
-      # So the reasoning written at length under 6080 applies to this port too, and the only
-      # difference is that this one has to be reachable by SOMETHING. Publishing it to 0.0.0.0
-      # on a shared network hands anyone who can reach it a browser and a cookie jar.
+      # Publishing it to 0.0.0.0 on a shared network hands anyone who can reach it a browser
+      # and a cookie jar.
       #
       # Hence loopback by default: the safe binding is the one you get without deciding, and
       # widening it is the deliberate act. Another container on this compose network reaches
@@ -33,29 +31,17 @@ services:
       # behind whatever already authenticates the rest of the deployment rather than change
       # this line.
       - "127.0.0.1:8088:8088"
-      # Deliberately NOT publishing 6080, and it no longer matters as much as it did: the
-      # noVNC client and the RFB stream are both served by the API on 8088 now, behind the
-      # session token, so 6080 carries nothing a caller needs. websockify still runs, bound to
-      # loopback inside the container, purely so reverting to it is a code change rather than
-      # an image rebuild.
+      # NOTHING ON THE DISPLAY PATH IS PUBLISHED, and there is no longer anything that could
+      # be. websockify used to serve the noVNC client and proxy RFB on 6080; both jobs moved to
+      # the MIT container that shares this pod, which ships the client in its own wheel and
+      # relays RFB over the pod's shared loopback. x11vnc binds 127.0.0.1 and is reached across
+      # the shared network namespace, so the display has no host-facing port at all.
       #
-      # Adding `- "6080:6080"` here is a one-line change that looks helpful and is not: the
-      # HITL endpoints authenticate nobody, and they never will. The sidecar holds no identity
-      # and cannot evaluate a policy, so anything that reaches 6080 gets full mouse and
-      # keyboard on a browser that may be holding a target's authenticated session.
-      #
-      # The session token proves only that a caller holds something this container minted --
-      # deciding who was ENTITLED to it is the consuming platform's job, evaluated where
-      # identity actually lives. This is not a control that is coming later; it is one that
-      # belongs somewhere else. Put this port behind whatever fronts the rest of your
-      # deployment.
-      #
-      # For a local look at it, publish the port on the command line where the decision is
-      # visible and temporary, rather than committing it into the compose file:
-      #   docker run -p 6080:6080 ...
-      #
-      # x11vnc itself binds loopback inside the container regardless, so websockify is the
-      # only thing that could ever be exposed.
+      # That shared namespace is what makes 8088 above the whole attack surface of this
+      # container. On Kubernetes it is reachable only by its MIT neighbour. Under compose there
+      # is no pod, so the loopback publishing below is what stands in for that -- and any other
+      # container on this network still reaches the sidecar by service name with nothing in the
+      # way. Put it behind whatever fronts the rest of your deployment.
     environment:
       SCREEN_GEOM: "1920x1080x24"
       PORT: "8088"

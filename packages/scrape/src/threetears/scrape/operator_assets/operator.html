@@ -2,6 +2,11 @@
 <!--
   The operator's window onto a target that needs a human.
 
+  OURS, and MIT, and deliberately not inside the noVNC tree it loads from. noVNC is MPL-2.0 and
+  sits in the `novnc/` directory beside this file, unmodified; keeping this page a sibling rather
+  than a file within it means nothing under `novnc/` can be read as something we changed. See
+  `novnc-provenance.json`.
+
   Served instead of noVNC's own vnc.html for one reason that matters and several that are
   cosmetic. The one that matters: the session token travels as a WebSocket subprotocol, and
   noVNC's stock page has no way to send one -- `wsProtocols` is an RFB constructor option its UI
@@ -11,10 +16,15 @@
   to the server, so it appears in no access log, no referrer header and no proxy trace; the
   query string appears in all three, and a live session credential does not belong there.
 
-  Every URL here is relative. This service expects to be mounted under an arbitrary prefix
-  belonging to somebody else's API, at a depth it never learns, so the browser resolves these
-  against wherever the page was actually served. A leading slash would work perfectly until the
-  day somebody proxied it.
+  Every URL here is relative. This page is mounted under an arbitrary prefix belonging to
+  somebody else's API, at a depth it can never learn, so the browser resolves these against
+  wherever the page was actually served. A leading slash would work perfectly until the day
+  somebody proxied it.
+
+  That resolution depends on this page being served from a path ending in a slash, which is why
+  the router serves it at its mount root and lets the framework redirect a request that arrives
+  without one. Served at `.../hitl` rather than `.../hitl/`, "ws" below would resolve one
+  directory too high and the display would never connect.
 -->
 <html lang="en">
   <head>
@@ -110,9 +120,12 @@
     <div id="message"><strong id="message-title"></strong><span id="message-body"></span></div>
 
     <script type="module">
-      // `./core/rfb.js` because this page is served from inside noVNC's own tree. Relative, so
-      // it survives being mounted under a prefix.
-      import RFB from "./core/rfb.js";
+      // The vendored noVNC client, which ships in this package rather than being something the
+      // platform has to install. Relative, so it survives being mounted under any prefix; and
+      // pinned to the tree beside this page, so the page and the RFB it constructs are always
+      // the same noVNC release. A platform-supplied client could be a different one, and RFB's
+      // constructor options have changed across releases.
+      import RFB from "./novnc/core/rfb.js";
 
       const dot = document.getElementById("dot");
       const status = document.getElementById("status");

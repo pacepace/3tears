@@ -6,6 +6,65 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**Fix: the operator's WebSocket route had never once worked (`3tears-scrape`).** It shipped with
+FastAPI imported inside `build_operator_router`, to keep the `hitl` extra genuinely optional. That
+does not compose with `from __future__ import annotations`: every annotation in the module is a
+string at runtime, and FastAPI resolves a handler's annotations against the handler's own
+`__globals__` -- the defining module's namespace -- where a name bound only as a local variable
+does not exist. FastAPI treated `websocket` as a request field, failed to validate it, and closed
+every upgrade with **1008**.
+
+1008 is the worst code it could have picked, because it is also what a refused token gets. A dead
+route and a rejected operator were indistinguishable from outside, and nothing exercised the route
+end to end -- the tests covered the relay and the token extraction in isolation, which both worked
+perfectly. A first attempt at a regression test asserted the close code and passed while the route
+was still dead.
+
+Fixed structurally rather than worked around: the route wiring moved to `operator_routes.py`,
+which imports FastAPI at module scope so annotations resolve, and `operator.py` imports that
+module lazily instead of importing FastAPI lazily. The extra is exactly as optional as before --
+nothing reaches it until a caller asks for a router -- and the shape that caused the bug is gone.
+The tests now assert the injected authorizer was **consulted**, which is the only evidence the
+handler ran.
+
+**The operator page and the noVNC client now ship from the router, and the sidecar is down to one
+job (`3tears-scrape`).** `build_operator_router()` serves the page at its own mount root, the
+vendored client beneath it, and the RFB WebSocket beside both. Mount it under any prefix at any
+depth; every URL it emits is relative, so it never learns where it ended up.
+
+**Served at the root, and that is load-bearing.** Relative URLs resolve against the directory the
+page came from: at `.../hitl/` the WebSocket resolves to `.../hitl/ws`, and at `.../hitl` it
+resolves to `.../ws` -- one directory too high, no route, and an operator who sees only "Failed to
+connect". A request without the trailing slash is redirected to the one with it, and a test mounts
+under a deep prefix rather than at the root, because at the root every wrong answer works.
+
+The static client tree is mounted BESIDE the routes rather than over them. A mount matches
+everything beneath it, including an upgrade `StaticFiles` cannot serve -- it dies on its own
+`assert scope["type"] == "http"`, reaching the operator as a 500 that looks like a dead display.
+The sidecar hit exactly that, because there the tree was the socket's parent and only registration
+order kept them apart. Here nothing the mount could claim is a route, so ordering does not matter,
+which is why moving it to the router root fails a test.
+
+**What the sidecar lost, and it is more than the relay.** `websockify` and Debian's `novnc` are
+gone from the image, with the noVNC root, the client path, the operator page, the WebSocket relay,
+the token subprotocol handling and `authorize_token`. `EXPOSE` is down to the API port and
+`VncSession` carries only a display. The AGPL container is now what the design says it is: Xvfb,
+Chromium, nodriver, `x11vnc`. `x11vnc` binds loopback, which on Kubernetes means reachable by the
+MIT container sharing the pod's network namespace and by nothing else -- that binding IS the
+access control on the display port rather than a hardening extra.
+
+`SessionManager` stays, deliberately, and so does `authorize(session_id, token)`. The tab
+machinery drives nodriver and cannot move; and removing the last capability check from endpoints
+that hand back raw cookie jars is a security reduction, not a cleanup, so it is a separate
+decision rather than a consequence of this one.
+
+Every property that lived in a deleted test moved with the thing it described: the token comes
+from the fragment and never the query string, no URL the page emits is absolute, the operator
+arrives connected on a desktop that scales, and a refused operator never causes the display to be
+resolved. That last one needed rewriting rather than copying -- the original watched
+`asyncio.open_connection`, which now happens inside the relay, so it watches the injected display
+collaborator instead.
+
 **Control messages for a session now find the pod holding its display (`3tears-scrape`).**
 Everything that acts on a display -- putting a target in front of the operator, taking a cleared
 one back, ending the session -- has to reach one specific pod. The two obvious arrangements are

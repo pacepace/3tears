@@ -39,7 +39,7 @@ class _FakeVnc:
     async def start(self) -> VncSession:
         self.starts += 1
         self._running = True
-        return VncSession(web_port=6080, display=":99", path=f"/{hitl.NOVNC_PAGE}?path=websockify")
+        return VncSession(display=":99")
 
     async def stop(self) -> None:
         self.stops += 1

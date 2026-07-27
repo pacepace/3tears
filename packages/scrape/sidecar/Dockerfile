@@ -4,13 +4,17 @@ FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# x11vnc/websockify/novnc are the human-in-the-loop path: they put the Xvfb
-# display Chromium already draws to in front of a person. Installed here but
-# started on demand by hitl.py, never at boot -- an idle VNC surface would exist
-# for the whole life of a container that is usually unattended. Debian ships all
-# three, and novnc's static client lands in /usr/share/novnc (verified in this
-# base image, not recalled: that tree has vnc.html / vnc_lite.html and no
-# index.html, which is why hitl.py names a page explicitly).
+# x11vnc is the human-in-the-loop path: it puts the Xvfb display Chromium
+# already draws to onto a loopback RFB port. Installed here but started on demand
+# by hitl.py, never at boot -- an idle VNC surface would exist for the whole life
+# of a container that is usually unattended.
+#
+# websockify and novnc were here too and are deliberately gone. Both jobs belong
+# to the MIT container sharing this pod: it ships the noVNC client in its own
+# wheel, pinned to the page that loads it, and relays RFB from this x11vnc over
+# the pod's shared loopback. Reinstating either would put a second,
+# unauthenticated route to the same display back in the container least able to
+# decide who may use it.
 #
 # openbox is a window manager, and without one this display is not operable by a human.
 # Xvfb draws windows in map order with no title bars, no alt-tab and no click-to-focus, so a
@@ -45,8 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
         curl \
         x11vnc \
-        websockify \
-        novnc \
         openbox \
         tint2 \
         x11-xserver-utils \
@@ -80,13 +82,6 @@ RUN pip install --no-cache-dir \
         "fastapi>=0.115,<0.116" \
         "uvicorn[standard]>=0.32,<0.33"
 
-# Our own operator page, dropped into noVNC's tree so its module imports stay relative.
-#
-# Replaces vnc.html rather than configuring it: the session token travels as a WebSocket
-# subprotocol, and noVNC's stock UI has no way to send one -- `wsProtocols` is an RFB
-# constructor option it does not expose.
-COPY hitl.html /usr/share/novnc/hitl.html
-
 COPY openbox-autostart /etc/xdg/openbox/autostart
 COPY main.py /app/main.py
 COPY hitl.py /app/hitl.py
@@ -103,13 +98,13 @@ RUN chmod +x /app/entrypoint.sh
 # though the --proxy-server flag is process-wide. One container therefore serves
 # several exits, and a second copy is not how you get a second exit.
 ENV DISPLAY_NUM=99 \
-    NOVNC_ROOT=/usr/share/novnc \
     SCREEN_GEOM=1920x1080x24 \
     CHROMIUM_PATH=/usr/bin/chromium \
     PORT=8088
 
-# 6080 is websockify: the only route to the display, and only while a session
-# is open. x11vnc binds loopback and is never published.
-EXPOSE 8088 6080
+# 8088 only. The display is reached over the pod's shared loopback by the MIT
+# container beside this one, and x11vnc binds 127.0.0.1, so there is nothing on
+# the display path to publish. 6080 was websockify's and no longer exists.
+EXPOSE 8088
 
 ENTRYPOINT ["/app/entrypoint.sh"]

@@ -62,7 +62,7 @@ It is kept as the evidence the design rested on, not as a description of the cod
 **The container already has everything VNC needs except VNC.** `sidecar/entrypoint.sh` starts
 Xvfb on `:99` at `1920x1080x24`; `sidecar/main.py`'s `_lifespan` launches nodriver with
 `headless=False` against it. Chromium is genuinely headful on a real X display today. Missing:
-`x11vnc`, `websockify`, noVNC static assets.
+`x11vnc`; the noVNC client ships in the MIT wheel.
 
 **One browser, one display, one shared profile.** `main.py` holds a single global `_browser`
 with a pinned `user_data_dir`, opening a throwaway tab per request (`new_tab=True`) and closing
@@ -429,8 +429,14 @@ fallback is a dedicated browser for that one target.
 
 ### 5. The HITL session (sidecar)
 
-Container additions, in two groups. For the display itself: `x11vnc`, `websockify`, and the
-noVNC static assets. Xvfb, Chromium and the headful launch were already there.
+Container additions, in two groups. For the display itself: `x11vnc`. Xvfb, Chromium and the
+headful launch were already there.
+
+`websockify` and the noVNC static assets were here too, and are deliberately gone. Serving the
+client and relaying RFB belong to the MIT container that shares this pod: it ships noVNC in its
+own wheel, pinned to the page that loads it, and reaches `x11vnc` across the pod's shared network
+namespace. Keeping a second, unauthenticated route to the same display would keep exactly what
+the capability check in front of the relay exists to prevent.
 
 For making that display OPERABLE, all added after live verification rather than designed in:
 `openbox` as a window manager, because bare Xvfb maps windows with no decoration and no way to
@@ -442,37 +448,39 @@ polls to confirm the window manager actually came up. The image also patches ope
 idle scroll on the desktop background silently moved the operator to an empty desktop and their
 targets appeared to vanish.
 
-`x11vnc` and `websockify` start **on demand** when a session opens and stop on teardown -- no idle
-VNC surface. This matches the operational model: the display comes up when a person arrives, not
-before.
+`x11vnc` starts **on demand** when a session opens and stops on teardown -- no idle VNC surface.
+This matches the operational model: the display comes up when a person arrives, not before.
 
 New sidecar endpoints (the sidecar remains a dumb browser-as-a-service -- no 3tears imports, the
 AGPL boundary is unchanged):
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/hitl/session` | Create a session, start VNC, return `{session_id, vnc_path, token, expires_at}` |
+| `POST /v1/hitl/session` | Create a session, start VNC, return `{session_id, token, expires_at}` |
 | `GET /v1/hitl/session/{id}` | Session state and open tabs |
 | `POST /v1/hitl/session/{id}/tab` | Bring one target into the session: isolated context, navigate, replay `nav_steps` |
 | `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: verify, export sealed state, close the tab, free the slot |
 | `DELETE /v1/hitl/session/{id}` | Teardown, stop VNC, drop contexts |
 | `POST` / `GET` / `DELETE /v1/hitl/vnc` | Bring the display up, report whether it is up, take it down. Predates the session API and stays for the case it does not cover |
 
-| `GET /vnc/ws` | The RFB stream itself, as a WebSocket |
+No response names a place to point a browser, and that is the point: where an operator goes is
+decided by the platform that mounts the operator router, under a prefix this container never
+learns.
 
-The client and the stream now share this API's port. `GET /vnc/hitl.html` is the operator page
-and `GET /vnc/ws` is the stream it opens, so a platform fronts one origin with one TLS endpoint
-and one authentication point rather than correlating two ports.
+**The operator's own surface is not here.** It is a mountable `APIRouter` in `3tears-scrape`
+(`threetears.scrape.operator`), served by the MIT container in this pod: the operator page, the
+vendored noVNC client, and the WebSocket that relays RFB from `x11vnc` over loopback. So a
+platform fronts one origin with one TLS endpoint and one authentication point, and it is the
+origin it already has rather than a second one belonging to this container.
 
-The stream carries the session token in a WebSocket `Sec-WebSocket-Protocol` entry. That is
-forced rather than preferred: a browser cannot set arbitrary headers on an upgrade, and the
-only other thing it can do is a query parameter, which writes a live credential into access
-logs, browser history and referrer headers. The page takes the token from the URL FRAGMENT,
-which never reaches a server at all.
+That stream carries the session token in a WebSocket `Sec-WebSocket-Protocol` entry. Forced
+rather than preferred: a browser cannot set arbitrary headers on an upgrade, and the only other
+thing it can do is a query parameter, which writes a live credential into access logs, browser
+history and referrer headers. The page takes the token from the URL FRAGMENT, which never
+reaches a server at all.
 
-Checking that token is a CAPABILITY check and not authorization. This container compares a
-value it minted; it verifies no signature and reads no claims, because it holds no identity and
-cannot evaluate a policy. Who was entitled to hold one is decided in front of it.
+Checking that token is a CAPABILITY check and not authorization. Who was entitled to hold one is
+decided by the platform, where identity lives.
 
 **Bounded working set.** A session has a fixed slot count. A target occupies a slot from
 `/tab` until `/complete`; backgrounding a slow one still holds its slot. Items are pulled in as
@@ -484,8 +492,9 @@ operator actually arrives. Waiting therefore costs zero container resources, and
 deterministic because `nav_steps` replay is already how this package reaches gated pages.
 
 **Security.** The session token is unguessable, short-lived, scoped to one session and bound to
-its TTL. `x11vnc` binds loopback only; `websockify` is the sole path in. A session has a hard TTL
-with a reaper. The sidecar never authenticates a human -- it honours a token that the MIT side
+its TTL. `x11vnc` binds loopback only, which on Kubernetes means it is reachable by the MIT
+container sharing this pod's network namespace and by nothing else -- that binding IS the access
+control on the display port, not a hardening extra. A session has a hard TTL with a reaper. The sidecar never authenticates a human -- it honours a token that the MIT side
 minted only after authorizing the request.
 
 **Concurrency, stated honestly.** One Xvfb display means one operator session at a time; a second
@@ -729,7 +738,7 @@ waiting ten seconds present a request every two.
   migrations rather than one because `v010` had already shipped to `develop` -- an applied
   migration is immutable, so §7 and §8 add columns rather than editing history
 - `driver.py` + all 8 drivers -- `session_state` parameter (accept-and-ignore except the browser backends)
-- `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc`, `websockify`, noVNC
+- `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc` (noVNC ships in the MIT wheel, not here)
 - `tests/test_migrations_drift.py` -- already introspection-based as of the current fix branch, so it picks up the new columns automatically
 - `packages/scrape/README.md`
 
@@ -779,7 +788,7 @@ waiting ten seconds present a request every two.
 9. A completed solve yields sealed session state that a subsequent unattended render consumes to
    fetch the target successfully with no human involved.
 10. Sealed state is unreadable without the master key; a tampered token is rejected.
-11. Session teardown stops `x11vnc`/`websockify` and drops contexts; the TTL reaper collects an
+11. Session teardown stops `x11vnc` and drops contexts; the TTL reaper collects an
     abandoned session.
 12. `./scripts/check-all.sh` green; the introspection-based drift guard covers every new column.
 

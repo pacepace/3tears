@@ -374,49 +374,26 @@ packages/observe/tests/test_tracing.py:190:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
 packages/observe/tests/test_tracing.py:205:_otel_available
 
-# rationale: TODO: no rationale carried forward -- write why this access is acceptable
-packages/scrape/sidecar/hitl.py:1048:_create_isolated_tab
-# rationale: TODO: no rationale carried forward -- write why this access is acceptable
-packages/scrape/sidecar/hitl.py:1057:_execute_nav_steps
+# rationale: module-private helper called from SessionManager in the same module; the isolated-context creation is deliberately not part of hitl.py's public surface because a caller reaching it directly would skip the slot accounting that makes the working set bounded
+packages/scrape/sidecar/hitl.py:899:_create_isolated_tab
+# rationale: module-private helper called from SessionManager in the same module; nav-step replay is shared with the render path and kept private so the timeout budget stays owned by its two call sites rather than by whoever imports it next
+packages/scrape/sidecar/hitl.py:908:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:445:_apply_context_state
+packages/scrape/sidecar/main.py:444:_apply_context_state
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:452:_apply_context_state
+packages/scrape/sidecar/main.py:451:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/main.py:502:_apply_origin_storage
+packages/scrape/sidecar/main.py:501:_apply_origin_storage
 
-# rationale: names the subprotocol the relay reads the token from. Hardcoding the string would let the production prefix change while the test kept passing against the old one, which is the drift the constant exists to prevent.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:465:_TOKEN_SUBPROTOCOL_PREFIX
-# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:467:_token_from_subprotocols
-# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:469:_token_from_subprotocols
-# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:471:_token_from_subprotocols
-# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:472:_token_from_subprotocols
-# rationale: the relay authenticates against the module's single SessionManager, and the test substitutes its token check. There is no injection seam -- the manager is process-global because there is one display -- so patching the module attribute is how the refusal path is reached without minting a real session.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:518:_sessions
-# rationale: names the subprotocol the relay reads the token from. Hardcoding the string would let the production prefix change while the test kept passing against the old one, which is the drift the constant exists to prevent.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:523:_TOKEN_SUBPROTOCOL_PREFIX
-
-# rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:152:_x11vnc
-# rationale: as above, for the websockify half -- the single route in, so whether it is running IS the exposure surface.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:153:_websockify
-# rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:158:_x11vnc
-# rationale: as above, for the websockify half -- the single route in, so whether it is running IS the exposure surface.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:159:_websockify
-# rationale: the argv the lifecycle builds; the flags ARE the security property (loopback bind, no view-only), so asserting on the built arguments is the only way to check them without a running server.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:256:_x11vnc_argv
-# rationale: TODO: no rationale carried forward -- write why this access is acceptable
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:297:_websockify_argv
-# rationale: the module's own loopback RFB port, read so the test scales with it rather than hardcoding a number that would silently stop matching.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:303:_RFB_PORT
-# rationale: the process-spawn seam, patched so the lifecycle can be driven without launching real x11vnc and websockify binaries.
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:384:_spawn
+# rationale: the test asserts a second start does not spawn a second x11vnc over the running one, and the process handle is the only evidence of that; a public accessor would exist solely for this test
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:127:_x11vnc
+# rationale: same assertion's second half -- comparing the pid before and after an idempotent start is what distinguishes 'returned the running session' from 'respawned and got lucky'
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:132:_x11vnc
+# rationale: -localhost IS the access control on the RFB port, so the built argv is asserted directly; going through start() would need a real x11vnc and would test the stub's argument parsing instead of the flag
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:226:_x11vnc_argv
+# rationale: the test pins that no child gets an undrained stderr pipe, which is a property of the spawn call itself; reaching it through start() would assert on the stub's behaviour rather than on the kwargs passed
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:251:_spawn
 
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
 packages/scrape/sidecar/tests/test_hitl_session.py:383:_apply_origin_storage

@@ -43,8 +43,8 @@ done
 # holding several targets stacks them and only the last one opened is reachable. That makes the
 # bounded working set undeliverable: three of four slots would hold targets nobody can get to.
 #
-# Started at boot rather than with the VNC, unlike x11vnc and websockify. Those are an exposure
-# surface and stay down until someone arrives; a window manager is not reachable from outside
+# Started at boot rather than with the VNC, unlike x11vnc. That is an exposure surface and
+# stays down until someone arrives; a window manager is not reachable from outside
 # and costs a few megabytes of RSS, and starting it on demand would mean restacking windows
 # that already exist -- openbox adopts what is mapped when it starts, but Chromium has already
 # chosen its geometry by then.

@@ -50,26 +50,6 @@ from typing import Any
 
 log = logging.getLogger("nodriver_sidecar.hitl")
 
-#: Where Debian's ``novnc`` package puts the client. Verified by installing the package in
-#: the real base image rather than recalled: the tree holds ``vnc.html``, ``vnc_lite.html``
-#: and ``vnc_auto.html`` and NO ``index.html``, which is why :attr:`VncSession.path` names a
-#: page explicitly. Serving the directory alone would 404 at ``/``.
-NOVNC_ROOT = os.environ.get("NOVNC_ROOT", "/usr/share/novnc")
-
-#: The noVNC page to hand a caller. ``vnc.html`` with ``autoconnect``, not ``vnc_lite.html``.
-#:
-#: The lite page was chosen first because it connects on load where the full client waits behind
-#: a settings sidebar, and for a human summoned to clear one challenge "it is already connected"
-#: is the whole difference. ``autoconnect=true`` buys that from the full client too, and the
-#: lite page cannot do the thing that matters more: it parses ``scale`` and nothing else, so it
-#: has no way to ask the server to match the viewport. An operator on a laptop was left
-#: scrolling a 1920x1080 desktop to reach a taskbar at the bottom of it.
-#:
-#: Verified against the installed tree rather than recalled: ``vnc_lite.html`` reads
-#: ``scale``, and ``vnc.html`` reads ``resize``. The ``resize=scale`` this once handed out was
-#: inert on the lite page -- a parameter that had never once done anything.
-NOVNC_PAGE = "hitl.html"
-
 #: RFB port ``x11vnc`` listens on, loopback only. Not published by the container and not
 #: configurable per session, because there is exactly one display.
 _RFB_PORT = 5900
@@ -129,180 +109,108 @@ class VncUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class VncSession:
-    """Where a human should point their browser, and what is behind it."""
+    """The display a human is about to be shown."""
 
-    #: Port ``websockify`` listens on, loopback-only. NOT the port a human reaches any more:
-    #: the client page and the RFB stream are both served by the API, so this is kept only so
-    #: reverting to websockify is a code change rather than an image rebuild.
-    web_port: int
     #: The X display being shared, e.g. ``":99"``.
     display: str
-    #: Path to the noVNC client, including the query string that makes it self-connect.
-    path: str
 
 
 class VncLifecycle:
-    """Starts and stops the two processes that put the X display in a browser.
+    """Starts and stops the ``x11vnc`` that puts the X display on the wire.
 
     One instance per sidecar process, matching the one display it has. Not reentrant across
     event loops and not intended to be: the container runs a single uvicorn worker against a
     single Chromium against a single Xvfb, and pretending otherwise here would be modelling a
     deployment that does not exist.
+
+    **One process, where there used to be two.** ``websockify`` ran here to serve a noVNC tree
+    and proxy RFB over a WebSocket. Both jobs moved to the MIT container sharing this pod, which
+    ships the client in its own wheel and relays RFB from ``x11vnc`` over loopback. Keeping a
+    second, unauthenticated route to the same display for the sake of symmetry would be keeping
+    exactly what the capability check in front of the relay exists to prevent.
     """
 
-    def __init__(self, *, display_num: int | None = None, web_port: int = 6080) -> None:
+    def __init__(self, *, display_num: int | None = None) -> None:
         """
         :param display_num: X display to share; defaults to ``DISPLAY_NUM``, then 99. The
             same display ``entrypoint.sh`` started Xvfb on and Chromium is drawing to
         :ptype display_num: int | None
-        :param web_port: port ``websockify`` serves noVNC and the RFB proxy on
-        :ptype web_port: int
         """
         self._display_num = display_num if display_num is not None else int(os.environ.get("DISPLAY_NUM", "99"))
-        self._web_port = web_port
         self._x11vnc: asyncio.subprocess.Process | None = None
-        self._websockify: asyncio.subprocess.Process | None = None
 
     @property
     def display(self) -> str:
         """The X display this shares, in ``:N`` form."""
         return f":{self._display_num}"
 
-    @property
-    def web_port(self) -> int:
-        """The port websockify serves on, loopback-only inside this container.
-
-        No longer the route an operator takes: the API serves the client page and relays the
-        RFB stream on its own port. Retained so reverting is a code change, not a rebuild.
-        """
-        return self._web_port
-
-    @property
-    def client_path(self) -> str:
-        """Where to point a browser, query string included.
-
-        Public because callers legitimately need it before a session is running -- the session
-        endpoint publishes it in its response -- and reaching into a private for it made every
-        stand-in for this class have to know about the underscore.
-        """
-        return self._novnc_path()
-
     def health(self) -> bool:
-        """Whether both processes are running right now.
+        """Whether the display is actually being served right now.
 
-        Both, not either: websockify alive with x11vnc dead is a page that loads and never
-        paints, which is indistinguishable from a broken display to the person looking at it
-        and is the specific failure this check exists to catch: a readiness signal that reports
-        healthy while the display is blank is worse than no signal, because it is believed.
+        A readiness signal that reports healthy while the display is blank is worse than no
+        signal, because it is believed -- so this asks about the process that does the serving
+        rather than about anything easier to check.
         """
-        return self._alive(self._x11vnc) and self._alive(self._websockify)
+        return self._alive(self._x11vnc)
 
     async def start(self) -> VncSession:
-        """Bring up the VNC path, or return the running one.
+        """Bring the display up, or return the running one.
 
         Idempotent by contract: a second caller gets the session the first one started rather
         than a second ``x11vnc`` fighting over the RFB port. That matters because "open a
         session" is the operation a human-facing queue will retry.
 
-        :return: where to point a browser
+        :return: the display now being served
         :rtype: VncSession
-        :raises VncUnavailable: when either process fails to come up
+        :raises VncUnavailable: when the process fails to come up
         """
         if self.health():
             return self._session()
 
-        # A half-dead pair is not a running session and not a clean stopped one. Tearing the
-        # remains down first means `start` has exactly two outcomes rather than three.
+        # Whatever is left of a previous attempt is neither a running session nor a clean
+        # stopped one. Tearing it down first means `start` has exactly two outcomes rather
+        # than three.
         await self.stop()
 
-        # The guard is around the whole sequence, not around each await, because "exactly two
-        # outcomes" is a property of the METHOD. `_await_port` cleans up after itself, but it
-        # is not the only thing here that can fail after x11vnc is already up and listening:
-        # `_websockify_argv()` resolves a binary and raises when the image lacks it, and a
-        # cancelled start raises without going through any of it. Both would otherwise leave
-        # an x11vnc holding the RFB port behind a lifecycle that reports not-running.
-        #
-        # The client tree is checked first, before anything is spawned at all: a missing one is
-        # a certain failure, and finding out before there are processes to clean up is better
-        # than finding out after.
-        self._require_novnc()
-
+        # The guard is around the whole sequence rather than each await, because "exactly two
+        # outcomes" is a property of the METHOD. `_await_port` cleans up after itself, but a
+        # cancelled start raises without going through it at all, and that would otherwise
+        # leave an x11vnc holding the RFB port behind a lifecycle reporting not-running.
         try:
             self._x11vnc = await self._spawn(self._x11vnc_argv(), what="x11vnc")
             await self._await_port(_RFB_PORT, what="x11vnc")
-
-            self._websockify = await self._spawn(self._websockify_argv(), what="websockify")
-            await self._await_port(self._web_port, what="websockify")
         except BaseException:
             await self.stop()
             raise
 
-        log.info(
-            "hitl: vnc session up on display %s, noVNC on port %d",
-            self.display,
-            self._web_port,
-        )
+        log.info("hitl: display %s is being served on the loopback RFB port", self.display)
         return self._session()
 
     async def stop(self) -> None:
-        """Stop both processes and leave nothing listening.
+        """Stop serving the display and leave nothing listening.
 
         Safe to call when nothing is running, and safe to call twice -- teardown is the path
         an error handler takes, so it must not be able to raise a second error on top of the
         first one.
         """
-        for proc, what in ((self._websockify, "websockify"), (self._x11vnc, "x11vnc")):
-            await self._terminate(proc, what=what)
-        self._websockify = None
+        await self._terminate(self._x11vnc, what="x11vnc")
         self._x11vnc = None
 
     def _session(self) -> VncSession:
         """Describe the running session."""
-        return VncSession(web_port=self._web_port, display=self.display, path=self._novnc_path())
-
-    def _novnc_path(self) -> str:
-        """The client URL path, with the query string that makes it connect on load.
-
-        ``path=websockify`` tells the client which endpoint to open its WebSocket against;
-        websockify serves the RFB proxy on that path and the static tree on every other one.
-        Without it the page loads and waits for a human to fill in a form, which is a worse
-        experience than the black rectangle it resembles.
-        """
-        # ``resize=scale``, not ``remote``, and the reason is a property of Xvfb rather than a
-        # preference. Xvfb creates ONE mode at startup and reports `maximum 1920 x 1080` with a
-        # single entry in its mode list, so there is nothing for a client-driven resize to
-        # resize to -- `resize=remote` is accepted and silently does nothing. Verified with
-        # `xrandr` against the running container, not assumed.
-        #
-        # Scaling costs some sharpness on text an operator has to read, which is a real cost on
-        # this screen of all screens. Making the desktop genuinely follow the viewport needs an
-        # X server that can resize -- TigerVNC's Xvnc, which would replace both Xvfb and x11vnc
-        # -- and that is a container change rather than a flag.
-        # RELATIVE, with no leading slash, and that is a requirement rather than a style
-        # choice. This service is expected to be mounted under an arbitrary prefix belonging
-        # to somebody else's API, at a depth it does not know. A relative path is resolved by
-        # the operator's browser against wherever the page was actually served, so mounting at
-        # the root and mounting under a prefix behave identically with no configuration and
-        # nothing counting path segments.
-        #
-        # `path=vnc/ws` is likewise relative, and is where this app's own WebSocket relay
-        # listens -- the RFB stream now shares the API's port, so a platform fronts one origin
-        # with one TLS endpoint and one authentication point instead of correlating two.
-        # No query string any more: this page takes its token from the FRAGMENT, and the
-        # caller appends it. A fragment never reaches a server, so the credential stays out of
-        # access logs, referrer headers and proxy traces -- which a query parameter would not.
-        return NOVNC_PAGE
+        return VncSession(display=self.display)
 
     def _x11vnc_argv(self) -> list[str]:
         """``x11vnc`` invocation.
 
-        - ``-localhost`` binds 127.0.0.1, so websockify is the only route in.
+        - ``-localhost`` binds 127.0.0.1. Containers in one Kubernetes pod share a network
+          namespace, so that is reachable by the MIT container beside this one and by nothing
+          else -- which is the entire access control on this port, and is why it must not
+          become ``0.0.0.0`` for convenience.
         - ``-nopw`` because there is no password to check: the sidecar authenticates nobody
           (it cannot -- it holds no identity), and pretending otherwise with a shared
-          password would be security theatre over a loopback socket. Authorization belongs
-          in front of websockify, in the platform that owns an identity -- this container has
-          none and cannot evaluate a policy. Nothing here enforces it today, so treat the
-          port as unauthenticated and put it behind something that is not.
+          password would be security theatre over a loopback socket. Deciding who may see this
+          display happens in front of the relay, in the container that holds an identity.
         - ``-forever`` so the first disconnect does not end the session; a human who closes a
           tab by accident should be able to come back.
         - ``-shared`` so a second viewer does not evict the first.
@@ -330,50 +238,12 @@ class VncLifecycle:
             "-quiet",
         ]
 
-    def _websockify_argv(self) -> list[str]:
-        """``websockify`` invocation: serve noVNC's tree and proxy to the RFB port.
-
-        Positional form is ``[source_addr:]source_port [target_addr:target_port]``, verified
-        against the installed binary's own usage line rather than recalled.
-        """
-        return [
-            self._require("websockify"),
-            "--web",
-            NOVNC_ROOT,
-            # Loopback, not `0.0.0.0`. This app now serves the noVNC tree and relays the RFB
-            # stream on its own port, so nothing outside this container should reach websockify
-            # -- it is kept running only so reverting to it is a code change rather than an
-            # image rebuild while the in-app relay is still young. Bound wide it would be a
-            # second, unauthenticated route to the same display, reachable by anything on the
-            # container network, offering exactly what the relay exists to put a capability in
-            # front of.
-            f"127.0.0.1:{self._web_port}",
-            f"127.0.0.1:{_RFB_PORT}",
-        ]
-
-    @staticmethod
-    def _require_novnc() -> None:
-        """Fail if the client the returned path points at is not actually on disk.
-
-        ``_require`` guards the two binaries, but the noVNC tree is an unguarded distro
-        layout, and its failure mode is worse than a missing binary: both processes come up,
-        ``start`` returns happily, and the path it hands back 404s. To the person told to open
-        it that is indistinguishable from the black rectangle everything else here is written
-        to avoid -- and unlike a crash it produces no log line anywhere.
-        """
-        page = os.path.join(NOVNC_ROOT, NOVNC_PAGE)
-        if not os.path.isfile(page):
-            raise VncUnavailable(
-                f"the noVNC client is not at {page}; the image was built without the novnc "
-                f"package, or the distro moved its asset tree"
-            )
-
     @staticmethod
     def _require(binary: str) -> str:
         """Resolve *binary* or fail with the reason, rather than with ``FileNotFoundError``.
 
-        The image installs both, so an absence here means the container was built without the
-        VNC packages -- worth saying plainly, because the alternative message sends whoever
+        The image installs it, so an absence here means the container was built without the
+        VNC package -- worth saying plainly, because the alternative message sends whoever
         reads it looking at this code instead of at the Dockerfile.
         """
         found = shutil.which(binary)
@@ -662,25 +532,6 @@ class SessionManager:
         if session is None:
             return False
         return not session.is_expired(now if now is not None else time.time())
-
-    def authorize_token(self, token: str, *, now: float | None = None) -> HitlSession:
-        """Resolve the live session from its token alone, or refuse.
-
-        For the VNC stream, where the caller is a browser opening a WebSocket and cannot send a
-        session id anywhere the other endpoints read one from. There is exactly one display and
-        therefore exactly one live session, so the id adds no selectivity here -- it identifies
-        the only thing it could have identified.
-
-        Every property :meth:`authorize` provides is preserved: constant-time comparison, the
-        TTL enforced on the request path rather than left to the reaper, and one refusal for
-        every way of failing so a caller learns nothing from which one it got.
-
-        :raises SessionNotFound: no live session, wrong token, or one past its TTL
-        """
-        live = self._session
-        if live is None:
-            raise SessionNotFound("no session is open")
-        return self.authorize(live.session_id, token, now=now)
 
     def authorize(self, session_id: str, token: str, *, now: float | None = None) -> HitlSession:
         """Resolve a session from an id and token, or refuse.

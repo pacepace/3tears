@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from threetears.observe import get_logger
@@ -41,9 +42,27 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from fastapi import APIRouter
 
-__all__ = ["DisplayEndpoint", "SessionAuthorizer", "build_operator_router", "relay_stream"]
+__all__ = [
+    "OPERATOR_ASSETS",
+    "OPERATOR_PAGE",
+    "DisplayEndpoint",
+    "SessionAuthorizer",
+    "build_operator_router",
+    "relay_stream",
+]
 
 log = get_logger(__name__)
+
+#: The page, the vendored noVNC client, and the licence notice that travels with it.
+#:
+#: Resolved from this module's own location rather than looked up in a configured directory,
+#: because it ships inside the wheel: there is no deployment in which it is somewhere else, and
+#: a configurable path would be a way to point at a noVNC that is not the one this page was
+#: tested against.
+OPERATOR_ASSETS = Path(__file__).resolve().parent / "operator_assets"
+
+#: The operator's page. Ours and MIT; a sibling of the vendored tree, never a file inside it.
+OPERATOR_PAGE = OPERATOR_ASSETS / "operator.html"
 
 #: How much to move in one direction before yielding. RFB framebuffer updates are large and
 #: bursty; a small buffer turns one update into many wakeups and reads to the person watching
@@ -172,45 +191,22 @@ def build_operator_router(
     :ptype authorize: SessionAuthorizer
     :param display: resolves a session to the RFB server serving it.
     :ptype display: DisplayEndpoint
-    :return: a router carrying the RFB WebSocket, ready to mount under any prefix
+    :return: a router carrying the operator page, the noVNC client and the RFB WebSocket, ready
+        to mount under any prefix
     :rtype: APIRouter
     """
-    from fastapi import APIRouter, WebSocket  # noqa: PLC0415 -- deliberate late import; the `hitl` extra is optional and this package must stay importable without a web framework
+    # Deliberately late, and the LAZINESS IS THE MODULE rather than the import statement. An
+    # earlier shape imported FastAPI inside this function instead, which kept the extra optional
+    # and silently broke the WebSocket route: this module uses `from __future__ import
+    # annotations`, so `websocket: WebSocket` is a string at runtime, and FastAPI resolves a
+    # handler's annotations against the DEFINING MODULE's globals -- where a name bound only as a
+    # local variable does not exist. FastAPI then treated the parameter as a request field and
+    # closed every upgrade with 1008, which is also the code a refused token gets, so a route
+    # that never ran looked exactly like a rejected operator.
+    #
+    # `operator_routes` imports FastAPI at its own module scope, so annotations resolve there.
+    # Importing that module here keeps the extra as optional as it ever was, because nothing
+    # reaches it until a caller asks for a router.
+    from .operator_routes import build_router  # noqa: PLC0415
 
-    router = APIRouter()
-
-    @router.websocket("/ws")
-    async def stream(websocket: WebSocket) -> None:
-        """Relay the display to an operator holding a token that entitles them to it."""
-        token = token_from_subprotocols(websocket.headers.get("sec-websocket-protocol", ""))
-        session_id = await authorize(token)
-        if session_id is None:
-            # Closed BEFORE accepting, so no RFB connection is opened on behalf of a caller who
-            # never had a capability: an unauthenticated request must not be able to cause a
-            # socket. 1008 is "policy violation", and the reason stays vague for the same
-            # purpose the rest of this surface does -- distinguishing "no session" from "wrong
-            # token" confirms an id to whoever is guessing.
-            await websocket.close(code=1008, reason="not authorised for this display")
-            return
-
-        host, port = await display(session_id)
-        try:
-            # Accepted only once the display is reachable, so a caller learns the difference
-            # between "refused" and "the display is down" from the close code rather than from
-            # a connection that opens and then dies.
-            await websocket.accept(subprotocol="binary")
-        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- an operator who navigated away between authorizing and accepting is ordinary, not a fault. Logged with its traceback below
-            log.info("operator: the client went away before the stream opened", exc_info=True)
-            return
-
-        try:
-            await relay_stream(websocket.send_bytes, websocket.receive_bytes, host, port)
-        except OSError:
-            log.warning(
-                "operator: the display could not be reached",
-                exc_info=True,
-                extra={"extra_data": {"session_id": session_id, "host": host, "port": port}},
-            )
-            await websocket.close(code=1011, reason="the display is not available")
-
-    return router
+    return build_router(authorize=authorize, display=display, assets=OPERATOR_ASSETS, page=OPERATOR_PAGE)
