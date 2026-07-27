@@ -56,5 +56,25 @@ done
 echo "[entrypoint] starting openbox-session on ${DISPLAY}"
 openbox-session &
 
+# Waited for, the same way Xvfb above is. `set -e` does not see a backgrounded child fail, so
+# without this the window manager is the one boot step whose failure is detected by an operator
+# arriving to find the display unusable -- no taskbar, no way to switch between targets, and
+# the DPI scaling in the autostart file never applied either, since tint2 and Xft.dpi both hang
+# off this process.
+#
+# `_NET_SUPPORTING_WM_CHECK` is the EWMH property a compliant window manager sets on the root
+# window once it is managing the display. Polling it asks the question that matters -- is a WM
+# actually running -- rather than whether a process was spawned.
+for _ in $(seq 1 100); do
+    if xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id"; then
+        break
+    fi
+    sleep 0.1
+done
+xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" || {
+    echo "[entrypoint] openbox-session failed to start; the display would be unusable by a human"
+    exit 1
+}
+
 echo "[entrypoint] starting nodriver sidecar on 0.0.0.0:${PORT}"
 exec uvicorn main:app --host 0.0.0.0 --port "${PORT}"

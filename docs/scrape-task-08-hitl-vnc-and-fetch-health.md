@@ -17,15 +17,10 @@ than to the library. What replaced it is two seams a platform drives -- `list_wa
 what is stuck, and `record_human_cleared()` to say a person has fixed it -- with the loop
 documented end to end in the package README.
 
-This header previously said sections 3 through 6 were NOT built while every one of them was,
-which is the state a status line is least useful in: confidently wrong.
-
-This line said "DESIGN, not yet approved to build" for a day after half the
-document had shipped. The go-ahead was a real decision the whole build plan
-rests on, and this is where the sibling docs in this family record it
-(scrape-task-01 "APPROVED TO START", -02 and -03 naming the shipped
-predecessor); leaving it stale made the one place a reader goes to learn the
-state of this work assert something false about the repo.
+A status line is the one place a reader goes to learn the state of this work, so it is worth
+more care than the rest of the document: stale, it does not merely fail to inform, it asserts
+something false. This family records the go-ahead here for the same reason (scrape-task-01
+"APPROVED TO START", -02 and -03 naming the shipped predecessor).
 
 **Driver:** some targets sit behind a bot wall (Cloudflare interstitial, a captcha, a
 "verify you are human" gate) that no unattended fetch will ever pass. A human can pass it in

@@ -79,19 +79,15 @@ _ROBOTS_DEFAULT = _RobotsDefault()
 class _Gate(StrEnum):
     """Which gate in :meth:`ScrapeTool.execute` refused, when one did.
 
-    Recorded at the gate that decides rather than reconstructed afterwards. The tail of
-    ``execute`` used to work out what had happened from four interdependent signals -- an error
-    string, a robots decision, a circuit decision, and a boolean derived from two of them -- so
-    predicting which branch would win meant holding all four at once, and adding a fifth gate
-    meant finding every place that reasoning had been spelled out.
+        Recorded at the gate that decides rather than reconstructed afterwards. The tail of
+    One value says which gate refused. Reconstructing it from the individual signals instead --
+        an error string, a robots decision, a circuit decision -- means a reader must hold all of
+        them to predict which branch wins, and a new gate must be spelled into every place that
+        reasoning appears.
 
-    That is the shape this module's own comments blame for a run of consecutive stranded-probe
-    bugs. Consolidating the compensation into one ``except BaseException`` fixed those bugs; it
-    did not touch the decision structure that produced them, so the conditions remained.
-
-    ``None`` rather than a member for "nothing refused": the absence of a refusal is not itself
-    a gate, and giving it a name invites code that checks for it by equality and then has to be
-    updated when a real gate is added.
+        ``None`` rather than a member for "nothing refused": the absence of a refusal is not itself
+        a gate, and giving it a name invites code that checks for it by equality and then has to be
+        updated when a real gate is added.
     """
 
     #: Missing or malformed tool input, an unknown driver backend, an unusable schema.
@@ -444,10 +440,9 @@ class ScrapeTool(TearsTool):
     def _release_probe(self, target_id: str) -> None:
         """Give back an in-process probe that will now never report an outcome.
 
-        One definition rather than the same two lines repeated in each guard. The compensation
-        being scattered is what let a fourth stranding bug appear in a family the code's own
-        comments already called "the third one": every new await near this path needed someone
-        to remember the pattern, and the pattern lived in two places to copy from.
+        One definition rather than the same two lines repeated in each guard. Scattered
+        compensation means every new await near this path needs someone to remember the pattern,
+        and a pattern with several copies to work from is one that drifts.
 
         Deliberately releases and persists NOTHING. A durable outcome here would back the
         target off across every pod and outlive the cancelled process, for something the
@@ -475,10 +470,13 @@ class ScrapeTool(TearsTool):
         neither. The caller needs the difference to know whether to give the fleet turn back.
 
         Extracted so `execute` has ONE `except BaseException` over the whole permitted path
-        rather than two adjacent ones. That shape produced four stranded-probe bugs in a row,
-        each fixed as a symptom: with two guards and a boundary between them, every new `await`
-        has to be placed against whichever guard its author happened to be reading. There is now
-        one guard and one place the compensation lives.
+        rather than two adjacent ones. With two guards and a boundary between them, every new
+        `await` has to be placed against whichever guard its author happened to be reading, and
+        the one placed wrongly strands a probe. There is now one guard, and one place the
+        compensation lives.
+
+        Note what that shape does NOT cover: a refusal that returns without raising never
+        reaches any guard, so such a path compensates explicitly at the point of refusal.
 
         Returning the error rather than raising it keeps the driver contract this tool already
         had -- a backend-specific failure becomes a `ToolResult`, never a crashed tool call --
@@ -774,9 +772,9 @@ class ScrapeTool(TearsTool):
         #
         # There is ONE guard over the whole permitted path -- the sleep, the credential read and
         # the render. There used to be two adjacent ones with a boundary between them, which is
-        # how this family reached four members: each new await had to be placed against
-        # whichever guard its author happened to be reading. Anything added below this line is
-        # covered without anyone having to notice.
+        # each new await had to be placed against whichever guard its author happened to be
+        # reading. Anything added below this line is covered without anyone having to notice --
+        # provided it RAISES; a path that returns normally compensates at its own refusal.
         # Now a READ of what the gates recorded, not a re-derivation of it. This predicate used
         # to be `error is None and (decision is None or decision.permitted)` -- two of the four
         # signals the tail also consulted, combined here and nowhere else, so a fifth gate meant

@@ -29,6 +29,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # closed the trap without making switching any easier. That fixes the symptom the operator hit
 # second and ignores the one they hit first.
 #
+# x11-utils carries xprop, which entrypoint.sh polls for `_NET_SUPPORTING_WM_CHECK` to confirm
+# a window manager actually came up. Verified to be in x11-utils and NOT in x11-xserver-utils --
+# they are different packages with confusingly similar names, and assuming the latter carried it
+# would have made the readiness check fail on every start, hard-exiting a container whose window
+# manager was fine.
+#
 # x11-xserver-utils carries xrdb, which is how UI_SCALE reaches openbox and tint2: both size
 # their furniture from Xft.dpi and read it once at startup. Without it the page would scale and
 # the titlebars and taskbar would not, and a mismatch like that reads as a rendering fault
@@ -44,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openbox \
         tint2 \
         x11-xserver-utils \
+        x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # One virtual desktop, and no way to leave it.

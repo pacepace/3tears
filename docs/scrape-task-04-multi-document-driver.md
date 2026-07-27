@@ -225,9 +225,9 @@ This design's own regex assumption didn't survive contact with real data, twice:
    reads values off a scanned page but does not reliably recover which column a value belonged
    to, so a scanned multi-column table still needs a human or a different tool. The trigger for
    doing something about it is a target whose data is BOTH scanned and genuinely tabular --
-   none of the current ones are, which is why it stays unbuilt rather than deferred. (This
-   previously cited a backlog id that no longer resolves; the condition is written out here
-   because a pointer is only as durable as the item it names.)
+   none of the current ones are, which is why it stays unbuilt rather than deferred. The
+   condition is written out rather than pointed at, because a pointer is only as durable as the
+   item it names and `.prawduct/` does not travel with a clone.
 
 ## Verification
 

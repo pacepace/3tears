@@ -359,6 +359,23 @@ lesson. That value is what the render was CONFIGURED to use, not an observation 
 traffic went; confirming the latter needs an outside observer, which is why
 `EgressDriver.health()` exists and reports the address an exit actually presents.
 
+**Poll it. Nothing here does.** `EgressRegistry.health()` probes every registered exit
+concurrently and never raises, but this library has no daemon to run it from, so wiring it is
+the consuming platform's job and there is no default that happens without you:
+
+```python
+report = await registry.health()          # {name: EgressHealth}
+down = [name for name, h in report.items() if not h.reachable]
+```
+
+The gap it closes is one you will otherwise diagnose the slow way. A dead TOR or WARP daemon
+fails every render transport-side, so every target's circuit opens -- and because an
+unreachable fetch deliberately never stamps `last_blocked_at`, `list_walled()` stays EMPTY
+while the whole fleet decays. The symptom is "everything stopped and nothing needs a human",
+which reads like a scraper problem and is a daemon problem. Render failures do log at WARNING
+with `error_type`, so it is not silent; it is just attributed to the wrong layer until somebody
+asks the exits directly.
+
 
 ## License
 
