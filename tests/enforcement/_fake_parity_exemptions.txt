@@ -211,3 +211,5 @@ packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandle
 packages/scrape/tests/_kv_shims.py:31:FakeKvBucket
 # rationale: subset shim for nats.aio.Client exposing kv_bucket alone, which is the entire surface KVLease reaches through; the full client's two dozen publish/subscribe/jetstream methods are unreachable from a lease
 packages/scrape/tests/_kv_shims.py:92:FakeNatsClient
+# rationale: subset shim for nats.aio.Client carrying only subscribe/unsubscribe/flush/publish_raw_reply/request_raw, which is the entire surface serve_owner and forward reach through; it exists so both ends derive a session's subject for real rather than against a stub, and the full client's jetstream/kv/auth methods are unreachable from owner-routed forwarding
+packages/scrape/tests/_bus_shims.py:37:FakeBus

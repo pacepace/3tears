@@ -6,6 +6,41 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**Control messages for a session now find the pod holding its display (`3tears-scrape`).**
+Everything that acts on a display -- putting a target in front of the operator, taking a cleared
+one back, ending the session -- has to reach one specific pod. The two obvious arrangements are
+both bad: addressing pods directly makes the caller track which pod is which and re-track it
+after every reschedule, and ingress stickiness makes the routing layer responsible for a fact it
+cannot see. So messages are addressed to the SESSION and find their own way, over
+`threetears.nats.serve_owner` and `forward`, on a subject derived from the session id.
+
+Four messages act on a live session: open a tab, complete a tab, close the session, read its
+state. **Opening a session is deliberately not one of them**, and the asymmetry is the mechanism
+rather than a gap -- taking the claim is what MAKES a pod the owner, so routing it to an owner
+would be circular. A caller opens a session by claiming it and addresses everything afterwards
+to the session it now owns. That is pinned by a test, because it is the one message somebody
+will reasonably expect to find.
+
+**A completed tab is sealed before it goes anywhere.** The raw export is the cookie jar of a
+target a human has just cleared: a live credential. It travels one loopback hop from the sidecar,
+which holds no key by design, and it stops at the pod -- the first point in the path that holds a
+key at all. What goes on the bus is ciphertext with an expiry, because a bus is a place other
+subscribers can be granted a read of. The raw key is removed from the reply rather than
+overwritten, so a jar cannot survive by an exception unwinding past the reassignment, and the
+test asserts against every payload the bus carried rather than against the reply alone -- checking
+the reply would only prove the field was renamed.
+
+**A pod that has lost its claim refuses every message from the moment it loses it.** Dropping
+the subscription is prompt but not instantaneous, and in the gap a message can still arrive at a
+pod that has stopped being the owner; acting on one would drive a display the new owner is using.
+Ownership is therefore re-checked per message, with the subscription as the optimisation and the
+check as the mechanism. Serving refuses to start at all on a claim already lost, since
+subscribing would advertise ownership this pod does not have.
+
+Nothing here frames its own errors: `forward` already carries a handler's exception back as a
+type name and message, and a second envelope on top would be a second thing that can disagree
+with the first.
+
 **One pod holds a session's display, and knows when it stops (`3tears-scrape`).** A session is
 one operator working one display, and on Kubernetes that display lives in exactly one pod while
 the operator's WebSocket lands on whichever pod the ingress routed it to. Nothing stopped a
