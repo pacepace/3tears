@@ -90,6 +90,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
@@ -122,6 +123,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
+    { name = "uuid-utils" },
 ]
 provides-extras = ["tracing", "duckdb", "testing"]
 
@@ -249,6 +251,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
@@ -259,6 +262,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]
@@ -671,6 +675,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "starlette" },
+    { name = "uuid-utils" },
     { name = "uvicorn" },
 ]
 
@@ -684,6 +689,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2" },
     { name = "starlette", specifier = ">=0.40" },
+    { name = "uuid-utils" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -877,6 +883,7 @@ dependencies = [
     { name = "playwright" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
@@ -892,6 +899,7 @@ requires-dist = [
     { name = "playwright", specifier = "<1.61" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]

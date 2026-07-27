@@ -29,6 +29,7 @@ dependencies = [
     "nats-py",
     "aiosqlite",
     "pydantic",
+    "uuid-utils",  # uuid7 ids (core.collections.registry, core.cache.sqlite/duckdb)
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
     "httpx",  # traced outbound HTTP transport (core.http_client)
