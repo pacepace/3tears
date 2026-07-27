@@ -27,7 +27,9 @@ dependencies = [
     "3tears-agent-memory>=0.19.0,<0.20.0",
     "3tears-langgraph>=0.19.0,<0.20.0",
     "3tears-media-contracts>=0.19.0,<0.20.0",
-    "3tears-nats>=0.19.0,<0.20.0",
+    # [client]: this package uses the NATS client at runtime, and nats-py is an
+    # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
+    "3tears-nats[client]>=0.19.0,<0.20.0",
     "3tears-observe>=0.19.0,<0.20.0",
     "langchain-core",
     "httpx",

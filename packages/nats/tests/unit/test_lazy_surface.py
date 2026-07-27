@@ -34,14 +34,21 @@ _CLIENT_DISTS = ("nats", "nkeys")
 
 
 class _BlockedFinder:
-    """meta_path finder that refuses the named top-level distributions."""
+    """meta_path finder that refuses the named top-level distributions.
+
+    Raises ``ModuleNotFoundError`` carrying ``name``, exactly as the real
+    machinery does for an uninstalled distribution: the package's
+    ``__getattr__`` reads ``name`` to decide whether to blame the missing
+    extra or re-raise a genuine broken import from one of our own submodules,
+    so a bare ``ImportError`` here would not exercise the branch that ships.
+    """
 
     def __init__(self, blocked: Sequence[str]) -> None:
         self._blocked = frozenset(blocked)
 
     def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> None:
         if fullname.split(".")[0] in self._blocked:
-            raise ImportError(f"blocked by test: {fullname}")
+            raise ModuleNotFoundError(f"blocked by test: {fullname}", name=fullname)
         return None
 
 
@@ -107,7 +114,60 @@ class TestLazySurface:
         unresolvable = [n for n in nats_pkg.__all__ if not hasattr(nats_pkg, n)]
         assert not unresolvable, f"__all__ names that do not resolve: {unresolvable}"
 
+    def test_no_public_name_resolves_to_a_submodule(self) -> None:
+        """``hasattr`` is not enough -- a shadowed name is present but wrong.
+
+        ``forward`` is both a submodule and the function it exports, so the
+        import machinery binding the submodule onto the package would satisfy
+        ``hasattr`` while turning every call into ``TypeError: 'module' object
+        is not callable``.
+        """
+        shadowed = [n for n in nats_pkg.__all__ if isinstance(getattr(nats_pkg, n, None), ModuleType)]
+        assert not shadowed, f"public names shadowed by their submodule: {shadowed}"
+
     def test_dir_advertises_the_lazy_names(self) -> None:
         """tab-completion and introspection should see the deferred surface."""
         listed = set(dir(nats_pkg))
         assert set(nats_pkg._LAZY_ATTR_TO_SUBMOD) <= listed  # noqa: SLF001
+
+
+class TestSubmoduleNameCollision:
+    """``forward`` is exported under the same name as the submodule holding it.
+
+    Both orderings below bind ``threetears.nats.forward`` to the submodule as a
+    side effect of the import machinery. Under eager re-exports the function
+    won because it was bound afterwards; under lazy resolution that order
+    inverts, so the package must refuse the shadowing write explicitly.
+    """
+
+    @staticmethod
+    def _reimported() -> ModuleType:
+        """a clean ``threetears.nats``, unaffected by earlier tests' caching."""
+        _purge(("threetears",))
+        return importlib.import_module("threetears.nats")
+
+    @pytest.fixture(autouse=True)
+    def _restore_modules(self) -> Iterator[None]:
+        saved = sys.modules.copy()
+        try:
+            yield
+        finally:
+            sys.modules.clear()
+            sys.modules.update(saved)
+
+    def test_survives_resolving_a_sibling_lazy_name(self) -> None:
+        """resolving ``ForwardedHandlerError`` must not replace ``forward``."""
+        pkg = self._reimported()
+
+        _ = pkg.ForwardedHandlerError  # imports threetears.nats.forward
+
+        assert callable(pkg.forward), f"forward became {type(pkg.forward).__name__}"
+
+    def test_survives_a_direct_submodule_import(self) -> None:
+        """the package's own tests import the submodule directly; that is fine."""
+        pkg = self._reimported()
+
+        importlib.import_module("threetears.nats.forward")
+
+        assert callable(pkg.forward), f"forward became {type(pkg.forward).__name__}"
+        assert "threetears.nats.forward" in sys.modules, "submodule must stay importable"

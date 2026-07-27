@@ -14,13 +14,18 @@ deliberately eager: those modules cost nothing.
 
 .. note::
    when this package requires python >= 3.15, delete ``_LAZY_SUBMOD_ATTRS``,
-   ``__getattr__``, ``__dir__`` and the ``TYPE_CHECKING`` block, and simply
-   prefix the nine plain imports with PEP 810's ``lazy`` keyword instead.
+   ``_LazyReexportModule``, ``__getattr__``, ``__dir__`` and the
+   ``TYPE_CHECKING`` block, and simply prefix the nine plain imports with PEP
+   810's ``lazy`` keyword instead. ``_LazyReexportModule`` goes with them:
+   a ``lazy from`` binds the name at the import statement, restoring the
+   eager ordering that kept the submodule from shadowing its re-export.
 """
 
 from __future__ import annotations
 
 import importlib
+import sys
+from types import ModuleType
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
@@ -158,6 +163,44 @@ _LAZY_ATTR_TO_SUBMOD: Final[dict[str, str]] = {
     attr: submod for submod, attrs in _LAZY_SUBMOD_ATTRS.items() for attr in attrs
 }
 
+#: distributions whose absence means "the client extra is not installed", as
+#: opposed to a genuine broken import inside one of our own submodules.
+_CLIENT_DISTS: Final[frozenset[str]] = frozenset({"nats", "nkeys"})
+
+
+class _LazyReexportModule(ModuleType):
+    """Keeps a re-export from being shadowed by its same-named submodule.
+
+    ``forward`` is both a submodule of this package and the function that
+    submodule exports. Importing that submodule -- directly, or as a side
+    effect of resolving any *other* lazy name from it, such as
+    ``ForwardedHandlerError`` -- makes the import machinery bind the module
+    onto this package under the same name. That write lands in the package
+    dict, so :func:`__getattr__` stops firing and ``threetears.nats.forward``
+    silently becomes the module: a call then fails with ``TypeError: 'module'
+    object is not callable``, far from the import that caused it.
+
+    Eager re-exports had no such problem, because the ``from ... import``
+    that bound the function ran *after* the machinery bound the module. Under
+    lazy resolution that order inverts, so the collision is refused here
+    instead. The submodule stays reachable via
+    ``sys.modules['threetears.nats.forward']`` and via ``from
+    threetears.nats.forward import ...``, which is how the internals reach it.
+    """
+
+    def __setattr__(self, name: str, value: object) -> None:
+        shadows_reexport = (
+            name in _LAZY_ATTR_TO_SUBMOD
+            and isinstance(value, ModuleType)
+            and getattr(value, "__name__", None) == f"{__name__}.{name}"
+        )
+        if shadows_reexport:
+            return
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _LazyReexportModule
+
 
 def __getattr__(name: str) -> object:
     """Resolve a nats-py-backed re-export on first access (PEP 562)."""
@@ -166,7 +209,11 @@ def __getattr__(name: str) -> object:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     try:
         module = importlib.import_module(f"{__name__}.{submod}")
-    except ImportError as exc:  # the NATS client is an optional install
+    except ImportError as exc:
+        # only claim "extra not installed" when that is actually what happened;
+        # a broken import inside our own submodule must surface as itself.
+        if (exc.name or "").split(".")[0] not in _CLIENT_DISTS:
+            raise
         raise ImportError(
             f"{name} requires the NATS client, which is not installed. "
             f"Install it with: pip install '3tears-nats[client]' "
