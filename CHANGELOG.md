@@ -6,6 +6,47 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**The noVNC client now ships in the wheel, under a licence notice that says so
+(`3tears-scrape`).** The human-handover router hands a platform a working display instead of
+instructions for installing one. A seam that requires the consumer to go and fetch noVNC
+separately is homework, not a seam -- and there is a correctness argument on top of the
+ergonomic one that is the stronger of the two: the operator page does
+`import RFB from "./core/rfb.js"` and passes `wsProtocols`, and RFB's constructor options have
+changed across releases, so a platform-supplied tree turns "did you install the right noVNC"
+into a bug class diagnosed from outside the process. Owning both pins them together.
+
+noVNC v1.7.0 is vendored unmodified at `src/threetears/scrape/operator_assets/novnc/`: `core/`
+and `vendor/pako/` only, roughly 740K rather than 2.8M, because `core/` imports nothing outside
+itself but pako and references no image, stylesheet or translation. The operator page replaces
+noVNC's own UI, so `app/`, `po/` and `vnc.html` are not shipped.
+
+**The licence obligation is met specifically rather than by a line in a README**, since noVNC is
+MPL-2.0 and this package is MIT. Redistributing MPL-2.0 files inside an MIT wheel is permitted;
+what it requires is that the licence text and copyright notice travel with the files, that the
+source stays identifiable, and that any modification is marked. So the upstream `LICENSE.txt`,
+`AUTHORS` and every text they reference ship beside the code and again in the wheel's
+`dist-info/licenses/`; `novnc-provenance.json` records the version, the source archive and a
+digest of the tree; and the declared expression is now `MIT AND MPL-2.0 AND
+LicenseRef-noVNC-DES` rather than plain `MIT`. That makes `3tears-scrape` the only compound
+entry in a family that otherwise declares `MIT` twenty-eight times over, which is correct: it
+is the only one redistributing somebody else's files. `LicenseRef-noVNC-DES` is
+`core/crypto/des.js`, which carries two bespoke permissive grants matching no listed SPDX
+licence. The operator page sits as a sibling of the vendored directory rather than inside it, so
+no file under `novnc/` can be read as a modified noVNC file.
+
+`modified: false` is checked, not promised: a test recomputes the tree digest, and the fix for a
+failure is to mark the modification, never to restamp the digest.
+
+**Two separate mechanisms would each have shipped a dead display**, and both are now held by
+test. The stock Python `.gitignore` carries a bare `lib/` rule; with no leading slash it matches
+at any depth, so it matched `vendor/pako/lib/` -- every zlib module noVNC's compressed-encoding
+decoders import. Twelve files, absent from the repository, with the working tree looking
+complete. A `!` re-inclusion fixes that for git and does not fix it for hatchling, which reads
+ignore files with its own matcher and does not honour the negation, so the wheel was still built
+without them; `[tool.hatch.build.targets.wheel] artifacts` is what covers that half. Nothing
+readable from the source tree distinguishes the two cases, which is why one test builds a real
+wheel and looks inside it.
+
 **A blocked scrape target now backs off, instead of being hammered forever
 (`3tears-scrape`).** Telling a bot wall apart from a site redesign already stopped a
 walled target burning its recipe, but it did not make one cheap: the target was still

@@ -380,4 +380,24 @@ asks the exits directly.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The bundled sidecar (`sidecar/`) wraps nodriver (AGPL-3.0) as a genuinely separate process, under its own [`sidecar/LICENSE`](sidecar/LICENSE).
+MIT for everything this package's own authors wrote. See [LICENSE](LICENSE).
+
+The declared expression is `MIT AND MPL-2.0 AND LicenseRef-noVNC-DES`, because the wheel
+carries files that are not ours and saying "MIT" would be claiming otherwise:
+
+- **noVNC v1.7.0**, vendored unmodified at
+  `src/threetears/scrape/operator_assets/novnc/`, so a platform mounting the operator router
+  gets a working display rather than instructions for installing one. **MPL-2.0**, which is
+  file-level copyleft: it governs those files and does not reach the code around them. The
+  upstream `LICENSE.txt`, `AUTHORS` and the licence texts they reference ship alongside the
+  code and again in the wheel's `dist-info/licenses/`. Provenance -- version, source archive,
+  digest, and the fact that nothing in the tree has been changed -- is recorded in
+  [`novnc-provenance.json`](src/threetears/scrape/operator_assets/novnc-provenance.json) and
+  held by `tests/test_operator_assets.py`. `core/crypto/des.js` carries its own permissive
+  grants from AT&T Laboratories Cambridge and Widget Workshop, which match no listed SPDX
+  licence; `LicenseRef-noVNC-DES` names them.
+- **pako**, MIT, under `operator_assets/novnc/vendor/pako/`, which noVNC's compressed-encoding
+  decoders import.
+
+The bundled sidecar (`sidecar/`) wraps nodriver (AGPL-3.0) as a genuinely separate process,
+under its own [`sidecar/LICENSE`](sidecar/LICENSE). It is not part of the wheel.
