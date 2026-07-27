@@ -12,7 +12,7 @@ set -euo pipefail
 # inside the ruff target tree) while nothing anywhere executed the result -- and a ruff
 # autofix wrote `except OSError, ProcessLookupError:` into hitl.py, a syntax error that
 # passed lint, passed mypy (the sidecar is outside its file list too) and passed the whole
-# whole workspace suite. Only this suite could catch it, and nothing ran this suite.
+# workspace suite. Only this suite could catch it, and nothing ran this suite.
 #
 # Requires `uv`, which resolves the sidecar's own pyproject.toml.
 

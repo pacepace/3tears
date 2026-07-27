@@ -429,8 +429,18 @@ fallback is a dedicated browser for that one target.
 
 ### 5. The HITL session (sidecar)
 
-Container additions: `x11vnc`, `websockify`, noVNC static assets. Xvfb, Chromium and the headful
-launch are already there.
+Container additions, in two groups. For the display itself: `x11vnc`, `websockify`, and the
+noVNC static assets. Xvfb, Chromium and the headful launch were already there.
+
+For making that display OPERABLE, all added after live verification rather than designed in:
+`openbox` as a window manager, because bare Xvfb maps windows with no decoration and no way to
+switch between them; `tint2` as a taskbar, because without one a minimised window is
+unrecoverable; `x11-xserver-utils` for `xrdb`, which is how `UI_SCALE` reaches openbox and
+tint2 so an operator can size the text; and `x11-utils` for `xprop`, which `entrypoint.sh`
+polls to confirm the window manager actually came up. The image also patches openbox's
+`rc.xml` down to one virtual desktop and unbinds the mousewheel from `GoToDesktop`, because an
+idle scroll on the desktop background silently moved the operator to an empty desktop and their
+targets appeared to vanish.
 
 `x11vnc` and `websockify` start **on demand** when a session opens and stop on teardown -- no idle
 VNC surface. This matches the operational model: the display comes up when a person arrives, not

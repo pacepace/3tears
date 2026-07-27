@@ -2,9 +2,15 @@
 set -euo pipefail
 
 # Xvfb startup discipline mirrors Pace's 14-eng-playwright-headed reference
-# repo: poll for the X11 socket file directly rather than depending on
-# x11-utils, and clean up stale lock files from a previous run before and
-# after.
+# repo: poll for the X11 socket file directly, and clean up stale lock files
+# from a previous run before and after. The socket is the X SERVER's own
+# readiness signal and needs no tooling to observe, which is why this loop
+# asks the filesystem.
+#
+# The window-manager check further down does use x11-utils (`xprop`), because
+# "is a WM managing this display" is an EWMH property on the root window and
+# there is no filesystem equivalent to poll. Different question, different
+# mechanism; this one deliberately stays dependency-free.
 
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 SCREEN_GEOM="${SCREEN_GEOM:-1920x1080x24}"

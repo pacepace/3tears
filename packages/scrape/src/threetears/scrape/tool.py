@@ -79,15 +79,14 @@ _ROBOTS_DEFAULT = _RobotsDefault()
 class _Gate(StrEnum):
     """Which gate in :meth:`ScrapeTool.execute` refused, when one did.
 
-        Recorded at the gate that decides rather than reconstructed afterwards. The tail of
-    One value says which gate refused. Reconstructing it from the individual signals instead --
-        an error string, a robots decision, a circuit decision -- means a reader must hold all of
-        them to predict which branch wins, and a new gate must be spelled into every place that
-        reasoning appears.
+    Recorded at the gate that decides, rather than reconstructed at the tail. Reconstructing it
+    from the individual signals -- an error string, a robots decision, a circuit decision --
+    means a reader must hold all of them to predict which branch wins, and a new gate has to be
+    spelled into every place that reasoning appears.
 
-        ``None`` rather than a member for "nothing refused": the absence of a refusal is not itself
-        a gate, and giving it a name invites code that checks for it by equality and then has to be
-        updated when a real gate is added.
+    ``None`` rather than a member for "nothing refused": the absence of a refusal is not itself
+    a gate, and giving it a name invites code that checks for it by equality and then has to be
+    updated when a real gate is added.
     """
 
     #: Missing or malformed tool input, an unknown driver backend, an unusable schema.
@@ -771,10 +770,10 @@ class ScrapeTool(TearsTool):
         # that sleep is the EXPECTED case, not a rare one.
         #
         # There is ONE guard over the whole permitted path -- the sleep, the credential read and
-        # the render. There used to be two adjacent ones with a boundary between them, which is
-        # each new await had to be placed against whichever guard its author happened to be
-        # reading. Anything added below this line is covered without anyone having to notice --
-        # provided it RAISES; a path that returns normally compensates at its own refusal.
+        # the render. With two adjacent guards and a boundary between them, each new await had
+        # to be placed against whichever one its author happened to be reading. Anything added
+        # below this line is covered without anyone having to notice -- provided it RAISES; a
+        # path that returns normally compensates at its own refusal instead.
         # Now a READ of what the gates recorded, not a re-derivation of it. This predicate used
         # to be `error is None and (decision is None or decision.permitted)` -- two of the four
         # signals the tail also consulted, combined here and nowhere else, so a fifth gate meant

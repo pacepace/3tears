@@ -324,17 +324,16 @@ tool = ScrapeTool(..., egress="tor", egress_registry=registry)
 `EgressDriver`; `NetworkCaptureDriver` and `MultiDocumentDriver` inherit whichever driver they
 wrap. `CamoufoxDriver`, `DocumentDriver`, `ListingDetailDriver`, and `MultiDocumentDriver`'s own
 listing fetch reach the target on the container's default route regardless of what this tool is
-configured with.
+configured with. Configuring an exit and selecting one of those backends therefore proxies the
+`robots.txt` read and sends the page fetch direct. `ScrapeTool` names the offending drivers in a
+warning at construction rather than letting that happen quietly, so check your logs; there is no
+way for this package to route a backend that has no proxy support.
 
-`NodriverDownloadDriver` is a third case. It posts to the sidecar's `/v1/download`, which
-accepts no per-request exit and reports none back, so its fetch leaves by whatever the
-CONTAINER's `EGRESS_PROXY` is set to. That is not the default route and it is not this tool's
-configured exit either -- it is a per-container setting, so a deployment running one sidecar
-behind TOR gets TOR for downloads no matter what any driver was given. Configuring an exit and selecting one of those
-backends therefore proxies the `robots.txt` read and sends the page fetch direct. `ScrapeTool`
-names the offending drivers in a warning at construction rather than letting that happen
-quietly, so check your logs; there is no way for this package to route a backend that has no
-proxy support.
+`NodriverDownloadDriver` is a third case, and not one that warning covers. It posts to the
+sidecar's `/v1/download`, which accepts no per-request exit and reports none back, so its fetch
+leaves by whatever the CONTAINER's `EGRESS_PROXY` is set to. That is neither the default route
+nor this tool's configured exit: it is a per-container setting, so a deployment running one
+sidecar behind TOR gets TOR for downloads no matter what any driver was given.
 
 *It is wired in two places, and getting one right hides the other.* Drivers take their own
 `egress=` because a driver may be shared between tools; `ScrapeTool` takes one for its own
