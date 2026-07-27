@@ -6,12 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-**RELEASE GATE -- `no_silent_swallow` must be clean workspace-wide before this ships.** The
-walker currently runs against `threetears.core` only, where every handler is marked and
-every one was legitimate. The rest of the workspace is unscanned. These are security
-packages, and a handler that swallows silently is an outage that reports nothing, so this
-is a blocker rather than a nice-to-have. Run
-`tests/enforcement/test_no_silent_swallow.py` widened to a package for its current count.
+**A pod can close one user's live sockets.** `WebSocketHandler` already kept a per-pod
+`user_id -> socket` map with nothing able to act on it, so server-side revocation reached the
+next token mint and the next connect but never a socket that had already authenticated -- it
+just kept streaming. `disconnect_user` sends the peer an error frame explaining why before
+closing, so a client routes to sign-in instead of reading it as a network drop and
+reconnecting in a loop, and one wedged handle no longer strands the rest.
+
+**`Subjects.identity_epoch`** is the subject to bump when a principal's ability to act changes
+in a way its already-issued token cannot express -- an account disabled mid-session being the
+case it exists for. Same write -> bump -> broadcast -> reload shape as `mcp_rbac_epoch`. The
+payload convention (`{"user_id": ...}`, so a subscriber can also close that user's sockets) is
+documented as a hint rather than a contract: the catch-up path carries no payload, so a
+subscriber has to stay correct without one.
+
+**`no_silent_swallow` now runs workspace-wide, and passes.** It had been scoped to
+`threetears.core`, which left every other package -- the security ones included -- unscanned,
+and a handler that swallows silently is an outage that reports nothing. The gate no longer
+takes `src_roots`: it discovers every source root under the repo and checks them all. Each
+handler it surfaced was either fixed, given the log the house convention asks for, or marked
+`# NOSILENT:` with the reason the failure IS the expected outcome. The walkers also record
+what they could not scan, so a file the AST cannot parse is reported rather than counted as
+clean.
 
 **Dict-state enforcement is keyed on the class, not the line.** The shared domain matched
 its allowlist on `(file, exact line, attr)` and had never had a caller to prove that
