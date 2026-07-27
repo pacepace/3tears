@@ -55,6 +55,8 @@ dev = [
     { name = "langchain-openai", specifier = ">=1.1" },
     { name = "langchain-voyageai", specifier = ">=0.3" },
     { name = "mypy", specifier = ">=1.8" },
+    { name = "nats-py", specifier = ">=2.10" },
+    { name = "nkeys", specifier = ">=0.2" },
     { name = "opentelemetry-api", specifier = ">=1.28" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28" },
     { name = "opentelemetry-sdk", specifier = ">=1.28" },
@@ -86,7 +88,6 @@ dependencies = [
     { name = "asyncpg" },
     { name = "cryptography" },
     { name = "httpx" },
-    { name = "nats-py" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy" },
@@ -95,6 +96,9 @@ dependencies = [
 [package.optional-dependencies]
 duckdb = [
     { name = "duckdb" },
+]
+nats = [
+    { name = "3tears-nats", extra = ["client"] },
 ]
 testing = [
     { name = "docker" },
@@ -108,6 +112,7 @@ tracing = [
 [package.metadata]
 requires-dist = [
     { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
@@ -115,7 +120,6 @@ requires-dist = [
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "httpx" },
-    { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
@@ -123,7 +127,7 @@ requires-dist = [
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
 ]
-provides-extras = ["tracing", "duckdb", "testing"]
+provides-extras = ["nats", "tracing", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
@@ -752,18 +756,23 @@ version = "0.19.4"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+client = [
     { name = "nats-py" },
     { name = "nkeys" },
-    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "nats-py", specifier = ">=2.10" },
-    { name = "nkeys", specifier = ">=0.2" },
+    { name = "nats-py", marker = "extra == 'client'", specifier = ">=2.10" },
+    { name = "nkeys", marker = "extra == 'client'", specifier = ">=0.2" },
     { name = "pydantic", specifier = ">=2.10" },
 ]
+provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"

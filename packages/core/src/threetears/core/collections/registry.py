@@ -5,13 +5,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
-from threetears.nats import NatsClient, Subjects
+from threetears.nats import Subjects
 from threetears.nats.errors import PublishError, SubscribeError
 from threetears.observe import get_logger
 from uuid_utils import uuid7
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
+
+    # annotation-only. `Subjects` above is a genuine runtime use, but it lives
+    # in a nats-py-free submodule, so importing it eagerly costs nothing.
+    from threetears.nats import NatsClient
 
 __all__ = [
     "CacheInvalidationMessage",
