@@ -1424,3 +1424,186 @@ class TestEgressReporting:
             assert captured["proxy_server"] == body["egress_proxy"], (
                 "the request's exit never reached the browser context, so the echo names an exit that was not used"
             )
+
+
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Tab for the startup-window path (only .target.url and get()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
+class _FakeStartupTab:
+    """A tab that remembers where it was told to go."""
+
+    def __init__(self, url: str) -> None:
+        self.target = SimpleNamespace(url=url)
+        self.navigated_to: list[str] = []
+        self.closed = 0
+
+    async def get(self, url: str) -> None:
+        """Record the navigation and reflect it, as a real tab's target would."""
+        self.navigated_to.append(url)
+        self.target.url = url
+
+    async def close(self) -> None:
+        """Record a close, so a test can prove this path does NOT take one."""
+        self.closed += 1
+
+
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Browser for the startup-window path (only tabs/update_targets); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
+class _FakeStartupBrowser:
+    """Just the tab list and the refresh the startup-window blanking walks."""
+
+    def __init__(self, tabs: list[_FakeStartupTab]) -> None:
+        self.tabs = tabs
+        self.refreshed = 0
+
+    async def update_targets(self) -> None:
+        """Count the refresh; a stale target list is how this finds nothing to blank."""
+        self.refreshed += 1
+
+
+class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
+    """Chromium needs one window, so the one it opens at launch lives for the container's life.
+
+    On this image the new-tab page renders the search engine's home page, so an operator summoned
+    to clear one challenge arrived at a display holding their target AND a second window that
+    looked exactly like a usable browser. Reported by an operator on the real screen.
+
+    Not cosmetic: that window belongs to the DEFAULT browser context, so it is the one place on
+    the display where what somebody types is not isolated per target -- which is the promise this
+    whole surface makes.
+    """
+
+    async def test_the_new_tab_page_is_left_on_about_blank(self) -> None:
+        """The observed state at boot was `chrome://newtab/`, which is what renders as search."""
+        tab = _FakeStartupTab("chrome://newtab/")
+        main._browser = _FakeStartupBrowser([tab])
+
+        await main._hide_the_idle_window()
+
+        assert tab.navigated_to == ["about:blank"], (
+            "the startup window was left on the new-tab page, so an operator sees a second "
+            "browser that looks usable and is not context-isolated"
+        )
+
+    async def test_it_is_navigated_rather_than_closed(self) -> None:
+        """By this point the warm-up render has disposed of its own tab, so this is the ONLY window.
+
+        Closing the last window exits Chromium, which would take the sidecar down at startup --
+        the reason this navigates instead, and the reason that is worth a test rather than a
+        comment.
+        """
+        tab = _FakeStartupTab("chrome://newtab/")
+        main._browser = _FakeStartupBrowser([tab])
+
+        await main._hide_the_idle_window()
+
+        assert tab.closed == 0, "the startup window was closed, which exits the browser"
+
+    async def test_a_real_page_is_left_alone(self) -> None:
+        """Only the startup page is touched. Navigating a session's tab away would take an
+        operator's half-finished challenge with it."""
+        target = _FakeStartupTab("https://example.gov/some-walled-target")
+        main._browser = _FakeStartupBrowser([target])
+
+        await main._hide_the_idle_window()
+
+        assert target.navigated_to == [], "a real page was blanked, losing whatever was on it"
+
+    async def test_a_browser_that_refuses_does_not_fail_startup(self) -> None:
+        """An operable deployment beats a tidy one: this runs during container startup."""
+
+        class _Refuses(_FakeStartupBrowser):
+            async def update_targets(self) -> None:
+                raise RuntimeError("CDP is not answering")
+
+        main._browser = _Refuses([])
+
+        # Must not raise.
+        await main._hide_the_idle_window()
+
+    async def test_no_browser_at_all_is_not_an_error(self) -> None:
+        """Warm-up fails open, so this can be reached with no browser to talk to."""
+        main._browser = None
+
+        await main._hide_the_idle_window()
+
+    async def test_container_startup_actually_calls_it(self, monkeypatch) -> None:
+        """The WIRING, not the mechanism, because the two fail independently.
+
+        Every test above drives `_hide_the_idle_window` directly, so all of them stayed green
+        with the call deleted from `_lifespan` -- the function worked perfectly and nothing invoked
+        it. That is the same shape as a stated property with no seam behind it, and the only thing
+        that catches it is asserting the boot path reaches it.
+        """
+        called: list[bool] = []
+
+        async def _record() -> None:
+            called.append(True)
+
+        async def _no_warm_up() -> None:
+            return None
+
+        class _Started:
+            """Enough of a browser for lifespan startup to finish."""
+
+            def stop(self) -> None:
+                return None
+
+        async def _fake_start(**_kwargs: object) -> _Started:
+            return _Started()
+
+        monkeypatch.setattr(main, "_hide_the_idle_window", _record)
+        monkeypatch.setattr(main, "_warm_up", _no_warm_up)
+        monkeypatch.setattr(main.uc, "start", _fake_start)
+        monkeypatch.setattr(main._sessions, "shutdown", _no_warm_up)
+
+        async with main._lifespan(main.app):
+            pass
+
+        assert called == [True], "container startup never blanked the startup window"
+
+    async def test_the_idle_window_is_taken_off_the_screen_and_out_of_the_taskbar(self, monkeypatch) -> None:
+        """Both, because either alone leaves something to click on.
+
+        A window that skips the taskbar is still sitting on the desktop; a minimised one that the
+        taskbar still lists is still one click away. An operator paid by the cleared challenge
+        should not have to know which of the two windows is real.
+        """
+        calls: list[list[str]] = []
+
+        async def _fake(argv: list[str], *, display: str) -> str | None:
+            calls.append(argv)
+            return "6291459\n" if argv[0] == "xdotool" and "search" in argv else ""
+
+        monkeypatch.setattr(main, "_wm_output", _fake)
+        await main._hide_window_titled("about:blank - Chromium", display=":99")
+
+        joined = [" ".join(c) for c in calls]
+        assert any("skip_taskbar" in c and "wmctrl" in c for c in joined), (
+            f"the idle window was left in the operator's taskbar: {joined}"
+        )
+        assert any("windowminimize" in c for c in joined), (
+            f"the idle window was left on the operator's screen: {joined}"
+        )
+
+    async def test_no_matching_window_is_not_an_error(self, monkeypatch) -> None:
+        """The window may legitimately be gone -- a render in flight, a browser mid-restart."""
+
+        async def _nothing(argv: list[str], *, display: str) -> str | None:
+            return ""
+
+        monkeypatch.setattr(main, "_wm_output", _nothing)
+        await main._hide_window_titled("about:blank - Chromium", display=":99")
+
+    async def test_a_window_manager_that_will_not_answer_does_not_fail_startup(self) -> None:
+        """This runs during container startup; an operable deployment beats a tidy one."""
+        # A binary that does not exist, which is what a stripped image looks like.
+        assert await main._wm_output(["definitely-not-installed-xyz"], display=":99") is None
+
+    def test_chromium_is_launched_on_a_blank_page(self) -> None:
+        """So no window in the container's life ever showed something worth clicking.
+
+        Asserted against the arguments PRODUCTION builds, not a copy: without the positional URL
+        Chromium opens its new-tab page, which on this image renders a search engine's home page.
+        """
+        args = main._browser_args()
+        assert "about:blank" in args, (
+            "Chromium is launched with no start page, so its idle window shows the new-tab page"
+        )

@@ -65,9 +65,17 @@ def build_router(
         if session_id is None:
             # Closed BEFORE the display is even resolved, so nothing is done on behalf of a
             # caller who never had a capability: an unauthenticated request must not be able to
-            # cause work against a display. 1008 is "policy violation", and the reason stays
-            # vague for the same purpose the rest of this surface does -- distinguishing "no
-            # session" from "wrong token" confirms an id to whoever is guessing.
+            # cause work against a display. The reason stays vague for the same purpose the rest
+            # of this surface does -- distinguishing "no session" from "wrong token" confirms an id
+            # to whoever is guessing.
+            #
+            # THE CODE DOES NOT REACH A BROWSER, and that is worth knowing rather than assuming.
+            # Closing before accepting means no WebSocket is ever established, so the server
+            # answers the handshake with HTTP 403 and the 1008 is never transmitted -- verified
+            # against a real client, not reasoned about. 1008 stays because it is the correct ASGI
+            # close code and a test client does surface it; what an operator actually gets is a
+            # failed connection, which is why the page distinguishes never-connected from dropped
+            # instead of waiting for RFB's `securityfailure` (which cannot fire this early).
             # Logged, because a refusal that leaves no server-side trace is a refusal nobody can
             # diagnose -- and this branch is reached both by a wrong token and by a token whose
             # session has ended, which look identical to the operator on purpose. The token

@@ -380,11 +380,11 @@ packages/scrape/sidecar/hitl.py:903:_create_isolated_tab
 packages/scrape/sidecar/hitl.py:912:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:444:_apply_context_state
+packages/scrape/sidecar/main.py:445:_apply_context_state
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:451:_apply_context_state
+packages/scrape/sidecar/main.py:452:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/main.py:501:_apply_origin_storage
+packages/scrape/sidecar/main.py:502:_apply_origin_storage
 
 # rationale: the test asserts a second start does not spawn a second x11vnc over the running one, and the process handle is the only evidence of that; a public accessor would exist solely for this test
 packages/scrape/sidecar/tests/test_hitl_lifecycle.py:127:_x11vnc
@@ -548,6 +548,38 @@ packages/scrape/sidecar/tests/test_render_contract.py:1328:_browser_args
 packages/scrape/sidecar/tests/test_render_contract.py:1333:_browser_args
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
 packages/scrape/sidecar/tests/test_render_contract.py:1403:_browser
+# rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1476:_browser
+# rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:1478:_hide_the_idle_window
+# rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1493:_browser
+# rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:1495:_hide_the_idle_window
+# rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1503:_browser
+# rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:1505:_hide_the_idle_window
+# rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1516:_browser
+# rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:1519:_hide_the_idle_window
+# rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1523:_browser
+# rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:1525:_hide_the_idle_window
+# rationale: the lifespan tears sessions down on exit, so the test substitutes the manager to keep a real reaper task out of a unit run
+packages/scrape/sidecar/tests/test_render_contract.py:1555:_sessions
+# rationale: the WIRING test: every other test here drives the helper directly and stayed green with the lifespan call deleted, so this asserts container startup actually reaches it
+packages/scrape/sidecar/tests/test_render_contract.py:1557:_lifespan
+# rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
+packages/scrape/sidecar/tests/test_render_contract.py:1578:_hide_window_titled
+# rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
+packages/scrape/sidecar/tests/test_render_contract.py:1595:_hide_window_titled
+# rationale: the subprocess boundary itself, asserted to return None rather than raise for a binary that does not exist -- which is what a stripped image looks like and must not fail startup
+packages/scrape/sidecar/tests/test_render_contract.py:1600:_wm_output
+# rationale: asserts the arguments PRODUCTION builds; an earlier version of a sibling test rebuilt the list itself and stayed green with the production line deleted
+packages/scrape/sidecar/tests/test_render_contract.py:1608:_browser_args
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows

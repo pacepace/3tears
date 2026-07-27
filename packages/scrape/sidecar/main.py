@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -718,6 +719,102 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
         shutil.rmtree(download_dir, ignore_errors=True)
 
 
+#: How long to wait on each window-manager call. Local X clients against a local Xvfb, so this is
+#: generous; the cost of being wrong is a startup that hangs rather than a window that shows.
+_WM_CALL_TIMEOUT_SECONDS = 5.0
+
+
+async def _hide_the_idle_window() -> None:
+    """Take Chromium's idle window off the operator's screen and out of their taskbar.
+
+    Chromium must own at least one window or it exits, and the warm-up render disposes of its own
+    tab, so exactly one window always survives doing nothing. An operator summoned to clear a
+    single challenge should see their target and nothing else. An extra window that looks like a
+    usable browser is a thing to click on, and the people doing this work are not the people who
+    should have to work out that it is scenery.
+
+    It is also the one window on that display belonging to the DEFAULT browser context, so it is
+    the only place where what somebody types is not isolated per target -- which is the promise the
+    rest of this surface keeps.
+
+    HIDDEN, NOT CLOSED. Closing the last window exits the browser and takes the container's whole
+    purpose with it. Hiding cannot.
+
+    **Done here rather than by an openbox rule, and that is a correction rather than a preference.**
+    An `<application title="about:blank*">` rule with `skip_taskbar` and `iconic` was tried first
+    and never fired: openbox applies those rules when a window is first MAPPED, and Chromium maps
+    before its page title arrives, so there is no title to match on yet. Observed on the live
+    display -- the window stayed viewable with an empty `_NET_WM_STATE`. Acting after startup means
+    the title exists by the time anything looks for it.
+
+    Both tools are needed. `wmctrl` sets `skip_taskbar`/`skip_pager`, and `xdotool` iconifies; a
+    minimised window that a taskbar still lists is still something to click on.
+
+    Best-effort throughout. A browser whose idle window will not hide is still a working browser,
+    and failing container startup over this would trade an operable deployment for a tidy one.
+    """
+    if _browser is None:
+        return
+    display = f":{os.environ.get('DISPLAY_NUM', '99')}"
+    try:
+        await _browser.update_targets()
+        for tab in list(_browser.tabs):
+            if (tab.target.url or "").startswith(("chrome://newtab", "chrome://new-tab-page")):
+                # Only reachable if the launch argument above did not take -- a Chromium build
+                # that ignores the positional URL, or an edit that dropped it. Blanking does not
+                # hide it, but a visibly empty window is a far smaller problem than a convincing
+                # one.
+                await tab.get("about:blank")
+                log.warning("hitl: the idle window was not blank at launch; blanked it here")
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; a browser that will not blank its idle window is still a working browser and must not fail startup
+        log.warning("hitl: could not blank the idle window: %s", exc)
+
+    await _hide_window_titled("about:blank - Chromium", display=display)
+
+
+async def _hide_window_titled(title: str, *, display: str) -> None:
+    """Iconify the window named *title* and keep it out of the taskbar.
+
+    Split out from its caller so the window-manager plumbing can be exercised without a browser,
+    and so the failure of one call does not decide the other's: a window that skipped the taskbar
+    but did not iconify is still half-hidden, which is better than neither.
+    """
+    found = await _wm_output(["xdotool", "search", "--name", f"^{re.escape(title)}$"], display=display)
+    window = (found or "").strip().splitlines()
+    if not window:
+        log.info("hitl: no idle window named %r to hide", title)
+        return
+    wid = window[0].strip()
+    # skip_pager as well as skip_taskbar: this image pins one desktop, but a pager that appears
+    # later would otherwise list a window nothing should reach.
+    await _wm_output(["wmctrl", "-i", "-r", wid, "-b", "add,skip_taskbar,skip_pager"], display=display)
+    await _wm_output(["xdotool", "windowminimize", wid], display=display)
+    log.info("hitl: idle window %s hidden from the operator's screen and taskbar", wid)
+
+
+async def _wm_output(argv: list[str], *, display: str) -> str | None:
+    """Run one window-manager command against *display*, returning its stdout or ``None``.
+
+    Never raises. Every caller is startup cosmetics, and a container that refuses to boot because
+    a window would not minimise is worse than the window.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env={**os.environ, "DISPLAY": display},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_WM_CALL_TIMEOUT_SECONDS)
+    except (OSError, TimeoutError) as exc:
+        log.warning("hitl: %s failed: %s", argv[0], exc)
+        return None
+    if proc.returncode != 0:
+        log.info("hitl: %s exited %s", argv[0], proc.returncode)
+        return None
+    return out.decode(errors="replace")
+
+
 async def _warm_up() -> None:
     """Render one real page before declaring the sidecar ready.
 
@@ -771,7 +868,13 @@ def _browser_args() -> list[str]:
     PRODUCTION builds. The first version of that test rebuilt the list itself and asserted on
     its own copy, which stayed green with the production line deleted -- a test of the test.
     """
-    args = ["--disable-dev-shm-usage", "--disable-gpu"]
+    # `about:blank` as a positional URL, so Chromium's startup page IS blank rather than the
+    # new-tab page, which on this image renders a search engine's home page.
+    #
+    # At launch rather than by navigating afterwards, so there is no window in the container's
+    # life that ever showed something an operator might try to use -- not even for the second
+    # before `_hide_the_idle_window` gets to it.
+    args = ["about:blank", "--disable-dev-shm-usage", "--disable-gpu"]
     if UI_SCALE not in ("", "1.0", "1"):
         # Chromium's own display-scaling knob, the same one a desktop OS drives. Applied to the
         # browser rather than the X server so the desktop geometry -- and therefore the fit the
@@ -809,6 +912,7 @@ async def _lifespan(_app: FastAPI):
         browser_args=_browser_args(),
     )
     await _warm_up()
+    await _hide_the_idle_window()
     yield
     # Before the browser, because the VNC processes are children of this one and a
     # container stopping should not leave an x11vnc holding the RFB port for whatever

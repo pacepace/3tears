@@ -53,6 +53,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tint2 \
         x11-xserver-utils \
         x11-utils \
+        # Chromium must own at least one window or it exits, and the warm-up render disposes of
+        # its own tab, so one window always survives doing nothing. An operator summoned to clear
+        # a single challenge should see their target and nothing else: an extra window that looks
+        # like a usable browser is a thing to click on, and the people doing this work are not the
+        # people who should have to know it is scenery.
+        #
+        # Hidden at runtime with these two rather than by an openbox <application> rule, which was
+        # tried and does not work: openbox applies those rules when a window is first MAPPED, and
+        # Chromium maps before its page title arrives, so a title-matched rule never fires. Checked
+        # against the live display rather than reasoned about. wmctrl sets skip_taskbar/skip_pager,
+        # xdotool iconifies -- both needed, since a minimised window still shows in a taskbar.
+        wmctrl \
+        xdotool \
     && rm -rf /var/lib/apt/lists/*
 
 # One virtual desktop, and no way to leave it.
@@ -72,8 +85,6 @@ RUN sed -i \
         -e '/<context name="Desktop">/,/<\/context>/ s|<action name="GoToDesktop"><to>next</to></action>||' \
         /etc/xdg/openbox/rc.xml \
     && grep -q '<number>1</number>' /etc/xdg/openbox/rc.xml
-
-
 WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
