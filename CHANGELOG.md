@@ -61,7 +61,7 @@ reservation: a caller that dies between the fetch and the outcome report leaves 
 row, and without the reservation that row would be fetched on every poll with every
 individual state transition still correct.
 
-`3tears-scrape[reprobe]` is a new extra carrying the fourth: `reprobe.py` books the next
+`3tears-scrape[reprobe]` is a new extra carrying the `ReprobeScheduler`: `reprobe.py` books the next
 probe as a `3tears-scheduled-jobs` `relative_delay` job rather than sleeping, for a caller
 that is event-driven rather than polling (a poller's next poll already is the re-probe).
 The job id is derived from the target, so re-booking replaces the outstanding probe --
