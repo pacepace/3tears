@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 from uuid import uuid7
 
@@ -41,9 +42,11 @@ class _RecordingSubscriber:
         self.bound: dict[str, Any] = {}
         self.kwargs: list[dict[str, Any]] = []
 
-    async def subscribe_typed(self, **kw: Any) -> Any:
-        self.kwargs.append(kw)
-        self.bound[str(kw["subject"].path)] = kw["cb"]
+    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any) -> Any:
+        # The protocol's exact signature, not **kw. Swallowing arbitrary kwargs meant a misspelled
+        # or extra one that the real NatsClient would TypeError on passed here in silence.
+        self.kwargs.append({"subject": subject, "cb": cb, "message_type": message_type})
+        self.bound[str(subject.path)] = cb
         return object()
 
 
@@ -110,8 +113,15 @@ async def test_subscribe_binds_all_three_subjects_without_a_queue_group() -> Non
         "t.acl.assignment.invalidate",
         "t.acl.role.invalidate",
     }
+    # subscribe_typed DOES take a `queue`; the bus must never pass one. Asserted against the real
+    # client's signature rather than against the fake, which cannot prove an omission by itself.
+    from threetears.nats import NatsClient
+
+    assert "queue" in inspect.signature(NatsClient.subscribe_typed).parameters, (
+        "if the client loses its queue parameter this assertion is meaningless and must be rewritten"
+    )
     for kw in sub.kwargs:
-        assert "queue" not in kw or kw["queue"] is None, "a queue group would evict on one pod only"
+        assert "queue" not in kw, "a queue group would deliver each broadcast to ONE pod only"
 
 
 async def test_a_membership_broadcast_drops_that_actor_and_leaves_others() -> None:

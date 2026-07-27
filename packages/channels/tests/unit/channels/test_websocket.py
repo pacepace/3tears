@@ -1085,3 +1085,77 @@ class TestWebSocketHandlerRateLimiting:
         )
         assert handler.rate_limit_messages == 20
         assert handler.rate_limit_window == 5.0
+
+
+# ============================================================
+# disconnect_user — closing already-open sockets
+# ============================================================
+
+
+class TestDisconnectUser:
+    """The counterpart to server-side revocation.
+
+    Revoking a refresh token stops the next mint and a status check stops the next connect, but a
+    socket that authenticated ten minutes ago is unaffected by either: it just keeps streaming.
+    These pin that ``disconnect_user`` reaches those sockets, tells the peer why before closing,
+    touches nobody else, and survives a handle that raises.
+    """
+
+    @staticmethod
+    def _handler() -> Any:
+        from threetears.channels.websocket import WebSocketHandler
+
+        return WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth)
+
+    async def test_closes_every_socket_the_user_has(self) -> None:
+        handler = self._handler()
+        first, second = MockWebSocket(), MockWebSocket()
+        handler.registry.register("user-1", first)
+        handler.registry.register("user-1", second)
+
+        closed = await handler.disconnect_user("user-1")
+
+        assert closed == 2
+        assert first.closed and second.closed
+        assert first.close_code == 1008
+
+    async def test_sends_the_reason_before_closing(self) -> None:
+        """So the client routes to sign-in instead of treating it as a network drop and retrying."""
+        handler = self._handler()
+        ws = MockWebSocket()
+        handler.registry.register("user-1", ws)
+
+        await handler.disconnect_user("user-1", reason="account disabled")
+
+        assert json.loads(ws.sent[0]) == {"type": "error", "message": "account disabled"}
+
+    async def test_leaves_other_users_connected(self) -> None:
+        handler = self._handler()
+        target, bystander = MockWebSocket(), MockWebSocket()
+        handler.registry.register("user-1", target)
+        handler.registry.register("user-2", bystander)
+
+        await handler.disconnect_user("user-1")
+
+        assert target.closed
+        assert not bystander.closed
+
+    async def test_unknown_user_is_a_no_op(self) -> None:
+        assert await self._handler().disconnect_user("nobody") == 0
+
+    async def test_one_wedged_socket_does_not_strand_the_others(self) -> None:
+        """Best-effort per handle: a peer that raises must not leave the rest of the sockets open."""
+
+        class _Wedged(MockWebSocket):
+            async def close(self, code: int = 1000) -> None:
+                raise RuntimeError("peer gone")
+
+        handler = self._handler()
+        wedged, healthy = _Wedged(), MockWebSocket()
+        handler.registry.register("user-1", wedged)
+        handler.registry.register("user-1", healthy)
+
+        closed = await handler.disconnect_user("user-1")
+
+        assert closed == 2, "the count is sockets attempted, not sockets confirmed"
+        assert healthy.closed

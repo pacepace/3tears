@@ -1030,6 +1030,41 @@ class WebSocketHandler:
             )
             await _safe_send(websocket, Frame.error("resume failed"), context="replay-source-except")
 
+    async def disconnect_user(self, user_id: str, *, reason: str = "session ended") -> int:
+        """Close every live socket this pod holds for ``user_id``.
+
+        The counterpart to server-side session revocation. A revoked refresh token stops the NEXT
+        token being minted and a status check stops the next CONNECT, but neither reaches a socket
+        that is already open -- it authenticated once and then just streams. Without this, an
+        account disabled mid-session keeps its live editor connection until the peer happens to
+        drop it.
+
+        Pod-local by construction: the registry holds handles, which cannot leave the process. A
+        deployment running several pods disconnects everywhere by having each pod call this from
+        whatever it already broadcasts on (e.g. a
+        :class:`~threetears.epoch.EpochListener` reload callback carrying the user id).
+
+        Best-effort per socket: a handle that raises on send or close is logged and skipped, so one
+        wedged peer cannot leave the rest of a user's sockets open.
+
+        :param user_id: the authenticated user whose sockets should be closed.
+        :ptype user_id: str
+        :param reason: human-readable text delivered as an ``error`` frame before the close, so the
+            client can distinguish this from a network drop and route to sign-in rather than retry.
+        :ptype reason: str
+        :return: how many sockets were closed on this pod.
+        :rtype: int
+        """
+        sockets = self.registry.get_connections(user_id)
+        for socket in sockets:
+            await self._close_with_error(socket, reason)
+        if sockets:
+            log.info(
+                "disconnected a user's live sockets",
+                extra={"extra_data": {"user_id": user_id, "closed": len(sockets)}},
+            )
+        return len(sockets)
+
     async def _close_with_error(self, websocket: Any, error_message: str) -> None:
         """send error message and close websocket connection.
 

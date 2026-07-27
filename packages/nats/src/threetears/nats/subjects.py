@@ -1390,6 +1390,38 @@ class Subjects:
         """
         return Subject(path=f"{_ns()}.mcp.rbac.epoch", kind="point")
 
+    @classmethod
+    def identity_epoch(cls) -> Subject:
+        """publish + subscribe subject for the principal-status epoch.
+
+        bumped when a principal's ability to act changes in a way an
+        already-issued access token cannot express -- the canonical case
+        being an account disabled mid-session. An identity token is
+        deliberately claims-only and self-contained, so nothing in it
+        goes stale on its own: without this, a disabled account keeps
+        authorizing until its token expires, which is the whole window
+        the ``IDN-9``-style "a disabled account never authenticates"
+        rule is supposed to close.
+
+        Sibling pods subscribe and drop their cached principal status,
+        so the next request re-reads it rather than trusting a token
+        minted before the change. Same write -> bump -> broadcast ->
+        reload shape as :meth:`mcp_rbac_epoch`, and it recovers a missed
+        broadcast the same way (periodic catch-up + per-message echo).
+
+        payload convention: publishers SHOULD send
+        ``{"user_id": "<uuid>"}`` naming the affected principal, so a
+        subscriber can also close that user's live sockets -- which a
+        cache drop alone never reaches. It is a hint, not a contract:
+        the catch-up path carries no payload at all, so a subscriber
+        must stay correct without one.
+
+        :return: subject ``{ns}.identity.epoch`` (3tears-bound:
+            ``3tears.identity.epoch``)
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.identity.epoch", kind="point")
+
     # ------------------------------------------------------------------
     # deadletter
     # ------------------------------------------------------------------
