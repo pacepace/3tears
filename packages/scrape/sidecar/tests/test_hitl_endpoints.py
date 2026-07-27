@@ -455,13 +455,30 @@ class TestTheVncStreamSharesTheApiPort:
 
         assert opened == []
 
-    def test_the_session_cookie_authenticates_the_stream(self, monkeypatch) -> None:
+    def test_the_token_is_read_from_the_subprotocol_and_nowhere_else(self) -> None:
+        """The extraction itself, which the relay tests cannot see because they patch past it.
+
+        Both tests above substitute `authorize_token`, so they prove the relay and the refusal
+        but not that the token is found where the design says it is. Without this, moving the
+        token back to a query parameter or a cookie would leave the suite green.
+        """
+        prefix = main._TOKEN_SUBPROTOCOL_PREFIX
+
+        assert main._token_from_subprotocols(f"binary, {prefix}abc123") == "abc123"
+        # Order is the client's choice, so position must not be what identifies it.
+        assert main._token_from_subprotocols(f"{prefix}abc123, binary") == "abc123"
+        # Absent is empty, which fails the check like any other wrong value rather than raising.
+        assert main._token_from_subprotocols("binary") == ""
+        assert main._token_from_subprotocols("") == ""
+
+    def test_the_token_subprotocol_authenticates_the_stream(self, monkeypatch) -> None:
         """The cookie is the only credential a browser can present on a WebSocket upgrade.
 
         A browser cannot set an `Authorization` header on an upgrade, so the header every other
-        endpoint here reads is unavailable to the noVNC client. This asserts the cookie route
-        works end to end, because if it does not the display is a black rectangle and nothing
-        says why.
+        endpoint here reads is unavailable to the noVNC client. `Sec-WebSocket-Protocol` is the
+        one exception, which is why the token rides there rather than in a cookie or a query
+        parameter. This asserts that route works end to end, because if it does not the display
+        is a black rectangle and nothing says why.
         """
         sent: list[bytes] = []
 
@@ -502,8 +519,9 @@ class TestTheVncStreamSharesTheApiPort:
         monkeypatch.setattr(session, "authorize_token", lambda token, **_: None)
 
         client = TestClient(main.app)
-        client.cookies.set(main._VNC_COOKIE, "a-minted-token")
-        with client.websocket_connect("/vnc/ws") as ws:
+        with client.websocket_connect(
+            "/vnc/ws", subprotocols=["binary", f"{main._TOKEN_SUBPROTOCOL_PREFIX}a-minted-token"]
+        ) as ws:
             assert ws.receive_bytes() == b"RFB 003.008\n", (
                 "the RFB handshake did not reach the browser, so the client shows nothing"
             )

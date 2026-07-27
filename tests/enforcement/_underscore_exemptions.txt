@@ -386,10 +386,20 @@ packages/scrape/sidecar/main.py:452:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
 packages/scrape/sidecar/main.py:502:_apply_origin_storage
 
-# rationale: the WebSocket relay authenticates against the module's single SessionManager, and the test substitutes its token check. There is no injection seam -- the manager is process-global because there is one display -- so patching the module attribute is how the refusal path is reached without minting a real session.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:501:_sessions
-# rationale: names the cookie the relay reads, and a browser is the only client that can present one on a WebSocket upgrade. Hardcoding the string here would let the production name change while the test kept passing against the old one, which is the failure the cookie exists to prevent.
-packages/scrape/sidecar/tests/test_hitl_endpoints.py:505:_VNC_COOKIE
+# rationale: names the subprotocol the relay reads the token from. Hardcoding the string would let the production prefix change while the test kept passing against the old one, which is the drift the constant exists to prevent.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:465:_TOKEN_SUBPROTOCOL_PREFIX
+# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:467:_token_from_subprotocols
+# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:469:_token_from_subprotocols
+# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:471:_token_from_subprotocols
+# rationale: the extraction is what the design rests on -- the token rides in a subprotocol rather than a cookie or a query string -- and the relay tests substitute `authorize_token`, so they cannot see it. Exercising it directly is the only way a move back to a query parameter fails a test.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:472:_token_from_subprotocols
+# rationale: the relay authenticates against the module's single SessionManager, and the test substitutes its token check. There is no injection seam -- the manager is process-global because there is one display -- so patching the module attribute is how the refusal path is reached without minting a real session.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:518:_sessions
+# rationale: names the subprotocol the relay reads the token from. Hardcoding the string would let the production prefix change while the test kept passing against the old one, which is the drift the constant exists to prevent.
+packages/scrape/sidecar/tests/test_hitl_endpoints.py:523:_TOKEN_SUBPROTOCOL_PREFIX
 
 # rationale: the VncLifecycle process handle; that x11vnc is started, bound to loopback and stopped again is the security property this suite exists to pin, and the handle is where it is observable.
 packages/scrape/sidecar/tests/test_hitl_lifecycle.py:151:_x11vnc
