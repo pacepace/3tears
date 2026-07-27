@@ -28,6 +28,7 @@ from threetears.enforcement.underscore_access.ruff_config import all_exempted_fi
 
 __all__ = [
     "blanket_noqa_offenders",
+    "carry_forward_rationales",
     "enclosing_scopes",
     "ledger_entries",
     "missing_files",
@@ -150,6 +151,48 @@ def orphan_rationales(exemptions_path: Path) -> list[int]:
         if not following.strip() or following.strip().startswith("#"):
             orphans.append(number)
     return orphans
+
+
+def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tuple[str, str, str], str]:
+    """Map ``(path, scope, symbol)`` to the rationale recorded for it, for a regeneration.
+
+    Keyed on the enclosing scope as well as the symbol because a file routinely reaches for the
+    same private name from several places for different reasons. Keyed on ``(path, symbol)``
+    alone -- which this was -- the first rationale is applied to every access of that name in
+    the file, so several unrelated entries all document whichever reason came first.
+
+    That failure is worse than ordinary staleness because it is self-repairing in the wrong
+    direction: correcting one of the wrong entries by hand is reverted by the next regeneration,
+    since the regeneration is what wrote it. The ledger then has a class of entry that is
+    permanently and silently wrong about the code it describes.
+
+    Lives here rather than in the regeneration script so it can be tested. The bug was in the
+    keying, and a test that pins only the scope walker leaves the keying free to be simplified
+    back with the suite still green.
+
+    The scope is resolved against the CURRENT file at the entry's recorded line: exact while the
+    ledger is fresh, and degrading to symbol-only when a line has drifted outside its original
+    function, which is no worse than the behaviour it replaces.
+    """
+    scopes_by_path: dict[str, dict[int, str]] = {}
+    found: dict[tuple[str, str, str], str] = {}
+    rationale: str | None = None
+    for raw in exemptions_path.read_text().split("\n"):
+        line = raw.strip()
+        if line.startswith(_RATIONALE_PREFIX):
+            rationale = line[len(_RATIONALE_PREFIX) :].strip()
+            continue
+        if not line or line.startswith("#"):
+            continue
+        path, _, rest = line.partition(":")
+        number, _, symbol = rest.partition(":")
+        if not number.isdigit() or not rationale:
+            continue
+        source = repo_root / path
+        if path not in scopes_by_path:
+            scopes_by_path[path] = enclosing_scopes(source) if source.exists() else {}
+        found.setdefault((path, scopes_by_path[path].get(int(number), ""), symbol), rationale)
+    return found
 
 
 def missing_files(exemptions_path: Path, repo_root: Path) -> list[str]:

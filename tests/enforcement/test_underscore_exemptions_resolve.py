@@ -22,8 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from threetears.enforcement.underscore_access import (
-    enclosing_scopes,
-    ledger_entries,
+    carry_forward_rationales,
     missing_files,
     orphan_rationales,
     unlisted_accesses,
@@ -72,40 +71,55 @@ class TestUnderscoreExemptionsResolve:
             f"-- rather than editing the numbers by hand: {unresolved}"
         )
 
-    def test_the_regeneration_can_tell_two_accesses_of_one_symbol_apart(self) -> None:
-        """A rationale describes one ACCESS, and a file may touch a symbol for several reasons.
+    def test_two_accesses_of_one_symbol_keep_their_own_rationales(self, tmp_path: Path) -> None:
+        """The keying itself, driven through a fixture rather than inferred from the real ledger.
 
-        Keyed on ``(path, symbol)``, the regeneration carried the FIRST rationale onto every
-        access of that name in the file: three tests reaching for the same helper all documented
-        whichever reason came first. Worse than ordinary staleness, because it was not
-        correctable -- writing the right one by hand was reverted by the next run, which was
-        what wrote the wrong one.
+        Keyed on ``(path, symbol)``, the regeneration applied the first rationale to every
+        access of that name in a file, so unrelated entries all documented whichever reason came
+        first. Worse than ordinary staleness because correcting one by hand was reverted by the
+        next run, which was what wrote it.
 
-        Asserted on the MECHANISM rather than on the ledger's contents, and that distinction is
-        the point. Scanning the file cannot detect the collapse: it destroys the evidence, so
-        after it happens there is exactly one rationale where there should be several, and
-        nothing left to compare. A version of this test that scanned the ledger passed against
-        the reintroduced bug.
+        A previous version of this test pinned only the scope WALKER. That left the keying free
+        to be simplified back to ``(path, symbol)`` with the whole suite still green -- while its
+        docstring claimed to pin the mechanism. This drives the function the regeneration
+        actually calls, so reverting the key fails here.
         """
-        source = _REPO_ROOT / "packages" / "scrape" / "tests" / "test_tool.py"
-        scopes = enclosing_scopes(source)
-        assert scopes, "no scopes resolved; the keying would degrade to symbol-only everywhere"
+        source = tmp_path / "sample.py"
+        source.write_text("def first():\n    obj._shared\n\ndef second():\n    obj._shared\n")
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text(
+            "# rationale: reason belonging to first\n"
+            "sample.py:2:_shared\n"
+            "# rationale: reason belonging to second\n"
+            "sample.py:5:_shared\n"
+        )
 
-        # The real entries this was found on: three accesses of one symbol, in three tests.
-        render_once = sorted(
-            line
-            for path, line, symbol in ledger_entries(_EXEMPTIONS)
-            if path.endswith("scrape/tests/test_tool.py") and symbol == "_render_once"
+        carried = carry_forward_rationales(ledger, tmp_path)
+
+        reasons = set(carried.values())
+        assert len(reasons) == 2, (
+            "both rationales collapsed onto one key, so a regeneration would overwrite one "
+            f"access's reason with the other's: {carried}"
         )
-        assert len(render_once) > 1, (
-            "this file no longer has multiple accesses of that symbol, so it no longer "
-            "exercises the case; point the assertion at another multi-access symbol"
-        )
-        distinct = {scopes.get(line, "") for line in render_once}
-        assert len(distinct) == len(render_once), (
-            f"two accesses resolve to the same scope, so the regeneration cannot keep their "
-            f"rationales apart: lines {render_once} map to {sorted(distinct)}"
-        )
+        assert carried[("sample.py", "first", "_shared")] == "reason belonging to first"
+        assert carried[("sample.py", "second", "_shared")] == "reason belonging to second"
+
+    def test_two_accesses_in_one_scope_still_share_one_rationale(self, tmp_path: Path) -> None:
+        """The other half, and the reason the key is not simply the line number.
+
+        Repeats within one function are legitimate and common -- several reads of the same
+        private name in one test genuinely share a reason -- and keying on the line would make
+        every line shift lose the rationale, which is the rot this carry-forward exists to
+        prevent.
+        """
+        source = tmp_path / "sample.py"
+        source.write_text("def only():\n    obj._shared\n    obj._shared\n")
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text("# rationale: one reason covers both\nsample.py:2:_shared\nsample.py:3:_shared\n")
+
+        carried = carry_forward_rationales(ledger, tmp_path)
+
+        assert carried == {("sample.py", "only", "_shared"): "one reason covers both"}
 
     def test_every_exempted_access_has_an_entry(self) -> None:
         """The other direction, which a stale-entry check structurally cannot cover.

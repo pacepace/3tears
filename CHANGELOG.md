@@ -431,7 +431,8 @@ That discovery reads every ruff config rather than the root `pyproject.toml` alo
 `ruff.toml` is a full override, so a checker built on the root cannot see what the subtree
 exempts -- which is how a set of reviewed sidecar entries were deleted with nothing noticing.
 Regenerate with `uv run python scripts/regen-underscore-exemptions.py`, which carries rationales
-forward by `(path, symbol)` so a line shift loses nothing; hand-editing the line numbers is what
+forward by `(path, enclosing scope, symbol)` so a line shift loses nothing and two accesses of
+one name keep their own reasons; hand-editing the line numbers is what
 the checks exist to catch.
 ## v0.19.3 -- 2026-07-26
 

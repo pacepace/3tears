@@ -28,7 +28,7 @@
 # They still drift when a file is edited above them; the difference is that
 # the drift now fails a test instead of sitting unnoticed. Regenerate rather
 # than hand-edit -- one command, which carries every rationale forward by
-# (path, symbol) so only a genuinely new access needs new text:
+# (path, enclosing scope, symbol) so only a genuinely new access needs new text:
 #   uv run python scripts/regen-underscore-exemptions.py
 # It reads EVERY ruff config, not just the root pyproject.toml. Reading only
 # the root is how five reviewed sidecar entries were deleted without anything
@@ -659,7 +659,7 @@ packages/scrape/tests/test_robots.py:1097:_capped_delay
 packages/scrape/tests/test_tool.py:862:_robots
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
 packages/scrape/tests/test_tool.py:1333:_render_once
-# rationale: asserts that a refused fetch left the origin's crawl-delay clock untouched. The clock is the gate's own internal store with no public reader, and `check()` would answer indirectly while also POPULATING the cache it reads, so asserting through it changes the thing under test.
+# rationale: the branch under test -- a solve exists and the driver cannot take it -- is decided inside this one method, and it returns before any fetch. Driving it through `execute` would need a seeded recipe and a health row to reach the same branch, which tests the fixtures rather than the decision. The separate `_last_fetch_at` read below carries its own reason.
 packages/scrape/tests/test_tool.py:1391:_render_once
 # rationale: the assertion is that a refused fetch left the origin's crawl-delay clock untouched, and that clock is the gate's own internal store with no public reader. `check()` would answer indirectly through a wait time, but it also POPULATES the cache it reads, so asserting through it changes the thing under test.
 packages/scrape/tests/test_tool.py:1401:_last_fetch_at

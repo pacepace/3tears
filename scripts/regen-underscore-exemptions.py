@@ -6,7 +6,8 @@ entry -- which happens constantly and has nothing to do with the access itself. 
 tests now fail when it does, in both directions, so regeneration is routine maintenance rather
 than a rescue operation and deserves one command instead of an ad-hoc script each time.
 
-Rationales are carried forward by `(path, symbol)`, so the reasoning survives a line shift and
+Rationales are carried forward by `(path, enclosing scope, symbol)`, so the reasoning survives a
+line shift and
 only a genuinely new access needs new text. Any access it cannot map is reported and given a
 placeholder, so it is visible rather than silently templated.
 
@@ -24,49 +25,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from threetears.enforcement.underscore_access import all_exempted_files, enclosing_scopes, private_accesses
+from threetears.enforcement.underscore_access import (
+    all_exempted_files,
+    carry_forward_rationales,
+    enclosing_scopes,
+    private_accesses,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _LEDGER = _REPO_ROOT / "tests" / "enforcement" / "_underscore_exemptions.txt"
 _PLACEHOLDER = "TODO: no rationale carried forward -- write why this access is acceptable"
-
-
-def _existing_rationales(repo_root: Path) -> dict[tuple[str, str, str], str]:
-    """Map ``(path, scope, symbol)`` to its recorded rationale, so a line shift loses nothing.
-
-    Keyed on the enclosing function as well as the symbol, because a file routinely reaches for
-    the same private name from several places for different reasons. Keyed on ``(path, symbol)``
-    alone, the first rationale was applied to every one of them -- so three tests touching the
-    same helper all documented whichever reason happened to come first, and the two wrong ones
-    could not be corrected by hand: rewriting them was reverted by the next run, which was the
-    thing that wrote them.
-
-    The scope is resolved against the CURRENT file at the entry's recorded line. That is exact
-    while the ledger is fresh, which is the normal case, and degrades to the old behaviour when
-    a line has drifted far enough to land outside its original function -- no worse than before,
-    and better whenever the entry still resolves.
-    """
-    scopes_by_path: dict[str, dict[int, str]] = {}
-    found: dict[tuple[str, str, str], str] = {}
-    rationale: str | None = None
-    for raw in _LEDGER.read_text().split("\n"):
-        line = raw.strip()
-        if line.startswith("# rationale:"):
-            rationale = line[len("# rationale:") :].strip()
-            continue
-        if not line or line.startswith("#"):
-            continue
-        path, _, rest = line.partition(":")
-        number, _, symbol = rest.partition(":")
-        if not number.isdigit() or not rationale:
-            continue
-        source = repo_root / path
-        if path not in scopes_by_path:
-            scopes_by_path[path] = enclosing_scopes(source) if source.exists() else {}
-        scope = scopes_by_path[path].get(int(number), "")
-        found.setdefault((path, scope, symbol), rationale)
-    return found
 
 
 def _header() -> list[str]:
@@ -91,7 +60,7 @@ def _header() -> list[str]:
 
 
 def main() -> int:
-    rationales = _existing_rationales(_REPO_ROOT)
+    rationales = carry_forward_rationales(_LEDGER, _REPO_ROOT)
     paths = all_exempted_files(_REPO_ROOT)
 
     out = _header()
