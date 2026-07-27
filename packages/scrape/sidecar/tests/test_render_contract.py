@@ -1616,6 +1616,7 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
         untested branch in the helper, which is exactly where that kind of thing survives.
         """
         killed: list[bool] = []
+        reaped: list[bool] = []
 
         class _Hangs:
             returncode = None
@@ -1628,6 +1629,7 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
                 killed.append(True)
 
             async def wait(self) -> int:
+                reaped.append(True)
                 return -9
 
         async def _spawn(*_argv: object, **_kwargs: object) -> _Hangs:
@@ -1640,3 +1642,8 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
 
         assert result is None, "a hung call reported output it never got"
         assert killed == [True], "the hung child was abandoned rather than killed, leaking a process"
+        # Reaped as well as killed. A killed child that is never waited on becomes a zombie, which
+        # is a smaller leak than a running process and still a leak in a container that runs for
+        # weeks. Asserted because the comment claiming it was the only thing holding it: deleting
+        # the `await proc.wait()` left the whole suite green.
+        assert reaped == [True], "the killed child was never reaped, so it lingers as a zombie"

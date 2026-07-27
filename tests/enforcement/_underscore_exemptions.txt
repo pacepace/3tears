@@ -576,12 +576,12 @@ packages/scrape/sidecar/tests/test_render_contract.py:1557:_lifespan
 packages/scrape/sidecar/tests/test_render_contract.py:1576:_hide_window_titled
 # rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
 packages/scrape/sidecar/tests/test_render_contract.py:1593:_hide_window_titled
-# rationale: the subprocess boundary itself: asserted to return None rather than raise for a missing binary, and to KILL a hung child rather than abandon it -- wait_for cancels the await, not the process, which is a leak in a long-lived unattended container
+# rationale: the subprocess boundary's missing-binary arm: asserted to return None rather than raise for a binary that is not installed, which is what a stripped image looks like and must not fail container startup
 packages/scrape/sidecar/tests/test_render_contract.py:1598:_wm_output
 # rationale: asserts the arguments PRODUCTION builds; an earlier version of a sibling test rebuilt the list itself and stayed green with the production line deleted
 packages/scrape/sidecar/tests/test_render_contract.py:1606:_browser_args
-# rationale: the subprocess boundary itself: asserted to return None rather than raise for a missing binary, and to KILL a hung child rather than abandon it -- wait_for cancels the await, not the process, which is a leak in a long-lived unattended container
-packages/scrape/sidecar/tests/test_render_contract.py:1639:_wm_output
+# rationale: the subprocess boundary's TIMEOUT arm, which is a different claim: a hung call must KILL its child, because wait_for cancels the await and not the process -- a leaked process for the life of a long-running unattended container
+packages/scrape/sidecar/tests/test_render_contract.py:1641:_wm_output
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows

@@ -200,11 +200,11 @@ packages/channels/tests/integration/channels/test_websocket_cross_pod.py:68:_Fak
 # rationale: live-socket transport stand-in; transport handle, no public parity to assert
 packages/channels/tests/unit/channels/presence/test_room_state.py:22:_FakeSocket
 # rationale: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:45:_FakeRoomState
+packages/channels/tests/unit/channels/test_websocket_task03.py:46:_FakeRoomState
 # rationale: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:59:_FakeFanout
+packages/channels/tests/unit/channels/test_websocket_task03.py:60:_FakeFanout
 # rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandler
+packages/channels/tests/unit/channels/test_websocket_task03.py:102:_FakeOpHandler
 
 # canonical shared fakes under packages/scrape/tests
 # rationale: subset shim for nats.js.KeyValue carrying only the create/get_entry/update/delete surface KVLease calls while a session claim is held; put and get are deliberately absent so a claim renewed by an unconditional write fails here instead of passing

@@ -6,6 +6,38 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**Fix: an undefined name reached a container past both lint and type checking (`3tears-scrape`
+sidecar).** `suppress` was used after an earlier change removed its import. `./scripts/lint.sh`
+passed, `./scripts/typecheck.sh` passed, and the container would have raised `NameError` on the
+first hung window-manager call.
+
+**Both gates were blind by configuration, not by accident.** Ruff's default rule set is in force
+nowhere in this repo: the root selects `SLF` alone, and a nested `ruff.toml` is a full override
+rather than an extension, so the sidecar's restated the same narrow set -- F821 (undefined name)
+was running in no directory at all. And mypy's file list covers `src` trees only, so it never looks
+at this one. The only thing between that `NameError` and a booted container was
+`./scripts/test-sidecar.sh`, and it caught this instance solely because a test happened to cover
+that branch.
+
+`packages/scrape/sidecar/ruff.toml` now selects `["SLF", "F"]`. Adopting all of F there cost two
+unused imports, and the rule was verified against the real defect: removing the import again yields
+`F821 Undefined name 'suppress'`.
+
+**This is the second time this directory's lint has let something through that then ran** -- the
+first was a formatter autofix writing a syntax error, recorded under v0.19.3 -- which is why the
+answer is a rule rather than more care. Running F across the whole repository additionally found
+**two live undefined names** in a channels test's annotations, now imported; they were harmless only
+because `from __future__ import annotations` never evaluates them, which is the same mechanism that
+had already broken the operator WebSocket route on this branch.
+
+Root-wide adoption is not done here: it reports 159 findings, almost all unused imports, which is a
+sweep rather than a fix and not one to start while closing a release.
+
+**A hung window-manager call no longer leaks a process.** `asyncio.wait_for` cancels the
+`communicate()` await and leaves the CHILD running, so a call that never answered held a process for
+the life of a container meant to run long and unattended. It is now killed and reaped, and both are
+asserted -- the reap had been claimed in a comment only, and deleting it left the suite green.
+
 **An operator now sees their target and nothing else (`3tears-scrape` sidecar).** Chromium must own
 at least one window or it exits, and the warm-up render disposes of its own tab, so exactly one
 window always survived doing nothing -- showing the new-tab page, which on this image renders a
