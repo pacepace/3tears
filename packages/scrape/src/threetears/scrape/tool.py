@@ -429,9 +429,9 @@ class ScrapeTool(TearsTool):
         elif unproxied and gate_proxied:
             log.warning(
                 "scrape tool: this tool's robots.txt reads leave by a configured exit but driver(s) "
-                "%s do not, so the page fetch itself goes out on the container's own address -- the "
-                "request the exit was configured for. Give those drivers the same egress driver "
-                "unless that is intended.",
+                "%s do not, so the page fetch itself leaves by the container rather than by the exit "
+                "the deployment configured -- the request that exit was for. Give those drivers the "
+                "same egress driver unless that is intended.",
                 ", ".join(unproxied),
                 extra={"extra_data": {"unproxied_drivers": unproxied, "gate_proxied": True}},
             )
@@ -774,6 +774,7 @@ class ScrapeTool(TearsTool):
         # to be placed against whichever one its author happened to be reading. Anything added
         # below this line is covered without anyone having to notice -- provided it RAISES; a
         # path that returns normally compensates at its own refusal instead.
+        #
         # Now a READ of what the gates recorded, not a re-derivation of it. This predicate used
         # to be `error is None and (decision is None or decision.permitted)` -- two of the four
         # signals the tail also consulted, combined here and nowhere else, so a fifth gate meant

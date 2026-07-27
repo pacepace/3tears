@@ -329,11 +329,13 @@ configured with. Configuring an exit and selecting one of those backends therefo
 warning at construction rather than letting that happen quietly, so check your logs; there is no
 way for this package to route a backend that has no proxy support.
 
-`NodriverDownloadDriver` is a third case, and not one that warning covers. It posts to the
-sidecar's `/v1/download`, which accepts no per-request exit and reports none back, so its fetch
-leaves by whatever the CONTAINER's `EGRESS_PROXY` is set to. That is neither the default route
-nor this tool's configured exit: it is a per-container setting, so a deployment running one
-sidecar behind TOR gets TOR for downloads no matter what any driver was given.
+`NodriverDownloadDriver` is a third case. The warning names it -- it declares no exit, so it
+lands in the unproxied list like the others -- but the message understates it slightly. It posts
+to the sidecar's `/v1/download`, which accepts no per-request exit and reports none back, so its
+fetch leaves by whatever the CONTAINER's `EGRESS_PROXY` is set to rather than by the container's
+own address. That is still neither the default route nor this tool's configured exit: it is a
+per-container setting, so a deployment running one sidecar behind TOR gets TOR for downloads no
+matter what any driver was given.
 
 *It is wired in two places, and getting one right hides the other.* Drivers take their own
 `egress=` because a driver may be shared between tools; `ScrapeTool` takes one for its own

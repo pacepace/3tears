@@ -1004,8 +1004,12 @@ def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
         egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
     )
 
-    assert any("the page fetch itself goes out on the container's own address" in m for m in messages), (
-        "a tool proxied in front of an unproxied driver passed silently"
+    # Asserted on the claim rather than the sentence: the page fetch leaves by the CONTAINER and
+    # not by the configured exit. An earlier wording said "the container's own address", which is
+    # true of most unproxied backends and wrong for the one that defers to the sidecar -- that
+    # leaves by the container's own EGRESS_PROXY. Both are "the container, not your exit".
+    assert any("leaves by the container rather than by the exit" in m for m in messages), (
+        f"a tool proxied in front of an unproxied driver passed silently: {messages}"
     )
 
 
@@ -1034,6 +1038,33 @@ def test_the_backends_that_cannot_honour_an_exit_are_named(caplog) -> None:
 
     assert any("camoufox, document" in m for m in messages), (
         f"the drivers that cannot honour the configured exit were not named: {messages}"
+    )
+
+
+def test_the_download_driver_is_named_even_though_it_defers_to_the_sidecar(caplog) -> None:
+    """It declares no exit, so it is unproxied like the others -- but for a different reason.
+
+    Every other unproxied backend builds its own client and reaches the target on the
+    container's own address. This one posts to the sidecar's `/v1/download`, which accepts no
+    per-request exit, so its fetch leaves by the CONTAINER's `EGRESS_PROXY`. Still not the exit
+    this tool was configured with, which is why the warning is right to name it.
+
+    Pinned because the README makes a claim about this driver specifically and the split-egress
+    tests parametrise over `api` and `sidecar` only, so nothing exercised the one backend whose
+    behaviour needed a paragraph of its own to explain.
+    """
+    from threetears.core.egress import SocksEgress
+    from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver
+
+    messages = _build_tool(
+        caplog,
+        drivers={"nodriver_download": NodriverDownloadDriver("http://s:8088")},
+        egress=SocksEgress("tor"),
+    )
+
+    assert any("nodriver_download" in m for m in messages), (
+        "the download driver honours no configured exit and was not named, so an operator "
+        f"reading the warning would think it was covered: {messages}"
     )
 
 
