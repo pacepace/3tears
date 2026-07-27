@@ -573,13 +573,15 @@ packages/scrape/sidecar/tests/test_render_contract.py:1555:_sessions
 # rationale: the WIRING test: every other test here drives the helper directly and stayed green with the lifespan call deleted, so this asserts container startup actually reaches it
 packages/scrape/sidecar/tests/test_render_contract.py:1557:_lifespan
 # rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
-packages/scrape/sidecar/tests/test_render_contract.py:1578:_hide_window_titled
+packages/scrape/sidecar/tests/test_render_contract.py:1576:_hide_window_titled
 # rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
-packages/scrape/sidecar/tests/test_render_contract.py:1595:_hide_window_titled
-# rationale: the subprocess boundary itself, asserted to return None rather than raise for a binary that does not exist -- which is what a stripped image looks like and must not fail startup
-packages/scrape/sidecar/tests/test_render_contract.py:1600:_wm_output
+packages/scrape/sidecar/tests/test_render_contract.py:1593:_hide_window_titled
+# rationale: the subprocess boundary itself: asserted to return None rather than raise for a missing binary, and to KILL a hung child rather than abandon it -- wait_for cancels the await, not the process, which is a leak in a long-lived unattended container
+packages/scrape/sidecar/tests/test_render_contract.py:1598:_wm_output
 # rationale: asserts the arguments PRODUCTION builds; an earlier version of a sibling test rebuilt the list itself and stayed green with the production line deleted
-packages/scrape/sidecar/tests/test_render_contract.py:1608:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:1606:_browser_args
+# rationale: the subprocess boundary itself: asserted to return None rather than raise for a missing binary, and to KILL a hung child rather than abandon it -- wait_for cancels the await, not the process, which is a leak in a long-lived unattended container
+packages/scrape/sidecar/tests/test_render_contract.py:1639:_wm_output
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
 packages/scrape/tests/test_collections.py:293:_rows

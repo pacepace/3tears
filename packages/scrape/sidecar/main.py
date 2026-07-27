@@ -24,7 +24,7 @@ import re
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, NamedTuple
 
 import hitl
@@ -805,8 +805,24 @@ async def _wm_output(argv: list[str], *, display: str) -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
+    except OSError as exc:
+        log.warning("hitl: %s could not be started: %s", argv[0], exc)
+        return None
+    try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=_WM_CALL_TIMEOUT_SECONDS)
-    except (OSError, TimeoutError) as exc:
+    except TimeoutError:
+        # KILLED, not just abandoned. `wait_for` cancels the `communicate()` await and leaves the
+        # CHILD running, so a hung window-manager call would otherwise leak a process for the life
+        # of a container that is meant to be long-lived and unattended. Reaped afterwards so it
+        # does not sit as a zombie either.
+        log.warning("hitl: %s did not answer within %ss; killing it", argv[0], _WM_CALL_TIMEOUT_SECONDS)
+        proc.kill()
+        with suppress(
+            Exception
+        ):  # prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
+            await proc.wait()
+        return None
+    except OSError as exc:
         log.warning("hitl: %s failed: %s", argv[0], exc)
         return None
     if proc.returncode != 0:

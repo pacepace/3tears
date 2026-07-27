@@ -443,7 +443,7 @@ For making that display OPERABLE, all added after live verification rather than 
 switch between them; `tint2` as a taskbar, because without one a minimised window is
 unrecoverable; `x11-xserver-utils` for `xrdb`, which is how `UI_SCALE` reaches openbox and
 tint2 so an operator can size the text; and `x11-utils` for `xprop`, which `entrypoint.sh`
-polls to confirm the window manager actually came up. The image also patches openbox's
+polls to confirm the window manager actually came up; and `wmctrl` plus `xdotool` to keep Chromium's idle window off the operator's screen and out of their taskbar, since the browser must own a window or it exits and that one belongs to the default context rather than to any target. The image also patches openbox's
 `rc.xml` down to one virtual desktop and unbinds the mousewheel from `GoToDesktop`, because an
 idle scroll on the desktop background silently moved the operator to an empty desktop and their
 targets appeared to vanish.

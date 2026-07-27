@@ -1607,3 +1607,36 @@ class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
         assert "about:blank" in args, (
             "Chromium is launched with no start page, so its idle window shows the new-tab page"
         )
+
+    async def test_a_hung_window_manager_call_is_killed_rather_than_abandoned(self, monkeypatch) -> None:
+        """`wait_for` cancels the await, not the CHILD, which is a process leak not a timeout.
+
+        The container is meant to run long and unattended, so a window-manager call that never
+        answers would otherwise leave a process behind for its whole life. This was the one
+        untested branch in the helper, which is exactly where that kind of thing survives.
+        """
+        killed: list[bool] = []
+
+        class _Hangs:
+            returncode = None
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+            def kill(self) -> None:
+                killed.append(True)
+
+            async def wait(self) -> int:
+                return -9
+
+        async def _spawn(*_argv: object, **_kwargs: object) -> _Hangs:
+            return _Hangs()
+
+        monkeypatch.setattr(main, "_WM_CALL_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", _spawn)
+
+        result = await main._wm_output(["wmctrl", "-l"], display=":99")
+
+        assert result is None, "a hung call reported output it never got"
+        assert killed == [True], "the hung child was abandoned rather than killed, leaking a process"

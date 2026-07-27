@@ -11,14 +11,12 @@ approach of importing it directly -- the sidecar's conftest puts it on the path.
 
 from __future__ import annotations
 
-import asyncio
 
 from typing import Any
 
 import httpx
 import main
 import pytest
-import hitl
 from hitl import VncSession, VncUnavailable
 
 

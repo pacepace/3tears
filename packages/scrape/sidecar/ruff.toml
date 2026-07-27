@@ -17,7 +17,19 @@ target-version = "py312"
 line-length = 120
 
 [lint]
-select = ["SLF"]
+# F as well as SLF, added 2026-07-27 after an undefined name reached a RUNNING container.
+#
+# `suppress` was used here after an earlier change had removed its import. `./scripts/lint.sh`
+# passed, because ruff's default rule set is not in force anywhere in this repo -- root or here --
+# and mypy deliberately does not check this directory at all. So the only thing standing between a
+# `NameError` and a container that boots into it was `./scripts/test-sidecar.sh`, and it only
+# caught this one because a test happened to cover that branch.
+#
+# F821 (undefined name) is the rule that matters; the rest of F comes with it and cost two unused
+# imports to adopt. This is the second time this directory's lint has let something through that
+# ran -- the first was a formatter autofix writing a syntax error -- which is why the answer is a
+# rule rather than more care.
+select = ["SLF", "F"]
 
 [lint.per-file-ignores]
 # Restated from the repo root, which cannot reach this far once a nested config exists:

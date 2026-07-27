@@ -6,6 +6,30 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**An operator now sees their target and nothing else (`3tears-scrape` sidecar).** Chromium must own
+at least one window or it exits, and the warm-up render disposes of its own tab, so exactly one
+window always survived doing nothing -- showing the new-tab page, which on this image renders a
+search engine's home page. A person summoned to clear one challenge arrived at a display holding
+their target next to something that looked exactly like a usable browser.
+
+Not tidiness. That window belongs to the DEFAULT browser context, so it was the one place on the
+display where what somebody types is not isolated per target -- which is the promise the rest of
+the surface keeps. The people doing this work are not the people who should have to work out that
+a window is scenery.
+
+It is hidden at startup with `wmctrl` (skip_taskbar, skip_pager) and `xdotool` (iconify), both
+added to the image. Both are needed: a minimised window a taskbar still lists is still one click
+away. Chromium is also launched straight onto `about:blank`, so no window in the container's life
+shows anything worth clicking, not even before the hide runs. Hidden rather than closed -- closing
+the last window exits the browser and takes the container's purpose with it -- and every
+window-manager call is best-effort for the same reason.
+
+**An openbox rule was tried first and does not work**, recorded because the next person will reach
+for it too: openbox applies `<application>` rules when a window is first *mapped*, and Chromium
+maps before its page title arrives, so a title-matched rule never fires. Observed on the live
+display, where the window stayed viewable with an empty `_NET_WM_STATE`. Removed rather than left
+in place.
+
 **Fix: the operator's WebSocket route had never once worked (`3tears-scrape`).** It shipped with
 FastAPI imported inside `build_operator_router`, to keep the `hitl` extra genuinely optional. That
 does not compose with `from __future__ import annotations`: every annotation in the module is a

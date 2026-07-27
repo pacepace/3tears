@@ -398,12 +398,18 @@ class TestThePageAndItsClientSurviveAPrefix:
 
 
 class _Captured(logging.Handler):
-    """Collect records emitted anywhere, so a structured `extra` survives to be asserted on.
+    """Collect records emitted anywhere, so a structured ``extra`` survives to be asserted on.
 
-    `caplog` is the usual answer and is not used here: this package logs through
-    `threetears.observe`, whose handlers do not necessarily propagate to the root logger caplog
-    attaches to, and a capture that silently collects nothing would make every assertion below
-    vacuous.
+    Not `caplog`, and the honest reason is narrower than the first version of this docstring
+    claimed. That version said ``threetears.observe``'s handlers might not propagate to the root
+    logger caplog attaches to -- which is not a real distinction: ``get_logger`` never touches
+    ``propagate``, so caplog would see these records exactly as this handler does, and would fail
+    identically if propagation were ever turned off. Offering that as the reason invented a defect
+    in the logging setup to justify a preference.
+
+    The real reason is that this keeps the ``LogRecord`` objects, so a test can read
+    ``record.extra_data`` -- the structured payload these assertions are about. ``caplog.records``
+    would serve as well; this holds the records without also owning caplog's level handling.
     """
 
     def __init__(self) -> None:
@@ -503,8 +509,6 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
         stated rather than tested. What IS tested is that the diagnosis is complete and the socket
         is told.
         """
-        import logging
-
         from fastapi.testclient import TestClient
 
         with self._captured(logging.WARNING) as records:

@@ -27,9 +27,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket
-from starlette.websockets import WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketDisconnect
 from threetears.observe import get_logger
 
 from .operator import relay_stream, token_from_subprotocols
