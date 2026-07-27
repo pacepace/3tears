@@ -937,8 +937,11 @@ def test_a_proxied_driver_with_an_unproxied_tool_says_so(caplog, driver_kind: st
             api_key="k",
         )
 
-    assert any("container's own address" in r.message for r in caplog.records), (
-        f"a split egress configuration passed silently for the {driver_kind} driver"
+    # Branch 1's own clause, not the phrase both branches share -- otherwise this passes when
+    # the OTHER direction fires, which is a different defect wearing the same words.
+    assert any("in front of every proxied fetch" in r.message for r in caplog.records), (
+        f"a split egress configuration passed silently for the {driver_kind} driver: "
+        f"{[r.message for r in caplog.records]}"
     )
 
 
@@ -1004,13 +1007,11 @@ def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
         egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
     )
 
-    # Asserted on the claim rather than the sentence: the page fetch leaves by the CONTAINER and
-    # not by the configured exit. An earlier wording said "the container's own address", which is
-    # true of most unproxied backends and wrong for the one that defers to the sidecar -- that
-    # leaves by the container's own EGRESS_PROXY. Both are "the container, not your exit".
     # Keyed on the DIRECTION-specific clause, because this test's subject is which of the two
-    # branches fired. The silence tests above assert on the absence of any record instead: a
-    # substring that lives in one branch cannot prove the other stayed quiet.
+    # branches fired. Both branches say "the container's own address", so keying on that would
+    # only prove SOME split warning fired. The silence tests above take the opposite approach
+    # and assert on the absence of any record: a substring living in one branch cannot prove
+    # the other stayed quiet.
     assert any("the page fetch itself goes out on" in m for m in messages), (
         f"a tool proxied in front of an unproxied driver passed silently: {messages}"
     )
@@ -1129,7 +1130,9 @@ def test_a_wrapper_driver_does_not_hide_its_inner_exit(caplog) -> None:
 
     messages = _build_tool(caplog, drivers={"capture": wrapped})
 
-    assert any("container's own address" in m for m in messages), "a proxied driver behind a wrapper passed silently"
+    assert any("in front of every proxied fetch" in m for m in messages), (
+        f"a proxied driver behind a wrapper passed silently: {messages}"
+    )
 
 
 async def test_the_exit_a_page_came_through_reaches_the_health_row() -> None:
