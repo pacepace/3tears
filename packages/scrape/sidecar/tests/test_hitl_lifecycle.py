@@ -230,7 +230,7 @@ def test_x11vnc_is_bound_to_loopback_so_the_pod_is_the_boundary(stub_path: Path)
     assert "-xrandr" in argv and "resize" in argv, "a server-side geometry change would leave viewers on a stale size"
 
 
-async def test_neither_process_gets_an_undrained_pipe(stub_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_child_never_gets_an_undrained_pipe(stub_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A pipe nobody reads is a 64 KiB ceiling on how long the child survives.
 
     x11vnc logs per connection and this session is explicitly built for reconnects

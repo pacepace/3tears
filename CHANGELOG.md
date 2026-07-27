@@ -159,8 +159,8 @@ source stays identifiable, and that any modification is marked. So the upstream 
 `dist-info/licenses/`; `novnc-provenance.json` records the version, the source archive and a
 digest of the tree; and the declared expression is now `MIT AND MPL-2.0 AND
 LicenseRef-noVNC-DES` rather than plain `MIT`. That makes `3tears-scrape` the only compound
-entry in a family that otherwise declares `MIT` twenty-eight times over, which is correct: it
-is the only one redistributing somebody else's files. `LicenseRef-noVNC-DES` is
+entry in a family where every other package declares plain `MIT`, which is correct: it is the
+only one redistributing somebody else's files. `LicenseRef-noVNC-DES` is
 `core/crypto/des.js`, which carries two bespoke permissive grants matching no listed SPDX
 licence. The operator page sits as a sibling of the vendored directory rather than inside it, so
 no file under `novnc/` can be read as a modified noVNC file.
@@ -329,12 +329,14 @@ and a target blocked overnight should be probed by morning without anyone interv
 (`3tears-scrape`, `3tears-core`).** The rest of the human-in-the-loop path, plus two
 capabilities that are not scrape-specific and are not in this package.
 
-The sidecar's Xvfb display is reachable on demand: `x11vnc` and `websockify` start when a
-person arrives and stop when they leave, x11vnc bound to loopback, and the display number a
-parameter so a display pool is later configuration rather than a rewrite. The operator reaches
-it through the API's own port: the client page and the RFB WebSocket are both served there, so
-one origin carries the display and one place authenticates it. websockify remains, bound to
-loopback, only so reverting to it is a code change rather than an image rebuild. On top of that sits one session against that one display -- a bounded number
+The sidecar's Xvfb display is reachable on demand: `x11vnc` starts when a person arrives and
+stops when they leave, bound to loopback, with the display number a parameter so a display pool
+is later configuration rather than a rewrite. The operator reaches it through one origin that
+also authenticates it. (This entry described that origin as the sidecar's own port, with
+`websockify` still running beside it; a later entry in this same release moved both the client
+and the relay into the MIT container and removed `websockify` outright. The arrangement above is
+what the display path looked like partway through, not what ships.) On top of that sits one
+session against that one display -- a bounded number
 of targets at a time, each in its own isolated browser context so a second target cannot see
 the first's cookies, behind a hard TTL and a token this container minted. The token proves
 only that; deciding who was entitled to it belongs where identity lives, which is not here.

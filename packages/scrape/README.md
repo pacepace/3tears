@@ -280,14 +280,27 @@ returns a FastAPI `APIRouter` carrying the operator page, the vendored noVNC cli
 WebSocket that relays RFB from the display. Mount it under any prefix you like, at any depth:
 every URL it emits is relative, so it never needs to know where it ended up.
 
+Install the extra it needs -- `pip install "3tears-scrape[hitl]"`, which adds FastAPI and
+`3tears-nats`. It is an extra because a deployment that never needs a human never needs a web
+framework, and nothing else in this package imports one.
+
 ```python
 from threetears.scrape.operator import build_operator_router
 
 app.include_router(
-    build_operator_router(authorize=my_session_authorizer, display=my_display_endpoint),
-    prefix="/scrape/hitl",           # yours to choose; the router never learns it
+    build_operator_router(
+        authorize=my_session_authorizer,   # is this token entitled to this session?
+        display=my_display_endpoint,       # where is this session's RFB server?
+        claim=my_claim_lookup,             # does THIS pod still hold it? (omit on a single pod)
+    ),
+    prefix="/scrape/hitl",                 # yours to choose; the router never learns it
 )
 ```
+
+Pass `claim` on any deployment running more than one pod. Without it the operator's stream
+outlives the lease that entitled it: a pod that loses a session to a handover keeps a live
+browser and a live display in front of a person for the rest of the session's TTL, while the pod
+that actually owns it serves somebody else against the same session id.
 
 The deployment this is shaped for is a Kubernetes pod with two containers: yours, which holds
 identity, coordination and the operator's socket, and the AGPL nodriver sidecar beside it, which

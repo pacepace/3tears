@@ -33,7 +33,7 @@ from threetears.observe import get_logger
 from .operator import relay_stream, token_from_subprotocols
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
-    from .operator import DisplayEndpoint, SessionAuthorizer
+    from .operator import ClaimLookup, DisplayEndpoint, SessionAuthorizer
 
 __all__ = ["build_router"]
 
@@ -44,6 +44,7 @@ def build_router(
     *,
     authorize: SessionAuthorizer,
     display: DisplayEndpoint,
+    claim: ClaimLookup | None,
     assets: Path,
     page: Path,
 ) -> APIRouter:
@@ -65,10 +66,33 @@ def build_router(
             # cause work against a display. 1008 is "policy violation", and the reason stays
             # vague for the same purpose the rest of this surface does -- distinguishing "no
             # session" from "wrong token" confirms an id to whoever is guessing.
+            # Logged, because a refusal that leaves no server-side trace is a refusal nobody can
+            # diagnose -- and this branch is reached both by a wrong token and by a token whose
+            # session has ended, which look identical to the operator on purpose. The token
+            # itself is never logged.
+            log.info(
+                "operator: refused an operator carrying no usable capability",
+                extra={"extra_data": {"offered_token": bool(token)}},
+            )
             await websocket.close(code=1008, reason="not authorised for this display")
             return
 
         host, port = await display(session_id)
+
+        # Asked BEFORE the stream opens, and refused rather than ignored when this pod holds no
+        # claim. A relay is the one thing here that runs for hours, so it is the one thing that
+        # must not outlive the ownership that entitled it: a pod that lost the session to a
+        # handover would otherwise keep a live browser and a live display in front of an operator
+        # for the rest of the session's TTL, while the pod that actually owns it serves another.
+        held = await claim(session_id) if claim is not None else None
+        if claim is not None and held is None:
+            log.info(
+                "operator: refusing a display this pod does not hold",
+                extra={"extra_data": {"session_id": session_id}},
+            )
+            await websocket.close(code=1008, reason="not authorised for this display")
+            return
+
         try:
             # Accepted only once the display has been located, so a caller learns the difference
             # between "refused" and "the display is down" from the close code rather than from a
@@ -79,7 +103,13 @@ def build_router(
             return
 
         try:
-            await relay_stream(websocket.send_bytes, websocket.receive_bytes, host, port)
+            await relay_stream(
+                websocket.send_bytes,
+                websocket.receive_bytes,
+                host,
+                port,
+                until=held.until_lost() if held is not None else None,
+            )
         except OSError:
             log.warning(
                 "operator: the display could not be reached",

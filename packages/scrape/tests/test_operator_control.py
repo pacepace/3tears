@@ -29,7 +29,7 @@ from threetears.scrape.operator_control import (
     serve_session,
 )
 from threetears.scrape.operator_session import SessionClaim
-from threetears.scrape.session_state import open_session_state
+from threetears.scrape.session_state import open_session_state, seal_session_state
 
 _KEY = SecretStr("a" * 32)
 _SESSION = "session-1"
@@ -195,22 +195,59 @@ class TestTheContractRefusesWhatItCannotCarryOut:
 class TestWhatACallerSends:
     """The caller-side helpers are half the contract; a wrong field is a silent no-op."""
 
-    async def test_nav_steps_and_a_prior_solve_are_carried_through(self) -> None:
+    async def test_nav_steps_are_carried_through(self) -> None:
         """A target is re-driven from url plus nav_steps, so losing them loses the target."""
         bus, display = FakeBus(), RecordingDisplay()
         steps = [{"action": "click", "selector": "#accept"}]
         async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            await open_tab(  # type: ignore[arg-type]
-                bus,
-                _SESSION,
-                target_id="t-1",
-                url="https://example.com",
-                nav_steps=steps,
-                session_state={"cookies": []},
-            )
+            await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", nav_steps=steps)  # type: ignore[arg-type]
 
         assert display.opened[0].nav_steps == steps
-        assert display.opened[0].session_state == {"cookies": []}
+
+
+class TestNoCookieJarTravelsInTheClearInEitherDirection:
+    """The reply is sealed, so accepting a plaintext jar INBOUND would defeat the whole point.
+
+    That asymmetry is the specific defect these pin: a contract that seals what it sends and
+    accepts what it would not send reads as deliberate to whoever finds it, and puts exactly the
+    credential the sealing protects onto exactly the bus it protects it from.
+    """
+
+    async def test_a_prior_solve_travels_sealed_and_arrives_opened(self) -> None:
+        """Sealed on the bus, plaintext only inside the pod that needs it."""
+        bus, display = FakeBus(), RecordingDisplay()
+        sealed = seal_session_state(_RAW_STATE, _KEY).sealed
+
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+            await open_tab(  # type: ignore[arg-type]
+                bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed
+            )
+
+        assert display.opened[0].session_state == _RAW_STATE, (
+            "the owning pod did not open the solve, so the tab opens unauthenticated"
+        )
+        for payload in bus.sent:
+            assert b"s3cr3t-value" not in payload, "a live cookie value travelled on the bus"
+            assert b"cf_clearance" not in payload, "a live cookie name travelled on the bus"
+
+    async def test_a_solve_that_cannot_be_trusted_opens_the_tab_without_one(self) -> None:
+        """A wrong key or a tampered token must degrade to "needs a human", never to bad data.
+
+        That is the same failure the stored-solve path already treats as safe: no solve means the
+        challenge is cleared again, which costs an operator a minute and cannot produce a wrong
+        record.
+        """
+        bus, display = FakeBus(), RecordingDisplay()
+        wrong_key = SecretStr("b" * 32)
+        sealed = seal_session_state(_RAW_STATE, wrong_key).sealed
+
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+            await open_tab(  # type: ignore[arg-type]
+                bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed
+            )
+
+        assert display.opened[0].session_state is None, "an untrusted solve was handed to the browser anyway"
+        assert display.opened[0].url == "https://example.com", "the tab was not opened at all"
 
 
 async def _raw_send(bus: FakeBus, message: dict[str, object]) -> bytes:

@@ -145,7 +145,7 @@ class TestTheAssetsCanActuallyShip:
         ignored = [line for line in result.stdout.splitlines() if line.strip()]
         assert not ignored, f"vendored assets are excluded by a gitignore rule: {ignored}"
 
-    def test_every_vendored_file_reaches_a_built_wheel(self, tmp_path: Path) -> None:
+    def test_every_operator_asset_reaches_a_built_wheel(self, tmp_path: Path) -> None:
         """The only check that could have caught the hatchling half, so it builds a real wheel.
 
         Nothing readable from the source tree distinguishes "hatchling will ship this" from
@@ -167,10 +167,19 @@ class TestTheAssetsCanActuallyShip:
         wheels = list(tmp_path.glob("*.whl"))
         assert len(wheels) == 1, f"expected exactly one wheel, got {[w.name for w in wheels]}"
 
-        prefix = "threetears/scrape/operator_assets/novnc/"
+        # EVERY file under `operator_assets/`, not just the vendored tree. The operator page and
+        # the provenance record are non-Python files too, so they are excluded by exactly the
+        # same mechanisms -- and a page missing from the wheel is a mount that 500s on the one
+        # request an operator makes. Anchoring on the assets root rather than on `novnc/` means a
+        # file added here later is covered without anybody remembering to extend this.
+        prefix = "threetears/scrape/operator_assets/"
         with zipfile.ZipFile(wheels[0]) as wheel:
             # `.dist-info/licenses/` holds copies of the same paths, so match on the package
             # prefix rather than a substring, or a missing asset is masked by its licence twin.
             shipped = {name[len(prefix) :] for name in wheel.namelist() if name.startswith(prefix)}
-        vendored = {p.relative_to(_NOVNC).as_posix() for p in _NOVNC.rglob("*") if p.is_file()}
-        assert not (vendored - shipped), f"vendored assets are missing from the wheel: {sorted(vendored - shipped)}"
+        on_disk = {p.relative_to(_ASSETS).as_posix() for p in _ASSETS.rglob("*") if p.is_file()}
+        assert not (on_disk - shipped), f"operator assets are missing from the wheel: {sorted(on_disk - shipped)}"
+        # Named explicitly as well, because the set comparison above would also pass if the
+        # assets directory were somehow empty on disk.
+        assert "operator.html" in shipped, "the operator page is not in the wheel"
+        assert "novnc/core/rfb.js" in shipped, "the noVNC client is not in the wheel"

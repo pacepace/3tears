@@ -169,19 +169,39 @@
       rfb.scaleViewport = true;
       rfb.focusOnClick = true;
 
-      rfb.addEventListener("connect", () => setState("connected", "Connected"));
-      rfb.addEventListener("disconnect", (event) =>
-        setState(
-          "failed",
-          event.detail.clean ? "Session ended" : "Connection lost",
-          event.detail.clean
-            ? "The session was closed. Any target you finished has already been saved."
-            : "The connection dropped. Anything you had already completed is saved; a target you " +
+      // Whether the display ever opened is what tells a refusal apart from a drop, and it is the
+      // only thing that can: the server refuses by closing the WebSocket BEFORE accepting it, so
+      // the browser reports an ordinary failed connection and RFB never gets far enough to raise
+      // `securityfailure`. Writing "Connection lost" for a refused token would send an operator
+      // to check their network when the answer is that their link has expired.
+      let everConnected = false;
+      rfb.addEventListener("connect", () => {
+        everConnected = true;
+        setState("connected", "Connected");
+      });
+      rfb.addEventListener("disconnect", (event) => {
+        if (event.detail.clean) {
+          setState("failed", "Session ended", "The session was closed. Any target you finished has already been saved.");
+        } else if (everConnected) {
+          setState(
+            "failed",
+            "Connection lost",
+            "The connection dropped. Anything you had already completed is saved; a target you " +
               "were part way through will need doing again.",
-        ),
-      );
+          );
+        } else {
+          setState(
+            "failed",
+            "Could not open the display",
+            "The link may have expired, the session may have ended, or it may now be running " +
+              "elsewhere. Ask for a fresh link rather than reloading this one.",
+          );
+        }
+      });
+      // Still worth handling, and it is a genuinely different failure: this fires only once the
+      // WebSocket is open and RFB's own handshake is refused, which the server does not do today.
       rfb.addEventListener("securityfailure", () =>
-        setState("failed", "Not authorised", "This token was refused. It may have expired, or the session may have ended."),
+        setState("failed", "Not authorised", "The display refused this session during the VNC handshake."),
       );
 
       document.getElementById("fullscreen").addEventListener("click", () => {

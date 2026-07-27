@@ -45,6 +45,8 @@ if TYPE_CHECKING:  # pragma: no cover - import-time only
 __all__ = [
     "OPERATOR_ASSETS",
     "OPERATOR_PAGE",
+    "ClaimLookup",
+    "ClaimWatch",
     "DisplayEndpoint",
     "SessionAuthorizer",
     "build_operator_router",
@@ -92,6 +94,36 @@ class DisplayEndpoint(Protocol):
         ...
 
 
+class ClaimWatch(Protocol):
+    """Something that completes when this pod stops owning a session.
+
+    Structural on purpose: :class:`threetears.scrape.operator_session.SessionClaim` satisfies it,
+    and a deployment coordinating some other way is not obliged to adopt that class to say when
+    a handover happened.
+    """
+
+    async def until_lost(self) -> None:
+        """Return once this pod is no longer the session's owner."""
+        ...
+
+
+class ClaimLookup(Protocol):
+    """Finds the claim this pod holds on a session, if it holds one.
+
+    The router serves a session for as long as this pod owns it, and ownership is decided
+    outside the router -- so it has to be able to ASK. Without this the relay outlives the claim
+    that entitled it: a pod that lost a session to a handover keeps a live browser and a live
+    display in front of an operator for the rest of the session's TTL.
+
+    Injected and optional, like every other collaborator here. A single-pod deployment has no
+    handover to survive and passes nothing.
+    """
+
+    async def __call__(self, session_id: str) -> ClaimWatch | None:
+        """Return this pod's claim on *session_id*, or ``None`` when it holds none."""
+        ...
+
+
 class SessionAuthorizer(Protocol):
     """Decides whether a token entitles its bearer to a session's display.
 
@@ -120,11 +152,22 @@ def token_from_subprotocols(offered: str) -> str:
     return ""
 
 
+async def _await_stop(until: Awaitable[None]) -> None:
+    """Await a caller-supplied stop signal, so it can be raced as a task.
+
+    Its own function because ``asyncio.wait`` takes tasks, and wrapping an arbitrary awaitable
+    in ``create_task`` requires a coroutine.
+    """
+    await until
+
+
 async def relay_stream(
     send: Callable[[bytes], Awaitable[None]],
     receive: Callable[[], Awaitable[bytes]],
     host: str,
     port: int,
+    *,
+    until: Awaitable[None] | None = None,
 ) -> None:
     """Carry bytes between a connected client and an RFB server, interpreting nothing.
 
@@ -150,7 +193,11 @@ async def relay_stream(
     against a worse failure mode, and it should be settled on measurements -- how often these
     sockets drop and land elsewhere, and how long a target stays open -- rather than on taste.
 
-    :raises OSError: when the RFB server cannot be reached.
+    :param until: awaited alongside the relay; when it completes first the relay ends. This is
+        how a pod that has stopped owning the session stops showing it -- see
+        :meth:`threetears.scrape.operator_session.SessionClaim.until_lost`.
+    :ptype until: Awaitable[None] | None
+    :raises OSError: when the RFB server cannot be reached, or when a pump fails mid-stream.
     """
     reader, writer = await asyncio.open_connection(host, port)
 
@@ -164,14 +211,31 @@ async def relay_stream(
             await writer.drain()
 
     pumps = [asyncio.create_task(_to_client()), asyncio.create_task(_to_display())]
+    # The stop signal rides alongside the pumps rather than in a second `wait`, so losing the
+    # session interrupts a relay that is otherwise parked forever on a socket nobody is writing
+    # to. Wrapped in a task because `asyncio.wait` refuses a bare coroutine, and tracked
+    # separately so it can be cancelled without being mistaken for a pump that ended.
+    stop = asyncio.create_task(_await_stop(until)) if until is not None else None
+    watched = [*pumps, stop] if stop is not None else pumps
     try:
         # Either direction ending ends the session. A half-open RFB stream is not a state the
         # protocol recovers from, and leaving the other pump running would hold a socket and a
         # task for a connection that can no longer carry anything.
-        await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
+        done, _pending = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+        # RETRIEVE THE OUTCOME, which `asyncio.wait` does not do for you. Without this an
+        # ordinary disconnect and a genuine transport fault both end here silently and identically,
+        # and the fault resurfaces later as a bare "Task exception was never retrieved" with no
+        # session, host or port attached to it. A pump that raised is the only thing worth
+        # reporting: the stop signal completing is the expected end of a handover.
+        for finished in done:
+            if finished is stop:
+                continue
+            error = finished.exception()
+            if error is not None:
+                raise OSError(f"the display relay failed mid-stream: {error}") from error
     finally:
-        for pump in pumps:
-            pump.cancel()
+        for task in watched:
+            task.cancel()
         writer.close()
         try:
             await writer.wait_closed()
@@ -183,6 +247,7 @@ def build_operator_router(
     *,
     authorize: SessionAuthorizer,
     display: DisplayEndpoint,
+    claim: ClaimLookup | None = None,
 ) -> APIRouter:
     """Build the router a platform mounts to give its operators a display.
 
@@ -191,6 +256,10 @@ def build_operator_router(
     :ptype authorize: SessionAuthorizer
     :param display: resolves a session to the RFB server serving it.
     :ptype display: DisplayEndpoint
+    :param claim: finds this pod's claim on a session, so the operator's stream ends when a
+        handover takes the session elsewhere. ``None`` on a deployment with one pod, which has
+        no handover to survive -- see :class:`ClaimLookup` for what leaving it out costs.
+    :ptype claim: ClaimLookup | None
     :return: a router carrying the operator page, the noVNC client and the RFB WebSocket, ready
         to mount under any prefix
     :rtype: APIRouter
@@ -209,4 +278,10 @@ def build_operator_router(
     # reaches it until a caller asks for a router.
     from .operator_routes import build_router  # noqa: PLC0415
 
-    return build_router(authorize=authorize, display=display, assets=OPERATOR_ASSETS, page=OPERATOR_PAGE)
+    return build_router(
+        authorize=authorize,
+        display=display,
+        claim=claim,
+        assets=OPERATOR_ASSETS,
+        page=OPERATOR_PAGE,
+    )

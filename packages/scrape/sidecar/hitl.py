@@ -5,10 +5,14 @@ any way for a person to SEE that display, let alone drive it. This module is tha
 the session that sits on it.
 
 Two layers, and the split is deliberate. :class:`VncLifecycle` is the display: it starts
-``x11vnc`` and ``websockify`` in front of it, serves noVNC's static client, and stops both
-again. :class:`SessionManager` is what a human actually works in: one session against the one
-display, a bounded number of targets in it at a time, each in its own isolated browser
-context, behind a token and a hard TTL.
+``x11vnc`` in front of Xvfb and stops it again. :class:`SessionManager` is what a human actually
+works in: one session against the one display, a bounded number of targets in it at a time, each
+in its own isolated browser context, behind a token and a hard TTL.
+
+**Nothing here serves a client or speaks WebSocket.** ``websockify`` and noVNC's static tree used
+to live in this container. Both jobs belong to the MIT container sharing this pod, which ships
+the client in its own wheel -- pinned to the page that loads it -- and relays RFB from ``x11vnc``
+over the pod's shared loopback. So this module puts a display on a socket and stops there.
 
 Still no authorization here, and there will not be any: the sidecar holds no identity and
 cannot evaluate a policy. It honours a token it minted; deciding who should have been given
@@ -19,11 +23,11 @@ the 99% of the container's life when nobody is looking at it. The processes come
 person arrives and go away when they leave, so the steady state is the same container that
 ran before this module existed.
 
-**Loopback only, with one way in.** ``x11vnc`` binds ``127.0.0.1`` and is never published;
-``websockify`` is now loopback-only and is not a path from outside at all: the API serves the
-client page and relays the RFB stream on its own port, which is what makes "who may connect" a
-question answered at one place rather than two. That single seam is the reason
-the two processes are separate rather than x11vnc's own ``-http`` mode.
+**Loopback only, and that binding IS the access control.** ``x11vnc`` binds ``127.0.0.1`` and
+the container publishes nothing on the display path. Containers in one Kubernetes pod share a
+network namespace, so ``127.0.0.1`` is reachable by the MIT container beside this one and by
+nothing else -- which is what makes "who may connect" a question answered in the one place that
+holds an identity. Widening this bind for convenience would route straight around that.
 
 **The display number is a parameter from the first line.** One Xvfb display means one
 operator at a time; more than that needs a display pool (``:100``, ``:101``, ...), each with
@@ -54,9 +58,9 @@ log = logging.getLogger("nodriver_sidecar.hitl")
 #: configurable per session, because there is exactly one display.
 _RFB_PORT = 5900
 
-#: How long to wait for each process to start listening before calling it a failure. Both are
-#: local process spawns, so this is generous; the cost of being wrong is a session that
-#: reports success and shows a black rectangle.
+#: How long to wait for the display to start listening before calling it a failure. A local
+#: process spawn, so this is generous; the cost of being wrong is a session that reports success
+#: and shows a black rectangle.
 _START_TIMEOUT_SECONDS = 10.0
 
 #: Poll interval while waiting for a port to accept a connection.
@@ -260,12 +264,12 @@ class VncLifecycle:
                 *argv,
                 stdout=asyncio.subprocess.DEVNULL,
                 # DEVNULL, not PIPE. A pipe nobody reads is a 64 KiB ceiling on the child's
-                # life: websockify logs a line per connection and this session is built for
-                # reconnects (-forever, -shared), so a long-lived operator session would
-                # eventually fill it and block websockify inside a write -- surfacing as a
-                # page that loads and never paints, which is the exact failure this module
-                # exists to prevent. Draining it properly means a reader task per process for
-                # output nothing consumes; discarding it is the honest trade, and the
+                # life: x11vnc logs per client connection and this session is built for
+                # reconnects (-forever, -shared), so a long operator session -- or one operator
+                # reconnecting repeatedly -- eventually fills it and blocks x11vnc inside a
+                # write. That surfaces as a display that stops painting, which is the exact
+                # failure this module exists to prevent. Draining it properly means a reader
+                # task for output nothing consumes; discarding it is the honest trade, and the
                 # diagnosis that matters (did it listen?) comes from the port wait.
                 stderr=asyncio.subprocess.DEVNULL,
             )

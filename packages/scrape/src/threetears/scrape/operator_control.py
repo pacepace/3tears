@@ -17,11 +17,16 @@ MAKES a pod the owner, so routing it to an owner would be circular. A caller ope
 claiming it (:func:`threetears.scrape.operator_session.claim_session`), and everything after
 that is addressed to the session it now owns.
 
-**A completed tab is sealed before it goes anywhere.** The raw export is the cookie jar of a
-target a human has just cleared: a live credential. It travels one loopback hop from the sidecar
-that holds no key, and it stops here. What goes on the bus is ciphertext with an expiry, because
-a bus is a place other subscribers can be granted a read of, and because this pod is the first
-point in the path that holds a key at all.
+**No cookie jar travels in the clear, in either direction.** A solve is a live credential, and
+a bus is a place other subscribers can be granted a read of, so both directions carry ciphertext
+and the plaintext exists only inside the pod that holds the display.
+
+Outbound, a completed tab's raw export travels one loopback hop from the sidecar -- which holds no
+key by design -- and stops here, where it is sealed before the reply is sent. Inbound, a prior
+solve being re-injected arrives sealed and is opened here, immediately before the sidecar is
+handed it. The symmetry is the point: sealing the reply while accepting a plaintext jar on the way
+in would put exactly the credential this protects onto exactly the bus it protects it from, and
+the asymmetry would read as deliberate to whoever found it next.
 
 **Nothing here frames its own errors.** :func:`threetears.nats.forward` already carries a
 handler's exception back to the caller as a type name and message, so a handler that raises
@@ -40,7 +45,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from threetears.nats import DEFAULT_FORWARD_TIMEOUT, forward, serve_owner
 from threetears.observe import get_logger
 
-from .session_state import DEFAULT_SESSION_STATE_TTL, seal_session_state
+from .session_state import DEFAULT_SESSION_STATE_TTL, open_session_state, seal_session_state
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from pydantic import SecretStr
@@ -107,7 +112,11 @@ class SessionDisplay(Protocol):
         nav_steps: list[dict[str, Any]] | None,
         session_state: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        """Bring one target into the session and return the tab it became."""
+        """Bring one target into the session and return the tab it became.
+
+        *session_state* is a prior solve, RAW: :func:`serve_session` opened it from the sealed
+        form the caller sent, because the sidecar behind this protocol holds no key and cannot.
+        """
         ...
 
     async def complete_tab(self, *, tab_id: str) -> dict[str, Any]:
@@ -178,11 +187,18 @@ async def _perform(
     """
     if op == OPEN_TAB:
         nav_steps = message.get("nav_steps")
+        # Opened HERE, at the last moment before the sidecar needs it, so the plaintext exists
+        # only inside this pod. `open_session_state` returns None for anything it cannot trust --
+        # a wrong key, a tampered token -- and None is exactly right: the tab opens
+        # unauthenticated and the human clears the challenge again, which is the same outcome as
+        # having no stored solve at all.
+        sealed = message.get("session_state_sealed")
+        prior = open_session_state(sealed, session_state_key, target_id=message.get("target_id")) if sealed else None
         return await display.open_tab(
             target_id=_require(message, "target_id"),
             url=_require(message, "url"),
             nav_steps=nav_steps if isinstance(nav_steps, list) else None,
-            session_state=message.get("session_state"),
+            session_state=prior,
         )
 
     if op == COMPLETE_TAB:
@@ -299,7 +315,7 @@ async def open_tab(
     target_id: str,
     url: str,
     nav_steps: list[dict[str, Any]] | None = None,
-    session_state: dict[str, Any] | None = None,
+    session_state_sealed: str | None = None,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
 ) -> dict[str, Any]:
     """Put one target in front of the operator working *session_id*.
@@ -307,6 +323,12 @@ async def open_tab(
     Carries ``url`` and ``nav_steps`` rather than a handle to an earlier fetch, because nothing
     is held while a target waits for a human: it is reported and forgotten, then re-driven from
     these two when somebody actually arrives.
+
+    *session_state_sealed* is a prior solve in the form :func:`complete_tab` handed back and
+    :func:`threetears.scrape.session_state.record_session_state` stored -- sealed, never a raw
+    jar. Pass it straight through; the owning pod opens it. A caller with plaintext in hand has a
+    plaintext credential to keep out of its own logs too, so the sealed form is the only one this
+    contract accepts.
 
     :raises NoOwnerError: if no pod currently holds the session
     :raises ForwardedHandlerError: if the owning pod refused or failed
@@ -319,7 +341,7 @@ async def open_tab(
             "target_id": target_id,
             "url": url,
             "nav_steps": nav_steps,
-            "session_state": session_state,
+            "session_state_sealed": session_state_sealed,
         },
         timeout=timeout,
     )

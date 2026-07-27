@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import socket
+from collections.abc import Iterator
 from urllib.parse import urljoin
 
 import pytest
@@ -103,9 +105,49 @@ class TestTheRelayMovesBytesAndInterpretsNothing:
 _PREFIX = "/platform/api/v1/scrape/hitl"
 
 
+@contextlib.contextmanager
+def _quiet_listener() -> Iterator[int]:
+    """A port that accepts a connection and then says nothing, as an idle RFB server does.
+
+    A plain listening socket that is never accepted from in Python: the OS completes the
+    handshake and holds the connection in the backlog, so the relay sees an established socket
+    with no data and no EOF. That is the state an idle operator's session is in for most of its
+    life, and it is the state a relay must be interruptible in.
+
+    Deliberately NOT `asyncio.start_server` with a handler that blocks. `Server.wait_closed()`
+    waits for open handlers to finish, so `async with server` around a handler that never returns
+    deadlocks the test rather than the code -- and a handler that DOES return lets its writer be
+    collected, which closes the socket and EOFs the relay, so every "it stayed open" claim would
+    pass for the wrong reason. Both ways round, the harness decides the result.
+    """
+    listener = socket.socket()
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        yield listener.getsockname()[1]
+    finally:
+        listener.close()
+
+
+class _StubClaim:
+    """A claim this pod holds, which can be taken away mid-relay."""
+
+    def __init__(self) -> None:
+        self.lost = asyncio.Event()
+
+    async def until_lost(self) -> None:
+        """Complete once the claim is gone, as ``SessionClaim.until_lost`` does."""
+        await self.lost.wait()
+
+
 def _mounted_app(
     resolved: list[str] | None = None,
     checked: list[str] | None = None,
+    claim: object | None = None,
+    *,
+    with_claim_lookup: bool = False,
+    claim_asked: list[str] | None = None,
+    rfb_port: int | None = None,
 ) -> object:
     """A router mounted the way a platform mounts it: under a prefix it chose, at a depth we
     can never learn.
@@ -135,10 +177,22 @@ def _mounted_app(
     async def _display(session_id: str) -> tuple[str, int]:
         if resolved is not None:
             resolved.append(session_id)
-        return ("127.0.0.1", 5900)
+        return ("127.0.0.1", rfb_port if rfb_port is not None else 5900)
+
+    async def _claim(session_id: str) -> object | None:
+        if claim_asked is not None:
+            claim_asked.append(session_id)
+        return claim
 
     app = FastAPI()
-    app.include_router(build_operator_router(authorize=_authorize, display=_display), prefix=_PREFIX)
+    app.include_router(
+        build_operator_router(
+            authorize=_authorize,
+            display=_display,
+            claim=_claim if with_claim_lookup else None,
+        ),
+        prefix=_PREFIX,
+    )
     return app
 
 
@@ -254,22 +308,106 @@ class TestThePageAndItsClientSurviveAPrefix:
         assert checked == [""], "the handler did not run, so this proves nothing about ordering"
         assert resolved == [], "the display was resolved on behalf of a caller who was then refused"
 
-    def test_an_authorised_operator_reaches_only_their_own_session(self) -> None:
-        """The counterpart, so the test above cannot pass by nothing ever being resolved.
+    def test_an_authorised_operator_gets_an_accepted_stream_from_their_display(self) -> None:
+        """The counterpart, and it has to go all the way through the handshake.
 
-        Without this, deleting the display lookup entirely would leave the refusal test green.
+        An earlier version asserted only that the display was RESOLVED, which happens before
+        ``accept``. Accepting is wrapped in a broad catch that returns quietly, so a
+        systematically failing handshake would have kept that assertion green -- the same class
+        of hole as asserting on a close code the framework can also produce. This connects to a
+        real listening socket, completes the upgrade, and checks the negotiated subprotocol is
+        ``binary`` and NOT the token-bearing one, which would put the credential in a response
+        header.
         """
         from fastapi.testclient import TestClient
 
         resolved: list[str] = []
-        with TestClient(_mounted_app(resolved)) as client:  # type: ignore[arg-type]
+        with _quiet_listener() as port:
+            with TestClient(_mounted_app(resolved, rfb_port=port)) as client:  # type: ignore[arg-type]
+                with client.websocket_connect(f"{_PREFIX}/ws", subprotocols=["binary", "hitl-token.good"]) as stream:
+                    negotiated = stream.accepted_subprotocol
+
+        assert resolved == ["session-1"], "an authorised operator did not reach the display they hold"
+        assert negotiated == "binary", (
+            f"the server echoed {negotiated!r}; echoing the token-bearing subprotocol would put a "
+            f"live credential into a response header"
+        )
+
+
+class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
+    """A relay runs for hours, so it is the one thing that must not survive a handover.
+
+    A pod that lost a session otherwise keeps a live browser and a live display in front of an
+    operator for the rest of the session's TTL, while the pod that actually owns it serves
+    somebody else against the same session id.
+
+    Tested at ``relay_stream`` and at the router separately, because the interesting half is a
+    race inside one event loop and ``TestClient`` runs the app in another thread -- an event set
+    from the test thread cannot wake a waiter bound to the app's loop, which is a property of the
+    harness rather than of the code and would prove nothing either way.
+    """
+
+    async def test_the_relay_ends_when_the_stop_signal_completes(self) -> None:
+        """The mechanism itself: a relay parked on a silent socket still lets go.
+
+        Without the signal riding alongside the pumps, this relay would sit forever -- nothing is
+        being written from either end, which is exactly the state an idle operator's session is in
+        for most of its life.
+        """
+        lost = asyncio.Event()
+        with _quiet_listener() as port:
+            relay = asyncio.create_task(
+                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port, until=lost.wait())
+            )
+            await asyncio.sleep(0.05)
+            assert not relay.done(), "the relay ended before the claim was lost"
+            lost.set()
+            await asyncio.wait_for(relay, timeout=5)
+
+    async def test_a_relay_with_no_stop_signal_still_runs(self) -> None:
+        """One pod has no handover to survive and must not need a signal to show a display."""
+        with _quiet_listener() as port:
+            relay = asyncio.create_task(
+                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port)
+            )
+            await asyncio.sleep(0.05)
+            assert not relay.done(), "a relay with no stop signal ended on its own"
+            relay.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay
+
+    def test_the_router_asks_whether_this_pod_holds_the_session(self) -> None:
+        """The seam that was missing: the router had no parameter that could carry a claim.
+
+        ``SessionClaim.until_lost()`` shipped with no consumer, so losing a lease was connected to
+        nothing. This asserts the lookup is consulted for the session that was authorised.
+        """
+        from fastapi.testclient import TestClient
+
+        asked: list[str] = []
+        app = _mounted_app(claim=_StubClaim(), with_claim_lookup=True, claim_asked=asked)
+        with TestClient(app) as client:  # type: ignore[arg-type]
             with contextlib.suppress(Exception):
-                # Nothing is listening on the resolved endpoint, so the relay fails after the
-                # lookup. The lookup itself is what this asserts on.
                 with client.websocket_connect(f"{_PREFIX}/ws", subprotocols=["binary", "hitl-token.good"]):
                     pass
 
-        assert resolved == ["session-1"], "an authorised operator did not reach the display they hold"
+        assert asked == ["session-1"], "the router never asked whether this pod holds the session"
+
+    def test_a_pod_holding_no_claim_refuses_before_opening_anything(self) -> None:
+        """Serving a display this pod does not own is worse than refusing to serve it.
+
+        The token is perfectly valid here -- authorization is not what fails. What fails is this
+        pod's entitlement to answer, which is a different question and needs its own refusal.
+        """
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        app = _mounted_app(claim=None, with_claim_lookup=True)
+        with TestClient(app) as client:  # type: ignore[arg-type]
+            with pytest.raises(WebSocketDisconnect) as refused:
+                with client.websocket_connect(f"{_PREFIX}/ws", subprotocols=["binary", "hitl-token.good"]):
+                    pytest.fail("a pod with no claim served the display anyway")
+        assert refused.value.code == 1008
 
 
 class TestThePageKeepsItsTwoInvisibleGuarantees:
@@ -292,6 +430,21 @@ class TestThePageKeepsItsTwoInvisibleGuarantees:
             "silently inert here because Xvfb has a single mode and cannot resize"
         )
         assert "new RFB(" in page, "the page does not connect on load, so an operator arrives at nothing"
+
+    def test_the_page_offers_the_subprotocol_the_server_actually_reads(self) -> None:
+        """The prefix is a contract between a Python constant and a string in a JS file.
+
+        Nothing links them: no import, no build step, no type. Change one and the operator gets
+        "not authorised" with a perfectly valid token, and the two halves each look right on
+        their own.
+        """
+        from threetears.scrape.operator import TOKEN_SUBPROTOCOL_PREFIX, OPERATOR_PAGE
+
+        page = OPERATOR_PAGE.read_text()
+        assert f"`{TOKEN_SUBPROTOCOL_PREFIX}${{token}}`" in page, (
+            f"the page does not offer a {TOKEN_SUBPROTOCOL_PREFIX!r}-prefixed subprotocol, so the "
+            f"server will read no token from it"
+        )
 
     def test_the_token_comes_from_the_fragment_and_never_the_query_string(self) -> None:
         """A fragment is never sent to a server, so it is in no log, referrer or proxy trace.

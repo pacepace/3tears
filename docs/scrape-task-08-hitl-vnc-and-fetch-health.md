@@ -459,7 +459,7 @@ AGPL boundary is unchanged):
 | `POST /v1/hitl/session` | Create a session, start VNC, return `{session_id, token, expires_at}` |
 | `GET /v1/hitl/session/{id}` | Session state and open tabs |
 | `POST /v1/hitl/session/{id}/tab` | Bring one target into the session: isolated context, navigate, replay `nav_steps` |
-| `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: verify, export sealed state, close the tab, free the slot |
+| `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: export the context's RAW cookies and storage, close the tab, free the slot. This container holds no key and seals nothing; the MIT side seals before anything persists or publishes it |
 | `DELETE /v1/hitl/session/{id}` | Teardown, stop VNC, drop contexts |
 | `POST` / `GET` / `DELETE /v1/hitl/vnc` | Bring the display up, report whether it is up, take it down. Predates the session API and stays for the case it does not cover |
 
@@ -711,6 +711,16 @@ waiting ten seconds present a request every two.
 - `packages/core/src/threetears/core/egress.py` -- `EgressDriver` and friends (§7); in core, not
   in scrape, because an exit is not a scraping concept
 - `packages/scrape/sidecar/hitl.py` -- session endpoints, VNC lifecycle
+- `packages/scrape/src/threetears/scrape/operator.py` -- the mountable operator router's seams:
+  `build_operator_router`, `relay_stream`, and the protocols a platform injects
+- `packages/scrape/src/threetears/scrape/operator_routes.py` -- the FastAPI wiring, in its own
+  module so annotations resolve against a namespace where FastAPI is imported
+- `packages/scrape/src/threetears/scrape/operator_session.py` -- `claim_session`, so one pod holds
+  one display
+- `packages/scrape/src/threetears/scrape/operator_control.py` -- the four control messages, routed
+  to the pod holding the display
+- `packages/scrape/src/threetears/scrape/operator_assets/` -- the operator page and the vendored
+  noVNC client, with its licence notice
 - tests alongside each
 
 **Planned and NOT built, deliberately**
@@ -723,8 +733,16 @@ waiting ten seconds present a request every two.
   see §6 for the seams that replaced them (`Subjects.hub_approval_record`,
   `TearsTool.requires_confirmation`). Listed rather than deleted because the file inventory is
   the first place a reader checks for "was this forgotten or decided".
-- ~~`packages/scrape/sidecar/static/` -- noVNC assets~~ Debian's `novnc` package already ships
-  the client; vendoring a copy would be a fork to maintain for nothing.
+- ~~`packages/scrape/sidecar/static/` -- noVNC assets~~ Not in the SIDECAR, and that part still
+  stands: this container serves no client at all. The reasoning originally given here -- that
+  Debian's `novnc` package ships one, so vendoring would be a fork for nothing -- was
+  **overturned**, and the client is now vendored into the MIT wheel instead
+  (`operator_assets/novnc/`). Two arguments beat it. A seam that requires the consumer to install
+  noVNC separately is homework rather than a seam; and more importantly the page and the RFB
+  module it imports must be the same noVNC release, because RFB's constructor options have changed
+  across versions, so a distro-supplied tree turns "did you install the right noVNC" into a bug
+  class diagnosed from outside the process. Vendoring is not a fork: the tree is unmodified and a
+  digest test says so.
 
 **Modify**
 - `eval_loop.py` -- challenge short-circuit, fingerprint routing, fetch-health updates
