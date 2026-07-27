@@ -629,45 +629,45 @@ packages/scrape/tests/test_robots.py:555:_recipe_collection
 # rationale: module-private housekeeping step; that a store outage cannot escape it is only reachable by calling it
 packages/scrape/tests/test_robots.py:706:_clear_robots_block_if_any
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:794:_cache
+packages/scrape/tests/test_robots.py:800:_cache
 # rationale: RobotsGate's per-origin fetch clock has no accessor; bounded retention and forget() are only checkable against it
-packages/scrape/tests/test_robots.py:795:_last_fetch_at
+packages/scrape/tests/test_robots.py:801:_last_fetch_at
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:796:_cache
+packages/scrape/tests/test_robots.py:802:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:797:_cache
+packages/scrape/tests/test_robots.py:803:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:809:_cache
+packages/scrape/tests/test_robots.py:815:_cache
 # rationale: RobotsGate's per-origin fetch clock has no accessor; bounded retention and forget() are only checkable against it
-packages/scrape/tests/test_robots.py:810:_last_fetch_at
+packages/scrape/tests/test_robots.py:816:_last_fetch_at
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:811:_cache
+packages/scrape/tests/test_robots.py:817:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:837:_cache
+packages/scrape/tests/test_robots.py:843:_cache
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1038:_delay_pacer
+packages/scrape/tests/test_robots.py:1044:_delay_pacer
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1042:_delay_pacer
+packages/scrape/tests/test_robots.py:1048:_delay_pacer
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1050:_delay_pacer
+packages/scrape/tests/test_robots.py:1056:_delay_pacer
 # rationale: the unparseable-delay branch is unreachable through a real robots.txt -- the stdlib parser filters those -- so calling it with a stub parser is the only caller that exists
-packages/scrape/tests/test_robots.py:1088:_capped_delay
+packages/scrape/tests/test_robots.py:1096:_capped_delay
 # rationale: the unparseable-delay branch is unreachable through a real robots.txt -- the stdlib parser filters those -- so calling it with a stub parser is the only caller that exists
-packages/scrape/tests/test_robots.py:1089:_capped_delay
+packages/scrape/tests/test_robots.py:1097:_capped_delay
 
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:808:_robots
+packages/scrape/tests/test_tool.py:862:_robots
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1242:_render_once
+packages/scrape/tests/test_tool.py:1296:_render_once
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1300:_render_once
+packages/scrape/tests/test_tool.py:1354:_render_once
 # rationale: the assertion is that a refused fetch left the origin's crawl-delay clock untouched, and that clock is the gate's own internal store with no public reader. `check()` would answer indirectly through a wait time, but it also POPULATES the cache it reads, so asserting through it changes the thing under test.
-packages/scrape/tests/test_tool.py:1310:_last_fetch_at
+packages/scrape/tests/test_tool.py:1364:_last_fetch_at
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1343:_render_once
+packages/scrape/tests/test_tool.py:1397:_render_once
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1453:_egress
+packages/scrape/tests/test_tool.py:1507:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1454:_egress
+packages/scrape/tests/test_tool.py:1508:_egress
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:1569:_robots
+packages/scrape/tests/test_tool.py:1623:_robots

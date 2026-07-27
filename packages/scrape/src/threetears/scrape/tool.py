@@ -802,11 +802,11 @@ class ScrapeTool(TearsTool):
             # clock already followed -- the site pays when we actually visit it.
             fleet_wait = 0.0
             if self._robots is not None and fetch_will_happen:
-                fleet_wait = await self._robots.claim_fleet_turn(url)
-                # Recorded rather than inferred from `fleet_wait`: a GRANTED turn returns 0.0,
-                # which is indistinguishable from never having asked, and the granted turn is
-                # exactly the one worth giving back.
-                fleet_wait_claimed = True
+                # `claimed` comes from the gate rather than being inferred here. A granted turn
+                # returns 0.0 seconds, indistinguishable from every path that never asked, and
+                # a REFUSED turn returns a positive wait while consuming nothing -- so reading
+                # the float alone gave a token back precisely when another pod was holding it.
+                fleet_wait, fleet_wait_claimed = await self._robots.claim_fleet_turn(url)
 
             wait_seconds = max(robots_decision.wait_seconds if robots_decision is not None else 0.0, fleet_wait)
             if wait_seconds > 0 and fetch_will_happen:
@@ -858,6 +858,20 @@ class ScrapeTool(TearsTool):
                 )
                 if render_error is not None:
                     error, declined_by = render_error, _Gate.RENDER
+                if not fetch_attempted:
+                    # The circuit may have admitted a probe before any of this ran, and only an
+                    # outcome or an explicit release ever gives it back. This path reports no
+                    # outcome -- deliberately, since a configuration error is not evidence about
+                    # the target -- and returns normally, so the `except BaseException` guard
+                    # below never sees it. Without this the breaker holds a probe forever and
+                    # `release_probe`'s own docstring says the target is then fast-failed with
+                    # `retry_after_seconds=0.0` for the life of the process, on every poll,
+                    # because a signature mismatch recurs identically.
+                    #
+                    # The asymmetry is what gave it away: this block already gave the fleet turn
+                    # back and left the probe. Compensating one resource and not its neighbour
+                    # is the shape of every member of this bug family.
+                    self._release_probe(target_id)
                 if not fetch_attempted and fleet_wait_claimed and self._robots is not None:
                     # The turn was claimed for a fetch that then did not happen, so give it
                     # back. Conditioned on `fetch_attempted` rather than on `render_error`,

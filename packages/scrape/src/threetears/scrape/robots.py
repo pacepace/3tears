@@ -419,8 +419,14 @@ class RobotsGate:
             )
         return delay
 
-    async def claim_fleet_turn(self, url: str) -> float:
+    async def claim_fleet_turn(self, url: str) -> tuple[float, bool]:
         """Take this origin's turn from the cross-pod pacer, and say how long is still owed.
+
+        Returns ``(wait_seconds, consumed)``. ``consumed`` is the half a caller cannot infer:
+        a token is taken ONLY when the claim is granted, and a granted claim returns
+        ``0.0`` seconds -- the same value as every path that never asked. A caller that read
+        the float alone would give back a token on the refusal, which is exactly the case where
+        somebody else is holding it.
 
         Split from :meth:`check` because claiming CONSUMES. Call it once the fetch is committed
         -- after every other gate has admitted it -- and honour the returned wait alongside
@@ -434,14 +440,15 @@ class RobotsGate:
 
         :param url: the url about to be fetched
         :ptype url: str
-        :return: additional seconds to wait before fetching, ``0.0`` when the turn is granted
-        :rtype: float
+        :return: additional seconds to wait before fetching (``0.0`` when granted), and
+            whether a token was actually consumed
+        :rtype: tuple[float, bool]
         """
         if self._delay_pacer is None:
-            return 0.0
+            return 0.0, False
         origin = _origin_of(url)
         if not origin or origin in self._policy.overrides:
-            return 0.0
+            return 0.0, False
 
         # Pacing IS the crawl-delay behaviour, so the flag that turns that behaviour off turns
         # this off with it. Checked here as well as in `check`, because this is a SECOND entry
@@ -451,7 +458,7 @@ class RobotsGate:
         # reports 0.0 under this flag, so without this the gate could also sleep for longer
         # than the budget it advertises.
         if not self._policy.respect_crawl_delay:
-            return 0.0
+            return 0.0, False
 
         # The SAME preconditions the local clock applies. Moving the claim out of `check`
         # accidentally dropped them: an origin with a written agreement, one serving no
@@ -466,20 +473,22 @@ class RobotsGate:
         # guard above.
         parser = await self._parser_for(origin, time.monotonic())
         if parser is None or self._capped_delay(origin, parser, announce=False) is None:
-            return 0.0
+            return 0.0, False
 
         try:
             claim = await self._delay_pacer.claim(origin)
         except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a KV outage must not stop a scrape; it costs fleet-wide precision and falls back to the per-process clock, which is stricter per pod rather than looser. Logged with its traceback below
             log.exception("scrape robots: crawl-delay pacer unavailable for %s; using this pod's own clock", origin)
-            return 0.0
+            return 0.0, False
         if claim.claimed:
-            return 0.0
+            return 0.0, True
         # Capped by the same ceiling as a declared delay. `retry_after_seconds` is the bucket's
         # own number and is otherwise unbounded, which would let it exceed `max_wait_seconds` --
         # the value that sizes `ScrapeTool`'s advertised deadline, so an uncapped wait puts the
         # call back outside the budget it was just taught to declare.
-        return min(float(claim.retry_after_seconds), self._policy.max_crawl_delay_seconds)
+        # Refused: somebody else holds this origin's turn. NOT consumed, so not ours to
+        # give back -- a refund here would hand a token to whoever is actually using it.
+        return min(float(claim.retry_after_seconds), self._policy.max_crawl_delay_seconds), False
 
     def _local_delay_owed(self, origin: str, delay: float, now: float) -> float:
         """Seconds owed by this process's own clock alone, ignoring any fleet coordination."""

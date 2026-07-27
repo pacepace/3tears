@@ -115,7 +115,7 @@ def seal_session_state(
     return SealedSessionState(sealed=seal(plaintext, key), expires_at=moment + ttl)
 
 
-def open_session_state(sealed: str, key: SecretStr) -> dict[str, Any] | None:
+def open_session_state(sealed: str, key: SecretStr, *, target_id: str | None = None) -> dict[str, Any] | None:
     """Recover a sealed state, or ``None`` when it cannot be trusted.
 
     ``None`` rather than an exception for every failure mode a caller can do nothing about: a
@@ -130,6 +130,12 @@ def open_session_state(sealed: str, key: SecretStr) -> dict[str, Any] | None:
     :ptype sealed: str
     :param key: operator master key
     :ptype key: SecretStr
+    :param target_id: which target this state belongs to, for log correlation only. Optional
+        because this function is usable without one, and never part of what is decrypted. Every
+        other log line in this package carries it, and without it these three say a solve was
+        discarded while naming no target -- true, unactionable, and indistinguishable from the
+        same line about any other target in the fleet.
+    :ptype target_id: str | None
     :return: the state, or ``None`` when it could not be opened or parsed
     :rtype: dict[str, Any] | None
     """
@@ -139,6 +145,7 @@ def open_session_state(sealed: str, key: SecretStr) -> dict[str, Any] | None:
         log.warning(
             "scrape session state: stored state could not be opened (%s); this target needs a human again",
             exc,
+            extra={"extra_data": {"target_id": target_id}},
         )
         return None
     try:
@@ -146,10 +153,16 @@ def open_session_state(sealed: str, key: SecretStr) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         # Opened but not parseable: the key was right, so this is a format change rather than
         # a tamper. Same operational answer, different cause, and worth not conflating.
-        log.warning("scrape session state: stored state opened but is not valid JSON; ignoring it")
+        log.warning(
+            "scrape session state: stored state opened but is not valid JSON; ignoring it",
+            extra={"extra_data": {"target_id": target_id}},
+        )
         return None
     if not isinstance(state, dict):
-        log.warning("scrape session state: stored state is not an object; ignoring it")
+        log.warning(
+            "scrape session state: stored state is not an object; ignoring it",
+            extra={"extra_data": {"target_id": target_id}},
+        )
         return None
     return state
 
@@ -190,9 +203,12 @@ def usable_session_state(
         # A stored state with no expiry is treated as expired rather than as eternal. The
         # writer always sets one, so its absence means a hand-edited or half-written row, and
         # the safe reading of "I do not know when this stops being valid" is "now".
-        log.info("scrape session state: stored state has expired; this target needs a human again")
+        log.info(
+            "scrape session state: stored state has expired; this target needs a human again",
+            extra={"extra_data": {"target_id": health.target_id}},
+        )
         return None
-    return open_session_state(sealed, key)
+    return open_session_state(sealed, key, target_id=health.target_id)
 
 
 async def record_session_state(

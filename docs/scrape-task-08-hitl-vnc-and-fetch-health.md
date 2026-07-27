@@ -268,7 +268,8 @@ A new `ScrapeTargetHealth` entity carries:
 | `consecutive_fetch_failures` | fetch-stage failures (blocked, transport, timeout) -- deliberately separate from the extraction counter |
 | `circuit_state` | `closed` / `open` / `half_open`, the `CircuitBreaker` vocabulary |
 | `blocked_until` | when the next probe is permitted |
-| `last_blocked_at`, `last_block_kind` | evidence for the operator and for tuning detection |
+| `last_blocked_at` | evidence for the operator and for tuning detection |
+| `last_block_kind` | DECLARED BUT NEVER WRITTEN. Kept because the column costs nothing and the distinction it would carry is real, but nothing populates it today, so a reader must not treat it as evidence. `health.py` records the same |
 | `classified_fingerprint`, `classified_verdict`, `classified_evidence` | the verdict cache: which page was last classified, what it was judged to be, and why |
 | `session_state_sealed`, `session_state_expires_at` | §4 |
 | `last_egress` | which exit the last observation was configured to leave by, reported by the fetcher rather than assumed by the caller (§7 -- configured, not observed). Without it "this target is walled" cannot be told apart from "this target is walled FROM THIS EXIT", and one blocked exit poisons a target permanently |
@@ -419,7 +420,7 @@ already-cleared.
 These are session credentials. Sealed at rest under an operator-supplied master key resolved via
 `secret_refs`, never written plaintext, never logged, and excluded from any debug dump.
 
-Driver contract gains `session_state: str | None = None` on `render()`, following the
+Driver contract gains `session_state: dict[str, Any] | None = None` on `render()`, following the
 established "accept the full signature, use what you need" convention already set by
 `link_selector` / `results_path` / `seen_urls` -- every other backend accepts and ignores it. The
 sidecar applies it to the isolated context before navigating.
@@ -450,7 +451,12 @@ AGPL boundary is unchanged):
 | `POST /v1/hitl/session/{id}/tab` | Bring one target into the session: isolated context, navigate, replay `nav_steps` |
 | `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: verify, export sealed state, close the tab, free the slot |
 | `DELETE /v1/hitl/session/{id}` | Teardown, stop VNC, drop contexts |
-| `GET /vnc/{token}` | The noVNC client itself |
+| `POST` / `GET` / `DELETE /v1/hitl/vnc` | Bring the display up, report whether it is up, take it down. Predates the session API and stays for the case it does not cover |
+
+The noVNC client itself is NOT served by this API and is NOT token-scoped. `websockify` serves
+it on its own port at `/vnc.html?path=websockify&autoconnect=true&resize=scale`, with no token
+in the path, because this container holds no identity and cannot evaluate one. Treat that port
+as unauthenticated and put it behind something that is not.
 
 **Bounded working set.** A session has a fixed slot count. A target occupies a slot from
 `/tab` until `/complete`; backgrounding a slow one still holds its slot. Items are pulled in as

@@ -322,9 +322,15 @@ tool = ScrapeTool(..., egress="tor", egress_registry=registry)
 
 *Not every backend honours one.* `ApiDriver` and `NodriverSidecarDriver` accept an
 `EgressDriver`; `NetworkCaptureDriver` and `MultiDocumentDriver` inherit whichever driver they
-wrap. The rest -- `CamoufoxDriver`, `DocumentDriver`, `ListingDetailDriver`, and
-`MultiDocumentDriver`'s own listing fetch -- reach the target on the container's default route
-regardless of what this tool is configured with. Configuring an exit and selecting one of those
+wrap. `CamoufoxDriver`, `DocumentDriver`, `ListingDetailDriver`, and `MultiDocumentDriver`'s own
+listing fetch reach the target on the container's default route regardless of what this tool is
+configured with.
+
+`NodriverDownloadDriver` is a third case. It posts to the sidecar's `/v1/download`, which
+accepts no per-request exit and reports none back, so its fetch leaves by whatever the
+CONTAINER's `EGRESS_PROXY` is set to. That is not the default route and it is not this tool's
+configured exit either -- it is a per-container setting, so a deployment running one sidecar
+behind TOR gets TOR for downloads no matter what any driver was given. Configuring an exit and selecting one of those
 backends therefore proxies the `robots.txt` read and sends the page fetch direct. `ScrapeTool`
 names the offending drivers in a warning at construction rather than letting that happen
 quietly, so check your logs; there is no way for this package to route a backend that has no

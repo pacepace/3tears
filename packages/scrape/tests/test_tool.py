@@ -771,6 +771,60 @@ class TestScrapeToolFetchCircuit:
             "a cancellation inside the failure report escaped the guard and left the in-process breaker holding a probe"
         )
 
+    async def test_a_refusal_before_the_driver_call_still_releases_the_probe(self):
+        """The fifth strand, and the one the single guard structurally cannot catch.
+
+        The four above are cancellations, which is why one `except BaseException` closed them:
+        every escape raised. This one does not raise. The driver-cannot-accept-a-solve branch
+        returns NORMALLY and reports no circuit outcome -- rightly, since a wiring error is not
+        evidence about the target -- so the guard never runs and nothing gives the probe back.
+
+        `TargetCircuit.check` can return permitted having already promoted the breaker to
+        HALF_OPEN with its probe in flight, and only an outcome or an explicit release clears
+        it. Stranded, `release_probe`'s own docstring says the target is fast-failed with
+        `retry_after_seconds=0.0` for the life of the process -- and a signature mismatch
+        recurs identically on every poll, so nothing later clears it either.
+
+        The asymmetry is what gave it away: that same block already gave the robots fleet turn
+        back and left the probe behind.
+        """
+        recipe_collection, extraction_collection = _collections()
+        health_collection = ScrapeTargetHealthCollection(get_registry(), get_config(), nats_client=None)
+        url = "https://example.gov/mismatched-driver"
+        schema = {"employer": "str"}
+        target_id = _derive_target_id(url, schema)
+        await _seed_recipe(recipe_collection, target_id, {"selectors": _SINGLE_STRATEGY})
+
+        class _PreSessionStateDriver:
+            """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+
+            @property
+            def name(self) -> str:
+                return "old"
+
+            async def render(self, url: str, *, timeout: float = 30.0, wait_for: str | None = None):
+                raise AssertionError("the render must not be attempted once the mismatch is known")
+
+        breaker = CircuitBreaker(target_id, failure_threshold=1, recovery_timeout_seconds=0.0)
+        breaker.record_failure()
+        circuit = TargetCircuit(health_collection, breaker_for=lambda _target: breaker)
+        tool = self._tool(
+            _PreSessionStateDriver(), circuit, recipe_collection, extraction_collection, health_collection
+        )
+
+        # A stored solve exists. Patched at the read rather than sealed into a health row,
+        # because what is under test is the branch a solve REACHES, not how one is stored.
+        with patch.object(ScrapeTool, "_read_solved_state", return_value={"cookies": {"s": "1"}}):
+            result = await tool.execute(url=url, field_schema=schema)
+
+        assert result.success is False
+        assert "does not accept session_state" in (result.error or "")
+        assert breaker.state is not CircuitState.HALF_OPEN, (
+            "a refusal issued before the driver call returned without raising, so the single "
+            "guard never ran and the in-process breaker is still holding a probe that nothing "
+            "will ever report an outcome for"
+        )
+
     @staticmethod
     def _robots_fetcher(body: str):
         async def _fetch(_url: str) -> tuple[int, str]:
@@ -1638,6 +1692,52 @@ class TestACancelledPollReturnsItsTurn:
         assert pacer.keys == ["https://example.gov"], "the turn was never taken, so this asserts nothing"
         assert pacer.refunded == ["https://example.gov"], (
             "a cancelled poll kept the origin's shared turn, so a restart loop starves every other target on that site"
+        )
+
+    async def test_a_refused_turn_is_not_given_back(self):
+        """A refusal consumed nothing, so refunding it credits the pod that DOES hold the turn.
+
+        The sibling above covers a granted turn returned after a cancellation. This is the case
+        that inverts the mechanism: `claim_fleet_turn` returns a positive wait when the claim is
+        REFUSED, and a granted claim returns 0.0, so a caller reading the float alone cannot
+        tell "took it" from "was told no" -- and the old code marked both as claimed. Under the
+        scenario the refund was written for, a pod restarting in a loop, that added one spurious
+        token per cancelled poll to a bucket sized for one.
+        """
+        from threetears.core.collections.registry import CollectionRegistry
+        from threetears.core.config import DefaultCoreConfig
+        from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+
+        async def _fetch(_url: str) -> tuple[int, str]:
+            return 200, "User-agent: *\nCrawl-delay: 10\n"
+
+        reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
+        recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
+        url, schema = "https://example.gov/refused-turn", {"employer": "str"}
+        await _seed_recipe(recipes, _derive_target_id(url, schema), {"selectors": _SINGLE_STRATEGY})
+
+        pacer = _FakeDelayPacer(claimed=False, retry_after_seconds=25.0)
+        gate = RobotsGate(fetch=_fetch, delay_pacer=pacer)
+        gate.note_fetched(url)
+        tool = ScrapeTool(
+            recipe_collection=recipes,
+            extraction_collection=ScrapeExtractionCollection(reg, cfg, nats_client=None),
+            drivers={"nodriver": _FakeDriver(_SINGLE_HTML)},
+            api_key="k",
+            robots=gate,
+        )
+
+        with (
+            patch("asyncio.sleep", side_effect=asyncio.CancelledError()),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await tool.execute(url=url, field_schema=schema)
+        await asyncio.sleep(0)
+
+        assert pacer.keys == ["https://example.gov"], "the claim was never attempted"
+        assert pacer.refunded == [], (
+            "a turn this pod was REFUSED was handed back anyway, crediting the bucket with a "
+            "token another pod is currently holding"
         )
 
     async def test_an_uncancelled_poll_keeps_its_turn(self):

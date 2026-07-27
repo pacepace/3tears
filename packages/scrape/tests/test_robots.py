@@ -203,7 +203,7 @@ async def test_both_flags_off_does_not_fetch_the_file_at_all() -> None:
     assert decision.allowed is True
     assert decision.wait_seconds == 0.0
 
-    assert await gate.claim_fleet_turn("https://example.gov/private") == 0.0
+    assert await gate.claim_fleet_turn("https://example.gov/private") == (0.0, False)
 
     assert fetch.calls == [], f"robots.txt was fetched despite both behaviours being off: {fetch.calls}"
 
@@ -732,7 +732,7 @@ async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay(
 
     gate.note_fetched("https://example.gov/a", now=1000.0)
     decision = await gate.check("https://example.gov/b", now=1004.0)
-    fleet = await gate.claim_fleet_turn("https://example.gov/b")
+    fleet, consumed = await gate.claim_fleet_turn("https://example.gov/b")
 
     assert pacer.keys == ["https://example.gov"], "the pacer is keyed per origin"
     # Each half asserted on its own. Writing `max(...)` here would move the combination into
@@ -741,6 +741,7 @@ async def test_a_granted_fleet_claim_does_not_cancel_the_site_s_own_crawl_delay(
     # where it lives, in test_tool.py.
     assert decision.wait_seconds == pytest.approx(6.0), "the site asked 10s and 4 had passed"
     assert fleet == 0.0, "a granted claim owes nothing, and must not shorten the site's own delay"
+    assert consumed is True, "a granted claim took the token, so it is ours to give back"
 
 
 async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower() -> None:
@@ -750,10 +751,14 @@ async def test_the_longer_of_the_two_constraints_wins_when_the_fleet_is_slower()
 
     gate.note_fetched("https://example.gov/a", now=1000.0)
     decision = await gate.check("https://example.gov/b", now=1004.0)
-    fleet = await gate.claim_fleet_turn("https://example.gov/b")
+    fleet, consumed = await gate.claim_fleet_turn("https://example.gov/b")
 
     assert decision.wait_seconds == pytest.approx(6.0), "this pod's own clock still owes 6s"
     assert fleet == pytest.approx(25.0), "and the fleet owes 25s; the caller takes the longer"
+    assert consumed is False, (
+        "a REFUSED claim consumed nothing, so refunding it hands a token to the pod that "
+        "actually holds the turn -- the exact inversion of what the pacer is for"
+    )
 
 
 async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
@@ -767,9 +772,10 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
     gate.note_fetched("https://example.gov/a", now=1000.0)
 
     decision = await gate.check("https://example.gov/b", now=1004.0)
-    fleet = await gate.claim_fleet_turn("https://example.gov/b")
+    fleet, consumed = await gate.claim_fleet_turn("https://example.gov/b")
     assert decision.allowed is True, "an outage must not stop the scrape"
     assert fleet == 0.0, "an outage yields no fleet wait rather than raising"
+    assert consumed is False, "nothing was taken, so nothing is owed back"
     assert decision.wait_seconds == pytest.approx(6.0), "and must not stop the politeness either"
 
 
@@ -1021,7 +1027,7 @@ async def test_a_check_that_never_fetches_does_not_spend_the_sites_fleet_budget(
 async def test_claiming_a_turn_without_a_pacer_is_a_no_op() -> None:
     """So a caller never has to branch on whether fleet coordination is configured."""
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY))
-    assert await gate.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert await gate.claim_fleet_turn("https://example.gov/a") == (0.0, False)
 
 
 async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
@@ -1034,11 +1040,11 @@ async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
     all use a file that DOES declare a delay.
     """
     no_delay = RobotsGate(fetch=_fetcher("User-agent: *\nDisallow: /nope\n"), delay_pacer=_FakeDelayPacer())
-    assert await no_delay.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert await no_delay.claim_fleet_turn("https://example.gov/a") == (0.0, False)
     assert no_delay._delay_pacer.keys == []
 
     unreachable = RobotsGate(fetch=_fetcher("", status=500), delay_pacer=_FakeDelayPacer())
-    assert await unreachable.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert await unreachable.claim_fleet_turn("https://example.gov/a") == (0.0, False)
     assert unreachable._delay_pacer.keys == []
 
     agreed = RobotsGate(
@@ -1046,7 +1052,7 @@ async def test_an_origin_that_asked_for_nothing_is_not_paced() -> None:
         fetch=_fetcher(_ROBOTS_DELAY),
         delay_pacer=_FakeDelayPacer(),
     )
-    assert await agreed.claim_fleet_turn("https://example.gov/a") == 0.0
+    assert await agreed.claim_fleet_turn("https://example.gov/a") == (0.0, False)
     assert agreed._delay_pacer.keys == [], "an origin we have an agreement with was still throttled"
 
 
@@ -1063,7 +1069,9 @@ async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
         delay_pacer=_FakeDelayPacer(claimed=False, retry_after_seconds=9999.0),
     )
 
-    assert await gate.claim_fleet_turn("https://example.gov/a") == pytest.approx(30.0)
+    capped, consumed = await gate.claim_fleet_turn("https://example.gov/a")
+    assert capped == pytest.approx(30.0)
+    assert consumed is False, "a refused claim is capped AND took nothing"
     assert gate.max_wait_seconds == pytest.approx(30.0), "the declared ceiling still bounds it"
 
 
