@@ -1363,6 +1363,41 @@ async def test_a_render_failure_logs_what_actually_went_wrong(caplog) -> None:
     )
 
 
+def test_every_gate_is_handled_where_the_outcome_is_decided() -> None:
+    """Each `_Gate` member must appear in `execute`'s tail, and the tail must read only that.
+
+    The defect this guards is not a bug that exists; it is the SHAPE that produced a run of
+    stranded-probe bugs. `execute` used to reconstruct which gate had refused from an error
+    string, a robots decision, a circuit decision and a boolean derived from two of them, so
+    adding a gate meant finding every place that reasoning had been spelled out, and missing
+    one was silent.
+
+    Source inspection rather than behaviour, deliberately: the behavioural tests already cover
+    each gate's OUTCOME, and they pass just as well against a tail that infers it. What they
+    cannot see is a fifth gate added without a branch, which is the failure this pins.
+    """
+    import inspect as _inspect
+
+    from threetears.scrape.tool import ScrapeTool, _Gate
+
+    body = _inspect.getsource(ScrapeTool.execute)
+    tail = body[body.index("except BaseException") :]
+
+    unhandled = [g.name for g in _Gate if f"_Gate.{g.name}" not in tail]
+    assert not unhandled, (
+        f"these gates can refuse but the tail never branches on them, so their outcome falls "
+        f"through to whatever the last branch happens to build: {unhandled}"
+    )
+
+    # And the predicate that decides whether a fetch happens reads the recorded gate rather
+    # than recombining the signals the tail also uses. Re-deriving it is what made the two
+    # drift apart.
+    assert "fetch_will_happen = declined_by is None" in body, (
+        "`fetch_will_happen` no longer reads the recorded refusal; if it is being re-derived "
+        "from the individual gate signals again, the tail and this predicate can disagree"
+    )
+
+
 def test_a_driver_taking_kwargs_is_not_called_incompatible() -> None:
     """A forwarding wrapper can take the solve, and refusing it would break a driver that works.
 

@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+from enum import StrEnum
 from typing import Any
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
@@ -73,6 +74,34 @@ class _RobotsDefault:
 
 
 _ROBOTS_DEFAULT = _RobotsDefault()
+
+
+class _Gate(StrEnum):
+    """Which gate in :meth:`ScrapeTool.execute` refused, when one did.
+
+    Recorded at the gate that decides rather than reconstructed afterwards. The tail of
+    ``execute`` used to work out what had happened from four interdependent signals -- an error
+    string, a robots decision, a circuit decision, and a boolean derived from two of them -- so
+    predicting which branch would win meant holding all four at once, and adding a fifth gate
+    meant finding every place that reasoning had been spelled out.
+
+    That is the shape this module's own comments blame for a run of consecutive stranded-probe
+    bugs. Consolidating the compensation into one ``except BaseException`` fixed those bugs; it
+    did not touch the decision structure that produced them, so the conditions remained.
+
+    ``None`` rather than a member for "nothing refused": the absence of a refusal is not itself
+    a gate, and giving it a name invites code that checks for it by equality and then has to be
+    updated when a real gate is added.
+    """
+
+    #: Missing or malformed tool input, an unknown driver backend, an unusable schema.
+    INPUT = "input"
+    #: ``robots.txt`` disallows this path. Escalates to a human rather than failing.
+    ROBOTS = "robots"
+    #: The target's durable fetch circuit is open, so no fetch was attempted.
+    CIRCUIT = "circuit"
+    #: The fetch was attempted and did not produce a page.
+    RENDER = "render"
 
 
 def _accepts_session_state(driver: ScrapeDriver) -> bool:
@@ -609,10 +638,17 @@ class ScrapeTool(TearsTool):
         # the sentinel if your failure is an error string, and return directly only if you are
         # producing a result shape the exit cannot build.
         error: str | None = None
+        # WHICH gate refused, recorded where the refusal is decided. `error` says what to tell
+        # the caller; this says who decided, and the tail branches on it rather than inferring
+        # it from the combination of `error`, `robots_decision` and `decision`.
+        declined_by: _Gate | None = None
+        # The one gate whose outcome is a full result rather than an error string. Built where
+        # the decision is made, returned by the tail like every other outcome.
+        escalation: ToolResult | None = None
 
         url = kwargs.get("url") or ""
         if not url:
-            error = "url is required"
+            error, declined_by = "url is required", _Gate.INPUT
 
         schema: FieldSchema = {}
         raw_schema = kwargs.get("field_schema") or {}
@@ -620,9 +656,9 @@ class ScrapeTool(TearsTool):
             try:
                 schema = decode_field_schema(raw_schema)
             except ValueError as exc:
-                error = str(exc)
+                error, declined_by = str(exc), _Gate.INPUT
             if error is None and not schema:
-                error = "field_schema must declare at least one field"
+                error, declined_by = "field_schema must declare at least one field", _Gate.INPUT
 
         driver_backend = kwargs.get("driver_backend") or "nodriver"
         driver: ScrapeDriver | None = None
@@ -630,6 +666,7 @@ class ScrapeTool(TearsTool):
             driver = self._drivers.get(driver_backend)
             if driver is None:
                 error = f"unsupported driver_backend {driver_backend!r}; available: {sorted(self._drivers)}"
+                declined_by = _Gate.INPUT
 
         nav_steps: list[NavStep] | None = None
         raw_nav_steps = kwargs.get("nav_steps")
@@ -637,11 +674,12 @@ class ScrapeTool(TearsTool):
             try:
                 nav_steps = decode_nav_steps(raw_nav_steps)
             except TypeError as exc:
-                error = f"invalid nav_steps: {exc}"
+                error, declined_by = f"invalid nav_steps: {exc}", _Gate.INPUT
 
         strategy_type: StrategyType = kwargs.get("strategy_type") or "css"
         if error is None and strategy_type not in ("css", "regex"):
             error = f"unsupported strategy_type {strategy_type!r}; must be 'css' or 'regex'"
+            declined_by = _Gate.INPUT
 
         multi_row = bool(kwargs.get("multi_row", False))
         wait_for = kwargs.get("wait_for") or None
@@ -657,7 +695,7 @@ class ScrapeTool(TearsTool):
         # exempt from the delay, or the politeness contract breaks exactly when a target is
         # already unhappy with us.
         robots_decision: RobotsDecision | None = None
-        if error is None and self._robots is not None:
+        if declined_by is None and self._robots is not None:
             robots_decision = await self._robots.check(url)
             if not robots_decision.allowed:
                 # A disallowed path is not fetched unattended and not silently skipped: it is
@@ -685,7 +723,14 @@ class ScrapeTool(TearsTool):
                             target_id,
                             extra={"extra_data": {"target_id": target_id, "url": url}},
                         )
-                return ToolResult(
+                # Recorded and carried to the tail rather than returned from here. The
+                # escalation needs a result shape the `error` sentinel cannot express, which
+                # was the original reason it returned early -- but a gate that leaves by its
+                # own exit is a gate the tail cannot reason about, and that was the finding.
+                # Holding the built result is not the thing worth avoiding; encoding it into a
+                # string and decoding it again would have been.
+                declined_by = _Gate.ROBOTS
+                escalation = ToolResult(
                     success=False,
                     error=f"needs a human: {robots_decision.reason}",
                     content=json.dumps({"target_id": target_id, "validation_status": "needs_human", "records": []}),
@@ -712,8 +757,10 @@ class ScrapeTool(TearsTool):
             await self._clear_robots_block_if_any(target_id)
 
         decision: FetchDecision | None = None
-        if error is None and self._circuit is not None:
+        if declined_by is None and self._circuit is not None:
             decision = await self._circuit.check(target_id)
+            if not decision.permitted:
+                declined_by = _Gate.CIRCUIT
 
         # From here to the render, an admitted probe is already outstanding. `check` above may
         # have claimed this target's one in-process probe slot, and only an outcome or an
@@ -730,10 +777,11 @@ class ScrapeTool(TearsTool):
         # how this family reached four members: each new await had to be placed against
         # whichever guard its author happened to be reading. Anything added below this line is
         # covered without anyone having to notice.
-        # Named once. Spelled out inline three times, this predicate was doing the work of a
-        # concept the function never gave a name to -- "the fetch is actually going to happen"
-        # -- and each site had to be found and updated by hand when a fourth gate arrived.
-        fetch_will_happen = error is None and (decision is None or decision.permitted)
+        # Now a READ of what the gates recorded, not a re-derivation of it. This predicate used
+        # to be `error is None and (decision is None or decision.permitted)` -- two of the four
+        # signals the tail also consulted, combined here and nowhere else, so a fifth gate meant
+        # remembering to widen this expression as well as the tail's.
+        fetch_will_happen = declined_by is None
 
         # Both bound before the guard, not inside it: the flow does guarantee `page` is set on
         # every path that later reads it, but that guarantee is three branches away from the
@@ -809,7 +857,7 @@ class ScrapeTool(TearsTool):
                     driver_backend=driver_backend,
                 )
                 if render_error is not None:
-                    error = render_error
+                    error, declined_by = render_error, _Gate.RENDER
                 if not fetch_attempted and fleet_wait_claimed and self._robots is not None:
                     # The turn was claimed for a fetch that then did not happen, so give it
                     # back. Conditioned on `fetch_attempted` rather than on `render_error`,
@@ -844,9 +892,14 @@ class ScrapeTool(TearsTool):
                 # behaviour this replaces, so the worst case is no worse than before.
                 fire_and_forget(self._robots.refund_fleet_turn(url))
             raise
-        if error is not None:
+        if declined_by is _Gate.ROBOTS:
+            assert escalation is not None  # set with the marker, in the same block
+            result = escalation
+        elif declined_by is _Gate.INPUT or declined_by is _Gate.RENDER:
+            assert error is not None  # both gates set it with the marker, in one statement
             result = ToolResult(success=False, content="", error=error)
-        elif decision is not None and not decision.permitted:
+        elif declined_by is _Gate.CIRCUIT:
+            assert decision is not None  # only the circuit gate sets this marker
             log.info(
                 "scrape tool: fetch of target %s suppressed by its circuit (%s)",
                 target_id,
