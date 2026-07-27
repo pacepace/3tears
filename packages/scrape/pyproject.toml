@@ -67,6 +67,19 @@ dependencies = [
 # this package, so nothing in the default install imports it.
 reprobe = ["3tears-scheduled-jobs>=0.19.0,<0.20.0"]
 
+# operator.py mounts the human-handover surface into a consuming platform's own
+# FastAPI app: the operator page, the noVNC client, and the WebSocket that
+# relays RFB from the display. Optional because a deployment that never needs a
+# human never needs a web framework, and this package is a library everywhere
+# else -- nothing here runs a server, it hands the platform a router to mount.
+#
+# `3tears-nats` because control messages route to whichever pod holds the
+# display over a subject keyed on the session, rather than by addressing pods.
+hitl = [
+    "fastapi>=0.115",
+    "3tears-nats>=0.19.0,<0.20.0",
+]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 
@@ -77,5 +90,6 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-tools = { workspace = true }
 3tears-models = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-scheduled-jobs = { workspace = true }

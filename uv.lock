@@ -884,6 +884,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+hitl = [
+    { name = "3tears-nats" },
+    { name = "fastapi" },
+]
 reprobe = [
     { name = "3tears-scheduled-jobs" },
 ]
@@ -893,17 +897,19 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-tools", extras = ["document"], editable = "packages/agent/tools" },
     { name = "3tears-models", editable = "packages/models" },
+    { name = "3tears-nats", marker = "extra == 'hitl'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "3tears-scheduled-jobs", marker = "extra == 'reprobe'", editable = "packages/scheduled-jobs" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "camoufox", specifier = ">=0.4" },
+    { name = "fastapi", marker = "extra == 'hitl'", specifier = ">=0.115" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "playwright", specifier = "<1.61" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
-provides-extras = ["reprobe"]
+provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "aioboto3"
