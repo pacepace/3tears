@@ -152,13 +152,17 @@ def token_from_subprotocols(offered: str) -> str:
     return ""
 
 
-async def _await_stop(until: Awaitable[None]) -> None:
+async def _await_stop(until: Callable[[], Awaitable[None]]) -> None:
     """Await a caller-supplied stop signal, so it can be raced as a task.
 
-    Its own function because ``asyncio.wait`` takes tasks, and wrapping an arbitrary awaitable
-    in ``create_task`` requires a coroutine.
+    Takes a CALLABLE rather than an awaitable, and that is not style. An awaitable built at the
+    call site is a coroutine that exists whether or not this relay ever gets far enough to await
+    it -- and the first thing the relay does is open a socket, whose failure is a handled case
+    that returns early. On that path the coroutine was created, never awaited, and surfaced as a
+    ``RuntimeWarning`` in whatever ran next. Deferring construction to here means there is nothing
+    to leak.
     """
-    await until
+    await until()
 
 
 async def relay_stream(
@@ -167,7 +171,8 @@ async def relay_stream(
     host: str,
     port: int,
     *,
-    until: Awaitable[None] | None = None,
+    until: Callable[[], Awaitable[None]] | None = None,
+    benign: tuple[type[BaseException], ...] = (),
 ) -> None:
     """Carry bytes between a connected client and an RFB server, interpreting nothing.
 
@@ -193,11 +198,20 @@ async def relay_stream(
     against a worse failure mode, and it should be settled on measurements -- how often these
     sockets drop and land elsewhere, and how long a target stays open -- rather than on taste.
 
-    :param until: awaited alongside the relay; when it completes first the relay ends. This is
-        how a pod that has stopped owning the session stops showing it -- see
-        :meth:`threetears.scrape.operator_session.SessionClaim.until_lost`.
-    :ptype until: Awaitable[None] | None
-    :raises OSError: when the RFB server cannot be reached, or when a pump fails mid-stream.
+    :param until: called and awaited alongside the relay; when it completes first the relay ends.
+        This is how a pod that has stopped owning the session stops showing it -- see
+        :meth:`threetears.scrape.operator_session.SessionClaim.until_lost`. A callable rather than
+        an awaitable so nothing is constructed on a path that never awaits it.
+    :ptype until: Callable[[], Awaitable[None]] | None
+    :param benign: exception types a pump may raise to mean "the other end went away", which is
+        the ORDINARY end of an operator's session rather than a fault. A client library that
+        signals disconnection by raising -- as Starlette's ``receive_bytes`` does, for a clean
+        close as much as a dirty one -- makes this necessary: without it every operator closing a
+        tab is reported as an unreachable display. This function must not import a web framework
+        to know that, so the caller names the types.
+    :ptype benign: tuple[type[BaseException], ...]
+    :raises OSError: when the RFB server cannot be reached, or when a pump fails mid-stream for a
+        reason not listed in *benign*.
     """
     reader, writer = await asyncio.open_connection(host, port)
 
@@ -222,17 +236,23 @@ async def relay_stream(
         # protocol recovers from, and leaving the other pump running would hold a socket and a
         # task for a connection that can no longer carry anything.
         done, _pending = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
-        # RETRIEVE THE OUTCOME, which `asyncio.wait` does not do for you. Without this an
-        # ordinary disconnect and a genuine transport fault both end here silently and identically,
-        # and the fault resurfaces later as a bare "Task exception was never retrieved" with no
-        # session, host or port attached to it. A pump that raised is the only thing worth
-        # reporting: the stop signal completing is the expected end of a handover.
+        # RETRIEVE THE OUTCOME, which `asyncio.wait` does not do for you -- but distinguish the
+        # ordinary end from a fault, because the two are NOT the same and reporting them
+        # identically is its own defect. Left unretrieved, a genuine fault resurfaces later as a
+        # bare "Task exception was never retrieved" with no session, host or port attached.
+        # Reported indiscriminately, every operator who closes a tab is logged as an unreachable
+        # display with a traceback and a host and port that were both fine -- which is worse,
+        # because it is the common path and it drowns the rare one it was meant to surface.
+        #
+        # A pump raising a `benign` type means the other end went away. The stop signal completing
+        # means a handover took the session. Neither is a fault; anything else is.
         for finished in done:
             if finished is stop:
                 continue
             error = finished.exception()
-            if error is not None:
-                raise OSError(f"the display relay failed mid-stream: {error}") from error
+            if error is None or isinstance(error, benign):
+                continue
+            raise OSError(f"the display relay failed mid-stream: {error}") from error
     finally:
         for task in watched:
             task.cancel()

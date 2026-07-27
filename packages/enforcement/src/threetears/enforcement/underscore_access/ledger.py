@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections import Counter
 from pathlib import Path
 
 from threetears.enforcement.underscore_access.ruff_config import all_exempted_files
@@ -153,29 +154,43 @@ def orphan_rationales(exemptions_path: Path) -> list[int]:
     return orphans
 
 
-def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tuple[str, str, str], str]:
-    """Map ``(path, scope, symbol)`` to the rationale recorded for it, for a regeneration.
+def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tuple[str, str, str, int], str]:
+    """Map ``(path, scope, symbol, occurrence)`` to the rationale recorded for it.
 
     Keyed on the enclosing scope as well as the symbol because a file routinely reaches for the
     same private name from several places for different reasons. Keyed on ``(path, symbol)``
-    alone -- which this was -- the first rationale is applied to every access of that name in
+    alone -- which this was once -- the first rationale is applied to every access of that name in
     the file, so several unrelated entries all document whichever reason came first.
+
+    Keyed on the OCCURRENCE within that scope as well, because the scope was not enough either.
+    One function routinely touches the same private twice for two reasons -- an arrange line that
+    reads a value and an assert line that compares it, which is the commonest shape in a test --
+    and those collapse to one key. The observed instance: two ``_x11vnc`` reads in one
+    ``test_start_is_idempotent``, whose second hand-written rationale was silently replaced by a
+    copy of the first one's on the next regeneration.
 
     That failure is worse than ordinary staleness because it is self-repairing in the wrong
     direction: correcting one of the wrong entries by hand is reverted by the next regeneration,
     since the regeneration is what wrote it. The ledger then has a class of entry that is
     permanently and silently wrong about the code it describes.
 
-    Lives here rather than in the regeneration script so it can be tested. The bug was in the
-    keying, and a test that pins only the scope walker leaves the keying free to be simplified
-    back with the suite still green.
+    The occurrence index is the entry's ordinal among same-scope, same-symbol entries in ledger
+    order, which is line order. That is stable across the line shifts carry-forward exists to
+    survive, and only mismatches if the accesses are REORDERED within their function -- at which
+    point which rationale belongs to which access is a genuine question rather than one this can
+    answer.
+
+    Lives here rather than in the regeneration script so it can be tested. Both widenings were
+    bugs in the keying, and a test that pins only the scope walker leaves the keying free to be
+    simplified back with the suite still green.
 
     The scope is resolved against the CURRENT file at the entry's recorded line: exact while the
     ledger is fresh, and degrading to symbol-only when a line has drifted outside its original
     function, which is no worse than the behaviour it replaces.
     """
     scopes_by_path: dict[str, dict[int, str]] = {}
-    found: dict[tuple[str, str, str], str] = {}
+    found: dict[tuple[str, str, str, int], str] = {}
+    seen: Counter[tuple[str, str, str]] = Counter()
     rationale: str | None = None
     for raw in exemptions_path.read_text().split("\n"):
         line = raw.strip()
@@ -191,7 +206,9 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
         source = repo_root / path
         if path not in scopes_by_path:
             scopes_by_path[path] = enclosing_scopes(source) if source.exists() else {}
-        found.setdefault((path, scopes_by_path[path].get(int(number), ""), symbol), rationale)
+        group = (path, scopes_by_path[path].get(int(number), ""), symbol)
+        found.setdefault((*group, seen[group]), rationale)
+        seen[group] += 1
     return found
 
 

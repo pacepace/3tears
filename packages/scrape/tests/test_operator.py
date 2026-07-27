@@ -90,6 +90,68 @@ class TestTheRelayMovesBytesAndInterpretsNothing:
         assert b"".join(client_received) == payload, "the display's bytes reached the client altered"
         assert server_received == [payload], "the operator's bytes reached the display altered"
 
+    async def test_the_other_end_going_away_is_the_ordinary_end_not_a_fault(self) -> None:
+        """A client library that signals disconnection by RAISING must not read as broken.
+
+        Starlette's ``receive_bytes`` raises ``WebSocketDisconnect`` for a clean close exactly as
+        for a dirty one, so an operator closing their tab completes a pump with an exception.
+        Reported as a fault, every finished session logs a warning with a traceback and a host and
+        port that were both fine -- drowning the one real failure that log line exists for. This
+        is the common path; getting it wrong is worse than not checking at all.
+        """
+
+        class _ClientWentAway(Exception):
+            """Stands in for the framework's own disconnect signal."""
+
+        async def _receive() -> bytes:
+            raise _ClientWentAway
+
+        with _quiet_listener() as port:
+            # Returns rather than raising: nothing here is a fault.
+            await asyncio.wait_for(
+                relay_stream(lambda _d: asyncio.sleep(0), _receive, "127.0.0.1", port, benign=(_ClientWentAway,)),
+                timeout=5,
+            )
+
+    async def test_a_pump_failing_for_any_other_reason_is_raised(self) -> None:
+        """The counterpart, so "benign" cannot quietly become "everything".
+
+        Left unretrieved, a genuine mid-stream fault surfaces later as a bare "Task exception was
+        never retrieved" with no session, host or port attached to it.
+        """
+
+        async def _receive() -> bytes:
+            raise RuntimeError("the transport broke")
+
+        with _quiet_listener() as port:
+            with pytest.raises(OSError, match="failed mid-stream"):
+                await asyncio.wait_for(
+                    relay_stream(lambda _d: asyncio.sleep(0), _receive, "127.0.0.1", port), timeout=5
+                )
+
+    async def test_an_unreachable_display_never_reaches_for_the_stop_signal(self) -> None:
+        """Nothing is constructed on a path that never awaits it.
+
+        The stop signal used to be passed as an awaitable built at the call site, and the relay's
+        first act is to open a socket, whose failure returns early. That left a coroutine created
+        and never awaited, surfacing as a ``RuntimeWarning`` in whatever ran next -- attributed to
+        a completely unrelated test, and invisible here because no warning filter is configured.
+        Taking a callable makes the leak impossible rather than merely unlikely.
+        """
+        started: list[bool] = []
+
+        async def _stop() -> None:
+            started.append(True)
+            await asyncio.Event().wait()
+
+        with pytest.raises(OSError):
+            # Port 1 on loopback: reserved, and nothing listens there.
+            await asyncio.wait_for(
+                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", 1, until=_stop),
+                timeout=5,
+            )
+        assert started == [], "the stop signal was constructed for a relay that never opened"
+
     async def test_an_unreachable_display_raises_rather_than_hanging(self) -> None:
         """A caller needs to tell "refused" from "the display is down", so this must not hang."""
         with pytest.raises(OSError):
@@ -357,7 +419,7 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
         lost = asyncio.Event()
         with _quiet_listener() as port:
             relay = asyncio.create_task(
-                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port, until=lost.wait())
+                relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, "127.0.0.1", port, until=lost.wait)
             )
             await asyncio.sleep(0.05)
             assert not relay.done(), "the relay ended before the claim was lost"

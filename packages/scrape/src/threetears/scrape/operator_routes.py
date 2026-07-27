@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket
+from starlette.websockets import WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from threetears.observe import get_logger
@@ -108,7 +109,12 @@ def build_router(
                 websocket.receive_bytes,
                 host,
                 port,
-                until=held.until_lost() if held is not None else None,
+                until=held.until_lost if held is not None else None,
+                # An operator closing their tab is the ORDINARY end of a session, and Starlette
+                # signals it by raising -- for a clean close exactly as for a dirty one. Without
+                # naming it here, every finished session is logged as an unreachable display,
+                # with a traceback and a host and port that were both fine.
+                benign=(WebSocketDisconnect,),
             )
         except OSError:
             log.warning(

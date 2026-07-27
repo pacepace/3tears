@@ -101,16 +101,19 @@ class TestUnderscoreExemptionsResolve:
             "both rationales collapsed onto one key, so a regeneration would overwrite one "
             f"access's reason with the other's: {carried}"
         )
-        assert carried[("sample.py", "first", "_shared")] == "reason belonging to first"
-        assert carried[("sample.py", "second", "_shared")] == "reason belonging to second"
+        assert carried[("sample.py", "first", "_shared", 0)] == "reason belonging to first"
+        assert carried[("sample.py", "second", "_shared", 0)] == "reason belonging to second"
 
-    def test_two_accesses_in_one_scope_still_share_one_rationale(self, tmp_path: Path) -> None:
-        """The other half, and the reason the key is not simply the line number.
+    def test_one_rationale_still_covers_every_repeat_in_a_scope(self, tmp_path: Path) -> None:
+        """Repeats that genuinely share a reason keep sharing it, and the line is still not the key.
 
-        Repeats within one function are legitimate and common -- several reads of the same
-        private name in one test genuinely share a reason -- and keying on the line would make
-        every line shift lose the rationale, which is the rot this carry-forward exists to
-        prevent.
+        RENAMED AND STRENGTHENED, from ``test_two_accesses_in_one_scope_still_share_one_rationale``,
+        which asserted the map held exactly ONE key for two accesses. That shape was the defect
+        rather than the contract: it is what silently replaced one hand-written rationale with a
+        copy of another's -- see the test below. What this test was really protecting is unchanged
+        and still asserted here: the key must not be the line number, or every line shift loses
+        the rationale, which is the rot carry-forward exists to prevent. The occurrence ordinal
+        keeps that property, because it moves with the code rather than with the file.
         """
         source = tmp_path / "sample.py"
         source.write_text("def only():\n    obj._shared\n    obj._shared\n")
@@ -119,7 +122,44 @@ class TestUnderscoreExemptionsResolve:
 
         carried = carry_forward_rationales(ledger, tmp_path)
 
-        assert carried == {("sample.py", "only", "_shared"): "one reason covers both"}
+        assert set(carried.values()) == {"one reason covers both"}, (
+            "a single rationale no longer covers repeats that legitimately share one"
+        )
+        assert set(carried) == {("sample.py", "only", "_shared", 0), ("sample.py", "only", "_shared", 1)}
+
+        # The property the old shape was really about: shift every line and the rationales still
+        # land, because the key holds no line number.
+        source.write_text("import os\n\n\ndef only():\n    obj._shared\n    obj._shared\n")
+        shifted = tmp_path / "_shifted.txt"
+        shifted.write_text("# rationale: one reason covers both\nsample.py:5:_shared\nsample.py:6:_shared\n")
+        assert set(carry_forward_rationales(shifted, tmp_path).values()) == {"one reason covers both"}
+
+    def test_two_accesses_in_one_scope_keep_their_own_rationales(self, tmp_path: Path) -> None:
+        """The defect this key was widened for, pinned so it cannot be simplified back.
+
+        One function touching the same private twice for two reasons is the commonest shape there
+        is -- a line that reads a value and a line that asserts on it. Keyed on the scope alone,
+        both collapse, and the SECOND rationale is silently replaced by a copy of the first on the
+        next regeneration. It happened: two ``_x11vnc`` reads in one ``test_start_is_idempotent``,
+        whose hand-written second reason was overwritten by a run that was supposed to preserve it.
+
+        Self-repairing in the wrong direction, which is what makes it worth a test rather than
+        care: fixing the wrong entry by hand is reverted by the very next regeneration.
+        """
+        source = tmp_path / "sample.py"
+        source.write_text("def only():\n    obj._shared\n    obj._shared\n")
+        ledger = tmp_path / "_exemptions.txt"
+        ledger.write_text(
+            "# rationale: the arrange line, which reads the value\n"
+            "sample.py:2:_shared\n"
+            "# rationale: the assert line, which compares it\n"
+            "sample.py:3:_shared\n"
+        )
+
+        carried = carry_forward_rationales(ledger, tmp_path)
+
+        assert carried[("sample.py", "only", "_shared", 0)] == "the arrange line, which reads the value"
+        assert carried[("sample.py", "only", "_shared", 1)] == "the assert line, which compares it"
 
     def test_every_exempted_access_has_an_entry(self) -> None:
         """The other direction, which a stale-entry check structurally cannot cover.

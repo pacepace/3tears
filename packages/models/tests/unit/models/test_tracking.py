@@ -747,29 +747,54 @@ class TestUsageTrackerCustomRegistry:
     def test_custom_registry_does_not_pollute_default(self) -> None:
         """instruments registered on a custom registry are NOT exposed via
         the default global registry — registry isolation guarantee.
+
+        Asserted as a BEFORE/AFTER on the one sample this test writes, rather
+        than by searching the default registry's rendered text.
+
+        The text search was flaky, and not mysteriously so. ``generate_latest``
+        renders the whole default registry: every instrument every other test
+        in the process registered, plus prometheus_client's own process and
+        platform collectors, with live float values. Searching that for the
+        substring ``"0.0042"`` matches any value that happens to render with
+        those characters inside it — ``10.0042``, ``0.004213``,
+        ``100.00421`` — none of which has anything to do with this tracker.
+        It failed once in a full-suite run and passed on rerun, which is
+        exactly how a substring assertion against shared mutable state
+        behaves.
+
+        ``get_sample_value`` asks the precise question instead: did the value
+        of THIS metric, with THESE labels, in the DEFAULT registry, change
+        because we recorded to a custom one? A before/after comparison also
+        makes the test independent of whether some earlier test legitimately
+        populated the default registry — which is the very condition the old
+        comment described and could not actually tolerate.
         """
         try:
-            from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
+            from prometheus_client import REGISTRY, CollectorRegistry
         except ImportError:
             import pytest
 
             pytest.skip("prometheus_client not installed in this environment")
 
+        labels = {"model": DEFAULT_LARGE_MODEL, "provider": "anthropic", "purpose": "chat"}
+        before = REGISTRY.get_sample_value("threetears_llm_cost_usd_total", labels)
+
         custom = CollectorRegistry()
         tracker = UsageTracker(prom_registry=custom)
         tracker.record(self._make_usage())
 
-        # the default-registry emitter has not been built (we only used
-        # a custom one), so the locked instruments should not appear in
-        # the default scrape.
-        default_scraped = generate_latest(REGISTRY).decode("utf-8")
-        # if some other test already built a default-registry emitter,
-        # the metric NAMES will be present, but the metric SAMPLES from
-        # this test's custom-registry record() must not show up. We
-        # check for the cost_usd value 0.0042 by way of its decoded
-        # representation, which is the smoking-gun for "samples leaked
-        # into the default registry".
-        assert "0.0042" not in default_scraped
+        after = REGISTRY.get_sample_value("threetears_llm_cost_usd_total", labels)
+        assert after == before, (
+            f"recording to a custom registry moved the DEFAULT registry's cost counter "
+            f"from {before!r} to {after!r}, so the registries are not isolated"
+        )
+        # And the sample really did land somewhere -- otherwise the assertion above would hold
+        # just as well for a tracker that recorded nothing at all.
+        landed = custom.get_sample_value("threetears_llm_cost_usd_total", labels)
+        assert landed is not None and abs(landed - 0.0042) < 1e-9, (
+            f"the custom registry received {landed!r} rather than the recorded cost, so this "
+            f"proves nothing about isolation"
+        )
 
     def test_per_registry_emitter_caching(self) -> None:
         """two ``UsageTracker(prom_registry=same)`` calls share the same

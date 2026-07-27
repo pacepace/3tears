@@ -23,6 +23,7 @@ full override the root cannot reach past.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 from threetears.enforcement.underscore_access import (
@@ -72,8 +73,15 @@ def main() -> int:
             continue
         scopes = enclosing_scopes(source)
         out.append("")
+        # Counted the same way `carry_forward_rationales` counts, and in the same order, so the
+        # nth access of one private inside one function keeps ITS OWN rationale rather than a copy
+        # of the first one's. A test reading a value and then asserting on it is two accesses of
+        # one name in one scope, which is the commonest shape there is.
+        seen: Counter[tuple[str, str]] = Counter()
         for number, symbol in accesses:
-            reason = rationales.get((rel, scopes.get(number, ""), symbol))
+            scope = scopes.get(number, "")
+            reason = rationales.get((rel, scope, symbol, seen[scope, symbol]))
+            seen[scope, symbol] += 1
             if reason is None:
                 unmapped.append(f"{rel}:{number}:{symbol}")
                 reason = _PLACEHOLDER
