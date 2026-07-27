@@ -158,9 +158,11 @@ and a target blocked overnight should be probed by morning without anyone interv
 capabilities that are not scrape-specific and are not in this package.
 
 The sidecar's Xvfb display is reachable on demand: `x11vnc` and `websockify` start when a
-person arrives and stop when they leave, x11vnc bound to loopback so websockify is the single
-route in, and the display number a parameter so a display pool is later configuration rather
-than a rewrite. On top of that sits one session against that one display -- a bounded number
+person arrives and stop when they leave, x11vnc bound to loopback, and the display number a
+parameter so a display pool is later configuration rather than a rewrite. The operator reaches
+it through the API's own port: the client page and the RFB WebSocket are both served there, so
+one origin carries the display and one place authenticates it. websockify remains, bound to
+loopback, only so reverting to it is a code change rather than an image rebuild. On top of that sits one session against that one display -- a bounded number
 of targets at a time, each in its own isolated browser context so a second target cannot see
 the first's cookies, behind a hard TTL and a token this container minted. The token proves
 only that; deciding who was entitled to it belongs where identity lives, which is not here.

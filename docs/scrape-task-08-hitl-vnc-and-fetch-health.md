@@ -458,10 +458,21 @@ AGPL boundary is unchanged):
 | `DELETE /v1/hitl/session/{id}` | Teardown, stop VNC, drop contexts |
 | `POST` / `GET` / `DELETE /v1/hitl/vnc` | Bring the display up, report whether it is up, take it down. Predates the session API and stays for the case it does not cover |
 
-The noVNC client itself is NOT served by this API and is NOT token-scoped. `websockify` serves
-it on its own port at `/vnc.html?path=websockify&autoconnect=true&resize=scale`, with no token
-in the path, because this container holds no identity and cannot evaluate one. Treat that port
-as unauthenticated and put it behind something that is not.
+| `GET /vnc/ws` | The RFB stream itself, as a WebSocket |
+
+The client and the stream now share this API's port. `GET /vnc/hitl.html` is the operator page
+and `GET /vnc/ws` is the stream it opens, so a platform fronts one origin with one TLS endpoint
+and one authentication point rather than correlating two ports.
+
+The stream carries the session token in a WebSocket `Sec-WebSocket-Protocol` entry. That is
+forced rather than preferred: a browser cannot set arbitrary headers on an upgrade, and the
+only other thing it can do is a query parameter, which writes a live credential into access
+logs, browser history and referrer headers. The page takes the token from the URL FRAGMENT,
+which never reaches a server at all.
+
+Checking that token is a CAPABILITY check and not authorization. This container compares a
+value it minted; it verifies no signature and reads no claims, because it holds no identity and
+cannot evaluate a policy. Who was entitled to hold one is decided in front of it.
 
 **Bounded working set.** A session has a fixed slot count. A target occupies a slot from
 `/tab` until `/complete`; backgrounding a slow one still holds its slot. Items are pulled in as

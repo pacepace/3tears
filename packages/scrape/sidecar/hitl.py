@@ -20,8 +20,9 @@ person arrives and go away when they leave, so the steady state is the same cont
 ran before this module existed.
 
 **Loopback only, with one way in.** ``x11vnc`` binds ``127.0.0.1`` and is never published;
-``websockify`` is the sole path from outside, which is what makes "who may connect" a
-question answerable at one place later rather than at two. That single seam is the reason
+``websockify`` is now loopback-only and is not a path from outside at all: the API serves the
+client page and relays the RFB stream on its own port, which is what makes "who may connect" a
+question answered at one place rather than two. That single seam is the reason
 the two processes are separate rather than x11vnc's own ``-http`` mode.
 
 **The display number is a parameter from the first line.** One Xvfb display means one
@@ -130,7 +131,9 @@ class VncUnavailable(RuntimeError):
 class VncSession:
     """Where a human should point their browser, and what is behind it."""
 
-    #: Port ``websockify`` listens on. The only port a human ever reaches.
+    #: Port ``websockify`` listens on, loopback-only. NOT the port a human reaches any more:
+    #: the client page and the RFB stream are both served by the API, so this is kept only so
+    #: reverting to websockify is a code change rather than an image rebuild.
     web_port: int
     #: The X display being shared, e.g. ``":99"``.
     display: str
@@ -167,7 +170,11 @@ class VncLifecycle:
 
     @property
     def web_port(self) -> int:
-        """The port websockify serves on. The only port a human ever reaches."""
+        """The port websockify serves on, loopback-only inside this container.
+
+        No longer the route an operator takes: the API serves the client page and relays the
+        RFB stream on its own port. Retained so reverting is a code change, not a rebuild.
+        """
         return self._web_port
 
     @property
