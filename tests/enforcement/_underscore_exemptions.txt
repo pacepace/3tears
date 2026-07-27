@@ -308,11 +308,11 @@ packages/models/tests/unit/models/test_tracking.py:440:_done
 packages/models/tests/unit/models/test_tracking.py:582:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the OTel once-flag and its ._done reset travel together; resetting both is the only way to re-init a provider between tracking tests, and the SDK exposes no public reset.
 packages/models/tests/unit/models/test_tracking.py:582:_done
-# rationale: test reads UsageTracker._prom (cached PromEmitter) to assert tracker-per-registry identity (two trackers with the same registry share the emitter); pins the cached-by-registry contract.
+# rationale: reads UsageTracker._prom to assert a tracker built with NO prom_registry is wired to the same emitter _get_prom_emitter() returns -- the backward-compat contract, not the per-registry caching one. The emitter is chosen in __init__ and exposed nowhere else, so the attribute is the only evidence.
 packages/models/tests/unit/models/test_tracking.py:745:_prom
 # rationale: test reads UsageTracker._prom (cached PromEmitter) to assert tracker-per-registry identity (two trackers with the same registry share the emitter); pins the cached-by-registry contract.
 packages/models/tests/unit/models/test_tracking.py:815:_prom
-# rationale: the SECOND _prom read on that line -- the assertion compares two trackers' cached emitters to pin that DISTINCT registries do not share one, which is the inverse of the same-registry caching contract and needs both sides of the comparison
+# rationale: compares two trackers' cached emitters to pin that DISTINCT registries do NOT share one -- the inverse of the same-registry caching contract asserted above, and a different claim about the same attribute.
 packages/models/tests/unit/models/test_tracking.py:832:_prom
 
 # rationale: OTel SDK >=1.39 guards set_tracer_provider behind an internal once-flag with no public reset; the dimensions suite re-inits a provider per case to assert span attributes in isolation, which is unreachable without touching it.

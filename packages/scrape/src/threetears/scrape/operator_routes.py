@@ -22,6 +22,7 @@ worked around.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -122,7 +123,15 @@ def build_router(
                 exc_info=True,
                 extra={"extra_data": {"session_id": session_id, "host": host, "port": port}},
             )
-            await websocket.close(code=1011, reason="the display is not available")
+            # Suppressed, because the most likely reason this close fails is that the client is
+            # already gone -- and a client going away is one of the things that gets us here. The
+            # close raising would escape the handler and replace the warning above, which is the
+            # only line carrying the session id, with a framework traceback that carries none. The
+            # socket is finished either way; telling it so is a courtesy, not a step.
+            with suppress(
+                Exception
+            ):  # prawduct:allow prawduct/broad-except -- see above; the diagnosis is already logged and this close cannot change the outcome
+                await websocket.close(code=1011, reason="the display is not available")
 
     @router.get("/", include_in_schema=False)
     async def operator_page() -> FileResponse:

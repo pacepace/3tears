@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import re
 import socket
 from collections.abc import Iterator
@@ -396,6 +397,24 @@ class TestThePageAndItsClientSurviveAPrefix:
         )
 
 
+class _Captured(logging.Handler):
+    """Collect records emitted anywhere, so a structured `extra` survives to be asserted on.
+
+    `caplog` is the usual answer and is not used here: this package logs through
+    `threetears.observe`, whose handlers do not necessarily propagate to the root logger caplog
+    attaches to, and a capture that silently collects nothing would make every assertion below
+    vacuous.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep the record rather than rendering it."""
+        self.records.append(record)
+
+
 class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
     """A relay runs for hours, so it is the one thing that must not survive a handover.
 
@@ -408,6 +427,21 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
     from the test thread cannot wake a waiter bound to the app's loop, which is a property of the
     harness rather than of the code and would prove nothing either way.
     """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _captured(level: int) -> Iterator[list[logging.LogRecord]]:
+        """Attach a handler to the root logger for the duration, and hand back what it saw."""
+        handler = _Captured()
+        root = logging.getLogger()
+        previous = root.level
+        root.addHandler(handler)
+        root.setLevel(level)
+        try:
+            yield handler.records
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous)
 
     async def test_the_relay_ends_when_the_stop_signal_completes(self) -> None:
         """The mechanism itself: a relay parked on a silent socket still lets go.
@@ -454,6 +488,43 @@ class TestTheStreamDoesNotOutliveTheClaimThatEntitledIt:
                     pass
 
         assert asked == ["session-1"], "the router never asked whether this pod holds the session"
+
+    def test_an_unreachable_display_is_reported_with_enough_to_act_on(self) -> None:
+        """The fault path's log line is the only place the session, host and port appear.
+
+        The operator gets 1011 and nothing else, deliberately -- so this line is the whole of the
+        diagnosis, and dropping any of the three turns "the display could not be reached" into a
+        message nobody can act on.
+
+        The close that follows it is suppressed in the route, for a case this harness cannot
+        reproduce: if the client has already gone -- one of the ways a fault arrives -- the close
+        raises, escapes the handler, and buries this warning under a framework traceback carrying
+        no session id. ``TestClient``'s client never departs, so that branch is defensive and
+        stated rather than tested. What IS tested is that the diagnosis is complete and the socket
+        is told.
+        """
+        import logging
+
+        from fastapi.testclient import TestClient
+
+        with self._captured(logging.WARNING) as records:
+            # Port 1 on loopback: reserved, and nothing listens there, which is the real shape of
+            # a display that cannot be reached.
+            with TestClient(_mounted_app(rfb_port=1)) as client:  # type: ignore[arg-type]
+                with client.websocket_connect(f"{_PREFIX}/ws", subprotocols=["binary", "hitl-token.good"]) as stream:
+                    # `receive`, not `receive_bytes`: the raw message carries the close frame, where
+                    # the typed readers turn it into an exception and lose the code.
+                    ended = stream.receive()
+
+        assert ended["type"] == "websocket.close", f"the socket was not closed on a fault: {ended}"
+        assert ended["code"] == 1011, "an unreachable display was not reported as a server-side fault"
+        reported = [r for r in records if "could not be reached" in r.getMessage()]
+        assert reported, "an unreachable display produced no warning at all"
+        data = getattr(reported[0], "extra_data", {})
+        assert data.get("session_id") == "session-1", f"the warning names no session: {data}"
+        assert data.get("host") == "127.0.0.1" and data.get("port") == 1, (
+            f"the warning does not say which endpoint failed, so nobody can act on it: {data}"
+        )
 
     def test_a_pod_holding_no_claim_refuses_before_opening_anything(self) -> None:
         """Serving a display this pod does not own is worse than refusing to serve it.
