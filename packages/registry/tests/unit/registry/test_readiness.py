@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.nats.errors import RequestError
-from threetears.observe import HealthCheck, HealthServer
+from threetears.observe import HealthCheck, HealthServer, HealthTier
 
 _JWKS: dict[str, Any] = {
     "keys": [{"kid": "k1", "kty": "OKP", "crv": "Ed25519", "x": "abc", "use": "sig", "alg": "EdDSA"}]
@@ -33,6 +33,7 @@ def _registry_jwks_check(provider: CachedHubJwksProvider | None) -> HealthCheck:
     return HealthCheck(
         name="jwks_warmed",
         probe=lambda: provider is not None and provider.is_warmed,
+        tier=HealthTier.READY,
     )
 
 
@@ -43,11 +44,24 @@ def _health_server(provider: CachedHubJwksProvider | None) -> HealthServer:
 class TestRegistryJwksReadinessGate:
     """the registry reports NOT-READY until the Hub-JWKS cache completes its first successful fetch."""
 
-    def test_not_ready_when_provider_absent(self) -> None:
+    @pytest.mark.asyncio
+    async def test_not_ready_when_provider_absent(self) -> None:
         # before the provider is constructed the gate must read NOT-READY (never accept-then-fail).
-        status = _health_server(None).get_status()
+        status = await _health_server(None).get_status(HealthTier.READY)
         assert status.healthy is False
         assert {c.name: c.healthy for c in status.components}["jwks_warmed"] is False
+
+    @pytest.mark.asyncio
+    async def test_cold_cache_does_not_fail_liveness(self) -> None:
+        """the gate is a READINESS check, so it must be invisible to liveness.
+
+        the registry shipped with no livenessProbe precisely because this check
+        sat in an aliased list and would have restart-looped the pod through a
+        Hub blip, taking the whole tool mesh down with it.
+        """
+        status = await _health_server(None).get_status(HealthTier.LIVE)
+        assert status.healthy is True
+        assert status.components == []
 
     @pytest.mark.asyncio
     async def test_not_ready_until_warmed_then_ready(self) -> None:
@@ -59,11 +73,11 @@ class TestRegistryJwksReadinessGate:
         server = _health_server(provider)
 
         await provider.refresh()  # first fetch fails -> NOT warmed
-        not_ready = server.get_status()
+        not_ready = await server.get_status(HealthTier.READY)
         assert not_ready.healthy is False
         assert {c.name: c.healthy for c in not_ready.components}["jwks_warmed"] is False
 
         await provider.refresh()  # second fetch succeeds -> warmed
-        ready = server.get_status()
+        ready = await server.get_status(HealthTier.READY)
         assert ready.healthy is True
         assert {c.name: c.healthy for c in ready.components}["jwks_warmed"] is True

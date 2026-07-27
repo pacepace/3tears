@@ -50,11 +50,9 @@ import json
 import time
 from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.coordination import WindowedCounter, WindowState
-from threetears.nats import KvCapable
-from threetears.nats.kv import KvBucketLike
 from threetears.observe import get_logger
 
 from threetears.iam.stores.base import (
@@ -63,6 +61,12 @@ from threetears.iam.stores.base import (
     hash_ticket,
     new_ticket_secret,
 )
+
+if TYPE_CHECKING:
+    # From the submodule, not the package: these are Protocols that `threetears.nats`
+    # stopped re-exporting when its nats-py-backed surface went lazy. Annotation-only,
+    # so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "NatsKvAttemptLimiter",
@@ -300,7 +304,7 @@ class NatsKvAttemptLimiter:
 async def state_store(nc: KvCapable, *, name: str, ttl: timedelta) -> NatsKvStateStore:
     """Open (or rebind) ``name`` and wrap it as a :class:`NatsKvStateStore`.
 
-    Resolved per call rather than held: :meth:`~threetears.nats.KvCapable.kv_bucket` caches
+    Resolved per call rather than held: :meth:`~threetears.nats.kv.KvCapable.kv_bucket` caches
     the handle itself, so this costs nothing and stays correct across a broker reconnect --
     where a handle captured once at construction would not.
 

@@ -42,7 +42,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import KvBucketLike, KvCapable
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "TokenClaimResult",
@@ -185,7 +188,7 @@ class TokenBucket:
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`;
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
             the store opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the

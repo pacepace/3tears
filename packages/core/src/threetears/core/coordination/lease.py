@@ -17,7 +17,7 @@ usage::
         ...
 
 ``nats_client`` is the canonical
-:class:`threetears.nats.KvCapable` wrapper. the lease opens its
+:class:`threetears.nats.kv.KvCapable` wrapper. the lease opens its
 bucket via :meth:`KvCapable.kv_bucket` so all CAS / miss semantics
 flow through :class:`KvBucketLike`'s typed return shape (``None`` on
 conflict instead of raising :class:`KeyWrongLastSequenceError`).
@@ -42,7 +42,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import KvBucketLike, KvCapable
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "KVLease",
@@ -268,7 +271,7 @@ class KVLease:
         unique per factory instance.
 
         :param nats_client: connected canonical
-            :class:`threetears.nats.KvCapable` wrapper; the lease
+            :class:`threetears.nats.kv.KvCapable` wrapper; the lease
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
         :param bucket_name: explicit bucket name; None uses env-derived default

@@ -75,8 +75,10 @@ from threetears.observe import get_logger, representative_exception
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
+    NoRespondersError,
     PublishError,
     RequestError,
+    RequestTimeoutError,
     StreamSubjectsOverlapError,
     SubscribeError,
 )
@@ -1864,11 +1866,11 @@ class NatsClient:
             try:
                 msg = await self._raw.request(sub.path, bytes(pos_payload), timeout=secs)
             except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
-                raise RequestError(
+                raise RequestTimeoutError(
                     f"request timed out: subject={sub.path} timeout={secs:.1f}s",
                 ) from exc
             except _NatsNoRespondersError as exc:
-                raise RequestError(f"no responders for subject: subject={sub.path}") from exc
+                raise NoRespondersError(f"no responders for subject: subject={sub.path}") from exc
             except Exception as exc:
                 self._note_if_outbound_overflow(exc)  # resilience-task-03
                 raise RequestError(f"request failed: subject={sub.path}: {exc}") from exc
@@ -1912,11 +1914,11 @@ class NatsClient:
         try:
             msg = await self._raw.request(subject.path, payload, timeout=timeout.total_seconds())
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
-            raise RequestError(
+            raise RequestTimeoutError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"
             ) from exc
         except _NatsNoRespondersError as exc:
-            raise RequestError(f"no responders for subject: subject={subject.path}") from exc
+            raise NoRespondersError(f"no responders for subject: subject={subject.path}") from exc
         except _NatsConnectionClosedError as exc:
             raise RequestError(f"NATS connection closed during request: subject={subject.path}") from exc
         except Exception as exc:

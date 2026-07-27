@@ -49,7 +49,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import KvBucketLike, KvCapable
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "DistributedCounter",
@@ -124,7 +127,7 @@ class DistributedCounter:
     def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = None) -> None:
         """configure the counter; defer bucket binding until first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`;
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
             the counter opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; dedicate one bucket per counting

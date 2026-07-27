@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+**`3tears-nats` no longer installs the NATS client by default -- BREAKING for consumers.**
+`nats-py` and `nkeys` moved to a `[client]` extra. `nkeys` publishes no wheels, so an
+unconditional dependency turned every install into a source build, including aarch64 targets
+that have prebuilt wheels for everything else in the tree. The nine client-backed submodules
+resolve through a PEP 562 `__getattr__`, so error types, subject grammar, transport Protocols
+and the auth-callout/user-JWT codecs stay importable without it.
+
+Anything using `NatsClient`, `kv`, `oplog`, `forward`, `cross_worker_cancel` or
+`distributed_lock` must now depend on **`3tears-nats[client]`** or **`3tears[nats]`**. A
+consumer that does not is not caught at install or import time -- the failure surfaces at the
+first attribute access, which is why this is called out here rather than left to the diff.
+
+**`uuid-utils` is declared by the packages that import it.** `core`, `memory`, `mcp` and
+`scrape` all imported it while relying on some other package to drag it in.
+
 **A pod can close one user's live sockets.** `WebSocketHandler` already kept a per-pod
 `user_id -> socket` map with nothing able to act on it, so server-side revocation reached the
 next token mint and the next connect but never a socket that had already authenticated -- it
@@ -144,8 +159,6 @@ decode, never disables signature/expiry verification, and never imports `jwt.dec
 for `packages/iam`; both are now thin shells over the shared walker. The shared walker also
 covers `jwt.decode_complete`, which both copies were blind to.
 
-## v0.20.0 -- 2026-07-25
-
 **New package: `3tears-iam`.** Identity and access primitives, factored out of two
 services that had each grown their own. Both had independently written argon2id
 password hashing with anti-enumeration timing, a GitHub OAuth2 authorization-code
@@ -182,6 +195,139 @@ The package is complete for passwords, PKCE, GitHub sign-in, session tokens, DPo
 API-key secrets, step-up freshness, trusted-proxy client-IP resolution, and the
 storage seams. OIDC, SAML, TOTP, WebAuthn and refresh rotation are still resident
 in the downstream identity service and land next.
+## v0.19.4 -- 2026-07-26
+
+**`HealthServer` gets real liveness/readiness semantics, so a readiness gate can no
+longer restart a pod.** `/healthz` and `/readyz` were aliases of one flat check list,
+which meant the server could not express "alive but not ready." That is not a
+cosmetic gap: `registry` and every tool pod register a `jwks_warmed` check -- a gate
+on the first successful Hub JWKS fetch, which a restart cannot fix and which clears
+on its own. With one check list, any liveness probe pointed at that list would turn a
+Hub blip into a crash-loop, and for the registry that takes the whole tool mesh with
+it. The only safe deployment was to drop the `livenessProbe` entirely, which is what
+`cobalt-dev` did for both -- leaving those pods with no restart-on-wedge net at all.
+
+Each `HealthCheck` now declares a `HealthTier`:
+
+- `LIVE` -- the process is unrecoverable; a restart is the right response.
+- `READY` -- cannot serve, but a restart would not help.
+
+Liveness is **contained in** readiness: every `LIVE` check is evaluated by the
+readiness path too, because a terminally wedged pod must leave rotation as well as be
+restarted. The converse does not hold, and that asymmetry is the whole design. There
+is deliberately no "both" tier -- `LIVE` already means both.
+
+`GET /healthz/live` and `GET /healthz/ready` are new. **`/healthz` and `/readyz` keep
+their exact previous meaning** (every check, evaluated), so no compose healthcheck,
+`depends_on: service_healthy` gate, or k8s probe already pointing at them changes
+behavior. This release is additive on the wire; a caller that wants the liveness
+question asks for it explicitly.
+
+Probes may now be `async` and are bounded by a required `timeout_seconds`. This
+exists for checks that must force a real round-trip: a cached `is_connected` flag
+reports connected long after a half-open socket's broker has gone away, so readiness
+that matters is decided by an actual `ping()` or `SELECT 1`. An unbounded network
+probe would let a hung dependency wedge the health surface itself -- the one failure
+mode a health surface may never have -- so an `async` probe without a timeout is
+rejected at construction, not at probe time.
+
+Breaking for callers: `HealthCheck` gains a required `tier`, and `get_status()` is
+now `async` and takes a tier. No back-compat shim -- a check with an implicit tier is
+exactly how a readiness gate ends up restart-looping a pod, so it breaks loudly at the
+constructor. Every in-tree call site is updated in this release.
+
+Alongside, in `3tears-registry`: the `nats` check keyed on `is_connected`, the
+stale-socket flag that stays `True` through a terminal close or a persistent auth
+wedge -- the silent-zombie bug its two sibling call sites had already migrated off. It
+now reads `not is_closed and is_healthy`. The `catalog` / `registration_handler` /
+`call_proxy` checks tested `is not None` against objects assigned before the health
+server is constructed and never reset, so they could not fail; `catalog` is removed
+(its only real predicate, the KV warm-load, is documented as degraded-but-serving and
+is not a readiness condition) and the other two are promoted to real
+`subscription_active` properties on `RegistrationHandler` and `CallProxy`.
+
+## v0.19.3 -- 2026-07-26
+
+**`NoRespondersError` and `RequestTimeoutError`, so callers can tell "nobody is
+subscribed" from "nobody answered."** `RequestError`'s own docstring had said
+"distinct subclasses may be added later if callers need to disambiguate"; a caller
+now does. The two are different operational facts -- the first points at a service
+that never started, was never deployed, or is subscribed on another
+subject/namespace, the second at one that is present and wedged -- and they send an
+operator to different places. Collapsed into a bare `RequestError` carrying only a
+message string, the only way to tell them apart was matching on that text, which is
+why `forward.py` had already resorted to inspecting `__cause__`.
+
+The caller that forced it: an agent registering with the agent router at boot. On a
+cold rollout the router may not have subscribed yet -- an ordinary race worth
+waiting out -- whereas a transport or response-decode failure is not. Without the
+distinction a retry either over-waits a permanent failure and then misreports it as
+unavailability, or reaches around this wrapper into `nats.errors` directly, which
+consumers' own enforcement tests forbid.
+
+Both subclass `RequestError`, so every existing `except RequestError` catches them
+unchanged. This refines the hierarchy; nothing is renamed and no call site must
+move.
+
+## v0.19.2 -- 2026-07-25
+
+**Image builds use uv, not pip.** `threetears-base` installed with pip and every
+consumer image inherited that. The platform has been uv-only everywhere else
+since the beginning; the Dockerfiles were the last holdout, and that is exactly
+where it hurt. pip backtracks across the cross-product of every published version
+when a dependency graph is under-constrained, then reports `ResolutionImpossible`
+against whichever node it happened to be holding rather than the package actually
+in conflict. One such message named an innocent, correctly-installed package and
+cost most of a day. uv resolved the identical set in seconds and named the real
+conflict.
+
+The uv binary is copied into the **runtime** image, not just the wheel builder,
+so every downstream consumer installs into the shared venv with the same resolver
+instead of drifting back to pip.
+
+Consumers can now render `uv.lock` at build time with `uv export --frozen` and
+retire hand-frozen constraints files entirely.
+
+**`bump-version.sh` moves the intra-family bounds.** v0.19.1 bounded every
+sibling dependency to its own minor line, but the bump script did not know about
+those bounds. Releasing 0.20.0 would have left every package at 0.20.0 while
+requiring siblings `<0.20.0` — a family that excludes itself, unresolvable the
+moment anyone installed it. Both the bump path and `--verify` now handle bounds,
+so a stale-bound release fails pre-flight instead of shipping.
+
+## v0.19.1 -- 2026-07-25
+
+**Every intra-family dependency is now version-bounded.** The packages release in
+lockstep but declared each other with no bound at all -- 84 bare entries such as
+`"3tears-observe"` across 25 packages. Each is now `>=0.19.0,<0.20.0`.
+
+Unbounded siblings let pip resolve a MIXED family, which fails in two ways that
+are both very expensive to diagnose:
+
+- **A mixed install builds clean and breaks at runtime.** pip paired
+  `3tears-object-store` 0.18.0 with an otherwise-0.19.0 family in a consumer
+  image; 0.18.0 predates `build_object_key`'s `path=` parameter.
+- **Resolution explodes and blames the wrong package.** Across ~17 published
+  versions and ~25 mutually-unbounded packages, pip backtracks the cross-product
+  and reports `ResolutionImpossible` against whichever node it was holding. One
+  such failure named `3tears-agent-tools` as having "no matching distributions
+  available" while that package was entirely innocent -- the real cause was a
+  stale `protobuf` pin in a consumer's constraints file, three levels away.
+
+Bounding makes a mixed family unresolvable rather than merely unlikely, and
+collapses the search space so pip names the package that actually conflicts.
+
+Also corrected five bounds that existed but had gone stale -- `registry`
+admitting `3tears-agent-acl>=0.1.0` and `3tears-agent-tools>=0.5.0`,
+`enforcement` admitting `3tears>=0.5.0`, `datasources` admitting
+`3tears>=0.9.1,<1.0`, and `channels` admitting `3tears-agent-wake>=0.9.0`. Those
+are worse than unbounded, because they look deliberate.
+
+`tests/enforcement/test_intra_family_version_bounds.py` now enforces both halves:
+no sibling may be unbounded, and no bound may name a line other than the
+declaring package's own.
+
+**Consumers should pin the whole family to `0.19.1` exactly.**
 
 ## v0.19.0 -- 2026-07-25
 

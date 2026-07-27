@@ -22,8 +22,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "langchain-core",
     "pydantic",
     "uuid-utils",

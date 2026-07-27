@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from threetears.observe import (
     HealthCheck,
     HealthServer,
+    HealthTier,
     configure_logging,
     get_logger,
     spawn_background,
@@ -192,10 +193,16 @@ class ToolServerBootstrap:
                     # heartbeat-loop supervisor is the no-k8s net (host / docker).
                     name="nats",
                     probe=lambda: server.is_healthy,
+                    tier=HealthTier.LIVE,
                 ),
+                # readiness, NOT liveness: a pod that has registered no tools cannot
+                # serve a call, but restarting it does not conjure tools -- it just
+                # replays the same startup. this check being tier-less is why the
+                # tool pods shipped with no livenessProbe at all.
                 HealthCheck(
                     name="tools_registered",
                     probe=lambda: server.tools_count > 0,
+                    tier=HealthTier.READY,
                 ),
                 # readiness gate: report NOT-READY until the pod's Hub-JWKS cache has had its first
                 # successful fetch. before it warms, the pod verifies every inbound identity token
@@ -205,6 +212,7 @@ class ToolServerBootstrap:
                 HealthCheck(
                     name="jwks_warmed",
                     probe=lambda: server.jwks_warmed,
+                    tier=HealthTier.READY,
                 ),
             ],
         )

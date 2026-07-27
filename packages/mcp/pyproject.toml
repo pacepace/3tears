@@ -21,13 +21,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
-    "3tears-epoch",
-    "3tears-nats",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-epoch>=0.20.0,<0.21.0",
+    "3tears-nats>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "mcp>=1.27",
     "httpx>=0.27",
     "pydantic>=2",
+    "uuid-utils",  # uuid7 ids (mcp.rbac)
     "starlette>=0.40",
     "uvicorn>=0.30",
 ]

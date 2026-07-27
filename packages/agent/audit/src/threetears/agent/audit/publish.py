@@ -25,10 +25,18 @@ idempotency indexes on ``audit_events``.
 
 from __future__ import annotations
 
-from threetears.nats import JetStreamPublisher, Subject
+from typing import TYPE_CHECKING
+
+from threetears.nats import Subject
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
+
+if TYPE_CHECKING:
+    # From the submodule, not the package: these are Protocols that `threetears.nats`
+    # stopped re-exporting when its nats-py-backed surface went lazy. Annotation-only,
+    # so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import JetStreamPublisher
 
 __all__ = ["publish_audit"]
 

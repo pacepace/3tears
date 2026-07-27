@@ -29,10 +29,10 @@ classifiers = [
 # (FrameworkEvents + dispatch in events.py / lifecycle.py), and langchain-
 # core + pydantic (the identity_propose tool + its args schema).
 dependencies = [
-    "3tears",
-    "3tears-agent-acl",
-    "3tears-langgraph",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-agent-acl>=0.20.0,<0.21.0",
+    "3tears-langgraph>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "langchain-core",
     "pydantic",
     "uuid-utils",

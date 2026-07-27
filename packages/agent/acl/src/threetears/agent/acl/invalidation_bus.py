@@ -19,7 +19,7 @@ tolerate the round trip (or that must stay correct with the broker down) should 
 before publishing; the operations are idempotent, so doing both is safe.
 
 The publish helpers take a narrow :class:`AclInvalidationPublisher` rather than the whole
-``NatsClient``, matching :class:`threetears.nats.JetStreamPublisher`'s reasoning: a signature
+``NatsClient``, matching :class:`threetears.nats.kv.JetStreamPublisher`'s reasoning: a signature
 naming the entire client forces every test with a recording double through a cast, which puts a
 hole in exactly the tests that exist to prove the right thing was published.
 """

@@ -52,11 +52,11 @@ packages/langgraph/tests/test_agent_node_caching.py:187:_FakeUnknownChatModel
 
 # nats unit tests
 # rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
-packages/nats/tests/unit/test_client.py:50:_FakeSubscription
+packages/nats/tests/unit/test_client.py:52:_FakeSubscription
 # rationale: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
-packages/nats/tests/unit/test_client.py:74:_FakeMsg
+packages/nats/tests/unit/test_client.py:76:_FakeMsg
 # rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
-packages/nats/tests/unit/test_client.py:83:_FakeNatsPyClient
+packages/nats/tests/unit/test_client.py:85:_FakeNatsPyClient
 # rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
 packages/nats/tests/unit/test_kv.py:20:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
@@ -98,7 +98,7 @@ packages/conversations/tests/unit/test_migrations.py:32:_FakeDataStore
 
 # agent/tools test-support classes
 # rationale: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
-packages/agent/tools/tests/unit/test_bootstrap.py:14:_FakeToolServer
+packages/agent/tools/tests/unit/test_bootstrap.py:15:_FakeToolServer
 # rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
 packages/agent/tools/tests/unit/test_migrations.py:32:_FakeDataStore
 # rationale: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake

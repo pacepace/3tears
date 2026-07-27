@@ -50,7 +50,10 @@ from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import KvBucketLike, KvCapable
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = ["WindowState", "WindowedCounter"]
 
@@ -108,7 +111,7 @@ class WindowedCounter:
     ) -> None:
         """configure the counter; defer bucket binding until the first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one throttle purpose (e.g. ``login_ip_throttle``) so unrelated

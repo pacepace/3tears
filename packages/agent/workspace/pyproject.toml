@@ -22,12 +22,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
-    "3tears-agent-acl",
-    "3tears-agent-audit",
-    "3tears-agent-tools",
-    "3tears-nats",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-agent-acl>=0.20.0,<0.21.0",
+    "3tears-agent-audit>=0.20.0,<0.21.0",
+    "3tears-agent-tools>=0.20.0,<0.21.0",
+    "3tears-nats>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "pydantic>=2.0",
     "ruamel.yaml>=0.18",
     "jsonpath-ng>=1.6",

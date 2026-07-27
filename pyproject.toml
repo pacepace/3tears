@@ -29,6 +29,12 @@ dev-dependencies = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp>=1.28",
     "duckdb>=1.0",
+    # the NATS client is an optional extra of 3tears-nats (`[client]`) so that
+    # an L1-SQLite-only consumer is not forced to build `nkeys`, which ships no
+    # wheels. installed in dev so the nats + L2 test suites exercise the real
+    # client rather than getting skipped.
+    "nats-py>=2.10",
+    "nkeys>=0.2",
     "simpleeval>=1.0.4",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",

@@ -25,11 +25,11 @@ dependencies = [
     # core supplies BaseCollection/DerivedCollection, which the feature cache
     # and tile collection subclass rather than hand-rolling a wrapper around
     # SQLiteBackend (the platform's caching rules forbid the latter).
-    "3tears",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     # object-key contract: tiles use the platform key scheme rather than
     # inventing a parallel one.
-    "3tears-media-contracts",
+    "3tears-media-contracts>=0.20.0,<0.21.0",
     # Geometry math in application code, not in SQL: YugabyteDB ships no
     # postgis extension, so there is no ST_Intersects / ST_Simplify /
     # ST_AsMVT to call. shapely does what those would have done.

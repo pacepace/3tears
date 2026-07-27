@@ -13,7 +13,7 @@ window.
 
 FAIL-CLOSED, unlike the L2 cache facade (:class:`threetears.core.cache.kv.NatsKvClient`, which is
 deliberately fail-open): a transport failure that the backing
-:class:`~threetears.nats.KvBucketLike` cannot self-heal propagates as
+:class:`~threetears.nats.kv.KvBucketLike` cannot self-heal propagates as
 :class:`~threetears.nats.KvError`, so the caller DENIES rather than silently admitting a possible
 replay. The bucket uses ``file`` storage so a normal NATS restart re-binds the intact on-disk
 bucket and recorded nonces survive within their TTL (with the default ``memory`` storage a restart
@@ -36,7 +36,10 @@ from typing import TYPE_CHECKING
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import KvBucketLike, KvCapable
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = ["ReplayGuard", "RevocationGuard"]
 
@@ -49,7 +52,7 @@ class ReplayGuard:
     def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl_seconds: int) -> None:
         """configure the guard; defer bucket binding until the first record.
 
-        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`; the guard
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`; the guard
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
@@ -153,7 +156,7 @@ class RevocationGuard:
     def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl_seconds: int) -> None:
         """configure the guard; defer bucket binding until the first record.
 
-        :param nats_client: connected canonical :class:`threetears.nats.KvCapable`; the guard
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`; the guard
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a

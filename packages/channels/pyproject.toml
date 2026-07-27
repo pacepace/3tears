@@ -12,10 +12,12 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears",
-    "3tears-agent-acl",
-    "3tears-nats",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-agent-acl>=0.20.0,<0.21.0",
+    # [client]: this package uses the NATS client at runtime, and nats-py is an
+    # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
+    "3tears-nats[client]>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,7 @@ websocket = ["starlette>=0.36"]
 #     one-direction edge: channels -> agent-wake -> conversations +
 #     agent-skills. agent-wake does NOT depend on channels (the wake
 #     adapter is a function the channels-side HTTP shim calls into).
-webhook = ["fastapi>=0.110", "3tears-agent-wake>=0.9.0"]
+webhook = ["fastapi>=0.110", "3tears-agent-wake>=0.20.0,<0.21.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

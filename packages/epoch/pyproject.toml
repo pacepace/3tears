@@ -21,9 +21,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
-    "3tears-nats",
-    "3tears-observe",
+    "3tears>=0.20.0,<0.21.0",
+    # [client]: this package uses the NATS client at runtime, and nats-py is an
+    # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
+    "3tears-nats[client]>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "pydantic>=2",
 ]
 

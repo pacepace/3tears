@@ -21,13 +21,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears",
+    "3tears>=0.20.0,<0.21.0",
     # drivers/document.py's DocumentDriver reuses parse_document to feed
     # PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
     # targets already use.
-    "3tears-agent-tools[document]",
-    "3tears-models",
-    "3tears-observe",
+    "3tears-agent-tools[document]>=0.20.0,<0.21.0",
+    "3tears-models>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "httpx[socks]>=0.27",
     # extraction.py's vision-extraction path builds a multimodal
     # HumanMessage directly -- an explicit dependency rather than relying on
@@ -35,6 +35,7 @@ dependencies = [
     "langchain-core>=0.3",
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    "uuid-utils",  # uuid7 ids (scrape.collections, .migrations)
     # extraction.py needs a CSS-selector engine to execute candidate
     # extraction strategies (structural validation + recipe reuse on later
     # fetches, both without an LLM call). MIT-licensed, pure-Python when

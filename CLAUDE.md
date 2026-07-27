@@ -1,5 +1,40 @@
 # CLAUDE.md -- 3tears
 
+## ⚠️ THE PACKAGE FAMILY VERSIONS IN LOCKSTEP. NEVER MIX VERSIONS.
+
+**Every `3tears*` package releases at the SAME version, and every intra-family
+dependency MUST carry the bound `>=<major>.<minor>.0,<major>.<minor+1>.0`
+matching the declaring package's own version.** A bare `"3tears-observe"` in a
+`dependencies` list is a BUG, not a shorthand.
+
+Enforced by `tests/enforcement/test_intra_family_version_bounds.py`. If you bump
+the family version, that test tells you which bounds to move -- do not hand-edit
+one package and leave the rest.
+
+**Why this is a hard rule, not a style preference.** Unbounded siblings let pip
+resolve a MIXED family, and the two failure modes it produces are both brutal to
+diagnose:
+
+1. **A mixed install that builds clean and breaks at runtime.** pip paired
+   `3tears-object-store` 0.18.0 with an otherwise-0.19.0 family in the hub image.
+   0.18.0 predates `build_object_key`'s `path=` parameter. Nothing failed at
+   build time.
+2. **A resolution failure that names the wrong package.** With ~17 published
+   versions across ~25 mutually-unbounded packages, pip backtracks the
+   cross-product and dies with `ResolutionImpossible` /
+   `resolution-too-deep` against whatever node it was holding. A real failure
+   reported `no matching distributions available for your environment:
+   3tears-agent-tools` when the actual cause was a stale `protobuf` pin in a
+   CONSUMER's constraints file, three levels away. That message cost most of a
+   day: it sends you hunting registry access, private indexes, and extras, none
+   of which were the problem.
+
+Bounding makes a mixed family **unresolvable** instead of merely unlikely, and
+collapses the search space so pip blames the package that actually conflicts.
+
+**Consumers must pin the whole family to one exact version too** -- see the
+matching warning in `14-eng-ai-bot/CLAUDE.md`.
+
 ## Project
 
 Three-tier data object framework. A uv-workspace monorepo of independently-versioned packages, all sharing the `threetears.*` import namespace and each published to PyPI on its own. Three families:

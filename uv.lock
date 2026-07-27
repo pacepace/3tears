@@ -57,6 +57,8 @@ dev = [
     { name = "langchain-openai", specifier = ">=1.1" },
     { name = "langchain-voyageai", specifier = ">=0.3" },
     { name = "mypy", specifier = ">=1.8" },
+    { name = "nats-py", specifier = ">=2.10" },
+    { name = "nkeys", specifier = ">=0.2" },
     { name = "opentelemetry-api", specifier = ">=1.28" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28" },
     { name = "opentelemetry-sdk", specifier = ">=1.28" },
@@ -88,15 +90,18 @@ dependencies = [
     { name = "asyncpg" },
     { name = "cryptography" },
     { name = "httpx" },
-    { name = "nats-py" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy" },
+    { name = "uuid-utils" },
 ]
 
 [package.optional-dependencies]
 duckdb = [
     { name = "duckdb" },
+]
+nats = [
+    { name = "3tears-nats", extra = ["client"] },
 ]
 testing = [
     { name = "docker" },
@@ -110,6 +115,7 @@ tracing = [
 [package.metadata]
 requires-dist = [
     { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'nats'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
@@ -117,15 +123,15 @@ requires-dist = [
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "httpx" },
-    { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
+    { name = "uuid-utils" },
 ]
-provides-extras = ["tracing", "duckdb", "testing"]
+provides-extras = ["nats", "tracing", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
@@ -139,13 +145,13 @@ dependencies = [
 
 [package.optional-dependencies]
 bus = [
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
-    { name = "3tears-nats", marker = "extra == 'bus'", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], marker = "extra == 'bus'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
@@ -156,14 +162,14 @@ name = "3tears-agent-audit"
 version = "0.20.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
@@ -258,6 +264,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
@@ -268,6 +275,7 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]
@@ -301,7 +309,7 @@ dependencies = [
     { name = "3tears-agent-memory" },
     { name = "3tears-langgraph" },
     { name = "3tears-media-contracts" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -358,7 +366,7 @@ requires-dist = [
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "3tears-media-contracts", editable = "packages/media-contracts" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx" },
     { name = "langchain-core" },
@@ -478,7 +486,7 @@ source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
 ]
 
@@ -504,7 +512,7 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-wake", marker = "extra == 'webhook'", editable = "packages/agent/wake" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = ">=3.9" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7" },
@@ -606,7 +614,7 @@ version = "0.20.0"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "pydantic" },
 ]
@@ -614,7 +622,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2" },
 ]
@@ -647,7 +655,7 @@ source = { editable = "packages/iam" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "argon2-cffi" },
     { name = "bcrypt" },
@@ -672,7 +680,7 @@ webauthn = [
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "bcrypt", specifier = ">=5.0.0" },
@@ -730,6 +738,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "starlette" },
+    { name = "uuid-utils" },
     { name = "uvicorn" },
 ]
 
@@ -743,6 +752,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27" },
     { name = "pydantic", specifier = ">=2" },
     { name = "starlette", specifier = ">=0.40" },
+    { name = "uuid-utils" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -811,18 +821,23 @@ version = "0.20.0"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+client = [
     { name = "nats-py" },
     { name = "nkeys" },
-    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
-    { name = "nats-py", specifier = ">=2.10" },
-    { name = "nkeys", specifier = ">=0.2" },
+    { name = "nats-py", marker = "extra == 'client'", specifier = ">=2.10" },
+    { name = "nkeys", marker = "extra == 'client'", specifier = ">=0.2" },
     { name = "pydantic", specifier = ">=2.10" },
 ]
+provides-extras = ["client"]
 
 [[package]]
 name = "3tears-object-store"
@@ -875,7 +890,7 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "nats-py" },
     { name = "prometheus-client" },
@@ -886,7 +901,7 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "nats-py", specifier = ">=2.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
@@ -898,7 +913,7 @@ version = "0.20.0"
 source = { editable = "packages/scheduled-jobs" }
 dependencies = [
     { name = "3tears" },
-    { name = "3tears-nats" },
+    { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "apscheduler" },
     { name = "uuid-utils" },
@@ -912,7 +927,7 @@ prometheus = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
@@ -936,6 +951,7 @@ dependencies = [
     { name = "playwright" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
@@ -951,6 +967,7 @@ requires-dist = [
     { name = "playwright", specifier = "<1.61" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]
