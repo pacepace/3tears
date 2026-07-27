@@ -1,0 +1,180 @@
+<!doctype html>
+<!--
+  The operator's window onto a target that needs a human.
+
+  Served instead of noVNC's own vnc.html for one reason that matters and several that are
+  cosmetic. The one that matters: the session token travels as a WebSocket subprotocol, and
+  noVNC's stock page has no way to send one -- `wsProtocols` is an RFB constructor option its UI
+  does not expose. This page is the smallest thing that can pass it.
+
+  The token arrives in the URL FRAGMENT rather than the query string. A fragment is never sent
+  to the server, so it appears in no access log, no referrer header and no proxy trace; the
+  query string appears in all three, and a live session credential does not belong there.
+
+  Every URL here is relative. This service expects to be mounted under an arbitrary prefix
+  belonging to somebody else's API, at a depth it never learns, so the browser resolves these
+  against wherever the page was actually served. A leading slash would work perfectly until the
+  day somebody proxied it.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Human handover</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #14161a;
+        --panel: #1c1f26;
+        --line: #2a2f3a;
+        --text: #e6e8ec;
+        --muted: #9aa3b2;
+        --accent: #5b9dff;
+        --ok: #3ecf8e;
+        --warn: #f0b429;
+        --bad: #f2555a;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+        /* Fixed height so the canvas below can own every remaining pixel. An operator reading a
+           challenge needs the screen, not our chrome. */
+        flex: 0 0 auto;
+      }
+      .dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--muted);
+        box-shadow: 0 0 0 3px rgb(255 255 255 / 4%);
+        transition: background 120ms ease;
+      }
+      .dot[data-state="connecting"] { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+      .dot[data-state="connected"]  { background: var(--ok); }
+      .dot[data-state="failed"]     { background: var(--bad); }
+      @keyframes pulse { 50% { opacity: .35; } }
+      @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+
+      h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+      .status { color: var(--muted); font-size: 13px; }
+      .spacer { flex: 1; }
+      button {
+        font: inherit;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 5px 11px;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); color: var(--accent); }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      #screen { flex: 1 1 auto; min-height: 0; background: #000; }
+
+      #message {
+        display: none;
+        margin: auto;
+        max-width: 46ch;
+        padding: 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+      #message strong { display: block; color: var(--text); margin-bottom: 6px; font-size: 15px; }
+      body[data-state="failed"] #screen { display: none; }
+      body[data-state="failed"] #message { display: block; }
+    </style>
+  </head>
+  <body data-state="connecting">
+    <header>
+      <span class="dot" id="dot" data-state="connecting" aria-hidden="true"></span>
+      <h1>Human handover</h1>
+      <span class="status" id="status" role="status" aria-live="polite">Connecting to the display…</span>
+      <span class="spacer"></span>
+      <button id="fullscreen" type="button">Fullscreen</button>
+    </header>
+
+    <div id="screen"></div>
+    <div id="message"><strong id="message-title"></strong><span id="message-body"></span></div>
+
+    <script type="module">
+      // `./core/rfb.js` because this page is served from inside noVNC's own tree. Relative, so
+      // it survives being mounted under a prefix.
+      import RFB from "./core/rfb.js";
+
+      const dot = document.getElementById("dot");
+      const status = document.getElementById("status");
+
+      function setState(state, text, detail) {
+        document.body.dataset.state = state;
+        dot.dataset.state = state;
+        status.textContent = text;
+        if (detail) {
+          document.getElementById("message-title").textContent = text;
+          document.getElementById("message-body").textContent = detail;
+        }
+      }
+
+      // The fragment, not the query string: it never leaves the browser.
+      const token = new URLSearchParams(location.hash.slice(1)).get("token");
+      if (!token) {
+        setState(
+          "failed",
+          "No session token",
+          "Open this page from the link the platform issued. The token belongs in the URL fragment, " +
+            "after a #, so that it is never sent to a server or written to a log.",
+        );
+        throw new Error("no token in fragment");
+      }
+
+      // Same origin, same path prefix, ws or wss to match how the page itself was served -- so a
+      // platform terminating TLS in front gets wss without configuring anything here.
+      const wsUrl = new URL("ws", location.href);
+      wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      wsUrl.hash = "";
+
+      // `binary` is noVNC's own transport subprotocol; the second entry carries the capability.
+      // The server echoes only `binary`, so the token never appears in a response header.
+      const rfb = new RFB(document.getElementById("screen"), wsUrl.href, {
+        wsProtocols: ["binary", `hitl-token.${token}`],
+      });
+
+      // Scaling rather than remote resizing: Xvfb creates one mode at startup and cannot follow
+      // a client viewport, so `scaleViewport` is what actually makes the desktop fit a laptop.
+      rfb.scaleViewport = true;
+      rfb.focusOnClick = true;
+
+      rfb.addEventListener("connect", () => setState("connected", "Connected"));
+      rfb.addEventListener("disconnect", (event) =>
+        setState(
+          "failed",
+          event.detail.clean ? "Session ended" : "Connection lost",
+          event.detail.clean
+            ? "The session was closed. Any target you finished has already been saved."
+            : "The connection dropped. Anything you had already completed is saved; a target you " +
+              "were part way through will need doing again.",
+        ),
+      );
+      rfb.addEventListener("securityfailure", () =>
+        setState("failed", "Not authorised", "This token was refused. It may have expired, or the session may have ended."),
+      );
+
+      document.getElementById("fullscreen").addEventListener("click", () => {
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen();
+      });
+    </script>
+  </body>
+</html>

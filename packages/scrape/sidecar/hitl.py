@@ -67,7 +67,7 @@ NOVNC_ROOT = os.environ.get("NOVNC_ROOT", "/usr/share/novnc")
 #: Verified against the installed tree rather than recalled: ``vnc_lite.html`` reads
 #: ``scale``, and ``vnc.html`` reads ``resize``. The ``resize=scale`` this once handed out was
 #: inert on the lite page -- a parameter that had never once done anything.
-NOVNC_PAGE = "vnc.html"
+NOVNC_PAGE = "hitl.html"
 
 #: RFB port ``x11vnc`` listens on, loopback only. Not published by the container and not
 #: configurable per session, because there is exactly one display.
@@ -281,7 +281,10 @@ class VncLifecycle:
         # `path=vnc/ws` is likewise relative, and is where this app's own WebSocket relay
         # listens -- the RFB stream now shares the API's port, so a platform fronts one origin
         # with one TLS endpoint and one authentication point instead of correlating two.
-        return f"{NOVNC_PAGE}?path=vnc/ws&autoconnect=true&resize=scale"
+        # No query string any more: this page takes its token from the FRAGMENT, and the
+        # caller appends it. A fragment never reaches a server, so the credential stays out of
+        # access logs, referrer headers and proxy traces -- which a query parameter would not.
+        return NOVNC_PAGE
 
     def _x11vnc_argv(self) -> list[str]:
         """``x11vnc`` invocation.

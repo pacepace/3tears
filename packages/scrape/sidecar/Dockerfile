@@ -80,6 +80,13 @@ RUN pip install --no-cache-dir \
         "fastapi>=0.115,<0.116" \
         "uvicorn[standard]>=0.32,<0.33"
 
+# Our own operator page, dropped into noVNC's tree so its module imports stay relative.
+#
+# Replaces vnc.html rather than configuring it: the session token travels as a WebSocket
+# subprotocol, and noVNC's stock UI has no way to send one -- `wsProtocols` is an RFB
+# constructor option it does not expose.
+COPY hitl.html /usr/share/novnc/hitl.html
+
 COPY openbox-autostart /etc/xdg/openbox/autostart
 COPY main.py /app/main.py
 COPY hitl.py /app/hitl.py

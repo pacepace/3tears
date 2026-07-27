@@ -136,8 +136,9 @@ async def test_start_brings_up_both_processes_and_reports_where_to_look(lifecycl
         "the client URL is absolute, so it resolves against the origin root and breaks the moment "
         "this service is mounted under a prefix belonging to somebody else's API"
     )
-    assert "path=vnc/ws" in session.path, (
-        "the client would load without knowing where to connect, so a human gets a form instead of a screen"
+    assert session.path == hitl.NOVNC_PAGE, (
+        "the path carries something beyond the page name; the token belongs in the fragment the "
+        "caller appends, and anything else here ends up in an access log"
     )
 
 
@@ -271,11 +272,18 @@ def test_the_client_url_asks_the_server_to_match_the_viewport(stub_path: Path) -
     del stub_path
     path = VncLifecycle(display_num=99).client_path
 
-    assert "resize=scale" in path, (
-        "without a scaling mode the operator scrolls a fixed 1920x1080 desktop; `remote` is "
-        "silently inert here because Xvfb has a single mode and cannot resize"
+    assert path == hitl.NOVNC_PAGE
+
+    # The properties moved from URL parameters into the page this repo now ships, so that is
+    # where they are asserted. They are the same two properties: the desktop scales to fit, and
+    # a summoned operator arrives connected rather than at a settings sidebar.
+    page = (Path(__file__).resolve().parents[1] / hitl.NOVNC_PAGE).read_text()
+
+    assert "scaleViewport = true" in page, (
+        "without a scaling mode the operator scrolls a fixed 1920x1080 desktop; remote resizing "
+        "is silently inert here because Xvfb has a single mode and cannot resize"
     )
-    assert "autoconnect=true" in path, "a summoned operator would arrive at a settings sidebar"
+    assert "new RFB(" in page, "the page does not connect on load, so an operator arrives at nothing"
     assert hitl.NOVNC_PAGE in path
 
 
@@ -400,4 +408,32 @@ def test_no_path_handed_to_a_client_is_absolute() -> None:
         assert not value.startswith("/"), (
             f"the {key!r} parameter points at an absolute path, so the client would open it "
             f"against the origin root rather than against this service: {value!r}"
+        )
+
+
+def test_the_operator_page_keeps_the_token_out_of_the_url_and_off_the_origin_root() -> None:
+    """The shipped page is code nothing else checks: no linter reads it, no type checker sees it.
+
+    Two properties it must not lose, both invisible until the day they matter:
+
+    The token comes from the FRAGMENT. A fragment is never sent to a server, so it appears in no
+    access log, no referrer and no proxy trace. Read from the query string instead -- a one-word
+    edit -- and a live session credential is written to all three, on every request, forever.
+
+    And every URL in it is relative. This service is mounted under a prefix belonging to
+    somebody else's API, so an absolute path resolves against the wrong root. That works
+    perfectly in every local test and fails only in the deployment nobody can test from here.
+    """
+    page = (Path(__file__).resolve().parents[1] / hitl.NOVNC_PAGE).read_text()
+
+    assert "location.hash" in page, (
+        "the token is no longer read from the URL fragment; if it moved to the query string it "
+        "is now in every access log and referrer header this page's requests touch"
+    )
+    assert "location.search" not in page, "the page reads the query string, which is logged everywhere"
+
+    for absolute in ('href="/', 'src="/', 'from "/', "from '/", 'new URL("/'):
+        assert absolute not in page, (
+            f"the page contains an absolute reference ({absolute!r}), which resolves against the "
+            f"origin root and breaks the moment this service is mounted under a prefix"
         )
