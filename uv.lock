@@ -133,18 +133,23 @@ version = "0.20.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
-    { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+bus = [
+    { name = "3tears-nats" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
-    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-nats", marker = "extra == 'bus'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
+provides-extras = ["bus"]
 
 [[package]]
 name = "3tears-agent-audit"
