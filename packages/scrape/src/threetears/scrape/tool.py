@@ -429,9 +429,10 @@ class ScrapeTool(TearsTool):
         elif unproxied and gate_proxied:
             log.warning(
                 "scrape tool: this tool's robots.txt reads leave by a configured exit but driver(s) "
-                "%s do not, so the page fetch itself leaves by the container rather than by the exit "
-                "the deployment configured -- the request that exit was for. Give those drivers the "
-                "same egress driver unless that is intended.",
+                "%s do not, so the page fetch itself goes out on the container's own address -- the "
+                "request the exit was configured for. (A backend that defers to the sidecar leaves "
+                "by the container's own EGRESS_PROXY instead; either way, not your exit.) Give those "
+                "drivers the same egress driver unless that is intended.",
                 ", ".join(unproxied),
                 extra={"extra_data": {"unproxied_drivers": unproxied, "gate_proxied": True}},
             )

@@ -962,14 +962,14 @@ def test_matching_egress_on_both_says_nothing(caplog) -> None:
             api_key="k",
         )
 
-    assert not any("container's own address" in r.message for r in caplog.records)
+    assert not caplog.records, f"the correct configuration was noisy: {[r.message for r in caplog.records]}"
 
 
 def _build_tool(caplog, **kwargs):
     """Construct a ScrapeTool with the collections these warning tests do not care about.
 
     Returns the WARNING records emitted during construction, which is the only thing under test
-    in the four cases below.
+    in the cases below.
     """
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
@@ -1008,7 +1008,10 @@ def test_a_proxied_tool_with_an_unproxied_driver_says_so(caplog) -> None:
     # not by the configured exit. An earlier wording said "the container's own address", which is
     # true of most unproxied backends and wrong for the one that defers to the sidecar -- that
     # leaves by the container's own EGRESS_PROXY. Both are "the container, not your exit".
-    assert any("leaves by the container rather than by the exit" in m for m in messages), (
+    # Keyed on the DIRECTION-specific clause, because this test's subject is which of the two
+    # branches fired. The silence tests above assert on the absence of any record instead: a
+    # substring that lives in one branch cannot prove the other stayed quiet.
+    assert any("the page fetch itself goes out on" in m for m in messages), (
         f"a tool proxied in front of an unproxied driver passed silently: {messages}"
     )
 
@@ -1084,9 +1087,11 @@ def test_a_caller_supplied_proxied_gate_is_not_called_split(caplog) -> None:
     tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
     messages = _build_tool(caplog, drivers={"api": ApiDriver(egress=tor)}, robots=RobotsGate(egress=tor))
 
-    assert not any("container's own address" in m for m in messages), (
-        f"a correctly proxied gate and driver were reported as split: {messages}"
-    )
+    # `assert not messages`, not a substring search. Both branches of the check must stay
+    # silent here, and a substring that appears in only one of them cannot see the other --
+    # swapping `proxied` and `unproxied` would leave this green while a security warning fired
+    # on a correct configuration, which is the exact thing this test exists to forbid.
+    assert not messages, f"a correctly proxied gate and driver were reported as split: {messages}"
 
 
 def test_a_disabled_gate_has_no_split_to_report(caplog) -> None:
@@ -1103,9 +1108,7 @@ def test_a_disabled_gate_has_no_split_to_report(caplog) -> None:
         robots=None,
     )
 
-    assert not any("container's own address" in m for m in messages), (
-        f"warned about robots.txt reads for a tool with no robots gate: {messages}"
-    )
+    assert not messages, f"warned about robots.txt reads for a tool with no robots gate: {messages}"
 
 
 def test_a_wrapper_driver_does_not_hide_its_inner_exit(caplog) -> None:

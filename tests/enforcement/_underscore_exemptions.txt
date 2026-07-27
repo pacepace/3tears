@@ -658,16 +658,16 @@ packages/scrape/tests/test_robots.py:1097:_capped_delay
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
 packages/scrape/tests/test_tool.py:862:_robots
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1327:_render_once
+packages/scrape/tests/test_tool.py:1330:_render_once
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1385:_render_once
+packages/scrape/tests/test_tool.py:1388:_render_once
 # rationale: the assertion is that a refused fetch left the origin's crawl-delay clock untouched, and that clock is the gate's own internal store with no public reader. `check()` would answer indirectly through a wait time, but it also POPULATES the cache it reads, so asserting through it changes the thing under test.
-packages/scrape/tests/test_tool.py:1395:_last_fetch_at
+packages/scrape/tests/test_tool.py:1398:_last_fetch_at
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1428:_render_once
+packages/scrape/tests/test_tool.py:1431:_render_once
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1538:_egress
+packages/scrape/tests/test_tool.py:1541:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1539:_egress
+packages/scrape/tests/test_tool.py:1542:_egress
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:1654:_robots
+packages/scrape/tests/test_tool.py:1657:_robots
