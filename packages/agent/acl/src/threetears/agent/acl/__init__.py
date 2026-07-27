@@ -124,6 +124,14 @@ from threetears.agent.acl.evaluator import (
     evaluate_file_access,
     evaluate_with_trail,
 )
+from threetears.agent.acl.invalidation_bus import (
+    AclInvalidationPublisher,
+    AclInvalidationSubscriber,
+    publish_assignment_invalidation,
+    publish_membership_invalidation,
+    publish_role_invalidation,
+    subscribe_acl_invalidation,
+)
 from threetears.agent.acl.invalidation import (
     AssignmentInvalidatePayload,
     MembershipInvalidatePayload,
@@ -163,6 +171,12 @@ __all__ = [
     "ActorMembershipEntry",
     "ActorMembershipKey",
     "ActorType",
+    "AclInvalidationPublisher",
+    "AclInvalidationSubscriber",
+    "publish_assignment_invalidation",
+    "publish_membership_invalidation",
+    "publish_role_invalidation",
+    "subscribe_acl_invalidation",
     "AssignmentInvalidatePayload",
     "ClaimsForAuthorization",
     "CollectionGrantLoader",
