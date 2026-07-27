@@ -29,7 +29,7 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.observe.background import spawn_background
-from threetears.observe.health import HealthCheck, HealthServer
+from threetears.observe.health import HealthCheck, HealthServer, HealthTier
 from threetears.observe.inflight import InflightRequestsGauge
 from threetears.observe.logging import (
     ContextFormatter,
@@ -50,6 +50,7 @@ __all__ = [
     "ContextFormatter",
     "HealthCheck",
     "HealthServer",
+    "HealthTier",
     "InflightRequestsGauge",
     "ThreeTearsLogger",
     "clear_context",

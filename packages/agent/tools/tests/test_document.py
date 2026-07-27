@@ -506,7 +506,10 @@ class TestMergeWrappedTableRows:
             ["1/1/2026", "Acme"],
             ["", "extra", "wildly out of bounds"],
         ]
-        with caplog.at_level("DEBUG"):
+        # raise the level on the EMITTING logger, not just the root one: any test that
+        # has called configure_logging() leaves an explicit INFO level on "threetears",
+        # which filters this DEBUG record before caplog's root handler ever sees it.
+        with caplog.at_level("DEBUG", logger="threetears"):
             result = _merge_wrapped_table_rows(rows)
         assert result[1] == ["1/1/2026", "Acme extra"]
         assert not any("wildly out of bounds" in str(row) for row in result)

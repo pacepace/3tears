@@ -4,6 +4,57 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.19.4 -- 2026-07-26
+
+**`HealthServer` gets real liveness/readiness semantics, so a readiness gate can no
+longer restart a pod.** `/healthz` and `/readyz` were aliases of one flat check list,
+which meant the server could not express "alive but not ready." That is not a
+cosmetic gap: `registry` and every tool pod register a `jwks_warmed` check -- a gate
+on the first successful Hub JWKS fetch, which a restart cannot fix and which clears
+on its own. With one check list, any liveness probe pointed at that list would turn a
+Hub blip into a crash-loop, and for the registry that takes the whole tool mesh with
+it. The only safe deployment was to drop the `livenessProbe` entirely, which is what
+`cobalt-dev` did for both -- leaving those pods with no restart-on-wedge net at all.
+
+Each `HealthCheck` now declares a `HealthTier`:
+
+- `LIVE` -- the process is unrecoverable; a restart is the right response.
+- `READY` -- cannot serve, but a restart would not help.
+
+Liveness is **contained in** readiness: every `LIVE` check is evaluated by the
+readiness path too, because a terminally wedged pod must leave rotation as well as be
+restarted. The converse does not hold, and that asymmetry is the whole design. There
+is deliberately no "both" tier -- `LIVE` already means both.
+
+`GET /healthz/live` and `GET /healthz/ready` are new. **`/healthz` and `/readyz` keep
+their exact previous meaning** (every check, evaluated), so no compose healthcheck,
+`depends_on: service_healthy` gate, or k8s probe already pointing at them changes
+behavior. This release is additive on the wire; a caller that wants the liveness
+question asks for it explicitly.
+
+Probes may now be `async` and are bounded by a required `timeout_seconds`. This
+exists for checks that must force a real round-trip: a cached `is_connected` flag
+reports connected long after a half-open socket's broker has gone away, so readiness
+that matters is decided by an actual `ping()` or `SELECT 1`. An unbounded network
+probe would let a hung dependency wedge the health surface itself -- the one failure
+mode a health surface may never have -- so an `async` probe without a timeout is
+rejected at construction, not at probe time.
+
+Breaking for callers: `HealthCheck` gains a required `tier`, and `get_status()` is
+now `async` and takes a tier. No back-compat shim -- a check with an implicit tier is
+exactly how a readiness gate ends up restart-looping a pod, so it breaks loudly at the
+constructor. Every in-tree call site is updated in this release.
+
+Alongside, in `3tears-registry`: the `nats` check keyed on `is_connected`, the
+stale-socket flag that stays `True` through a terminal close or a persistent auth
+wedge -- the silent-zombie bug its two sibling call sites had already migrated off. It
+now reads `not is_closed and is_healthy`. The `catalog` / `registration_handler` /
+`call_proxy` checks tested `is not None` against objects assigned before the health
+server is constructed and never reset, so they could not fail; `catalog` is removed
+(its only real predicate, the KV warm-load, is documented as degraded-but-serving and
+is not a readiness condition) and the other two are promoted to real
+`subscription_active` properties on `RegistrationHandler` and `CallProxy`.
+
 ## v0.19.3 -- 2026-07-26
 
 **`NoRespondersError` and `RequestTimeoutError`, so callers can tell "nobody is

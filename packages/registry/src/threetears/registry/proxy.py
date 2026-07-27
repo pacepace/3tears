@@ -291,6 +291,22 @@ class CallProxy:
         self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
 
+    @property
+    def subscription_active(self) -> bool:
+        """whether the tool-call subscription is currently bound.
+
+        readiness signal: a registry replica not subscribed to
+        ``{ns}.tools.call`` routes nothing, so it must leave rotation. a
+        restart would not fix an underlying NATS outage, so this is readiness
+        rather than liveness.
+
+        ``True`` between a successful :meth:`start` and :meth:`stop`.
+
+        :return: true while the tool-call subject is subscribed
+        :rtype: bool
+        """
+        return self._sub is not None
+
     async def start(self, nc: "NatsClient") -> None:
         """start listening for tool call requests.
 
