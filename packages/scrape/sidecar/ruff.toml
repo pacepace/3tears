@@ -33,7 +33,13 @@ line-length = 120
 # The repo root now selects F too, and this still has to say so: a nested ruff.toml REPLACES the
 # root's configuration rather than extending it, so dropping F here would switch it back off for
 # exactly the directory that earned it.
-select = ["SLF", "F"]
+# N as well, matching the root, with the root's two exclusions restated for the same reason the
+# rest of this file restates things: a nested ruff.toml REPLACES the root's configuration rather
+# than extending it, so a rule this directory does not name is a rule this directory does not run.
+# Its only N findings are the three condition-named exceptions (`VncUnavailable`,
+# `SessionUnavailable`, `SessionNotFound`), which are the family's house style.
+select = ["SLF", "F", "N"]
+ignore = ["N818", "N811"]
 
 [lint.per-file-ignores]
 # Restated from the repo root, which cannot reach this far once a nested config exists:

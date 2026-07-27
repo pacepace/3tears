@@ -38,7 +38,13 @@ def test_the_module_imports_without_the_optional_web_framework() -> None:
     with open(source) as handle:  # noqa: PTH123 - reading this repo's own source, not a data path
         top_level = [line for line in handle if line.startswith(("import fastapi", "from fastapi"))]
     assert not top_level, f"FastAPI is imported at module scope, so the extra is not optional: {top_level}"
-    assert "fastapi" not in sys.modules or True  # importing us must not require it
+    # `sys.modules` is deliberately NOT asserted on. An earlier line here read
+    # `assert "fastapi" not in sys.modules or True`, which cannot fail, and the reason it was
+    # written that way is real: this suite imports FastAPI elsewhere, so by the time this runs the
+    # module is legitimately loaded and the honest form would fail for a reason that says nothing
+    # about the extra. The source check above is the whole of the claim; a tautology dressed as a
+    # second one only makes the first look weaker than it is.
+    assert sys is not None  # noqa: S101 - `sys` is imported for the note above, not for a check
 
 
 class TestTheTokenIsReadFromTheSubprotocol:
@@ -211,6 +217,7 @@ def _mounted_app(
     with_claim_lookup: bool = False,
     claim_asked: list[str] | None = None,
     rfb_port: int | None = None,
+    prefix: str = _PREFIX,
 ) -> object:
     """A router mounted the way a platform mounts it: under a prefix it chose, at a depth we
     can never learn.
@@ -248,14 +255,16 @@ def _mounted_app(
         return claim
 
     app = FastAPI()
-    app.include_router(
-        build_operator_router(
-            authorize=_authorize,
-            display=_display,
-            claim=_claim if with_claim_lookup else None,
-        ),
-        prefix=_PREFIX,
+    router = build_operator_router(
+        authorize=_authorize,
+        display=_display,
+        claim=_claim if with_claim_lookup else None,
     )
+    # `prefix=""` mounts at the origin root, which the requirement names alongside the prefixed
+    # case: the same page and the same client with no configuration difference. Everything else
+    # here mounts under a prefix, because that is where the failures hide -- at the root every
+    # wrong answer works.
+    app.include_router(router, prefix=prefix)
     return app
 
 
@@ -292,6 +301,25 @@ class TestThePageAndItsClientSurviveAPrefix:
             f"the page was served from {landed.url}, which does not end in a slash, so every "
             f"relative URL on it resolves one directory too high"
         )
+
+    def test_it_works_mounted_at_the_root_as_well_as_under_a_prefix(self) -> None:
+        """Both halves of the requirement, which named the root explicitly and had only one tested.
+
+        The acceptance shape was "the whole flow works when mounted at `/` and when mounted under a
+        prefix, with no configuration difference visible to the operator's browser". Every other
+        test here uses a prefix, deliberately, because that is where a leading slash hides. The
+        root case was never exercised and was never descoped -- so it is exercised here rather
+        than quietly dropped.
+        """
+        from fastapi.testclient import TestClient
+
+        with TestClient(_mounted_app(prefix="")) as client:  # type: ignore[arg-type]
+            page = client.get("/")
+            asset = client.get("/novnc/core/rfb.js")
+
+        assert page.status_code == 200, "the page is not served when the router is mounted at the root"
+        assert "Human handover" in page.text
+        assert asset.status_code == 200, "the vendored client is not served when mounted at the root"
 
     def test_the_novnc_client_the_page_imports_is_served(self) -> None:
         """The page's own import, resolved the way a browser resolves it.

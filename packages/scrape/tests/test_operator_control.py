@@ -156,6 +156,52 @@ class TestAPodThatLostTheSessionStopsActing:
         assert not bus.registrations, "a lost session was subscribed anyway"
 
 
+class TestAHandoverReleasesWhatThisPodWasHolding:
+    """Stopping serving is not the same as letting go, and only one of them was happening.
+
+    Losing the claim already ended the relay, refused control messages and released the lease.
+    None of that touched what this pod still HELD: an x11vnc on a live display, and browser
+    contexts carrying the cookies of whatever the human was part way through. They survived until
+    the sidecar's own half-hour TTL reaped them -- a browser holding a target's authenticated
+    session for a session this pod is no longer entitled to.
+    """
+
+    async def test_losing_the_claim_closes_this_pods_own_session(self) -> None:
+        """Safe because the pods do not share a display: each has its own sidecar on its own
+        loopback, so closing this one cannot touch the display the new owner just brought up."""
+        bus, display = FakeBus(), RecordingDisplay()
+        claim = _claim()
+        async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+            claim.lost.set()
+
+        assert display.closed == 1, (
+            "a pod that lost the session left its display up and its contexts holding the human's "
+            "cookies until the sidecar's TTL collected them"
+        )
+
+    async def test_an_ordinary_end_does_not_close_it_here(self) -> None:
+        """The caller owns a normal teardown. Closing twice would race its own close and, on the
+        single-pod deployment where nothing is ever lost, would end sessions that are still live."""
+        bus, display = FakeBus(), RecordingDisplay()
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
+            pass
+
+        assert display.closed == 0, "serving closed a session that ended normally"
+
+    async def test_a_sidecar_that_will_not_close_does_not_mask_the_outcome(self) -> None:
+        """This runs in a `finally` on the way out of a session that already went wrong."""
+
+        class _Refuses(RecordingDisplay):
+            async def close_session(self) -> dict[str, object]:
+                raise RuntimeError("the sidecar is not answering")
+
+        bus, display = FakeBus(), _Refuses()
+        claim = _claim()
+        # Must not raise: the sidecar's TTL is still the backstop.
+        async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
+            claim.lost.set()
+
+
 class TestTheContractRefusesWhatItCannotCarryOut:
     """Every refusal crosses the wire as a type name, so it has to be the right one."""
 

@@ -213,7 +213,7 @@ def _build_composed_agent_runner() -> MigrationRunner:
     return runner
 
 
-class TestScenarioA_FreshApply:
+class TestScenarioAFreshApply:
     """apply composed migrations against a fresh schema then re-apply."""
 
     async def test_fresh_apply_creates_every_table(self, pg_schema: tuple[str, str]) -> None:
@@ -241,7 +241,7 @@ class TestScenarioA_FreshApply:
             await conn.close()
 
 
-class TestScenarioB_MidSequenceRollback:
+class TestScenarioBMidSequenceRollback:
     """an injected failing migration halts apply and preserves prior work."""
 
     async def test_failure_halts_apply_and_preserves_previous_work(self, pg_schema: tuple[str, str]) -> None:
@@ -298,7 +298,7 @@ class TestScenarioB_MidSequenceRollback:
             await conn.close()
 
 
-class TestScenarioC_Downgrade:
+class TestScenarioCDowngrade:
     """downgrade --steps 1 reverts DDL and bookkeeping for the newest migration."""
 
     async def test_downgrade_one_step_reverts_schema_and_bookkeeping(self, pg_schema: tuple[str, str]) -> None:

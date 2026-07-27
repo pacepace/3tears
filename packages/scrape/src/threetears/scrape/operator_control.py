@@ -292,7 +292,46 @@ async def serve_session(
         )
 
     async with serve_owner(nats, claim.session_id, _handle):
-        yield
+        try:
+            yield
+        finally:
+            if not claim.held:
+                await _release_a_session_this_pod_no_longer_owns(claim, display)
+
+
+async def _release_a_session_this_pod_no_longer_owns(claim: SessionClaim, display: SessionDisplay) -> None:
+    """Tear down the local display after a handover took the session elsewhere.
+
+    **The obligation this closes.** Losing the claim already stops this pod serving: the relay
+    ends, control messages are refused, and the lease is released. None of that releases what the
+    pod is still HOLDING -- an ``x11vnc`` on a live display, and browser contexts carrying the
+    cookies of whatever the human was part way through. Left alone they survive until the sidecar's
+    own session TTL reaps them, which is half an hour of a browser holding a target's authenticated
+    session for a session this pod is no longer entitled to.
+
+    Safe precisely because the pods do not share a display. Each has its own sidecar on its own
+    loopback, so closing this one cannot touch the display the new owner just brought up. On a
+    single-pod deployment there is no handover and this never runs.
+
+    Best-effort, and it has to be: this is a `finally` on the way out of a session that has already
+    gone wrong, and raising here would replace whatever the caller was dealing with. The sidecar's
+    reaper remains the backstop it always was -- this makes it the backstop rather than the
+    mechanism.
+    """
+    try:
+        await display.close_session()
+    except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; the sidecar's own TTL reaper still collects this, and a failure here must not replace the caller's own outcome. Logged with its traceback
+        log.warning(
+            "operator: could not release the display for a session that moved to another pod; "
+            "the sidecar's TTL will collect it",
+            exc_info=True,
+            extra={"extra_data": {"session_id": claim.session_id}},
+        )
+    else:
+        log.info(
+            "operator: released the display for a session that moved to another pod",
+            extra={"extra_data": {"session_id": claim.session_id}},
+        )
 
 
 async def _send(

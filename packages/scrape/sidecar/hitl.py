@@ -91,17 +91,6 @@ _NAV_STEP_TIMEOUT_SECONDS = 30.0
 _COMPLETE_TAB_TIMEOUT_SECONDS = 20.0
 
 
-#: Where the in-container RFB server listens. Exposed so the app that relays to it does not
-#: restate the port, which is the kind of duplicate constant that survives one of its copies
-#: being changed.
-RFB_HOST = "127.0.0.1"
-
-
-def rfb_endpoint() -> tuple[str, int]:
-    """Host and port of the loopback RFB server a WebSocket relay should connect to."""
-    return RFB_HOST, _RFB_PORT
-
-
 class VncUnavailable(RuntimeError):
     """Raised when the VNC path cannot be brought up.
 

@@ -43,7 +43,8 @@ class FakeBus:
 
     def __init__(self) -> None:
         self.registrations: list[_Registration] = []
-        #: Every payload that reached the bus, for asserting on what did and did not travel.
+        #: Every payload that crossed the bus in EITHER direction -- requests and replies -- so
+        #: an assertion about what travelled cannot silently examine only one of them.
         self.sent: list[bytes] = []
         self._replies: dict[str, asyncio.Future[bytes]] = {}
         self._inbox = 0
@@ -73,7 +74,16 @@ class FakeBus:
         del timeout
 
     async def publish_raw_reply(self, *, reply_subject: str, payload: bytes) -> None:
-        """Complete the request waiting on *reply_subject*."""
+        """Complete the request waiting on *reply_subject*, recording what crossed the bus.
+
+        RECORDED INTO THE SAME LIST as requests, and that is the whole point of this method. It
+        did not record, and the consequence was silent: the test asserting that a raw cookie jar
+        never appears in anything published looped over `sent` -- which only requests appended --
+        so for `complete_tab` it examined a request that trivially holds no jar and passed while
+        the reply direction, the one that actually carries the solve, went unlooked at. The
+        production code was right; the fake made the test unable to see the direction it guarded.
+        """
+        self.sent.append(payload)
         pending = self._replies.get(reply_subject)
         if pending is not None and not pending.done():
             pending.set_result(payload)

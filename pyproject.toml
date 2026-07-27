@@ -113,9 +113,36 @@ target-version = "py314"
 #
 # Turned on only once every finding was cleared. A gate that fails on a clean checkout is a gate
 # people learn to skip.
-select = ["SLF", "F"]
+select = ["SLF", "F", "N"]
+
+# N (pep8-naming) enabled 2026-07-27 on Pace's instruction, after measuring whether the naming
+# conventions actually drift across the family. They do not: functions, classes, variables and
+# constants are consistent across all 28 packages, and the 104 findings were ruff disagreeing with
+# a HOUSE STYLE applied uniformly, not the codebase disagreeing with itself. Two rules are
+# therefore off repo-wide, with the reason rather than a shrug:
+#
+#   N818 -- exceptions are named for the CONDITION, not suffixed `Error`: `LeaseUnavailable`,
+#   `LeaseTimeout`, `LeaseLost`, `LockHeld`, `SessionNotFound`, `AccessDenied`, `SandboxDenied`,
+#   `WorkspaceNotFound`, `IdempotencyConflict`. Nineteen in shipped code and thirteen in tests, one
+#   convention, no exceptions to it. Adopting ruff's opinion would rename thirty-two public
+#   exception types across published wheels -- a breaking change to buy a suffix.
+#
+#   N811 -- `from sqlalchemy.dialects.postgresql import UUID as PgUUID` and its siblings. Ruff
+#   reads the all-caps `UUID` as a constant; it is a CLASS, and the alias exists to disambiguate it
+#   from `uuid.UUID` in the same module. Sixteen instances, all the same false positive.
+#
+# Everything the rule genuinely caught was fixed rather than ignored: one local in shipped code
+# named as a constant, three test classes and one test function. N803 and N806 are off for TESTS
+# only (see per-file-ignores) -- N803 had ZERO findings in `src`, so the rule stays live exactly
+# where a real naming mistake would matter.
+ignore = ["N818", "N811"]
 
 [tool.ruff.lint.per-file-ignores]
+# N803/N806 in tests only. Test suites legitimately bind locally-defined stand-in CLASSES to
+# CapWords names (`MockClient`) and take arguments named after the foreign API they stand in for,
+# and both read correctly. Zero N803 findings exist in any `src` tree, so this narrows the rule to
+# where it is noise instead of switching it off where it would catch something.
+"**/tests/**" = ["N803", "N806"]
 # OpenTelemetry SDK >=1.39 guards set_tracer_provider behind an internal
 # once-flag with no public reset; resetting _TRACER_PROVIDER_SET_ONCE._done
 # is the only way to re-init the provider (required for tests and re-init

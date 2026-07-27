@@ -756,8 +756,8 @@ class TestUsageTrackerCustomRegistry:
         in the process registered, plus prometheus_client's own process and
         platform collectors, with live float values. Searching that for the
         substring ``"0.0042"`` matches any value that happens to render with
-        those characters inside it — ``10.0042``, ``0.004213``,
-        ``100.00421`` — none of which has anything to do with this tracker.
+        those characters inside it -- ``10.0042``, ``0.004213``,
+        ``100.00421`` -- none of which has anything to do with this tracker.
         It failed once in a full-suite run and passed on rerun, which is
         exactly how a substring assertion against shared mutable state
         behaves.
@@ -766,7 +766,7 @@ class TestUsageTrackerCustomRegistry:
         of THIS metric, with THESE labels, in the DEFAULT registry, change
         because we recorded to a custom one? A before/after comparison also
         makes the test independent of whether some earlier test legitimately
-        populated the default registry — which is the very condition the old
+        populated the default registry -- which is the very condition the old
         comment described and could not actually tolerate.
         """
         try:

@@ -45,14 +45,11 @@ __all__ = [
 
 # `record_session_state` writes a health row and therefore looks like it belongs in `health.py`
 # beside the other health writers, which share that module's `_merge_health`. It lives here
-# because the write is the LAST step of sealing and is meaningless without the four functions
+# because the write is the LAST step of sealing and is meaningless without the sealing functions
 # above it: a caller that has a sealed blob and no way to store it has been handed half an
 # operation. Splitting them would put the encryption in one module and its only destination in
 # another, and the seam between them is exactly where a future change drops the expiry or
 # stores plaintext.
-#
-# It was also missing from `__all__` above while `packages/scrape/README.md` step 6 instructs
-# consumers to call it -- a public instruction pointing at a name the module did not export.
 
 log = get_logger(__name__)
 

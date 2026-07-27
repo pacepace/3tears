@@ -375,9 +375,9 @@ packages/observe/tests/test_tracing.py:190:_otel_available
 packages/observe/tests/test_tracing.py:205:_otel_available
 
 # rationale: module-private helper called from SessionManager in the same module; the isolated-context creation is deliberately not part of hitl.py's public surface because a caller reaching it directly would skip the slot accounting that makes the working set bounded
-packages/scrape/sidecar/hitl.py:903:_create_isolated_tab
+packages/scrape/sidecar/hitl.py:892:_create_isolated_tab
 # rationale: module-private helper called from SessionManager in the same module; nav-step replay is shared with the render path and kept private so the timeout budget stays owned by its two call sites rather than by whoever imports it next
-packages/scrape/sidecar/hitl.py:912:_execute_nav_steps
+packages/scrape/sidecar/hitl.py:901:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
 packages/scrape/sidecar/main.py:445:_apply_context_state

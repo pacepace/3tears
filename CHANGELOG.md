@@ -59,8 +59,10 @@ answer is a rule rather than more care. Running F across the whole repository ad
 because `from __future__ import annotations` never evaluates them, which is the same mechanism that
 had already broken the operator WebSocket route on this branch.
 
-Root-wide adoption is not done here: it reports 159 findings, almost all unused imports, which is a
-sweep rather than a fix and not one to start while closing a release.
+Root-wide adoption was deferred at this point in the release, on the grounds that 159 findings is a
+sweep rather than a fix. It was then done anyway, later in this same release -- see the entry above,
+which opened those findings and reports what was actually in them. This paragraph is kept rather
+than rewritten because it is why the two arrived as separate pieces of work.
 
 **A hung window-manager call no longer leaks a process.** `asyncio.wait_for` cancels the
 `communicate()` await and leaves the CHILD running, so a call that never answered held a process for

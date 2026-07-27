@@ -66,7 +66,7 @@ class TestLogin:
             await client.aclose()
 
     @pytest.mark.asyncio
-    async def test_login_failure_raises_PlatformHttpError(self) -> None:
+    async def test_login_failure_raises_platform_http_error(self) -> None:
         """401 from login surfaces as PlatformHttpError with status."""
 
         def responder(_request: httpx.Request) -> httpx.Response:
