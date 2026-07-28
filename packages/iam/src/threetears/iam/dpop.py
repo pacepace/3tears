@@ -54,7 +54,42 @@ class DpopError(Exception):
 
     Carries only the structural reason -- never the proof string or key material -- so it is
     safe to log at a verification boundary.
+
+    :ivar detail: operator-actionable specifics for the failures where the structural reason
+        alone does not name the fix. Callers are expected to collapse every ``DpopError``
+        into one generic client-facing message -- an unauthenticated caller must learn
+        nothing from probing -- which makes the raise site the only place the actual reason
+        ever exists. Without this, that reason is destroyed rather than withheld. Values are
+        unvalidated, caller-supplied claim data: diagnostics to log, never inputs to trust.
     """
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {}
+
+
+#: Cap on the attacker-supplied ``htu`` echoed into :attr:`DpopError.detail`.
+#:
+#: A token endpoint is reachable unauthenticated, and this value comes straight off an
+#: unverified proof payload -- so it is attacker-chosen in both LENGTH and TYPE. Logged
+#: unbounded it is a log-volume amplifier; logged raw it can carry newlines and forge log
+#: lines. Truncated and coerced to ``str``, it stays exactly as useful for the one job it
+#: has: showing an operator which origin a real browser signed.
+_MAX_LOGGED_HTU_CHARS: Final[int] = 200
+
+
+def _loggable_htu(htu: object) -> str:
+    """Render an unverified ``htu`` claim safely for a server-side log.
+
+    :param htu: raw ``htu`` claim from an unverified proof payload; any type.
+    :ptype htu: object
+    :return: single-line, length-capped rendering.
+    :rtype: str
+    """
+    flattened = " ".join(str(htu).split())
+    if len(flattened) > _MAX_LOGGED_HTU_CHARS:
+        return f"{flattened[:_MAX_LOGGED_HTU_CHARS]}...[truncated]"
+    return flattened
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +165,14 @@ async def validate_dpop_proof(
     if not accepted_htu:
         raise DpopError("no acceptable dpop htu was supplied for validation.")
     if payload.get("htu") not in accepted_htu:
-        raise DpopError("dpop proof htu does not match the expected request URI.")
+        # The one rejection an operator cannot diagnose from the structural reason alone:
+        # a browser signs `htu` against the origin it actually called, so a deployment
+        # reachable through a proxying front-end fails here while every URI involved looks
+        # individually correct. `detail` names the two values to reconcile.
+        raise DpopError(
+            "dpop proof htu does not match the expected request URI.",
+            detail={"presented_htu": _loggable_htu(payload.get("htu")), "accepted_htu": list(accepted_htu)},
+        )
 
     iat = payload.get("iat")
     if not isinstance(iat, int) or isinstance(iat, bool):

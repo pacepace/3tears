@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-knowledge"
-version = "0.20.0"
+version = "0.21.0"
 description = "Governed-knowledge retrieval + injection for LLM agents -- concepts, playbook entries, three-scope shadow merge, and before_model middleware"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,12 +22,12 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.20.0,<0.21.0",
-    "3tears-agent-acl>=0.20.0,<0.21.0",
-    "3tears-agent-memory>=0.20.0,<0.21.0",
-    "3tears-langgraph>=0.20.0,<0.21.0",
-    "3tears-nats>=0.20.0,<0.21.0",
-    "3tears-observe>=0.20.0,<0.21.0",
+    "3tears>=0.21.0,<0.22.0",
+    "3tears-agent-acl>=0.21.0,<0.22.0",
+    "3tears-agent-memory>=0.21.0,<0.22.0",
+    "3tears-langgraph>=0.21.0,<0.22.0",
+    "3tears-nats>=0.21.0,<0.22.0",
+    "3tears-observe>=0.21.0,<0.22.0",
     "pgvector",
     "langchain-core",
 ]

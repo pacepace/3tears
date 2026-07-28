@@ -321,3 +321,92 @@ class TestSingleUse:
             )
         # The same jti still works, which it would not if the failure above had spent it.
         assert await validate_dpop_proof(_proof(key, jti=jti), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+
+
+# -- what a refusal tells the operator -------------------------------------------------------
+
+
+class TestRefusalDiagnostics:
+    """An htu mismatch must name BOTH origins it failed to reconcile.
+
+    Callers collapse every `DpopError` into one generic client-facing message on purpose --
+    an unauthenticated caller learns nothing from probing. That makes the raise site the only
+    place the actual reason ever exists, so an htu mismatch that does not carry the two
+    values an operator must reconcile is a reason destroyed rather than a reason withheld.
+
+    Real incident: an admin SPA proxied `/v1` under its own origin, so browsers signed `htu`
+    against the ADMIN origin while the deployment's accepted list held only the API's. Every
+    refresh was denied, the edge logged the RPC "200 OK" (the rejection rides in the reply
+    envelope), the issuer logged nothing at all, and every session died at exactly one
+    access-token lifetime.
+    """
+
+    _PRESENTED = "https://admin.example/v1/token"
+
+    async def test_an_htu_mismatch_reports_both_the_presented_and_accepted_uris(self, guard: ReplayGuard) -> None:
+        """Without both values the log names a problem but not the fix."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(
+                _proof(key, htu=self._PRESENTED), expected_htm=_HTM, expected_htu=[_HTU], replay_guard=guard
+            )
+        assert exc.value.detail["presented_htu"] == self._PRESENTED
+        assert exc.value.detail["accepted_htu"] == [_HTU]
+
+    async def test_the_message_itself_still_leaks_nothing_situational(self, guard: ReplayGuard) -> None:
+        """The structural reason stays generic; the specifics ride in `detail`, which only a
+        server-side log consumes."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(
+                _proof(key, htu=self._PRESENTED), expected_htm=_HTM, expected_htu=[_HTU], replay_guard=guard
+            )
+        assert self._PRESENTED not in str(exc.value)
+
+    async def test_an_unrelated_failure_carries_an_empty_detail(self, guard: ReplayGuard) -> None:
+        """`detail` is opt-in per raise site, never a required field."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(_proof(key, htm="GET"), expected_htm=_HTM, expected_htu=_HTU, replay_guard=guard)
+        assert exc.value.detail == {}
+
+    async def test_an_overlong_htu_is_truncated_before_it_reaches_the_log(self, guard: ReplayGuard) -> None:
+        """The endpoint is unauthenticated, so this value is attacker-chosen in LENGTH.
+        Echoed unbounded it is a log-volume amplifier."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(
+                _proof(key, htu=f"https://evil.example/{'a' * 5000}"),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+            )
+        presented = exc.value.detail["presented_htu"]
+        assert presented.endswith("...[truncated]")
+        assert len(presented) < 250
+
+    async def test_a_newline_bearing_htu_cannot_forge_a_second_log_line(self, guard: ReplayGuard) -> None:
+        """Attacker-chosen in CONTENT too: raw newlines would let one rejected proof write
+        what looks like an independent log record."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(
+                _proof(key, htu="https://evil.example/\n2026-01-01 INFO refresh accepted"),
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+            )
+        assert "\n" not in exc.value.detail["presented_htu"]
+
+    async def test_a_non_string_htu_is_rendered_rather_than_exploding(self, guard: ReplayGuard) -> None:
+        """Attacker-chosen in TYPE. The diagnostic path must not raise its own exception on
+        the way to reporting a refusal."""
+        key = _key()
+        with pytest.raises(DpopError) as exc:
+            await validate_dpop_proof(
+                _proof(key, htu={"not": "a string"}),  # type: ignore[arg-type]
+                expected_htm=_HTM,
+                expected_htu=_HTU,
+                replay_guard=guard,
+            )
+        assert isinstance(exc.value.detail["presented_htu"], str)
