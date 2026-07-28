@@ -7,7 +7,7 @@ verifies the contract end-to-end against a real postgres:
 - ``fetch_iter`` server-side streaming (memory-bounded)
 - ``list_tables`` / ``list_columns`` / ``table_hashes`` discover seed schema
 - Tier-2 hash byte-equivalence between python helper + warehouse MD5
-- cancellation propagation via :meth:`Connection.cancel` (NOT terminate)
+- cancellation propagation (the driver issues no cancel of its own -- dsd-task-02)
 - AGENT_INTERNAL borrowed-pool: driver does NOT close the borrowed pool
 - microbenchmark guard rail (DS-10-13; gated, manual run only)
 
@@ -458,12 +458,13 @@ class TestAsyncpgDriverCancellation(DriverCancellationContractTest):
     async def test_cancellation_returns_connection_cleanly_to_pool(
         self,
     ) -> None:
-        """after cancellation, the connection stays in the pool (not evicted).
+        """after cancellation, the connection stays usable (not evicted).
 
-        verifies the cancel-vs-terminate discipline: ``cancel()``
-        keeps the connection alive; ``terminate()`` evicts it. after
-        a cancelled fetch, issuing a follow-up query MUST work
-        without the pool re-opening a fresh connection.
+        the driver calls neither ``cancel`` (which asyncpg does not
+        have) nor ``terminate`` (which would evict the connection):
+        asyncpg's own protocol requests the backend cancel and
+        ``Pool.release`` resets the session. after a cancelled fetch,
+        issuing a follow-up query MUST therefore work.
         """
         driver = await self.make_slow_driver()
         try:

@@ -698,14 +698,21 @@ class Driver(ABC):
         to its backend's expected dialect (``%s`` for pyformat /
         Redshift, ``:1`` for numeric, ``@p1`` for BigQuery named-at).
 
-    cancellation contract (DS-09-05):
+    cancellation contract (DS-09-05, amended by dsd-task-02):
         ``fetch`` / ``execute`` / ``fetch_iter`` MUST cooperate with
-        :mod:`asyncio` cancellation. if the awaiting coroutine is
-        cancelled, the driver MUST attempt to cancel the in-flight
-        query at the backend before re-raising
+        :mod:`asyncio` cancellation: the awaiting coroutine sees
         :class:`asyncio.CancelledError`. concrete drivers route every
         backend call through :meth:`_with_cancellation` so the
         propagation logic lives in one place.
+
+        what a driver MUST NOT do is claim a backend cancellation it
+        cannot perform. where the backend library exposes a real
+        primitive the driver uses it (Redshift terminates the
+        server-side backend); where it does not, the driver says so
+        rather than calling a method that does not exist. **no driver
+        guarantees an in-flight warehouse statement stops.** callers
+        that need bounded cancellation make it cooperative and bound it
+        by statement completion.
 
     transaction contract (DSD-01-01 / DSD-01-02):
         :meth:`begin` opens a multi-statement unit of work pinned to
@@ -1078,10 +1085,17 @@ class Driver(ABC):
             short-circuit on cancellation that fires before the
             backend call starts
         :ptype coro_fn: Callable[[], Awaitable[Any]]
-        :param cancel_callback: backend-specific cancellation hook
-            (e.g. ``conn.cancel`` for asyncpg, ``stmt.cancel`` for
-            redshift_connector). may be sync or async; sync callables
-            whose return is a coroutine are awaited
+        :param cancel_callback: backend-specific hook invoked on
+            cancellation. what it may honestly do is bounded by what the
+            backend library actually exposes: the Redshift driver
+            terminates the server-side backend and closes the socket,
+            while the asyncpg driver only RECORDS the cancellation --
+            :class:`asyncpg.Connection` has no cancel verb and asyncpg's
+            protocol already requests the backend cancel itself (see
+            dsd-task-02 in the asyncpg driver's module docstring). a
+            callback MUST NOT imply a cancellation the backend cannot
+            perform. may be sync or async; sync callables whose return
+            is a coroutine are awaited
         :ptype cancel_callback: Callable[[], Any]
         :return: the wrapped coroutine's result on success
         :rtype: Any

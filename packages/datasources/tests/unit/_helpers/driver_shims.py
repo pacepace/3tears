@@ -21,7 +21,10 @@ from types import TracebackType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
+
 __all__ = [
+    "PoolAcquireHandle",
     "build_mock_redshift_connection",
     "build_transaction_capable_pool",
     "is_open_setup_stmt",
@@ -188,7 +191,7 @@ class _TransactionHandle:
         return False
 
 
-class _PoolAcquireHandle:
+class PoolAcquireHandle:
     """stand-in for :class:`asyncpg.pool.PoolAcquireContext`.
 
     awaitable (``conn = await pool.acquire()``) AND an async context
@@ -264,6 +267,13 @@ def build_transaction_capable_pool(
     ``pool.transaction_handle`` is the single shared
     :class:`_TransactionHandle` whose await counts the tests assert on.
 
+    the connection is spec'd against the REAL :class:`asyncpg.Connection`
+    (dsd-task-02): reading an attribute the class does not carry raises
+    :class:`AttributeError` here exactly as it does in production. an
+    earlier version of this shim assigned ``conn.cancel``, a method
+    asyncpg has never had, which is what hid a driver cancellation path
+    that could not cancel anything.
+
     :param fetch_records: rows ``conn.fetch`` resolves to
     :ptype fetch_records: list[dict[str, Any]] | None
     :return: pool mock with acquire / release / close wired
@@ -271,7 +281,7 @@ def build_transaction_capable_pool(
     """
     records = fetch_records or []
     pool = MagicMock(name="MockPool")
-    conn = MagicMock(name="MockConn")
+    conn = MagicMock(spec=asyncpg.Connection, name="MockConn")
 
     sql_log: list[str] = []
     statement_log: list[dict[str, Any]] = []
@@ -306,8 +316,6 @@ def build_transaction_capable_pool(
     conn.execute = AsyncMock(side_effect=_execute)
     conn.fetch = AsyncMock(side_effect=_fetch)
     conn.fetchval = AsyncMock(side_effect=_fetchval)
-    conn.cancel = MagicMock(return_value=None)
-    conn.terminate = MagicMock(return_value=None)
     conn.transaction = MagicMock(return_value=transaction_handle)
 
     def _fail_caller_statement_at(index: int, error: Exception) -> None:
@@ -315,7 +323,7 @@ def build_transaction_capable_pool(
         armed["index"] = index
         armed["error"] = error
 
-    pool.acquire = MagicMock(side_effect=lambda *a, **k: _PoolAcquireHandle(pool, conn))
+    pool.acquire = MagicMock(side_effect=lambda *a, **k: PoolAcquireHandle(pool, conn))
     pool.release = AsyncMock(return_value=None)
     pool.close = AsyncMock(return_value=None)
     pool.is_closing = MagicMock(return_value=False)

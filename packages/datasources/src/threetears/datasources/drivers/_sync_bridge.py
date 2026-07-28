@@ -25,9 +25,14 @@ design points:
   threads drain naturally once their current call returns.
 - cancellation: ``to_thread_with_cancel`` fires ``cancel_cb`` on
   :class:`asyncio.CancelledError`. ``cancel_cb`` MUST be safe to call
-  from the event loop (i.e. fast / non-blocking); the canonical use
-  is the backend lib's "abort the in-flight statement" hook (e.g.
-  ``redshift_connector.Connection.cancel``).
+  from the event loop (i.e. fast / non-blocking), and it MUST NOT
+  imply an abort the backend library cannot perform.
+  ``redshift_connector`` exposes NO ``cancel`` on either connection or
+  cursor, so the Redshift driver's hook terminates the server-side
+  backend from a fresh connection and closes the socket. never write
+  ``cancel_cb=conn.cancel``: that method does not exist on any backend
+  this package drives, and the resulting :class:`AttributeError` is
+  swallowed as a warning (see dsd-task-02).
 """
 
 from __future__ import annotations
@@ -66,7 +71,9 @@ class AsyncSyncBridge:
                 conn = await self._acquire_connection()
                 return await self._bridge.to_thread_with_cancel(
                     lambda: _sync_fetch(conn, sql, params),
-                    cancel_cb=conn.cancel,
+                    # a hook the backend can actually honour -- NOT
+                    # ``conn.cancel``, which redshift_connector has never had
+                    cancel_cb=lambda: self._cancel_checkout(checkout),
                 )
 
             async def close(self) -> None:
