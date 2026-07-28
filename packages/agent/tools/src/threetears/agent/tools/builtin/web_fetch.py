@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
+from threetears.observe import get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "WebFetchInput",
@@ -89,8 +92,20 @@ def _create_fetch_fn(max_chars: int, credential_resolver: Any | None) -> Any:
                 extra_headers = credential_resolver(url)
                 if extra_headers:
                     headers.update(extra_headers)
-            except Exception:
-                pass  # credential resolver failure is non-fatal
+            except Exception as exc:  # noqa: BLE001 -- the fetch proceeds unauthenticated
+                # Non-fatal, but the request now goes out with no credentials: the likely results
+                # are a 403 blamed on the site, or public content returned in place of the
+                # authenticated page. Only the host and the failure type are recorded -- never the
+                # resolver's output, which is the credential itself.
+                log.warning(
+                    "credential resolver failed; fetching unauthenticated",
+                    extra={
+                        "extra_data": {
+                            "host": httpx.URL(url).host,
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                )
 
         try:
             with httpx.Client(timeout=30.0, follow_redirects=True, max_redirects=5) as client:

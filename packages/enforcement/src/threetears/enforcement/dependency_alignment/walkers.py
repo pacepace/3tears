@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from threetears.enforcement.common import Violation
+from threetears.enforcement.common import Violation, note_unscanned
 
 from threetears.enforcement.dependency_alignment.config import DependencyAlignmentConfig
 
@@ -211,7 +211,10 @@ def _load_package(pkg_root: Path) -> PackageInfo | None:
         for py in sorted(src.rglob("*.py")):
             try:
                 tree = ast.parse(py.read_text())
-            except SyntaxError:
+            except SyntaxError as exc:
+                # Its imports never reach the dependency graph, so a dependency this module alone
+                # requires reads as undeclared-and-unused rather than as a gap in the scan.
+                note_unscanned(py, f"syntax error at line {exc.lineno}")
                 continue
             _collect_imports(tree, py, info.top_imports, info.other_imports)
     return info

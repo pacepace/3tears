@@ -4,6 +4,197 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+**`3tears-nats` no longer installs the NATS client by default -- BREAKING for consumers.**
+`nats-py` and `nkeys` moved to a `[client]` extra. `nkeys` publishes no wheels, so an
+unconditional dependency turned every install into a source build, including aarch64 targets
+that have prebuilt wheels for everything else in the tree. The nine client-backed submodules
+resolve through a PEP 562 `__getattr__`, so error types, subject grammar, transport Protocols
+and the auth-callout/user-JWT codecs stay importable without it.
+
+Anything using `NatsClient`, `kv`, `oplog`, `forward`, `cross_worker_cancel` or
+`distributed_lock` must now depend on **`3tears-nats[client]`** or **`3tears[nats]`**. A
+consumer that does not is not caught at install or import time -- the failure surfaces at the
+first attribute access, which is why this is called out here rather than left to the diff.
+
+**`uuid-utils` is declared by the packages that import it.** `core`, `memory`, `mcp` and
+`scrape` all imported it while relying on some other package to drag it in.
+
+**A pod can close one user's live sockets.** `WebSocketHandler` already kept a per-pod
+`user_id -> socket` map with nothing able to act on it, so server-side revocation reached the
+next token mint and the next connect but never a socket that had already authenticated -- it
+just kept streaming. `disconnect_user` sends the peer an error frame explaining why before
+closing, so a client routes to sign-in instead of reading it as a network drop and
+reconnecting in a loop, and one wedged handle no longer strands the rest.
+
+**`Subjects.identity_epoch`** is the subject to bump when a principal's ability to act changes
+in a way its already-issued token cannot express -- an account disabled mid-session being the
+case it exists for. Same write -> bump -> broadcast -> reload shape as `mcp_rbac_epoch`. The
+payload convention (`{"user_id": ...}`, so a subscriber can also close that user's sockets) is
+documented as a hint rather than a contract: the catch-up path carries no payload, so a
+subscriber has to stay correct without one.
+
+**`no_silent_swallow` now runs workspace-wide, and passes.** It had been scoped to
+`threetears.core`, which left every other package -- the security ones included -- unscanned,
+and a handler that swallows silently is an outage that reports nothing. The gate no longer
+takes `src_roots`: it discovers every source root under the repo and checks them all. Each
+handler it surfaced was either fixed, given the log the house convention asks for, or marked
+`# NOSILENT:` with the reason the failure IS the expected outcome. The walkers also record
+what they could not scan, so a file the AST cannot parse is reported rather than counted as
+clean.
+
+**Dict-state enforcement is keyed on the class, not the line.** The shared domain matched
+its allowlist on `(file, exact line, attr)` and had never had a caller to prove that
+unusable -- a line number is invalidated by any edit ABOVE the assignment, so an allowlist
+went stale the first time anyone added an import. It keys on `(file, class_name, attr)`
+now, which is what the hand-rolled copy in `packages/core/tests/` always did, and that copy
+is retired. Violations report `Class.attr` rather than a bare attribute name, and
+the shared exemption grammar accepts dotted symbols.
+
+**`rotate_refresh_token` gained the hooks its real caller needed.** It had zero callers
+while identity-core ran a 358-line reimplementation of the same check order beside it, and
+that copy had already drifted: an ordinary session could refresh forever, because only the
+impersonation branch enforced an absolute cap. Four things kept the shared function from
+being adoptable and each is now a documented step rather than a reason to fork it. The
+holder key is a resolver rather than a value, so proof-of-possession validation happens at
+step 5 instead of before step 1 and a refresh the cheap checks were always going to deny
+never pays a round trip for it. `bind_holder_key_on_first_use` serves a login flow that
+collects no proof at all. `pre_redemption_checks` and `post_redemption_checks` split at the
+redemption boundary, because that is exactly where the guarantee changes: a pre-redemption
+denial must cost the legitimate holder nothing, a post-redemption one must force full
+re-authentication rather than permit a retry. And `lifetime_caps` accepts a resolver, since
+per-tenant policy is keyed on a claim that cannot be read until the token is verified.
+
+Breaking, for a function with no callers: `holder_key_thumbprint` is now `holder_key`, and
+`absolute_session_lifetime` / `inactivity_timeout` collapse into one `SessionLifetimeCaps`
+-- a smaller surface than the pair it replaces, and the only shape that can express the
+per-tenant case.
+
+**`ttl` now means something in the KV stores.** `NatsKvTicketStore` and `NatsKvStateStore`
+took a per-call `ttl`, recorded it into the stored payload, and read it back nowhere, so
+every entry stayed redeemable for the whole bucket TTL -- a ten-minute reset ticket in an
+hour-long bucket lived an hour. `MemoryTicketStore` honoured the same argument faithfully,
+which meant the shipped double enforced an expiry production did not. Each entry now
+carries its own absolute expiry, checked on every read, wall-clock because these entries are
+read by a different process from the one that wrote them. The check runs BEFORE the delete,
+so an expired ticket is refused without being consumed, matching the Postgres store.
+
+**New: `resolve_request_client_ip`.** The ASGI adapter for `resolve_client_ip`, typed
+against a Protocol naming the two attributes it reads rather than importing any web
+framework, so this package still depends on no server. Both consumers had written or were
+about to write the same six lines. The Protocol names `getlist` rather than `get`, which is
+the detail worth having in one place: `get` returns only the first occurrence of a repeated
+header, and for `X-Forwarded-For` the first occurrence is the part the client controls.
+
+**New enforcement domain: `single_return`.** A function's business logic returns at most
+once, with leading guard clauses exempt and unlimited. Lifted out of a consumer repo that
+carried two 124-line verbatim copies of the analyzer differing only in a path constant; the
+nested-scope bug, where a nested `def`'s returns were charged to its parent, had to be found
+once and fixed twice.
+
+**One digest, two names.** `hash_ticket` and `hash_api_key_secret` had the same body written
+out twice. The names stay separate because they are separate contracts, but a change to how
+this package hashes can no longer land in one and miss the other.
+
+**`py.typed` for `3tears-enforcement`, `3tears-models` and `3tears-channels`** -- the last
+three of twenty-nine packages shipping without the marker, so every downstream consumer had
+to carry a mypy override naming them untyped.
+
+**New: `threetears.iam.stores.postgres`.** `PostgresTicketStore` and `PostgresStateStore`,
+for the case the package's "none of this belongs in a table" argument does not cover: a
+service whose broker is OPTIONAL, where a reset ticket or an OAuth handoff must survive the
+broker being unreachable. Expiry is enforced INSIDE the claim (`AND expires_at > now`), so an
+expired row is unredeemable whether or not anything has swept it -- `purge_expired` bounds
+table size and nothing else. The claim itself is one `DELETE ... RETURNING`, so two concurrent
+redemptions produce exactly one winner.
+
+The package still owns no schema: the caller creates the table in its own migration and names
+it, with the assumed column set published as `TICKET_TABLE_DDL` / `STATE_TABLE_DDL` so it is
+stated once rather than reconstructed per consumer. Table names are validated before
+interpolation, because SQL has no placeholder for an identifier.
+
+**`atomic_write_sync`** exposes the tmp + fsync + rename + dir-fsync sequence for callers with
+no event loop to await on.
+
+**One windowed counter, not two.** `threetears.iam.stores.nats_kv.NatsKvAttemptLimiter`
+is now an adapter over `threetears.core.coordination.WindowedCounter` rather than a second
+implementation beside it. The two had diverged on the properties that matter: the iam one
+keyed its window by wall-clock ordinal (`floor(now / window)`), so every key's window rolled
+at the same instant -- an attacker straddling a boundary got twice the attempt budget back to
+back, and a victim's lockout could expire almost immediately. `WindowedCounter` anchors the
+window at the first failure, which is what makes a lockout last as long as it claims.
+
+Two consequences for callers. `NatsKvAttemptLimiter` now takes a `NatsClient` and a
+`bucket_name` instead of an already-opened bucket, and it takes `fail_open`, which
+**defaults to `False`**. The previous implementation always failed open; that is defensible
+for a cheap throttle in front of an authoritative check and indefensible for a lockout
+counter with nothing behind it, so the choice is now the caller's and the safe answer is the
+default. It also no longer case-folds keys -- normalising case silently merges two distinct
+credentials.
+
+`WindowedCounter` gains `state()` (the live window, so a caller can report a truthful
+`Retry-After` rather than restating the window length) and `clear()`.
+
+**`StateStore.get`** reads without consuming, alongside `take`. A redirect flow that
+enforces single use with a separate replay guard needs a non-destructive read, and keeping
+the mechanisms distinct is what lets it tell "never issued" from "already spent". `take`
+remains the safe default and the docstring says so.
+
+**`sole_audience`** reads back the single audience of a token whose issuer has a closed
+audience vocabulary -- `SessionClaims.aud` is an open tuple because a token in general may
+serve several, and services issuing exactly one were each re-deriving the check.
+
+**`state_store` / `ticket_store` factories** in `threetears.iam.stores.nats_kv`. Consumers
+were open-coding `Store(await nc.kv_bucket(name=..., ttl=...))` at every call site.
+
+**`threetears.core.testing.kv`** publishes `FakeKvBucket` / `FakeNatsClient`. These had been
+hand-rolled at least twice inside this repo and again in each consumer, which is exactly the
+drift `threetears.core.testing` exists to prevent.
+
+**New enforcement domain: `threetears.enforcement.jwt_alg_pinning`.** Structural checks that
+a JWS verifier pins its algorithms from literals or module constants, names exactly one per
+decode, never disables signature/expiry verification, and never imports `jwt.decode` bare.
+`packages/core` had a hand-rolled AST test for this and a near-identical copy had been made
+for `packages/iam`; both are now thin shells over the shared walker. The shared walker also
+covers `jwt.decode_complete`, which both copies were blind to.
+
+**New package: `3tears-iam`.** Identity and access primitives, factored out of two
+services that had each grown their own. Both had independently written argon2id
+password hashing with anti-enumeration timing, a GitHub OAuth2 authorization-code
+flow, a NATS-KV login throttle, a single-use SHA-256 ticket store, and a JWT
+mint/verify pair pinning its claim set -- and neither could adopt the other's,
+because each was welded to its own schema, transport, and config prefix.
+
+The package owns protocol, crypto, and policy, and owns nobody's database schema
+or wire DTOs. That line is deliberate: the two services disagree about persistence
+in every way that matters, so unifying it would have produced an abstraction
+neither could use. State sits behind `SingleUseTicketStore`, `StateStore`, and
+`AttemptLimiter` Protocols, with JetStream KV implementations for production and
+in-memory ones for tests -- shipped rather than left to each consumer, because a
+hand-rolled double that drifts from the real store is how a store bug ships green.
+
+Session tokens carry one claim vocabulary over either EdDSA or HS256, with the
+claim set pinned on mint *and* on verify: a token carrying an unrecognized claim
+is rejected, which is what makes "identity only, authorization evaluated live" an
+enforceable property rather than an aspiration. Algorithms are pinned from
+literals and checked twice -- once before key selection, once in the decode call.
+
+It builds on what already existed rather than beside it. `jwk_thumbprint`,
+`build_jwks`, `generate_signing_keypair` and `ReplayGuard` come from
+`threetears.core.security`; the sensitive-action taxonomy comes from
+`threetears.agent.acl`. That last one had been hand-copied into a downstream repo
+with a comment explaining the copy existed only because no import path connected
+the two. This package is that path, and the second declaration goes away.
+
+SAML sits behind a `[saml]` extra and WebAuthn behind `[webauthn]`, so a consumer
+doing password and OIDC only does not inherit pysaml2 and an `xmlsec1` system
+binary it will never call.
+
+The package is complete for passwords, PKCE, GitHub sign-in, session tokens, DPoP,
+API-key secrets, step-up freshness, trusted-proxy client-IP resolution, and the
+storage seams. OIDC, SAML, TOTP, WebAuthn and refresh rotation are still resident
+in the downstream identity service and land next.
 ## v0.19.4 -- 2026-07-26
 
 **`HealthServer` gets real liveness/readiness semantics, so a readiness gate can no

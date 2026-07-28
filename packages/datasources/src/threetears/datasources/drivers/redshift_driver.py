@@ -94,7 +94,7 @@ import collections
 import contextlib
 import socket
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -824,18 +824,27 @@ class RedshiftDriver(Driver):
                 cursor.close()
 
     @staticmethod
-    def _suppress_close() -> Any:
-        """return a :func:`contextlib.suppress` for fallback-close paths.
+    @contextlib.contextmanager
+    def _suppress_close() -> Iterator[None]:
+        """record-and-swallow a failure on a fallback-close path.
 
         used in places where a best-effort close is desirable but a
         failure must NOT propagate (finalize, cancel cleanup, double-
         close paths). a single helper centralizes the discipline so a
-        future reviewer can see every suppression site at one grep.
+        future reviewer can see every suppression site at one grep --
+        and so every one of them leaves a debug line, since a close
+        that keeps failing is how a connection leak starts.
 
-        :return: suppression context-manager
-        :rtype: contextlib.AbstractContextManager[Any]
+        :return: context-manager that logs and absorbs any exception
+        :rtype: Iterator[None]
         """
-        return contextlib.suppress(Exception)
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001 -- best-effort close; failure must not propagate
+            log.debug(
+                "best-effort close failed (ignored)",
+                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            )
 
     async def _acquire_connection(self) -> RedshiftConnection:
         """pop a warm connection from the cache OR open a fresh one.

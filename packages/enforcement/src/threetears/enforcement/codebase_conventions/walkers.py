@@ -31,6 +31,7 @@ from pathlib import Path
 from threetears.enforcement.common import (
     Violation,
     iter_python_files,
+    note_unscanned,
     parse_python_file,
     relative_posix_path,
 )
@@ -187,6 +188,7 @@ def find_stdlib_getlogger_calls(
             try:
                 source_text = module_path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
+                note_unscanned(module_path, "not valid utf-8")
                 continue
             tree = parse_python_file(module_path)
             if tree is None:

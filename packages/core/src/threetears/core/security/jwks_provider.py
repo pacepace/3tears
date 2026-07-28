@@ -132,6 +132,7 @@ class CachedHubJwksProvider:
             self._task.cancel()
             try:
                 await self._task
+            # NOSILENT: CancelledError here IS the cancellation we just requested
             except asyncio.CancelledError:
                 pass
             self._task = None

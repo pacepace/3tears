@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-registry"
-version = "0.19.4"
+version = "0.20.0"
 description = "MCP-compatible tool registry for 3tears tool system"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,13 +12,13 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears>=0.19.0,<0.20.0",
-    "3tears-agent-acl>=0.19.0,<0.20.0",
-    "3tears-agent-tools>=0.19.0,<0.20.0",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-agent-acl>=0.20.0,<0.21.0",
+    "3tears-agent-tools>=0.20.0,<0.21.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.19.0,<0.20.0",
-    "3tears-observe>=0.19.0,<0.20.0",
+    "3tears-nats[client]>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "nats-py>=2.0",
     "prometheus-client>=0.20",
 ]

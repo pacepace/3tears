@@ -201,7 +201,19 @@ class WorkspaceHistoryTool(TearsTool):
                             db_pool=None,
                             acl_cache=self._acl_cache,
                         )
-                    except SandboxDenied, WorkspaceAccessDenied:
+                    except (SandboxDenied, WorkspaceAccessDenied) as exc:
+                        # Correct behaviour -- the caller must not see this path. Recorded because
+                        # a burst of it is what a misconfigured policy looks like from the outside:
+                        # a history that is simply short, with nothing saying rows were withheld.
+                        log.debug(
+                            "workspace history withheld a row the caller cannot read",
+                            extra={
+                                "extra_data": {
+                                    "workspace_id": str(workspace.id),
+                                    "denial": type(exc).__name__,
+                                }
+                            },
+                        )
                         continue
                     rows.append(row)
             entries = [self._serialize_row(row) for row in rows]

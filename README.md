@@ -111,6 +111,7 @@ Every package shares the `threetears.*` import namespace and installs independen
 | [`3tears-nats`](packages/nats/) | `threetears.nats` | Typed NATS client, subject builders, message envelopes, and JetStream KV bucket helpers |
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, a `@traced` decorator, ContextVar-backed tags, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast and per-message echo, for coherent cross-pod cache reloads |
+| [`3tears-iam`](packages/iam/) | `threetears.iam` | Identity and access primitives. Passwords, OAuth2/OIDC, SAML, GitHub sign-in, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them |
 | [`3tears-mcp`](packages/mcp/) | `threetears.mcp` | A Model Context Protocol framework. RBAC-gated `McpServer`, `McpTool` plus `register_tool`, an auth-aware HTTP client, and pluggable identity and authorizer protocols |
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |

@@ -1,11 +1,9 @@
 """shared test setup for the agent-workspace package test suite.
 
-exposes the core coordination fake NATS KV helpers (defined in the core
-package's test tree) to workspace tests by adding the core tests root to
-``sys.path``. the fake NATS KV is a test-only helper exercising the
-semantics of ``nats-py`` :class:`KeyValue` that :class:`KVLease` depends
-on; reusing it here rather than duplicating the implementation keeps the
-workspace lease-wrapper tests in lockstep with core's lease tests.
+the fake NATS KV these tests use is published as
+:mod:`threetears.core.testing.kv` and imported normally. it previously lived in core's
+test tree and was reached by inserting that directory onto ``sys.path``, which meant a
+double every consumer needed could only be had by a path hack.
 """
 
 from __future__ import annotations
@@ -31,12 +29,6 @@ def _bind_test_subject_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "3tears")
 
-
-_CORE_COORDINATION_TESTS = (
-    Path(__file__).resolve().parent.parent.parent.parent / "core" / "tests" / "unit" / "coordination"
-)
-if str(_CORE_COORDINATION_TESTS) not in sys.path:
-    sys.path.insert(0, str(_CORE_COORDINATION_TESTS))
 
 # expose ``_helpers.asyncpg_shims`` (and any future shared test-infra
 # packages) to every workspace test by adding this ``tests`` directory

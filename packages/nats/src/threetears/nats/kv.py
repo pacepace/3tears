@@ -24,7 +24,7 @@ design notes
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
@@ -254,6 +254,7 @@ class NatsKvBucket:
         try:
             entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         except Exception as exc:
             raise KvError(f"KV get failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -271,6 +272,7 @@ class NatsKvBucket:
         try:
             entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
+            # NOSILENT: a miss is this method's documented result, reported to the caller as None
             return None
         except Exception as exc:
             raise KvError(f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -311,6 +313,14 @@ class NatsKvBucket:
                 lambda: self._kv.create(key, value), passthrough=(KeyWrongLastSequenceError,)
             )
         except KeyWrongLastSequenceError:
+            # A lost create is a documented result (None), but a burst of them is contention on
+            # one key -- two writers racing a lock or a leader election -- which only shows up
+            # here. The value is not logged; the key is structural, the same identifier already
+            # carried by the KvError below.
+            log.debug(
+                "KV create lost: key already exists",
+                extra={"extra_data": {"bucket": self._full_name, "key": key}},
+            )
             return None
         except Exception as exc:
             raise KvError(f"KV create failed: bucket={self._full_name} key={key}: {exc}") from exc
@@ -334,6 +344,12 @@ class NatsKvBucket:
                 lambda: self._kv.update(key, value, revision), passthrough=(KeyWrongLastSequenceError,)
             )
         except KeyWrongLastSequenceError:
+            # A lost CAS is a documented result (None), but a burst of them is contention on one
+            # key, and a caller that never retries would otherwise drop the write in silence.
+            log.debug(
+                "KV update lost: revision mismatch",
+                extra={"extra_data": {"bucket": self._full_name, "key": key, "expected_revision": revision}},
+            )
             return None
         except Exception as exc:
             raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
@@ -373,3 +389,73 @@ class NatsKvBucket:
         except Exception as exc:
             raise KvError(f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}") from exc
         return True
+
+
+@runtime_checkable
+class KvBucketLike(Protocol):
+    """The bucket surface a KV consumer actually uses.
+
+    Structurally identical to :class:`NatsKvBucket`'s public operations, and to the
+    in-memory ``FakeKvBucket`` the testing package ships. It exists so a consumer can
+    declare the slice it needs instead of the concrete class: the two are interchangeable
+    at every call site in the platform, and a signature naming the concrete one forces a
+    ``cast`` or a ``type: ignore`` on every test that passes the double.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def ttl(self) -> timedelta | None: ...
+
+    async def get(self, *, key: str) -> bytes | None: ...
+
+    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None: ...
+
+    async def put(self, *, key: str, value: bytes) -> int: ...
+
+    async def create(self, *, key: str, value: bytes) -> int | None: ...
+
+    async def update(self, *, key: str, value: bytes, revision: int) -> int | None: ...
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool: ...
+
+
+@runtime_checkable
+class KvCapable(Protocol):
+    """A client that can open KV buckets -- the slice of :class:`NatsClient` that KV code needs.
+
+    Most consumers of a NATS client only ever call ``kv_bucket``: a rate limiter, a replay
+    guard, a distributed lock. Naming this instead of ``NatsClient`` says what is actually
+    required, and lets the shipped in-memory double satisfy the signature by construction
+    rather than by exemption.
+
+    The full ``kv_bucket`` signature is declared rather than a two-argument subset: several
+    coordination primitives pass ``storage`` / ``create_if_missing`` / ``history``, and a
+    Protocol that omitted them would reject those callers. The shipped in-memory double
+    mirrors the same signature, so both satisfy this by construction.
+    """
+
+    async def kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        create_if_missing: bool = True,
+        history: int = 1,
+    ) -> KvBucketLike: ...
+
+
+@runtime_checkable
+class JetStreamPublisher(Protocol):
+    """The slice of :class:`NatsClient` a durable-publish caller needs.
+
+    One method, because that is genuinely all an audit emitter or any other
+    fire-and-persist producer uses. Sits beside :class:`KvCapable` for the same reason:
+    a signature naming the whole client forces every test that passes a recording double
+    to launder it through a cast, which is a hole in exactly the tests that exist to prove
+    the right thing was published.
+    """
+
+    async def jetstream_publish(self, *, subject: Any, payload: bytes) -> None: ...

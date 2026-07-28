@@ -421,13 +421,22 @@ class Subscription:
             return
         try:
             await self.raw_subscription.unsubscribe()
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            pass
+        except Exception as exc:  # noqa: BLE001 -- diag only; teardown continues regardless
+            log.warning(
+                "unsubscribe failed",
+                extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
+            )
         self.dispatch_task.cancel()
         try:
             await self.dispatch_task
-        except asyncio.CancelledError, Exception:  # noqa: BLE001
+        except asyncio.CancelledError:
+            # NOSILENT: this IS the cancellation requested on the line above
             pass
+        except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
+            log.warning(
+                "dispatch task raised while unwinding",
+                extra={"extra_data": {"subject": self.subject.path, "error": str(exc)}},
+            )
         self._closed = True
 
 
@@ -1782,8 +1791,14 @@ class NatsClient:
         sub.dispatch_task.cancel()
         try:
             await sub.dispatch_task
-        except asyncio.CancelledError, Exception:  # noqa: BLE001
+        except asyncio.CancelledError:
+            # NOSILENT: this IS the cancellation requested on the line above
             pass
+        except Exception as exc:  # noqa: BLE001 -- diag only; the subscription is dropped either way
+            log.warning(
+                "dispatch task raised while unwinding",
+                extra={"extra_data": {"subject": sub.subject.path, "error": str(exc)}},
+            )
         if sub in self._subscriptions:
             self._subscriptions.remove(sub)
 

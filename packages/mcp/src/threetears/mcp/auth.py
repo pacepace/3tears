@@ -528,6 +528,7 @@ class LocalGrantAuthorizer:
         self._catchup_task.cancel()
         try:
             await self._catchup_task
+        # NOSILENT: CancelledError here IS the cancellation we just requested
         except asyncio.CancelledError:
             pass
         self._catchup_task = None

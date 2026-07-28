@@ -18,9 +18,10 @@ from __future__ import annotations
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NoReturn
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from threetears.observe import get_logger
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 from threetears.core.security.identity_token import (
@@ -32,6 +33,26 @@ from threetears.core.security.identity_token import (
 )
 
 __all__ = ["DEFAULT_IDENTITY_TTL_SECONDS", "IdentityMinter", "static_token_provider"]
+
+
+log = get_logger(__name__)
+
+
+def _key_load_failed(reason: str) -> NoReturn:
+    """Log a signing-key load failure at ERROR, then raise it.
+
+    Distinct from a verification denial, and a level louder: a denial means one caller was
+    refused, whereas this means the service holds no usable signing key and cannot mint at
+    all. It is a deploy error -- an unparseable PEM, an encrypted key with no password, a
+    seed of the wrong length -- and the operator who mis-set it is the only person who can
+    fix it, so it must reach them rather than dying inside a caller's ``except``.
+
+    The reason names the failure shape only. The key material, and the secret it was read
+    from, never appear.
+    """
+    log.error("identity signing key could not be loaded", extra={"extra_data": {"reason": reason}})
+    raise IdentityTokenError(reason) from None
+
 
 #: fallback identity-JWT lifetime. The token is a CONNECT credential re-minted on every reconnect
 #: (the token provider), so a short TTL just means more frequent transparent re-mints, never
@@ -119,9 +140,9 @@ class IdentityMinter:
             # given but private key is encrypted") — an operator handed us a password-protected key we
             # cannot open here. Both are a bad-key deploy error: map to IdentityTokenError so the caller's
             # `except IdentityTokenError` yields a clean config error, never a raw traceback (the contract).
-            raise IdentityTokenError(f"invalid identity signing key ({type(exc).__name__})") from None
+            _key_load_failed(f"invalid identity signing key ({type(exc).__name__})")
         if not isinstance(key, Ed25519PrivateKey):
-            raise IdentityTokenError("identity signing key must be an Ed25519 private key")
+            _key_load_failed("identity signing key must be an Ed25519 private key")
         return cls(key, kid=kid, issuer=issuer, ttl_seconds=ttl_seconds)
 
     @classmethod

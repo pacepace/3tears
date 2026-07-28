@@ -201,6 +201,9 @@ def _select_one_safe(node: BeautifulSoup | Tag, selector: str) -> Tag | None:
     try:
         return node.select_one(selector)
     except SelectorSyntaxError:
+        # An unparseable selector and a selector that legitimately matched nothing both return
+        # None, so a malformed proposal reads as "this page does not have that field".
+        log.debug("invalid CSS selector treated as no match", extra={"extra_data": {"selector": selector[:200]}})
         return None
 
 
@@ -219,6 +222,8 @@ def _select_safe(node: BeautifulSoup | Tag, selector: str) -> list[Tag]:
     try:
         return node.select(selector)
     except SelectorSyntaxError:
+        # Same conflation as _select_one_safe: invalid and matched-nothing are the same [].
+        log.debug("invalid CSS selector treated as no match", extra={"extra_data": {"selector": selector[:200]}})
         return []
 
 
@@ -796,6 +801,9 @@ def _fields_matching_any_row(
             try:
                 _coerce_field_value(text, expected_type)
             except ValueError, TypeError:
+                # NOSILENT: this call IS the test of whether the proposal yields a coercible value
+                # for this row. A rejection is how a bad proposal gets filtered out, which is the
+                # function's whole purpose; the survivors list below is the report.
                 continue
             survivors.append(proposal)
             break
@@ -1597,6 +1605,13 @@ def _coerce_direct_extraction_result(result: BaseModel, schema: FieldSchema) -> 
         try:
             extracted[name] = _coerce_field_value(normalized, expected_type)
         except ValueError, TypeError:
+            # The field is dropped from the result, where it becomes indistinguishable from one the
+            # page never carried. This is the extraction proper, not the proposal-filtering probe
+            # above, so a value that was found and then discarded gets a line.
+            log.debug(
+                "extracted field dropped: value would not coerce to its schema type",
+                extra={"extra_data": {"field": name, "expected_type": str(expected_type), "raw": normalized[:120]}},
+            )
             continue
     return extracted
 

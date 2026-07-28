@@ -395,6 +395,14 @@ class _PrometheusEmitter:
             try:
                 self._resolved_registry.unregister(collector)
             except KeyError, ValueError:
+                # KeyError: already off the registry (benign race). ValueError: registered against
+                # a different registry than the one resolved here -- benign for this best-effort
+                # cleanup, but a steady stream of it means the collectors and the registry were
+                # wired up from different places.
+                logger.debug(
+                    "could not unregister metrics collector; left in place",
+                    extra={"extra_data": {"collector": type(collector).__name__}},
+                )
                 continue
 
         self._counter_input = None

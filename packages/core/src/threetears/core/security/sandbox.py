@@ -29,7 +29,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, NoReturn
+
+from threetears.observe import get_logger
 
 __all__ = [
     "PathSandbox",
@@ -37,6 +39,28 @@ __all__ = [
     "SandboxDecision",
     "SandboxDenied",
 ]
+
+
+log = get_logger(__name__)
+
+
+def _deny(action: str, target: str, reason: str) -> NoReturn:
+    """Log a policy denial, then raise it.
+
+    Every denial goes through here so the log line and the exception cannot drift apart,
+    and so a check added later cannot deny silently. A denial is the whole output of a
+    sandbox -- a run of them is either a misconfigured policy or something probing the
+    boundary, and neither is visible if the only record is an exception the caller
+    swallows.
+
+    All three of :class:`SandboxDenied`'s attributes are recorded, which is what that
+    class's own docstring says they are for. ``target`` is a key or path, never a secret.
+    """
+    log.warning(
+        "sandbox denied",
+        extra={"extra_data": {"action": action, "target": target, "reason": reason}},
+    )
+    raise SandboxDenied(action, target, reason)
 
 
 class SandboxDecision(StrEnum):
@@ -119,7 +143,7 @@ class Sandbox(ABC):
         :raises SandboxDenied: if policy denies requested action on target
         """
         if self.check(action, target) is SandboxDecision.DENY:
-            raise SandboxDenied(action, target, self.deny_reason(action, target))
+            _deny(action, target, self.deny_reason(action, target))
 
     def deny_reason(self, action: str, target: str) -> str:
         """return human-readable reason why policy denies this call.
@@ -254,23 +278,23 @@ class PathSandbox(Sandbox):
             string.
         """
         if not key:
-            raise SandboxDenied("access", key, "key is empty")
+            _deny("access", key, "key is empty")
         if len(key) > self.MAX_KEY_LEN:
-            raise SandboxDenied(
+            _deny(
                 "access",
                 key,
                 f"key length {len(key)} exceeds max {self.MAX_KEY_LEN}",
             )
         if self._contains_control_char(key):
-            raise SandboxDenied(
+            _deny(
                 "access",
                 key,
                 "key contains NUL or control character",
             )
         if Path(key).is_absolute():
-            raise SandboxDenied("access", key, "absolute path not allowed")
+            _deny("access", key, "absolute path not allowed")
         if ".." in Path(key).parts:
-            raise SandboxDenied(
+            _deny(
                 "access",
                 key,
                 "parent-ref (..) not allowed in key",
@@ -310,12 +334,12 @@ class PathSandbox(Sandbox):
         root = self._fs_roots[root_name]
         as_path = Path(path)
         if as_path.is_absolute():
-            raise SandboxDenied("access", str(path), "absolute path not allowed")
+            _deny("access", str(path), "absolute path not allowed")
         candidate = (root / as_path).resolve()
         try:
             candidate.relative_to(root)
         except ValueError as exc:
-            raise SandboxDenied("access", str(path), "path escapes root") from exc
+            _deny("access", str(path), "path escapes root")
         return candidate
 
     def deny_reason(self, action: str, target: str) -> str:

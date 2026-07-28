@@ -26,7 +26,7 @@ import pytest
 
 from threetears.core.coordination import TokenBucket, TokenBucketConflict
 
-from ._fake_kv import FakeNatsClient
+from threetears.core.testing.kv import FakeNatsClient
 
 
 @pytest.fixture

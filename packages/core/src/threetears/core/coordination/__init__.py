@@ -51,7 +51,7 @@ from threetears.core.coordination.token_bucket import (
     TokenBucketConflict,
     TokenClaimResult,
 )
-from threetears.core.coordination.windowed_counter import WindowedCounter
+from threetears.core.coordination.windowed_counter import WindowedCounter, WindowState
 
 __all__ = [
     "ClaimResult",
@@ -71,5 +71,6 @@ __all__ = [
     "TokenBucket",
     "TokenBucketConflict",
     "TokenClaimResult",
+    "WindowState",
     "WindowedCounter",
 ]

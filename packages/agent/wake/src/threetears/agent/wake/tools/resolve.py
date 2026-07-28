@@ -14,10 +14,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from threetears.observe import get_logger
+
 __all__ = [
     "parse_schedule_id",
     "parse_subscription_id",
 ]
+
+log = get_logger(__name__)
 
 
 def parse_schedule_id(raw: str) -> UUID | None:
@@ -61,13 +65,7 @@ def _parse_tagged(raw: str, tag: str) -> UUID | None:
     try:
         return UUID(candidate)
     except ValueError:
-        # malformed UUID literal (typo, wrong format, etc.)
-        return None
-    except AttributeError:
-        # defensive: handles unusual non-string candidates that
-        # uuid.UUID rejects via attribute access on its input
-        return None
-    except TypeError:
-        # defensive: non-str inputs (e.g. dict, list) that bypass the
-        # earlier ``isinstance(raw, str)`` guard via duck-typing
+        # Malformed UUID literal (typo, wrong format, etc.). The caller turns None into a
+        # tool-error the model sees; this line is for an operator asking why a lookup keeps missing.
+        log.debug("id did not parse as a UUID", extra={"extra_data": {"tag": tag, "candidate": candidate[:64]}})
         return None

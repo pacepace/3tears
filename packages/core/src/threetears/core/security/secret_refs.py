@@ -26,12 +26,15 @@ failure raises :class:`SecretResolutionError` whose message names the *reference
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import os
 import re
 from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import SecretStr
+from threetears.observe import get_logger
 
 # a backend resolves a scheme's locator to a SecretStr. ``None`` in the
 # registry marks a recognised-but-unimplemented scheme.
@@ -45,6 +48,24 @@ __all__ = [
     "resolve_secret",
     "validate_ref",
 ]
+
+
+log = get_logger(__name__)
+
+
+def _reject(reason: str) -> NoReturn:
+    """Log the rejection, then raise it.
+
+    Every failure path goes through here so the log line and the exception cannot drift
+    apart, and so a rejection added later cannot silently log nothing.
+
+    A secret that will not resolve is a deployment failure an operator has to see, and the
+    reference (not the secret) is what tells them which one. The resolved VALUE never
+    appears here -- that is the entire point of the type it is carried in.
+    """
+    log.warning("secret resolution failed", extra={"extra_data": {"reason": reason}})
+    raise SecretResolutionError(reason) from None
+
 
 # a reference is ``scheme://locator``. scheme is lowercase alnum + a
 # few separators; locator is everything after the first ``://`` and
@@ -83,9 +104,9 @@ def parse_ref(ref: str) -> tuple[str, str]:
     """
     match = _REF_RE.match(ref)
     if match is None:
-        raise SecretResolutionError(
+        _reject(
             f"invalid secret reference {ref!r}: expected "
-            f"'scheme://locator' (e.g. 'env://MY_VAR' or 'k8s://my-datasource/password').",
+            f"'scheme://locator' (e.g. 'env://MY_VAR' or 'k8s://my-datasource/password')."
         )
     return match.group("scheme"), match.group("locator")
 
@@ -96,14 +117,10 @@ def _resolve_env(locator: str) -> SecretStr:
     :raises SecretResolutionError: when the name is malformed or unset
     """
     if not _ENV_VAR_NAME_RE.match(locator):
-        raise SecretResolutionError(
-            f"invalid env reference 'env://{locator}': {locator!r} is not a valid environment variable name.",
-        )
+        _reject(f"invalid env reference 'env://{locator}': {locator!r} is not a valid environment variable name.")
     raw = os.environ.get(locator)
     if raw is None:
-        raise SecretResolutionError(
-            f"env://{locator} is not set. export {locator} before the secret is used.",
-        )
+        _reject(f"env://{locator} is not set. export {locator} before the secret is used.")
     return SecretStr(raw)
 
 
@@ -117,22 +134,18 @@ def _resolve_k8s(locator: str) -> SecretStr:
     :raises SecretResolutionError: on path traversal, missing file, or read error
     """
     if ".." in Path(locator).parts:
-        raise SecretResolutionError(
-            f"invalid k8s reference 'k8s://{locator}': path traversal ('..') is not allowed.",
-        )
+        _reject(f"invalid k8s reference 'k8s://{locator}': path traversal ('..') is not allowed.")
     base = Path(os.environ.get(_K8S_SECRETS_DIR_ENV, _K8S_SECRETS_DIR_DEFAULT))
     secret_path = base / locator
     try:
         raw = secret_path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        raise SecretResolutionError(
+        _reject(
             f"k8s://{locator} not found at {secret_path}. confirm the Secret is mounted "
-            f"at {base} (set {_K8S_SECRETS_DIR_ENV} to relocate).",
-        ) from None
+            f"at {base} (set {_K8S_SECRETS_DIR_ENV} to relocate)."
+        )
     except OSError as exc:
-        raise SecretResolutionError(
-            f"k8s://{locator}: failed to read {secret_path}: {type(exc).__name__}.",
-        ) from None
+        _reject(f"k8s://{locator}: failed to read {secret_path}: {type(exc).__name__}.")
     return SecretStr(raw)
 
 
@@ -195,13 +208,9 @@ def validate_ref(ref: str) -> str:
     scheme, locator = parse_ref(ref)
     if scheme not in _BACKENDS:
         known = ", ".join(sorted(_BACKENDS))
-        raise SecretResolutionError(
-            f"unknown secret scheme {scheme!r} in {ref!r}. known schemes: {known}.",
-        )
+        _reject(f"unknown secret scheme {scheme!r} in {ref!r}. known schemes: {known}.")
     if scheme == "env" and not _ENV_VAR_NAME_RE.match(locator):
-        raise SecretResolutionError(
-            f"invalid env reference {ref!r}: {locator!r} is not a valid environment variable name.",
-        )
+        _reject(f"invalid env reference {ref!r}: {locator!r} is not a valid environment variable name.")
     return ref
 
 
@@ -220,7 +229,5 @@ def resolve_secret(ref: str) -> SecretStr:
         if scheme in _BACKENDS:
             raise _resolve_unimplemented(scheme)
         known = ", ".join(sorted(_BACKENDS))
-        raise SecretResolutionError(
-            f"unknown secret scheme {scheme!r} in {ref!r}. known schemes: {known}.",
-        )
+        _reject(f"unknown secret scheme {scheme!r} in {ref!r}. known schemes: {known}.")
     return backend(locator)

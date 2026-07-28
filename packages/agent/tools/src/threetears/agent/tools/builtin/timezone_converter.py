@@ -72,6 +72,9 @@ def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> st
                 parsed = datetime.strptime(time_str.strip(), fmt)
                 break
             except ValueError:
+                # NOSILENT: this loop IS the probe -- each candidate format is tried until one
+                # parses, so a rejection is the expected answer for all but the matching format.
+                # Exhausting every format is reported by the tool-error below.
                 continue
 
         if parsed is None:
