@@ -1067,7 +1067,8 @@ def split_notice_documents(html: str) -> list[NoticeDocument]:
     instead of a page-wide regex/CSS pattern -- some real multi-document targets
     (e.g. Hawaii/West Virginia's WARN Act letters, one independently-worded letter
     per employer) share no boilerplate a single pattern could ever generalize
-    across, so each document needs its own fresh extraction call, not a cached recipe.
+    across, so each document needs its own fresh extraction, not a cached recipe --
+    and a judge besides, so never fewer than two calls apiece.
 
     :param html: the combined page's full HTML (see :data:`NOTICE_DOCUMENT_CLASS`)
     :ptype html: str
@@ -1439,7 +1440,7 @@ async def generate_regex_row_candidates(
 
 
 # ===========================================================================
-# extract_fields_directly -- no cached pattern, one LLM call per document
+# extract_fields_directly -- no cached pattern; chunked by field count, so more than one call per document
 # ===========================================================================
 
 
@@ -1545,10 +1546,15 @@ async def extract_fields_directly(
     genuinely independently-worded (e.g. Hawaii/West Virginia's real WARN
     Act letters, one freeform letter per employer, live-verified to share
     no boilerplate a single regex/CSS pattern could ever generalize across)
-    needs a fresh extraction call on every single document, every poll --
-    the eval loop's ``"per_document"`` :data:`~threetears.scrape.eval_loop.
-    StrategyType` (see that module) calls this once per document rather
-    than once per page.
+    needs a fresh extraction on every single document, every poll -- the eval
+    loop's ``"per_document"`` :data:`~threetears.scrape.eval_loop.StrategyType`
+    (see that module) extracts per document rather than per page.
+
+    It reaches this function through :func:`extract_fields_directly_chunked`
+    rather than calling it directly, so one document is more than one call to
+    this: the wrapper splits the schema by field count and gathers the chunks.
+    Named precisely because "one call per document" was the cost this package
+    documented in six places and none of them were right.
 
     :param text: one document's own plain text (see :func:`html_to_text`), never HTML
     :ptype text: str

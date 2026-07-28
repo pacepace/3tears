@@ -43,6 +43,7 @@ import time
 from typing import Any
 
 import httpx
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
 from ..driver import NavStep, RenderedPage, ScrapeDriver
@@ -155,13 +156,28 @@ class ApiDriver(ScrapeDriver):
     case via ``wait_for``/``nav_steps``.
     """
 
-    def __init__(self, *, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, *, client: httpx.AsyncClient | None = None, egress: EgressDriver | None = None) -> None:
         """
         :param client: an already-constructed httpx client to reuse (test
             injection); a fresh one is created per call when omitted.
         :ptype client: httpx.AsyncClient | None
+        :param egress: which exit this driver's requests leave by (see
+            :mod:`threetears.core.egress`). Applies only to the per-call client
+            this driver builds -- an injected ``client`` already has whatever
+            transport its owner gave it, and silently rebinding that would
+            override a decision somebody else made deliberately. This is the
+            half of egress a browser flag cannot reach: a deployment routing
+            its scrapes through TOR while its JSON APIs go out direct has one
+            exit in its configuration and two in reality.
+        :ptype egress: EgressDriver | None
         """
         self._client = client
+        self._egress = egress
+
+    @property
+    def egress(self) -> EgressDriver | None:
+        """This driver's configured exit. Overrides ``ScrapeDriver``'s ``None`` default."""
+        return self._egress
 
     @property
     def name(self) -> str:
@@ -180,6 +196,7 @@ class ApiDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch *url*'s JSON response and concatenate per-record fragments into synthetic HTML.
 
@@ -206,12 +223,20 @@ class ApiDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            SITE, not per call) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
+        :ptype session_state: dict[str, Any] | None
         :return: the concatenated fragments, or the synthetic table (structured mode), as HTML
         :rtype: RenderedPage
         :raises ApiDriverError: on a transport failure, a non-2xx HTTP
             response, missing *results_path*, a response that isn't valid
             JSON, or *results_path* not resolving to a list
         """
+        if session_state:
+            self._warn_dropped_session_state(url, log)
         if results_path is None:
             raise ApiDriverError("missing_config", "results_path is required for ApiDriver.render()")
 
@@ -220,7 +245,10 @@ class ApiDriver(ScrapeDriver):
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                transport=self._egress.httpx_transport() if self._egress is not None else None,
             )
         try:
             try:
@@ -260,4 +288,14 @@ class ApiDriver(ScrapeDriver):
             status=response.status_code,
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            # This driver binds its transport from `self._egress` a few lines up, so it is one
+            # of the backends that genuinely honours an exit -- and it was the only one not
+            # saying which. Left unreported, `ScrapeTool` passes `None` to the circuit and every
+            # API target's health row records no exit, so "walled" and "walled FROM THIS EXIT"
+            # -- the distinction the column and its migration exist for -- are indistinguishable
+            # for the one non-browser backend that can tell them apart.
+            #
+            # `None` when nothing was configured, matching the convention `last_egress` keeps
+            # everywhere: a name means somebody chose an exit.
+            egress=self._egress.name if self._egress is not None else None,
         )

@@ -25,7 +25,7 @@ from threetears.core.security.identity_token import (
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
-from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
+from threetears.nats import IncomingMessage, RequestError, Subjects
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog

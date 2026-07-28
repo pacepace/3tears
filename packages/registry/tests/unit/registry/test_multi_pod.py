@@ -22,7 +22,7 @@ from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import ProxyCallResponse
-from threetears.registry.registration import ProbeResponse, RegistrationHandler
+from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
 
 from ._dispatch_auth import make_authed_request, make_proxy

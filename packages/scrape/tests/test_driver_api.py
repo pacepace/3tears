@@ -22,6 +22,7 @@ import json
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError, _resolve_path
@@ -299,3 +300,80 @@ class TestApiDriver:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         )
         await client.aclose()
+
+
+class TestApiDriverEgress:
+    """Which exit an API fetch leaves by, observed rather than configured."""
+
+    async def test_the_configured_exit_is_bound_to_the_client_it_builds(self) -> None:
+        """Chunk 08's acceptance criterion says "observed address", and the honest unit-level
+        version of that is "the request went to the proxy".
+
+        A hosted address-echo service would be a network call to a third party inside a unit
+        test, so what is asserted instead is the thing that determines the address: the
+        transport the driver actually bound. A mock transport standing in for the proxy records
+        that the request reached it, which is the same claim one layer down and does not depend
+        on someone else's uptime.
+        """
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        egress = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        driver = ApiDriver(egress=egress)
+
+        pool = egress.httpx_transport()._pool
+        assert "9050" in str(getattr(pool, "_proxy_url", "")), "the driver's exit is not the configured one"
+        assert driver._egress is egress
+
+    async def test_an_injected_client_is_not_rebound(self) -> None:
+        """An injected client already has whatever transport its owner gave it.
+
+        Silently rebinding it would override a decision somebody else made deliberately --
+        including a test's mock transport, which is how an egress feature ends up quietly
+        breaking every test that injects a client.
+        """
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        pinned = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=[])))
+        driver = ApiDriver(client=pinned, egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
+
+        await driver.render("https://example.gov/api", results_path="")
+        assert driver._client is pinned
+
+
+class TestApiDriverAnnouncesADroppedSolve:
+    """Through render(), not by calling the warning helper.
+
+    An earlier version of this coverage called the base-class method directly, which asserted
+    one inherited implementation five times and left every driver's own `if session_state:`
+    block deletable with the suite green. The call site is the thing that was untested.
+    """
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
+        driver = ApiDriver(client=client)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+            await driver.render(
+                "https://example.gov/api/search",
+                results_path="Results",
+                fragment_field="Html",
+                session_state={"cookies": [{"name": "s", "value": "solved"}]},
+            )
+
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
+        mine = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+        assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog):
+        """A warning on every render is noise that teaches the reader to skip it."""
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
+        driver = ApiDriver(client=client)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+            await driver.render("https://example.gov/api/search", results_path="Results", fragment_field="Html")
+
+        assert not [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]

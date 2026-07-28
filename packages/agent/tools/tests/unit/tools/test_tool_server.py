@@ -28,7 +28,7 @@ from threetears.core.security.identity_token import (
     generate_signing_keypair,
     sign_identity_token,
 )
-from threetears.nats import IncomingMessage, Subject
+from threetears.nats import IncomingMessage
 
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider

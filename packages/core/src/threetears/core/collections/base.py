@@ -29,7 +29,7 @@ from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
@@ -100,6 +100,24 @@ class BaseCollection(ABC, Generic[EntityT]):
     """
 
     primary_key_column: str | tuple[str, ...] = "id"
+
+    #: Columns holding timestamps, declared rather than hand-rehydrated.
+    #:
+    #: The L2 JSON codec renders a ``datetime`` as an ISO string, so a row read through L2
+    #: differs in TYPE from the identical row read through L1 or L3 unless something restores
+    #: it. That asymmetry is cosmetic while the row is only read; it becomes a fault the moment
+    #: one is written BACK, because an update fences on ``date_updated`` as an optimistic lock
+    #: and a string bound against ``TIMESTAMPTZ`` fails at the asyncpg border.
+    #:
+    #: Declaring the columns rather than overriding :meth:`deserialize` is what stops this being
+    #: solved once per collection. It had been solved three times, in three packages, with three
+    #: different answers to what "rehydrate" means -- tuple versus frozenset, coerce versus pass
+    #: through, raise versus preserve the string. Every collection now gets one answer, and gets
+    #: it by naming its columns.
+    #:
+    #: A ``frozenset`` so a subclass can extend its parent's set with ``|`` rather than
+    #: restating it, which is how a column gets silently dropped.
+    datetime_columns: ClassVar[frozenset[str]] = frozenset()
 
     # datasource-task-06 DS-06-04: per-concrete-class memo of table
     # names that have already emitted the "nats_client missing"
@@ -328,6 +346,70 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         ...
+
+    # --- timestamp discipline across the L2 boundary ---
+    #
+    # One rule, enforced at both ends: every datetime in this system is timezone-aware UTC.
+    # Write-side normalisation is the half that matters, because it is the only one that
+    # PREVENTS anything. Read-side coercion is a legacy tail: it repairs values written before
+    # the rule existed, says so in the log, and can be deleted once those age out.
+    #
+    # Coercing a naive value to UTC on read, alone, is the mistake rather than the fix. If the
+    # value was local time, coercion shifts it silently by hours and stamps the result
+    # authoritative -- worse than leaving a string, because it now looks correct. Normalising on
+    # write means the guess has a shrinking, observable lifetime instead of a permanent one.
+
+    def _normalise_datetimes_for_write(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return *data* with every :attr:`datetime_columns` value aware-UTC.
+
+        A naive value is assumed UTC and stamped, because by the time a row reaches here the
+        information needed to interpret it any other way is gone. That assumption is recorded
+        at WARNING: it is a guess, and a caller producing naive timestamps has a bug upstream
+        that will keep producing them until somebody sees this line.
+
+        Copies rather than mutating: the caller's dict is often an entity's live row, and a
+        serialization step that edits its input is a surprise nobody reads the code to find.
+        """
+        if not self.datetime_columns:
+            return data
+        out = dict(data)
+        for column in self.datetime_columns:
+            value = out.get(column)
+            if isinstance(value, datetime) and value.tzinfo is None:
+                log.warning(
+                    "naive datetime normalised to UTC on write; the value's real offset is "
+                    "unknowable here, so this is an assumption and the producer should be fixed",
+                    extra={"extra_data": {"table": self.table_name, "column": column}},
+                )
+                out[column] = value.replace(tzinfo=UTC)
+        return out
+
+    def _rehydrate_datetimes(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Restore :attr:`datetime_columns` from the ISO strings the L2 codec produced.
+
+        :raises CorruptCacheEntry: when a value will not parse. The caller treats that as a
+            cache miss and falls through to L3 rather than failing the read -- see the
+            exception's own docstring for why that beats propagating or papering over it.
+        """
+        if not self.datetime_columns:
+            return row
+        for column in self.datetime_columns:
+            value = row.get(column)
+            if not isinstance(value, str):
+                continue
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError as exc:
+                raise CorruptCacheEntry(self.table_name, column, value) from exc
+            if parsed.tzinfo is None:
+                log.warning(
+                    "naive datetime read from L2 and assumed UTC; written before write-side "
+                    "normalisation, or by something that bypasses it",
+                    extra={"extra_data": {"table": self.table_name, "column": column}},
+                )
+                parsed = parsed.replace(tzinfo=UTC)
+            row[column] = parsed
+        return row
 
     # --- L1 cache (sync, for BaseEntity) ---
     #
@@ -563,7 +645,24 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
         if raw is None:
             return None
-        return self.deserialize(raw)
+        try:
+            return self._rehydrate_datetimes(self.deserialize(raw))
+        except CorruptCacheEntry as exc:
+            # A cache miss, not a failure. Returning None sends the caller to L3, which is
+            # authoritative -- the same path a cold key takes. Failing the read instead would
+            # let one poisoned key break a lookup that L3 could have answered, and returning
+            # the row undecoded would hand back a string where the caller declared a datetime.
+            log.warning(
+                "L2 entry could not be decoded; falling through to L3",
+                extra={
+                    "extra_data": {
+                        "entity_id": str(entity_id),
+                        "table": self.table_name,
+                        "column": exc.column,
+                    },
+                },
+            )
+            return None
 
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
         """write entity payload to the L2 NATS KV bucket.
@@ -577,7 +676,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             kv = await self._ensure_kv()
             if kv is None:
                 return False
-            await kv.put(key=self.l2_key(entity_id), value=self.serialize(data))
+            await kv.put(key=self.l2_key(entity_id), value=self.serialize(self._normalise_datetimes_for_write(data)))
         except KvError as exc:
             log.warning(
                 "L2 cache write failed",
@@ -1128,7 +1227,25 @@ class BaseCollection(ABC, Generic[EntityT]):
                 revision: int | None = None
             else:
                 raw_bytes, revision = entry
-                row = self.deserialize(raw_bytes)
+                try:
+                    row = self._rehydrate_datetimes(self.deserialize(raw_bytes))
+                except CorruptCacheEntry as exc:
+                    # Treated as no prior row, but the REVISION is kept deliberately. The write
+                    # below then takes the `update` branch and compare-and-swaps the corrupt
+                    # entry away at the revision that held it, which self-heals the key.
+                    # Dropping the revision too would take the `create` branch against a key
+                    # that exists, fail, and retry until the attempt budget ran out.
+                    log.warning(
+                        "L2 entry could not be decoded; replacing it in this CAS round",
+                        extra={
+                            "extra_data": {
+                                "entity_id": str(entity_id),
+                                "table": self.table_name,
+                                "column": exc.column,
+                            },
+                        },
+                    )
+                    row = None
 
             action, new_row = mutate(row)
             if action == "noop":
@@ -1144,9 +1261,19 @@ class BaseCollection(ABC, Generic[EntityT]):
                 if revision is None:
                     # value absent: create-if-absent so a racing creator loses.
                     new_row.setdefault("date_created", now)
-                    ok = await kv.create(key=key, value=self.serialize(new_row)) is not None
+                    ok = (
+                        await kv.create(key=key, value=self.serialize(self._normalise_datetimes_for_write(new_row)))
+                        is not None
+                    )
                 else:
-                    ok = await kv.update(key=key, value=self.serialize(new_row), revision=revision) is not None
+                    ok = (
+                        await kv.update(
+                            key=key,
+                            value=self.serialize(self._normalise_datetimes_for_write(new_row)),
+                            revision=revision,
+                        )
+                        is not None
+                    )
 
             if not ok:
                 if attempt == max_retries - 1:

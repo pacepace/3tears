@@ -36,7 +36,7 @@ from dataclasses import dataclass
 __all__ = ["FakeKvBucket", "FakeNatsClient"]
 
 
-class _yield_once:
+class _YieldOnce:
     """suspend the coroutine once, handing control back to the event loop.
 
     deliberately NOT ``asyncio.sleep(0)``: several suites spy on ``asyncio.sleep`` to assert a
@@ -111,7 +111,7 @@ class FakeKvBucket:
         :return: new revision number, or ``None`` if key already exists
         :rtype: int | None
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         if key in self._entries:
             return None
         self._revision += 1
@@ -126,7 +126,7 @@ class FakeKvBucket:
         :return: stored bytes or ``None``
         :rtype: bytes | None
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -140,7 +140,7 @@ class FakeKvBucket:
         :return: ``(value, revision)`` tuple or ``None``
         :rtype: tuple[bytes, int] | None
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -158,7 +158,7 @@ class FakeKvBucket:
         :return: new revision, or ``None`` on conflict / missing key
         :rtype: int | None
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None or entry.revision != revision:
             return None
@@ -177,7 +177,7 @@ class FakeKvBucket:
             already gone. an unguarded delete of an absent key is still ``True`` (idempotent).
         :rtype: bool
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         entry = self._entries.get(key)
         if entry is None:
             # A revision-guarded delete of a key that is no longer there LOST the race -- it
@@ -200,7 +200,7 @@ class FakeKvBucket:
         :return: new revision number
         :rtype: int
         """
-        await _yield_once()  # so gather() genuinely interleaves
+        await _YieldOnce()  # so gather() genuinely interleaves
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision)
         return self._revision

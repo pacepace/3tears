@@ -50,12 +50,10 @@ from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
 from _helpers.workspace_shims import (
     FakeWorkspaceCollection,
-    FakeWorkspaceContext,
     FakeWorkspaceEntity,
     FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

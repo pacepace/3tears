@@ -93,10 +93,9 @@ _JS_ERR_SUBJECTS_OVERLAP = 10065
 if TYPE_CHECKING:
     from nats.aio.client import Server as _NatsServer
     from nats.aio.msg import Msg as _NatsMsg
-    from nats.aio.subscription import Subscription as _NatsSub
 
     from threetears.nats.kv import NatsKvBucket
-    from threetears.nats.transport import MessageCallback, RawMessageCallback
+    from threetears.nats.transport import RawMessageCallback
 
 
 from threetears.nats.transport import IncomingMessage

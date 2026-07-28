@@ -49,7 +49,7 @@ class _FakeElement:
 
 # parity-exempt: hand-rolled subset stub of nodriver's third-party Tab (only the CDP surface _render uses: .target.target_id/send()/add_handler()/remove_handler()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
 class _FakeTab:
-    """SCR-7L4M: also fakes the CDP surface ``_render`` uses to capture the
+    """Also fakes the CDP surface ``_render`` uses to capture the
     real HTTP status -- ``.target.target_id``, ``.send()``, ``.add_handler()``/
     ``.remove_handler()``. ``fire_response`` lets a test simulate the browser
     emitting ``Network.responseReceived`` for the registered handler, the way
@@ -276,6 +276,19 @@ class _FakeBrowser:
         self._hang = hang
         self._fail_times = fail_times
         self.get_calls = 0
+        self.cdp_calls: list[object] = []
+
+    async def send(self, cmd: object) -> object:
+        """Stand in for the CDP calls the isolated-context path makes.
+
+        Needed for context DISPOSAL: a render that named its own exit disposes its context in
+        `_render`'s finally, on the browser connection. The tab creation itself is
+        monkeypatched at `_create_isolated_tab`, so `update_targets`/`targets` are not needed
+        and are deliberately absent -- unreachable fake surface reads as covered behaviour and
+        is worse than none.
+        """
+        self.cdp_calls.append(cmd)
+        return "ctx-fake"
 
     async def get(self, url: str, new_tab: bool = False) -> _FakeTab:
         self.get_calls += 1
@@ -311,7 +324,9 @@ class TestHealthz:
     async def test_not_ready_before_startup(self, client: httpx.AsyncClient):
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "starting"}
+        # The status field is the contract; the body is an envelope that gains fields.
+        # Asserting the whole dict made every additive field a breaking change.
+        assert r.json()["status"] == "starting"
 
     async def test_not_ready_while_browser_started_but_warm_up_incomplete(self, client: httpx.AsyncClient):
         """Browser started =/= ready -- the warm-up render must complete (or
@@ -319,14 +334,14 @@ class TestHealthz:
         main._browser = _FakeBrowser()
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "starting"}
+        assert r.json()["status"] == "starting"
 
     async def test_ready_once_warm_up_completes(self, client: httpx.AsyncClient):
         main._browser = _FakeBrowser()
         main._ready = True
         async with client:
             r = await client.get("/healthz")
-        assert r.json() == {"status": "ok"}
+        assert r.json()["status"] == "ok"
 
 
 class TestRenderContract:
@@ -379,7 +394,7 @@ class TestRenderContract:
 
 
 class TestRenderRealStatus:
-    """SCR-7L4M: the sidecar must surface the real top-level HTTP status
+    """The sidecar must surface the real top-level HTTP status
     (a successfully-rendered 404/500 page is not the same as a driver crash)
     instead of always reporting 200."""
 
@@ -1268,3 +1283,367 @@ class TestDownloadContract:
         assert filenames == {"a.pdf", "b.pdf"}
         assert len(browser.disposed_contexts) == 2
         assert len(set(browser.disposed_contexts)) == 2  # each context disposed exactly once, no reuse/collision
+
+
+class TestEgressReporting:
+    """Which exit this container leaves by, visible from outside it."""
+
+    async def test_healthz_reports_nothing_when_nothing_is_configured(self) -> None:
+        """A deployment running one container per exit needs to confirm which one it reached.
+
+        Without this the only way to tell a TOR container from a direct one is to fetch an
+        address-echo service through it, which is a network round trip to answer a question
+        the container already knows.
+
+        ``null`` rather than ``"direct"``: this value is written through to
+        ``ScrapeTargetHealth.last_egress``, whose convention is that a name means somebody chose
+        an exit. An unconfigured container reporting "direct" stamped that claim on every row.
+        """
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+            body = (await client.get("/healthz")).json()
+        assert body["egress"] is None
+
+    async def test_healthz_reports_the_name_a_deployment_chose(self, monkeypatch) -> None:
+        """The other half: a stated choice is reported, so ``null`` above means absence not silence.
+
+        Without this the assertion above passes just as well against a ``/healthz`` that never
+        reports an egress at all.
+        """
+        monkeypatch.setattr(main, "EGRESS_NAME", "tor")
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://sidecar") as client:
+            body = (await client.get("/healthz")).json()
+        assert body["egress"] == "tor"
+
+    def test_a_configured_proxy_reaches_the_browser_args(self, monkeypatch) -> None:
+        """Reads the list PRODUCTION builds, which the first version of this test did not.
+
+        That version rebuilt the argument list inside itself and asserted on its own copy, so
+        deleting the production line left it green -- a test of the test. The failure being
+        guarded is the argument never being built, which looks identical from inside the
+        container and only differs at the far end, where nobody is watching.
+        """
+        monkeypatch.setattr(main, "EGRESS_PROXY", "socks5://tor:9050")
+        assert "--proxy-server=socks5://tor:9050" in main._browser_args()
+
+    def test_no_proxy_configured_adds_no_argument(self, monkeypatch) -> None:
+        """The default route stays the default route, with no empty --proxy-server."""
+        monkeypatch.setattr(main, "EGRESS_PROXY", None)
+        args = main._browser_args()
+        assert not any(a.startswith("--proxy-server") for a in args)
+        assert "--disable-dev-shm-usage" in args, "the other launch arguments were lost"
+
+    def test_a_per_request_exit_gets_its_own_context(self, monkeypatch) -> None:
+        """The capability three artifacts said Chromium did not have.
+
+        `--proxy-server` is process-wide, which is what made "one container is one exit" look
+        true. `Target.createBrowserContext` takes its own `proxyServer`, so a render can leave
+        by a different exit than the container's default without a second container.
+
+        Asserted on the CDP command this builds, because that is the whole mechanism: the
+        argument is accepted silently and only differs at the far end.
+        """
+        import nodriver as uc
+
+        cmd = uc.cdp.target.create_browser_context(proxy_server="socks5://tor:9050")
+        payload = next(iter(cmd)) if hasattr(cmd, "__iter__") else cmd
+        assert "proxyServer" in str(payload) or "proxy_server" in str(payload), (
+            "per-context proxying is not reaching CDP, so a per-request exit is silently the default one"
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ({"egress_proxy": "socks5://tor:9050", "egress_name": "tor"}, "tor"),
+            ({"egress_proxy": "socks5://tor:9050"}, "unnamed"),
+            # `DirectEgress`. The container here has an exit configured, so this is the case
+            # that distinguishes honouring the selection from ignoring it: falling through to
+            # the shared browser would report "container-default" AND route the request out
+            # through the container's `--proxy-server`, while the caller had asked for neither.
+            ({"egress_proxy": "direct://", "egress_name": "direct"}, "direct"),
+            # A name with no proxy to take it. `RenderRequest.egress_name` documents this to
+            # consumers as reporting the CONTAINER's exit rather than the name sent, because
+            # nothing routed the render anywhere -- so a consumer that assumed an echo would
+            # record a route never used.
+            #
+            # No producer among the SHIPPED drivers, which is why it had no test. It is not
+            # unreachable: `EgressDriver.browser_proxy_arg()` is documented as returning
+            # `None` to express no opinion about the browser's proxy, and the driver forwards
+            # that verbatim alongside the name -- so a third-party exit written to the
+            # protocol posts exactly this body. A stated contract with no test is how the
+            # comment this row pins drifted into being wrong once already.
+            ({"egress_name": "tor"}, "container-default"),
+            ({}, "container-default"),
+        ],
+        ids=[
+            "named-request-exit",
+            "unnamed-request-exit",
+            "explicit-direct",
+            "name-without-proxy",
+            "container-default",
+        ],
+    )
+    async def test_the_response_reports_the_exit_the_render_used(
+        self, client, monkeypatch, body: dict, expected: str
+    ) -> None:
+        """Driven through the real endpoint, because the previous version was a test of itself.
+
+        That version re-typed the production expression inside the test and compared it
+        against literals, so deleting `egress=` from the RenderResponse left it green. It sat
+        four tests below one whose docstring describes exactly that defect -- "rebuilt the
+        argument list inside itself and asserted on its own copy" -- which is how a pattern
+        survives being named.
+
+        What matters to a caller is that the RESPONSE carries the exit, so the response is
+        what gets read.
+        """
+        monkeypatch.setattr(main, "EGRESS_NAME", "container-default")
+        tab = _FakeTab(html="<html>hi</html>", url="https://example.gov/x", response_status=200)
+        main._browser = _FakeBrowser(tab=tab)
+
+        # A render that names its own exit goes through the isolated-context path, which needs
+        # real CDP target bookkeeping. Substituted at the helper -- a module seam -- so the
+        # endpoint, `_render`, and the response construction under test all run for real.
+        async def _fake_isolated(_browser, _url, *, proxy_server=None):
+            captured["proxy_server"] = proxy_server
+            return tab, "ctx-fake"
+
+        captured: dict = {}
+        monkeypatch.setattr(main, "_create_isolated_tab", _fake_isolated)
+
+        async with client:
+            r = await client.post("/v1/render", json={"url": "https://example.gov/x", "timeout": 5.0, **body})
+
+        assert r.status_code == 200
+        assert r.json()["egress"] == expected
+        if "egress_proxy" in body:
+            # Membership rather than truthiness, mirroring production's `is not None`. A
+            # truthiness test here would quietly stop asserting for any exit whose proxy
+            # argument is falsy, which is exactly the class of bug the direct case covers.
+            assert captured["proxy_server"] == body["egress_proxy"], (
+                "the request's exit never reached the browser context, so the echo names an exit that was not used"
+            )
+
+
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Tab for the startup-window path (only .target.url and get()); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
+class _FakeStartupTab:
+    """A tab that remembers where it was told to go."""
+
+    def __init__(self, url: str) -> None:
+        self.target = SimpleNamespace(url=url)
+        self.navigated_to: list[str] = []
+        self.closed = 0
+
+    async def get(self, url: str) -> None:
+        """Record the navigation and reflect it, as a real tab's target would."""
+        self.navigated_to.append(url)
+        self.target.url = url
+
+    async def close(self) -> None:
+        """Record a close, so a test can prove this path does NOT take one."""
+        self.closed += 1
+
+
+# parity-exempt: hand-rolled subset stub of nodriver's third-party Browser for the startup-window path (only tabs/update_targets); nodriver is AGPL-isolated to this sidecar and never installed in the workspace venv, so a parity-with marker cannot resolve there
+class _FakeStartupBrowser:
+    """Just the tab list and the refresh the startup-window blanking walks."""
+
+    def __init__(self, tabs: list[_FakeStartupTab]) -> None:
+        self.tabs = tabs
+        self.refreshed = 0
+
+    async def update_targets(self) -> None:
+        """Count the refresh; a stale target list is how this finds nothing to blank."""
+        self.refreshed += 1
+
+
+class TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn:
+    """Chromium needs one window, so the one it opens at launch lives for the container's life.
+
+    On this image the new-tab page renders the search engine's home page, so an operator summoned
+    to clear one challenge arrived at a display holding their target AND a second window that
+    looked exactly like a usable browser. Reported by an operator on the real screen.
+
+    Not cosmetic: that window belongs to the DEFAULT browser context, so it is the one place on
+    the display where what somebody types is not isolated per target -- which is the promise this
+    whole surface makes.
+    """
+
+    async def test_the_new_tab_page_is_left_on_about_blank(self) -> None:
+        """The observed state at boot was `chrome://newtab/`, which is what renders as search."""
+        tab = _FakeStartupTab("chrome://newtab/")
+        main._browser = _FakeStartupBrowser([tab])
+
+        await main._hide_the_idle_window()
+
+        assert tab.navigated_to == ["about:blank"], (
+            "the startup window was left on the new-tab page, so an operator sees a second "
+            "browser that looks usable and is not context-isolated"
+        )
+
+    async def test_it_is_navigated_rather_than_closed(self) -> None:
+        """By this point the warm-up render has disposed of its own tab, so this is the ONLY window.
+
+        Closing the last window exits Chromium, which would take the sidecar down at startup --
+        the reason this navigates instead, and the reason that is worth a test rather than a
+        comment.
+        """
+        tab = _FakeStartupTab("chrome://newtab/")
+        main._browser = _FakeStartupBrowser([tab])
+
+        await main._hide_the_idle_window()
+
+        assert tab.closed == 0, "the startup window was closed, which exits the browser"
+
+    async def test_a_real_page_is_left_alone(self) -> None:
+        """Only the startup page is touched. Navigating a session's tab away would take an
+        operator's half-finished challenge with it."""
+        target = _FakeStartupTab("https://example.gov/some-walled-target")
+        main._browser = _FakeStartupBrowser([target])
+
+        await main._hide_the_idle_window()
+
+        assert target.navigated_to == [], "a real page was blanked, losing whatever was on it"
+
+    async def test_a_browser_that_refuses_does_not_fail_startup(self) -> None:
+        """An operable deployment beats a tidy one: this runs during container startup."""
+
+        class _Refuses(_FakeStartupBrowser):
+            async def update_targets(self) -> None:
+                raise RuntimeError("CDP is not answering")
+
+        main._browser = _Refuses([])
+
+        # Must not raise.
+        await main._hide_the_idle_window()
+
+    async def test_no_browser_at_all_is_not_an_error(self) -> None:
+        """Warm-up fails open, so this can be reached with no browser to talk to."""
+        main._browser = None
+
+        await main._hide_the_idle_window()
+
+    async def test_container_startup_actually_calls_it(self, monkeypatch) -> None:
+        """The WIRING, not the mechanism, because the two fail independently.
+
+        Every test above drives `_hide_the_idle_window` directly, so all of them stayed green
+        with the call deleted from `_lifespan` -- the function worked perfectly and nothing invoked
+        it. That is the same shape as a stated property with no seam behind it, and the only thing
+        that catches it is asserting the boot path reaches it.
+        """
+        called: list[bool] = []
+
+        async def _record() -> None:
+            called.append(True)
+
+        async def _no_warm_up() -> None:
+            return None
+
+        class _Started:
+            """Enough of a browser for lifespan startup to finish."""
+
+            def stop(self) -> None:
+                return None
+
+        async def _fake_start(**_kwargs: object) -> _Started:
+            return _Started()
+
+        monkeypatch.setattr(main, "_hide_the_idle_window", _record)
+        monkeypatch.setattr(main, "_warm_up", _no_warm_up)
+        monkeypatch.setattr(main.uc, "start", _fake_start)
+        monkeypatch.setattr(main._sessions, "shutdown", _no_warm_up)
+
+        async with main._lifespan(main.app):
+            pass
+
+        assert called == [True], "container startup never blanked the startup window"
+
+    async def test_the_idle_window_is_taken_off_the_screen_and_out_of_the_taskbar(self, monkeypatch) -> None:
+        """Both, because either alone leaves something to click on.
+
+        A window that skips the taskbar is still sitting on the desktop; a minimised one that the
+        taskbar still lists is still one click away. An operator paid by the cleared challenge
+        should not have to know which of the two windows is real.
+        """
+        calls: list[list[str]] = []
+
+        async def _fake(argv: list[str], *, display: str) -> str | None:
+            calls.append(argv)
+            return "6291459\n" if argv[0] == "xdotool" and "search" in argv else ""
+
+        monkeypatch.setattr(main, "_wm_output", _fake)
+        await main._hide_window_titled("about:blank - Chromium", display=":99")
+
+        joined = [" ".join(c) for c in calls]
+        assert any("skip_taskbar" in c and "wmctrl" in c for c in joined), (
+            f"the idle window was left in the operator's taskbar: {joined}"
+        )
+        assert any("windowminimize" in c for c in joined), (
+            f"the idle window was left on the operator's screen: {joined}"
+        )
+
+    async def test_no_matching_window_is_not_an_error(self, monkeypatch) -> None:
+        """The window may legitimately be gone -- a render in flight, a browser mid-restart."""
+
+        async def _nothing(argv: list[str], *, display: str) -> str | None:
+            return ""
+
+        monkeypatch.setattr(main, "_wm_output", _nothing)
+        await main._hide_window_titled("about:blank - Chromium", display=":99")
+
+    async def test_a_window_manager_that_will_not_answer_does_not_fail_startup(self) -> None:
+        """This runs during container startup; an operable deployment beats a tidy one."""
+        # A binary that does not exist, which is what a stripped image looks like.
+        assert await main._wm_output(["definitely-not-installed-xyz"], display=":99") is None
+
+    def test_chromium_is_launched_on_a_blank_page(self) -> None:
+        """So no window in the container's life ever showed something worth clicking.
+
+        Asserted against the arguments PRODUCTION builds, not a copy: without the positional URL
+        Chromium opens its new-tab page, which on this image renders a search engine's home page.
+        """
+        args = main._browser_args()
+        assert "about:blank" in args, (
+            "Chromium is launched with no start page, so its idle window shows the new-tab page"
+        )
+
+    async def test_a_hung_window_manager_call_is_killed_rather_than_abandoned(self, monkeypatch) -> None:
+        """`wait_for` cancels the await, not the CHILD, which is a process leak not a timeout.
+
+        The container is meant to run long and unattended, so a window-manager call that never
+        answers would otherwise leave a process behind for its whole life. This was the one
+        untested branch in the helper, which is exactly where that kind of thing survives.
+        """
+        killed: list[bool] = []
+        reaped: list[bool] = []
+
+        class _Hangs:
+            returncode = None
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+            def kill(self) -> None:
+                killed.append(True)
+
+            async def wait(self) -> int:
+                reaped.append(True)
+                return -9
+
+        async def _spawn(*_argv: object, **_kwargs: object) -> _Hangs:
+            return _Hangs()
+
+        monkeypatch.setattr(main, "_WM_CALL_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(main.asyncio, "create_subprocess_exec", _spawn)
+
+        result = await main._wm_output(["wmctrl", "-l"], display=":99")
+
+        assert result is None, "a hung call reported output it never got"
+        assert killed == [True], "the hung child was abandoned rather than killed, leaking a process"
+        # Reaped as well as killed. A killed child that is never waited on becomes a zombie, which
+        # is a smaller leak than a running process and still a leak in a container that runs for
+        # weeks. Asserted because the comment claiming it was the only thing holding it: deleting
+        # the `await proc.wait()` left the whole suite green.
+        assert reaped == [True], "the killed child was never reaped, so it lingers as a zombie"

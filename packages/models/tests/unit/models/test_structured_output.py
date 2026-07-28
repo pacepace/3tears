@@ -176,7 +176,6 @@ class TestOpenAiStructuredOutputKwargs:
         carries no top-level ``response_format`` (the key langchain
         branches on) while still carrying the directive.
         """
-        from langchain_core.messages import HumanMessage
         from langchain_openai import ChatOpenAI
 
         model = ChatOpenAI(model="gpt-4o", api_key="sk-test")

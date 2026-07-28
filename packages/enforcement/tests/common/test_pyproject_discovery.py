@@ -34,9 +34,7 @@ class TestPoetryPathDeps:
         )
         consumer = _make_repo(
             tmp_path / "consumer",
-            '[tool.poetry]\nname = "consumer"\n'
-            "[tool.poetry.dependencies]\n"
-            f'core = {{path = "../core", develop = true}}\n',
+            '[tool.poetry]\nname = "consumer"\n[tool.poetry.dependencies]\ncore = {path = "../core", develop = true}\n',
         )
         roots = discover_src_roots(consumer)
         assert (target / "src").resolve() in roots
@@ -49,7 +47,7 @@ class TestPoetryPathDeps:
         )
         consumer = _make_repo(
             tmp_path / "consumer",
-            f'[tool.poetry]\nname = "consumer"\n[tool.poetry.group.dev.dependencies]\ntools = {{path = "../tools"}}\n',
+            '[tool.poetry]\nname = "consumer"\n[tool.poetry.group.dev.dependencies]\ntools = {path = "../tools"}\n',
         )
         roots = discover_src_roots(consumer)
         assert (target / "src").resolve() in roots
@@ -192,7 +190,7 @@ class TestUvSources:
         consumer_dir.mkdir()
         (consumer_dir / "src").mkdir()
         (consumer_dir / "pyproject.toml").write_text(
-            f'[project]\nname = "consumer"\n[tool.uv.sources]\nlib = {{path = "../lib", editable = true}}\n'
+            '[project]\nname = "consumer"\n[tool.uv.sources]\nlib = {path = "../lib", editable = true}\n'
         )
         roots = discover_src_roots(consumer_dir)
         assert (target / "src").resolve() in roots
@@ -270,11 +268,9 @@ class TestRealPyprojectShapesRoundTrip:
 
     def test_3tears_root(self) -> None:
         # 3tears root uses [tool.uv.workspace] members = ["packages/*"]
-        root = Path(__file__).resolve().parents[3].parent
-        # path: packages/enforcement/tests/_common/test_pyproject_discovery.py
-        # parents[3] = packages/enforcement, parent = packages, parent = 3tears
-        # but tests are inside the package, so simpler:
-        # packages/enforcement/tests/_common -> parent x4 = 3tears repo root
+        # parents[4] from packages/enforcement/tests/common/ is the repo root. An earlier
+        # version computed a `root` here too, by a different route, used it nowhere, and left
+        # three comments working out which was right.
         threetears = Path(__file__).resolve().parents[4]
         if not (threetears / "pyproject.toml").exists():
             pytest.skip(f"3tears repo root not at expected location: {threetears}")

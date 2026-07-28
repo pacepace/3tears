@@ -338,7 +338,7 @@ class PathSandbox(Sandbox):
         candidate = (root / as_path).resolve()
         try:
             candidate.relative_to(root)
-        except ValueError as exc:
+        except ValueError:
             _deny("access", str(path), "path escapes root")
         return candidate
 

@@ -24,7 +24,7 @@ design notes
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError

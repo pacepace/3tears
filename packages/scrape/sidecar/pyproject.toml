@@ -21,3 +21,9 @@ package = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# A bare `pytest` here must collect what `scripts/test-sidecar.sh` collects. Without this it
+# walks `.venv/` and picks up dependencies' own test modules -- a real run recorded
+# `annotated_types/test_cases.py` as part of this branch's passing evidence, which is harmless
+# to the result and wrong about what was actually tested.
+testpaths = ["tests"]
+norecursedirs = [".venv", "*.egg", "build", "dist"]

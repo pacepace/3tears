@@ -8,7 +8,6 @@ turned off "temporarily", a weak algorithm smuggled in through a variable.
 from __future__ import annotations
 
 import ast
-from pathlib import Path
 
 from threetears.enforcement.common import Violation, parse_python_file
 

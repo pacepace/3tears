@@ -10,9 +10,12 @@ code, never read from the environment here.
 
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import asdict
 
 import httpx
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
 from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
@@ -45,17 +48,34 @@ class NodriverSidecarDriver(ScrapeDriver):
     imports ``nodriver`` as a library.
     """
 
-    def __init__(self, base_url: str, *, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        egress: EgressDriver | None = None,
+    ) -> None:
         """
         :param base_url: the sidecar's base URL (e.g. ``"http://localhost:8088"``),
             with no trailing slash assumed either way.
         :ptype base_url: str
+        :param egress: exit the RENDERED PAGE should leave by. Sent to the sidecar per
+            request, which renders it in its own browser context -- so two targets served by
+            one container can leave by two exits. Distinct from the exit this driver's own
+            HTTP call to the sidecar takes, which is an internal hop and stays direct
+        :ptype egress: EgressDriver | None
         :param client: an already-constructed httpx client to reuse (e.g. for
             test injection); a fresh one is created per call when omitted.
         :ptype client: httpx.AsyncClient | None
         """
         self._base_url = base_url.rstrip("/")
         self._client = client
+        self._egress = egress
+
+    @property
+    def egress(self) -> EgressDriver | None:
+        """This driver's configured exit. Overrides ``ScrapeDriver``'s ``None`` default."""
+        return self._egress
 
     @property
     def name(self) -> str:
@@ -74,6 +94,7 @@ class NodriverSidecarDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through the sidecar's ``POST /v1/render`` endpoint.
 
@@ -99,6 +120,11 @@ class NodriverSidecarDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: a human's exported cookies and storage. THIS driver is the one
+            that applies them -- it forwards the payload to the sidecar, which re-installs the
+            cookies on the browser context and the storage on the origin, so a target solved
+            once by a person extracts unattended afterwards
+        :ptype session_state: dict[str, Any] | None
         :return: the rendered page, including any ``evaluate`` step results
         :rtype: RenderedPage
         :raises NodriverSidecarError: on a sidecar-reported error (4xx/5xx
@@ -112,6 +138,20 @@ class NodriverSidecarDriver(ScrapeDriver):
             "wait_for": wait_for,
             "capture_network": capture_network,
             "nav_steps": [asdict(step) for step in nav_steps] if nav_steps else None,
+            # The one backend that can actually use this: it drives a real browser, so a
+            # human's cleared cookies can be put into the context before the navigation that
+            # would otherwise be challenged. Sent only when present, so a sidecar built before
+            # this existed still accepts the payload.
+            **({"session_state": session_state} if session_state else {}),
+            # The exit for THIS render. Sent only when configured, so a sidecar built before
+            # per-context proxying existed still accepts the payload. The sidecar renders it in
+            # its own browser context, which is what makes an exit a per-target choice rather
+            # than a per-container one.
+            **(
+                {"egress_proxy": self._egress.browser_proxy_arg(), "egress_name": self._egress.name}
+                if self._egress is not None
+                else {}
+            ),
         }
         client = self._client
         owns_client = client is None
@@ -144,6 +184,10 @@ class NodriverSidecarDriver(ScrapeDriver):
             status=data["status"],
             final_url=data["final_url"],
             timing_ms=data["timing_ms"],
+            # Reported by the sidecar, not inferred from what was sent: a request whose proxy
+            # argument was dropped by an older sidecar comes back with the container's exit,
+            # which is the truth and is what should be recorded.
+            egress=data.get("egress"),
             network_calls=[NetworkCall(**call) for call in data.get("network_calls", [])],
             eval_results=data.get("eval_results", []),
         )

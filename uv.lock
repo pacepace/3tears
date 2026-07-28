@@ -103,6 +103,9 @@ duckdb = [
 nats = [
     { name = "3tears-nats", extra = ["client"] },
 ]
+socks = [
+    { name = "httpx", extra = ["socks"] },
+]
 testing = [
     { name = "docker" },
     { name = "pytest" },
@@ -123,6 +126,7 @@ requires-dist = [
     { name = "docker", marker = "extra == 'testing'", specifier = ">=7.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "httpx" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
@@ -131,7 +135,7 @@ requires-dist = [
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
     { name = "uuid-utils" },
 ]
-provides-extras = ["nats", "tracing", "duckdb", "testing"]
+provides-extras = ["nats", "tracing", "socks", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
@@ -954,14 +958,26 @@ dependencies = [
     { name = "uuid-utils" },
 ]
 
+[package.optional-dependencies]
+hitl = [
+    { name = "3tears-nats" },
+    { name = "fastapi" },
+]
+reprobe = [
+    { name = "3tears-scheduled-jobs" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-tools", extras = ["document"], editable = "packages/agent/tools" },
     { name = "3tears-models", editable = "packages/models" },
+    { name = "3tears-nats", marker = "extra == 'hitl'", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "3tears-scheduled-jobs", marker = "extra == 'reprobe'", editable = "packages/scheduled-jobs" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "camoufox", specifier = ">=0.4" },
+    { name = "fastapi", marker = "extra == 'hitl'", specifier = ">=0.115" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "playwright", specifier = "<1.61" },
@@ -969,6 +985,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "uuid-utils" },
 ]
+provides-extras = ["reprobe", "hitl"]
 
 [[package]]
 name = "aioboto3"

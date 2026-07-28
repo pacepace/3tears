@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -68,31 +68,6 @@ _CAS_MAX_RETRIES = 8
 _MemberAction = Literal["upsert", "delete", "noop"]
 
 
-def _coerce_datetimes(raw: dict[str, Any], fields: tuple[str, ...]) -> None:
-    """rehydrate ISO datetime strings to aware-UTC in place.
-
-    mirrors :meth:`HeartbeatCollection.deserialize`: the L2 JSON codec
-    renders datetimes as ISO strings; on the way back any naive value
-    (legacy / hand-written payload) is coerced to aware-UTC so the rest
-    of the pipeline can rely on aware comparisons (the sweep does
-    ``datetime.now(UTC) - entity.date_last_heartbeat``).
-
-    :param raw: row dict mutated in place
-    :ptype raw: dict[str, Any]
-    :param fields: datetime column names to coerce
-    :ptype fields: tuple[str, ...]
-    :return: nothing
-    :rtype: None
-    """
-    for field_name in fields:
-        value = raw.get(field_name)
-        if isinstance(value, str):
-            parsed = datetime.fromisoformat(value)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            raw[field_name] = parsed
-
-
 class _L1L2OnlyCollection(BaseCollection[Any]):
     """shared L1+L2-only base for the two presence Collections.
 
@@ -107,7 +82,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
     """
 
     #: datetime columns the L2 codec must rehydrate to aware-UTC.
-    datetime_columns: tuple[str, ...] = ("date_created", "date_updated")
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_created", "date_updated"})
 
     def __init__(
         self,
@@ -284,7 +259,9 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :rtype: dict[str, Any]
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        _coerce_datetimes(raw, self.datetime_columns)
+        # Timestamp rehydration is `BaseCollection`'s, driven by `datetime_columns` above. This
+        # class used to carry its own copy, which agreed with neither of the other two that had
+        # also written one.
         return raw
 
 
@@ -296,7 +273,7 @@ class PresenceConnectionCollection(_L1L2OnlyCollection):
     """
 
     primary_key_column: str = "connection_id"
-    datetime_columns = ("date_last_heartbeat", "date_created", "date_updated")
+    datetime_columns: ClassVar[frozenset[str]] = _L1L2OnlyCollection.datetime_columns | {"date_last_heartbeat"}
 
     @property
     def table_name(self) -> str:

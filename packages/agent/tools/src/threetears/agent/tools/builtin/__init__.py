@@ -129,7 +129,7 @@ def register_builtins(registry: ToolRegistry) -> None:
     not a crash.
     """
     # Each entry: (tool_type, module_path, factory_name)
-    _BUILTINS: list[tuple[str, str, str]] = [
+    _builtins: list[tuple[str, str, str]] = [
         ("calculator", "threetears.agent.tools.builtin.calculator", "create_calculator_tool"),
         ("context_recall", "threetears.agent.tools.builtin.context_recall", "create_context_recall_tool"),
         ("unit_converter", "threetears.agent.tools.builtin.unit_converter", "create_unit_converter_tool"),
@@ -143,7 +143,7 @@ def register_builtins(registry: ToolRegistry) -> None:
 
     import importlib
 
-    for tool_type, module_path, factory_name in _BUILTINS:
+    for tool_type, module_path, factory_name in _builtins:
         try:
             mod = importlib.import_module(module_path)
             factory = getattr(mod, factory_name)

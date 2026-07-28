@@ -168,7 +168,7 @@ async def _insert_source(
         "memory_id, agent_id, customer_id, user_id, conversation_id, "
         "type_memory, content, embedding, salience, superseded_by, "
         "date_created, date_updated"
-        f") VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::public.vector,0.5,$9,$10,$10)",
+        ") VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text::public.vector,0.5,$9,$10,$10)",
         memory_id,
         agent_id,
         customer_id,

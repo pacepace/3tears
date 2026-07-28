@@ -18,7 +18,6 @@ from threetears.conversations.migrations import (
     add_conversation_language_column,
     add_conversation_search_vector,
     add_folder_referential_integrity,
-    add_name_column,
     create_conversations_table,
     create_folders_and_conversation_folder_id,
     datetime_to_datetimetz,

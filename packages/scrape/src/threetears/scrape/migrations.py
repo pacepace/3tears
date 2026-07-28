@@ -87,7 +87,7 @@ async def v001_create_scrape_tables(store: DataStore) -> None:
 
 
 async def v002_target_multi_row_flag(store: DataStore) -> None:
-    """SCR-6P2X -- ``ScrapeTarget.multi_row`` selects which eval loop
+    """``ScrapeTarget.multi_row`` selects which eval loop
     ``poll_scrape_targets`` runs (``run_eval_loop_multi_row`` vs. the
     original single-record ``run_eval_loop``). Defaults ``false`` so every
     pre-existing target keeps its current (single-record) behavior.
@@ -96,7 +96,7 @@ async def v002_target_multi_row_flag(store: DataStore) -> None:
 
 
 async def v003_target_wait_for(store: DataStore) -> None:
-    """SCR-2N8W follow-up -- ``ScrapeTarget.wait_for`` is a CSS selector the
+    """``ScrapeTarget.wait_for`` is a CSS selector the
     driver waits for before considering the page settled, passed straight
     through to ``ScrapeDriver.render(..., wait_for=...)``. Nullable; ``None``
     keeps every pre-existing target's current behavior (a plain settle
@@ -274,8 +274,48 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(8)(v008_target_timeout_seconds)
     pkg.version(9)(v009_target_link_selector)
     pkg.version(10)(v010_create_scrape_target_health)
+    pkg.version(11)(v011_target_health_last_egress)
+    pkg.version(12)(v012_target_health_robots_block)
     runner.register(pkg)
     return pkg
+
+
+async def v011_target_health_last_egress(store: DataStore) -> None:
+    """Record which exit an observation came from.
+
+    An ALTER rather than another column on v010, because v010 has shipped: it is on
+    ``develop``, so a database that has applied it records version 10 as done and would never
+    pick up an edit to it. v010's own docstring says exactly this, and following it is the
+    whole reason this is a separate version.
+
+    With more than one egress available, "this target is walled" stops being the useful fact
+    and "this target is walled FROM THIS EXIT" starts being it. Without the column, a target
+    blocked through one TOR exit looks permanently walled, its circuit backs it off, and
+    nothing records that a different exit was never tried -- so the backoff learns the wrong
+    lesson and a working route goes unused.
+
+    Nullable with no default, because "we did not record an exit" is a real and common state:
+    every row written before this migration, and every deployment that never configures egress
+    at all. A default of ``'direct'`` would assert something about rows nobody stamped.
+    """
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS last_egress TEXT")
+
+
+async def v012_target_health_robots_block(store: DataStore) -> None:
+    """Record that a target is held back by ``robots.txt`` rather than by a wall.
+
+    Without this the decision existed only in the ToolResult of whoever happened to call, so a
+    disallowed target reached no queue at all: ``list_walled`` answers from the health row, and
+    nothing wrote one. A person could not be sent to a target the scraper had decided needed a
+    person.
+
+    A separate column rather than reusing ``circuit_state``: a robots block is not a fetch
+    failure and must not be counted as one. Counting it would open the circuit, start a
+    backoff, and mark a target unhealthy over a policy decision that says nothing about
+    whether the site works -- and the backoff would then decay a target nobody was fetching.
+    """
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_at TIMESTAMPTZ")
+    await store.execute("ALTER TABLE scrape_target_health ADD COLUMN IF NOT EXISTS robots_blocked_reason TEXT")
 
 
 async def apply_migrations(pool: Any) -> None:

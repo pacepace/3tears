@@ -80,8 +80,11 @@ def _iter_tool_modules(directory: Path) -> list[Path]:
     """return every ``.py`` file under ``directory`` excluding __init__ and helpers."""
     if not directory.exists():
         return []
-    skip = {"__init__", "helpers", "image_prep"}  # image_prep has no schema-only test target
-    return sorted(p for p in directory.glob("*.py") if p.stem not in {"__init__", "helpers"})
+    # `skip` was built and then not used -- the return carried its own hardcoded set, so
+    # `image_prep` was never actually excluded despite the comment saying it was. Inert today
+    # (there is no `image_prep` module), which is exactly why it went unnoticed.
+    skip = {"__init__", "helpers", "image_prep"}  # image_prep would have no schema-only test target
+    return sorted(p for p in directory.glob("*.py") if p.stem not in skip)
 
 
 def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:

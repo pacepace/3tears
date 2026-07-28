@@ -263,3 +263,120 @@ class TestCasContention:
         store = TokenBucket(client, bucket_name="b", refill_rate=1.0, capacity=10.0)
         with pytest.raises(TokenBucketConflict):
             await store.claim("k")
+
+
+class TestRefund:
+    """Returning a turn taken for work that never happened.
+
+    Without this, `claim` consumed and the only recovery was refill over time -- so a caller
+    cancelled between claiming and doing the work held the bucket down for as long as the
+    refill rate took to make it up. Invisible once, compounding under repeated cancellation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_refund_returns_the_tokens_it_was_given(self, client: FakeNatsClient) -> None:
+        bucket = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=5.0)  # type: ignore[arg-type]
+        first = await bucket.claim("k", tokens=3.0)
+        assert first.claimed
+
+        remaining = await bucket.refund("k", tokens=3.0)
+
+        assert remaining == pytest.approx(5.0, abs=0.01), "the claimed tokens did not come back"
+
+    @pytest.mark.asyncio
+    async def test_a_refund_cannot_mint_budget_above_capacity(self, client: FakeNatsClient) -> None:
+        """Safe to call unconditionally from a handler that may not have claimed at all."""
+        bucket = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=5.0)  # type: ignore[arg-type]
+        await bucket.claim("k", tokens=1.0)
+
+        await bucket.refund("k", tokens=1.0)
+        remaining = await bucket.refund("k", tokens=1.0)
+
+        assert remaining == pytest.approx(5.0, abs=0.01), "a second refund invented budget the bucket never had"
+
+    @pytest.mark.asyncio
+    async def test_a_refund_makes_a_denied_claim_succeed_again(self, client: FakeNatsClient) -> None:
+        """The behaviour that matters: the next caller is not made to wait for refill."""
+        bucket = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=1.0)  # type: ignore[arg-type]
+        assert (await bucket.claim("k")).claimed
+        assert not (await bucket.claim("k")).claimed, "the bucket should be empty"
+
+        await bucket.refund("k")
+
+        assert (await bucket.claim("k")).claimed, "the refunded turn was not usable by the next caller"
+
+    @pytest.mark.asyncio
+    async def test_a_refund_on_an_untouched_key_invents_nothing(self, client: FakeNatsClient) -> None:
+        """No key means nothing was consumed from it, so there is nothing to give back."""
+        bucket = TokenBucket(client, bucket_name="b", refill_rate=1.0, capacity=5.0)  # type: ignore[arg-type]
+
+        assert await bucket.refund("never-claimed") == pytest.approx(5.0)
+        assert (await bucket.claim("never-claimed", tokens=5.0)).claimed
+
+    @pytest.mark.asyncio
+    async def test_a_refund_never_raises_into_a_caller_that_is_unwinding(self, monkeypatch) -> None:
+        """It runs from an exception handler, so raising would lose the original error.
+
+        A failed refund costs throughput that self-heals; an exception escaping here replaces a
+        recoverable dip with a lost traceback.
+        """
+        bucket = TokenBucket(FakeNatsClient(), bucket_name="b", refill_rate=1.0, capacity=5.0)  # type: ignore[arg-type]
+
+        async def _explode(*_a: object, **_k: object) -> object:
+            raise RuntimeError("kv is down")
+
+        monkeypatch.setattr(bucket, "_ensure_bucket", _explode)
+
+        assert await bucket.refund("k") == -1.0, "a broken refund must report failure, not raise"
+
+    @pytest.mark.asyncio
+    async def test_a_refund_retries_a_lost_cas_race(self) -> None:
+        """Another claimer touching the key mid-refund must not lose the returned tokens.
+
+        Mocked at the client, matching `TestCasContention` above, so the test reaches no
+        private attribute to observe the retry.
+        """
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock
+
+        # A RECENT last_refill, so continuous refill contributes nothing measurable and the
+        # assertion is about the refund. Dated 2026-01-01 the bucket has months of refill behind
+        # it and sits at capacity regardless, which would have made this pass for the wrong
+        # reason -- or, as it did, fail against a correct implementation.
+        now = datetime.now(UTC).isoformat()
+        entry = (f'{{"tokens": 3.0, "last_refill": "{now}"}}'.encode(), 1)
+        bucket_mock = AsyncMock()
+        bucket_mock.get_entry = AsyncMock(side_effect=[entry, entry])
+        bucket_mock.update = AsyncMock(side_effect=[None, 3])  # first CAS loses, second wins
+        client = AsyncMock()
+        client.kv_bucket = AsyncMock(return_value=bucket_mock)
+
+        store = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=10.0)
+        remaining = await store.refund("k", tokens=2.0)
+
+        assert bucket_mock.update.await_count == 2, "the lost CAS race was not retried"
+        assert remaining == pytest.approx(5.0, abs=0.01), "the refund was dropped by the race"
+
+    @pytest.mark.asyncio
+    async def test_exhausting_the_cas_budget_reports_rather_than_raising(self) -> None:
+        """`claim` raises `TokenBucketConflict` here; `refund` deliberately does not.
+
+        The contracts differ because the callers do: a claim that cannot be made must stop its
+        caller, while a refund runs from a handler already unwinding -- raising there would
+        replace a self-healing throughput dip with a lost original error.
+        """
+        from unittest.mock import AsyncMock
+
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC).isoformat()
+        entry = (f'{{"tokens": 3.0, "last_refill": "{now}"}}'.encode(), 1)
+        bucket_mock = AsyncMock()
+        bucket_mock.get_entry = AsyncMock(return_value=entry)
+        bucket_mock.update = AsyncMock(return_value=None)  # every CAS attempt loses
+        client = AsyncMock()
+        client.kv_bucket = AsyncMock(return_value=bucket_mock)
+
+        store = TokenBucket(client, bucket_name="b", refill_rate=0.0001, capacity=10.0)
+
+        assert await store.refund("k", tokens=2.0) == -1.0, "exhaustion must report, not raise"

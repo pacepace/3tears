@@ -94,7 +94,7 @@ packages/channels/tests/unit/channels/test_discord.py:53:_FakeDMChannel
 
 # conversations migration runner
 # rationale: in-memory DataStore for the conversations migration runner unit test; identical shape to core's _fake_store with the same execute+query subset
-packages/conversations/tests/unit/test_migrations.py:32:_FakeDataStore
+packages/conversations/tests/unit/test_migrations.py:34:_FakeDataStore
 
 # agent/tools test-support classes
 # rationale: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
@@ -122,29 +122,29 @@ packages/agent/workspace/tests/integration/conftest.py:661:_FakeToolContextManag
 
 # workspace unit-test one-offs (each fake stands in for a single production interface and the test exercises a small subset)
 # rationale: NatsClient subset for the audit-publish unit covering bind in test_bind; the bind audit emitter calls publish so the test only models that surface
-packages/agent/workspace/tests/unit/test_bind.py:601:_FakeNats
+packages/agent/workspace/tests/unit/test_bind.py:600:_FakeNats
 # rationale: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
 packages/agent/workspace/tests/unit/test_collections.py:135:_FakeNatsBus
 # rationale: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request_typed
-packages/agent/workspace/tests/unit/test_discovery_client.py:35:_FakeNatsClient
+packages/agent/workspace/tests/unit/test_discovery_client.py:34:_FakeNatsClient
 # rationale: in-memory DataStore for the workspace migration runner unit test; identical shape to the core+conversations migration fakes
 packages/agent/workspace/tests/unit/test_migrations.py:24:_FakeDataStore
 # rationale: workspace-collection subset for the workspace tools factory test; the test exercises factory wiring only and does not call collection methods directly
-packages/agent/workspace/tests/unit/tools/test_factory.py:32:_FakeCollection
+packages/agent/workspace/tests/unit/tools/test_factory.py:27:_FakeCollection
 # rationale: NamespaceCollection subset for the workspace tools factory test exposing only the get_by_name lookup the namespace-emit surface uses
-packages/agent/workspace/tests/unit/tools/test_factory.py:110:_FakeNamespaceCollection
+packages/agent/workspace/tests/unit/tools/test_factory.py:105:_FakeNamespaceCollection
 # rationale: workspace pin-namespace stand-in for test_helpers; the pin model is dataclass-shaped and the test reads only the pinned name attribute
-packages/agent/workspace/tests/unit/tools/test_helpers.py:95:_FakePin
+packages/agent/workspace/tests/unit/tools/test_helpers.py:91:_FakePin
 # rationale: NatsClient subset for the tool-audit-injection unit; the audit emitter publishes a single subject and the wrapper's full surface is out of scope
-packages/agent/workspace/tests/unit/tools/test_tool_audit_injection.py:61:_FakeNats
+packages/agent/workspace/tests/unit/tools/test_tool_audit_injection.py:60:_FakeNats
 # rationale: workspace discovery-client subset for the workspace_current tool unit; the discovery client carries multiple find methods and the test only exercises one
-packages/agent/workspace/tests/unit/tools/test_workspace_current.py:54:_FakeDiscoveryClient
+packages/agent/workspace/tests/unit/tools/test_workspace_current.py:48:_FakeDiscoveryClient
 # rationale: workspace version-row stand-in for the workspace_history tool unit; the production VersionRow has more attributes than the test reads
-packages/agent/workspace/tests/unit/tools/test_workspace_history.py:66:_FakeVersionRow
+packages/agent/workspace/tests/unit/tools/test_workspace_history.py:64:_FakeVersionRow
 # rationale: workspace discovery-client subset for the workspace_list tool unit; same shape as workspace_current's discovery-client fake above
 packages/agent/workspace/tests/unit/tools/test_workspace_list.py:34:_FakeDiscoveryClient
 # rationale: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
-packages/agent/workspace/tests/unit/tools/test_workspace_use.py:35:_FakeCollection
+packages/agent/workspace/tests/unit/tools/test_workspace_use.py:30:_FakeCollection
 
 # agent-skills shard-02 agent-tools unit tests
 # rationale: AgentSkillCollection subset for the eight tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
@@ -196,8 +196,16 @@ packages/channels/tests/integration/channels/test_websocket_cross_pod.py:68:_Fak
 # rationale: live-socket transport stand-in; transport handle, no public parity to assert
 packages/channels/tests/unit/channels/presence/test_room_state.py:22:_FakeSocket
 # rationale: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:45:_FakeRoomState
+packages/channels/tests/unit/channels/test_websocket_task03.py:46:_FakeRoomState
 # rationale: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:59:_FakeFanout
+packages/channels/tests/unit/channels/test_websocket_task03.py:60:_FakeFanout
 # rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandler
+packages/channels/tests/unit/channels/test_websocket_task03.py:102:_FakeOpHandler
+
+# canonical shared fakes under packages/scrape/tests
+# rationale: subset shim for nats.js.KeyValue carrying only the create/get_entry/update/delete surface KVLease calls while a session claim is held; put and get are deliberately absent so a claim renewed by an unconditional write fails here instead of passing
+packages/scrape/tests/_kv_shims.py:31:FakeKvBucket
+# rationale: subset shim for nats.aio.Client exposing kv_bucket alone, which is the entire surface KVLease reaches through; the full client's two dozen publish/subscribe/jetstream methods are unreachable from a lease
+packages/scrape/tests/_kv_shims.py:92:FakeNatsClient
+# rationale: subset shim for nats.aio.Client carrying only subscribe/unsubscribe/flush/publish_raw_reply/request_raw, which is the entire surface serve_owner and forward reach through; it exists so both ends derive a session's subject for real rather than against a stub, and the full client's jetstream/kv/auth methods are unreachable from owner-routed forwarding
+packages/scrape/tests/_bus_shims.py:37:FakeBus

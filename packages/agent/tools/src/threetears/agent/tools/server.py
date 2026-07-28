@@ -67,7 +67,6 @@ from threetears.nats import (
     IncomingMessage,
     NatsClient,
     Principal,
-    RequestError,
     Subjects,
     TokenCallback,
     inbox_prefix_for,

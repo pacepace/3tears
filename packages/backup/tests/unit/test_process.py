@@ -114,7 +114,7 @@ async def test_feed_stdin_short_feed_reports_a_synthetic_returncode() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("size", [1024, 32 * 1024], ids=["1KiB", "32KiB"])
-async def test_a_short_feed_below_the_pipe_buffer_is_KNOWN_to_go_undetected(size: int) -> None:
+async def test_a_short_feed_below_the_pipe_buffer_is_known_to_go_undetected(size: int) -> None:
     """Pins the documented LIMIT of the short-feed guard, so nobody mistakes it for a guarantee.
 
     Detection needs the write side to actually break, which needs the unwritten remainder to exceed

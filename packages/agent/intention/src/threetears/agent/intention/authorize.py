@@ -27,7 +27,7 @@ access is needed (design §6.5).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (

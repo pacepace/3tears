@@ -183,9 +183,11 @@ class ScrapeTarget(BaseEntity):
     def driver_backend(self) -> str:
         """Which ``ScrapeDriver`` backend renders this target.
 
-        One of eight, resolved by the caller (this entity stores the string
-        and never constructs a driver itself): ``"nodriver"`` (headless
-        Chromium via the HTTP sidecar), ``"camoufox"`` (in-process stealth
+        Resolved by the caller, which this entity never does -- it stores the
+        string and constructs nothing: ``"nodriver"`` (a headful Chromium on an
+        Xvfb display, via the HTTP sidecar; headful because real sites treat it
+        differently from headless and because a display is what a human can be
+        handed), ``"camoufox"`` (in-process stealth
         Firefox), ``"document"`` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX parsed into
         synthetic HTML), ``"api"`` (a stateless JSON GET, needing
         :attr:`api_results_path`/:attr:`api_fragment_field`),
@@ -245,7 +247,7 @@ class ScrapeTarget(BaseEntity):
         behavior (a plain settle sleep). Some real pages need this: e.g. a
         target whose real content loads asynchronously well past the
         driver's default settle wait returns a near-empty page without it
-        (live-verified, Nebraska's WARN listing, SCR-2N8W follow-up). A
+        (live-verified against Nebraska's WARN listing). A
         genuine input variable like ``url``/``cadence``, not a per-target
         extraction hack -- the eval loop still discovers its own selectors
         from whatever HTML this produces.
@@ -291,7 +293,7 @@ class ScrapeTarget(BaseEntity):
     def extraction_strategy_type(self) -> str:
         """Which extraction-strategy shape the eval loop should propose.
 
-        One of ``eval_loop.StrategyType``'s four values, passed straight
+        One of ``eval_loop.StrategyType``'s values, passed straight
         through to ``run_eval_loop``/``run_eval_loop_multi_row(...,
         strategy_type=...)``: ``"css"`` (the default, preserving every
         pre-existing target's behavior -- CSS-selector candidates against an
@@ -420,6 +422,13 @@ class ScrapeRecipe(BaseEntity):
 #: and "we never got the page" carrying real consequences for anything that counts failures
 #: or retries. Its sibling vocabularies (``challenge.PageVerdictKind``,
 #: ``eval_loop.StrategyType``) are both Literals for the same reason.
+#:
+#: One value a consumer can see under this key is deliberately NOT here: ``ScrapeTool``'s
+#: JSON payload reports ``"backoff"`` for a poll its fetch circuit suppressed. That is not a
+#: validation outcome and is never stored -- a suppressed poll persists nothing at all,
+#: because it observed nothing -- so admitting it to this Literal would declare a storable
+#: value that can never be stored. Every one of the four above describes a page we did or
+#: did not receive; ``"backoff"`` describes a fetch we declined to attempt.
 ValidationStatus = Literal["validated", "needs_review", "failed", "blocked"]
 
 #: Every value :data:`ValidationStatus` permits, derived from the Literal rather than
@@ -730,23 +739,19 @@ class ScrapeCollection(BaseCollection[EntityT]):
         non-fatal handling would have swallowed it. Both are repaired by fixing the read,
         which is why this belongs here rather than in each writer.
 
-        A value that does not parse is left exactly as found rather than nulled: losing a
-        timestamp silently is worse than carrying a malformed one to a border that will
-        reject it loudly.
+        The rehydration itself is `BaseCollection`'s, driven by the `datetime_columns` this
+        class declares. It lived here until three packages had each written their own and the
+        three disagreed about what "rehydrate" means.
+
+        One behaviour changed in that move, deliberately. This copy preserved an unparseable
+        value verbatim, on the reasoning that losing a timestamp silently is worse than
+        carrying a malformed one to a border that rejects it loudly. True as far as it went,
+        and it left the row reaching the caller with a string in a column typed `datetime` --
+        the exact fault the paragraph above says this rehydration exists to prevent. The base
+        now treats an undecodable value as a corrupt CACHE entry and falls through to L3,
+        which is authoritative, so nothing is lost and nothing malformed is served.
         """
         result: dict[str, Any] = json.loads(data)
-        for column in self.datetime_columns:
-            raw = result.get(column)
-            if isinstance(raw, str) and raw:
-                try:
-                    result[column] = datetime.fromisoformat(raw)
-                except ValueError:  # NOSILENT: unparseable timestamp is preserved verbatim
-                    log.warning(
-                        "%s: %r in column %r did not parse as a timestamp; left as-is",
-                        type(self).__name__,
-                        raw,
-                        column,
-                    )
         return result
 
     async def list_all(self) -> list[EntityT]:

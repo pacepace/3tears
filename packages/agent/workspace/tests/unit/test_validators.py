@@ -28,13 +28,7 @@ from threetears.agent.workspace.validators import (
 from threetears.agent.workspace import validators as validators_module
 from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
 from _helpers.workspace_shims import (
-    FakeWorkspaceCollection,
-    FakeWorkspaceContext,
     FakeWorkspaceEntity,
-    FakeWorkspaceFile,
-    FakeWorkspaceFileCollection,
-    FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

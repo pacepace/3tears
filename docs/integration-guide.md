@@ -1,12 +1,15 @@
 # 3tears Integration Guide
 
 > **Status: current as of the L2-registry-wiring / vector-column / lazy-init work
-> (PRs #87, #89, #90).**
+> (PRs #87, #89, #90), plus the `threetears.core.egress` seam and the
+> `fire_and_forget` promotion, which are NOT on `develop` yet and ship in 0.20.0.**
 >
 > Every concrete API, import path, and code sample below was verified against the
-> `develop` source tree. `develop` moves fast, so **treat code as the source of
-> truth** and re-verify before relying on a specific signature. Remaining known
-> sharp edges are in [§13](#13-known-sharp-edges--open-questions).
+> source tree -- for the egress entries, against the branch that introduces them
+> rather than against `develop`, where they do not exist. `develop` moves fast, so
+> **treat code as the source of truth** and re-verify before relying on a specific
+> signature. Remaining known sharp edges are in
+> [§13](#13-known-sharp-edges--open-questions).
 
 This guide explains how to wire 3tears into a host application as its data layer:
 the mental model, the design decisions you have to make, and copy-pasteable
@@ -700,6 +703,18 @@ from threetears.core import (
     ConcurrentModificationError, DataLayerUnavailableError,
     create_dynamic_collection,
     KVLease, LeaseHandle,                      # coordination (multi-pod locks)
+    Keyset, Page, decode_cursor, encode_cursor, CursorError,   # cursor pagination
+    fire_and_forget,                           # submit a coroutine without awaiting it
+)
+
+# Egress -- HOW traffic leaves. A seam, not a proxy: `EgressDriver` is a
+# runtime_checkable Protocol, so a consumer may supply its own exit. Nothing
+# here polls, so wiring `EgressRegistry.health()` is the platform's job -- and
+# it is worth doing, because a dead exit fails every fetch transport-side while
+# looking exactly like an application problem.
+from threetears.core.egress import (
+    EgressDriver, EgressRegistry, EgressHealth,
+    DirectEgress, ProxyEgress, SocksEgress, WarpEgress,
 )
 
 # Migrations (canonical runner)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS",
     "DEFAULT_HTTP_TIMEOUT_SECONDS",
     "CoreConfig",
     "DefaultCoreConfig",
@@ -19,6 +20,12 @@ VALID_FLUSH_STRATEGIES = frozenset({"ALWAYS", "ON_CHECKPOINT", "ON_SCHEDULE", "O
 # here, the designated core config layer, so the transport signature carries
 # no hardcoded timeout literal.
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
+
+# budget for an egress health probe (:meth:`threetears.core.egress.EgressDriver.health`).
+# deliberately shorter than DEFAULT_HTTP_TIMEOUT_SECONDS: this probe runs to answer "is the
+# exit up", and a check that hangs as long as a real request tells an operator nothing they
+# could not already see from the requests themselves.
+DEFAULT_EGRESS_HEALTH_TIMEOUT_SECONDS = 10.0
 
 
 @runtime_checkable

@@ -54,7 +54,7 @@ Mix in BEFORE the concrete base (``(NameTranslatingChatMixin, ChatX)``) so
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from threetears.models.tool_name_translation import (
@@ -71,7 +71,6 @@ if TYPE_CHECKING:
     from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
     from langchain_core.outputs import ChatResult
     from langchain_core.runnables import Runnable, RunnableConfig
-    from langchain_core.tools import BaseTool
 
 __all__ = ["NameTranslatingChatMixin", "drop_junk_invalid_tool_calls"]
 

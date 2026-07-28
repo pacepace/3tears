@@ -6,6 +6,766 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+> **0.20.0 carries new public API from two directions.** The workspace was already bumped to
+> 0.20.0 for `3tears-iam`; this branch needs the same MINOR bump on its own merits, because
+> `threetears.core.egress` on `3tears` and the operator surfaces on `3tears-scrape` are both new
+> public API rather than fixes.
+>
+> `threetears.scrape` imports `threetears.core.egress`, which exists on no released version, so the
+> two distributions must move together -- which lockstep versioning already guarantees. Shipping
+> this as a patch would leave `3tears-scrape` declaring `3tears>=0.19.0,<0.20.0` while importing a
+> module no published 0.19.x contains: resolvable by pip and broken at import, the exact
+> mixed-family failure these bounds exist to make impossible.
+>
+> A version bump only rewrites bounds that exist when it runs. `bump-version.sh 0.20.0` ran on
+> `develop` before this branch's `hitl` and `reprobe` extras existed, so those two kept `<0.20.0`
+> bounds against a 0.20.0 package and the merge is where they were corrected. Any branch adding an
+> intra-family dependency across a bump has to re-check its own bounds; `--verify` is what says so.
+
+
+**Docs: `per_document`'s cost was documented wrong in seven places, and `geo` had no adoption
+doc.** Both matter to a reader deciding what to spend.
+
+The cost error would have been paid in money. Seven sites said `per_document` costs one LLM call per
+document; it costs an extraction plus an **unconditional** grounding judge per document, and the
+extraction itself is chunked by field count when the document is born-digital. So somebody costing a
+6-field, 30-document born-digital target from the README budgeted 30 calls and would have issued
+120: three chunked extractions plus a judge, per document, thirty times over. Fixed
+at every site, including `eval_loop.py`'s and `multi_document.py`'s docstrings, which are the more
+authoritative homes and were missed by a first sweep that grepped only the prose phrasings.
+
+What the published sentences say now: the floor is two calls per document (one extraction, one
+grounding judge), a born-digital document can cost more because that path chunks the extraction by
+field count, and an OCR'd document is a single vision call whatever the schema. The floor is what a
+reader can budget from; earlier attempts at a formula were mis-read in both directions.
+
+The site that survived every earlier sweep was `_run_per_document_extraction`'s own docstring, which
+had carried the singular claim since it was written. Those sweeps grepped the prose phrasings rather
+than the claim, so the least authoritative homes were fixed first and the definition last.
+
+`multi_row_vision` was also grouped into a cycle it does not run. Only `css` and `regex` reuse a
+cached pattern and can make a poll free; both other strategies persist a **marker** recipe for
+operational visibility, so a recipe row existing is not evidence that a poll costs nothing.
+
+**`docs/adoption/geo.md` now exists**, so every published package has an adoption doc -- verified
+programmatically across every distribution rather than by eye. The index used to promise that
+universally; it now states it as of a date and says plainly that nothing enforces the pairing, since
+a promise no gate keeps is one the next package breaks. Also `docs/integration-guide.md` no longer
+claims its `threetears.core.egress` entries were
+"verified against the `develop` source tree": they cannot have been, since that seam ships here for
+the first time.
+
+**Naming conventions are now gated, and the measurement is the news.** Ruff's `N` (pep8-naming)
+rules are on repo-wide. They were enabled because the question "do we do things inconsistently" had
+never been answered with numbers, and the answer is no: functions, classes, variables and constants
+are consistent across every package, and 104 of the findings were ruff disagreeing with a house
+style applied uniformly rather than the codebase disagreeing with itself.
+
+Two rules are off, with the reason recorded at the setting rather than left to be rediscovered.
+`N818` -- exceptions here are named for the CONDITION (`LeaseUnavailable`, `SessionNotFound`,
+`AccessDenied`), and adopting the `Error` suffix would rename thirty-two public exception types
+across published wheels to buy a suffix. `N811` -- the same false positive every time: ruff reads
+SQLAlchemy's `UUID` CLASS as a constant when it is aliased to disambiguate it from `uuid.UUID`.
+`N803`/`N806` are off for TESTS only, because `N803` had zero findings in any `src` tree, so the
+rule stays live exactly where a real naming mistake would matter.
+
+Everything the rules genuinely caught was fixed rather than ignored: one local named as a constant
+in shipped code, three test classes and one test function. Verified live by mis-naming a class and a
+function in `src` and watching the rules fire, and the sidecar's nested `ruff.toml` names `N` itself
+because a nested config replaces the root's rather than extending it.
+
+**Fix: four names were public in practice and absent from the declared surface (`3tears`).**
+`threetears.core` resolves `Keyset`, `Page`, `decode_cursor` and `encode_cursor` through its lazy
+PEP 562 map -- they import, and this package's own pagination tests use them through
+`from threetears.core import ...` -- while `__all__` listed only `CursorError` beside them. So
+`import *` missed them and anything reading `__all__` did not know they existed.
+
+The test meant to catch this asserted `set(__all__) <= set(_LAZY)`, a subset, while its module
+docstring claimed to pin a "three-way agreement". A name reachable but undeclared passed. It now
+asserts set EQUALITY in both directions, because `_LAZY` is the mechanism and `__all__` is the
+declaration, and a name in one and not the other is a surface nobody decided on.
+
+Found by enabling ruff's `F` rules, which recognised the four as undeclared re-exports.
+
+**`F` is now on repo-wide, and clearing it found two more real defects.** A flag set and never read
+in a shipped datasources driver (`error_raised`, whose apparent intent was to label a latency
+histogram by outcome -- deleted rather than wired, because adding a metric label is a decision
+about dashboards, not a lint fix); and an exclusion set that a tools enforcement test built and
+then ignored, its return statement carrying a hardcoded set instead, so the module its own comment
+named was never actually excluded.
+
+The rest was volume rather than substance: 149 unused imports, mostly one copy-paste pattern in one
+package's test suite, plus three dead locals. Every finding was cleared BEFORE the rule was turned
+on -- a gate that fails on a clean checkout is a gate people learn to skip.
+
+**Two ledgers are keyed on `path:line:symbol`**, so an autofix of that size invalidated both:
+fifteen entries across `_underscore_exemptions.txt` and `_fake_parity_exemptions.txt` were
+realigned, and five rationales that carry-forward could not match were recovered from git rather
+than rewritten from scratch.
+
+**Fix: an undefined name reached a container past both lint and type checking (`3tears-scrape`
+sidecar).** `suppress` was used after an earlier change removed its import. `./scripts/lint.sh`
+passed, `./scripts/typecheck.sh` passed, and the container would have raised `NameError` on the
+first hung window-manager call.
+
+**Both gates were blind by configuration, not by accident.** Ruff's default rule set is in force
+nowhere in this repo: the root selects `SLF` alone, and a nested `ruff.toml` is a full override
+rather than an extension, so the sidecar's restated the same narrow set -- F821 (undefined name)
+was running in no directory at all. And mypy's file list covers `src` trees only, so it never looks
+at this one. The only thing between that `NameError` and a booted container was
+`./scripts/test-sidecar.sh`, and it caught this instance solely because a test happened to cover
+that branch.
+
+`packages/scrape/sidecar/ruff.toml` now selects `["SLF", "F"]`. Adopting all of F there cost two
+unused imports, and the rule was verified against the real defect: removing the import again yields
+`F821 Undefined name 'suppress'`.
+
+**This is the second time this directory's lint has let something through that then ran** -- the
+first was a formatter autofix writing a syntax error, recorded under v0.19.3 -- which is why the
+answer is a rule rather than more care. Running F across the whole repository additionally found
+**two live undefined names** in a channels test's annotations, now imported; they were harmless only
+because `from __future__ import annotations` never evaluates them, which is the same mechanism that
+had already broken the operator WebSocket route on this branch.
+
+Root-wide adoption was deferred at this point in the release, on the grounds that 159 findings is a
+sweep rather than a fix. It was then done anyway, later in this same release -- see the entry above,
+which opened those findings and reports what was actually in them. This paragraph is kept rather
+than rewritten because it is why the two arrived as separate pieces of work.
+
+**A hung window-manager call no longer leaks a process.** `asyncio.wait_for` cancels the
+`communicate()` await and leaves the CHILD running, so a call that never answered held a process for
+the life of a container meant to run long and unattended. It is now killed and reaped, and both are
+asserted -- the reap had been claimed in a comment only, and deleting it left the suite green.
+
+**An operator now sees their target and nothing else (`3tears-scrape` sidecar).** Chromium must own
+at least one window or it exits, and the warm-up render disposes of its own tab, so exactly one
+window always survived doing nothing -- showing the new-tab page, which on this image renders a
+search engine's home page. A person summoned to clear one challenge arrived at a display holding
+their target next to something that looked exactly like a usable browser.
+
+Not tidiness. That window belongs to the DEFAULT browser context, so it was the one place on the
+display where what somebody types is not isolated per target -- which is the promise the rest of
+the surface keeps. The people doing this work are not the people who should have to work out that
+a window is scenery.
+
+It is hidden at startup with `wmctrl` (skip_taskbar, skip_pager) and `xdotool` (iconify), both
+added to the image. Both are needed: a minimised window a taskbar still lists is still one click
+away. Chromium is also launched straight onto `about:blank`, so no window in the container's life
+shows anything worth clicking, not even before the hide runs. Hidden rather than closed -- closing
+the last window exits the browser and takes the container's purpose with it -- and every
+window-manager call is best-effort for the same reason.
+
+**An openbox rule was tried first and does not work**, recorded because the next person will reach
+for it too: openbox applies `<application>` rules when a window is first *mapped*, and Chromium
+maps before its page title arrives, so a title-matched rule never fires. Observed on the live
+display, where the window stayed viewable with an empty `_NET_WM_STATE`. Removed rather than left
+in place.
+
+**Fix: the operator's WebSocket route had never once worked (`3tears-scrape`).** It shipped with
+FastAPI imported inside `build_operator_router`, to keep the `hitl` extra genuinely optional. That
+does not compose with `from __future__ import annotations`: every annotation in the module is a
+string at runtime, and FastAPI resolves a handler's annotations against the handler's own
+`__globals__` -- the defining module's namespace -- where a name bound only as a local variable
+does not exist. FastAPI treated `websocket` as a request field, failed to validate it, and closed
+every upgrade with **1008**.
+
+1008 is the worst code it could have picked, because it is also what a refused token gets. A dead
+route and a rejected operator were indistinguishable from outside, and nothing exercised the route
+end to end -- the tests covered the relay and the token extraction in isolation, which both worked
+perfectly. A first attempt at a regression test asserted the close code and passed while the route
+was still dead.
+
+Fixed structurally rather than worked around: the route wiring moved to `operator_routes.py`,
+which imports FastAPI at module scope so annotations resolve, and `operator.py` imports that
+module lazily instead of importing FastAPI lazily. The extra is exactly as optional as before --
+nothing reaches it until a caller asks for a router -- and the shape that caused the bug is gone.
+The tests now assert the injected authorizer was **consulted**, which is the only evidence the
+handler ran.
+
+**The operator page and the noVNC client now ship from the router, and the sidecar is down to one
+job (`3tears-scrape`).** `build_operator_router()` serves the page at its own mount root, the
+vendored client beneath it, and the RFB WebSocket beside both. Mount it under any prefix at any
+depth; every URL it emits is relative, so it never learns where it ended up.
+
+**Served at the root, and that is load-bearing.** Relative URLs resolve against the directory the
+page came from: at `.../hitl/` the WebSocket resolves to `.../hitl/ws`, and at `.../hitl` it
+resolves to `.../ws` -- one directory too high, no route, and an operator who sees only "Failed to
+connect". A request without the trailing slash is redirected to the one with it, and a test mounts
+under a deep prefix rather than at the root, because at the root every wrong answer works.
+
+The static client tree is mounted BESIDE the routes rather than over them. A mount matches
+everything beneath it, including an upgrade `StaticFiles` cannot serve -- it dies on its own
+`assert scope["type"] == "http"`, reaching the operator as a 500 that looks like a dead display.
+The sidecar hit exactly that, because there the tree was the socket's parent and only registration
+order kept them apart. Here nothing the mount could claim is a route, so ordering does not matter,
+which is why moving it to the router root fails a test.
+
+**What the sidecar lost, and it is more than the relay.** `websockify` and Debian's `novnc` are
+gone from the image, with the noVNC root, the client path, the operator page, the WebSocket relay,
+the token subprotocol handling and `authorize_token`. `EXPOSE` is down to the API port and
+`VncSession` carries only a display. The AGPL container is now what the design says it is: Xvfb,
+Chromium, nodriver, `x11vnc`. `x11vnc` binds loopback, which on Kubernetes means reachable by the
+MIT container sharing the pod's network namespace and by nothing else -- that binding IS the
+access control on the display port rather than a hardening extra.
+
+`SessionManager` stays, deliberately, and so does `authorize(session_id, token)`. The tab
+machinery drives nodriver and cannot move; and removing the last capability check from endpoints
+that hand back raw cookie jars is a security reduction, not a cleanup, so it is a separate
+decision rather than a consequence of this one.
+
+Every property that lived in a deleted test moved with the thing it described: the token comes
+from the fragment and never the query string, no URL the page emits is absolute, the operator
+arrives connected on a desktop that scales, and a refused operator never causes the display to be
+resolved. That last one needed rewriting rather than copying -- the original watched
+`asyncio.open_connection`, which now happens inside the relay, so it watches the injected display
+collaborator instead.
+
+**Control messages for a session now find the pod holding its display (`3tears-scrape`).**
+Everything that acts on a display -- putting a target in front of the operator, taking a cleared
+one back, ending the session -- has to reach one specific pod. The two obvious arrangements are
+both bad: addressing pods directly makes the caller track which pod is which and re-track it
+after every reschedule, and ingress stickiness makes the routing layer responsible for a fact it
+cannot see. So messages are addressed to the SESSION and find their own way, over
+`threetears.nats.serve_owner` and `forward`, on a subject derived from the session id.
+
+Four messages act on a live session: open a tab, complete a tab, close the session, read its
+state. **Opening a session is deliberately not one of them**, and the asymmetry is the mechanism
+rather than a gap -- taking the claim is what MAKES a pod the owner, so routing it to an owner
+would be circular. A caller opens a session by claiming it and addresses everything afterwards
+to the session it now owns. That is pinned by a test, because it is the one message somebody
+will reasonably expect to find.
+
+**A completed tab is sealed before it goes anywhere.** The raw export is the cookie jar of a
+target a human has just cleared: a live credential. It travels one loopback hop from the sidecar,
+which holds no key by design, and it stops at the pod -- the first point in the path that holds a
+key at all. What goes on the bus is ciphertext with an expiry, because a bus is a place other
+subscribers can be granted a read of. The raw key is removed from the reply rather than
+overwritten, so a jar cannot survive by an exception unwinding past the reassignment, and the
+test asserts against every payload the bus carried rather than against the reply alone -- checking
+the reply would only prove the field was renamed.
+
+**A pod that has lost its claim refuses every message from the moment it loses it.** Dropping
+the subscription is prompt but not instantaneous, and in the gap a message can still arrive at a
+pod that has stopped being the owner; acting on one would drive a display the new owner is using.
+Ownership is therefore re-checked per message, with the subscription as the optimisation and the
+check as the mechanism. Serving refuses to start at all on a claim already lost, since
+subscribing would advertise ownership this pod does not have.
+
+Nothing here frames its own errors: `forward` already carries a handler's exception back as a
+type name and message, and a second envelope on top would be a second thing that can disagree
+with the first.
+
+**One pod holds a session's display, and knows when it stops (`3tears-scrape`).** A session is
+one operator working one display, and on Kubernetes that display lives in exactly one pod while
+the operator's WebSocket lands on whichever pod the ingress routed it to. Nothing stopped a
+second pod deciding it also served the session, and the cost is not a race that resolves: two
+Xvfb displays, two browsers, and a human driving whichever one their socket reached while the
+other collects half a solve. `claim_session` is the claim, and it refuses rather than queues --
+the holder is a person working a page, so waiting would hold a caller open for minutes to hours
+and tell nobody anything.
+
+**It is built on `KVLease` rather than `nats_distributed_lock`, which is the closer-looking
+fit.** The lock is one context manager, owns its own heartbeat, and its own docstring pairs it
+with `serve_owner`. It is still the wrong primitive here for one specific reason: its heartbeat
+is an unconditional `bucket.put`. A holder that stalls long enough for its entry to expire, and
+whose key another pod then wins, overwrites the winner's entry on its next heartbeat -- two
+holders, no error. `LeaseHandle.refresh` is a compare-and-swap against the recorded holder and
+raises `LeaseLost` instead. What KVLease lacks is only the renewal loop, and that loop is short
+because its whole job is to react to the exception the lock cannot raise.
+
+**A claim is given up on evidence or on time, never on one failed call.** `LeaseLost` is
+authoritative and acts immediately. An unreachable coordination layer is not evidence of
+anything, so a blip is ridden out -- but a claim un-renewed past its TTL has expired whether or
+not this pod noticed, and another pod may already hold it, so the deadline gives it up. Holding
+on *because* renewals are failing is the exact inversion of the safe reading.
+
+Three sharp edges are refused rather than reinterpreted. A sub-second TTL truncates to zero at
+the coordination layer, writing an entry stale the instant it lands, so it raises. A refresh
+interval longer than the TTL lapses a live claim under its own holder, so it raises. And a
+deployment with no lease -- which the compose file in this repo is -- still runs, but says so at
+WARNING: silence there means two operators on two displays believing they share one, with
+nothing anywhere saying why.
+
+Releasing is best-effort by design. The likeliest reason a release fails is that the
+coordination layer is unreachable, which is the same reason the claim was just given up -- so it
+is the ordinary path out of a lost claim, and raising would replace the operator's real failure
+with a cleanup error exactly when the original was the informative one. The TTL frees the entry
+regardless; that is what it is for.
+
+**The noVNC client now ships in the wheel, under a licence notice that says so
+(`3tears-scrape`).** The human-handover router hands a platform a working display instead of
+instructions for installing one. A seam that requires the consumer to go and fetch noVNC
+separately is homework, not a seam -- and there is a correctness argument on top of the
+ergonomic one that is the stronger of the two: the operator page does
+`import RFB from "./core/rfb.js"` and passes `wsProtocols`, and RFB's constructor options have
+changed across releases, so a platform-supplied tree turns "did you install the right noVNC"
+into a bug class diagnosed from outside the process. Owning both pins them together.
+
+noVNC v1.7.0 is vendored unmodified at `src/threetears/scrape/operator_assets/novnc/`: `core/`
+and `vendor/pako/` only, roughly 740K rather than 2.8M, because `core/` imports nothing outside
+itself but pako and references no image, stylesheet or translation. The operator page replaces
+noVNC's own UI, so `app/`, `po/` and `vnc.html` are not shipped.
+
+**The licence obligation is met specifically rather than by a line in a README**, since noVNC is
+MPL-2.0 and this package is MIT. Redistributing MPL-2.0 files inside an MIT wheel is permitted;
+what it requires is that the licence text and copyright notice travel with the files, that the
+source stays identifiable, and that any modification is marked. So the upstream `LICENSE.txt`,
+`AUTHORS` and every text they reference ship beside the code and again in the wheel's
+`dist-info/licenses/`; `novnc-provenance.json` records the version, the source archive and a
+digest of the tree; and the declared expression is now `MIT AND MPL-2.0 AND
+LicenseRef-noVNC-DES` rather than plain `MIT`. That makes `3tears-scrape` the only compound
+entry in a family where every other package declares plain `MIT`, which is correct: it is the
+only one redistributing somebody else's files. `LicenseRef-noVNC-DES` is
+`core/crypto/des.js`, which carries two bespoke permissive grants matching no listed SPDX
+licence. The operator page sits as a sibling of the vendored directory rather than inside it, so
+no file under `novnc/` can be read as a modified noVNC file.
+
+`modified: false` is checked, not promised: a test recomputes the tree digest, and the fix for a
+failure is to mark the modification, never to restamp the digest.
+
+**Two separate mechanisms would each have shipped a dead display**, and both are now held by
+test. The stock Python `.gitignore` carries a bare `lib/` rule; with no leading slash it matches
+at any depth, so it matched `vendor/pako/lib/` -- every zlib module noVNC's compressed-encoding
+decoders import. Twelve files, absent from the repository, with the working tree looking
+complete. A `!` re-inclusion fixes that for git and does not fix it for hatchling, which reads
+ignore files with its own matcher and does not honour the negation, so the wheel was still built
+without them; `[tool.hatch.build.targets.wheel] artifacts` is what covers that half. Nothing
+readable from the source tree distinguishes the two cases, which is why one test builds a real
+wheel and looks inside it.
+
+**A blocked scrape target now backs off, instead of being hammered forever
+(`3tears-scrape`).** Telling a bot wall apart from a site redesign already stopped a
+walled target burning its recipe, but it did not make one cheap: the target was still
+fetched on every poll, and every one of those fetches produced a page that failed
+extraction and therefore got classified. The classifier's verdict cache does not bound
+that, because it keys on a digest of the page's visible text and a real interstitial
+renders a per-request id into exactly that text -- so the cache misses on every poll,
+forever. The only thing that bounds either cost is not fetching the target, which is why
+the fetch rate and the classification rate are two separate claims and both are now
+tested over many polls rather than one.
+
+`TargetCircuit` gates the fetch off durable state on the health row
+(`circuit_state`, `consecutive_fetch_failures`, `blocked_until`, shipped unwritten in
+`v010`). Repeated blocks trip it open, an open circuit suppresses the fetch, and each
+probe that finds the wall still standing doubles the wait up to a ceiling -- a decay,
+not a floor. A transport failure shares the circuit with a wall, since both mean the
+content did not arrive, but only a wall stamps `last_blocked_at`, so that column keeps
+meaning "walled" rather than drifting into "something went wrong". A suppressed poll
+persists nothing: no observation was made, and a row per suppressed poll would write
+more the harder the backoff worked.
+
+**No new state machine was written.** The three states, the failure threshold, the
+OPEN-to-HALF_OPEN promotion and what a probe's outcome does are all
+`threetears.models.circuit_breaker.CircuitBreaker`'s, reached through a new
+`CircuitBreaker.restore()` classmethod (`3tears-models`): the durable row is hydrated
+into a real breaker, the transition is driven by calling it, and the resulting state is
+written back. That seam is the point -- a consumer keeping circuit state in its own store
+should not also keep its own copy of the rules, because a second copy is a second copy
+that can disagree. `restore()` deliberately does not restore an in-flight probe: that
+belongs to the process that issued it and no other process can observe it.
+
+The collaborators below are optional and injected, never constructed, because each belongs to
+infrastructure `3tears-scrape` does not own: a per-target `CircuitBreakerLike` lookup for a
+free in-process fast-fail before any I/O (the same structural seam `core.http_client`
+already uses, taken as a lookup because one `TargetCircuit` serves many targets and a shared
+breaker would let one walled target fast-fail the rest -- `CircuitBreakerRegistry.get` fits
+it directly, though a long-lived process should inject a bounded lookup, since that registry
+never evicts and a scrape target is a far larger key space than the provider name it was
+built for), a `WindowedCounter` so several pods polling one target reach the threshold
+together instead of each carrying a share that never gets there, a capacity-one `TokenBucket`
+for the cross-pod single-probe admission a restored breaker structurally cannot give, and a
+`ReprobeScheduler`. With every one of them absent the circuit still decays a blocked target's fetch
+rate off the health row alone.
+
+Two consequences of the durable and in-process circuits running on different clocks are
+handled rather than left latent. A suppressed fetch resolves an in-process probe that will
+now never happen -- but only where one was genuinely admitted, since reporting a failure to
+a breaker that admitted nothing trips it on fetches nobody attempted, after which the wrong
+circuit answers and the caller is told to retry in seconds when the truth is hours. And
+because `restore()` cannot carry an in-flight flag across a process, a restored HALF_OPEN
+breaker consults no timer, so the promotion writes `blocked_until` as the probe's own
+reservation: a caller that dies between the fetch and the outcome report leaves a HALF_OPEN
+row, and without the reservation that row would be fetched on every poll with every
+individual state transition still correct.
+
+`3tears-scrape[reprobe]` is a new extra carrying the `ReprobeScheduler`: `reprobe.py` books the next
+probe as a `3tears-scheduled-jobs` `relative_delay` job rather than sleeping, for a caller
+that is event-driven rather than polling (a poller's next poll already is the re-probe).
+The job id is derived from the target, so re-booking replaces the outstanding probe --
+with a random id every superseded booking would survive and eventually fire, turning the
+longest backoff into the biggest burst. The extra is optional because scheduled-jobs
+brings NATS and APScheduler with it, and nothing in the default install imports it.
+
+**A suppressed poll reports `validation_status: "backoff"`, not `"blocked"`.** In this
+package `"blocked"` is a fact about the target -- a bot wall stood where the content should
+be -- and the same circuit also opens on repeated transport failures, so the old value told
+a consumer that a host which had simply stopped answering was challenging it. The status
+now describes the poll rather than the target, which is the same reason a suppressed poll
+persists no extraction row: it observed nothing. Whether a target was ever walled remains
+`last_blocked_at`'s question to answer.
+
+The probe reservation is honoured whether or not a `TokenBucket` is configured. The bucket
+and the reservation look like two answers to one question and are not: the bucket bounds how
+many pods probe at once and refills at a constant rate, while the reservation bounds how
+often a stuck target is probed and decays. Deferring to the bucket swapped the decay for a
+floor, and only in the deployments that had configured one.
+
+`TargetCircuit.release_probe()` closes the permitted path's version of a hazard the
+suppressed path already handled. A permitted decision can promote the in-process breaker and
+mark its probe in flight; that flag is cleared only by an outcome, so a caller raising
+between the fetch and the report left the breaker holding it for the life of the process,
+fast-failing the target ahead of the durable row and answering "retry in about 0s" forever.
+The durable side needs no equivalent, because its own promotion already stamped a
+reservation that outlives the process that abandoned it. `breaker_for` is correspondingly
+typed to `ProbeObservableBreaker` -- the three-call protocol plus a readable `state` -- since
+a probe this module cannot see admitted is a probe it cannot release, and a breaker that
+could not answer that was previously accepted at the seam and wedged at runtime.
+
+The same release covers a cancelled fetch. `driver.render` is guarded by `except Exception`,
+which a `CancelledError` is not, and it is the longest await in the call -- so cancellation
+is where a strand most often lands. The cancellation is not persisted as a fetch outcome:
+a shutdown is not evidence about the target, and a durable failure would back it off across
+every pod and outlive the process that was cancelled. The in-process breaker does take the
+failure, because the three-call protocol has no "never mind", but that is seconds-scale,
+process-local, and dies with the process anyway.
+
+`"backoff"` is deliberately NOT added to the `ValidationStatus` Literal, whose four values
+are the domain of what gets stored on `ScrapeExtraction`. A suppressed poll stores nothing,
+so admitting it would declare a storable value that can never be stored; the four existing
+values each describe a page we did or did not receive, where `"backoff"` describes a fetch
+we declined to attempt. The scrape README and the design doc record the distinction, since
+the tool's JSON payload is where a consumer meets both.
+
+The OPEN-to-HALF_OPEN promotion now books a re-probe as well as stamping a reservation. A
+`relative_delay` job is terminal, so the job booked at trip time is spent once it fires: a
+dispatcher that fires it, promotes the row, and then dies before reporting an outcome left a
+HALF_OPEN row with a live reservation and nothing left that would ever revisit it. That is
+the crash the reservation was invented for, and it was solved for a poller -- whose next poll
+is the re-probe -- and silently not for the event-driven caller `reprobe.py` exists to serve.
+Bookings are keyed by target, so the outcome report that normally follows replaces this one.
+A recovery is the exception, since closing the circuit books nothing and so cannot supersede
+the outstanding booking. `ReprobeScheduler` therefore gains `cancel_reprobe`, called when the
+circuit closes: without it the last booking survives and fires against a target that already
+came back, which is a whole poll including its eval loop rather than a bare fetch, and it
+leaves a job row behind for every target that ever tripped. The cancel deletes rather than
+expires, and is safe to issue blind -- `Collection.delete` is idempotent and returns `True` on
+every path, so a booking that was never made costs one no-op rather than an exception, and a
+caller closing a circuit never has to find out which it was. Nothing is logged above DEBUG for
+the same reason: the return value cannot tell a real cancellation from a no-op, and a close
+happens for every target that recovers, including the many that never tripped.
+
+**A success reported against a circuit the breaker leaves OPEN no longer erases its backoff.**
+`CircuitBreaker` answers a success from a request it never admitted by leaving the circuit
+open, which this module adopts rather than overrides. Clearing `blocked_until` on the way past
+turned that conservative answer into its opposite: a missing window restores as nought seconds
+remaining, so the next check found an open breaker whose recovery had elapsed, promoted it and
+probed -- the state column still reading OPEN while the backoff it names had been discarded.
+Reachable across a fleet with nothing failing to persist, when one pod trips the row while
+another's already-permitted fetch is in flight. The window is now cleared only by an actual
+close, which writes no transition rule: the window is this module's storage, not a state.
+
+**`TargetCircuit.forget_target()` is the retention story, and it is manual on purpose.** Both
+tables this writes are keyed by target and upserted rather than appended, so neither grows
+with time or poll count -- but both grow with distinct targets, and an ad-hoc target id is
+derived from `(url, field_schema)`, so a long-lived process accumulates a row per URL it has
+ever scraped. There was previously no way to reclaim any of it. It is not automatic because a
+health row is not garbage: it carries the fingerprint that stops a target being re-classified
+on every poll, so evicting one for a target still being polled costs exactly the LLM calls
+this design exists to avoid, and no TTL can distinguish a retired target from a quiet one.
+Only the caller knows which is which.
+
+The three `BackoffPolicy` defaults now carry their reasoning rather than appearing as bare
+numbers -- three failures because two in a row is ordinary bad luck, fifteen minutes because
+it is sized against the poll interval it protects rather than any vendor's undocumented
+cooldown, six hours because a doubling curve otherwise passes a day within a working shift
+and a target blocked overnight should be probed by morning without anyone intervening.
+
+**A human can now clear a wall the scraper cannot, and their work is reused
+(`3tears-scrape`, `3tears-core`).** The rest of the human-in-the-loop path, plus two
+capabilities that are not scrape-specific and are not in this package.
+
+The sidecar's Xvfb display is reachable on demand: `x11vnc` starts when a person arrives and
+stops when they leave, bound to loopback, with the display number a parameter so a display pool
+is later configuration rather than a rewrite. The operator reaches it through one origin that
+also authenticates it. (This entry described that origin as the sidecar's own port, with
+`websockify` still running beside it; a later entry in this same release moved both the client
+and the relay into the MIT container and removed `websockify` outright. The arrangement above is
+what the display path looked like partway through, not what ships.) On top of that sits one
+session against that one display -- a bounded number
+of targets at a time, each in its own isolated browser context so a second target cannot see
+the first's cookies, behind a hard TTL and a token this container minted. The token proves
+only that; deciding who was entitled to it belongs where identity lives, which is not here.
+
+Nothing is held while a target waits for a person. It is reported and forgotten, and
+re-driven from `url` plus `nav_steps` when an operator actually arrives, so waiting costs no
+container resources at all.
+
+When they finish, the context's cookies and `localStorage` are exported, sealed with
+`core.security.encryption` under an operator master key, and stored on the health row with an
+expiry. Later unattended renders send them, so the target extracts normally without anyone
+watching. The sidecar holds no key and seals nothing -- the container driving a browser for
+arbitrary targets is the one you least want holding a decryption key. Every way the stored
+state can fail (wrong key, tamper, format change, missing or passed expiry, no key configured)
+degrades to "this target needs a human again", never to sending a dead cookie and believing
+the answer. `localStorage` is named because the export always captured it while the apply path
+dropped it, so a site keeping its session there came back needing a human anyway.
+
+Two seams make that loop usable by a platform, which owns the queue and the operator.
+`ScrapeTargetHealthCollection.list_walled()` answers "which targets need a person" -- the only
+non-primary-key query in the package, filtered so a host that merely stopped answering does
+not queue somebody who arrives with nothing to clear. `TargetCircuit.record_human_cleared()`
+lifts the suppression afterwards, which nothing else can: `record_reachable` reports a FETCH
+that succeeded, and a success from a request the breaker never admitted deliberately leaves
+the circuit open. Without it the solve is stored and the next poll is still suppressed.
+
+**`threetears.core.egress` is new, and deliberately in core.** An `EgressDriver` seam with
+`direct`, any proxy URL, and a SOCKS constructor covering TOR and most VPN sidecars, wired
+into `core.http_client` -- which already called itself "the one transport" and already had a
+transport seam, and httpx proxying IS a transport. A driver answers both what httpx needs and
+what a browser needs, because a deployment whose API calls proxy while its scrapes go out
+direct is worse off than one with no proxying: it believes it has the property. An unknown
+driver name raises rather than falling back to direct, and an exit with no address is refused
+at construction -- both are the same silent failure, an exit that reports itself as `tor` and
+leaves by the container's own IP. Nothing here starts a daemon.
+
+Egress is per target, not per container. The sidecar's `EGRESS_PROXY` is a default applied at
+browser launch, and a render may override it with `egress_proxy`, which gets its own browser
+context -- `Target.createBrowserContext` accepts a `proxyServer`, where the `--proxy-server`
+flag is process-wide. `last_egress` on the health row (migration `v011`) records which exit an
+observation was CONFIGURED to come from -- reported by the fetcher rather than assumed by the
+caller, so a dropped proxy argument shows up as a mismatch. It is not evidence that traffic
+left that way: a per-context proxy Chromium accepted and then ignored would still be recorded
+under the name it was asked for, and confirming otherwise needs an observer outside the
+process. What it buys is telling "walled" apart from "walled from this exit", so a working
+alternative is not left untried. `None` means no exit was configured, which is a different fact
+from choosing the default route; that choice is `DirectEgress` and records as `direct`.
+
+Egress is wired separately on the drivers and on `ScrapeTool`, and `ScrapeTool` warns on either
+half being wrong. Drivers proxied with an unproxied gate leaks the container's address on the
+`robots.txt` read in front of every fetch; the gate proxied with an unproxied driver leaks it on
+the page fetch itself. Both are invisible otherwise, because both halves work. The backends that
+honour an exit are `ApiDriver` and `NodriverSidecarDriver`, plus the wrappers that delegate to
+them -- the warning names any driver that cannot.
+
+**`robots.txt` is honoured, both halves on by default.** `Crawl-delay` is waited between
+fetches of an origin; a `Disallow` is escalated for a person rather than fetched unattended or
+silently skipped. A human working the page over VNC is not an automated agent, which is what
+makes that escalation close rather than dead-end -- and `Crawl-delay` deliberately does not get
+that exemption, because load on someone's server is caused equally by either. Every unusable
+robots file means "allowed": treating an unreachable text file as a refusal lets one bad
+response stop a scrape silently. Parsing is `urllib.robotparser`, so no new dependency.
+
+A disallowed target becomes a queue item rather than a dead end.
+`ScrapeTool` builds a gate unless one is passed. There are two ways off: `robots=None`
+removes the gate entirely, and a gate whose policy has both behaviours disabled stays in
+place, keeps its overrides, and does not fetch the file at all -- so turning politeness off
+does not leave a request going out to every new origin purely to discard the answer.
+Migration `v012` adds `robots_blocked_at`/`robots_blocked_reason`, and `list_walled()` now
+answers with BOTH kinds of target a human is needed for -- a bot wall and a robots refusal --
+which widens what that method returns. The robots columns are deliberately not the circuit's:
+a policy decision is not a fetch failure, and counting it as one would back off a site that
+works perfectly. A block is stamped once rather than per poll, and is cleared both when a
+human clears the target and when the file stops disallowing us, so the queue empties as well
+as fills.
+
+The default robots fetcher leaves by the tool's configured exit. On-by-default politeness with
+an unproxied read would have disclosed the container's real address to every origin
+immediately before the proxied fetch that was meant to hide it -- a deployment with one exit
+configured and two in reality.
+
+**The VNC display is now operable by a human, which it was not (`3tears-scrape` sidecar).** Four
+defects, every one invisible to a green suite because every test asserted the contexts were
+isolated and the slots accounted for, and every one of those assertions was true. The windows
+existed, held the right cookies, and could not be used.
+
+There was no window manager: bare Xvfb maps windows in creation order with no titlebars and no
+click-to-focus, so with four slots only the last target opened was reachable. `openbox` fixes
+that, and `tint2` gives a taskbar, without which switching is blind and a minimised window has
+nowhere to come back from. openbox's four virtual desktops with the mousewheel bound to
+`GoToDesktop` are collapsed to one and the gesture unbound -- a stray scroll moved the operator
+to an empty desktop where the panel was still drawn but held nothing, which reads as a missing
+taskbar rather than a switched desktop.
+
+And the client URL handed to every operator since the VNC shipped carried `resize=scale`, which
+`vnc_lite.html` does not parse: it reads `scale` and does not know the word `resize`. The
+parameter had never once done anything, so an operator on a laptop scrolled a fixed 1920x1080
+desktop to reach the taskbar at the bottom of it. The page served is now `vnc.html` with
+`autoconnect=true&resize=scale`.
+
+**`UI_SCALE` is the display-scaling setting a desktop OS would offer.** Chromium's
+`--force-device-scale-factor` plus `Xft.dpi` for openbox and tint2, so the page and the
+furniture around it scale together -- either alone reads as a rendering fault. It affects only
+what a person looks at: extraction renders never go through it, because a scraped page's layout
+must not depend on an operator's comfort setting. Live per-site adjustment is Chromium's own
+`Ctrl +`, which persists in the pinned profile.
+
+**`docker-compose.yml` names the tag `docker buildx bake` writes.** It said
+`nodriver-sidecar:latest` while bake tags `aibots/...`, so building and then running started
+whatever stale image carried the bare name -- silently, with every command reporting success. It
+cost a verification run against a nine-day-old container in which the feature under test did not
+exist.
+
+**A cancelled poll gives back the crawl-delay turn it took (`3tears`, `3tears-scrape`).**
+`TokenBucket.claim` consumes and had no inverse, so the only recovery was refill over time: a
+caller cancelled between taking a turn and doing the work held that key's shared budget down for
+nothing. Invisible once, and compounding under repeated cancellation -- a pod restarting in a
+loop can hold a key near zero while doing nothing at all. `TokenBucket.refund()` is the inverse,
+capped at capacity so a double refund cannot mint budget the bucket never had, and it never
+raises: it exists to be called from a handler that is already unwinding, where an exception
+would replace a self-healing throughput dip with a lost error.
+
+`ScrapeTool` returns the origin's turn when a poll is cancelled after claiming it. Fire-and-forget
+rather than awaited, because an `await` inside a cancellation handler re-raises before reaching
+the store.
+
+**`ScrapeTool.execute` has one probe guard instead of two.** The two adjacent
+`except BaseException` blocks had no `await` between them, so there was no live gap -- but that
+shape produced four stranded-probe bugs in a row, each fixed as a symptom, because every new
+`await` had to be placed against whichever guard its author happened to be reading. The render is
+now `_render_once`, returning `(page, error)`, and one guard covers the whole permitted path, so
+the compensation has exactly one home. `execute` is 45 lines shorter.
+
+**A poll that never fetches no longer spends the site's fleet-wide budget.** `TokenBucket.claim`
+consumes atomically, and the crawl-delay pacer was being claimed inside `RobotsGate.check` --
+which is a question, not a commitment. The circuit can suppress the fetch afterwards, the caller
+can change its mind, the driver can be missing. Because the token is shared across pods, polling
+one walled target inside its backoff drained a token per poll and delayed every SIBLING target
+on that origin: a target behaving perfectly, slowed by one that is not. Taking the turn is now
+`claim_fleet_turn`, called only once the fetch is committed, which is the rule `note_fetched`
+already enforced for the local clock -- the site pays when we actually visit it.
+
+`EgressRegistry.health()` survives a driver that raises. It is a diagnostic over a
+`runtime_checkable` Protocol that invites foreign implementations, so one broken driver replaced
+the whole report with an exception -- leaving an operator asking "which exit is down" with no
+answer at the moment one already was.
+
+`threetears.core.egress` is reachable from `threetears.core` directly. It was described as new
+public API while being absent from the package's lazy export map, so it could only be imported
+by its full module path.
+
+**A driver that cannot use a human's solve now says so, once per site.** Only the nodriver
+sidecar can apply exported cookies and storage; the other five accept the parameter and render
+unauthenticated. In silence that is a trap -- the caller gets a successful page back and learns
+nothing until extraction fails on a login wall and the target is escalated to a person who
+already cleared it.
+
+The cardinality is the whole design, and both obvious choices are wrong. Per render is a storm:
+`MultiDocumentDriver` forwards a solve to its inner driver once per document, so one listing
+would emit a warning per document, and a warning that repeats that way teaches its reader to
+filter it. Per driver instance is silence: `ScrapeTool` builds its driver map once and reuses it
+for the life of the process, so the first target would warn and every later one would be dropped
+quietly. An origin is what a solve actually belongs to, so it is the unit -- one report per site,
+bounded so a long-lived process cannot accumulate origins forever. `NodriverDownloadDriver`
+carries its own remedy, since the general advice ("use the nodriver sidecar driver") names the
+thing it already is; its constraint is the `/v1/download` endpoint, which carries no session
+state.
+
+**A driver written before this release keeps working.** `ScrapeDriver` ships as a pluggable
+contract, and `session_state` was being passed on EVERY fetch -- so an out-of-tree driver
+written against 0.19.x raised `TypeError` on every call, including the overwhelming majority
+carrying no stored solve at all. It is passed only when one exists. The egress half of the
+same change had reasoned about exactly this consumer and reads its attribute through a
+`getattr`; the asymmetry is what made this an oversight rather than a decision.
+
+**`egress` accepts a NAME, not just a constructed driver.** `ScrapeTool(egress="tor",
+egress_registry=...)` resolves through `EgressRegistry`, which is what that class was built
+for and, until now, what nothing did with it. An unknown name raises rather than falling back
+to the default route: a deployment that asked for TOR and silently got the container's own
+address would look correct in every log line while being wrong about the one property it
+configured.
+
+`3tears[socks]` declares `httpx[socks]`, which `SocksEgress` and `WarpEgress` need. It was
+reachable only as an ImportError on the first request, which makes a packaging requirement
+look like a runtime bug.
+
+**Cloudflare WARP is a named exit, not a configuration people have to discover.**
+`WarpEgress()` on `warp-cli mode proxy`'s own default SOCKS port, with commented compose
+plumbing beside TOR's. It was expressible via `SocksEgress` all along, which is true and is not
+the same thing: a backend nobody can find by name is one the next person reimplements, and the
+port is the part everyone gets wrong. WARP and TOR are for opposite problems -- WARP changes
+the address a site sees and is far less challenged, while TOR is for non-attribution and raises
+the challenge rate.
+
+**An exit can be asked whether it is up.** `EgressDriver.health()` returns an `EgressHealth`
+carrying the address the exit actually presents, because a proxy that is listening but
+forwarding directly answers a connectivity check perfectly while providing none of the property
+it was configured for. `EgressRegistry.health()` sweeps every registered exit at once.
+
+This closes a detection gap rather than adding a convenience. A dead `tor` or `warp` daemon
+fails every render transport-side; each target's circuit then opens and backs off for hours,
+and those targets are correctly EXCLUDED from the walled queue, since unreachability
+deliberately never stamps `last_blocked_at`. Every individual signal behaves correctly and the
+aggregate is invisible: "all my targets broke at once" and "one daemon died" produce identical
+evidence until something asks the exits directly. A driver that cannot answer reports
+unreachable with a reason rather than defaulting to healthy -- an exit nobody can check must
+not be the one that looks fine.
+
+**Two wrapping drivers stopped swallowing a human's solve.** `NetworkCaptureDriver` delegates
+to an inner driver that is typically the nodriver sidecar -- the one backend that can apply a
+session -- and dropped `session_state` on the way, so a solved session was discarded exactly
+where it would have worked and the capture returned the login wall's XHR.
+`MultiDocumentDriver` forwards it now too. A wrapper that silently withholds a credential makes
+the capability depend on which wrapper happens to be in the way.
+
+**A fleet pacer no longer overrides what a site asked for.** With a `delay_pacer` injected,
+`RobotsGate` returned the bucket's answer alone and discarded the parsed `Crawl-delay`
+entirely -- so a site asking for 30s between requests was fetched at whatever rate the bucket
+happened to carry, and only in the fleet deployments where several pods make that delay
+matter most. Both constraints bind now: the wait is the longer of the fleet's turn and this
+origin's own clock. That branch was previously the module's only untested one, which is how
+it stayed wrong.
+
+`RobotsGate` also stops growing forever. Both per-origin stores are caches reconstructible
+from a re-fetch, so they self-bound at `max_origins` on a least-recently-used basis, and
+`forget()` retires one origin explicitly. The circuit's equivalent state gets a manual lever
+instead, because evicting a circuit row would discard a judgement nothing can rebuild.
+
+**Completing a HITL tab no longer holds the session lock across the browser.** The export and
+context-dispose are two CDP round-trips, and a wedged browser holding that lock blocked
+`reap()` and `close()` -- defeating the hard TTL exactly when it matters, since the stuck
+context is the one still holding a target's authenticated session. Popping the tab is the
+claim and stays under the lock; the round-trips happen outside it under their own timeouts,
+and a failed export costs the state rather than the slot.
+
+**`CamoufoxDriver` says when it drops a session state.** It accepts the parameter and cannot
+apply it -- a real gap rather than an inapplicability, since it drives a browser. Silence
+meant a caller handed over a session a person had spent real time solving, got a successful
+render back, and learned nothing until extraction failed on a login wall and the target was
+escalated to a human who had already done the work. Now a warning, and a documented one.
+
+**`fire_and_forget` is now supported public API on `3tears`.** It moves from
+`threetears.core._bridge` into `threetears.core`'s export surface because a sibling
+distribution needs to schedule a coroutine it must not await, and the alternative was every
+consumer reaching across a package boundary into a module whose underscore says it may change.
+`_bridge`'s other exports -- `sync_await`, `drain`, `shutdown` -- are deliberately not promoted
+and carry no compatibility promise: they drive the bridge's lifecycle, which belongs to whoever
+owns the loop.
+
+**The gate can now see the sidecar, and the SLF001 ledger is checked in both directions.**
+`nodriver` is AGPL-3.0 and never enters the workspace venv, so the workspace suite carries
+`--ignore` for `packages/scrape/sidecar` -- which meant ruff formatted the sidecar's source
+while nothing executed the result. An autofix wrote `except OSError, ProcessLookupError:` into
+`hitl.py`, a syntax error that passed lint, passed mypy (the sidecar is outside its file list
+too) and passed the entire workspace suite. `scripts/test-sidecar.sh` runs that suite against
+the sidecar's own interpreter and `check-all.sh` calls it, so it is separate but not optional.
+
+`tests/enforcement/_underscore_exemptions.txt` records why each exempted private access was
+judged acceptable, and nothing read it back: the underscore walker scans `packages/*/src` and
+never enters a `tests/` tree. It had rotted in both directions -- entries pointing at code that
+had moved or gone, and accesses with no entry at all. Both directions are now checked, and they
+have to be separate checks, because a missing entry is not a stale one. The reconciliation, the
+AST walking and the ruff-config discovery live in
+`threetears.enforcement.underscore_access` alongside the walkers whose exemptions they describe,
+with thin shells in `tests/enforcement/`.
+
+That discovery reads every ruff config rather than the root `pyproject.toml` alone. A nested
+`ruff.toml` is a full override, so a checker built on the root cannot see what the subtree
+exempts -- which is how a set of reviewed sidecar entries were deleted with nothing noticing.
+Regenerate with `uv run python scripts/regen-underscore-exemptions.py`, which carries rationales
+forward by `(path, enclosing scope, symbol)` so a line shift loses nothing and two accesses of
+one name keep their own reasons; hand-editing the line numbers is what
+the checks exist to catch.
+
 **`3tears-nats` no longer installs the NATS client by default -- BREAKING for consumers.**
 `nats-py` and `nkeys` moved to a `[client]` extra. `nkeys` publishes no wheels, so an
 unconditional dependency turned every install into a source build, including aarch64 targets
@@ -195,6 +955,7 @@ The package is complete for passwords, PKCE, GitHub sign-in, session tokens, DPo
 API-key secrets, step-up freshness, trusted-proxy client-IP resolution, and the
 storage seams. OIDC, SAML, TOTP, WebAuthn and refresh rotation are still resident
 in the downstream identity service and land next.
+
 ## v0.19.4 -- 2026-07-26
 
 **`HealthServer` gets real liveness/readiness semantics, so a readiness gate can no

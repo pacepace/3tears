@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import asyncpg
 import pytest

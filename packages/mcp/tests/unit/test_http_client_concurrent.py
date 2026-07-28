@@ -8,7 +8,6 @@ additional invariant (login-lock) and uses a slower mock path
 from __future__ import annotations
 
 import asyncio
-import json
 
 import httpx
 import pytest

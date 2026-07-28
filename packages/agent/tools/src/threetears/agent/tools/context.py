@@ -8,7 +8,6 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.agent.memory.collections import MemoryRefsCollection
-from threetears.agent.memory.entities import MemoryRefEntity
 from threetears.agent.tools.collections import ContextItemCollection
 
 __all__ = [

@@ -214,3 +214,13 @@ __marimo__/
 
 # macOS folder metadata
 .DS_Store
+
+# Vendored noVNC's pako, re-included over the stock Python `lib/` rule above.
+#
+# `lib/` has no leading slash, so it matches at ANY depth -- including
+# `.../operator_assets/novnc/vendor/pako/lib/`, which is every zlib module
+# `core/inflator.js` and `core/deflator.js` import. Without this, twelve files
+# vendored under an MPL-2.0 obligation are absent from the repository and the
+# display dies on the first compressed framebuffer update, with the source tree
+# looking complete.
+!packages/scrape/src/threetears/scrape/operator_assets/novnc/vendor/pako/lib/
