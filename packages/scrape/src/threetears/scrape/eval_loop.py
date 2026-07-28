@@ -21,9 +21,12 @@ call AND an unconditional grounding judge on every poll.
 cached-recipe cycle at all -- some real multi-document
 targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern
-learned once and reused; every document gets its own fresh LLM extraction
-extraction on every poll instead -- chunked by field count, plus an unconditional
-grounding judge per document (:func:`_run_per_document_extraction`).
+learned once and reused; every document gets its own fresh extraction on every
+poll instead, plus an unconditional grounding judge. The extraction's cost depends
+on the document's SHAPE: a born-digital one is chunked by field count (several
+calls), an OCR'd one is a single vision call over its images. So the floor is two
+calls per document and the ceiling scales with your schema
+(:func:`_run_per_document_extraction`).
 """
 
 from __future__ import annotations
@@ -1715,7 +1718,7 @@ async def run_eval_loop_multi_row(
     :param strategy_type: ``"css"`` (row/field CSS selectors), ``"regex"``
         (a single pattern matched repeatedly via ``re.finditer`` against the
         page's plain text, one match per record), ``"per_document"`` (no
-        cached pattern at all -- a fresh chunked extraction plus a grounding judge per document,
+        cached pattern at all -- a fresh extraction plus a grounding judge per document,
         every poll), or ``"multi_row_vision"`` (a single PDF whose own table
         structure defeats text-based extraction -- a vision read of the
         whole table, every record grounded before counting; see

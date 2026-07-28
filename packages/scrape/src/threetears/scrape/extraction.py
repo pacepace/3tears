@@ -1059,7 +1059,8 @@ def split_notice_documents(html: str) -> list[NoticeDocument]:
     instead of a page-wide regex/CSS pattern -- some real multi-document targets
     (e.g. Hawaii/West Virginia's WARN Act letters, one independently-worded letter
     per employer) share no boilerplate a single pattern could ever generalize
-    across, so each document needs its own fresh extraction call, not a cached recipe.
+    across, so each document needs its own fresh extraction, not a cached recipe --
+    and a judge besides, so never fewer than two calls apiece.
 
     :param html: the combined page's full HTML (see :data:`NOTICE_DOCUMENT_CLASS`)
     :ptype html: str

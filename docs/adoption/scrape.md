@@ -39,18 +39,25 @@ which is not fetch it.
   candidates, validate each structurally against the real page, have a judge pick
   the winner by comparing extracted values against page content, persist the
   winner as a recipe, and reuse it with zero LLM calls until it stops validating.
-  That is the `css` and `regex` path. The `per_document` and `multi_row_vision`
-  strategies deliberately have no reusable pattern, for different reasons:
-  `per_document`'s targets share no template a recipe could generalise across,
-  while `multi_row_vision`'s problem is that `find_tables()` -- the text substrate a
-  cached pattern would key against -- fails on its table. So each pays LLM calls
-  every poll, and more than one apiece: `per_document` spends a chunked extraction
-  per document, split by field count so it scales with the schema, plus an
-  unconditional grounding judge; `multi_row_vision` spends two over the whole
-  table, extraction then the same kind of judge, and the recipe they persist is a marker
-  for visibility rather than something reused to skip a call. Worth knowing
-  before costing a target, since it is the difference between
-  paying once and paying per poll.
+  That is the `css` and `regex` path.
+
+  The `per_document` and `multi_row_vision` strategies deliberately have no
+  reusable pattern, for different reasons. `per_document`'s targets share no
+  template a recipe could generalise across; `multi_row_vision`'s problem is that
+  `find_tables()`, the text substrate a cached pattern would key against, fails on
+  its table.
+
+  Both therefore pay LLM calls on every poll, never fewer than two per unit of
+  work. `per_document` spends, per document, an extraction plus an unconditional
+  grounding judge -- and the extraction's cost depends on the document's shape,
+  since a born-digital one is chunked by field count while an OCR'd one is a single
+  vision call. `multi_row_vision` spends two over the whole table: an extraction,
+  then the same kind of judge.
+
+  Both also persist a recipe, and it is a marker for operational visibility rather
+  than something reused to skip a call -- so a recipe row existing is not evidence
+  that a poll is free. Worth knowing before costing a target, because it is the
+  difference between paying once and paying every poll.
 - **`classify_failed_page`** -- asks what a failed page IS. A wall leaves the
   recipe byte-identical and records `blocked`; a genuinely changed page
   regenerates on the first failure rather than waiting for a threshold.

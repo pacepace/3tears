@@ -44,8 +44,8 @@ own prose per notice), sharing no boilerplate a single pattern could ever
 generalize across (verified: candidates each hardcoded one specific letter's
 exact wording, matching 1 of 10 real documents). ``extraction_strategy_type:
 per_document`` (``eval_loop.StrategyType``) is the correct fit instead: no
-cached pattern, a fresh, independent chunked extraction per document plus a
-grounding judge for each, every
+cached pattern, a fresh, independent extraction per document plus a grounding
+judge for each, every
 poll -- ``extraction.split_notice_documents`` is this driver's own combined-page
 convention's other half.
 
