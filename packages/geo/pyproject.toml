@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-geo"
-version = "0.20.0"
+version = "0.21.0"
 description = "Slippy-map tile geometry: WKB decoding, zoom bands, and MVT encoding in application code (no PostGIS)"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -25,11 +25,11 @@ dependencies = [
     # core supplies BaseCollection/DerivedCollection, which the feature cache
     # and tile collection subclass rather than hand-rolling a wrapper around
     # SQLiteBackend (the platform's caching rules forbid the latter).
-    "3tears>=0.20.0,<0.21.0",
-    "3tears-observe>=0.20.0,<0.21.0",
+    "3tears>=0.21.0,<0.22.0",
+    "3tears-observe>=0.21.0,<0.22.0",
     # object-key contract: tiles use the platform key scheme rather than
     # inventing a parallel one.
-    "3tears-media-contracts>=0.20.0,<0.21.0",
+    "3tears-media-contracts>=0.21.0,<0.22.0",
     # Geometry math in application code, not in SQL: YugabyteDB ships no
     # postgis extension, so there is no ST_Intersects / ST_Simplify /
     # ST_AsMVT to call. shapely does what those would have done.
