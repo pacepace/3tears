@@ -16,14 +16,18 @@ consumer that wants the platform-baseline behaviour can use
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_DISPATCH_REAP_AFTER_SECONDS",
+    "DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND",
     "DEFAULT_JOB_CONFIG",
     "DEFAULT_TICK_DUE_LIMIT",
     "DEFAULT_TICK_LOCK_KEY",
     "JobConfig",
+    "reap_after_seconds_for_kind",
 ]
 
 
@@ -50,6 +54,23 @@ DEFAULT_TICK_DUE_LIMIT: int = 200
 DEFAULT_DISPATCH_REAP_AFTER_SECONDS: int = 900
 
 
+# Default per-``kind`` reap-threshold overrides: none. Every kind falls
+# back to :data:`DEFAULT_DISPATCH_REAP_AFTER_SECONDS`, so a deployment
+# that configures nothing behaves exactly as it did before per-kind
+# thresholds existed.
+#
+# A kind whose work legitimately runs for hours needs a larger value
+# here -- a dataset build carries a multi-hour statement ceiling, and the
+# 15-minute baseline would reap it mid-run and record the loss as a
+# failure. **A larger threshold alone does not fix false reaping**: the
+# age is measured from dispatch start, not last activity, so a bigger
+# number only moves the cliff. The complete fix is this threshold PLUS
+# progress-conditioned renewal keyed on a ``date_last_progress`` column
+# on the run row (``dsh-task-04b`` adds the column, ``dsh-task-09``
+# renews on it). Neither half is sufficient alone.
+DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND: Mapping[str, int] = MappingProxyType({})
+
+
 @runtime_checkable
 class JobConfig(Protocol):
     """Read-side operational config for the tick engine.
@@ -59,10 +80,17 @@ class JobConfig(Protocol):
     that wants the platform baseline can delegate to the defaults from
     its own implementation.
 
-    :ivar tick_lock_key: the cross-pod lock key the tick acquires
+    :ivar tick_lock_key: the cross-pod lock key the tick acquires.
+        Consumers running more than one pump in a process MUST vary this
+        -- two pumps sharing a key serialise against each other for no
+        reason
     :ivar tick_due_limit: per-tick cap on the due-row scan
-    :ivar dispatch_reap_after_seconds: age after which a stuck
+    :ivar dispatch_reap_after_seconds: fallback age after which a stuck
         ``'dispatching'`` fire row is reaped to ``'failed'``
+    :ivar dispatch_reap_after_seconds_by_kind: per-``kind`` overrides of
+        that age; a kind absent from the mapping uses the fallback.
+        Resolve through :func:`reap_after_seconds_for_kind` rather than
+        reading the mapping directly
     """
 
     @property
@@ -73,6 +101,9 @@ class JobConfig(Protocol):
 
     @property
     def dispatch_reap_after_seconds(self) -> int: ...
+
+    @property
+    def dispatch_reap_after_seconds_by_kind(self) -> Mapping[str, int]: ...
 
 
 class _DefaultJobConfig:
@@ -96,8 +127,31 @@ class _DefaultJobConfig:
     def dispatch_reap_after_seconds(self) -> int:
         return DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 
+    @property
+    def dispatch_reap_after_seconds_by_kind(self) -> Mapping[str, int]:
+        return DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND
+
 
 # Platform-default :class:`JobConfig` singleton. Returns the ``DEFAULT_*``
 # constants; used by :func:`threetears.scheduled_jobs.tick.scheduled_tick_job`
 # when no consumer-supplied config is passed.
 DEFAULT_JOB_CONFIG: JobConfig = _DefaultJobConfig()
+
+
+def reap_after_seconds_for_kind(config: JobConfig, kind: str) -> int:
+    """Resolve the stale-dispatch reap age for one job ``kind``.
+
+    Consults ``config.dispatch_reap_after_seconds_by_kind`` and falls
+    back to ``config.dispatch_reap_after_seconds`` when the kind
+    configures no override, so an unconfigured kind behaves exactly as
+    it did before per-kind thresholds existed.
+
+    :param config: operational config carrying both the fallback and the
+        per-kind overrides
+    :ptype config: JobConfig
+    :param kind: the job kind whose threshold to resolve
+    :ptype kind: str
+    :return: reap age in seconds
+    :rtype: int
+    """
+    return config.dispatch_reap_after_seconds_by_kind.get(kind, config.dispatch_reap_after_seconds)

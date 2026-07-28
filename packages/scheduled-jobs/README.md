@@ -9,10 +9,32 @@ What it gives you:
 - **`scheduled_tick_job(...)`** -- one cross-pod-locked tick pump. Acquire
   the `nats_distributed_lock` at a caller-supplied key; on `LockHeld`
   skip silently; on `KvError` degrade open (the per-row optimistic-CAS
-  is the real guard); enumerate due rows; per-row CAS-claim + reschedule;
-  invoke an injected dispatch callback; drift / missed-fire accounting;
-  per-row failure isolation. Takes the store(s), the dispatch callback,
-  and the NATS client as parameters, with no domain knowledge.
+  is the real guard); sweep abandoned in-flight fires per kind group;
+  enumerate due rows of the routed kinds; per-row CAS-claim + reschedule;
+  invoke the handler registered for that row's `kind`; drift /
+  missed-fire accounting; per-row failure isolation. Takes the store(s),
+  a `DispatchRoutes` table, and the NATS client as parameters, with no
+  domain knowledge.
+- **Per-`kind` routing, and an unrouted kind is inert.** The pump's
+  `kind -> handler` table is matched EXACTLY -- no wildcard, no default
+  handler, no fall-through -- and it also scopes the due-row scan (a SQL
+  predicate, not a Python filter) and the reaper sweep. A row whose kind
+  has no handler is refused with an `unrouted_kind` failure metric and an
+  ERROR event, and is deliberately not claimed, so the occurrence
+  survives until its handler is registered. Silent misdelivery is the
+  failure this prevents: a row absorbed by another kind's dispatcher does
+  that dispatcher's work and records it as a success.
+- **Per-`kind` reap thresholds.** `dispatch_reap_after_seconds_by_kind`
+  overrides `DEFAULT_DISPATCH_REAP_AFTER_SECONDS` per kind, so a kind
+  whose work legitimately runs for hours is not reaped on the 15-minute
+  baseline. Kinds sharing a threshold sweep in one query. Note the age is
+  measured from dispatch start, not last activity, so the threshold alone
+  only moves the false-reap cliff -- pair it with progress-conditioned
+  renewal in the executor.
+- **A distinct lock key per pump.** `JobConfig.tick_lock_key` defaults to
+  `DEFAULT_TICK_LOCK_KEY`; consumers running more than one pump in a
+  process MUST vary it, or the pumps serialise against each other for no
+  reason.
 - **`compute_next_fire_at(...)`** -- the pure reschedule math for every
   schedule type (`daily_at`, `every_n_hours`, `random_within_window`,
   `one_shot_at`, `cron`, `relative_delay`, `interval`) and both

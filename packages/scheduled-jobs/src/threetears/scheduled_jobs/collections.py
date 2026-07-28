@@ -314,24 +314,34 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
         self,
         now: datetime,
         *,
+        kinds: Sequence[str],
         limit: int = 200,
     ) -> list[ScheduledJobEntity]:
-        """Return active jobs whose ``next_fire_at <= now``.
+        """Return active jobs of ``kinds`` whose ``next_fire_at <= now``.
 
         Used by the tick engine to scope each tick's work. Cross-partition
         scan -- the partition predicate cannot apply by construction; the
         ``__SPANS_PARTITIONS__`` marker documents the deliberate
         exemption.
 
+        The ``kind`` filter is a SQL predicate, deliberately NOT a Python
+        filter over a kind-blind result set: the scan is the one place a
+        forgotten filter cannot hide, and the failure mode it prevents --
+        a row reaching a handler registered for some other kind -- is
+        silent. An empty ``kinds`` returns nothing rather than widening
+        to every kind.
+
         :param now: tick instant; rows with ``next_fire_at <= now`` are
             returned
         :ptype now: datetime
+        :param kinds: the routed kinds to scan for
+        :ptype kinds: Sequence[str]
         :param limit: per-tick cap (defaults to 200)
         :ptype limit: int
         :return: list of due jobs ordered by ``next_fire_at`` ASC
         :rtype: list[ScheduledJobEntity]
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or not kinds:
             return []
         # __SPANS_PARTITIONS__: the tick engine enumerates ready jobs
         # across every partition; the partition predicate cannot apply
@@ -347,8 +357,10 @@ class ScheduledJobCollection(BaseCollection[ScheduledJobEntity]):
             "missed_fire_policy, name, date_created, date_updated "
             "FROM scheduled_jobs "
             "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
-            "ORDER BY next_fire_at ASC LIMIT $2",
+            "AND kind = ANY($2) "
+            "ORDER BY next_fire_at ASC LIMIT $3",
             now,
+            list(kinds),
             limit,
         )
         return [ScheduledJobEntity(dict(row), is_new=False, collection=self) for row in rows]
@@ -641,8 +653,9 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         now: datetime,
         *,
         older_than: timedelta,
+        kinds: Sequence[str],
     ) -> int:
-        """Reap ``'dispatching'`` fire rows abandoned mid-dispatch to ``'failed'``.
+        """Reap ``'dispatching'`` fire rows of ``kinds`` to ``'failed'``.
 
         Cross-partition sweep: a pod that dies after
         :meth:`create_dispatching` but before a finalize leaves a
@@ -652,14 +665,24 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         :data:`REAPED_DISPATCH_ERROR`, making the loss visible in fire
         history + failure metrics instead of silent.
 
+        ``job_fires`` carries no ``kind`` column of its own, so the scope
+        resolves through the ``job_id`` the fire row already references
+        (``scheduled_jobs.job_id`` is UNIQUE, which is why the subquery
+        needs no partition join). Scoping to the caller's kinds is what
+        lets two pumps with different reap thresholds share one table
+        without either reclaiming the other's in-flight fires. An empty
+        ``kinds`` sweeps nothing rather than widening to every kind.
+
         :param now: sweep instant; the cutoff is ``now - older_than``
         :ptype now: datetime
         :param older_than: minimum in-flight age before a row is reaped
         :ptype older_than: timedelta
+        :param kinds: the kinds whose fire rows this sweep may reclaim
+        :ptype kinds: Sequence[str]
         :return: number of rows reaped
         :rtype: int
         """
-        if self.l3_pool is None:
+        if self.l3_pool is None or not kinds:
             return 0
         cutoff = now - older_than
         # __SPANS_PARTITIONS__: reclaiming abandoned in-flight fires is a
@@ -673,9 +696,11 @@ class JobFireCollection(BaseCollection[JobFireEntity]):
         rows = await self.l3_pool.fetch(
             "UPDATE job_fires SET status = 'failed', error = $1 "
             "WHERE status = 'dispatching' AND actual_fired_at < $2 "
+            "AND job_id IN (SELECT job_id FROM scheduled_jobs WHERE kind = ANY($3)) "
             "RETURNING partition_key, fire_id",
             REAPED_DISPATCH_ERROR,
             cutoff,
+            list(kinds),
         )
         return len(rows)
 

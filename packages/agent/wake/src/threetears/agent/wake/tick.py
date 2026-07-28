@@ -33,7 +33,15 @@ design notes
   :class:`~threetears.scheduled_jobs.config.JobConfig`, NOT the core default
   ``"scheduled_jobs_tick"``). A rolling deploy where some pods still run the
   pre-S-2 wake tick must contend on the SAME lock, or two home pods could
-  briefly co-fire one schedule before the optimistic-CAS catches it.
+  briefly co-fire one schedule before the optimistic-CAS catches it. This is
+  also what keeps the wake pump from serialising against any other pump in
+  the same process.
+- **Wake runs exactly one routed kind.** Since the core engine took per-``kind``
+  routing (dsj-task-01) it dispatches through a ``kind -> handler`` table, so
+  wake registers ``{"agent_wake": _adapt}``. ``agent_wake_schedules`` holds
+  nothing else, so the core's kind filter is satisfied by construction in the
+  adapters: a scan or sweep for kinds that do not include ``"agent_wake"``
+  returns nothing rather than the whole table.
 - **Metrics.** The generic engine owns the tick's fire / drift / tick-duration
   counters now (on the scheduled-jobs emitter). The genuinely wake-specific
   yield-duration histogram has no generic equivalent, so :func:`_adapt`
@@ -45,7 +53,7 @@ design notes
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
@@ -53,6 +61,7 @@ from uuid import UUID
 from threetears.observe import get_logger
 from threetears.scheduled_jobs import (
     DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
+    DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND,
     DEFAULT_TICK_DUE_LIMIT,
     DueSchedule,
     JobConfig,
@@ -80,8 +89,9 @@ log = get_logger(__name__)
 _WAKE_TICK_LOCK_KEY: Final[str] = "agent_wake_tick"
 
 # The opaque ``kind`` discriminator the engine stamps on every wake job's
-# trigger. A consumer that registered multiple kinds against one tick pump
-# would route on this; wake runs a single dedicated pump.
+# trigger, and the single key in wake's dispatch routing table. Wake runs a
+# dedicated pump over a table that holds nothing else, so this constant is
+# simultaneously the routed kind, the scan scope, and the reaper scope.
 _WAKE_KIND: Final[str] = "agent_wake"
 
 # Constant ``fire_source`` for every scheduled (non-webhook) wake fire.
@@ -140,6 +150,16 @@ class _WakeJobConfig:
     def dispatch_reap_after_seconds(self) -> int:
         """Return the platform-default stale-``'dispatching'`` reap age."""
         return DEFAULT_DISPATCH_REAP_AFTER_SECONDS
+
+    @property
+    def dispatch_reap_after_seconds_by_kind(self) -> Mapping[str, int]:
+        """Return no per-kind reap overrides.
+
+        Wake routes one kind whose dispatch stages work and returns
+        promptly, so the platform baseline applies and there is nothing
+        to override.
+        """
+        return DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND
 
 
 _WAKE_JOB_CONFIG: JobConfig = _WakeJobConfig()
@@ -254,9 +274,27 @@ class _WakeScheduleStore:
         self,
         now: datetime,
         *,
+        kinds: Sequence[str],
         limit: int = 200,
     ) -> list[DueSchedule]:
-        """Return due schedules wrapped as ``DueSchedule`` rows."""
+        """Return due schedules wrapped as ``DueSchedule`` rows.
+
+        ``agent_wake_schedules`` holds exactly one kind, so the core's
+        kind filter is satisfied by the table's construction rather than
+        by a column predicate: a scan for kinds that do not include
+        ``agent_wake`` returns nothing.
+
+        :param now: tick instant
+        :ptype now: datetime
+        :param kinds: the calling pump's routed kinds
+        :ptype kinds: Sequence[str]
+        :param limit: per-tick cap on rows returned
+        :ptype limit: int
+        :return: list of due schedules wrapped for the core engine
+        :rtype: list[DueSchedule]
+        """
+        if _WAKE_KIND not in kinds:
+            return []
         entities = await self._collection.list_due_for_tick(now, limit=limit)
         rows: list[DueSchedule] = [_WakeDueSchedule(entity) for entity in entities]
         return rows
@@ -369,8 +407,25 @@ class _WakeFireStore:
         now: datetime,
         *,
         older_than: timedelta,
+        kinds: Sequence[str],
     ) -> int:
-        """Delegate the abandoned-``'dispatching'`` sweep to the wake collection."""
+        """Delegate the abandoned-``'dispatching'`` sweep to the wake collection.
+
+        ``wake_fires`` holds exactly one kind, so a sweep for kinds that
+        do not include ``agent_wake`` reclaims nothing rather than the
+        whole table.
+
+        :param now: sweep instant
+        :ptype now: datetime
+        :param older_than: minimum in-flight age before a row is reaped
+        :ptype older_than: timedelta
+        :param kinds: the calling pump's routed kinds
+        :ptype kinds: Sequence[str]
+        :return: number of rows reaped
+        :rtype: int
+        """
+        if _WAKE_KIND not in kinds:
+            return 0
         return await self._collection.reap_stale_dispatching(now, older_than=older_than)
 
 
@@ -436,8 +491,9 @@ async def wake_tick_job(
     """Run one tick pass of the agent-wake scheduler.
 
     Builds the adapter stores over ``pool`` + an adapter dispatch callback that
-    bridges the consumer's wake-shaped callback to the generic engine, and
-    delegates to :func:`threetears.scheduled_jobs.scheduled_tick_job` under the
+    bridges the consumer's wake-shaped callback to the generic engine, registers
+    it against the single ``"agent_wake"`` kind, and delegates to
+    :func:`threetears.scheduled_jobs.scheduled_tick_job` under the
     preserved ``"agent_wake_tick"`` cross-pod lock. The callback is awaited
     inline; long-running callback bodies (e.g. LLM round-trips) are expected to
     ``asyncio.create_task`` internally so the tick returns as soon as the row
@@ -488,7 +544,7 @@ async def wake_tick_job(
     await scheduled_tick_job(
         schedule_store,
         fire_store,
-        _adapt,
+        {_WAKE_KIND: _adapt},
         nats_client=nats_client,
         config=_WAKE_JOB_CONFIG,
     )

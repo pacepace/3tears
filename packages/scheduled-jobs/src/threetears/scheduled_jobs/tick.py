@@ -1,18 +1,19 @@
 """Generic scheduled-jobs tick engine.
 
 One pure-async :func:`scheduled_tick_job` invocation drives one pass of
-the scheduler: acquire the cross-pod lock, enumerate due schedules via
-the injected :class:`~threetears.scheduled_jobs.protocols.ScheduleStore`,
-claim each via optimistic-CAS, insert the initial ``job_fires`` row via
-the injected :class:`~threetears.scheduled_jobs.protocols.FireStore`, and
-invoke the consumer-supplied dispatch callback. Consumers register this
-body as a periodic job (e.g. an APScheduler ``IntervalTrigger``, cadence
+the scheduler: acquire the cross-pod lock, enumerate due schedules of the
+pump's routed kinds via the injected
+:class:`~threetears.scheduled_jobs.protocols.ScheduleStore`, claim each
+via optimistic-CAS, insert the initial ``job_fires`` row via the injected
+:class:`~threetears.scheduled_jobs.protocols.FireStore`, and invoke the
+handler registered for that row's ``kind``. Consumers register this body
+as a periodic job (e.g. an APScheduler ``IntervalTrigger``, cadence
 ~60s); the platform itself does NOT depend on APScheduler.
 
 Generalized from :func:`threetears.agent.wake.tick.wake_tick_job`. The
 agent/skill/webhook/conversation-specific machinery is stripped: the
-engine takes the store(s) + the dispatch callback + the NATS client as
-parameters and has zero domain knowledge. It builds a
+engine takes the store(s) + the dispatch routing table + the NATS client
+as parameters and has zero domain knowledge. It builds a
 :class:`~threetears.scheduled_jobs.types.JobTrigger` from the opaque
 ``kind`` + ``payload`` off each due row and forwards it verbatim.
 
@@ -28,39 +29,77 @@ design notes
   per-row optimistic-CAS in
   :meth:`ScheduleStore.claim_and_reschedule` is the real guard, so the
   tick body runs anyway rather than silencing the scheduler until a
-  process restart.
+  process restart. Consumers running more than one pump in a process MUST
+  give each pump its own ``tick_lock_key``; two pumps sharing a key
+  serialise against each other for no reason.
 - **Sequential per-schedule dispatch inside the lock.** Parallel
   ``asyncio.gather`` across schedules introduces write-contention on the
   fire store for no meaningful latency win (one tick handles tens of
   fires).
 - **Per-schedule failure isolation.** Every dispatch is wrapped in
   ``try/except Exception`` -- one bad row never poisons the tick.
-- **Dispatch callback is injected.** The engine only types the callable +
-  invokes it; the consumer owns what a fire *does*.
+- **Dispatch is routed by ``kind``, and an unrouted kind is inert.** The
+  engine takes a :data:`DispatchRoutes` mapping, not a single callback.
+  The routed kinds are pushed into the due-row scan as a SQL predicate,
+  so a row of another kind is never enumerated in the first place; if a
+  store returns one anyway, the row is REFUSED (a named
+  ``unrouted_kind`` failure + an ERROR event) rather than falling through
+  to whichever handler happens to be registered. Silent misdelivery is
+  the failure this engine exists to make impossible: an unrouted dataset
+  row absorbed by a billing dispatcher fires an unscheduled export that
+  advances the billing watermark and records it as a success. A refused
+  row is deliberately NOT claimed, so the occurrence survives to fire
+  once its handler is registered.
+- **Reap thresholds are per-kind.** The routed kinds are grouped by
+  resolved threshold (:func:`reap_after_seconds_for_kind`) and each group
+  is swept with its own age, so a kind whose work legitimately runs for
+  hours is not reaped on the 15-minute baseline. This alone does not fix
+  false reaping -- the age still runs from dispatch start, not last
+  activity; the pair is completed by progress-conditioned renewal keyed
+  on ``date_last_progress`` in the executor (``dsh-task-09``).
 - **Missed-fire policy + drift recording.** The tick records the planned
   fire instant (``scheduled_fire_at``) alongside the actual fire instant
   on every row; per-schedule ``missed_fire_policy`` controls whether a
   backlog coalesces into one fire or fires once per missed tick (via
   :func:`~threetears.scheduled_jobs.reschedule.compute_next_fire_at`).
+
+migration
+---------
+
+``scheduled_tick_job``'s third parameter was ``dispatch_callback``: a
+single ``(JobTrigger, fire_id) -> JobFireResult`` coroutine that received
+every due row regardless of ``kind``. It is now ``dispatch_routes``, a
+``Mapping[str, DispatchCallback]``. A caller passing the old bare
+callable gets a :class:`TypeError` naming the parameter; wrap it as
+``{the_kind: the_callback}``. Stores must add the ``kinds`` keyword to
+:meth:`ScheduleStore.list_due_for_tick` and
+:meth:`FireStore.reap_stale_dispatching`, and configs must add
+``dispatch_reap_after_seconds_by_kind``.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections import defaultdict
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
 from threetears.observe import get_logger
 
-from threetears.scheduled_jobs.config import DEFAULT_JOB_CONFIG, JobConfig
+from threetears.scheduled_jobs.config import (
+    DEFAULT_JOB_CONFIG,
+    JobConfig,
+    reap_after_seconds_for_kind,
+)
 from threetears.scheduled_jobs.events import (
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_REAPED,
     EVENT_FIRE_SKIPPED_BUSY,
+    EVENT_FIRE_UNROUTED_KIND,
     EVENT_TICK_COMPLETED,
     EVENT_TICK_STARTED,
 )
@@ -69,7 +108,12 @@ from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, Schedule
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
 
-__all__ = ["DispatchCallback", "scheduled_tick_job"]
+__all__ = [
+    "UNROUTED_KIND_REASON",
+    "DispatchCallback",
+    "DispatchRoutes",
+    "scheduled_tick_job",
+]
 
 
 # Drift threshold for the dedicated drift-event log ("actual - scheduled
@@ -87,6 +131,12 @@ _DRIFT_LOG_THRESHOLD_SECONDS: Final[float] = 60.0
 _ONE_SHOT_SCHEDULE_TYPES: Final[frozenset[str]] = frozenset({"one_shot_at", "relative_delay"})
 
 
+# Failure-metric reason recorded when a due row's ``kind`` has no handler
+# on the pump that scanned it. Named as a constant so alerting rules and
+# tests bind to the vocabulary rather than to a string literal.
+UNROUTED_KIND_REASON: Final[str] = "unrouted_kind"
+
+
 log = get_logger(__name__)
 
 
@@ -100,10 +150,18 @@ DispatchCallback = Callable[
 ]
 
 
+# The pump's routing table: ``kind`` -> the handler for that kind. Keys
+# are matched EXACTLY -- there is no wildcard entry, no default handler,
+# and no fall-through. A pump's registered kinds are also the kinds its
+# due-row scan and its reaper sweep are scoped to, so the table is the
+# single declaration of what this pump owns.
+DispatchRoutes = Mapping[str, DispatchCallback]
+
+
 async def scheduled_tick_job(
     schedule_store: ScheduleStore,
     fire_store: FireStore,
-    dispatch_callback: DispatchCallback,
+    dispatch_routes: DispatchRoutes,
     *,
     nats_client: Any = None,
     config: JobConfig = DEFAULT_JOB_CONFIG,
@@ -111,11 +169,13 @@ async def scheduled_tick_job(
     """Run one tick pass of the scheduled-jobs scheduler.
 
     Acquires the cross-pod lock at ``config.tick_lock_key``; on hold,
-    returns silently. Within the lock, enumerates due schedules, claims
+    returns silently. Within the lock, sweeps abandoned in-flight fires
+    per kind group, enumerates due schedules of the routed kinds, claims
     each via optimistic-CAS, writes the initial in-flight fire row, and
-    invokes the dispatch callback. The callback is awaited inline;
-    long-running callback bodies are expected to ``asyncio.create_task``
-    internally so the tick returns as soon as the row is staged.
+    invokes the handler registered for that row's ``kind``. The handler
+    is awaited inline; long-running bodies are expected to
+    ``asyncio.create_task`` internally so the tick returns as soon as the
+    row is staged.
 
     ``nats_client`` is typed ``Any`` to keep the NATS client an optional
     runtime dep on the engine's interface; ``None`` skips lock acquisition
@@ -126,26 +186,34 @@ async def scheduled_tick_job(
     :ptype schedule_store: ScheduleStore
     :param fire_store: the fire-side store (in-flight insert + finalize)
     :ptype fire_store: FireStore
-    :param dispatch_callback: per-fire dispatcher; raised exceptions are
-        isolated to a single schedule and recorded as failed fires
-    :ptype dispatch_callback: DispatchCallback
+    :param dispatch_routes: ``kind`` -> handler. Matched exactly; a row
+        whose kind is absent is refused, never rerouted. Raised handler
+        exceptions are isolated to a single schedule and recorded as
+        failed fires
+    :ptype dispatch_routes: DispatchRoutes
     :param nats_client: :class:`threetears.nats.NatsClient` or ``None``
         for single-pod dev mode (no cross-pod lock)
     :ptype nats_client: Any
-    :param config: operational config (lock key + due-scan cap); defaults
-        to the platform baseline
+    :param config: operational config (lock key, due-scan cap, reap
+        thresholds); defaults to the platform baseline
     :ptype config: JobConfig
     :return: nothing
     :rtype: None
+    :raises TypeError: when ``dispatch_routes`` is not a mapping (e.g.
+        the pre-routing single-callback signature)
+    :raises ValueError: when ``dispatch_routes`` is empty -- such a pump
+        would scan nothing and silently do no work forever
     """
     # local import to keep the lock module out of the engine's always-paid
     # import cost (consumers without NATS skip this).
     from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
     from threetears.nats.errors import KvError  # noqa: PLC0415
 
+    routed_kinds = _validate_routes(dispatch_routes)
+
     try:
         async with nats_distributed_lock(nats_client, config.tick_lock_key):
-            await _run_tick_body(schedule_store, fire_store, dispatch_callback, config)
+            await _run_tick_body(schedule_store, fire_store, dispatch_routes, routed_kinds, config)
     except LockHeld:
         log.debug(
             "scheduled_tick: lock held by another pod, skipping",
@@ -164,28 +232,58 @@ async def scheduled_tick_job(
             "scheduled_tick: cross-pod lock unavailable; proceeding without it (CAS still guards fires)",
             extra={"extra_data": {"error_type": type(exc).__name__, "error": str(exc)}},
         )
-        await _run_tick_body(schedule_store, fire_store, dispatch_callback, config)
+        await _run_tick_body(schedule_store, fire_store, dispatch_routes, routed_kinds, config)
+
+
+def _validate_routes(dispatch_routes: DispatchRoutes) -> tuple[str, ...]:
+    """Validate the routing table and return its kinds in stable order.
+
+    A pump is defined by what it routes, so a malformed table is a wiring
+    defect that must surface at the call site rather than as a pump that
+    quietly processes nothing. The sorted tuple is what the due-row scan
+    and the reaper sweep are scoped to.
+
+    :param dispatch_routes: the caller-supplied routing table
+    :ptype dispatch_routes: DispatchRoutes
+    :return: routed kinds, sorted for deterministic scan + sweep scoping
+    :rtype: tuple[str, ...]
+    :raises TypeError: when ``dispatch_routes`` is not a mapping
+    :raises ValueError: when ``dispatch_routes`` is empty
+    """
+    if not isinstance(dispatch_routes, Mapping):
+        raise TypeError(
+            "dispatch_routes must be a Mapping of kind -> DispatchCallback; "
+            f"got {type(dispatch_routes).__name__}. The single-callback pump signature was "
+            "replaced by per-kind routing -- wrap the callback as {'<kind>': callback}."
+        )
+    if not dispatch_routes:
+        raise ValueError(
+            "dispatch_routes is empty; a pump with no routes scans no kinds and would "
+            "silently do no work. Register at least one kind -> DispatchCallback entry."
+        )
+    return tuple(sorted(dispatch_routes))
 
 
 async def _run_tick_body(
     schedule_store: ScheduleStore,
     fire_store: FireStore,
-    dispatch_callback: DispatchCallback,
+    dispatch_routes: DispatchRoutes,
+    routed_kinds: Sequence[str],
     config: JobConfig,
 ) -> None:
-    """Pump one tick's worth of fires through the dispatch callback."""
+    """Pump one tick's worth of fires through the routing table."""
     emitter = get_scheduled_jobs_emitter()
     tick_started = time.monotonic()
     now = datetime.now(UTC)
-    await _reap_stale_dispatching(fire_store, config, now, emitter)
-    due = await schedule_store.list_due_for_tick(now=now, limit=config.tick_due_limit)
+    await _reap_stale_dispatching(fire_store, routed_kinds, config, now, emitter)
+    due = await schedule_store.list_due_for_tick(now=now, kinds=routed_kinds, limit=config.tick_due_limit)
     log.info(
         EVENT_TICK_STARTED,
-        extra={"extra_data": {"due_count": len(due), "tick_at": now.isoformat()}},
+        extra={"extra_data": {"due_count": len(due), "tick_at": now.isoformat(), "kinds": list(routed_kinds)}},
     )
     for schedule in due:
         try:
-            await _dispatch_one(schedule, schedule_store, fire_store, dispatch_callback, now, emitter)
+            await _dispatch_one(schedule, schedule_store, fire_store, dispatch_routes, now, emitter)
         except Exception:  # noqa: BLE001 - boundary: isolate per-schedule failures
             # _dispatch_one already records a failed job_fires row; this
             # outer except is defense in depth in case the row write itself
@@ -203,24 +301,54 @@ async def _run_tick_body(
     )
 
 
+def _group_kinds_by_reap_threshold(
+    routed_kinds: Sequence[str],
+    config: JobConfig,
+) -> list[tuple[int, tuple[str, ...]]]:
+    """Group the routed kinds by their resolved reap threshold.
+
+    One sweep per DISTINCT threshold rather than one per kind: kinds that
+    share a threshold (the common case, where none override the default)
+    collapse into a single query. Both the groups and the kinds inside
+    them are ordered deterministically so the sweep sequence is stable
+    across ticks and reproducible in tests.
+
+    :param routed_kinds: the pump's registered kinds
+    :ptype routed_kinds: Sequence[str]
+    :param config: operational config carrying the thresholds
+    :ptype config: JobConfig
+    :return: list of ``(reap age seconds, kinds)`` ordered by age
+    :rtype: list[tuple[int, tuple[str, ...]]]
+    """
+    grouped: dict[int, list[str]] = defaultdict(list)
+    for kind in routed_kinds:
+        grouped[reap_after_seconds_for_kind(config, kind)].append(kind)
+    return [(seconds, tuple(sorted(kinds))) for seconds, kinds in sorted(grouped.items())]
+
+
 async def _reap_stale_dispatching(
     fire_store: FireStore,
+    routed_kinds: Sequence[str],
     config: JobConfig,
     now: datetime,
     emitter: Any,
 ) -> None:
-    """Reap fire rows abandoned mid-dispatch, once per tick.
+    """Reap fire rows abandoned mid-dispatch, once per threshold per tick.
 
-    Delegates to :meth:`FireStore.reap_stale_dispatching` with the
-    configured age threshold. A pod that died between the in-flight
-    insert and a finalize leaves a permanent ``'dispatching'`` zombie;
-    this surfaces the loss as a ``'failed'`` fire + a failure-metric
-    increment. Wrapped in boundary isolation so a reaper failure (e.g. a
-    transient DB hiccup) never blocks the tick's dispatch work.
+    Delegates to :meth:`FireStore.reap_stale_dispatching` once per group
+    of kinds sharing a resolved age threshold. A pod that died between
+    the in-flight insert and a finalize leaves a permanent
+    ``'dispatching'`` zombie; this surfaces the loss as a ``'failed'``
+    fire + a failure-metric increment. Each group is wrapped in boundary
+    isolation so one group's failure (e.g. a transient DB hiccup) blocks
+    neither the other groups nor the tick's dispatch work.
 
     :param fire_store: the fire-side store
     :ptype fire_store: FireStore
-    :param config: operational config (carries the reap-age threshold)
+    :param routed_kinds: the pump's registered kinds; the sweep never
+        reaches beyond them into another pump's in-flight fires
+    :ptype routed_kinds: Sequence[str]
+    :param config: operational config (carries the reap-age thresholds)
     :ptype config: JobConfig
     :param now: tick instant
     :ptype now: datetime
@@ -229,39 +357,75 @@ async def _reap_stale_dispatching(
     :return: nothing
     :rtype: None
     """
-    older_than = timedelta(seconds=config.dispatch_reap_after_seconds)
-    try:
-        reaped = await fire_store.reap_stale_dispatching(now, older_than=older_than)
-    except Exception:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
-        log.exception(
-            "scheduled_tick: reaper sweep raised; continuing with dispatch",
-            extra={"extra_data": {"reap_after_seconds": config.dispatch_reap_after_seconds}},
-        )
-        return
-    if reaped > 0:
-        log.info(
-            EVENT_FIRE_REAPED,
-            extra={"extra_data": {"reaped_count": reaped, "reap_after_seconds": config.dispatch_reap_after_seconds}},
-        )
-        for _ in range(reaped):
-            emitter.inc_failure(reason="reaped")
+    for reap_after_seconds, kinds in _group_kinds_by_reap_threshold(routed_kinds, config):
+        older_than = timedelta(seconds=reap_after_seconds)
+        try:
+            reaped = await fire_store.reap_stale_dispatching(now, older_than=older_than, kinds=kinds)
+        except Exception:  # noqa: BLE001 - boundary: a reaper failure must not block the tick
+            log.exception(
+                "scheduled_tick: reaper sweep raised; continuing with dispatch",
+                extra={"extra_data": {"reap_after_seconds": reap_after_seconds, "kinds": list(kinds)}},
+            )
+            continue
+        if reaped > 0:
+            log.info(
+                EVENT_FIRE_REAPED,
+                extra={
+                    "extra_data": {
+                        "reaped_count": reaped,
+                        "reap_after_seconds": reap_after_seconds,
+                        "kinds": list(kinds),
+                    }
+                },
+            )
+            for _ in range(reaped):
+                emitter.inc_failure(reason="reaped")
 
 
 async def _dispatch_one(
     schedule: DueSchedule,
     schedule_store: ScheduleStore,
     fire_store: FireStore,
-    dispatch_callback: DispatchCallback,
+    dispatch_routes: DispatchRoutes,
     tick_at: datetime,
     emitter: Any,
 ) -> None:
-    """Claim one due schedule and dispatch its fire.
+    """Route one due schedule to its handler and dispatch its fire.
+
+    The routing lookup is an EXACT match on ``kind`` and runs before the
+    claim. A kind with no registered handler is refused outright: no
+    handler runs, the schedule is not claimed, no fire row is written,
+    and the refusal is recorded as an ERROR event plus an
+    ``unrouted_kind`` failure metric. Falling through to another kind's
+    handler would be silent misdelivery; claiming the row would advance
+    ``next_fire_at`` and destroy an occurrence whose handler may simply
+    not be registered yet.
 
     On CAS miss (another tick already claimed) returns silently. On
-    dispatch callback success, writes the terminal fire status. On
-    dispatch exception (or a returned ``status='failed'``), writes a
-    failed fire row + logs.
+    handler success, writes the terminal fire status. On handler
+    exception (or a returned ``status='failed'``), writes a failed fire
+    row + logs.
     """
+    dispatch_callback = dispatch_routes.get(schedule.kind)
+    if dispatch_callback is None:
+        # The due-row scan already filters on the routed kinds, so a row
+        # arriving here means a store returned what it was told not to.
+        # Refuse loudly and leave the occurrence intact.
+        log.error(
+            EVENT_FIRE_UNROUTED_KIND,
+            extra={
+                "extra_data": {
+                    "job_id": str(schedule.job_id),
+                    "partition_key": str(schedule.partition_key),
+                    "kind": schedule.kind,
+                    "routed_kinds": sorted(dispatch_routes),
+                    "reason": UNROUTED_KIND_REASON,
+                }
+            },
+        )
+        emitter.inc_failure(reason=UNROUTED_KIND_REASON)
+        return
+
     expected_next_fire = schedule.next_fire_at
     if expected_next_fire is None:
         # defense in depth: list_due_for_tick already filters NULL
