@@ -14,7 +14,14 @@ reasoned rather than read is in "What is assumed" and carries its mitigation.
 
 An operator must be able to reach a live VNC display that is running inside a Kubernetes tool
 pod, from a browser, over TLS, with the platform's existing identity and RBAC deciding who gets
-in and which tenant's display they can see.
+in, which tenant's display they can see, and which network zone they may reach into.
+
+**The zone half is not a later refinement.** The deployment has pod sets with different network
+reach -- some inside a firewall with visibility of targets nobody else can resolve, some with plain
+internet egress -- and only certain customers are entitled to certain zones. Section 5 shows that
+zone entitlement and tenant entitlement are the SAME role assignment rather than two mechanisms,
+which is why the requirement states both here rather than treating one as a special case of the
+other.
 
 Today they cannot, and the reason is structural rather than a missing configuration.
 `relay_stream` reaches the display with `asyncio.open_connection(host, port)` -- a TCP connect to
@@ -103,6 +110,27 @@ makes it true: "N pods register DISTINCT `pod_id`s". The chart supplies one lite
 per Deployment to every replica. Every tool pod runs `replicaCount: 1` today, so this is latent,
 not live.
 
+**Routing cannot see who is calling, so it cannot be the zone mechanism.**
+`threetears.registry.routing.RoutingStrategy` declares `select(self, endpoints: list[ToolEndpoint])
+-> ToolEndpoint | None` and receives nothing else: not the caller, not the customer, not the call
+arguments. `ToolEndpoint` (`packages/registry/src/threetears/registry/catalog.py`) carries
+`pod_id`, `status`, `in_flight` and `date_last_heartbeat`, with no labels or attributes. A
+zone-aware router would therefore need a widened endpoint model, a breaking change to a shipped
+Protocol, and a policy engine inside a load balancer.
+
+**A tool's registered name is the seam, and it is documented as one.**
+`ScrapeTool.mcp_name()` returns `3tears.scrape`, and its docstring states that "a consuming wrapper
+that registers it is free to override this with its own namespaced name".
+`threetears.agent.tools.server.tool_namespace_name` turns that into
+`tools.<mcp_name>.<version>` with dots sanitized to dashes.
+
+**A pod cannot register a tool it is not entitled to.**
+`threetears.registry.registration.RegistrationHandler._authenticate_and_filter` verifies the pod's
+presented identity token against its stored key, then filters `manifest.tools` against
+`pod_auth.allowed_namespaces` by prefix match. Tools outside those namespaces are dropped and
+logged with the pod name and the rejected list, and a manifest with nothing left is refused
+outright with "no tools authorized for this pod's namespaces".
+
 **The test shapes this needs already exist.**
 `packages/nats/tests/integration/test_forward_round_trip.py` is the round-trip precedent, and
 `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` is the precedent for proving
@@ -159,6 +187,8 @@ listed thing, not a parallel one.
 | Roles, groups, members, assignments, evaluation, cache invalidation | `threetears.agent.acl` | action vocabulary and a tenant-scoped namespace type |
 | Namespace naming and tenant column | `threetears.core.namespaces`, `namespaces.customer_id` | no HITL namespace type or plural prefix |
 | Round-trip and live-grant test harness | `packages/nats/tests/integration/`, `threetears.core.testing.fixtures` | none |
+| Zone as a tool identity | `ScrapeTool.mcp_name()` override seam, `tool_namespace_name` | none; a consuming wrapper names its own tool |
+| Refusing a pod that claims the wrong tool | `RegistrationHandler._authenticate_and_filter`, `allowed_namespaces` on the tool-pods row | none |
 
 ---
 
@@ -174,8 +204,17 @@ subject. Whichever pod holds the key answers with the concrete stream coordinate
 
 ```
 attach  -> {"op": "attach", "credit": <bytes>, "max_chunk": <bytes>}
-reply   <- {"pod_id": "...", "nonce": "...", "max_chunk": <bytes>, "credit": <bytes>}
+reply   <- {"zone": "...", "pod_id": "...", "nonce": "...",
+            "max_chunk": <bytes>, "credit": <bytes>}
 ```
+
+**The owner states its own zone, and cannot usefully lie about it.** The caller needs `zone` to
+build the subject and the owner is the authoritative source, so it rides the reply rather than
+being derived caller-side. An owner naming a zone it is not in gains nothing: its publish grant is
+`pipe.{its own zone}.{its own pod_id}.>`, so a subject built from a false zone is one it cannot
+publish on, and the stream dies at the first frame instead of crossing a boundary. The property is
+worth stating because it is what makes a self-declared field safe here and would not make one safe
+elsewhere.
 
 The owner mints the nonce per attach. Using the nonce rather than the application key in the
 stream subject buys two things: a stale reconnect cannot land on a live stream, and an
@@ -186,12 +225,21 @@ subscriber could enumerate it.
 state:
 
 ```
-{ns}.pipe.{pod_id}.{nonce}.down    owner publishes, caller subscribes
-{ns}.pipe.{pod_id}.{nonce}.up      caller publishes, owner subscribes
+{ns}.pipe.{zone}.{pod_id}.{nonce}.down    owner publishes, caller subscribes
+{ns}.pipe.{zone}.{pod_id}.{nonce}.up      caller publishes, owner subscribes
 ```
 
-`pod_id` leads because it is the authenticated segment. A session-id-led subject with the
-wildcard publish grant the hub needs would let any pod paint frames onto any session.
+`pod_id` is the authenticated segment, and an owner's publish grant names its OWN pod id exactly
+rather than a wildcard -- the same shape `tools.internal.{pod_id}` already uses, and the reason a
+session-id-led subject would be wrong (the wildcard publish grant the caller side needs would let
+any pod paint frames onto any session).
+
+**What the `{zone}` segment does and does not buy, stated honestly.** The strong isolation is the
+exact pod-id grant above; zone adds nothing to it. What zone buys is a SUBSCRIBE grant that is
+separable per pod set (`pipe.zone_alpha.>` held apart from `pipe.zone_beta.>`), so a future
+per-zone gateway is a grant change rather than a subject migration, and a subject that names its
+own network zone in a trace. It is cheap now and expensive to retrofit, which is the whole
+argument for it.
 
 **Framing is a fixed-width header and a body.** A monotonic per-direction sequence, and a small
 tag distinguishing data from a credit acknowledgement, so an ack needs no second subject:
@@ -230,13 +278,27 @@ nothing a grant can discriminate on.
 
 The fix is an enhancement to the existing builder rather than a coarse grant: a family segment
 between the prefix and the digest, so `{ns}.forward.{family}.{sha256hex(key)}` is grantable per
-family. `Subjects.forward(key)` keeps its current shape and behaviour for every existing caller;
-the scoped variant is additive.
+family. The family is a single sanitized token supplied by the CALLING MODULE as a deployment
+constant, never by a caller and never from user data. `Subjects.forward(key)` keeps its current
+shape and behaviour for every existing caller; the scoped variant is additive.
 
-**[DECISION: add a family segment to the forward subject family rather than granting
-`{ns}.forward.>` | the coarse grant makes every owner-routed key in the namespace serveable by
-any tool pod, and the digest leaves nothing else to discriminate on | user can veto and accept
-the broad grant]**
+**The family carries the network zone, not just the concern.** For the operator surface it is
+`hitl-<zone>`, so the subjects are `{ns}.forward.hitl-zone_alpha.{digest}` and the grants
+`forward.hitl-zone_alpha.*`. A flat `hitl` family would let a pod in one zone join the
+queue group for another zone's session control subject -- and `serve_owner` queue-groups on the
+subject deliberately, so that is not eavesdropping but a SHARE OF THE MESSAGES.
+
+The damage from the flat form is bounded rather than catastrophic, and the bound is worth
+recording so nobody over-corrects later: the interloper would have to already know the session id
+(the token is a digest it cannot enumerate), and `serve_session` re-checks `claim.held` on every
+message against a KV lease it does not hold, so it can only refuse messages, not act on them. That
+is a denial of service on a live human session rather than a breach. It is free to close now and
+awkward to close once callers exist.
+
+**[DECISION: add a family segment to the forward subject family, carrying the network zone, rather
+than granting `{ns}.forward.>` | the coarse grant makes every owner-routed key in the namespace
+serveable by any tool pod, and the digest leaves nothing else to discriminate on | user can veto
+and accept the broad grant]**
 
 ### 3. `relay_stream` gets a transport seam
 
@@ -259,27 +321,81 @@ The attach goes through `dispatch_core`, not around it. That is what makes the c
 inherit identity verification, RBAC, rate limiting, metering and audit rather than growing a
 second copy of each.
 
-### 5. Authorization and multi-tenancy
+### 5. Network zones, tenancy, and why they are one decision
 
-Role, group, members. No new engine, and the action vocabulary is data:
+The deployment this has to serve is not one undifferentiated pool of scrape pods. Some pod sets sit
+inside a firewall with reach to targets nobody else can see; others have plain internet egress. Only
+certain customers may use certain zones.
 
-- A `hitl` resource type with a `hitl.attach` action, seeded the way that repo's
-  `bootstrap_rbac.py` already seeds `PlatformSuperAdmin` and `ToolCaller`.
-- A role carrying `{"hitl": ["hitl.attach"]}`.
-- A group holding that role by assignment; people in the group.
+**A zone is a tool identity, not a pod attribute.** Each pod set registers a DIFFERENT tool:
 
-**The tenant boundary is the namespace, and getting this wrong is the one security defect this
-design can produce.** A HITL session must NOT be authorized against the scrape tool's own
-namespace: `tools.<mcp_name>.<version>` is a platform-scoped row with `customer_id=NULL`, which is
-precisely why the `ToolCaller` seed had to be namespace-scoped. Authorizing there would let one
-customer's operator group attach to another customer's live display, and that display is a browser
-holding the target's authenticated session.
+```
+pod set A  ->  scrape.zone_alpha   ->  namespace  tools.scrape-zone_alpha.1-0-0
+pod set B  ->  scrape.zone_beta    ->  namespace  tools.scrape-zone_beta.1-0-0
+pod set C  ->  scrape.internet     ->  namespace  tools.scrape-internet.1-0-0
+```
 
-So the session is authorized against a customer-scoped namespace, in the shape the platform
-already uses for `memories.<agent_id_hex>.<customer_id_hex>`: a new plural prefix and namespace
-type whose rows carry `customer_id`. `type_customer`-scoped role assignments then do the tenant
-isolation the evaluator already performs everywhere else, with no bespoke check anywhere on the
-path.
+The seam already exists and is already documented as one: `ScrapeTool.mcp_name()` returns
+`3tears.scrape` and says a consuming wrapper is free to override it with its own namespaced name.
+
+**Why this and not endpoint labels plus a smarter router.** `RoutingStrategy.select` receives only
+the endpoint list -- no caller, no customer, no target -- and `ToolEndpoint` carries no attributes.
+A zone-aware router would mean widening the endpoint model, a breaking change to a shipped
+Protocol so it can see call context, and a customer-to-zone policy engine living inside a load
+balancer. That last one is the defect: authorization and routing become two facts that can
+disagree, and the disagreement is invisible until it routes wrong.
+
+With zone-as-tool, the registry only ever sees endpoints for the tool that was actually called, so
+every endpoint in that list is in the right zone by construction. Routing stays a load balancer.
+
+**Entitlement is then one role assignment, and it is the shipped `ToolCaller` shape.** A role
+carrying `{"tool": ["tool.call"]}`, assigned to a group at
+`scope_namespace_id = tools.scrape-zone_alpha.1-0-0`. Customer X's people and agents are in that
+group; customer Z's are not. Zone entitlement and customer entitlement collapse into the same fact,
+evaluated by the same evaluator, with no second mechanism to keep in sync.
+
+**And a pod cannot claim a zone it was not given.**
+`RegistrationHandler._authenticate_and_filter` verifies the pod's identity token against its stored
+key and then filters its manifest against `allowed_namespaces` on the tool-pods row. A
+general-internet pod misconfigured to register `scrape.zone_alpha` has those tools dropped
+server-side and logged, and is refused entirely if nothing survives. The enforcement is on the row,
+not on the pod's honesty.
+
+**The display inherits both facts, and this is where the naive shape is wrong.** A HITL session
+must NOT be authorized against the scrape tool's own namespace: `tools.<mcp_name>.<version>` is a
+platform-scoped row with `customer_id=NULL`, which is precisely why the `ToolCaller` seed had to be
+namespace-scoped. Authorizing there would let one customer's operator group attach to another
+customer's live display, and that display is a browser holding the target's authenticated session.
+
+Nor is a customer-only namespace enough. `hitl.<customer_id_hex>` isolates tenants but NOT zones:
+an operator entitled to customer X on the general internet could attach to customer X's zone-alpha
+display, which is a reach into the firewalled network they were never granted.
+
+So the session namespace derives from BOTH, in the shape the platform already uses for
+`memories.<agent_id_hex>.<customer_id_hex>`:
+
+```
+hitl.<tool-namespace-segment>.<customer_id_hex>
+
+e.g.  hitl.scrape-zone_alpha.7f3c...
+```
+
+One `authorize()` call then carries both facts: you may attach to a zone-alpha display, and only
+for your own tenant. The rows carry `customer_id`, so `type_customer`-scoped role assignments do
+the tenant isolation the evaluator already performs everywhere else, with no bespoke check anywhere
+on the path.
+
+**Operators are scoped the same way**, which falls out rather than needing design: an operator's
+group needs the `hitl.attach` role on the zone's session namespace, so a zone-beta operator simply
+has no assignment that reaches a zone-alpha display.
+
+**What is NOT verified, and should be known.** Nothing confirms that a pod registering
+`scrape.zone_alpha` is ACTUALLY placed on the zone-alpha network. `allowed_namespaces` proves it was
+authorized to claim that identity; the network placement is a chart and NetworkPolicy fact. That is
+the same trust model as the rest of the deployment, but it means the chart entry and the
+`tool_pods` row must be provisioned as a pair, and a mismatch is silent. A later guard could have a
+zone's pod assert its egress address at registration and have the hub check it against the zone's
+expected range; that is not in this scope.
 
 ### 6. What this does not decide
 
@@ -299,6 +415,9 @@ does not block anything here at `replicaCount: 1`.
 - Replacing `forward`'s request/reply semantics, or introducing a second owner-election mechanism.
 - Pooling displays, or more than one Xvfb per pod.
 - The tool-pod replica identity model (section 6 above).
+- Verifying that a pod registering a zone's tool is genuinely placed on that zone's network. The
+  registration filter proves entitlement to the identity, not the placement; see the closing note
+  of section 5 for the guard that would close it.
 
 ---
 
@@ -323,7 +442,7 @@ does not block anything here at `replicaCount: 1`.
 - `packages/scrape/src/threetears/scrape/operator.py` -- the transport seam on `relay_stream`
 - new `packages/scrape/src/threetears/scrape/operator_pipe.py` -- the pod-side display bridge
 - `packages/scrape/README.md` -- the deployment section currently describes only the
-  two-container pod
+  two-container pod, and says nothing about naming a per-zone tool via the `mcp_name()` override
 
 **`14-eng-ai-bot`** (consumer-side, planned here and built there)
 - the operator router mounted on the hub with a pipe-backed transport
@@ -345,6 +464,16 @@ does not block anything here at `replicaCount: 1`.
   "unit-correct parts, composed failure" learning: the subjects must be proven admitted by the
   built permission set, not merely working on a server that enforces nothing.
 - **Authorizing the display against the tool namespace.** See section 5. This is the tenant leak.
+- **Authorizing the display against a customer-only namespace.** Also section 5, and a subtler
+  version of the same defect: it isolates tenants while leaving every zone reachable by anyone
+  entitled to that tenant anywhere.
+- **Conflating egress with network zone.** `EgressDriver` (task-08 section 7) is "which exit does
+  this request leave by" -- TOR, WARP, a proxy -- chosen PER REQUEST, inside a pod, from a caller's
+  argument. A zone is where a pod is PLACED on the network, decided at deploy time. If zone ever
+  becomes caller-selectable the way egress is, a customer can ask for a zone they are not entitled
+  to, and the entitlement in section 5 stops meaning anything.
+- **Adding labels to `ToolEndpoint` so the router can pick a zone.** That is the design section 5
+  rejected, and its cost is that authorization and routing become two facts that can disagree.
 - **Letting a gap be skipped rather than raised.** A receiver that tolerates a missing sequence
   turns a detectable fault into a frozen screen, which is the failure mode the whole design is
   arranged to avoid.
@@ -375,6 +504,11 @@ does not block anything here at `replicaCount: 1`.
 7. An operator reaches a real display through the hub, over TLS, end to end, and drives it.
 8. An operator entitled to one customer's session is refused another customer's, and the refusal
    comes from the shipped evaluator rather than from a check written for this path.
+9. An operator entitled to a customer in one zone is refused that SAME customer's display in
+   another zone, from the same evaluator. This is the criterion a customer-only namespace passes
+   criterion 8 while failing, which is why it is written separately rather than folded in.
+10. A pod presenting a manifest for a tool outside its `allowed_namespaces` has that tool rejected
+    at registration, so a zone cannot be joined by a pod that was not granted it.
 
 ---
 
@@ -390,3 +524,9 @@ does not block anything here at `replicaCount: 1`.
    the tool-mesh call shape has to carry a stream handle in its reply.
 3. **Credit window default.** Wants a number chosen against a measurement rather than taste. The
    first chunk's slow-consumer test is where that measurement comes from.
+4. **Whether the zone token is derived or configured.** The pipe and forward subjects carry a
+   `{zone}` token, and the session namespace carries the tool-namespace segment. Both could be
+   derived from the registered tool name (one source of truth, no chance of disagreement) or
+   configured per pod (explicit, but a second place to get wrong). Deriving is the recommendation;
+   the cost is that a pod serving more than one zone's tool becomes unrepresentable, which is
+   arguably a property rather than a limitation.
