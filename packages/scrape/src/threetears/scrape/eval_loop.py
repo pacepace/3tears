@@ -22,9 +22,11 @@ multi-document targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern learned once
 and reused; every document gets its own fresh extraction on every poll instead, plus
 an unconditional grounding judge. The extraction's cost depends on the document's
-shape: a born-digital one is chunked by field count (several calls), an OCR'd one is a
-single vision call over its images. So the floor is two calls per document and the
-ceiling scales with your schema (:func:`_run_per_document_extraction`).
+shape: a born-digital one is chunked by field count, so it can be more than one call
+past the chunk size, while an OCR'd one is a single vision call over its images
+whatever the schema. So the floor is two calls per document -- one extraction, one
+judge -- and the ceiling scales with your schema
+(:func:`_run_per_document_extraction`).
 """
 
 from __future__ import annotations

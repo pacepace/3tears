@@ -33,14 +33,14 @@ extraction itself is chunked by field count when the document is born-digital. S
 at every site, including `eval_loop.py`'s and `multi_document.py`'s docstrings, which are the more
 authoritative homes and were missed by a first sweep that grepped only the prose phrasings.
 
-Corrected three times, honestly, and each correction introduced the next error. The first
-over-corrected by asserting field-count chunking for every document, which overstates an OCR'd one --
-that path is a single vision call. The second then asserted that chunking always costs more, which is
-false below the chunk size: a two-field schema is one chunk and hits the two-call floor exactly. The
-published sentences now give the floor and say a born-digital document CAN cost more, rather than a
-formula that reads as a total. The seventh site was `_run_per_document_extraction`'s own docstring,
-which had carried the singular claim since it was written and survived every earlier sweep, because
-those sweeps grepped the prose phrasings rather than the claim.
+What the published sentences say now: the floor is two calls per document (one extraction, one
+grounding judge), a born-digital document can cost more because that path chunks the extraction by
+field count, and an OCR'd document is a single vision call whatever the schema. The floor is what a
+reader can budget from; earlier attempts at a formula were mis-read in both directions.
+
+The site that survived every earlier sweep was `_run_per_document_extraction`'s own docstring, which
+had carried the singular claim since it was written. Those sweeps grepped the prose phrasings rather
+than the claim, so the least authoritative homes were fixed first and the definition last.
 
 `multi_row_vision` was also grouped into a cycle it does not run. Only `css` and `regex` reuse a
 cached pattern and can make a poll free; both other strategies persist a **marker** recipe for
@@ -49,7 +49,8 @@ operational visibility, so a recipe row existing is not evidence that a poll cos
 **`docs/adoption/geo.md` now exists**, so every published package has an adoption doc -- verified
 programmatically across every distribution rather than by eye. The index used to promise that
 universally; it now states it as of a date and says plainly that nothing enforces the pairing, since
-a promise no gate keeps is one the next package breaks. Also `docs/integration-guide.md` no longer claims its `threetears.core.egress` entries were
+a promise no gate keeps is one the next package breaks. Also `docs/integration-guide.md` no longer
+claims its `threetears.core.egress` entries were
 "verified against the `develop` source tree": they cannot have been, since that seam ships here for
 the first time.
 

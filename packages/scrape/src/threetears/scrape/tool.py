@@ -637,7 +637,7 @@ class ScrapeTool(TearsTool):
         # exactly ONE `return`, and `tests/test_tool.py` asserts that rather than trusting this
         # comment. An earlier version of this paragraph said the escalation "departs" and told the
         # next author they could "return directly"; the code had already stopped doing that, and
-        # the sentence six lines below has always said so.
+        # the `escalation` comment below has always said so.
         #
         # So the rule for whoever adds the next gate: use the sentinel if your failure is an error
         # string, add a variable like `escalation` if you need a fuller result shape, and either
