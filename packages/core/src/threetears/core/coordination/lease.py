@@ -263,17 +263,20 @@ class KVLease:
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
-        default ``bucket_name`` is
-        ``f"{THREETEARS_NATS_SUBJECT_NAMESPACE}_leases"`` when the env
-        var is set, or ``"leases"`` as unscoped fallback. default
-        ``pod_id`` is ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and
-        unique per factory instance.
+        ``bucket_name`` is a SUFFIX, not a full name: it is handed to
+        :meth:`KvCapable.kv_bucket`, which layers the connection's own
+        ``{namespace}-`` over it. Passing a name that already carries the
+        namespace therefore produces it twice. The default is the constant
+        ``"leases"`` for exactly that reason. default ``pod_id`` is
+        ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and unique per factory
+        instance.
 
         :param nats_client: connected canonical
             :class:`threetears.nats.kv.KvCapable` wrapper; the lease
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
-        :param bucket_name: explicit bucket name; None uses env-derived default
+        :param bucket_name: explicit bucket-name SUFFIX (the transport adds the
+            namespace prefix); None uses the constant default
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
         :ptype pod_id: str | None

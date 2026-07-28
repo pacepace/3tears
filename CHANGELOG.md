@@ -75,12 +75,14 @@ is a bare `str` that nothing validates, and both sanitizers in the codebase repl
 nothing else, so a name carrying a space, a `*` or a `>` would otherwise inject a wildcard into a
 pod's own grant.
 
-**Tool pods can also open the bucket their display claim uses.** `KVLease` defaults to
-`{ns}_leases` and passes it to `NatsClient.kv_bucket` as a SUFFIX, which the client prefixes again,
-so the bucket that materialises is `{ns}-{ns}_leases` and that is what is granted. Without it
-`claim_session` is handed `lease=None`, logs, and serves the display unclaimed -- two pods can drive
-one browser. Proven by applying the minted permission set as a real nats-server's `authorization`
-and driving a real `KVLease` through it.
+**Tool pods can also open the bucket their display claim uses.** `KVLease` returns a bucket-name
+SUFFIX and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it, so the granted bucket is
+`{ns}-leases`. Without that grant `claim_session` is handed `lease=None`, logs, and serves the
+display unclaimed -- two pods can drive one browser. Proven by applying the minted permission set as
+a real nats-server's `authorization` and driving a real `KVLease` through it.
+
+(The suffix that composition starts from is itself corrected in the entry above; before that fix it
+carried the namespace, so the bucket materialised with the namespace twice.)
 
 ## v0.21.0 -- 2026-07-28
 

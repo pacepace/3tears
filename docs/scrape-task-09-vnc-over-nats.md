@@ -62,7 +62,8 @@ family -- not `_tool_pod`, not `_hub`, not `_registry`. So `operator_control.ser
 with it `open_tab` / `complete_tab` / `close_session` / `read_state`, is denied by auth-callout in
 any deployment that enforces these grants.
 
-**The session claim is blocked the same way.** `KVLease` defaults its bucket to `{ns}_leases`
+**The session claim is blocked the same way.** `KVLease` defaults its bucket suffix to `leases`,
+which the transport prefixes to `{ns}-leases`
 (`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s `kv_buckets` grant is
 `({ns}-proxy_assertion_nonces,)` alone. A platform that cannot open the bucket passes `lease=None`,
 and `claim_session` then logs its two-pods-can-serve-one-display warning and yields anyway.
@@ -185,7 +186,7 @@ listed thing, not a parallel one.
 | Route to the pod owning a key | `threetears.nats.forward` / `serve_owner` | none for the rendezvous; the subject family is ungranted |
 | Subject construction | `threetears.nats.Subjects` | needs a `pipe` builder; `forward` needs a scoped variant so grants can be family-scoped |
 | Bounded outbound buffer, overflow telemetry | `NatsClient` `pending_size` / `overflow_events` / `is_healthy` | no per-subscription inbound limit |
-| Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}_leases` ungranted to tool pods |
+| Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}-leases` ungranted to tool pods |
 | Which pod owns a display | `threetears.scrape.operator_session.claim_session` | none |
 | Control messages to that pod | `threetears.scrape.operator_control` | none, once `forward` is granted |
 | Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | `relay_stream` hardcodes a TCP transport |
@@ -510,12 +511,17 @@ does not block anything here at `replicaCount: 1`.
 - new `packages/nats/src/threetears/nats/pipe.py` -- the primitive
 - `packages/nats/src/threetears/nats/subjects.py` -- `Subjects.pipe`, scoped `forward`
 - `packages/nats/src/threetears/nats/subject_permissions.py` -- `_tool_pod` and `_hub` grants,
-  plus the lease bucket for `_tool_pod`. That bucket is `{ns}-{ns}_leases`, not the `{ns}_leases`
-  spelling `KVLease._default_bucket_name` returns: the lease passes its bucket name to
-  `NatsClient.kv_bucket` as a SUFFIX and the client layers its own `{ns}-` prefix over it. Written
-  out because the un-prefixed grant fails silently -- a pod that cannot open the bucket is handed
-  `lease=None` and serves the display unclaimed, and `test_forward_grants_live.py` is where the
-  distinction is actually proven
+  plus the lease bucket for `_tool_pod`, which is `{ns}-leases`: `KVLease` returns the bare suffix
+  and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it. Written out because the wrong
+  spelling fails SILENTLY -- a pod that cannot open the bucket is handed `lease=None` and serves the
+  display unclaimed. `test_forward_grants_live.py` proves the grant against a real broker, and
+  `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant and the lease's own default as a
+  pair so they cannot drift.
+
+  **Do not infer a naming rule from that.** Three conventions are live: `kv_bucket()` prefixes a
+  suffix, a direct `js.key_value(bucket=...)` prefixes nothing, and a component that builds its own
+  `f"{namespace}_thing"` name and creates it directly owns that name verbatim. A grant's spelling
+  cannot tell you which applies, so a chunk touching grants reads the opener, never the shape
 - `packages/nats/src/threetears/nats/__init__.py` -- lazy re-exports in the existing hand-rolled
   PEP 562 shape
 - new `packages/nats/tests/unit/test_pipe.py`, new

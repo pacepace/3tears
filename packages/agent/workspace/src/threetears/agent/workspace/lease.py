@@ -56,10 +56,23 @@ class WorkspaceFileLease:
         2. ``f"{env}_workspace_locks"`` when ``THREETEARS_NATS_SUBJECT_NAMESPACE`` is set
         3. ``"workspace_locks"`` as unscoped fallback
 
-        this mirrors :meth:`KVLease._default_bucket_name` behaviour —
-        deliberately using :meth:`os.environ.get` rather than subscript
-        access so unit tests and local-dev runs without the platform env
-        var do not blow up with :class:`KeyError` at wrapper construction.
+        it uses :meth:`os.environ.get` rather than subscript access so unit
+        tests and local-dev runs without the platform env var do not blow up
+        with :class:`KeyError` at wrapper construction.
+
+        **This no longer mirrors :meth:`KVLease._default_bucket_name`, and the
+        difference is a known defect rather than a design choice.** That method
+        used to bake the namespace into the name too; it now returns a bare
+        SUFFIX, because the name is handed to
+        :meth:`threetears.nats.kv.KvCapable.kv_bucket`, which layers the
+        connection's own ``{namespace}-`` over whatever it receives. The name
+        built here therefore materialises as ``{conn_ns}-{namespace}_workspace_locks``
+        -- a namespace on each side. It is left alone deliberately: unlike the
+        lease default, this one takes an EXPLICIT ``namespace`` argument that a
+        caller may legitimately set to something other than the connection's, so
+        collapsing it is a behaviour question about what that argument is for,
+        not a typo. Whoever settles that question owns renaming the bucket, and
+        the rename orphans live locks.
 
         :param nats_client: connected NATS client exposing ``jetstream()``
         :ptype nats_client: Any
