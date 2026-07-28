@@ -131,6 +131,14 @@ presented identity token against its stored key, then filters `manifest.tools` a
 logged with the pod name and the rejected list, and a manifest with nothing left is refused
 outright with "no tools authorized for this pod's namespaces".
 
+**A tool's registered name is completely unvalidated, and both sanitizers only handle dots.**
+`ToolManifestEntry.name` is a bare `str` with no pattern.
+`RegistrationHandler._validate_manifest` checks exactly two things: `pod_id` non-empty and `tools`
+non-empty. Meanwhile `threetears.nats.subjects._sanitize` and
+`threetears.core.namespaces.sanitize_segment` are both `value.replace(".", "-")` and nothing more,
+so a space, a `*` or a `>` in a tool name survives into whatever is built from it. This is the
+hazard `Subjects.forward` and `Subjects.room` already document and already solve by hashing.
+
 **The test shapes this needs already exist.**
 `packages/nats/tests/integration/test_forward_round_trip.py` is the round-trip precedent, and
 `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` is the precedent for proving
@@ -204,17 +212,20 @@ subject. Whichever pod holds the key answers with the concrete stream coordinate
 
 ```
 attach  -> {"op": "attach", "credit": <bytes>, "max_chunk": <bytes>}
-reply   <- {"zone": "...", "pod_id": "...", "nonce": "...",
+reply   <- {"tool": "tools.scrape-zone_alpha.1-0-0", "pod_id": "...", "nonce": "...",
             "max_chunk": <bytes>, "credit": <bytes>}
 ```
 
-**The owner states its own zone, and cannot usefully lie about it.** The caller needs `zone` to
-build the subject and the owner is the authoritative source, so it rides the reply rather than
-being derived caller-side. An owner naming a zone it is not in gains nothing: its publish grant is
-`pipe.{its own zone}.{its own pod_id}.>`, so a subject built from a false zone is one it cannot
-publish on, and the stream dies at the first frame instead of crossing a boundary. The property is
-worth stating because it is what makes a self-declared field safe here and would not make one safe
-elsewhere.
+**The owner states which tool it is serving, and cannot usefully lie about it.** The caller derives
+`{tool_digest}` by hashing this value, so it needs the readable form and the owner is the
+authoritative source. Carrying the READABLE name rather than the digest is deliberate: it is what
+makes a trace correlatable, and it costs nothing because the caller hashes it anyway.
+
+An owner naming a tool it does not serve gains nothing. Its publish grant is
+`pipe.{digest of its own tool}.{its own pod_id}.>` -- an exact literal minted from the tool-pods
+row -- so a subject built from a false name is one it cannot publish on, and the stream dies at the
+first frame instead of crossing a boundary. The property is worth stating because it is what makes
+a self-declared field safe HERE and would not make one safe elsewhere.
 
 The owner mints the nonce per attach. Using the nonce rather than the application key in the
 stream subject buys two things: a stale reconnect cannot land on a live stream, and an
@@ -225,21 +236,30 @@ subscriber could enumerate it.
 state:
 
 ```
-{ns}.pipe.{zone}.{pod_id}.{nonce}.down    owner publishes, caller subscribes
-{ns}.pipe.{zone}.{pod_id}.{nonce}.up      caller publishes, owner subscribes
+{ns}.pipe.{tool_digest}.{pod_id}.{nonce}.down    owner publishes, caller subscribes
+{ns}.pipe.{tool_digest}.{pod_id}.{nonce}.up      caller publishes, owner subscribes
 ```
+
+`{tool_digest}` is `sha256hex(tool_namespace_name)` -- see section 5 for why it is a digest of the
+tool identity rather than a readable zone name, and why that is what makes the whole scheme need no
+naming convention.
 
 `pod_id` is the authenticated segment, and an owner's publish grant names its OWN pod id exactly
 rather than a wildcard -- the same shape `tools.internal.{pod_id}` already uses, and the reason a
 session-id-led subject would be wrong (the wildcard publish grant the caller side needs would let
 any pod paint frames onto any session).
 
-**What the `{zone}` segment does and does not buy, stated honestly.** The strong isolation is the
-exact pod-id grant above; zone adds nothing to it. What zone buys is a SUBSCRIBE grant that is
-separable per pod set (`pipe.zone_alpha.>` held apart from `pipe.zone_beta.>`), so a future
-per-zone gateway is a grant change rather than a subject migration, and a subject that names its
-own network zone in a trace. It is cheap now and expensive to retrofit, which is the whole
-argument for it.
+**What the `{tool_digest}` segment does and does not buy, stated honestly.** The strong isolation
+is the exact pod-id grant above; the digest adds nothing to it. What it buys is a SUBSCRIBE grant
+separable per pod set (`pipe.a3f9c2....>` held apart from another tool's), so a future per-zone
+gateway is a grant change rather than a subject migration -- and, because the digest is computable
+from the tool-pods row's `allowed_namespaces`, a pod's publish grant can be an EXACT literal with
+no wildcard in it at all. It is cheap now and expensive to retrofit, which is the argument for it.
+
+What it explicitly does NOT buy is legibility: `pipe.a3f9c2...` tells a reader nothing about which
+zone they are looking at. That cost is real, it is the same cost `Subjects.room` already accepted,
+and the mitigation is the same -- the readable tool identity rides in the attach reply and in every
+log line, never in the subject.
 
 **Framing is a fixed-width header and a body.** A monotonic per-direction sequence, and a small
 tag distinguishing data from a credit acknowledgement, so an ack needs no second subject:
@@ -282,11 +302,12 @@ family. The family is a single sanitized token supplied by the CALLING MODULE as
 constant, never by a caller and never from user data. `Subjects.forward(key)` keeps its current
 shape and behaviour for every existing caller; the scoped variant is additive.
 
-**The family carries the network zone, not just the concern.** For the operator surface it is
-`hitl-<zone>`, so the subjects are `{ns}.forward.hitl-zone_alpha.{digest}` and the grants
-`forward.hitl-zone_alpha.*`. A flat `hitl` family would let a pod in one zone join the
-queue group for another zone's session control subject -- and `serve_owner` queue-groups on the
-subject deliberately, so that is not eavesdropping but a SHARE OF THE MESSAGES.
+**The family carries the serving tool's identity, not just the concern.** For the operator surface
+it is `hitl-{tool_digest}`, so the subjects are `{ns}.forward.hitl-a3f9c2....{session_digest}` and
+a pod's grant is that exact literal followed by `.*`. A flat `hitl` family would let a pod serving
+one tool join the queue group for another tool's session control subject -- and `serve_owner`
+queue-groups on the subject deliberately, so that is not eavesdropping but a SHARE OF THE
+MESSAGES.
 
 The damage from the flat form is bounded rather than catastrophic, and the bound is worth
 recording so nobody over-corrects later: the interloper would have to already know the session id
@@ -295,10 +316,10 @@ message against a KV lease it does not hold, so it can only refuse messages, not
 is a denial of service on a live human session rather than a breach. It is free to close now and
 awkward to close once callers exist.
 
-**[DECISION: add a family segment to the forward subject family, carrying the network zone, rather
-than granting `{ns}.forward.>` | the coarse grant makes every owner-routed key in the namespace
-serveable by any tool pod, and the digest leaves nothing else to discriminate on | user can veto
-and accept the broad grant]**
+**[DECISION: add a family segment to the forward subject family, carrying a digest of the serving
+tool's namespace, rather than granting `{ns}.forward.>` | the coarse grant makes every owner-routed
+key in the namespace serveable by any tool pod, and the key digest leaves nothing else to
+discriminate on | user can veto and accept the broad grant]**
 
 ### 3. `relay_stream` gets a transport seam
 
@@ -375,15 +396,64 @@ So the session namespace derives from BOTH, in the shape the platform already us
 `memories.<agent_id_hex>.<customer_id_hex>`:
 
 ```
-hitl.<tool-namespace-segment>.<customer_id_hex>
+hitl.<tool-namespace-name minus its `tools.` prefix>.<customer_id_hex>
 
-e.g.  hitl.scrape-zone_alpha.7f3c...
+e.g.  tools.scrape-zone_alpha.1-0-0  ->  hitl.scrape-zone_alpha.1-0-0.7f3c...
 ```
+
+Spelled out rather than left as "the tool segment", because the version is part of it and an
+earlier phrasing here left that ambiguous. The paragraph below on version granularity says why it
+has to be.
 
 One `authorize()` call then carries both facts: you may attach to a zone-alpha display, and only
 for your own tenant. The rows carry `customer_id`, so `type_customer`-scoped role assignments do
 the tenant isolation the evaluator already performs everywhere else, with no bespoke check anywhere
 on the path.
+
+**The subject token is DERIVED from the tool identity, and it is a digest.** This is the decision
+that makes everything above need no naming convention, so it is recorded rather than left implied.
+
+`{tool_digest} = sha256hex(tool_namespace_name)`, e.g. `tools.scrape-zone_alpha.1-0-0` becomes a
+64-character hex token. Deriving rather than configuring means there is no second identifier that
+can disagree with the tool a pod actually registered -- the same argument that rejected endpoint
+labels above. Hashing rather than sanitizing is what removes the convention: tool names are
+UNVALIDATED (`ToolManifestEntry.name` is a bare `str`; `_validate_manifest` checks only that
+`pod_id` and `tools` are non-empty) and both sanitizers replace dots and nothing else, so a name
+containing a space, a `*` or a `>` would produce an illegal subject or, worse, inject a wildcard
+into one. A digest is `[0-9a-f]` only, collision-resistant and deterministic, so every pod and the
+hub derive the same token from the same tool. It is the identical move
+`Subjects.forward` and `Subjects.room` already make, for the identical reason.
+
+**And it makes the grant exact rather than wildcarded.** The hub mints a pod's permissions at
+connect time from the `allowed_namespaces` list on its tool-pods row -- the same list that filters
+its registration. It can hash each entry and emit literal subject grants, so a pod's publish
+permission names precisely the tools it was authorized to serve and nothing else. One source of
+truth feeding both registration filtering and subject permissions.
+
+**[DECISION: derive the subject token as a digest of the tool's namespace name, rather than
+configuring a zone per pod or sanitizing the tool name into the subject | configuring adds a second
+identifier that can disagree with the registered tool; sanitizing an unvalidated name is a
+wildcard-injection hazard the existing forward/room builders already document and avoid | user can
+veto in favour of validating `mcp_name` against a strict pattern and using it raw, which buys
+legible subjects at the cost of constraining a shipped public surface]**
+
+**The subject takes the digest; the NAMESPACE does not.** These are different surfaces with
+different constraints, and treating them the same would be the mistake:
+
+```
+subject     {ns}.pipe.a3f9c2....{pod_id}.{nonce}
+namespace   hitl.scrape-zone_alpha.1-0-0.<customer_id_hex>
+```
+
+A namespace name is a database row value. Subject-safety does not apply to it, and legibility is
+worth having in a table a human administers. This is the same split `Subjects.room` already makes:
+digest in the subject, raw identity in the wire envelope.
+
+**The namespace carries the tool VERSION, because entitlement does.** `tools.scrape-zone_alpha.1-0-0`
+is its own namespace row with its own role assignments. If the session namespace dropped the
+version, a version bump would produce the mismatch where somebody can call the tool but not attach
+to the display it raised, or the reverse. Matching the granularity is what keeps the two grants
+telling the same story.
 
 **Operators are scoped the same way**, which falls out rather than needing design: an operator's
 group needs the `hitl.attach` role on the zone's session namespace, so a zone-beta operator simply
@@ -472,6 +542,10 @@ does not block anything here at `replicaCount: 1`.
   argument. A zone is where a pod is PLACED on the network, decided at deploy time. If zone ever
   becomes caller-selectable the way egress is, a customer can ask for a zone they are not entitled
   to, and the entitlement in section 5 stops meaning anything.
+- **Putting an unvalidated tool name into a subject.** Tool names are not validated anywhere and
+  both sanitizers replace only dots, so a name carrying a space, a `*` or a `>` produces an illegal
+  subject or injects a wildcard into one. Hash it, the way `Subjects.forward` and `Subjects.room`
+  already do. The same applies to any future app-supplied value that reaches a subject.
 - **Adding labels to `ToolEndpoint` so the router can pick a zone.** That is the design section 5
   rejected, and its cost is that authorization and routing become two facts that can disagree.
 - **Letting a gap be skipped rather than raised.** A receiver that tolerates a missing sequence
@@ -509,6 +583,10 @@ does not block anything here at `replicaCount: 1`.
    criterion 8 while failing, which is why it is written separately rather than folded in.
 10. A pod presenting a manifest for a tool outside its `allowed_namespaces` has that tool rejected
     at registration, so a zone cannot be joined by a pod that was not granted it.
+11. A tool whose name contains a space, a `*` or a `>` yields a subject token of `[0-9a-f]` only,
+    and the permission minted for it is an exact literal rather than a wildcard. The hostile name is
+    the test input, not a hypothetical: nothing validates tool names, so this is the property that
+    has to hold rather than a convention that has to be followed.
 
 ---
 
@@ -524,9 +602,11 @@ does not block anything here at `replicaCount: 1`.
    the tool-mesh call shape has to carry a stream handle in its reply.
 3. **Credit window default.** Wants a number chosen against a measurement rather than taste. The
    first chunk's slow-consumer test is where that measurement comes from.
-4. **Whether the zone token is derived or configured.** The pipe and forward subjects carry a
-   `{zone}` token, and the session namespace carries the tool-namespace segment. Both could be
-   derived from the registered tool name (one source of truth, no chance of disagreement) or
-   configured per pod (explicit, but a second place to get wrong). Deriving is the recommendation;
-   the cost is that a pod serving more than one zone's tool becomes unrepresentable, which is
-   arguably a property rather than a limitation.
+4. **RESOLVED 2026-07-28, kept here because the reasoning outlives the question.** Whether the
+   subject's zone token is derived or configured: DERIVED, as a digest of the tool's namespace name
+   (section 5 carries the decision). The concern that deriving forces a naming convention is what
+   selected the digest over a sanitized name -- a digest constrains nothing, because it launders any
+   name into `[0-9a-f]`. One consequence to accept knowingly: a single pod serving two tools has two
+   digests and therefore two subject families, so "one pod, one zone" stops being an assumption the
+   code can make. That is a property rather than a limitation, but it is not free -- anything that
+   wants to enumerate "this pod's streams" has to enumerate per tool.
