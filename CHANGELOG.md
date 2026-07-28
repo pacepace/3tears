@@ -4,6 +4,41 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.20.1 -- 2026-07-28
+
+> **No package content changed. This release exists because `threetears-base` could not be
+> built from a cold cache**, and every consumer resolves the 3tears checkout by version tag,
+> so an unreleased fix on `develop` reaches none of them.
+
+**`threetears-base` failed every cold build, and had since 15 July.** The wheels stage
+enumerated packages with `find /build/packages -name pyproject.toml` and built each hit --
+strictly broader than the workspace. It swept in `packages/scrape/sidecar`, the
+nodriver/Chromium companion app: flat `main.py`/`hitl.py`, its own Dockerfile, its own
+AGPL-isolated dependencies, `[tool.uv] package = false`, and no business being a wheel at
+all. Building one fails with `Multiple top-level modules discovered in a flat-layout:
+['main', 'hitl']`.
+
+The stage now runs `uv build --all-packages`, which derives the member list from
+`[tool.uv.workspace]` rather than re-deriving it by hand -- the same correction
+`scripts/bump-version.sh` already carries for the same reason.
+
+Two things about this are worth more than the fix. It shipped broken in **v0.17.9 through
+v0.20.0**: a warm registry `:cache` tag served the wheel layer for eight releases, so the
+failure surfaced only when an unrelated version bump invalidated the cache, twelve days and
+many merges after the change that caused it. And it was invisible to PR CI, because the base
+image is built post-merge only. A green PR was never evidence that this image built.
+
+**`DpopError` gains `detail`.** An `htu` mismatch now carries `presented_htu` (single-line,
+capped at 200 chars -- it is unverified, attacker-chosen claim data) and `accepted_htu`.
+Callers deliberately collapse every `DpopError` into one generic client-facing message, which
+makes the raise site the only place the reason ever exists; without this it was destroyed
+rather than withheld. Additive: `detail` is `{}` at every other raise site.
+
+This is the failure a deployment behind a proxying front-end actually hits -- a browser signs
+`htu` against the origin it called, so every URI involved looks individually correct while
+every refresh is denied. Diagnosing one instance cost a day, with the issuer logging nothing
+at all.
+
 ## v0.20.0 -- 2026-07-28
 
 > **A MINOR bump, because three distributions gain new public API and one changes an existing
