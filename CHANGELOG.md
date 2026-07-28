@@ -4,6 +4,69 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.21.0 -- 2026-07-28
+
+> **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,
+> `HtmlForm.event_triggers`, `build_form_post(event=...)`). Additive and backward-compatible
+> -- `event_triggers` defaults to `()` and a form with only submit controls parses exactly as
+> before -- but new surface is a minor here, per the discipline v0.20.0 set out.
+>
+> **The urgent half is the build fix.** `threetears-base` could not be built from a cold
+> cache, which is why nothing had deployed; every consumer resolves its 3tears checkout by
+> version tag, so an unreleased fix on `develop` reaches none of them.
+>
+> These shipped together deliberately rather than as a 0.20.1 hotfix plus a later 0.21.0.
+> No consumer of the build fix uses `threetears.scrape` at all, so splitting them would have
+> bought a tidier release boundary and cost a second round of pin edits across six repos.
+
+**`threetears-base` failed every cold build, and had since 15 July.** The wheels stage
+enumerated packages with `find /build/packages -name pyproject.toml` and built each hit --
+strictly broader than the workspace. It swept in `packages/scrape/sidecar`, the
+nodriver/Chromium companion app: flat `main.py`/`hitl.py`, its own Dockerfile, its own
+AGPL-isolated dependencies, `[tool.uv] package = false`, and no business being a wheel at
+all. Building one fails with `Multiple top-level modules discovered in a flat-layout:
+['main', 'hitl']`.
+
+The stage now runs `uv build --all-packages`, which derives the member list from
+`[tool.uv.workspace]` rather than re-deriving it by hand -- the same correction
+`scripts/bump-version.sh` already carries for the same reason.
+
+Two things about this are worth more than the fix. It shipped broken in **v0.17.9 through
+v0.20.0**: a warm registry `:cache` tag served the wheel layer for eight releases, so the
+failure surfaced only when an unrelated version bump invalidated the cache, twelve days and
+many merges after the change that caused it. And it was invisible to PR CI, because the base
+image is built post-merge only. A green PR was never evidence that this image built.
+
+**`DpopError` gains `detail`.** An `htu` mismatch now carries `presented_htu` (single-line,
+capped at 200 chars -- it is unverified, attacker-chosen claim data) and `accepted_htu`.
+Callers deliberately collapse every `DpopError` into one generic client-facing message, which
+makes the raise site the only place the reason ever exists; without this it was destroyed
+rather than withheld. Additive: `detail` is `{}` at every other raise site.
+
+This is the failure a deployment behind a proxying front-end actually hits -- a browser signs
+`htu` against the origin it called, so every URI involved looks individually correct while
+every refresh is denied. Diagnosing one instance cost a day, with the issuer logging nothing
+at all.
+
+**`3tears-scrape` can now drive a form that has no submit button.** A server-rendered form
+submits either via a named submit control (`name=value`) or via
+`__doPostBack(target, argument)` on an anchor or script-driven element, which sets the
+`__EVENTTARGET` / `__EVENTARGUMENT` hidden fields and posts the same form. Only the first was
+parsed, so a form driven entirely the second way reported zero triggers and a browser-free
+replay concluded it could not be driven at all -- when the browser was doing nothing more
+than writing two hidden fields.
+
+`HtmlForm.event_triggers` now carries them and `build_form_post(event=...)` serializes them.
+Each keeps its visible label, so a caller chooses "Search" over "Export" or "Clear" without
+hardcoding per-portal control-name conventions. Triggers de-duplicate on
+`(target, argument)`: two anchors raising the same event are one trigger, while the same
+control with a different argument stays distinct, which is how a pager names its pages.
+
+The calls are read from PARSED attribute values, never the raw markup -- portals serve them
+HTML-escaped (`__doPostBack(&#39;x&#39;,&#39;&#39;)`), so scanning bytes finds nothing on
+exactly the pages this exists for. Verified against a live portal whose form has zero named
+submit controls: 947 rows x 9 columns through `parse_form` + `build_form_post`.
+
 ## v0.20.0 -- 2026-07-28
 
 > **A MINOR bump, because three distributions gain new public API and one changes an existing

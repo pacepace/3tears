@@ -18,20 +18,29 @@
 #   * WORKDIR /app
 #   * USER appuser
 #
-# Image is intentionally aibots-agnostic: it carries every 3tears wheel found
-# under packages/ at build time and nothing else. Sub-images (e.g. aibots-base
+# Image is intentionally aibots-agnostic: it carries every 3tears WORKSPACE
+# MEMBER wheel at build time and nothing else. Sub-images (e.g. aibots-base
 # under 14-eng-ai-bot-agents/docker/Dockerfile) layer additional wheels.
 
 # ---------------------------------------------------------------------------
 # Stage 1: build every 3tears wheel
 # ---------------------------------------------------------------------------
-# Dynamic enumeration: every directory under packages/ that contains a
-# pyproject.toml is built, regardless of nesting depth. New 3tears packages
-# added to the workspace pick up automatically; no Dockerfile edit.
+# Enumeration is delegated to uv, which resolves the member list from the root
+# pyproject's [tool.uv.workspace] globs. New 3tears packages pick up
+# automatically; no Dockerfile edit.
 #
-# packages/ has two layout shapes: top-level packages (e.g. ``packages/core``)
-# and grouped packages (e.g. ``packages/agent/{acl,audit,memory,tools,workspace}``
-# after the agent reorg). ``find -name pyproject.toml`` covers both.
+# It must be uv's list and not our own. This stage used to run
+# `find /build/packages -name pyproject.toml` and build each hit, which is
+# strictly BROADER than the workspace: it swept in packages/scrape/sidecar, a
+# nodriver/Chromium companion app with a flat main.py/hitl.py, its own
+# Dockerfile, its own AGPL-isolated dependency set, and `[tool.uv]
+# package = false`. It is a deployable, never a distributable, and building a
+# wheel from it fails with "Multiple top-level modules discovered in a
+# flat-layout: ['main', 'hitl']". That killed every cold-cache base build from
+# the moment the sidecar landed; a warm registry :cache tag hid it for eight
+# releases, so it surfaced as an unrelated-looking break long after the change
+# that caused it. Re-deriving the member list by hand is how that happened --
+# so don't, ask uv.
 FROM python:3.14-slim AS wheels
 
 # uv, not pip. This platform is uv-only everywhere else (see the "uv-Only" rule
@@ -45,17 +54,14 @@ FROM python:3.14-slim AS wheels
 # real conflict.
 COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
 
-RUN uv pip install --system --no-cache hatchling build
-
+# The root pyproject.toml is the workspace definition -- it is the INPUT to the
+# build below, not incidental metadata. Copied on its own so a packages/ change
+# does not invalidate it, and vice versa.
+COPY pyproject.toml /build/pyproject.toml
 COPY packages /build/packages
 
-RUN set -e; \
-    find /build/packages -name pyproject.toml -type f | sort | while read -r toml; do \
-      pkg_dir=$(dirname "$toml"); \
-      pkg_rel=${pkg_dir#/build/packages/}; \
-      echo "Building wheel for 3tears/${pkg_rel}"; \
-      python -m build --wheel --outdir /wheels "$pkg_dir"; \
-    done
+WORKDIR /build
+RUN uv build --all-packages --wheel --out-dir /wheels
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
