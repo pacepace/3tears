@@ -1,7 +1,9 @@
 # 3tears -- Adoption Guide
 
-This is the entry point for deciding what to adopt from 3tears and why. Each
-module has its own doc in this directory: the problem it solves, its design
+This is the entry point for deciding what to adopt from 3tears and why. Every
+published package had its own doc in this directory as of 2026-07-28, and the
+table below is the list that is maintained -- nothing enforces the pairing, so a
+new package can arrive without one. Each doc covers: the problem it solves, its design
 philosophy, when to adopt it, and what it composes with. This file is the map.
 
 Written for both humans and AI systems evaluating the platform. Every module

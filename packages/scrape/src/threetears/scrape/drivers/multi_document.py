@@ -34,20 +34,18 @@ Each document's synthetic HTML is wrapped in a delimiting
 channel a per-document caller downstream (``eval_loop._run_per_document_extraction``)
 has into what any one sub-document actually was.
 
-**Revision (2026-07-15):** the first version of this design
-assumed ``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing
-pattern) would apply unmodified once documents were combined -- live-verified
-wrong. Regex/CSS strategies both assume one shared template repeated across
-every row on a page, learned once and cached forever; West Virginia's real
-documents are independently-worded business letters (a different employer's
-own prose per notice), sharing no boilerplate a single pattern could ever
-generalize across (verified: candidates each hardcoded one specific letter's
-exact wording, matching 1 of 10 real documents). ``extraction_strategy_type:
-per_document`` (``eval_loop.StrategyType``) is the correct fit instead: no
-cached pattern, a fresh, independent extraction per document plus a grounding
-judge for each, every
-poll -- ``extraction.split_notice_documents`` is this driver's own combined-page
-convention's other half.
+**Revision (2026-07-15):** the first version of this design assumed
+``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing pattern) would
+apply unmodified once documents were combined -- live-verified wrong. Regex/CSS
+strategies both assume one shared template repeated across every row on a page, learned
+once and cached forever; West Virginia's real documents are independently-worded
+business letters (a different employer's own prose per notice), sharing no boilerplate a
+single pattern could ever generalize across (verified: candidates each hardcoded one
+specific letter's exact wording, matching 1 of 10 real documents).
+``extraction_strategy_type: per_document`` (``eval_loop.StrategyType``) is the correct
+fit instead: no cached pattern, a fresh, independent extraction per document plus a
+grounding judge for each, every poll -- ``extraction.split_notice_documents`` is this
+driver's own combined-page convention's other half.
 
 **Revision (2026-07-16):** per_document's own OCR'd-text path
 (``extraction.extract_fields_directly_chunked``) turned out unreliable on real

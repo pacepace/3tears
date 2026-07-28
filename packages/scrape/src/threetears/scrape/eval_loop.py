@@ -17,16 +17,14 @@ row existing is not a recipe being reused. ``multi_row_vision``'s reason is its 
 its table); see :func:`_run_multi_row_vision_extraction`, which costs an extraction
 call AND an unconditional grounding judge on every poll.
 
-``"per_document"`` (2026-07-15) has no
-cached-recipe cycle at all -- some real multi-document
-targets (independently-worded documents sharing no template, see
-``drivers/multi_document.py``) genuinely cannot be served by a pattern
-learned once and reused; every document gets its own fresh extraction on every
-poll instead, plus an unconditional grounding judge. The extraction's cost depends
-on the document's SHAPE: a born-digital one is chunked by field count (several
-calls), an OCR'd one is a single vision call over its images. So the floor is two
-calls per document and the ceiling scales with your schema
-(:func:`_run_per_document_extraction`).
+``"per_document"`` (2026-07-15) has no cached-recipe cycle at all -- some real
+multi-document targets (independently-worded documents sharing no template, see
+``drivers/multi_document.py``) genuinely cannot be served by a pattern learned once
+and reused; every document gets its own fresh extraction on every poll instead, plus
+an unconditional grounding judge. The extraction's cost depends on the document's
+shape: a born-digital one is chunked by field count (several calls), an OCR'd one is a
+single vision call over its images. So the floor is two calls per document and the
+ceiling scales with your schema (:func:`_run_per_document_extraction`).
 """
 
 from __future__ import annotations
@@ -1378,8 +1376,10 @@ async def _run_per_document_extraction(
     judge_model_id: str,
 ) -> ScrapeExtraction:
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
-    Literal's own comment) -- every document gets a fresh, independent LLM
-    extraction call, every single poll, never a reuse-without-an-LLM-call path.
+    Literal's own comment) -- every document gets a fresh, independent extraction
+    AND an unconditional grounding judge, every single poll, never a
+    reuse-without-an-LLM-call path. Two calls per document is the floor; a
+    born-digital document's extraction is chunked by field count and costs more.
 
     Still persists a marker ``ScrapeRecipe`` (``extraction_strategy={"strategy":
     "per_document"}``, no reusable pattern inside it) so ``consecutive_validation_

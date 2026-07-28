@@ -28,7 +28,8 @@ doc.** Both matter to a reader deciding what to spend.
 The cost error would have been paid in money. Six sites said `per_document` costs one LLM call per
 document; it costs an extraction plus an **unconditional** grounding judge per document, and the
 extraction itself is chunked by field count when the document is born-digital. So somebody costing a
-6-field, 30-document target from the README budgeted 30 calls and would have issued 90-plus. Fixed
+6-field, 30-document born-digital target from the README budgeted 30 calls and would have issued
+120: three chunked extractions plus a judge, per document, thirty times over. Fixed
 at every site, including `eval_loop.py`'s and `multi_document.py`'s docstrings, which are the more
 authoritative homes and were missed by a first sweep that grepped only the prose phrasings.
 
