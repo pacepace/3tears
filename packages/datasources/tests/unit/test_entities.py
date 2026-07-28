@@ -4,12 +4,24 @@ covers enum membership + value stability, flat-PK shape on
 CapabilitySourceEntity, composite-PK shape on TableTemplateEntity, flat-PK
 shape on DataSourceTableEntity / DataSourceColumnEntity /
 DataSourceRelationEntity, and BaseEntity subclass invariants.
+
+access-mode coverage reaches past entities on purpose. the value set is
+carried by TWO independent string authorities in this package --
+:class:`DataSourceAccessMode` here, and
+``threetears.datasources.config._VALID_ACCESS_MODES`` -- and neither
+references the other. the parity and normalization cases live beside the
+enum they are guarding so a mode added to one authority and not the other
+fails in the same file that shows the enum.
 """
 
 from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import pytest
+from pydantic import ValidationError
+
+from threetears.datasources.config import _VALID_ACCESS_MODES, DatasourceConfig
 from threetears.datasources.entities import (
     CapabilitySourceEntity,
     DataSourceAccessMode,
@@ -42,10 +54,72 @@ class TestDataSourceTypeEnum:
 
 
 class TestDataSourceAccessModeEnum:
-    """three access-mode values; no surprises."""
+    """four access-mode values; BUILD appended last, never inserted."""
 
     def test_members(self) -> None:
-        assert {m.value for m in DataSourceAccessMode} == {"read", "write", "readwrite"}
+        assert {m.value for m in DataSourceAccessMode} == {"read", "write", "readwrite", "build"}
+
+    def test_declaration_order_build_last(self) -> None:
+        """BUILD is appended, so an inserted member fails here.
+
+        two admin-console sites index the access-mode list POSITIONALLY to
+        seed a default. inserting a value ahead of ``readwrite`` silently
+        changes the default access mode for every new capability source, so
+        the order is part of the contract and not incidental.
+        """
+        assert [m.value for m in DataSourceAccessMode] == ["read", "write", "readwrite", "build"]
+
+    def test_build_is_not_composed(self) -> None:
+        """``build`` is a fourth value, never a composition.
+
+        a composed ``readwritebuild`` would put the warehouse user's
+        ``CREATE`` grant behind the read tool, which is exactly the
+        structural least-privilege claim the separate mode buys.
+        """
+        assert "readwritebuild" not in {m.value for m in DataSourceAccessMode}
+
+    def test_str_equivalence(self) -> None:
+        # StrEnum: members compare equal to their string values
+        assert DataSourceAccessMode.BUILD == "build"
+
+
+class TestAccessModeAuthorityParity:
+    """the enum and the config frozenset MUST carry identical value sets.
+
+    ``_VALID_ACCESS_MODES`` mirrors the enum by hand rather than importing
+    it, so nothing in the type system stops a fifth mode landing in one
+    authority and not the other. this test is what stops it.
+    """
+
+    def test_config_frozenset_matches_enum(self) -> None:
+        assert set(_VALID_ACCESS_MODES) == {m.value for m in DataSourceAccessMode}
+
+
+class TestDatasourceConfigAccessMode:
+    """``DatasourceConfig`` is the YAML-facing gate on the same value set.
+
+    the model carries ``extra="forbid"``, so the ``access_mode`` field is
+    the only entry point and its validator is the whole gate.
+    """
+
+    def test_build_mode_loads(self) -> None:
+        cfg = DatasourceConfig.model_validate({"name": "influencers-build", "access_mode": "build"})
+        assert cfg.access_mode == "build"
+
+    @pytest.mark.parametrize("raw", ["Build", "BUILD", "  build  ", " Build\t"])
+    def test_normalizes_case_and_whitespace(self, raw: str) -> None:
+        """an unnormalized mode fails SILENTLY downstream, so normalize here.
+
+        a stored ``Build`` matches none of the tool-pod's registration
+        branches: no tools register, nothing raises, and the only trace is
+        ``tool_count=0``.
+        """
+        assert DatasourceConfig.model_validate({"name": "x", "access_mode": raw}).access_mode == "build"
+
+    @pytest.mark.parametrize("raw", ["admin", "readwritebuild", "buildread", ""])
+    def test_rejects_unknown_modes(self, raw: str) -> None:
+        with pytest.raises(ValidationError):
+            DatasourceConfig.model_validate({"name": "x", "access_mode": raw})
 
 
 class TestDataSourceStatusEnum:

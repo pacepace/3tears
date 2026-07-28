@@ -117,14 +117,28 @@ class DataSourceType(StrEnum):
 class DataSourceAccessMode(StrEnum):
     """data source access mode controlling which query tools are registered.
 
+    the set is closed and members are APPENDED, never inserted: consumers
+    index the ordered mode list positionally to seed a default, so a value
+    added ahead of ``READWRITE`` silently changes that default.
+
+    ``BUILD`` is a fourth value rather than a composition, and there is no
+    ``readwritebuild``. a build data source's warehouse user holds
+    ``CREATE``; composing that grant into the read surface would defeat the
+    structural least-privilege the separate mode exists to buy. a caller
+    needing both surfaces gets two data source rows.
+
     :cvar READ: read-only (SELECT queries via DataSourceReadTool)
     :cvar WRITE: write-only (INSERT/UPDATE/DELETE via DataSourceWriteTool)
     :cvar READWRITE: full access (all query tools registered)
+    :cvar BUILD: dataset build access; the warehouse user holds ``CREATE``
+        and the platform compiles the SQL from a typed definition, so no
+        untrusted query string crosses the boundary
     """
 
     READ = "read"
     WRITE = "write"
     READWRITE = "readwrite"
+    BUILD = "build"
 
 
 class DataSourceStatus(StrEnum):

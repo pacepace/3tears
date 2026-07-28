@@ -92,7 +92,14 @@ __all__ = [
 # :class:`threetears.datasources.entities.DataSourceAccessMode`. kept
 # as a literal set here so the config validator stays a pure pydantic
 # field check without pulling the enum module at validation time.
-_VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite"})
+#
+# the mirror is by hand, so the two authorities can drift.
+# ``tests/unit/test_entities.py::TestAccessModeAuthorityParity`` is what
+# stops a fifth mode landing in one and not the other.
+#
+# ``build`` is a FOURTH value, not a composition -- there is no
+# ``readwritebuild``. see :class:`DataSourceAccessMode` for why.
+_VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build"})
 
 # credential resolution lives in :mod:`threetears.datasources.secrets`.
 # config carries a ``scheme://locator`` reference (``password_ref`` /
@@ -617,7 +624,8 @@ class DatasourceConfig(BaseModel):
 
     :param name: human-readable name for this data source
     :ptype name: str
-    :param access_mode: tool registration mode (read / write / readwrite)
+    :param access_mode: tool registration mode (read / write / readwrite /
+        build). normalized to lowercase with surrounding whitespace stripped
     :ptype access_mode: str
     :param schemas: database schemas exposed to agents (whitelist;
         empty means "all schemas the warehouse account can see").
@@ -650,17 +658,25 @@ class DatasourceConfig(BaseModel):
     @field_validator("access_mode")
     @classmethod
     def access_mode_must_be_valid(cls, value: str) -> str:
-        """validates that ``access_mode`` is one of read / write / readwrite.
+        """normalizes ``access_mode`` then validates it against the closed set.
 
-        :param value: access mode string to validate
+        normalization is ``.lower().strip()`` and is load-bearing rather
+        than cosmetic. an unnormalized ``Build`` reaching the tool pod
+        matches no registration branch, so no tools register, nothing
+        raises, and ``tool_count=0`` is the only trace. the model carries
+        ``extra="forbid"``, which makes this field the sole entry point.
+
+        :param value: access mode string to normalize and validate
         :ptype value: str
-        :return: validated access mode string
+        :return: normalized access mode string
         :rtype: str
-        :raises ValueError: if access mode is not valid
+        :raises ValueError: if access mode is not one of read / write /
+            readwrite / build
         """
-        if value not in _VALID_ACCESS_MODES:
-            raise ValueError(f"invalid access_mode {value!r}: must be one of read, write, readwrite")
-        return value
+        normalized = value.lower().strip()
+        if normalized not in _VALID_ACCESS_MODES:
+            raise ValueError(f"invalid access_mode {value!r}: must be one of read, write, readwrite, build")
+        return normalized
 
     @property
     def is_reference(self) -> bool:
