@@ -30,9 +30,11 @@ which is not fetch it.
   behind an isolated sidecar, in-process stealth Firefox, documents
   (PDF/DOCX/XLSX/CSV), plain JSON APIs, authenticated in-session XHR capture, the
   listing-plus-detail and multi-document shapes, and a forced download for a
-  document sitting behind a real challenge. `threetears.scrape.drivers` is the
-  current set: read it there rather than trusting a list here, since neither a
-  count nor an enumeration survives the next one being added.
+  document sitting behind a real challenge. The `drivers/` package is the current
+  set -- read the modules there rather than trusting a list here, since neither a
+  count nor an enumeration survives the next one being added. (The package's
+  `__all__` is deliberately empty: each driver is imported from its own module, so
+  nothing is re-exported at the namespace level.)
 - **The eval loop** (`run_eval_loop`, `run_eval_loop_multi_row`) -- propose
   candidates, validate each structurally against the real page, have a judge pick
   the winner by comparing extracted values against page content, persist the

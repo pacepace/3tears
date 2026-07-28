@@ -184,7 +184,7 @@ class ScrapeTarget(BaseEntity):
         """Which ``ScrapeDriver`` backend renders this target.
 
         Resolved by the caller, which this entity never does -- it stores the
-        string and constructs nothing: ``"nodriver"`` (a HEADFUL Chromium on an
+        string and constructs nothing: ``"nodriver"`` (a headful Chromium on an
         Xvfb display, via the HTTP sidecar; headful because real sites treat it
         differently from headless and because a display is what a human can be
         handed), ``"camoufox"`` (in-process stealth
@@ -293,7 +293,7 @@ class ScrapeTarget(BaseEntity):
     def extraction_strategy_type(self) -> str:
         """Which extraction-strategy shape the eval loop should propose.
 
-        One of ``eval_loop.StrategyType``'s four values, passed straight
+        One of ``eval_loop.StrategyType``'s values, passed straight
         through to ``run_eval_loop``/``run_eval_loop_multi_row(...,
         strategy_type=...)``: ``"css"`` (the default, preserving every
         pre-existing target's behavior -- CSS-selector candidates against an
