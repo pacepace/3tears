@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import textwrap
+
 import pytest
 from _pacer_fakes import _FakeDelayPacer
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitState
@@ -1810,3 +1812,42 @@ class TestACancelledPollReturnsItsTurn:
 
 async def _noop_sleep(_seconds: float) -> None:
     return None
+
+
+class TestExecuteKeepsItsSingleExit:
+    """`ScrapeTool.execute` documents a single-exit structure and nothing enforced it.
+
+    The function is long by design: it is a sequence of independent gates (robots, the fetch
+    circuit, a probe reservation, the crawl delay, the fleet pacer, a credential read, the render)
+    and every one of them can decline. Its answer to that is one exit -- a gate records WHY in
+    `error` or, when a refusal needs a whole `ToolResult` rather than a string, in `escalation`,
+    and the tail returns it.
+
+    That invariant lived in a comment addressed to "whoever adds the next gate", and a comment is
+    not a constraint. An early return added in good faith would skip the tail, which is where the
+    outcome is recorded against the target's health row -- so the failure mode is not a messy
+    diff, it is a decline that never reaches the durable state the next poll reads.
+    """
+
+    def test_execute_has_exactly_one_return(self) -> None:
+        """One `return`, checked structurally rather than by reading the function.
+
+        Deliberately counts `return` statements rather than asserting a line number or a shape:
+        the gates are expected to keep being added, and the only thing that must not change is
+        how many ways out there are.
+        """
+        import ast
+        import inspect
+
+        from threetears.scrape.tool import ScrapeTool
+
+        source = inspect.getsource(ScrapeTool.execute)
+        tree = ast.parse(textwrap.dedent(source))
+        returns = [node for node in ast.walk(tree) if isinstance(node, ast.Return)]
+
+        assert len(returns) == 1, (
+            f"`execute` has {len(returns)} return statements; it is documented as single-exit and "
+            f"the tail is where an outcome is recorded against the health row. Use the `error` "
+            f"sentinel for an error string, or a variable like `escalation` for a fuller result, "
+            f"and let the tail return it."
+        )

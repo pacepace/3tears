@@ -22,10 +22,10 @@ packages (bumped in lock-step).
 > neither. Run `./scripts/bump-version.sh 0.20.0`, which moves every package's version AND every
 > intra-family bound together, then `--verify 0.20.0` before anything is published.
 
-**Docs: `per_document`'s cost was documented wrong in six places, and `geo` had no adoption
+**Docs: `per_document`'s cost was documented wrong in seven places, and `geo` had no adoption
 doc.** Both matter to a reader deciding what to spend.
 
-The cost error would have been paid in money. Six sites said `per_document` costs one LLM call per
+The cost error would have been paid in money. Seven sites said `per_document` costs one LLM call per
 document; it costs an extraction plus an **unconditional** grounding judge per document, and the
 extraction itself is chunked by field count when the document is born-digital. So somebody costing a
 6-field, 30-document born-digital target from the README budgeted 30 calls and would have issued
@@ -33,18 +33,23 @@ extraction itself is chunked by field count when the document is born-digital. S
 at every site, including `eval_loop.py`'s and `multi_document.py`'s docstrings, which are the more
 authoritative homes and were missed by a first sweep that grepped only the prose phrasings.
 
-Corrected twice, honestly: the first fix over-corrected by asserting field-count chunking for every
-document, which overstates an OCR'd one -- that path is a single vision call. The published sentences
-now name both shapes and give the floor (two calls per document) rather than a formula that reads as
-a total.
+Corrected three times, honestly, and each correction introduced the next error. The first
+over-corrected by asserting field-count chunking for every document, which overstates an OCR'd one --
+that path is a single vision call. The second then asserted that chunking always costs more, which is
+false below the chunk size: a two-field schema is one chunk and hits the two-call floor exactly. The
+published sentences now give the floor and say a born-digital document CAN cost more, rather than a
+formula that reads as a total. The seventh site was `_run_per_document_extraction`'s own docstring,
+which had carried the singular claim since it was written and survived every earlier sweep, because
+those sweeps grepped the prose phrasings rather than the claim.
 
 `multi_row_vision` was also grouped into a cycle it does not run. Only `css` and `regex` reuse a
 cached pattern and can make a poll free; both other strategies persist a **marker** recipe for
 operational visibility, so a recipe row existing is not evidence that a poll costs nothing.
 
-**`docs/adoption/geo.md` now exists**, and the adoption index's own claim that "each module has its
-own doc" is true for the first time -- verified programmatically across every package rather than by
-eye. Also `docs/integration-guide.md` no longer claims its `threetears.core.egress` entries were
+**`docs/adoption/geo.md` now exists**, so every published package has an adoption doc -- verified
+programmatically across every distribution rather than by eye. The index used to promise that
+universally; it now states it as of a date and says plainly that nothing enforces the pairing, since
+a promise no gate keeps is one the next package breaks. Also `docs/integration-guide.md` no longer claims its `threetears.core.egress` entries were
 "verified against the `develop` source tree": they cannot have been, since that seam ships here for
 the first time.
 

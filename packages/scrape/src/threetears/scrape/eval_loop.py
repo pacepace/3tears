@@ -1378,8 +1378,10 @@ async def _run_per_document_extraction(
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
     Literal's own comment) -- every document gets a fresh, independent extraction
     AND an unconditional grounding judge, every single poll, never a
-    reuse-without-an-LLM-call path. Two calls per document is the floor; a
-    born-digital document's extraction is chunked by field count and costs more.
+    reuse-without-an-LLM-call path. Two calls per document is the floor. A
+    born-digital document's extraction is chunked by field count, so it CAN cost more
+    -- past the chunk size, not below it: a two-field schema is one chunk and hits
+    the floor exactly. An OCR'd document is a single vision call whatever the schema.
 
     Still persists a marker ``ScrapeRecipe`` (``extraction_strategy={"strategy":
     "per_document"}``, no reusable pattern inside it) so ``consecutive_validation_

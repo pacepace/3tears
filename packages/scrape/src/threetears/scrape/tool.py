@@ -625,16 +625,23 @@ class ScrapeTool(TearsTool):
         # unsupported backend, a transport failure), and this repo's own
         # single-return convention wants one exit point, not one per failure mode.
         #
-        # ONE case departs, and it is the robots-disallow escalation below. The sentinel holds
-        # an error STRING, and the exit it feeds builds `ToolResult(success=False, content="",
-        # error=error)` -- no content, no metadata. The escalation needs both: it reports
-        # `validation_status="needs_human"` in a JSON body and in metadata, so a caller can
-        # route it to a queue rather than parse a message. Routing it through the sentinel
-        # would mean encoding that structure into a string and decoding it at the exit.
+        # ONE case needs more than the sentinel can carry, and it is the robots-disallow
+        # escalation below. The sentinel holds an error STRING, and the exit it feeds builds
+        # `ToolResult(success=False, content="", error=error)` -- no content, no metadata. The
+        # escalation needs both: it reports `validation_status="needs_human"` in a JSON body and
+        # in metadata, so a caller can route it to a queue rather than parse a message. Encoding
+        # that structure into a string and decoding it at the exit would be the alternative.
         #
-        # So the rule for whoever adds the next gate is not "never return early". It is: use
-        # the sentinel if your failure is an error string, and return directly only if you are
-        # producing a result shape the exit cannot build.
+        # It does NOT return early. It is built where the decision is made, assigned to
+        # `escalation`, and returned by the tail like every other outcome -- so this function has
+        # exactly ONE `return`, and `tests/test_tool.py` asserts that rather than trusting this
+        # comment. An earlier version of this paragraph said the escalation "departs" and told the
+        # next author they could "return directly"; the code had already stopped doing that, and
+        # the sentence six lines below has always said so.
+        #
+        # So the rule for whoever adds the next gate: use the sentinel if your failure is an error
+        # string, add a variable like `escalation` if you need a fuller result shape, and either
+        # way let the tail do the returning.
         error: str | None = None
         # WHICH gate refused, recorded where the refusal is decided. `error` says what to tell
         # the caller; this says who decided, and the tail branches on it rather than inferring
