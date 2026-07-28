@@ -22,7 +22,7 @@ from threetears.core.coordination.lease import (
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
-from ._fake_kv import FakeKvBucket, FakeNatsClient
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 
 
 async def _make_lease(

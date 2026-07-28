@@ -34,6 +34,7 @@ class _FakeInnerDriver:
         self._html = html
         self.render_calls: list[str] = []
         self.capture_network_calls: list[bool] = []
+        self.session_states: list[dict[str, object] | None] = []
 
     @property
     def name(self) -> str:
@@ -47,11 +48,13 @@ class _FakeInnerDriver:
         wait_for: str | None = None,
         capture_network: bool = False,
         nav_steps: list[NavStep] | None = None,
+        session_state: dict[str, object] | None = None,
         results_path: str | None = None,
         fragment_field: str | None = None,
     ) -> RenderedPage:
         self.render_calls.append(url)
         self.capture_network_calls.append(capture_network)
+        self.session_states.append(session_state)
         return RenderedPage(
             html=self._html,
             status=200,
@@ -206,3 +209,71 @@ class TestNetworkCaptureDriver:
         page = await driver.render("https://example.gov/warn")
 
         assert "<td>1</td>" in page.html
+
+
+class TestNetworkCaptureForwardsTheSolve:
+    async def test_a_session_state_reaches_the_inner_driver(self):
+        """A wrapper that swallows this drops the solve where it would have worked.
+
+        The inner driver is typically `NodriverSidecarDriver`, the one backend that can apply
+        a human's exported session. Withholding it here does not degrade to "renders
+        unauthenticated" quietly -- it captures the login wall's XHR and hands back whatever
+        record list that happens to contain.
+        """
+        inner = _FakeInnerDriver([_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})])
+        driver = NetworkCaptureDriver(inner)
+        state = {"cookies": [{"name": "session", "value": "solved"}]}
+
+        await driver.render("https://example.gov/list", session_state=state)
+
+        assert inner.session_states == [state], (
+            "the wrapper dropped the human's solve on the way to the driver that could use it"
+        )
+
+    async def test_no_session_state_is_not_passed_at_all(self):
+        """Not passed, rather than passed as None -- the distinction is the whole point.
+
+        The inner driver is INJECTED, so it can be an out-of-tree implementation written before
+        this parameter existed. Passing the keyword unconditionally makes every ordinary render
+        through such a driver raise TypeError, which is exactly the defect that was just fixed
+        one layer up in `ScrapeTool`. An earlier version of this test asserted
+        `session_states == [None]` and therefore PINNED the broken form.
+        """
+
+        # Deliberately NOT named `_Fake<Name>`: the fake-parity enforcement walker keys on that
+        # prefix, and a parity declaration here would defeat the point. This stands in for a
+        # driver whose surface is INTENTIONALLY narrower than the current protocol -- declaring
+        # parity with `ScrapeDriver` would make it track the very parameter it exists to lack.
+        class _PreSessionStateInner:
+            @property
+            def name(self) -> str:
+                return "old-inner"
+
+            async def render(
+                self,
+                url: str,
+                *,
+                timeout: float = 30.0,
+                wait_for: str | None = None,
+                capture_network: bool = False,
+                nav_steps: list[NavStep] | None = None,
+                results_path: str | None = None,
+                fragment_field: str | None = None,
+            ) -> RenderedPage:
+                return RenderedPage(
+                    html="<html></html>",
+                    status=200,
+                    final_url=url,
+                    timing_ms=1.0,
+                    network_calls=[_call({"rows": [{"a": 1}, {"a": 2}, {"a": 3}]})],
+                )
+
+        driver = NetworkCaptureDriver(_PreSessionStateInner())  # type: ignore[arg-type]
+
+        page = await driver.render("https://example.gov/list")
+
+        # Asserts the captured DATA, not merely that a page came back. `status == 200` alone
+        # would pass on a wrapper that silently stopped capturing altogether, which is the
+        # failure this whole driver exists to prevent.
+        assert "<table" in page.html, "the capture produced no table, so nothing was captured"
+        assert page.html.count("<tr") >= 3, f"expected the three captured records, got: {page.html[:200]}"

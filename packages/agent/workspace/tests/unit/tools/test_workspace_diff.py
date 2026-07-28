@@ -14,15 +14,11 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.workspace_diff import WorkspaceDiffTool
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool
 from _helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,
-    FakeWorkspaceFile,
-    FakeWorkspaceFileCollection,
-    FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

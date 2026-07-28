@@ -13,7 +13,6 @@ from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.registration import (
-    ProbeResponse,
     RegistrationHandler,
     RegistrationResponse,
 )

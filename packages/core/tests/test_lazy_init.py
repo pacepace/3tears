@@ -44,8 +44,26 @@ def _type_checking_names(init_path: Path) -> set[str]:
 
 
 class TestLazySurfaceConsistency:
-    def test_all_is_subset_of_lazy(self) -> None:
-        assert set(core.__all__) <= set(core._LAZY)
+    def test_all_and_lazy_are_the_same_set(self) -> None:
+        """Both directions, because one of them had drifted and a subset check cannot see it.
+
+        This asserted ``__all__ <= _LAZY`` while its module docstring claimed to pin a "three-way
+        agreement". A name reachable through ``_LAZY`` but missing from ``__all__`` therefore
+        passed -- and four were: ``Keyset``, ``Page``, ``decode_cursor`` and ``encode_cursor`` were
+        importable, used by this package's own tests through ``from threetears.core import ...``,
+        and absent from the declared surface, so ``import *`` missed them and anything reading
+        ``__all__`` did not know they existed. Found by ruff's F401, which recognised them as
+        undeclared re-exports.
+
+        Equality is the honest contract for a lazy ``__init__``: ``_LAZY`` is the mechanism and
+        ``__all__`` is the declaration, and a name in one and not the other is a surface nobody
+        decided on. If a genuinely internal lazy import is ever wanted, that is a deliberate
+        exception to add here with its reason -- not a hole to leave open for every name.
+        """
+        lazy, declared = set(core._LAZY), set(core.__all__)
+        assert lazy == declared, (
+            f"reachable but undeclared: {sorted(lazy - declared)}; declared but unreachable: {sorted(declared - lazy)}"
+        )
 
     def test_type_checking_block_matches_lazy(self) -> None:
         init_path = Path(core.__file__)

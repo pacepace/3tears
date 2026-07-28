@@ -49,7 +49,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "DistributedCounter",
@@ -121,12 +124,12 @@ class DistributedCounter:
     within this package.
     """
 
-    def __init__(self, nats_client: "NatsClient", *, bucket_name: str, ttl: timedelta | None = None) -> None:
+    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = None) -> None:
         """configure the counter; defer bucket binding until first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`;
-            the counter opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
+            the counter opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; dedicate one bucket per counting
             domain (e.g. HTTP-request windows vs. LLM-token windows) so
             unrelated keys never collide across surfaces, and so each domain
@@ -147,7 +150,7 @@ class DistributedCounter:
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = ttl
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -230,7 +233,7 @@ class DistributedCounter:
             entry = await bucket.get_entry(key=key)
             if entry is None:
                 new_value = delta
-                # NatsKvBucket.create returns the new revision on success or
+                # KvBucketLike.create returns the new revision on success or
                 # None on CAS conflict (another writer created the key
                 # between our get_entry miss and this create) -- retry.
                 revision = await bucket.create(key=key, value=_encode_value(new_value))
@@ -239,7 +242,7 @@ class DistributedCounter:
             else:
                 current_value, revision = entry
                 new_value = _decode_value(current_value) + delta
-                # NatsKvBucket.update returns None on revision mismatch --
+                # KvBucketLike.update returns None on revision mismatch --
                 # another writer applied a delta between our get_entry and
                 # this update -- retry.
                 new_revision = await bucket.update(key=key, value=_encode_value(new_value), revision=revision)
@@ -250,7 +253,7 @@ class DistributedCounter:
                 await asyncio.sleep(backoff)
         raise DistributedCounterConflict(f"exhausted {_CAS_MAX_RETRIES} CAS retries applying delta to counter {key!r}")
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket

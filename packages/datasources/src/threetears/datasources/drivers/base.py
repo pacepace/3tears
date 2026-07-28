@@ -53,15 +53,13 @@ and let the threads drain naturally.
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import functools
 import inspect
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, TypedDict, TypeVar
-
-import asyncio
 
 from threetears.observe import get_logger
 
@@ -349,7 +347,6 @@ def _observed(driver_type: str) -> Callable[[F], F]:
             datasource_name = getattr(self, "_datasource_name", "unknown")
             attrs = {"driver_type": driver_type, "datasource_name": datasource_name}
             start = time.monotonic()
-            error_raised: BaseException | None = None
             try:
                 result = await fn(self, *args, **kwargs)
             except asyncio.CancelledError:
@@ -358,7 +355,6 @@ def _observed(driver_type: str) -> Callable[[F], F]:
                 # by concrete drivers from _with_cancellation hooks
                 raise
             except Exception as exc:
-                error_raised = exc
                 error_counter.add(
                     1,
                     attributes={
@@ -690,9 +686,9 @@ class Driver(ABC):
 
         - on success: return the coroutine's result.
         - on :class:`asyncio.CancelledError`: invoke ``cancel_callback``,
-          ignore any exception it raises (logged at debug), then
-          re-raise the cancellation. if the callback returns a
-          coroutine, it is awaited.
+          log any exception it raises at warning without letting it
+          displace the cancellation, then re-raise. if the callback
+          returns a coroutine, it is awaited.
 
         :param coro_fn: zero-arg callable returning the awaitable to
             run. taking a callable rather than the awaitable itself
@@ -713,9 +709,17 @@ class Driver(ABC):
         try:
             result = await coro_fn()
         except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
+            try:
                 cancel_result = cancel_callback()
                 if asyncio.iscoroutine(cancel_result):
                     await cancel_result
+            except Exception as exc:  # noqa: BLE001 -- the CancelledError below is the caller's answer
+                # The cancellation still propagates, but the backend statement it was meant to stop
+                # may not have stopped: a failed cancel leaves work running server-side while this
+                # side reports cancelled.
+                log.warning(
+                    "cancel callback failed; backend work may still be running",
+                    extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+                )
             raise
         return result

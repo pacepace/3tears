@@ -25,9 +25,10 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 import jwt
+from threetears.observe import get_logger
 from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePublicKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from jwt.algorithms import ECAlgorithm, OKPAlgorithm
@@ -43,6 +44,23 @@ __all__ = [
     "sign_identity_token",
     "verify_identity_token",
 ]
+
+
+log = get_logger(__name__)
+
+
+def _reject(reason: str) -> NoReturn:
+    """Log the rejection, then raise it.
+
+    Every failure path goes through here so the log line and the exception cannot drift
+    apart, and so a rejection added later cannot silently log nothing.
+
+    A rejected identity token is the security signal this module exists to produce. Only
+    the structural reason is recorded -- never the token, its claims, or key material.
+    """
+    log.warning("identity token rejected", extra={"extra_data": {"reason": reason}})
+    raise IdentityTokenError(reason) from None
+
 
 # the ONE algorithm this module signs and verifies. EdDSA over Ed25519: small keys, fast
 # verify, no curve/parameter choices to get wrong. Decode pins this as a list literal (so the
@@ -132,7 +150,7 @@ def build_jwks(public_keys: Mapping[str, Ed25519PublicKey]) -> dict[str, Any]:
         # Hub signing key. The type hint is the contract; this is the runtime backstop for a
         # custody/KMS key mix-up on a future minting path.
         if not isinstance(public_key, Ed25519PublicKey):
-            raise IdentityTokenError(f"build_jwks requires Ed25519 public keys; kid {kid!r} is not one.")
+            _reject(f"build_jwks requires Ed25519 public keys; kid {kid!r} is not one.")
         jwk = OKPAlgorithm.to_jwk(public_key, as_dict=True)
         jwk["kid"] = kid
         jwk["use"] = "sig"
@@ -181,14 +199,14 @@ def verify_identity_token(token: str, *, jwks: dict[str, Any], issuer: str, leew
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError as exc:
-        raise IdentityTokenError(f"malformed token header ({type(exc).__name__}).") from None
+        _reject(f"malformed token header ({type(exc).__name__}).")
     # reject a non-EdDSA token BEFORE selecting a key — defence in depth with the decode pin
     # below, so an HS256/none header never reaches signature verification.
     if header.get("alg") != _ALG:
-        raise IdentityTokenError("unexpected token algorithm; only EdDSA is accepted.")
+        _reject("unexpected token algorithm; only EdDSA is accepted.")
     kid = header.get("kid")
     if not isinstance(kid, str) or not kid:
-        raise IdentityTokenError("token is missing a string kid header.")
+        _reject("token is missing a string kid header.")
     public_key = _select_public_key(jwks, kid)
     try:
         payload = jwt.decode(
@@ -200,7 +218,7 @@ def verify_identity_token(token: str, *, jwks: dict[str, Any], issuer: str, leew
             options={"require": list(_REQUIRED_CLAIMS)},
         )
     except jwt.PyJWTError as exc:
-        raise IdentityTokenError(f"token verification failed ({type(exc).__name__}).") from None
+        _reject(f"token verification failed ({type(exc).__name__}).")
     return _payload_to_claims(payload)
 
 
@@ -230,12 +248,12 @@ def _select_public_key(jwks: dict[str, Any], kid: str) -> Ed25519PublicKey:
         TypeError,
         ValueError,
     ) as exc:
-        raise IdentityTokenError(f"malformed JWKS ({type(exc).__name__}).") from None
+        _reject(f"malformed JWKS ({type(exc).__name__}).")
     for jwk in key_set.keys:
         if jwk.key_id == kid:
             key = jwk.key
             if not isinstance(key, Ed25519PublicKey):
-                raise IdentityTokenError("JWKS key for kid is not an Ed25519 public key.")
+                _reject("JWKS key for kid is not an Ed25519 public key.")
             return key
     raise IdentityKeyNotFoundError("no JWKS key matches the token kid.")
 
@@ -286,7 +304,7 @@ def _require_nonempty_str(payload: dict[str, Any], claim: str) -> str:
     """
     value = payload.get(claim)
     if not isinstance(value, str) or not value:
-        raise IdentityTokenError(f"identity claim {claim!r} must be a non-empty string.")
+        _reject(f"identity claim {claim!r} must be a non-empty string.")
     return value
 
 

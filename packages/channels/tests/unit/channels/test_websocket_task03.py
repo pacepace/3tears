@@ -35,6 +35,7 @@ import pytest
 
 from threetears.agent.acl import AccessDenied
 from threetears.channels.frames import Frame, OpResult
+from threetears.channels.protocol import ChannelMessage, ChannelResponse
 
 from .test_websocket import MockWebSocket, _EchoRouter, _valid_auth
 

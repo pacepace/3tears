@@ -24,7 +24,6 @@ import asyncpg
 import pytest
 
 from threetears.agent.tools.platform_migrations import (
-    PACKAGE_NAME,
     register,
 )
 from threetears.core.data.migrations import MigrationRunner

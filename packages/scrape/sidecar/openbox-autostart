@@ -1,0 +1,19 @@
+# Runs once the window manager has connected, so the X server is provably accepting -- which is
+# why the DPI is set here and not in entrypoint.sh, where it raced Xvfb's startup and silently
+# set nothing.
+
+# UI_SCALE is the operator's comfort setting: how much larger to draw everything a human reads,
+# like display scaling on a desktop OS. Chromium takes it as --force-device-scale-factor (see
+# main.py); openbox's titlebars and tint2's taskbar size themselves from Xft.dpi, and 96 is the
+# X default that the factor multiplies. Without this half the page scales and the furniture
+# around it does not, which reads as a rendering fault rather than a setting.
+UI_SCALE="${UI_SCALE:-1.0}"
+if [ "${UI_SCALE}" != "1.0" ] && [ "${UI_SCALE}" != "1" ]; then
+    DPI=$(awk -v s="${UI_SCALE}" 'BEGIN { printf "%d", 96 * s }')
+    printf 'Xft.dpi: %s\n' "${DPI}" | xrdb -merge -
+fi
+
+# The taskbar. Without it an operator alt-tabs blind through the working set and a minimised
+# window has nowhere to come back from. Started after the DPI so it sizes itself correctly the
+# first time; it reads Xft.dpi once and does not re-read.
+tint2 &

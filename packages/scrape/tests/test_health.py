@@ -28,7 +28,6 @@ from threetears.scrape.challenge import PageVerdict
 from threetears.scrape.collections import ScrapeExtraction, ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import _stamp_fingerprint_if_validated, run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.health import (
-    ScrapeTargetHealth,
     ScrapeTargetHealthCollection,
     content_fingerprint,
     record_validated_fetch,
@@ -405,9 +404,10 @@ async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
     update fences on the row's own ``date_updated`` as an optimistic lock against a
     ``TIMESTAMPTZ`` column, and a string bound there fails at the asyncpg border.
 
-    Asserted at the serialize/deserialize boundary rather than by mocking a hydrated row
-    into the merge, because that is where the repair now lives; a test that injected
-    strings past this layer would be testing its own setup.
+    Asserted across the serialize/rehydrate boundary rather than by mocking a hydrated row
+    into the merge; a test that injected strings past this layer would be testing its own
+    setup. The rehydration itself now lives on `BaseCollection` rather than in this
+    collection's `deserialize`, so the composition below is what the L2 read path performs.
     """
     written = {
         "target_id": "warn_l2",
@@ -418,7 +418,7 @@ async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
         "fingerprint_updated_at": datetime(2026, 7, 25, 3, 30, tzinfo=UTC),
     }
 
-    round_tripped = health.deserialize(health.serialize(written))
+    round_tripped = health._rehydrate_datetimes(health.deserialize(health.serialize(written)))
 
     for column in ("date_created", "date_updated", "last_blocked_at", "fingerprint_updated_at"):
         assert isinstance(round_tripped[column], datetime), (
@@ -431,22 +431,33 @@ async def test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes(
     assert round_tripped["target_id"] == "warn_l2"
 
 
-def test_an_unparseable_timestamp_survives_rather_than_being_nulled(
+def test_an_unparseable_timestamp_is_a_corrupt_cache_entry(
     health: ScrapeTargetHealthCollection,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A value that will not parse is carried through as found, and logged.
+    """A value that will not decode is refused, not carried onward.
 
-    Nulling it would discard a real stored value silently and, for ``date_updated``,
-    would quietly disable the optimistic lock on the next write by making the fence
-    ``None``. Better to carry it to a border that rejects it loudly.
+    CONTRACT CHANGE, decided rather than drifted into. This collection used to preserve such a
+    value verbatim, reasoning that nulling it would discard real data and, for ``date_updated``,
+    would silently disable the next write's optimistic lock by making the fence ``None``. That
+    reasoning was sound about nulling and wrong about the alternative it chose: preserving the
+    string hands the caller a row with a ``str`` in a column typed ``datetime``, which is the
+    precise fault the round-trip test above says this rehydration exists to prevent.
+
+    The third option is the one taken. L2 is a cache, so a value that will not decode is a
+    corrupt cache entry: `BaseCollection` raises here, the L2 read path treats it as a miss and
+    falls through to L3, and the CAS path replaces the entry at the revision that held it.
+    Nothing is discarded, because L3 is authoritative and still holds the row.
     """
+    from threetears.core.exceptions import CorruptCacheEntry
+
     payload = b'{"target_id": "warn_bad", "date_updated": "not-a-timestamp"}'
 
-    result = health.deserialize(payload)
+    with pytest.raises(CorruptCacheEntry) as caught:
+        health._rehydrate_datetimes(health.deserialize(payload))
 
-    assert result["date_updated"] == "not-a-timestamp"
-    assert "did not parse as a timestamp" in caplog.text
+    # Names the column, so the log line the read path emits can point at the bad data.
+    assert caught.value.column == "date_updated"
+    assert caught.value.value == "not-a-timestamp"
 
 
 async def test_the_fingerprint_merge_carries_the_lock_forward(health: ScrapeTargetHealthCollection) -> None:

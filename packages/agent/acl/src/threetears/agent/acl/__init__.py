@@ -124,6 +124,34 @@ from threetears.agent.acl.evaluator import (
     evaluate_file_access,
     evaluate_with_trail,
 )
+
+# The cross-process invalidation bus needs the NATS client for its Subjects grammar, so it is an
+# EXTRA (`3tears-agent-acl[bus]`) rather than a hard dependency: the evaluator, the cache and the
+# collections are useful to a consumer with no broker at all, and making every one of them install
+# nats-py + nkeys would contradict the reason invalidation_bus takes narrow Protocols in the first
+# place. A consumer that reaches for the bus without the extra gets an ImportError naming it.
+try:
+    from threetears.agent.acl.invalidation_bus import (
+        AclInvalidationPublisher,
+        AclInvalidationSubscriber,
+        publish_assignment_invalidation,
+        publish_membership_invalidation,
+        publish_role_invalidation,
+        subscribe_acl_invalidation,
+    )
+except ImportError as _bus_exc:  # pragma: no cover - exercised by the packaging, not the suite
+    _BUS_IMPORT_ERROR = _bus_exc
+
+    def _bus_unavailable(*_args: object, **_kwargs: object) -> object:
+        raise ImportError(
+            "the acl invalidation bus needs the NATS client; install 3tears-agent-acl[bus]"
+        ) from _BUS_IMPORT_ERROR
+
+    AclInvalidationPublisher = AclInvalidationSubscriber = object  # type: ignore[assignment,misc]
+    publish_assignment_invalidation = _bus_unavailable  # type: ignore[assignment]
+    publish_membership_invalidation = _bus_unavailable  # type: ignore[assignment]
+    publish_role_invalidation = _bus_unavailable  # type: ignore[assignment]
+    subscribe_acl_invalidation = _bus_unavailable  # type: ignore[assignment]
 from threetears.agent.acl.invalidation import (
     AssignmentInvalidatePayload,
     MembershipInvalidatePayload,
@@ -163,6 +191,12 @@ __all__ = [
     "ActorMembershipEntry",
     "ActorMembershipKey",
     "ActorType",
+    "AclInvalidationPublisher",
+    "AclInvalidationSubscriber",
+    "publish_assignment_invalidation",
+    "publish_membership_invalidation",
+    "publish_role_invalidation",
+    "subscribe_acl_invalidation",
     "AssignmentInvalidatePayload",
     "ClaimsForAuthorization",
     "CollectionGrantLoader",

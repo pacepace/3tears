@@ -19,6 +19,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 
@@ -28,6 +29,38 @@ __all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
 #: without the core needing to know anything about what's being searched for
 #: (multi-step navigation, 2026-07-14).
 NavStepAction = Literal["click", "fill", "wait_for", "wait_ms", "scroll_into_view", "scroll_page", "evaluate"]
+
+#: Default advice when a driver drops a solve. Wrong for the sidecar-backed download driver,
+#: which is why :meth:`ScrapeDriver._warn_dropped_session_state` takes an override.
+_SIDECAR_REMEDY = "Use the nodriver sidecar driver to reuse a solved session."
+
+#: Ceiling on remembered origins per driver, so the dedupe set cannot grow without bound in a
+#: long-lived process. Reached, it clears wholesale, and the cost is one repeated warning per
+#: site still being scraped -- not one in total, which an earlier version of this comment
+#: claimed. Wholesale rather than evicting the oldest because the alternative is tracking
+#: recency for a set whose whole job is to be forgotten occasionally.
+_MAX_WARNED_ORIGINS = 512
+
+
+def _origin_of(url: str) -> str:
+    """``scheme://host[:port]`` for *url*, or the url itself when it has no parseable origin.
+
+    Deliberately NOT shared with :func:`threetears.scrape.robots._origin_of`, whose contract is
+    ``str | None``. The two answer the same question for opposite purposes, and the difference
+    is the return type. Robots must distinguish "no usable origin" so it can decline to apply a
+    site's rules to something that is not a site; here the value is only ever a dedupe key, and
+    ``None`` would collapse every unparseable url into one bucket -- so a batch of odd urls
+    would report the first and silence the rest, which is the failure this dedupe exists to
+    avoid. Falling back to the url keeps each one distinct.
+
+    Sharing them would mean one of the two callers handling a case it has no answer for. This
+    module also keeps a zero-non-stdlib-import discipline, so importing from ``robots`` would
+    cost more than the six lines it saved.
+    """
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 @dataclass(frozen=True)
@@ -127,6 +160,11 @@ class RenderedPage:
     #: expression's own (JSON-serializable) return value. Empty when no
     #: ``evaluate`` step ran.
     eval_results: list[Any] = field(default_factory=list)
+    #: Which exit this page was fetched through, when the backend knows. ``None`` from a
+    #: backend that has no concept of one. Reported by the fetcher rather than assumed by the
+    #: caller, so a dropped proxy argument surfaces as a mismatch rather than as a result
+    #: quietly stamped with an exit that was never used.
+    egress: str | None = None
 
 
 class ScrapeDriver(ABC):
@@ -137,6 +175,92 @@ class ScrapeDriver(ABC):
     this boundary, so callers can swap backends without caring which one
     rendered the page.
     """
+
+    #: Origins this instance has already reported a dropped solve for. The state is per
+    #: instance, but the dedupe KEY is the origin, which is the whole point -- keying on the
+    #: instance itself was the bug. `ScrapeTool` builds its driver map once and reuses it for
+    #: the life of the process, so deduping per instance meant per PROCESS: the first target
+    #: warned and every later one was rendered logged-out, in exactly the silence this exists
+    #: to prevent.
+    #: Per render was the opposite failure, a warning per document across a whole listing.
+    #: An origin is the unit a human's solve actually belongs to, so it is the unit here.
+    _warned_dropped_origins: set[str] | None = None
+
+    #: What to tell an operator instead. PUBLIC and a class attribute: subclasses are meant to
+    #: override it, which the repo's underscore rule rightly forbids for a private name -- an
+    #: underscore attribute is implementation detail of the class that declares it. A class
+    #: attribute rather than a call-site keyword so it is a property of the DRIVER: the
+    #: download driver's own remedy is different, and a
+    #: keyword passed at the point of call made that difference invisible to any test that did
+    #: not go through that exact line.
+    dropped_solve_remedy: str = _SIDECAR_REMEDY
+
+    def _warn_dropped_session_state(self, url: str, log: Any) -> None:
+        """Report ONCE that this driver is discarding a human's exported session.
+
+        Silence is the failure this prevents: a caller hands over a session a person spent real
+        time solving, gets a successful render back, and learns nothing until extraction fails
+        on a login wall and the target is escalated to a human who already did the work.
+
+        **Once per ORIGIN**, which is the only cardinality that is wrong in neither direction.
+        Per render is a storm: :class:`MultiDocumentDriver` forwards a solve to its inner
+        document driver once per document, so one listing emitted a warning per document, and a
+        warning that repeats that way trains its reader to filter it out. Per driver INSTANCE is
+        silence: `ScrapeTool` builds its driver map once and reuses it for the whole process, so
+        the first dropped solve would warn and every later target would be rendered logged-out
+        with nothing said. An origin is what a human's solve actually belongs to, so it is the
+        unit that makes "this site's solve was discarded" true exactly once.
+
+        On the base class rather than a module function so the per-instance set of already-
+        reported origins has somewhere to live, and so every backend gets this by inheriting
+        rather than by each author remembering the pattern -- the previous version was added to
+        whichever driver a review happened to name, and the others stayed silent.
+
+        :param url: the url being rendered without the solve
+        :ptype url: str
+        :param log: the calling module's own logger, so the record carries its name
+        :ptype log: Any
+        """
+        origin = _origin_of(url)
+        if self._warned_dropped_origins is None:
+            # Lazily built per instance, so no backend has to remember to initialise it and
+            # the class-level default is never mutated into a set shared by every driver.
+            self._warned_dropped_origins = set()
+        if origin in self._warned_dropped_origins:
+            return
+        if len(self._warned_dropped_origins) >= _MAX_WARNED_ORIGINS:
+            # Bounded rather than unbounded: a long-lived process scraping a wide set of sites
+            # would otherwise hold one string per origin forever, which is the same leak the
+            # robots gate had to fix. Clearing wholesale re-warns once for each site still in
+            # play, which is the honest cost -- noisier than "at most one", and still bounded.
+            self._warned_dropped_origins.clear()
+        self._warned_dropped_origins.add(origin)
+        log.warning(
+            "%s driver: session_state was supplied but this driver cannot apply it; rendering %s "
+            "unauthenticated. %s (reported once per site)",
+            self.name,
+            url,
+            self.dropped_solve_remedy,
+        )
+
+    @property
+    def egress(self) -> object | None:
+        """The exit this driver's fetches leave by, or ``None`` for the default route.
+
+        Concrete rather than abstract, and returning ``None``, because most backends have no
+        concept of an exit and should not be made to declare one. What it buys is that asking
+        the question is always valid: ``ScrapeTool`` inspects this to warn about a split
+        configuration -- drivers proxied while its own ``robots.txt`` read is not -- and a
+        check that had to ``getattr`` its way to an undeclared name would fail silently the
+        moment that name changed, which is the worst failure mode a security check can have.
+
+        Typed ``object | None`` rather than ``EgressDriver``: this module keeps a
+        zero-non-stdlib-import discipline, which is what lets it be imported from anywhere
+        without dragging a dependency along. ``object | None`` needs no import, accepts every
+        override, and supports the only operation anyone performs on it -- asking whether it
+        is there. ``Any`` would satisfy the same constraint while typing nothing.
+        """
+        return None
 
     @property
     @abstractmethod
@@ -156,6 +280,7 @@ class ScrapeDriver(ABC):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* and return the resulting page.
 
@@ -201,6 +326,14 @@ class ScrapeDriver(ABC):
             capability, 2026-07-15); every other backend accepts and
             ignores it
         :ptype link_selector: str | None
+        :param session_state: a human's previously cleared browser state -- cookies and origin
+            storage exported from a HITL session -- to apply BEFORE navigating, so the request
+            that would have been challenged carries the credential that clears it. Raw and
+            already opened; sealing is the caller's business, not a driver's. Every non-browser
+            backend accepts and ignores it, per this protocol's established convention: a
+            driver that cannot restore a browser session has nothing to do with one, and the
+            alternative is a capability flag every caller has to branch on
+        :ptype session_state: dict[str, Any] | None
         :param seen_urls: document URLs the caller already has real data
             for -- only meaningful to :class:`~threetears.scrape.drivers.
             multi_document.MultiDocumentDriver` (document-dedup capability,

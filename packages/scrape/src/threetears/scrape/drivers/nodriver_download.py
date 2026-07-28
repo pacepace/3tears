@@ -22,6 +22,8 @@ itself, which stays inside the sidecar's own AGPL-3.0-licensed process.
 
 from __future__ import annotations
 
+from typing import Any
+
 import base64
 import time
 
@@ -53,6 +55,14 @@ class NodriverDownloadError(Exception):
 
 class NodriverDownloadDriver(ScrapeDriver):
     """``ScrapeDriver`` backed by the sidecar's browser-forced-download endpoint."""
+
+    #: The base class's default advice -- "use the nodriver sidecar driver" -- names the thing
+    #: this driver already IS, so it would send a reader to change nothing and conclude the
+    #: warning was noise. The real constraint is the endpoint, not the backend.
+    dropped_solve_remedy = (
+        "This driver posts to the sidecar's /v1/download endpoint, which carries no session "
+        "state; fetch the document through a render instead if it is behind a wall."
+    )
 
     def __init__(
         self,
@@ -106,6 +116,7 @@ class NodriverDownloadDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Download *url*'s real file bytes through the sidecar, then parse and convert them.
 
@@ -129,6 +140,12 @@ class NodriverDownloadDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            SITE, not per call) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
+        :ptype session_state: dict[str, Any] | None
         :return: the parsed document's content as synthetic HTML
         :rtype: RenderedPage
         :raises NodriverDownloadError: on a sidecar-reported error (4xx/5xx
@@ -140,6 +157,8 @@ class NodriverDownloadDriver(ScrapeDriver):
             parse_document_bytes_to_html`, not wrapped, since it's already
             the right semantic type for "downloaded fine, couldn't parse"
         """
+        if session_state:
+            self._warn_dropped_session_state(url, log)
         start = time.monotonic()
         payload = {"url": url, "timeout": timeout}
         client = self._client

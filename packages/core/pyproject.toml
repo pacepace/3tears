@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.19.4"
+version = "0.20.0"
 description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,20 +22,34 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.19.0,<0.20.0",
-    "3tears-nats>=0.19.0,<0.20.0",
+    "3tears-observe>=0.20.0,<0.21.0",
+    "3tears-nats>=0.20.0,<0.21.0",
     "sqlalchemy",
     "asyncpg",
-    "nats-py",
     "aiosqlite",
     "pydantic",
+    "uuid-utils",  # uuid7 ids (core.collections.registry, core.cache.sqlite/duckdb)
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
     "httpx",  # traced outbound HTTP transport (core.http_client)
 ]
 
 [project.optional-dependencies]
+# The L2 (NATS KV) tier. Core never imports `nats-py` itself -- it reaches the
+# client only through `threetears.nats`, whose nats-py-backed names are now
+# lazy -- so this extra is the single switch for "this process talks to NATS".
+# Anything using L2, DerivedCollection, or the invalidation listener wants it;
+# an L1-SQLite-only process does not, and `nkeys` ships no wheels, so not
+# installing it is the difference between a wheel install and a source build.
+nats = ["3tears-nats[client]>=0.20.0,<0.21.0"]
 tracing = ["opentelemetry-api>=1.20"]
+# needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
+# ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without
+# it. Declared as an extra rather than a hard dependency because the overwhelming majority of
+# consumers use the default route or an http(s) proxy and should not carry it -- but declared
+# at all, because "install 3tears, reach for SocksEgress, get an ImportError on the first
+# request" makes a packaging requirement look like a runtime bug.
+socks = ["httpx[socks]"]
 duckdb = ["duckdb>=1.0"]
 # pulled by anything importing :mod:`threetears.core.testing.fixtures`
 # (the centralized testcontainer harness for downstream integration

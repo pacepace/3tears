@@ -1,0 +1,64 @@
+{
+  "$comment": [
+    "What the `novnc/` directory beside this file is, where it came from, and proof it has not",
+    "been changed. Read by packages/scrape/tests/test_operator_assets.py, which recomputes",
+    "`tree_sha256` and fails if the tree and this record disagree.",
+    "",
+    "This exists because noVNC is MPL-2.0 and 3tears-scrape is MIT. Redistributing MPL-2.0 files",
+    "inside an MIT wheel is permitted, and the obligations are specific: the licence text and",
+    "copyright notice travel with the files, the files stay under their own licence regardless of",
+    "the wheel's, the source stays identifiable, and any modification is marked. The first two are",
+    "satisfied by shipping the upstream LICENSE.txt, AUTHORS and docs/LICENSE.* unmodified next to",
+    "the code. The last two are satisfied here -- and `modified: false` is a claim a test can",
+    "falsify rather than a promise, which is the only reason it is worth writing down.",
+    "",
+    "Nothing under `novnc/` is ours. The operator page is a SIBLING of that directory rather than",
+    "a file inside it, so no file under it can be read as a modified noVNC file."
+  ],
+  "name": "noVNC",
+  "version": "1.7.0",
+  "released": "2026-04-28",
+  "homepage": "https://github.com/novnc/noVNC",
+  "source_archive": "https://github.com/novnc/noVNC/archive/refs/tags/v1.7.0.tar.gz",
+  "source_archive_sha256": "b1003a11b6e6e8d8f7f5e5586daae7f8ca651d8aee0aa155ff9ac841c48f52c6",
+  "modified": false,
+  "tree_sha256": "d1efa061bfa5a530b1681abca1e116f649f1be7142de199a27a621644d0e50ed",
+  "tree_sha256_recipe": "sha256 over every file under novnc/, sorted by POSIX-relative path, each contributing its path bytes, a NUL, its contents, and a NUL",
+  "vendored_subset": {
+    "$comment": [
+      "Not the whole distribution. `core/` imports nothing outside itself except the pako zlib",
+      "modules below, and references no image, stylesheet or translation, so `app/`, `po/`,",
+      "`tests/` and noVNC's own vnc.html are not shipped -- the operator page replaces that UI",
+      "entirely. Roughly 740K instead of 2.8M.",
+      "",
+      "The two BSD texts are shipped even though nothing in this subset is plainly BSD-licensed,",
+      "because the upstream LICENSE.txt shipped beside them names them by path. Dropping them",
+      "would leave the notice we are obliged to carry pointing at files that are not there."
+    ],
+    "core/": "the RFB client library",
+    "vendor/pako/": "zlib in JavaScript; core/inflator.js and core/deflator.js import it",
+    "LICENSE.txt": "upstream licence summary and per-part licence map",
+    "AUTHORS": "upstream copyright holders, referenced by LICENSE.txt",
+    "docs/LICENSE.MPL-2.0": "referenced by LICENSE.txt",
+    "docs/LICENSE.BSD-2-Clause": "referenced by LICENSE.txt",
+    "docs/LICENSE.BSD-3-Clause": "referenced by LICENSE.txt",
+    "vendor/pako/LICENSE": "MIT, referenced by LICENSE.txt"
+  },
+  "licenses": {
+    "$comment": [
+      "Read out of the files rather than copied from upstream's LICENSE.txt summary, because that",
+      "summary is stale for this release: it names `core/des.js`, which moved to",
+      "`core/crypto/des.js` in 1.7.0, and calls it `Various BSD style licenses` when the file",
+      "actually carries two bespoke permissive notices with no SPDX identifier between them.",
+      "",
+      "packages/scrape/pyproject.toml's License-Expression carries these so the wheel's metadata",
+      "does not claim the vendored files are MIT."
+    ],
+    "default": "MPL-2.0",
+    "vendor/pako/": "MIT",
+    "core/crypto/des.js": {
+      "spdx": "LicenseRef-noVNC-DES",
+      "why_not_an_spdx_id": "two bespoke permissive grants kept intact in the file header -- AT&T Laboratories Cambridge (1999) and Widget Workshop, Inc. (1996). Neither matches a listed SPDX licence, so PEP 639's LicenseRef form is the accurate way to name it."
+    }
+  }
+}

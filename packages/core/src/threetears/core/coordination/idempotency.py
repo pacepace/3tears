@@ -52,7 +52,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "ClaimResult",
@@ -204,12 +207,12 @@ class IdempotencyKeyStore:
     :class:`ReplayGuard`'s construction style within this module.
     """
 
-    def __init__(self, nats_client: "NatsClient", *, bucket_name: str, ttl: timedelta | None = _DEFAULT_TTL) -> None:
+    def __init__(self, nats_client: "KvCapable", *, bucket_name: str, ttl: timedelta | None = _DEFAULT_TTL) -> None:
         """configure the store; defer bucket binding until first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`;
-            the store opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
+            the store opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the
             namespace. pick a bucket dedicated to one idempotency domain so
             unrelated keys never collide across surfaces
@@ -225,7 +228,7 @@ class IdempotencyKeyStore:
         self._client = nats_client
         self._bucket_name = bucket_name
         self._ttl = ttl
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -360,7 +363,7 @@ class IdempotencyKeyStore:
                 await asyncio.sleep(backoff)
         raise IdempotencyConflict(f"exhausted {_CAS_MAX_RETRIES} CAS retries transitioning key {key!r} to {status!r}")
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket
@@ -372,7 +375,7 @@ class IdempotencyKeyStore:
                     # file storage (NOT the default "memory"): a claim must survive a NATS
                     # restart for the whole ttl window, same reasoning as ReplayGuard's identical
                     # choice (replay_guard.py). with memory storage a restart wipes the bucket, and
-                    # NatsKvBucket's self-heal would recreate it EMPTY -- a caller retrying an
+                    # KvBucketLike's self-heal would recreate it EMPTY -- a caller retrying an
                     # already-"completed"/"failed" operation would then get status="claimed" again
                     # and redo the work, exactly the double-processing this primitive exists to
                     # prevent. file storage rebinds the intact on-disk bucket instead, so recorded

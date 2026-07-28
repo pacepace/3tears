@@ -84,6 +84,8 @@ def package_id(path: Path, src_roots: Iterable[Path]) -> tuple[str, ...]:
         try:
             rel = resolved.relative_to(root_resolved)
         except ValueError:
+            # NOSILENT: this IS the containment test -- the loop asks each root in turn whether it
+            # holds the path, and "no" is the expected answer for every root but one.
             continue
         parts = rel.parts
         if not parts:

@@ -10,6 +10,7 @@ lives in test_driver_contract.py, not here.
 from __future__ import annotations
 
 import pytest
+from _driver_log_helpers import driver_warnings
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -221,6 +222,38 @@ class TestCamoufoxDriverRender:
         assert result.final_url == "https://example.gov/page"
         assert result.timing_ms >= 0
         assert page.closed is True  # new tab closed after use, never reused
+
+    async def test_a_dropped_session_state_is_announced_rather_than_silent(self, caplog):
+        """The whole value of the warning is that it is heard, so the assertion is on the log.
+
+        This driver cannot apply a human's exported session and renders unauthenticated. In
+        silence, a caller gets a successful render back and learns nothing until extraction
+        fails on a login wall and the target is escalated to a person who already solved it.
+        Without this assertion the warning was executed by the contract suite and checked by
+        nothing, so deleting it left the suite green.
+        """
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
+            await driver.render("https://example.gov", session_state={"cookies": [{"name": "s"}]})
+
+        # Through the shared helper like every other driver suite, so this asserts the record
+        # came from camoufox's own logger rather than from whatever happened to be captured.
+        mine = [r for r in driver_warnings(caplog, "camoufox") if "cannot apply it" in r.getMessage()]
+        assert mine, (
+            f"a dropped session state was not announced; saw {[(r.name, r.getMessage()) for r in caplog.records]}"
+        )
+
+    async def test_no_session_state_says_nothing(self, caplog):
+        """A warning on every ordinary render would be noise that trains the reader to ignore it."""
+        page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.camoufox"):
+            await driver.render("https://example.gov")
+
+        assert driver_warnings(caplog, "camoufox") == []
 
     async def test_render_converts_seconds_to_milliseconds(self):
         page = _FakeCamoufoxPage(goto_result=_FakeCamoufoxResponse(200))

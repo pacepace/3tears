@@ -18,7 +18,7 @@ from threetears.agent.workspace.tools import (
 from threetears.agent.workspace.tools.workspace_rollback import (
     WorkspaceRollbackTool,
 )
-from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgPool
 from _helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
@@ -26,7 +26,6 @@ from _helpers.workspace_shims import (
     FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

@@ -144,6 +144,19 @@ class NetworkCaptureDriver(ScrapeDriver):
         """Stable string key for this driver."""
         return "network_capture"
 
+    @property
+    def egress(self) -> object | None:
+        """The wrapped driver's exit -- this one performs no fetch of its own.
+
+        Delegated rather than inherited. The base class returns ``None`` for backends with no
+        concept of an exit, which is right for them and wrong here: a wrapper around a proxied
+        driver reports the truth about itself and a lie about the fetch. ``ScrapeTool`` reads
+        this to warn about a split configuration, so the lie lands on the safe-looking side --
+        a genuinely proxied sidecar wrapped in this class looked unconfigured, and the warning
+        it should have suppressed fired while the one it should have raised did not.
+        """
+        return self._inner.egress
+
     async def render(
         self,
         url: str,
@@ -156,6 +169,7 @@ class NetworkCaptureDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through the inner driver and synthesize HTML from its largest captured record list.
 
@@ -180,6 +194,10 @@ class NetworkCaptureDriver(ScrapeDriver):
         :ptype fragment_field: str | None
         :param link_selector: accepted for interface conformance; not applicable
         :ptype link_selector: str | None
+        :param session_state: a human's exported cookies and storage, forwarded to the inner
+            driver. Whether it is honoured is the inner driver's business -- this one neither
+            applies nor withholds it, which is the only behaviour that keeps a wrapper honest
+        :ptype session_state: dict[str, Any] | None
         :return: synthetic HTML built from the largest captured JSON record
             list, with the inner render's real status/final_url/timing
         :rtype: RenderedPage
@@ -187,8 +205,23 @@ class NetworkCaptureDriver(ScrapeDriver):
             body contains a usable record list
         """
         start = time.monotonic()
+        # Forwarded, not dropped. The inner driver is typically `NodriverSidecarDriver` --
+        # the one backend that can actually apply a human's solve -- so swallowing this here
+        # discarded a solved session at the exact point it would have worked, and the symptom
+        # is a capture that returns the login wall's XHR instead of the data's.
+        # Forwarded only when there IS one, for the same reason `ScrapeTool` passes it
+        # conditionally: the inner driver is INJECTED, so it may be an out-of-tree
+        # implementation written before this parameter existed, and passing it unconditionally
+        # makes every ordinary render through such a driver raise `TypeError`. Fixing that one
+        # layer up and reintroducing it here would have been the same bug wearing a wrapper.
+        extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
         page = await self._inner.render(
-            url, timeout=timeout, wait_for=wait_for, capture_network=True, nav_steps=nav_steps
+            url,
+            timeout=timeout,
+            wait_for=wait_for,
+            capture_network=True,
+            nav_steps=nav_steps,
+            **extra,
         )
 
         best: list[dict[str, Any]] | None = None

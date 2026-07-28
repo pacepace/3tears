@@ -20,12 +20,18 @@ assertion doesn't apply to it the same way).
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
+from threetears.scrape.drivers.api import ApiDriver
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
+from threetears.scrape.drivers.document import DocumentDriver
+from threetears.scrape.drivers.listing_detail import ListingDetailDriver
+from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
 _PAGE_HTML = "<html><body>contract test page</body></html>"
@@ -198,3 +204,333 @@ class TestScrapeDriverContract:
         )
 
         assert page.eval_results == [_CONTRACT_EVAL_RESULT]
+
+    @pytest.mark.parametrize("make_driver", _BACKENDS)
+    async def test_a_parametrized_backend_accepts_and_ignores_session_state(self, make_driver):
+        """The "accept the full signature, use what you need" rule, applied to a new parameter.
+
+        A backend that cannot restore a browser session has nothing to do with one, but it
+        must still ACCEPT it: the alternative is every caller branching on which driver it
+        happens to hold, which is the coupling this protocol exists to prevent. The same rule
+        already governs ``link_selector``, ``results_path`` and ``seen_urls``.
+
+        This covers the two backends this suite parametrizes, which is a behavioural check
+        against real objects. ``test_every_render_implementation_declares_session_state``
+        below covers all nine by signature, because constructing every composite backend here
+        would be a different and much heavier test than this file is for.
+        """
+        driver = make_driver()
+
+        page = await driver.render(
+            "https://example.gov/contract-page",
+            session_state={"cookies": [{"name": "cf_clearance", "value": "x", "domain": ".example.gov"}]},
+        )
+
+        assert isinstance(page, RenderedPage)
+
+    @pytest.mark.parametrize("make_driver", _BACKENDS)
+    async def test_session_state_defaults_to_absent(self, make_driver):
+        """Every pre-existing caller keeps working without knowing this parameter exists."""
+        driver = make_driver()
+        page = await driver.render("https://example.gov/contract-page")
+        assert isinstance(page, RenderedPage)
+
+
+def test_every_render_implementation_declares_session_state():
+    """All nine ``render`` implementations, by signature rather than by construction.
+
+    The parametrized contract tests above instantiate two representative backends. The other
+    seven are composites and wrappers whose construction needs collections, HTTP clients or a
+    parent driver, so exercising them here would make this file about fixtures rather than
+    about the contract. A signature check is weaker than a call, but it covers the whole set
+    and it catches the failure that actually happens: a new parameter added to the protocol
+    and to some of its implementers, leaving one that raises ``TypeError`` the first time a
+    caller passes it -- at runtime, in whichever deployment happens to use that backend.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import threetears.scrape.drivers as drivers_pkg
+    from threetears.scrape.driver import ScrapeDriver
+
+    checked: list[str] = []
+    modules = [m.name for m in pkgutil.iter_modules(drivers_pkg.__path__)]
+    for mod_name in modules:
+        module = importlib.import_module(f"threetears.scrape.drivers.{mod_name}")
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != module.__name__:
+                continue
+            render = getattr(obj, "render", None)
+            if render is None or not callable(render):
+                continue
+            params = inspect.signature(render).parameters
+            if "url" not in params:
+                continue
+            checked.append(f"{mod_name}.{obj.__name__}")
+            assert "session_state" in params, (
+                f"{mod_name}.{obj.__name__}.render does not accept session_state, so a caller "
+                f"passing it gets a TypeError at runtime rather than a driver that ignores it"
+            )
+
+    assert "session_state" in inspect.signature(ScrapeDriver.render).parameters
+    assert len(checked) >= 8, f"the sweep only found {len(checked)} render implementations: {checked}"
+
+
+# ---------------------------------------------------------------------------
+# Reporting the exit back. A driver that accepts an egress and does not report
+# it leaves `ScrapeTargetHealth.last_egress` empty for every target it serves,
+# which collapses "walled" and "walled FROM THIS EXIT" -- the distinction that
+# column and its migration exist for. ApiDriver honoured an exit and reported
+# nothing for exactly as long as nothing asked it to.
+# ---------------------------------------------------------------------------
+
+
+async def _render_api_driver(egress):
+    return await ApiDriver(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=[{"a": 1}]))),
+        egress=egress,
+    ).render("https://example.gov/api", results_path="")
+
+
+async def _render_sidecar_driver(egress):
+    def _handler(_request: httpx.Request) -> httpx.Response:
+        # The sidecar reports the exit itself, so a driver test that invented the value would
+        # assert its own arithmetic. This echoes what a sidecar honouring the request would say.
+        body = json.loads(_request.content)
+        return httpx.Response(
+            200,
+            json={
+                "html": _PAGE_HTML,
+                "status": 200,
+                "final_url": _PAGE_FINAL_URL,
+                "timing_ms": 1.0,
+                "egress": body.get("egress_name"),
+            },
+        )
+
+    return await NodriverSidecarDriver(
+        "http://sidecar:8088", client=httpx.AsyncClient(transport=httpx.MockTransport(_handler)), egress=egress
+    ).render("https://example.gov/x")
+
+
+_REPORTS_ITS_EXIT = {
+    "api": _render_api_driver,
+    "nodriver_sidecar": _render_sidecar_driver,
+}
+
+
+@pytest.mark.parametrize("module_name", sorted(_REPORTS_ITS_EXIT), ids=sorted(_REPORTS_ITS_EXIT))
+async def test_a_driver_given_an_exit_reports_it_back(module_name: str) -> None:
+    """Both halves: a configured exit comes back by name, and an unconfigured one comes back None.
+
+    Asserting only the first would pass against a driver that hard-coded any string; asserting
+    only the second would pass against one that reported nothing at all.
+    """
+    from threetears.core.egress import ProxyEgress
+
+    tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+    assert (await _REPORTS_ITS_EXIT[module_name](tor)).egress == "tor", (
+        f"the {module_name} driver honours an exit but does not say which, so every health row "
+        f"it produces records no exit at all"
+    )
+    assert (await _REPORTS_ITS_EXIT[module_name](None)).egress is None, (
+        f"the {module_name} driver claims an exit nobody configured"
+    )
+
+
+def test_every_driver_that_accepts_an_exit_is_covered_above() -> None:
+    """The list is checked rather than maintained by hope.
+
+    A driver gaining an `egress` parameter is exactly when this contract starts applying to it,
+    and that is the moment nobody thinks to add it to a hand-written list. The sweep fails then,
+    naming the driver, instead of the omission surfacing as an empty column months later.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import threetears.scrape.drivers as drivers_pkg
+
+    accepting: set[str] = set()
+    for mod_name in (m.name for m in pkgutil.iter_modules(drivers_pkg.__path__)):
+        module = importlib.import_module(f"threetears.scrape.drivers.{mod_name}")
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj.__module__ != module.__name__ or not callable(getattr(obj, "render", None)):
+                continue
+            if "egress" in inspect.signature(obj.__init__).parameters:
+                accepting.add(mod_name)
+
+    assert accepting == set(_REPORTS_ITS_EXIT), (
+        "these drivers take an egress but no round-trip test asserts they report it: "
+        f"{sorted(accepting - set(_REPORTS_ITS_EXIT))}; and these are covered but no longer take "
+        f"one: {sorted(set(_REPORTS_ITS_EXIT) - accepting)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dropping a human's solve, tested at the level of the BASE CLASS rather than
+# per driver. Three consecutive reviews found this defect one driver at a time:
+# the behaviour was added to whichever backend a review named, and the others
+# kept discarding a person's credential in silence. Asserting it against every
+# accept-and-ignore backend at once is what stops the fourth round.
+# ---------------------------------------------------------------------------
+
+_DROPS_THE_SOLVE = [
+    pytest.param(lambda: ApiDriver(), "api", id="api"),
+    pytest.param(lambda: DocumentDriver(), "document", id="document"),
+    pytest.param(
+        lambda: ListingDetailDriver(
+            row_selector="tr",
+            listing_field_columns={0: "employer"},
+            detail_link_column=0,
+            detail_field_labels={"Employer": "employer"},
+        ),
+        "listing_detail",
+        id="listing-detail",
+    ),
+    pytest.param(lambda: NodriverDownloadDriver("http://sidecar:8088"), "nodriver_download", id="nodriver-download"),
+    pytest.param(lambda: CamoufoxDriver(), "camoufox", id="camoufox"),
+]
+
+
+class TestADroppedSolveIsNeverSilent:
+    """Every backend that cannot apply a session must say so, not just the reviewed one."""
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_it_warns_when_a_solve_is_dropped(self, caplog, make_driver, module: str) -> None:
+        """Asserted on the emitted record, so deleting the call fails this.
+
+        The failure being excluded is silent: a successful render is returned, the page is the
+        login wall, extraction fails, and the target is escalated to a person who already
+        cleared it.
+        """
+        driver = make_driver()
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            driver._warn_dropped_session_state(
+                "https://example.gov/x", logging.getLogger(f"threetears.scrape.drivers.{module}")
+            )
+
+        assert [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()], (
+            f"{module} dropped a human's solve without saying so; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
+        )
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_one_origin_is_reported_once_however_many_documents_it_has(self, caplog, make_driver, module: str) -> None:
+        """Per render is a storm: `MultiDocumentDriver` forwards a solve once per document, so
+        one listing emitted a warning per document up to the cap, and a warning that repeats
+        that way trains its reader to filter it out."""
+        driver = make_driver()
+        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            for i in range(5):
+                driver._warn_dropped_session_state(f"https://example.gov/doc{i}.pdf", log)
+
+        emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
+        assert len(emitted) == 1, f"{module} warned {len(emitted)} times for one origin"
+        # The TAIL, not just the stem. This is the only operator-visible statement of the
+        # cardinality, and it went stale silently once already: every assertion in this branch
+        # matched on "cannot apply it" and none on what followed, so the message kept promising
+        # "once per driver instance" after the behaviour became once per site -- telling an
+        # operator that a second site's silence was expected.
+        assert "once per site" in emitted[0].getMessage(), (
+            f"the message describes a cardinality the code no longer has: {emitted[0].getMessage()}"
+        )
+
+    @pytest.mark.parametrize(("make_driver", "module"), _DROPS_THE_SOLVE)
+    def test_a_second_site_is_still_reported(self, caplog, make_driver, module: str) -> None:
+        """The opposite failure, and the one that is silent rather than noisy.
+
+        `ScrapeTool` builds its driver map once and reuses it for the life of the process, so
+        deduping per driver INSTANCE meant per process: the first target warned and every later
+        one was rendered logged-out with nothing said at all. An origin is what a human's solve
+        belongs to, so it is the unit that makes this true exactly once per site.
+        """
+        driver = make_driver()
+        log = logging.getLogger(f"threetears.scrape.drivers.{module}")
+        with caplog.at_level("WARNING", logger=f"threetears.scrape.drivers.{module}"):
+            driver._warn_dropped_session_state("https://first.example/a", log)
+            driver._warn_dropped_session_state("https://second.example/a", log)
+
+        emitted = [r for r in driver_warnings(caplog, module) if "cannot apply it" in r.getMessage()]
+        assert len(emitted) == 2, (
+            f"{module} reported {len(emitted)} of 2 sites; a driver reused across targets goes "
+            "silent after the first, which is the failure this cardinality exists to avoid"
+        )
+
+    def test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is(self, caplog) -> None:
+        """It IS sidecar-backed, so the default advice names what it already is.
+
+        The endpoint it posts to carries no session state, which is the actual reason and the
+        actual remedy -- generic advice that happens to be wrong is worse than none, because a
+        reader who follows it changes nothing and concludes the warning was noise.
+        """
+        driver = NodriverDownloadDriver("http://sidecar:8088")
+        log = logging.getLogger("threetears.scrape.drivers.nodriver_download")
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.nodriver_download"):
+            driver._warn_dropped_session_state("https://example.gov/f.pdf", log)
+
+        message = driver_warnings(caplog, "nodriver_download")[0].getMessage()
+        assert "/v1/download" in message, f"the remedy was not made specific to this driver: {message}"
+        assert "Use the nodriver sidecar driver" not in message
+
+
+async def test_the_dropped_solve_memory_does_not_grow_without_bound() -> None:
+    """The resource guard, which was the one added branch nothing asserted.
+
+    A long-lived process scraping a wide set of sites would otherwise hold one origin string
+    per site it had ever touched, forever -- the same leak the robots gate had to fix. Deleting
+    the cap left the suite green while the CHANGELOG claimed the bound, which is the shape where
+    a documented guarantee quietly stops being true.
+
+    Asserted on the observed size after exceeding the cap, not on the constant: a bound that is
+    configured and never enforced is exactly the failure worth excluding.
+    """
+    from threetears.scrape import driver as driver_mod
+
+    d = ApiDriver()
+    log = logging.getLogger("threetears.scrape.drivers.api")
+    for i in range(driver_mod._MAX_WARNED_ORIGINS + 25):
+        d._warn_dropped_session_state(f"https://s{i}.example/a", log)
+
+    assert d._warned_dropped_origins is not None
+    assert len(d._warned_dropped_origins) <= driver_mod._MAX_WARNED_ORIGINS, (
+        f"remembered {len(d._warned_dropped_origins)} origins against a cap of "
+        f"{driver_mod._MAX_WARNED_ORIGINS}; the set grows with every site the process ever sees"
+    )
+
+
+def test_urls_with_no_parseable_origin_stay_distinct() -> None:
+    """The fallback branch the docstring's whole design argument rests on, and it had no test.
+
+    `robots._origin_of` returns None for these, deliberately, so it can decline to apply a
+    site's rules to something that is not a site. Here the value is only ever a dedupe key, so
+    None would collapse every unparseable url into ONE bucket -- the first would be reported
+    and the rest silenced. Falling back to the url keeps them distinct, which is what makes the
+    two helpers' different return types a decision rather than an accident.
+    """
+    from threetears.scrape.driver import _origin_of
+
+    assert _origin_of("not a url at all") == "not a url at all"
+    assert _origin_of("file.pdf") != _origin_of("other.pdf"), (
+        "two unparseable urls collapsed to one dedupe key, so only the first would be reported"
+    )
+    assert _origin_of("https://example.gov/a") == _origin_of("https://example.gov/b"), (
+        "the ordinary case still keys on the origin rather than the path"
+    )
+
+
+async def test_two_unparseable_urls_are_each_reported(caplog) -> None:
+    """The behaviour that branch exists for, asserted through the warning rather than the helper."""
+    driver = ApiDriver()
+    log = logging.getLogger("threetears.scrape.drivers.api")
+
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.api"):
+        driver._warn_dropped_session_state("garbage-one", log)
+        driver._warn_dropped_session_state("garbage-two", log)
+
+    emitted = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
+    assert len(emitted) == 2, (
+        f"reported {len(emitted)} of 2; unparseable urls collapsed into one dedupe key and "
+        "silenced everything after the first"
+    )

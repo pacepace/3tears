@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
-from threetears.mcp.rbac import McpToolGrantCollection, McpToolGrantEntity
+from threetears.mcp.rbac import McpToolGrantCollection
 
 
 def _make_collection() -> tuple[McpToolGrantCollection, Any]:

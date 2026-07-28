@@ -54,7 +54,11 @@ class Exemption:
     rationale: str
 
 
-_ENTRY_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$")
+# The symbol may be DOTTED. A domain whose violations are only meaningful when qualified
+# reports them that way -- dict-state names `Class.attr`, because the class is what the
+# entry is about and a bare attribute name is ambiguous within a module. A bare
+# identifier stays valid; this only widens what is accepted.
+_ENTRY_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*$")
 
 _MIN_RATIONALE_LENGTH = 30
 

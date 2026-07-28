@@ -54,7 +54,7 @@ from typing import Final
 
 from threetears.observe import get_logger
 
-from threetears.nats.client import NatsClient
+from threetears.nats.kv import KvCapable
 from threetears.nats.errors import KvError
 
 __all__ = ["LockHeld", "nats_distributed_lock"]
@@ -80,7 +80,7 @@ _DEFAULT_BUCKET: Final[str] = "scheduler-locks"
 
 @asynccontextmanager
 async def nats_distributed_lock(
-    client: NatsClient | None,
+    client: KvCapable | None,
     key: str,
     *,
     bucket_name: str = _DEFAULT_BUCKET,
@@ -109,7 +109,7 @@ async def nats_distributed_lock(
     NATS available.
 
     :param client: connected NATS client, or ``None`` to no-op
-    :ptype client: NatsClient | None
+    :ptype client: KvCapable | None
     :param key: lock key (per-resource identifier, e.g. ``"backup"``
         for a backup job or ``"agent_wake_tick"`` for the
         wake tick engine)

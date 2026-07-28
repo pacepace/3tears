@@ -329,3 +329,80 @@ class TestCircuitBreakerCallback:
         cb = CircuitBreaker("anthropic", failure_threshold=1)
         callback = cb.make_callback()
         callback.on_chat_model_start({}, [[]])  # does not raise
+
+
+class TestRestore:
+    """restore() is the seam for a breaker whose state lives in a durable store.
+
+    the state is in memory behind a threading.Lock, so a consumer that needs the
+    same circuit honoured across pods and restarts has to persist it elsewhere.
+    what it must NOT do is reimplement the transitions alongside that store --
+    two copies of a state machine are two copies that can disagree. these tests
+    pin that a restored breaker behaves as though it had reached that state here.
+    """
+
+    def test_a_restored_open_breaker_still_fast_fails(self) -> None:
+        """the whole point: the suppression survives the process boundary."""
+        cb = CircuitBreaker.restore(
+            "deepseek",
+            state=CircuitState.OPEN,
+            failure_count=5,
+            seconds_until_probe_permitted=30.0,
+            recovery_timeout_seconds=60.0,
+        )
+        assert cb.state == CircuitState.OPEN
+        with pytest.raises(CircuitOpenError) as exc:
+            cb.check()
+        assert exc.value.remaining_seconds == pytest.approx(30.0, abs=1.0)
+
+    def test_an_elapsed_recovery_window_promotes_to_half_open(self) -> None:
+        """zero or less means the durable "blocked until" moment has passed."""
+        cb = CircuitBreaker.restore(
+            "deepseek",
+            state=CircuitState.OPEN,
+            failure_count=5,
+            seconds_until_probe_permitted=0.0,
+            recovery_timeout_seconds=60.0,
+        )
+        cb.check()  # does not raise: this request IS the probe
+        assert cb.state == CircuitState.HALF_OPEN
+
+    def test_a_restored_breaker_trips_on_the_next_failure_past_the_threshold(self) -> None:
+        """the threshold rule is applied to the RESTORED count, not to a fresh zero.
+
+        without this, a caller storing the count durably would still have to
+        decide when to trip it -- which is the reimplementation this seam exists
+        to prevent.
+        """
+        cb = CircuitBreaker.restore("deepseek", state=CircuitState.CLOSED, failure_count=2, failure_threshold=3)
+        assert cb.state == CircuitState.CLOSED
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+        assert cb.failure_count == 3
+
+    def test_a_restored_half_open_breaker_closes_on_a_successful_probe(self) -> None:
+        cb = CircuitBreaker.restore("deepseek", state=CircuitState.HALF_OPEN, failure_count=4)
+        cb.record_success()
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+
+    def test_a_restored_half_open_breaker_reopens_on_a_failed_probe(self) -> None:
+        cb = CircuitBreaker.restore("deepseek", state=CircuitState.HALF_OPEN, failure_count=4)
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+
+    def test_no_probe_is_treated_as_in_flight_on_a_restored_breaker(self) -> None:
+        """an in-flight probe belongs to the process that issued it.
+
+        a different process cannot observe it, so restoring one would be a claim
+        this object has no way to check. a caller needing cross-pod single-probe
+        admission has to reach for a distributed primitive; documenting that
+        honestly beats pretending the flag carries.
+        """
+        cb = CircuitBreaker.restore("deepseek", state=CircuitState.HALF_OPEN, failure_count=4)
+        cb.check()  # admitted, because no probe is in flight in THIS process
+
+    def test_a_negative_failure_count_is_clamped(self) -> None:
+        """corrupt or hand-edited durable state must not produce a negative count."""
+        cb = CircuitBreaker.restore("deepseek", state=CircuitState.CLOSED, failure_count=-7)
+        assert cb.failure_count == 0

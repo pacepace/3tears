@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -69,6 +69,10 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
     """
 
     primary_key_column: str = "pod_id"
+    #: Declared rather than listed inline in `deserialize`, which is where they used to live --
+    #: as a bare tuple literal, invisible to anything that wanted to know which columns this
+    #: collection treats as timestamps.
+    datetime_columns: ClassVar[frozenset[str]] = frozenset({"date_last_heartbeat", "date_created", "date_updated"})
 
     def __init__(
         self,
@@ -314,13 +318,9 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :rtype: dict[str, Any]
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        for field_name in ("date_last_heartbeat", "date_created", "date_updated"):
-            value = raw.get(field_name)
-            if isinstance(value, str):
-                parsed = datetime.fromisoformat(value)
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=UTC)
-                raw[field_name] = parsed
+        # Timestamps are `BaseCollection`'s, driven by `datetime_columns`. The loop that used to
+        # sit here was the original of the three copies; the other two were written from it and
+        # then drifted.
         tools = raw.get("tools")
         if isinstance(tools, str):
             try:

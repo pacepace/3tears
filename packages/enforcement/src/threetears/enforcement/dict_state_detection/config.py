@@ -87,10 +87,15 @@ class DictStateAllowlistEntry:
         the offending assignment, as written in source. matched against
         :func:`~threetears.enforcement.common.ast_helpers.relative_posix_path`
         of the violation's file.
-    :ivar line: 1-based line number of the offending assignment. line
-        matching is precise — a refactor that moves the assignment to
-        a different line surfaces the entry as stale, which is the
-        correct outcome.
+    :ivar class_name: name of the class whose ``__init__`` holds the
+        assignment. the key is ``(file, class_name, attr_name)`` rather
+        than ``(file, line, attr_name)``: a line number is invalidated
+        by any edit ABOVE the assignment, so every entry in a long
+        allowlist would go stale each time an unrelated import was
+        added. the class is the thing the entry is actually about, and
+        it survives that. a genuine move — the attribute leaving the
+        class — still surfaces the entry as stale, which is the
+        outcome precise matching is for.
     :ivar attr_name: name of the ``self.<attr>`` being assigned. always
         starts with an underscore because the walker only flags
         single-leading-underscore attributes.
@@ -100,7 +105,7 @@ class DictStateAllowlistEntry:
     """
 
     file: str
-    line: int
+    class_name: str
     attr_name: str
     rationale: str
 
@@ -113,11 +118,11 @@ class DictStateAllowlistEntry:
         rationale = self.rationale.strip()
         if not rationale:
             raise AllowlistRationaleError(
-                f"{self.file}:{self.line}:{self.attr_name}: rationale must be non-empty",
+                f"{self.file}:{self.class_name}.{self.attr_name}: rationale must be non-empty",
             )
         if len(rationale) < _MIN_RATIONALE_LENGTH:
             raise AllowlistRationaleError(
-                f"{self.file}:{self.line}:{self.attr_name}: rationale "
+                f"{self.file}:{self.class_name}.{self.attr_name}: rationale "
                 f"must be at least {_MIN_RATIONALE_LENGTH} characters; "
                 f"got {len(rationale)}: {rationale!r}",
             )
@@ -130,7 +135,7 @@ class DictStateAllowlistEntry:
                 or lower.startswith(phrase + ",")
             ):
                 raise AllowlistRationaleError(
-                    f"{self.file}:{self.line}:{self.attr_name}: rationale "
+                    f"{self.file}:{self.class_name}.{self.attr_name}: rationale "
                     f"{rationale!r} matches blanket phrase {phrase!r}; "
                     f"rationales must be specific",
                 )

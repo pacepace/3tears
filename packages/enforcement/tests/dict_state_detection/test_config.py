@@ -57,7 +57,7 @@ class TestDictStateConfigOverrides:
     def test_explicit_allowlist(self, tmp_path: Path) -> None:
         entry = DictStateAllowlistEntry(
             file="src/x.py",
-            line=10,
+            class_name="Svc",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -70,7 +70,7 @@ class TestDictStateConfigOverrides:
     def test_explicit_known_violations(self, tmp_path: Path) -> None:
         entry = DictStateAllowlistEntry(
             file="src/x.py",
-            line=10,
+            class_name="Svc",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -86,7 +86,7 @@ class TestDictStateConfigOverrides:
         allow = (
             DictStateAllowlistEntry(
                 file="src/a.py",
-                line=5,
+                class_name="Svc",
                 attr_name="_a",
                 rationale=_VALID_RATIONALE,
             ),
@@ -94,7 +94,7 @@ class TestDictStateConfigOverrides:
         known = (
             DictStateAllowlistEntry(
                 file="src/b.py",
-                line=7,
+                class_name="Svc",
                 attr_name="_b",
                 rationale=_VALID_RATIONALE,
             ),
@@ -119,7 +119,7 @@ class TestAllowlistRationaleValidation:
     def test_sufficient_rationale_accepted(self) -> None:
         DictStateAllowlistEntry(
             file="src/x.py",
-            line=10,
+            class_name="Svc",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -128,7 +128,7 @@ class TestAllowlistRationaleValidation:
         with pytest.raises(AllowlistRationaleError, match="non-empty"):
             DictStateAllowlistEntry(
                 file="src/x.py",
-                line=10,
+                class_name="Svc",
                 attr_name="_cache",
                 rationale="",
             )
@@ -137,7 +137,7 @@ class TestAllowlistRationaleValidation:
         with pytest.raises(AllowlistRationaleError, match="non-empty"):
             DictStateAllowlistEntry(
                 file="src/x.py",
-                line=10,
+                class_name="Svc",
                 attr_name="_cache",
                 rationale="    ",
             )
@@ -146,7 +146,7 @@ class TestAllowlistRationaleValidation:
         with pytest.raises(AllowlistRationaleError, match="at least"):
             DictStateAllowlistEntry(
                 file="src/x.py",
-                line=10,
+                class_name="Svc",
                 attr_name="_cache",
                 rationale="too short",
             )
@@ -155,7 +155,7 @@ class TestAllowlistRationaleValidation:
         with pytest.raises(AllowlistRationaleError, match="blanket"):
             DictStateAllowlistEntry(
                 file="src/x.py",
-                line=10,
+                class_name="Svc",
                 attr_name="_cache",
                 rationale="tests need this for the integration suite",
             )
@@ -165,7 +165,7 @@ class TestAllowlistRationaleValidation:
         with pytest.raises(AllowlistRationaleError, match="blanket"):
             DictStateAllowlistEntry(
                 file="src/x.py",
-                line=10,
+                class_name="Svc",
                 attr_name="_cache",
                 rationale="temporary, until the next refactor lands",
             )
@@ -173,7 +173,7 @@ class TestAllowlistRationaleValidation:
     def test_entry_is_frozen(self) -> None:
         entry = DictStateAllowlistEntry(
             file="src/x.py",
-            line=10,
+            class_name="Svc",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )

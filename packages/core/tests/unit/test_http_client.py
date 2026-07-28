@@ -261,3 +261,72 @@ def test_breaker_spy_satisfies_protocol() -> None:
     # CircuitBreakerLike, and so is the real reuse target.
     assert isinstance(_BreakerSpy(), CircuitBreakerLike)
     assert isinstance(CircuitBreaker(provider_name="x"), CircuitBreakerLike)
+
+
+class TestEgressWiring:
+    """The one transport, leaving by a configured exit."""
+
+    def test_an_egress_driver_supplies_the_transport(self) -> None:
+        """This is the reuse the seam exists for: httpx proxying IS a transport, and
+        ``TracedHttpClient`` already had a transport seam, so an exit needed no new plumbing."""
+        from threetears.core.egress import ProxyEgress
+        from threetears.core.http_client import TracedHttpClient
+
+        client = TracedHttpClient(
+            upstream_base_url="https://upstream.example",
+            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+        )
+        assert client.egress_name == "tor"
+
+        # The bound transport must be the PROXIED one, not merely "a transport". httpx binds a
+        # default transport regardless, so both `is not None` and `is not <other instance>`
+        # were true with the egress ignored entirely -- assertions that could not fail, on the
+        # one property this test exists for.
+        #
+        # httpx builds a different POOL for a proxied transport: `AsyncHTTPProxy` rather than
+        # `AsyncConnectionPool`, carrying the proxy url. That is the observable difference, so
+        # it is what gets asserted. Reaching into the pool is reaching into httpx's internals,
+        # which is worth it here: the alternative is an assertion that passes when the feature
+        # is deleted.
+        pool = client._client._transport._pool  # noqa: SLF001 -- the pool type IS the assertion
+        assert type(pool).__name__ != "AsyncConnectionPool", (
+            "the configured exit was ignored; this is the unproxied pool httpx builds by default"
+        )
+        # The scheme decides the pool class -- AsyncSOCKSProxy here, AsyncHTTPProxy for an
+        # http:// exit -- so the url is asserted rather than the class name, which is the part
+        # that says WHICH exit rather than merely that there is one.
+        assert "9050" in str(getattr(pool, "_proxy_url", "")), "proxied, but not through the configured exit"
+
+    def test_an_explicit_transport_wins_over_a_configured_egress(self) -> None:
+        """``transport`` is the documented test seam.
+
+        A test that binds one is asserting on what this client does with it; letting ambient
+        deployment configuration replace it would make the seam conditional on config, which
+        is the sort of thing that passes locally and behaves differently in production.
+        """
+        import httpx
+        from threetears.core.egress import ProxyEgress
+        from threetears.core.http_client import TracedHttpClient
+
+        pinned = httpx.MockTransport(lambda _req: httpx.Response(200))
+        client = TracedHttpClient(
+            upstream_base_url="https://upstream.example",
+            transport=pinned,
+            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+        )
+        assert client._client._transport is pinned  # noqa: SLF001
+
+    def test_no_egress_reports_nothing_and_direct_egress_reports_direct(self) -> None:
+        """The two facts stay apart: nobody configured an exit, versus somebody chose the default.
+
+        Both are asserted together because the value of either is entirely in its contrast with
+        the other. An earlier convention returned ``"direct"`` for both, which made every row of
+        an unconfigured deployment indistinguishable from a deliberate choice of the default
+        route -- and :class:`DirectEgress` exists precisely so that choice can be stated.
+        """
+        from threetears.core.egress import DirectEgress
+        from threetears.core.http_client import TracedHttpClient
+
+        assert TracedHttpClient(upstream_base_url="https://upstream.example").egress_name is None
+        chosen = TracedHttpClient(upstream_base_url="https://upstream.example", egress=DirectEgress())
+        assert chosen.egress_name == "direct"

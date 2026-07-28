@@ -4,13 +4,37 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scrape"
-version = "0.19.4"
+version = "0.20.0"
 description = "AI-driven, self-healing web scraping: pluggable render backends + LLM-proposed extraction candidates validated and judged against real page content, never hand-rolled per-site parsers"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
-license = "MIT"
-license-files = ["LICENSE"]
+# Compound, and the only compound one in this family, because this is the only package that
+# redistributes somebody else's files: `src/threetears/scrape/operator_assets/novnc/` is noVNC
+# v1.7.0, vendored unmodified so a platform mounting the operator router gets a working display
+# instead of homework. MPL-2.0 is file-level copyleft -- it does not reach the MIT code around
+# it -- but a wheel whose metadata said plain "MIT" would be claiming those files are MIT, and
+# they are not.
+#
+# LicenseRef-noVNC-DES is `core/crypto/des.js`, which carries two bespoke permissive grants
+# (AT&T Laboratories Cambridge 1999, Widget Workshop 1996) that match no listed SPDX licence.
+# PEP 639's LicenseRef form is how you name one honestly.
+#
+# The full provenance, including the digest that makes "unmodified" checkable, is in
+# `src/threetears/scrape/operator_assets/novnc-provenance.json`.
+license = "MIT AND MPL-2.0 AND LicenseRef-noVNC-DES"
+# Every licence text travels into the wheel's `.dist-info/licenses/`, alongside the copies that
+# sit next to the code itself. Both, deliberately: the in-tree copies are what the MPL means by
+# the notice travelling with the files, and the dist-info copies are what tooling reads.
+license-files = [
+    "LICENSE",
+    "src/threetears/scrape/operator_assets/novnc/LICENSE.txt",
+    "src/threetears/scrape/operator_assets/novnc/AUTHORS",
+    "src/threetears/scrape/operator_assets/novnc/docs/LICENSE.MPL-2.0",
+    "src/threetears/scrape/operator_assets/novnc/docs/LICENSE.BSD-2-Clause",
+    "src/threetears/scrape/operator_assets/novnc/docs/LICENSE.BSD-3-Clause",
+    "src/threetears/scrape/operator_assets/novnc/vendor/pako/LICENSE",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
@@ -21,13 +45,13 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.19.0,<0.20.0",
+    "3tears>=0.20.0,<0.21.0",
     # drivers/document.py's DocumentDriver reuses parse_document to feed
     # PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
     # targets already use.
-    "3tears-agent-tools[document]>=0.19.0,<0.20.0",
-    "3tears-models>=0.19.0,<0.20.0",
-    "3tears-observe>=0.19.0,<0.20.0",
+    "3tears-agent-tools[document]>=0.20.0,<0.21.0",
+    "3tears-models>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "httpx[socks]>=0.27",
     # extraction.py's vision-extraction path builds a multimodal
     # HumanMessage directly -- an explicit dependency rather than relying on
@@ -35,6 +59,7 @@ dependencies = [
     "langchain-core>=0.3",
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    "uuid-utils",  # uuid7 ids (scrape.collections, .migrations)
     # extraction.py needs a CSS-selector engine to execute candidate
     # extraction strategies (structural validation + recipe reuse on later
     # fetches, both without an LLM call). MIT-licensed, pure-Python when
@@ -57,6 +82,29 @@ dependencies = [
     "playwright<1.61",
 ]
 
+[project.optional-dependencies]
+# reprobe.py books a blocked target's next probe as a scheduled-jobs
+# `relative_delay` job, for a caller that is event-driven rather than
+# polling. Optional because 3tears-scheduled-jobs brings NATS and
+# APScheduler with it, and a polling caller needs none of that: its next
+# poll is the re-probe, gated by `blocked_until` on the health row.
+# circuit.py depends on the two-method ReprobeScheduler Protocol, never on
+# this package, so nothing in the default install imports it.
+reprobe = ["3tears-scheduled-jobs>=0.20.0,<0.21.0"]
+
+# operator.py mounts the human-handover surface into a consuming platform's own
+# FastAPI app: the operator page, the noVNC client, and the WebSocket that
+# relays RFB from the display. Optional because a deployment that never needs a
+# human never needs a web framework, and this package is a library everywhere
+# else -- nothing here runs a server, it hands the platform a router to mount.
+#
+# `3tears-nats` because control messages route to whichever pod holds the
+# display over a subject keyed on the session, rather than by addressing pods.
+hitl = [
+    "fastapi>=0.115",
+    "3tears-nats>=0.20.0,<0.21.0",
+]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 
@@ -67,4 +115,6 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-tools = { workspace = true }
 3tears-models = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
+3tears-scheduled-jobs = { workspace = true }

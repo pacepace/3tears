@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
@@ -1339,3 +1339,64 @@ class TestStorageAgnosticL3Contract:
         # delete → delete_from_store removes it from the non-SQL durable tier
         await coll.delete("g1")
         assert "g1" not in l3_rows
+
+
+class TestCorruptL2EntryFallsThroughToL3:
+    """A cached value that will not decode is a cache miss, not a failed read.
+
+    L2 is a cache and L3 is authoritative, so a corrupt entry must not be able to break a
+    lookup that L3 could answer. The two alternatives were both worse and both plausible:
+    letting the decode error propagate turns one poisoned key into a failed read, and handing
+    back the undecoded value gives the caller a `str` in a column it declared as `datetime`,
+    which fails far away and usually at the database border.
+
+    Three packages had each written their own rehydration before this moved to the base, and
+    all three answered this question differently. This is the answer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_corrupt_timestamp_in_l2_is_served_from_l3_instead(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        class _Timestamped(StubCollection):
+            datetime_columns = frozenset({"date_created"})
+
+        nats = _make_nats_mock()
+        good = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10, "date_created": good}}
+        coll = _Timestamped(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        # A poisoned L2 entry: right key, right shape, one value that will not decode.
+        nats.store[coll.l2_key("e1")] = json.dumps(
+            {"id": "e1", "name": "FromCache", "score": 99, "date_created": "not-a-timestamp"}
+        ).encode()
+
+        entity = await coll.get("e1")
+
+        assert entity is not None, "a corrupt cache entry broke a read that L3 could serve"
+        assert entity.name == "Alice", "the corrupt L2 row was served instead of falling through"
+
+    @pytest.mark.asyncio
+    async def test_a_decodable_l2_entry_is_still_served_from_l2(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """The negative half. Without it, a base that always fell through to L3 would pass.
+
+        That failure mode is invisible in behaviour and expensive in load, which is exactly the
+        kind that survives.
+        """
+
+        class _Timestamped(StubCollection):
+            datetime_columns = frozenset({"date_created"})
+
+        nats = _make_nats_mock()
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = _Timestamped(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        nats.store[coll.l2_key("e1")] = json.dumps(
+            {"id": "e1", "name": "FromCache", "score": 99, "date_created": "2026-07-26T12:00:00+00:00"}
+        ).encode()
+
+        entity = await coll.get("e1")
+
+        assert entity is not None
+        assert entity.name == "FromCache", "a healthy L2 entry was bypassed"

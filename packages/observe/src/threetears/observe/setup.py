@@ -168,7 +168,13 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     try:
         trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
     except AttributeError:
-        pass
+        # The private guard this reaches into was renamed or removed by an SDK upgrade. The
+        # set_tracer_provider below then keeps whatever provider was installed first, so tracing
+        # quietly stops reaching our exporter -- the one failure here that has to be loud.
+        logger.warning(
+            "could not reset the OTel set-once guard; set_tracer_provider may be a no-op",
+            extra={"extra_data": {"guard": "trace._TRACER_PROVIDER_SET_ONCE._done"}},
+        )
     trace.set_tracer_provider(provider)
     _tracer_provider = provider
     _shutdown_called = False
@@ -275,19 +281,32 @@ def shutdown_telemetry() -> None:
 
     try:
         _tracer_provider.force_flush(timeout_millis=2000)
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
+        # The buffered spans did not make it to the exporter, so this process's last traces are
+        # gone. Shutdown still proceeds; the operator just needs to know the tail is missing.
+        logger.warning(
+            "OTel force_flush failed; buffered spans were dropped",
+            extra={"extra_data": {"error": str(exc)}},
+        )
 
     try:
         _tracer_provider.shutdown()
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 -- shutdown continues regardless
+        logger.warning(
+            "OTel provider shutdown failed; exporter resources may not be released",
+            extra={"extra_data": {"error": str(exc)}},
+        )
 
     # Reset the global provider so new init_telemetry calls work
     try:
         trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
     except AttributeError:
-        pass
+        # Same private guard as init_telemetry: without the reset a later init_telemetry cannot
+        # install its provider, so tracing never comes back after this shutdown.
+        logger.warning(
+            "could not reset the OTel set-once guard; a later init_telemetry may be a no-op",
+            extra={"extra_data": {"guard": "trace._TRACER_PROVIDER_SET_ONCE._done"}},
+        )
     trace.set_tracer_provider(NoOpTracerProvider())
     _tracer_provider = None
 

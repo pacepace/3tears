@@ -8,12 +8,25 @@ no LLM call at all (just re-executing its stored selectors); only when
 generation re-run, survivors get compared by an LLM judge against the real
 page content, and the winner is persisted as the new recipe.
 
-**Exception: ``StrategyType`` ``"per_document"``** (2026-07-15) has no
-cached-recipe cycle at all -- some real multi-document
-targets (independently-worded documents sharing no template, see
-``drivers/multi_document.py``) genuinely cannot be served by a pattern
-learned once and reused; every document gets its own fresh LLM extraction
-call on every poll instead (:func:`_run_per_document_extraction`).
+**Two exceptions, and they are exceptions to the whole cycle rather than variations
+of it: ``StrategyType`` ``"per_document"`` and ``"multi_row_vision"``.** Neither has
+a cached pattern to reuse, so neither can make a poll free, and each persists a
+marker ``ScrapeRecipe`` for operational visibility rather than for reuse -- a recipe
+row existing is not a recipe being reused. ``multi_row_vision``'s reason is its own
+(``find_tables()``, the text substrate a pattern would be cached against, fails on
+its table); see :func:`_run_multi_row_vision_extraction`, which costs an extraction
+call AND an unconditional grounding judge on every poll.
+
+``"per_document"`` (2026-07-15) has no cached-recipe cycle at all -- some real
+multi-document targets (independently-worded documents sharing no template, see
+``drivers/multi_document.py``) genuinely cannot be served by a pattern learned once
+and reused; every document gets its own fresh extraction on every poll instead, plus
+an unconditional grounding judge. The extraction's cost depends on the document's
+shape: a born-digital one is chunked by field count, so it can be more than one call
+past the chunk size, while an OCR'd one is a single vision call over its images
+whatever the schema. So the floor is two calls per document -- one extraction, one
+judge -- and the ceiling scales with your schema
+(:func:`_run_per_document_extraction`).
 """
 
 from __future__ import annotations
@@ -116,11 +129,11 @@ DEFAULT_FAILURE_THRESHOLD = 3
 #: Default candidate count per (re)generation round.
 DEFAULT_CANDIDATE_COUNT = 3
 
-#: Hard outer deadline for ONE document's ``extract_fields_directly`` call inside
+#: Hard outer deadline for ONE document's extraction inside
 #: ``"per_document"`` StrategyType (:func:`_run_per_document_extraction`) -- live-
 #: reproduced (a real West Virginia document): the underlying chat
 #: client can hang well past its own configured per-attempt timeout with zero
-#: further retry activity, so ``extract_fields_directly``'s own *timeout*/*attempts*
+#: further retry activity, so the extractor's own *timeout*/*attempts*
 #: parameters alone are not a reliable bound. 90s covers every well-behaved case
 #: seen live (a successful call takes single-digit seconds; a well-behaved retry
 #: cycle through several failed attempts still lands well under a minute) with
@@ -545,8 +558,9 @@ async def _resolve_failure_verdict(
     re-asks every poll. That is deliberately not solved by normalising ids out of the
     fingerprint, which would put vendor-shaped pattern matching back into the one place this
     design removed it and would suppress real content changes that happen to look like ids.
-    What bounds a walled target is not fetching it every poll -- the circuit backoff that
-    consumes ``blocked_until``, which this does not implement.
+    What bounds a walled target is not fetching it every poll, which is
+    :class:`threetears.scrape.circuit.TargetCircuit`'s job at the fetch boundary rather than
+    this function's -- by the time a page reaches here it has already been paid for.
 
     ``None`` means "no opinion", and every caller must treat it as exactly today's
     behaviour. It is returned when there is no health store to consult, when the page is
@@ -1045,7 +1059,7 @@ async def _judge_row_candidates(
     """Structured-output judge call for row-set candidates, retried on transient failure.
 
     Shares :func:`_judge_candidates`'s retry/logging shape via the shared
-    :func:`_judge` (backlog SCR-K7M3, closed 2026-07-14). The multi-row judge
+    :func:`_judge`. The multi-row judge
     was first written as a deliberate copy of the single-record one rather
     than a shared abstraction -- two callers did not justify the indirection.
     A third judge use (per-document grounding) is what tipped it: at that
@@ -1364,8 +1378,12 @@ async def _run_per_document_extraction(
     judge_model_id: str,
 ) -> ScrapeExtraction:
     """``"per_document"`` StrategyType: no cached pattern is possible (see that
-    Literal's own comment) -- every document gets a fresh, independent LLM
-    extraction call, every single poll, never a reuse-without-an-LLM-call path.
+    Literal's own comment) -- every document gets a fresh, independent extraction
+    AND an unconditional grounding judge, every single poll, never a
+    reuse-without-an-LLM-call path. Two calls per document is the floor. A
+    born-digital document's extraction is chunked by field count, so it CAN cost more
+    -- past the chunk size, not below it: a two-field schema is one chunk and hits
+    the floor exactly. An OCR'd document is a single vision call whatever the schema.
 
     Still persists a marker ``ScrapeRecipe`` (``extraction_strategy={"strategy":
     "per_document"}``, no reusable pattern inside it) so ``consecutive_validation_
@@ -1666,10 +1684,18 @@ async def run_eval_loop_multi_row(
 
     The multi-row counterpart to :func:`run_eval_loop` -- extracts every matching
     record on the page (``structured_fields={"records": [...]}``), not a single set
-    of values. Reuses *target_id*'s existing recipe (no LLM call) while it's
-    healthy; once ``consecutive_validation_failures`` crosses *failure_threshold*,
-    regenerates candidates and consults the LLM judge for a new winner -- same
-    cadence as :func:`run_eval_loop`, just row-shaped throughout.
+    of values.
+
+    **The reuse below describes the ``css`` and ``regex`` strategies only.** This
+    function also dispatches ``per_document`` and ``multi_row_vision``, and neither
+    has a cached pattern to reuse: each pays LLM calls on every poll regardless of
+    how healthy its recipe row looks. Read *strategy_type* below before costing a
+    target from this paragraph.
+
+    For ``css``/``regex``: reuses *target_id*'s existing recipe (no LLM call) while
+    it's healthy; once ``consecutive_validation_failures`` crosses
+    *failure_threshold*, regenerates candidates and consults the LLM judge for a new
+    winner -- same cadence as :func:`run_eval_loop`, just row-shaped throughout.
 
     :param target_id: the target this fetch belongs to
     :ptype target_id: str
@@ -1696,7 +1722,7 @@ async def run_eval_loop_multi_row(
     :param strategy_type: ``"css"`` (row/field CSS selectors), ``"regex"``
         (a single pattern matched repeatedly via ``re.finditer`` against the
         page's plain text, one match per record), ``"per_document"`` (no
-        cached pattern at all -- a fresh LLM extraction call per document,
+        cached pattern at all -- a fresh extraction plus a grounding judge per document,
         every poll), or ``"multi_row_vision"`` (a single PDF whose own table
         structure defeats text-based extraction -- a vision read of the
         whole table, every record grounded before counting; see

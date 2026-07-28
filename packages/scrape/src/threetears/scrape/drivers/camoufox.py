@@ -75,6 +75,9 @@ def _decode_captured_body(raw: bytes) -> str | None:
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError, LookupError:
+            # NOSILENT: this loop IS the probe -- each candidate encoding is tried until one
+            # decodes, so a rejection is the expected answer for every candidate but the last.
+            # Exhausting them all is reported by the None below.
             continue
     return None
 
@@ -137,6 +140,7 @@ class CamoufoxDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Render *url* through a fresh, in-process Camoufox page.
 
@@ -164,6 +168,15 @@ class CamoufoxDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not
             applicable (only :class:`~threetears.scrape.drivers.multi_document.MultiDocumentDriver` uses it)
         :ptype link_selector: str | None
+        :param session_state: a human's exported cookies and storage. Accepted and NOT
+            applied -- unlike the other accept-and-ignore parameters above, this one is a
+            real gap rather than an inapplicability: this driver runs a browser, so reusing
+            a solved session is meaningful here and simply is not built. Only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver`
+            applies one today. Passing it here logs a warning rather than failing, because a
+            target that must be re-solved by a person is a worse outcome than one rendered
+            unauthenticated, but neither is what the caller asked for
+        :ptype session_state: dict[str, Any] | None
         :return: the rendered page's HTML, status, final URL, timing, (if
             requested) captured network calls, and any ``evaluate`` step results
         :rtype: RenderedPage
@@ -171,6 +184,13 @@ class CamoufoxDriver(ScrapeDriver):
             *wait_for* selector that never appears within *timeout*, or a
             nav step that can't be executed (``code="nav_step_failed"``)
         """
+        if session_state:
+            # Silence here was the actual defect: a caller handed over a session a person had
+            # spent real time solving, got a successful render back, and had no way to learn
+            # the page was fetched logged-out. The extraction then fails on a login wall and
+            # the target is escalated to a human who already did the work.
+            self._warn_dropped_session_state(url, log)
+
         browser = await self._ensure_browser()
         timeout_ms = timeout * 1000
         start = time.monotonic()

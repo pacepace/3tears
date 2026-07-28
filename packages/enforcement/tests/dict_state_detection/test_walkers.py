@@ -44,7 +44,7 @@ class TestDictLiteralDetection:
         assert len(violations) == 1
         v = violations[0]
         assert v.category == "dict_state_detection.dict_in_init"
-        assert v.symbol == "_cache"
+        assert v.symbol == "Foo._cache"
         assert v.line == 3
         assert "empty-dict literal" in v.reason
         assert "Foo._cache" in v.reason
@@ -60,7 +60,7 @@ class TestDictCallDetection:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_cache"
+        assert violations[0].symbol == "Foo._cache"
         assert "`dict()` call" in violations[0].reason
 
     def test_dict_call_with_args_not_flagged(self, tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ class TestOrderedDictCallDetection:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_cache"
+        assert violations[0].symbol == "Foo._cache"
         assert "`OrderedDict()` call" in violations[0].reason
 
 
@@ -103,7 +103,7 @@ class TestOrFallbackDetection:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_opts"
+        assert violations[0].symbol == "Foo._opts"
         assert "fallback" in violations[0].reason
 
     def test_or_with_non_dict_fallback_not_flagged(
@@ -132,7 +132,7 @@ class TestAnnotatedDetection:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_cache"
+        assert violations[0].symbol == "Foo._cache"
         assert "annotated empty-dict literal" in violations[0].reason
 
     def test_bare_dict_annotation_with_empty_value(
@@ -147,7 +147,7 @@ class TestAnnotatedDetection:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_cache"
+        assert violations[0].symbol == "Foo._cache"
 
     def test_dict_annotation_with_clean_value_not_flagged(
         self,
@@ -293,7 +293,7 @@ class TestNegatives:
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
-        assert violations[0].symbol == "_cache"
+        assert violations[0].symbol == "Foo._cache"
 
 
 # ------------------------------------------------------------------
@@ -316,7 +316,7 @@ class TestFilterAgainstAllowlist:
         assert len(violations) == 1
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -328,7 +328,7 @@ class TestFilterAgainstAllowlist:
         )
         assert true_v == []
         assert len(allowed) == 1
-        assert allowed[0].symbol == "_cache"
+        assert allowed[0].symbol == "Foo._cache"
 
     def test_known_violations_remove_matching_violation(
         self,
@@ -343,7 +343,7 @@ class TestFilterAgainstAllowlist:
         violations = find_dict_state_violations((src,), repo)
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -367,10 +367,10 @@ class TestFilterAgainstAllowlist:
             "class Foo:\n    def __init__(self) -> None:\n        self._cache = {}\n",
         )
         violations = find_dict_state_violations((src,), repo)
-        # wrong line number: walker reports line 3, allowlist references 99.
+        # wrong class: the walker reports Foo._cache, the allowlist names a different class.
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=99,
+            class_name="SomeOtherClass",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -397,7 +397,7 @@ class TestFilterAgainstAllowlist:
         assert len(violations) == 2
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_a",
             rationale=_VALID_RATIONALE,
         )
@@ -408,9 +408,9 @@ class TestFilterAgainstAllowlist:
             repo,
         )
         assert len(true_v) == 1
-        assert true_v[0].symbol == "_b"
+        assert true_v[0].symbol == "Foo._b"
         assert len(allowed) == 1
-        assert allowed[0].symbol == "_a"
+        assert allowed[0].symbol == "Foo._a"
 
 
 # ------------------------------------------------------------------
@@ -432,7 +432,7 @@ class TestStaleAllowlist:
         )
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -445,8 +445,8 @@ class TestStaleAllowlist:
         assert len(stale) == 1
         v = stale[0]
         assert v.category == "dict_state_detection.stale_allowlist"
-        assert v.symbol == "_cache"
-        assert v.line == 3
+        assert v.symbol == "Foo._cache"
+        assert v.line == 1
         assert "no longer matches" in v.reason
 
     def test_stale_known_violation_distinct_category(
@@ -461,7 +461,7 @@ class TestStaleAllowlist:
         )
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -484,7 +484,7 @@ class TestStaleAllowlist:
         )
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -499,13 +499,13 @@ class TestStaleAllowlist:
         )
         match = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
         stale = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=42,
+            class_name="Foo",
             attr_name="_phantom",
             rationale=_VALID_RATIONALE,
         )
@@ -516,7 +516,7 @@ class TestStaleAllowlist:
             repo,
         )
         assert len(result) == 1
-        assert result[0].symbol == "_phantom"
+        assert result[0].symbol == "Foo._phantom"
 
     def test_allowlist_and_known_violations_audited_separately(
         self,
@@ -530,13 +530,13 @@ class TestStaleAllowlist:
         )
         a = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_a",
             rationale=_VALID_RATIONALE,
         )
         b = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=4,
+            class_name="Foo",
             attr_name="_b",
             rationale=_VALID_RATIONALE,
         )
@@ -573,7 +573,7 @@ class TestMultiRoot:
         violations = find_dict_state_violations((a_src, b_src), tmp_path)
         assert len(violations) == 2
         symbols = sorted(v.symbol for v in violations)
-        assert symbols == ["_x", "_y"]
+        assert symbols == ["A._x", "B._y"]
 
 
 # ------------------------------------------------------------------
@@ -604,4 +604,4 @@ class TestMultipleInOneInit:
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 5
         symbols = sorted(v.symbol for v in violations)
-        assert symbols == ["_a", "_b", "_c", "_d", "_e"]
+        assert symbols == ["Foo._a", "Foo._b", "Foo._c", "Foo._d", "Foo._e"]

@@ -1,4 +1,4 @@
-"""Shared bounded-retry-on-structured-LLM-output helper (backlog SCR-K7M3).
+"""Shared bounded-retry-on-structured-LLM-output helper.
 
 The same retry/logging shape was independently duplicated across
 ``extraction.generate_candidates``/``generate_row_candidates``,

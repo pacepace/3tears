@@ -214,6 +214,7 @@ class ListingDetailDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch the listing at *url*, resolve each row's own detail page, merge, and return a synthetic table.
 
@@ -234,10 +235,18 @@ class ListingDetailDriver(ScrapeDriver):
         :param link_selector: accepted for interface conformance; not applicable
             (this driver's own *row_selector*/*detail_link_column* replace it)
         :ptype link_selector: str | None
+        :param session_state: accepted and NOT applied -- only
+            :class:`~threetears.scrape.drivers.nodriver_sidecar.NodriverSidecarDriver` can use a
+            human's exported cookies and storage. Supplying one here logs a warning (once per
+            SITE, not per call) rather than failing, because a target re-solved by a person is a
+            worse outcome than one rendered unauthenticated, but neither is what was asked for
+        :ptype session_state: dict[str, Any] | None
         :return: one synthetic ``<table>`` page, one row per successfully-resolved record
         :rtype: RenderedPage
         :raises ListingDetailDriverError: the listing fetch itself fails outright
         """
+        if session_state:
+            self._warn_dropped_session_state(url, log)
         start = time.monotonic()
         client = self._client
         owns_client = client is None

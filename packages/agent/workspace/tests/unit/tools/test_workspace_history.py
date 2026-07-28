@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition
-from threetears.core.security import SandboxDecision, SandboxDenied
+from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.workspace_history import (
     WorkspaceHistoryTool,
@@ -21,10 +21,8 @@ from _helpers.workspace_shims import (
     FakeWorkspaceCollection,
     FakeWorkspaceContext,
     FakeWorkspaceEntity,
-    FakeWorkspaceFile,
     FakeWorkspaceFileCollection,
     FakeWorkspaceFileVersionCollection,
-    FakeWorkspaceSandbox,
 )
 
 

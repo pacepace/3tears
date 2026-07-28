@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-iam"
+version = "0.20.0"
+description = "Identity and access primitives: OAuth2/OIDC, SAML, passwords, JWT sessions, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    # core supplies the crypto this package builds ON rather than beside:
+    # jwk_thumbprint/build_jwks/generate_signing_keypair (identity_token),
+    # ReplayGuard/RevocationGuard/WindowedCounter (coordination), and
+    # seal/open_secret (encryption) for TOTP seed material at rest. Forking
+    # any of those would give the platform two answers to the same question.
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
+    # the sensitive-action taxonomy. agent-acl's ImpersonationCategory and
+    # identity-core's SensitiveActionCategory declared the same six strings
+    # independently, each documenting that the copy existed only because no
+    # import path connected them. This package is that path, so the enum is
+    # imported here and the second declaration goes away.
+    "3tears-agent-acl>=0.20.0,<0.21.0",
+    # the KV adapters in threetears.iam.stores.nats_kv. Every state this
+    # package keeps (auth codes, OAuth state, single-use tickets, attempt
+    # counters) is short-lived and TTL'd, which is a KV bucket's job, not a
+    # table's -- and both first consumers already run NATS.
+    "3tears-nats[client]>=0.20.0,<0.21.0",
+    # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
+    # migrated in from an older system. bcrypt is verify-only here: nothing in
+    # this package ever WRITES a bcrypt hash.
+    "argon2-cffi>=25.1.0",
+    "bcrypt>=5.0.0",
+    # session tokens (EdDSA or HS256), DPoP proofs, and OIDC id_token
+    # verification. [crypto] pulls the asymmetric backends.
+    "pyjwt[crypto]>=2.8",
+    # Ed25519/EC key handling, and AES-256-GCM for TOTP seeds at rest.
+    "cryptography>=43.0",
+    # OIDC discovery, the OAuth2 token exchange, provider userinfo/profile
+    # fetches, and the k-anonymity breach-corpus range query. Used directly
+    # rather than through authlib: the flows here are small enough that a
+    # second OAuth framework would be more surface than saved code.
+    "httpx>=0.27",
+    # TOTP code generation/verification (RFC 6238).
+    "pyotp>=2.9",
+    # OIDC id_token verification. joserfc rather than pyjwt for this one path: it models a
+    # JWKS KeySet and a claims registry directly, which is what an id_token needs, and
+    # authlib's own jose module -- the obvious alternative -- is deprecated.
+    "joserfc>=1.0",
+    # SecretStr on the seed-sealing surface, and the type core's seal/open_secret speak.
+    # Declared directly rather than leaned on transitively: this package names it in a
+    # public signature, so it is a real dependency of this API, not an implementation detail.
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+# SAML drags pysaml2 AND the xmlsec1 SYSTEM binary in with it. A consumer that
+# only needs OAuth/OIDC should not inherit an apt-get line, so the SAML service
+# provider lives behind this extra and threetears.iam.saml raises a pointed
+# ImportError when it is missing.
+saml = [
+    "pysaml2>=7.5.0",
+    "defusedxml>=0.7",
+]
+# WebAuthn/passkey registration + assertion verification. Optional for the same
+# reason: a consumer doing password + OIDC only should not carry it.
+webauthn = [
+    "webauthn>=3.0",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-observe = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-nats = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.iam"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+# no [tool.pytest.ini_options] block: pytest's rootdir detection picks the
+# closest pyproject with that block, so a per-package one would hide the
+# workspace conftest.py and unregister the canonical pytest_plugins line.
+# inherit from the workspace instead.

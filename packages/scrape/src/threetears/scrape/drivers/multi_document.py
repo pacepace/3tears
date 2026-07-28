@@ -34,19 +34,18 @@ Each document's synthetic HTML is wrapped in a delimiting
 channel a per-document caller downstream (``eval_loop._run_per_document_extraction``)
 has into what any one sub-document actually was.
 
-**Revision (2026-07-15):** the first version of this design
-assumed ``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing
-pattern) would apply unmodified once documents were combined -- live-verified
-wrong. Regex/CSS strategies both assume one shared template repeated across
-every row on a page, learned once and cached forever; West Virginia's real
-documents are independently-worded business letters (a different employer's
-own prose per notice), sharing no boilerplate a single pattern could ever
-generalize across (verified: candidates each hardcoded one specific letter's
-exact wording, matching 1 of 10 real documents). ``extraction_strategy_type:
-per_document`` (``eval_loop.StrategyType``) is the correct fit instead: no
-cached pattern, a fresh, independent LLM extraction call per document, every
-poll -- ``extraction.split_notice_documents`` is this driver's own combined-page
-convention's other half.
+**Revision (2026-07-15):** the first version of this design assumed
+``extraction_strategy_type: regex`` (Pennsylvania/Michigan's existing pattern) would
+apply unmodified once documents were combined -- live-verified wrong. Regex/CSS
+strategies both assume one shared template repeated across every row on a page, learned
+once and cached forever; West Virginia's real documents are independently-worded
+business letters (a different employer's own prose per notice), sharing no boilerplate a
+single pattern could ever generalize across (verified: candidates each hardcoded one
+specific letter's exact wording, matching 1 of 10 real documents).
+``extraction_strategy_type: per_document`` (``eval_loop.StrategyType``) is the correct
+fit instead: no cached pattern, a fresh, independent extraction per document plus a
+grounding judge for each, every poll -- ``extraction.split_notice_documents`` is this
+driver's own combined-page convention's other half.
 
 **Revision (2026-07-16):** per_document's own OCR'd-text path
 (``extraction.extract_fields_directly_chunked``) turned out unreliable on real
@@ -224,6 +223,22 @@ class MultiDocumentDriver(ScrapeDriver):
         """Stable string key for this driver."""
         return "multi_document"
 
+    @property
+    def egress(self) -> object | None:
+        """The document driver's exit.
+
+        Delegated for the reason given on :meth:`NetworkCaptureDriver.egress`: a wrapper that
+        inherited the base class's ``None`` would report itself as unproxied while every
+        document it fetches went out through a configured exit, and ``ScrapeTool`` reads this
+        to decide whether a configuration is split.
+
+        The listing fetch is this class's own ``httpx`` client and is NOT covered -- see the
+        ``client`` parameter, which says the document driver's fetching is its own concern. A
+        deployment proxying documents is not thereby proxying the listing request, and this
+        property does not claim otherwise.
+        """
+        return self._document_driver.egress
+
     async def render(
         self,
         url: str,
@@ -236,6 +251,7 @@ class MultiDocumentDriver(ScrapeDriver):
         fragment_field: str | None = None,
         link_selector: str | None = None,
         seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
     ) -> RenderedPage:
         """Fetch the listing at *url*, discover document URLs, fetch and combine up to *max_documents*.
 
@@ -274,6 +290,10 @@ class MultiDocumentDriver(ScrapeDriver):
             discovered document is (re-)fetched, matching this driver's
             pre-2026-07-16 behavior).
         :ptype seen_urls: set[str] | None
+        :param session_state: a human's exported cookies and storage, forwarded to the inner
+            document driver only when one is present. Whether it is honoured is that driver's
+            business; this one neither applies nor withholds it
+        :ptype session_state: dict[str, Any] | None
         :return: one combined page -- each successfully fetched document's
             content wrapped in its own delimiting block
         :rtype: RenderedPage
@@ -344,7 +364,13 @@ class MultiDocumentDriver(ScrapeDriver):
         bodies: list[str] = []
         for doc_url in candidate_urls:
             try:
-                page = await self._document_driver.render(doc_url, timeout=timeout)
+                # Forwarded for the same reason the network-capture wrapper forwards it: a
+                # wrapper that silently withholds a credential its inner driver might use
+                # makes the capability depend on which wrapper happens to be in the way.
+                # Conditional for the same reason as the network-capture wrapper: the inner
+                # driver is injected and may predate this parameter.
+                doc_extra: dict[str, Any] = {"session_state": session_state} if session_state else {}
+                page = await self._document_driver.render(doc_url, timeout=timeout, **doc_extra)
             except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- one bad document must never sink the others: a single unreachable or malformed document would otherwise discard every sibling already fetched in this poll
                 log.warning(
                     "multi-document: one document fetch failed, skipping",

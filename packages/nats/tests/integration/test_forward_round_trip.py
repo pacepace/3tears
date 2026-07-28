@@ -14,7 +14,6 @@ cleanly via that fixture's docker gate.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import timedelta
 
 import pytest

@@ -28,6 +28,20 @@ the first few times.
   `ForeignKeyDef`) and the canonical `MigrationRunner` -- package-composing,
   topologically ordered, idempotent, version-tracked.
 - **Coordination primitives** (`KVLease`) for cross-pod mutual exclusion.
+- **`threetears.core.egress`** -- a seam for *how traffic leaves*, not a proxy
+  implementation. `EgressDriver` is a `runtime_checkable` Protocol, so a
+  consumer may supply its own exit and this package promises the shape;
+  `ProxyEgress`, `DirectEgress`, `SocksEgress` and `WarpEgress` ship as
+  implementations, and `EgressRegistry` resolves an exit by name and probes
+  every registered one concurrently via `health()`. Nothing here polls: this
+  is a library, so wiring the probe is the consuming platform's job -- and a
+  dead exit is worth detecting, because it fails every fetch transport-side
+  while looking like a scraper problem. `httpx[socks]` rides the `socks`
+  extra, since only SOCKS URLs need it.
+- **`fire_and_forget`** -- submit a coroutine without awaiting it. Promoted out
+  of the private `threetears.core._bridge` onto the public surface because
+  more than one package needed it and the alternative was each importing a
+  private name from another package's internals.
 
 ## Design philosophy
 

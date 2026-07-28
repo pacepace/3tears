@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from threetears.agent.memory.dream import (
     ConsolidationResult,

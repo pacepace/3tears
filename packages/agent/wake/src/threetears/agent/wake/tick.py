@@ -55,11 +55,9 @@ from threetears.scheduled_jobs import (
     DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
     DEFAULT_TICK_DUE_LIMIT,
     DueSchedule,
-    FireStore,
     JobConfig,
     JobFireResult,
     JobTrigger,
-    ScheduleStore,
     scheduled_tick_job,
 )
 

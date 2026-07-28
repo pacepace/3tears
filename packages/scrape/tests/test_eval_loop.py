@@ -7,7 +7,7 @@ application, which owns the API keys and the running container.
 
 Both the candidate-generation call (extraction.py) and the judge call
 (eval_loop.py) now funnel through the single shared
-``threetears.scrape.llm_retry.create_chat_model`` (backlog SCR-K7M3) -- tests that
+``threetears.scrape.llm_retry.create_chat_model`` -- tests that
 need to return different fakes for the two calls dispatch on the ``purpose``
 kwarg (``LlmPurpose.EXTRACTION`` vs ``LlmPurpose.UTILITY``) via
 :func:`_dispatch_by_purpose`, rather than patching two separate module

@@ -34,8 +34,11 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from threetears.observe import get_logger
+
 __all__ = [
     "OPENROUTER_MODELS_URL",
+    "HttpClient",
     "VOYAGE_PRICING_URL",
     "ModelOption",
     "OpenRouterPriceSource",
@@ -49,6 +52,8 @@ __all__ = [
     "match_price",
     "register_price_source",
 ]
+
+log = get_logger(__name__)
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 VOYAGE_PRICING_URL = "https://docs.voyageai.com/docs/pricing"
@@ -82,8 +87,15 @@ class PriceLookup:
     source_url: str | None = OPENROUTER_MODELS_URL
 
 
-class _HttpClient(Protocol):
-    """The minimal httpx-AsyncClient surface this module needs (one ``get``)."""
+class HttpClient(Protocol):
+    """The minimal httpx-AsyncClient surface this module needs (one ``get``).
+
+    Public because it appears in the signature of :func:`lookup_price` and
+    :func:`fetch_provider_models`, both of which callers must pass a client to. While this
+    was private, a consumer could call those functions but could not name the type of the
+    argument it was passing -- so it typed the parameter it threaded through as ``object``
+    and lost the check at exactly the boundary the Protocol exists to define.
+    """
 
     async def get(self, url: str, /) -> Any: ...
 
@@ -106,11 +118,11 @@ class PriceSource(Protocol):
         """
         ...
 
-    async def lookup(self, client: _HttpClient, *, provider: str, api_name: str) -> PriceLookup:
+    async def lookup(self, client: HttpClient, *, provider: str, api_name: str) -> PriceLookup:
         """Price ``(provider, api_name)`` using ``client`` for any network fetch.
 
         :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-        :ptype client: _HttpClient
+        :ptype client: HttpClient
         :param provider: the provider slug to price under.
         :ptype provider: str
         :param api_name: the model id to price.
@@ -135,6 +147,10 @@ def _to_per_million(per_token: object) -> Decimal | None:
     try:
         value = Decimal(str(per_token)) * _PER_MILLION
     except InvalidOperation, ValueError:
+        # An upstream price that is present but unreadable. The model ends up unpriced, which the
+        # caller handles, but a run of these means the upstream price encoding changed and every
+        # cost figure downstream is quietly missing.
+        log.debug("upstream per-token price did not parse", extra={"extra_data": {"raw": str(per_token)[:64]}})
         return None
     return value if value > 0 else None
 
@@ -252,7 +268,7 @@ def list_provider_models(catalogue: Sequence[dict[str, Any]], *, provider: str) 
     return out
 
 
-async def _fetch_openrouter_catalogue(client: _HttpClient) -> list[dict[str, Any]]:
+async def _fetch_openrouter_catalogue(client: HttpClient) -> list[dict[str, Any]]:
     """Fetch OpenRouter's ``/models`` catalogue ``data`` list (a transport error propagates)."""
     response = await client.get(OPENROUTER_MODELS_URL)
     response.raise_for_status()
@@ -280,13 +296,13 @@ class OpenRouterPriceSource:
         """
         return True
 
-    async def lookup(self, client: _HttpClient, *, provider: str, api_name: str) -> PriceLookup:
+    async def lookup(self, client: HttpClient, *, provider: str, api_name: str) -> PriceLookup:
         """Fetch the OpenRouter catalogue and conservatively match ``(provider, api_name)``.
 
         A transport/HTTP error propagates to the caller (a lookup failure just means hand-enter).
 
         :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-        :ptype client: _HttpClient
+        :ptype client: HttpClient
         :param provider: the provider slug to price under (e.g. ``openai``).
         :ptype provider: str
         :param api_name: the model id to price (e.g. ``gpt-4o``).
@@ -297,11 +313,11 @@ class OpenRouterPriceSource:
         catalogue = await _fetch_openrouter_catalogue(client)
         return match_price(catalogue, provider=provider, api_name=api_name)
 
-    async def list_models(self, client: _HttpClient, *, provider: str) -> list[ModelOption]:
+    async def list_models(self, client: HttpClient, *, provider: str) -> list[ModelOption]:
         """Fetch the catalogue and return the selectable models for ``provider`` (the admin picker).
 
         :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-        :ptype client: _HttpClient
+        :ptype client: HttpClient
         :param provider: the provider slug to list models for (e.g. ``openrouter``).
         :ptype provider: str
         :return: the selectable models, sorted by ``api_name``.
@@ -367,7 +383,14 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
         try:
             price_col = headers.index(_PER_MILLION_HEADER)
         except ValueError:
-            continue  # not a per-1M-token table (e.g. multimodal per-pixel) — skip it.
+            # Not a per-1M-token table (e.g. multimodal per-pixel), so skipping is right. Recorded
+            # because if the page's column label ever changes, EVERY table skips here and the
+            # parser returns an empty price map that reads exactly like "no prices published".
+            log.debug(
+                "pricing table has no per-1M column; skipped",
+                extra={"extra_data": {"headers": headers[:8]}},
+            )
+            continue
         for row_html in rows[1:]:
             cells = _TD_RE.findall(row_html)
             if len(cells) <= price_col:
@@ -381,6 +404,14 @@ def _parse_voyage_prices(body_html: str) -> dict[str, Decimal]:
             try:
                 price = Decimal(price_match.group(1))
             except InvalidOperation:
+                # The cell matched the price regex but is not a number. Skipping leaves those
+                # models unpriced, which the "never a near price" contract prefers to guessing --
+                # but unpriced-because-unparsed and unpriced-because-absent look identical to the
+                # caller, so the difference is recorded here.
+                log.debug(
+                    "pricing cell matched the price pattern but did not parse",
+                    extra={"extra_data": {"raw": price_match.group(1)[:32], "model_ids": model_ids[:4]}},
+                )
                 continue
             if price <= 0:
                 continue
@@ -408,6 +439,9 @@ def _extract_voyage_body(page_html: str) -> str | None:
     try:
         decoded = json.loads(f'"{match.group(1)}"')
     except json.JSONDecodeError, ValueError:
+        # The pricing page's embedded body field is no longer a JSON string literal. Voyage prices
+        # go empty from here on, so record the shape change rather than returning a bare None.
+        log.debug("voyage pricing page body field did not decode as JSON")
         return None
     return decoded if isinstance(decoded, str) and decoded else None
 
@@ -473,14 +507,14 @@ class VoyagePriceSource:
         """
         return provider in _VOYAGE_PROVIDERS
 
-    async def lookup(self, client: _HttpClient, *, provider: str, api_name: str) -> PriceLookup:
+    async def lookup(self, client: HttpClient, *, provider: str, api_name: str) -> PriceLookup:
         """Scrape Voyage pricing and conservatively match ``api_name``.
 
         A transport/HTTP error propagates; a parse miss or no-match returns all-``None`` (with the
         Voyage provenance still attached) so the admin hand-enters.
 
         :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-        :ptype client: _HttpClient
+        :ptype client: HttpClient
         :param provider: the provider slug (``voyage`` / ``voyageai``).
         :ptype provider: str
         :param api_name: the model id to price (e.g. ``voyage-4``).
@@ -576,7 +610,7 @@ def register_price_source(source: PriceSource) -> None:
     _REGISTRY.register(source)
 
 
-async def lookup_price(client: _HttpClient, *, provider: str, api_name: str) -> PriceLookup:
+async def lookup_price(client: HttpClient, *, provider: str, api_name: str) -> PriceLookup:
     """Price ``(provider, api_name)`` via the first registered source that ``covers`` ``provider``.
 
     The caller owns the HTTP client lifecycle (an ``httpx.AsyncClient`` with a timeout). A
@@ -585,7 +619,7 @@ async def lookup_price(client: _HttpClient, *, provider: str, api_name: str) -> 
     all-``None`` result rather than raising.
 
     :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-    :ptype client: _HttpClient
+    :ptype client: HttpClient
     :param provider: the provider slug to price under (e.g. ``openai`` / ``voyage``).
     :ptype provider: str
     :param api_name: the model id to price (e.g. ``gpt-4o`` / ``voyage-4``).
@@ -597,14 +631,14 @@ async def lookup_price(client: _HttpClient, *, provider: str, api_name: str) -> 
     return await source.lookup(client, provider=provider, api_name=api_name)
 
 
-async def fetch_provider_models(client: _HttpClient, *, provider: str) -> list[ModelOption]:
+async def fetch_provider_models(client: HttpClient, *, provider: str) -> list[ModelOption]:
     """Fetch the OpenRouter catalogue and return the selectable models for ``provider`` (the picker).
 
     The admin model picker is OpenRouter-backed regardless of pricing source (it lists the
     catalogue's chat models); embedding-only vendors are added by the admin directly.
 
     :param client: an async HTTP client exposing ``get(url)`` (e.g. ``httpx.AsyncClient``).
-    :ptype client: _HttpClient
+    :ptype client: HttpClient
     :param provider: the provider slug to list models for (e.g. ``openrouter``).
     :ptype provider: str
     :return: the selectable models, sorted by ``api_name``.

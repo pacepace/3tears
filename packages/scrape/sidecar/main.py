@@ -20,14 +20,16 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, NamedTuple
 
+import hitl
 import nodriver as uc
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 from nodriver.core.connection import ProtocolException
 from pydantic import BaseModel
@@ -36,6 +38,34 @@ log = logging.getLogger("nodriver_sidecar")
 logging.basicConfig(level=logging.INFO)
 
 CHROMIUM_PATH = os.environ.get("CHROMIUM_PATH", "/usr/bin/chromium")
+
+# Egress: this container's DEFAULT exit, as a --proxy-server value (e.g.
+# "socks5://tor:9050"). Set by the deployment, because which exits exist is
+# deployment knowledge -- this container only needs to be told which one to use.
+#
+# Applied at browser launch, which Chromium takes process-wide: every render that
+# does not ask for something else leaves by this one.
+#
+# A render CAN ask for something else. `RenderRequest.egress_proxy` renders in its
+# own browser context, and `Target.createBrowserContext` accepts its own
+# `proxyServer` -- verified against this image's own CDP bindings. An earlier
+# version of this comment said a per-request proxy would advertise a capability
+# Chromium does not have; that was true of the command-line flag and wrong about
+# contexts, which is why per-target egress is a request field rather than a second
+# container.
+EGRESS_PROXY = os.environ.get("EGRESS_PROXY") or None
+# `None` when the deployment configured no exit at all, because that is what the consumers of
+# this value mean by it: `ScrapeTargetHealth.last_egress` and `TargetCircuit` both treat `None`
+# as "nobody said" and reserve a name for a stated choice. Stamping "direct" here would fill
+# every row of an unconfigured deployment with the one value that convention exists to withhold,
+# and a reader could no longer tell a deployment that chose the default route from one that
+# never considered the question. A deployment that HAS chosen it says so with `EGRESS_NAME`, or
+# by passing `DirectEgress` per request.
+#
+# When a proxy is set without a name the name is unknown rather than absent, and "unnamed" says
+# so. A literal placeholder like "direct" would be indistinguishable from a real exit called
+# that, and telling exits apart is the whole point of the name.
+EGRESS_NAME = os.environ.get("EGRESS_NAME") or ("unnamed" if EGRESS_PROXY else None)
 
 # Browser-forced-download capability (scrape-task-04, 2026-07-15): a fixed profile
 # directory (rather than nodriver's own auto-generated temp one) so the Preferences
@@ -135,6 +165,26 @@ class RenderRequest(BaseModel):
     #: settle-wait -- drives the browser to a page not reachable by a bare
     #: navigation (a search form, a second page in a listing).
     nav_steps: list[NavStepModel] | None = None
+    #: A human's previously cleared browser state, applied before navigating so the request
+    #: that would be challenged carries the credential that clears it. Raw, not sealed: this
+    #: container holds no key and never has.
+    session_state: dict[str, Any] | None = None
+    #: Exit for THIS request only, as a proxy url. Renders in its own browser context, so two
+    #: targets in one container can leave by two different exits -- which is what makes egress
+    #: a per-target choice. Omitted uses the container's own route.
+    egress_proxy: str | None = None
+    #: Name recorded against the result, so "walled" can be told apart from "walled from this
+    #: exit". Free-form because the names are the deployment's.
+    #:
+    #: Echoed back on the response ONLY when sent alongside :attr:`egress_proxy`. Sent alone it
+    #: names an exit this render did not take -- there is no proxy to take it -- so the response
+    #: reports the container's own exit instead, and a consumer that assumed an echo would
+    #: record a route that was never used. The two travel together or neither is meaningful.
+    #:
+    #: The echo exists so a caller records what THIS sidecar reported rather than what it sent:
+    #: without it, a request whose proxy argument was dropped is indistinguishable from one that
+    #: was honoured. Reported, not observed -- see :attr:`RenderResponse.egress`.
+    egress_name: str | None = None
 
 
 class NetworkCall(BaseModel):
@@ -151,6 +201,20 @@ class RenderResponse(BaseModel):
     final_url: str
     timing_ms: float
     network_calls: list[NetworkCall] = []
+    #: The exit this render was CONFIGURED to leave by: the request's own name when it selected
+    #: one, otherwise the container's. A caller stamps THIS against its result rather than what
+    #: it sent, so a dropped proxy argument shows up as a mismatch instead of silently recording
+    #: an exit that was never asked for.
+    #:
+    #: Configured, not observed. This value is derived from the request, so a per-context proxy
+    #: Chromium accepted and then ignored is still reported under the name it was asked for.
+    #: Nothing in this process can tell the difference; confirming traffic genuinely leaves by
+    #: an exit needs an observer outside it. Said here rather than only at the construction
+    #: site, because an API consumer reads the model and never sees the handler.
+    #:
+    #: ``null`` means no exit was configured, which is a different fact from choosing the
+    #: default route -- that choice is reported as ``direct``.
+    egress: str | None = None
     #: One entry per real ``evaluate`` nav step, in step order -- see
     #: ``threetears.scrape.driver.NavStep``'s own docstring.
     eval_results: list[Any] = []
@@ -330,11 +394,13 @@ async def _render(
     capture_network: bool = False,
     nav_steps: list[NavStepModel] | None = None,
     timeout: float = 30.0,
+    session_state: dict[str, Any] | None = None,
+    egress_proxy: str | None = None,
 ) -> _RenderResult:
     """Navigate to *url*, optionally drive it through *nav_steps*, wait for a
     selector, and return the rendered page.
 
-    ``status`` -- SCR-7L4M fix (2026-07-14): a plain ``browser.get(url,
+    ``status`` -- fixed 2026-07-14: a plain ``browser.get(url,
     new_tab=True)`` gives no way to observe the real top-level HTTP response
     status -- nodriver's ``Tab`` exposes no ``.status`` attribute (checked
     live against nodriver 0.50.3's ``Tab``/CDP bindings), and the browser
@@ -358,7 +424,34 @@ async def _render(
     frame received or sent". Opening a throwaway tab per request and closing
     only that one avoids it.
     """
-    tab = await _browser.get("about:blank", new_tab=True)
+    # With a human's session state, the render runs in an ISOLATED browser context rather
+    # than the shared profile. Applying one target's cleared cookies to the profile every
+    # other target also renders through would hand them to sites that never earned them, and
+    # would mix two targets' sessions for the same origin. The context is disposed in the
+    # same `finally` that closes the tab, so the state lives exactly as long as the fetch.
+    render_context_id: Any = None
+    if egress_proxy is not None:
+        # An exit for this request alone. Its own context, disposed with the tab, so nothing
+        # about this render's route leaks into the next one.
+        #
+        # `is not None` rather than truthiness, because the caller selecting the DEFAULT route
+        # is a selection and has to be honoured like any other. It arrives as `direct://` --
+        # Chromium's own no-proxy URI -- so it takes this branch and gets a context whose proxy
+        # setting overrides the container-wide `--proxy-server` applied at launch. Falling
+        # through to the shared browser instead would route an explicitly-direct request out
+        # through the container's proxy while still reporting `direct` back to the caller.
+        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank", proxy_server=egress_proxy)
+        if session_state:
+            await hitl._apply_context_state(_browser, render_context_id, session_state)
+    elif session_state:
+        # about:blank first so the cookies are in place before the real navigation -- a cookie
+        # set after the page loads arrives too late to have been sent with the request that
+        # was going to be challenged. Storage is applied after that navigation instead, since
+        # localStorage is origin-scoped and about:blank is not the origin.
+        tab, render_context_id = await _create_isolated_tab(_browser, "about:blank")
+        await hitl._apply_context_state(_browser, render_context_id, session_state)
+    else:
+        tab = await _browser.get("about:blank", new_tab=True)
     main_frame_id = str(tab.target.target_id)
     last_response: dict[str, Any] = {}
     # Network-capture bookkeeping (only populated when capture_network=True):
@@ -401,6 +494,13 @@ async def _render(
         tab.add_handler(uc.cdp.network.LoadingFinished, _capture_loading_finished)
     try:
         await tab.send(uc.cdp.page.navigate(url))
+        if session_state and render_context_id is not None:
+            # Storage lands after the navigation and the page is then reloaded, because
+            # localStorage is origin-scoped: it can only be written while a page from that
+            # origin is loaded, which about:blank was not. The cookies were already in place
+            # for the navigation above, which is the part that carries a cleared challenge.
+            await hitl._apply_origin_storage(tab, session_state)
+            await tab.send(uc.cdp.page.navigate(url))
         if nav_steps:
             # A settle wait before interacting, not just before the final content
             # capture -- live-reproduced against Maine's real WARN search form:
@@ -483,6 +583,11 @@ async def _render(
             tab.remove_handler(uc.cdp.network.RequestWillBeSent, _capture_request)
             tab.remove_handler(uc.cdp.network.LoadingFinished, _capture_loading_finished)
         await tab.close()
+        if render_context_id is not None:
+            try:
+                await _browser.send(uc.cdp.target.dispose_browser_context(render_context_id))
+            except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- the page has already been rendered and returned; a context that will not dispose is a bounded leak, where raising here would discard a good result. Logged with its traceback below
+                log.exception("scrape sidecar: could not dispose the session-state render context")
     # Fails open to 200/the originally requested url rather than raising or
     # blocking on a request whose DOCUMENT response genuinely never fired
     # (e.g. a same-document navigation) -- a render that produced real content
@@ -492,7 +597,7 @@ async def _render(
     # `Tab.__getattr__` forwarding to `self.target.url`) does not reliably
     # reflect the post-navigate URL when navigating via raw `cdp.page.navigate`
     # instead of the higher-level `browser.get()` wrapper this function used
-    # before the SCR-7L4M status fix -- reproduced live against a real running
+    # before the status fix above -- reproduced live against a real running
     # container (empty string returned for both a 200 and a 404 real fetch).
     # The captured response's own URL is the actual URL that document came
     # from, redirects included, with no dependency on that internal tracking.
@@ -517,7 +622,9 @@ class _DownloadResult(NamedTuple):
     data: bytes
 
 
-async def _create_isolated_tab(browser: Any, url: str) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
+async def _create_isolated_tab(
+    browser: Any, url: str, *, proxy_server: str | None = None
+) -> tuple[Any, uc.cdp.browser.BrowserContextID]:
     """Create a fresh, isolated browser context + one tab within it, navigated to *url*.
 
     Live-reproduced (2026-07-15): ``browser.create_context()``'s own internal
@@ -535,7 +642,13 @@ async def _create_isolated_tab(browser: Any, url: str) -> tuple[Any, uc.cdp.brow
     :rtype: tuple[Any, uc.cdp.browser.BrowserContextID]
     :raises RuntimeError: the created target never appeared in ``browser.targets``
     """
-    context_id = await browser.send(uc.cdp.target.create_browser_context())
+    # PER-CONTEXT proxying, which is what makes an exit a per-target choice rather than a
+    # per-container one. `--proxy-server` on the browser command line is process-wide and
+    # cannot vary; `Target.createBrowserContext` takes its own `proxyServer`, so two targets
+    # in one browser can leave by two different exits. Verified against the running image's
+    # own CDP bindings rather than assumed -- the earlier claim that Chromium could only do
+    # this process-wide was true of the flag and wrong about contexts.
+    context_id = await browser.send(uc.cdp.target.create_browser_context(proxy_server=proxy_server))
     target_id = await browser.send(uc.cdp.target.create_target(url, browser_context_id=context_id, new_window=True))
     for attempt in range(_TAB_LOOKUP_ATTEMPTS):
         await browser.update_targets()
@@ -606,6 +719,118 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
         shutil.rmtree(download_dir, ignore_errors=True)
 
 
+#: How long to wait on each window-manager call. Local X clients against a local Xvfb, so this is
+#: generous; the cost of being wrong is a startup that hangs rather than a window that shows.
+_WM_CALL_TIMEOUT_SECONDS = 5.0
+
+
+async def _hide_the_idle_window() -> None:
+    """Take Chromium's idle window off the operator's screen and out of their taskbar.
+
+    Chromium must own at least one window or it exits, and the warm-up render disposes of its own
+    tab, so exactly one window always survives doing nothing. An operator summoned to clear a
+    single challenge should see their target and nothing else. An extra window that looks like a
+    usable browser is a thing to click on, and the people doing this work are not the people who
+    should have to work out that it is scenery.
+
+    It is also the one window on that display belonging to the DEFAULT browser context, so it is
+    the only place where what somebody types is not isolated per target -- which is the promise the
+    rest of this surface keeps.
+
+    HIDDEN, NOT CLOSED. Closing the last window exits the browser and takes the container's whole
+    purpose with it. Hiding cannot.
+
+    **Done here rather than by an openbox rule, and that is a correction rather than a preference.**
+    An `<application title="about:blank*">` rule with `skip_taskbar` and `iconic` was tried first
+    and never fired: openbox applies those rules when a window is first MAPPED, and Chromium maps
+    before its page title arrives, so there is no title to match on yet. Observed on the live
+    display -- the window stayed viewable with an empty `_NET_WM_STATE`. Acting after startup means
+    the title exists by the time anything looks for it.
+
+    Both tools are needed. `wmctrl` sets `skip_taskbar`/`skip_pager`, and `xdotool` iconifies; a
+    minimised window that a taskbar still lists is still something to click on.
+
+    Best-effort throughout. A browser whose idle window will not hide is still a working browser,
+    and failing container startup over this would trade an operable deployment for a tidy one.
+    """
+    if _browser is None:
+        return
+    display = f":{os.environ.get('DISPLAY_NUM', '99')}"
+    try:
+        await _browser.update_targets()
+        for tab in list(_browser.tabs):
+            if (tab.target.url or "").startswith(("chrome://newtab", "chrome://new-tab-page")):
+                # Only reachable if the launch argument above did not take -- a Chromium build
+                # that ignores the positional URL, or an edit that dropped it. Blanking does not
+                # hide it, but a visibly empty window is a far smaller problem than a convincing
+                # one.
+                await tab.get("about:blank")
+                log.warning("hitl: the idle window was not blank at launch; blanked it here")
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- see docstring; a browser that will not blank its idle window is still a working browser and must not fail startup
+        log.warning("hitl: could not blank the idle window: %s", exc)
+
+    await _hide_window_titled("about:blank - Chromium", display=display)
+
+
+async def _hide_window_titled(title: str, *, display: str) -> None:
+    """Iconify the window named *title* and keep it out of the taskbar.
+
+    Split out from its caller so the window-manager plumbing can be exercised without a browser,
+    and so the failure of one call does not decide the other's: a window that skipped the taskbar
+    but did not iconify is still half-hidden, which is better than neither.
+    """
+    found = await _wm_output(["xdotool", "search", "--name", f"^{re.escape(title)}$"], display=display)
+    window = (found or "").strip().splitlines()
+    if not window:
+        log.info("hitl: no idle window named %r to hide", title)
+        return
+    wid = window[0].strip()
+    # skip_pager as well as skip_taskbar: this image pins one desktop, but a pager that appears
+    # later would otherwise list a window nothing should reach.
+    await _wm_output(["wmctrl", "-i", "-r", wid, "-b", "add,skip_taskbar,skip_pager"], display=display)
+    await _wm_output(["xdotool", "windowminimize", wid], display=display)
+    log.info("hitl: idle window %s hidden from the operator's screen and taskbar", wid)
+
+
+async def _wm_output(argv: list[str], *, display: str) -> str | None:
+    """Run one window-manager command against *display*, returning its stdout or ``None``.
+
+    Never raises. Every caller is startup cosmetics, and a container that refuses to boot because
+    a window would not minimise is worse than the window.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            env={**os.environ, "DISPLAY": display},
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log.warning("hitl: %s could not be started: %s", argv[0], exc)
+        return None
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=_WM_CALL_TIMEOUT_SECONDS)
+    except TimeoutError:
+        # KILLED, not just abandoned. `wait_for` cancels the `communicate()` await and leaves the
+        # CHILD running, so a hung window-manager call would otherwise leak a process for the life
+        # of a container that is meant to be long-lived and unattended. Reaped afterwards so it
+        # does not sit as a zombie either.
+        log.warning("hitl: %s did not answer within %ss; killing it", argv[0], _WM_CALL_TIMEOUT_SECONDS)
+        proc.kill()
+        with suppress(
+            Exception
+        ):  # prawduct:allow prawduct/broad-except -- the child is already being killed; a failure to reap it must not fail startup, and the kill above is what actually matters
+            await proc.wait()
+        return None
+    except OSError as exc:
+        log.warning("hitl: %s failed: %s", argv[0], exc)
+        return None
+    if proc.returncode != 0:
+        log.info("hitl: %s exited %s", argv[0], proc.returncode)
+        return None
+    return out.decode(errors="replace")
+
+
 async def _warm_up() -> None:
     """Render one real page before declaring the sidecar ready.
 
@@ -638,6 +863,47 @@ async def _warm_up() -> None:
     _ready = True
 
 
+#: How much larger to draw everything a human looks at, like the display-scaling setting on a
+#: desktop OS. ``1.0`` is unscaled; ``1.5`` makes text half again as large.
+#:
+#: A requirement raised by an operator during verification, not a fix: the display is a fixed
+#: 1920x1080 scaled down to whatever browser window is looking at it, so on a laptop the text
+#: arrives small and there was no way to ask for it bigger. Scaling the DESKTOP would undo the
+#: fit; scaling the CONTENT leaves the fit alone, which is what was asked for.
+#:
+#: Deliberately affects only what a person reads. Rendering for extraction never goes through
+#: this path -- a scraped page's own layout must not depend on an operator's comfort setting, or
+#: two deployments with different values would extract differently from the same site.
+UI_SCALE = os.environ.get("UI_SCALE", "1.0")
+
+
+def _browser_args() -> list[str]:
+    """Chromium's launch arguments, including the egress exit when one is configured.
+
+    A function rather than a literal inside ``_lifespan`` so a test can assert on the arguments
+    PRODUCTION builds. The first version of that test rebuilt the list itself and asserted on
+    its own copy, which stayed green with the production line deleted -- a test of the test.
+    """
+    # `about:blank` as a positional URL, so Chromium's startup page IS blank rather than the
+    # new-tab page, which on this image renders a search engine's home page.
+    #
+    # At launch rather than by navigating afterwards, so there is no window in the container's
+    # life that ever showed something an operator might try to use -- not even for the second
+    # before `_hide_the_idle_window` gets to it.
+    args = ["about:blank", "--disable-dev-shm-usage", "--disable-gpu"]
+    if UI_SCALE not in ("", "1.0", "1"):
+        # Chromium's own display-scaling knob, the same one a desktop OS drives. Applied to the
+        # browser rather than the X server so the desktop geometry -- and therefore the fit the
+        # operator already has -- is untouched.
+        args.append(f"--force-device-scale-factor={UI_SCALE}")
+    if EGRESS_PROXY:
+        # Process-wide by nature: Chromium applies --proxy-server to the whole browser, so this
+        # is the DEFAULT exit rather than the only one. A render that wants a different exit
+        # gets its own browser context, which takes its own proxyServer.
+        args.append(f"--proxy-server={EGRESS_PROXY}")
+    return args
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     global _browser
@@ -659,10 +925,15 @@ async def _lifespan(_app: FastAPI):
         # only via browser_args is not sufficient -- nodriver's own
         # connect-back check still refuses to start without this.
         sandbox=False,
-        browser_args=["--disable-dev-shm-usage", "--disable-gpu"],
+        browser_args=_browser_args(),
     )
     await _warm_up()
+    await _hide_the_idle_window()
     yield
+    # Before the browser, because the VNC processes are children of this one and a
+    # container stopping should not leave an x11vnc holding the RFB port for whatever
+    # restarts into the same namespace.
+    await _sessions.shutdown()
     if _browser is not None:
         _browser.stop()
 
@@ -685,6 +956,8 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
                 capture_network=req.capture_network,
                 nav_steps=req.nav_steps,
                 timeout=req.timeout,
+                session_state=req.session_state,
+                egress_proxy=req.egress_proxy,
             ),
             timeout=req.timeout,
         )
@@ -706,6 +979,19 @@ async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
         timing_ms=timing_ms,
         network_calls=[NetworkCall(**call) for call in result.network_calls],
         eval_results=result.eval_results,
+        # The exit this render was CONFIGURED to use -- the request's own name when it selected
+        # one, otherwise the container's. Deliberately not the exit OBSERVED: this value is
+        # derived from the request, so a per-context proxy that Chromium accepted and ignored
+        # would still be reported as `tor` here, and that string is written through to
+        # `ScrapeTargetHealth.last_egress`.
+        #
+        # Confirming that traffic genuinely leaves by this exit needs an outside observer --
+        # something reading the address this container presents to a third party. Nothing in
+        # this process can tell the difference.
+        #
+        # `is not None` matches the routing branch above -- a request that selected the default
+        # route sends `direct://` and must report `direct`, not the container's name.
+        egress=(req.egress_name or "unnamed") if req.egress_proxy is not None else EGRESS_NAME,
     )
 
 
@@ -743,6 +1029,267 @@ async def download(req: DownloadRequest) -> DownloadResponse | JSONResponse:
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    """Liveness/readiness probe for docker-compose healthcheck."""
-    return {"status": "ok" if _ready else "starting"}
+async def healthz() -> dict[str, str | None]:
+    """Liveness/readiness probe for docker-compose healthcheck.
+
+    Reports the configured egress so a caller can tell WHICH exit a result came from. A
+    deployment running one container per exit otherwise has no way to confirm, from outside,
+    that the container it is talking to is the one it thinks it is.
+
+    ``null`` when the deployment configured no exit -- the same "nobody said" this value carries
+    everywhere else, rather than a claim that the default route was chosen.
+    """
+    return {"status": "ok" if _ready else "starting", "egress": EGRESS_NAME}
+
+
+# --------------------------------------------------------------------------
+# HITL: the bare VNC path.
+#
+# These predate the session API below and remain for the case it does not cover:
+# bringing the display up on its own, to look at what the unattended browser is
+# doing, with no session and no target. That is a real diagnostic need and it is
+# why they were not deleted.
+#
+# They no longer act while a session is open, which is the part that matters.
+# The session owns the display for its whole life, so a bare POST bringing it up
+# outside a TTL, or a bare DELETE killing it under a live session that then goes
+# on reporting itself open, is two owners of one resource and a state divergence
+# waiting to happen. Both refuse with 409 and name the session API instead.
+#
+# Unauthenticated, like every other endpoint here: the sidecar holds no identity
+# and authenticates nobody. It is reachable only from inside the deployment, and
+# the token check that fronts it belongs on the MIT side, which is the only side
+# that can evaluate a policy.
+# --------------------------------------------------------------------------
+
+_sessions = hitl.SessionManager(browser_provider=lambda: _browser)
+_vnc = _sessions.vnc
+
+
+class HitlSessionRequest(BaseModel):
+    """Nothing to supply: one display means the session's shape is not negotiable."""
+
+
+class HitlTabRequest(BaseModel):
+    """Pull one target into the session.
+
+    Carries `url` + `nav_steps` rather than any handle to an earlier fetch, because nothing is
+    held while a target waits for a human. It is reported and forgotten, and re-driven from
+    these two fields when an operator actually arrives -- so waiting costs no container
+    resources, and the replay is deterministic because nav-step replay is already how this
+    package reaches gated pages.
+    """
+
+    target_id: str
+    url: str
+    nav_steps: list[NavStepModel] | None = None
+    #: A previously exported state, applied to the isolated context BEFORE navigating. Raw,
+    #: not sealed: this container holds no key. Whoever calls this has already opened it.
+    session_state: dict[str, Any] | None = None
+
+
+# response_model=None: the union of a dict and a JSONResponse is not a Pydantic
+# field type, and FastAPI infers a response model from the annotation unless told not
+# to -- the same reason the render/download endpoints name theirs explicitly.
+@app.post("/v1/hitl/vnc", response_model=None)
+async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
+    """Start the VNC path, or return the one already running.
+
+    Idempotent: a caller that retries gets the running session rather than a second
+    ``x11vnc`` losing a race for the RFB port.
+    """
+    if _sessions.owns_display():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": (
+                    "a HITL session owns the display; use POST /v1/hitl/session to open one, "
+                    "or DELETE it before driving the display directly"
+                )
+            },
+        )
+    try:
+        session = await _vnc.start()
+    except hitl.VncUnavailable as exc:
+        log.warning("hitl: could not start the vnc path: %s", exc)
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+    return {"display": session.display}
+
+
+@app.get("/v1/hitl/vnc")
+async def hitl_vnc_status() -> dict[str, Any]:
+    """Whether the display is being served right now.
+
+    Asks about the process that actually serves it: a readiness signal reporting healthy over a
+    blank display is worse than none, because it is believed.
+    """
+    return {"running": _vnc.health(), "display": _vnc.display}
+
+
+@app.delete("/v1/hitl/vnc", response_model=None)
+async def hitl_vnc_stop() -> dict[str, Any] | JSONResponse:
+    """Stop both processes, leaving nothing listening.
+
+    Refuses while a session owns the display: stopping it underneath one would leave a session
+    reporting itself open with nothing for its operator to look at.
+    """
+    # `owns_display`, not `current`: an EXPIRED session is refused by `authorize`, so it cannot
+    # be torn down through the session API -- and if it also blocked here, nothing but the
+    # reaper could ever release the display. This is the escape hatch for exactly that, so it
+    # closes the session too rather than stopping the display out from under a tracked one.
+    if _sessions.owns_display():
+        return JSONResponse(
+            status_code=409,
+            content={"error": "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead"},
+        )
+    if _sessions.current() is not None:
+        log.info("hitl: releasing the display held by an expired session")
+        await _sessions.close()
+        return {"running": _vnc.health(), "released_expired_session": True}
+    await _vnc.stop()
+    return {"running": _vnc.health()}
+
+
+# --------------------------------------------------------------------------
+# HITL sessions.
+#
+# The token is returned once, by the create call, and every later call carries
+# it. It is checked with a constant-time compare against a session this process
+# minted -- which is a weaker claim than authentication and is deliberately all
+# the sidecar makes: it holds no identity and cannot evaluate a policy. Who was
+# entitled to be handed the token is the MIT side's question.
+# --------------------------------------------------------------------------
+
+
+def _token_from(authorization: str | None, x_hitl_token: str | None) -> str:
+    """Read the session token from either header, preferring the standard one."""
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return (x_hitl_token or "").strip()
+
+
+@app.post("/v1/hitl/session", response_model=None)
+async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, Any] | JSONResponse:
+    """Open the session and bring up the display.
+
+    409 rather than a queue when one is already open. One display means one operator, and
+    queueing would hold an HTTP request open for however long the first operator takes --
+    minutes to hours, which is not a thing to do to a caller.
+    """
+    del req
+    try:
+        session = await _sessions.open()
+    except hitl.SessionUnavailable as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except hitl.VncUnavailable as exc:
+        log.warning("hitl: session refused, no display: %s", exc)
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+    return {
+        "session_id": session.session_id,
+        "token": session.token,
+        "expires_at": session.expires_at,
+        "max_slots": session.max_slots,
+    }
+
+
+@app.get("/v1/hitl/session/{session_id}", response_model=None)
+async def hitl_session_get(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Session state and the tabs currently open in it."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    return {
+        "session_id": session.session_id,
+        "expires_at": session.expires_at,
+        "max_slots": session.max_slots,
+        "free_slots": session.free_slots(),
+        "tabs": [
+            {"tab_id": t.tab_id, "target_id": t.target_id, "url": t.url, "opened_at": t.opened_at}
+            for t in session.tabs.values()
+        ],
+    }
+
+
+@app.post("/v1/hitl/session/{session_id}/tab", response_model=None)
+async def hitl_tab_open(
+    session_id: str,
+    req: HitlTabRequest,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Bring one target into the session, in its own isolated context."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    try:
+        tab = await _sessions.open_tab(
+            session,
+            target_id=req.target_id,
+            url=req.url,
+            nav_steps=req.nav_steps,
+            session_state=req.session_state,
+        )
+    except hitl.SessionUnavailable as exc:
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except hitl.SessionNotFound as exc:
+        # The session was closed or reaped while this navigation was in flight. An ordinary
+        # race, not a fault: INFO and 409, where the broad handler below would call it a bad
+        # gateway and log a traceback for something nobody needs to investigate.
+        log.info("hitl: session closed while opening a tab for target %s", req.target_id)
+        return JSONResponse(status_code=409, content={"error": str(exc)})
+    except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a nav-step replay or a CDP timing failure is this target's problem, not the session's; surfacing it as a ToolResult-shaped error keeps the operator's other tabs alive. Logged with its traceback below
+        log.exception("hitl: could not open a tab for target %s", req.target_id)
+        return JSONResponse(status_code=502, content={"error": f"could not open the target: {exc}"})
+    return {"tab_id": tab.tab_id, "target_id": tab.target_id, "url": tab.url, "free_slots": session.free_slots()}
+
+
+@app.post("/v1/hitl/session/{session_id}/tab/{tab_id}/complete", response_model=None)
+async def hitl_tab_complete(
+    session_id: str,
+    tab_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """The human says this one is cleared: close the tab and free its slot.
+
+    Exporting the context's cookies happens here because this is the last moment the context
+    exists -- once it is disposed the human's work is gone.
+    """
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    try:
+        tab = await _sessions.complete_tab(session, tab_id)
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    # `session_state` is the human's work, raw and unsealed. It is returned exactly once, to
+    # the caller that completed the tab, and never logged: the MIT side seals it before it
+    # touches a database. A cookie jar for a cleared challenge is a credential.
+    return {
+        "tab_id": tab.tab_id,
+        "target_id": tab.target_id,
+        "free_slots": session.free_slots(),
+        "session_state": tab.exported_state,
+    }
+
+
+@app.delete("/v1/hitl/session/{session_id}", response_model=None)
+async def hitl_session_close(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+    x_hitl_token: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    """Tear the session down: drop every context, stop the display."""
+    try:
+        session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
+    except hitl.SessionNotFound as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    await _sessions.close(session)
+    return {"closed": True, "session_id": session_id}

@@ -319,7 +319,9 @@ async def _search_by_ids(
         try:
             valid_uuids.append(UUID(raw_id))
         except ValueError:
-            pass
+            # Dropped from the batch. Recorded because a partly-invalid list still returns results
+            # for the ids that parsed, and nothing else would show that some were never looked up.
+            log.debug("skipping unparseable id in batch", extra={"extra_data": {"raw_id": raw_id[:64]}})
     if not valid_uuids:
         return "No valid UUIDs provided."
 
@@ -560,6 +562,10 @@ async def load_memory_search_tool(
                     f"Invalid type_filter '{type_filter}'. Must be one of: {', '.join(sorted(valid_types))}",
                 )
 
+        # Branches that failed outright. A search that lost a branch must not be reported as a
+        # search that found nothing -- the agent would tell the user it has no such memory.
+        degraded: list[str] = []
+
         memories: list[dict[str, Any]] = []
         if run_semantic and embedding is not None:
             try:
@@ -603,7 +609,11 @@ async def load_memory_search_tool(
                             }
                         )
             except Exception:
-                pass
+                degraded.append("memory full-text search")
+                log.exception(
+                    "memory_search full-text branch failed",
+                    extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+                )
 
         media_results: list[dict[str, Any]] = []
         mc_seen: set[str] = set()
@@ -655,7 +665,11 @@ async def load_memory_search_tool(
                             }
                         )
         except Exception:
-            pass
+            degraded.append("media search")
+            log.exception(
+                "memory_search media branch failed",
+                extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+            )
 
         doc_chunks: list[dict[str, Any]] = []
         try:
@@ -680,9 +694,17 @@ async def load_memory_search_tool(
                         }
                     )
         except Exception:
-            pass
+            degraded.append("document chunk search")
+            log.exception(
+                "memory_search document-chunk branch failed",
+                extra={"extra_data": {"user_id": user_id, "agent_id": agent_id}},
+            )
 
         if not memories and not media_results and not doc_chunks:
+            if degraded:
+                # Empty because the search broke, not because there is nothing stored. Saying
+                # "no memories found" here is the answer that turns an outage into a confident lie.
+                return _tool_error("memory_search", "query", f"search incomplete: {', '.join(degraded)} failed")
             return "No relevant memories or documents found for this query."
 
         parts: list[str] = []
@@ -723,6 +745,12 @@ async def load_memory_search_tool(
                 location = " ".join(loc_parts) if loc_parts else "unknown source"
                 tag = f"[chunk:{c['chunk_id']}]"
                 parts.append(f"- {tag} [from {location}] {c['content']}")
+
+        if degraded:
+            # Partial results. Told to the model as well as the log, so it does not present an
+            # incomplete recall as an exhaustive one.
+            parts.append("")
+            parts.append(f"(Partial results: {', '.join(degraded)} failed, so more may exist.)")
 
         if ledger_callback:
             for m in memories:

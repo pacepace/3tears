@@ -1,20 +1,26 @@
 # scrape-task-08: Human-in-the-loop render sessions (VNC) + fetch-side health learning
 
-**Status:** APPROVED TO START, and partially built. Sections 1 and 2 shipped on
-`feat/scrape-hitl-vnc` as build-plan Chunks 01 and 02: `health.py`
-(`ScrapeTargetHealth` + collection, content fingerprint), migration `v010`,
-`challenge.py` (`PageVerdict`, `classify_failed_page`), the eval-loop failure
-classification and routing, and the `ScrapeTool` opt-in. Sections 3 through 6
-(circuit state and backoff, sealed session reuse, the sidecar VNC and HITL
-session endpoints, RBAC/audit/announcement) are Chunks 03 through 07 and are
-NOT built.
+**Status:** BUILT. Sections 1 through 8 are implemented and tested.
 
-This line said "DESIGN, not yet approved to build" for a day after half the
-document had shipped. The go-ahead was a real decision the whole build plan
-rests on, and this is where the sibling docs in this family record it
-(scrape-task-01 "APPROVED TO START", -02 and -03 naming the shipped
-predecessor); leaving it stale made the one place a reader goes to learn the
-state of this work assert something false about the repo.
+Sections 1 and 2 shipped first (`health.py` with `ScrapeTargetHealth` and the content
+fingerprint, migration `v010`, `challenge.py`'s `PageVerdict` and `classify_failed_page`, the
+eval-loop failure routing and the `ScrapeTool` opt-in). Section 3 is the durable fetch circuit
+in `circuit.py`. Sections 4 through 6 are the sidecar's on-demand VNC, the HITL session with
+isolated per-tab contexts, and the sealed session-state reuse in `session_state.py`. Sections
+7 and 8 are `threetears.core.egress` and `robots.py`, both added after this document was first
+written and both recorded here rather than only in a build plan that clones never receive.
+
+Section 6's "RBAC, audit, announcement" was rewritten during the build and is the one part
+NOT implemented, deliberately. Authorization needs an identity 3tears does not have, and the
+operator conversation and audit trail belong to the platform that uses this library rather
+than to the library. What replaced it is two seams a platform drives -- `list_walled()` to ask
+what is stuck, and `record_human_cleared()` to say a person has fixed it -- with the loop
+documented end to end in the package README.
+
+A status line is the one place a reader goes to learn the state of this work, so it is worth
+more care than the rest of the document: stale, it does not merely fail to inform, it asserts
+something false. This family records the go-ahead here for the same reason (scrape-task-01
+"APPROVED TO START", -02 and -03 naming the shipped predecessor).
 
 **Driver:** some targets sit behind a bot wall (Cloudflare interstitial, a captcha, a
 "verify you are human" gate) that no unattended fetch will ever pass. A human can pass it in
@@ -49,13 +55,14 @@ package currently cannot answer.
 
 Read directly from the code this session, not recalled. **This section is a snapshot of the
 state BEFORE any of this was built** -- it names functions the strategy collapse has since
-removed (`_reuse_recipe`, `_reuse_row_recipe`) and describes the bug Chunk 02 fixed as live.
+removed (`_reuse_recipe`, `_reuse_row_recipe`) and describes the recipe-destruction bug as live,
+which section 2's classification routing has since fixed.
 It is kept as the evidence the design rested on, not as a description of the code today:
 
 **The container already has everything VNC needs except VNC.** `sidecar/entrypoint.sh` starts
 Xvfb on `:99` at `1920x1080x24`; `sidecar/main.py`'s `_lifespan` launches nodriver with
 `headless=False` against it. Chromium is genuinely headful on a real X display today. Missing:
-`x11vnc`, `websockify`, noVNC static assets.
+`x11vnc`; the noVNC client ships in the MIT wheel.
 
 **One browser, one display, one shared profile.** `main.py` holds a single global `_browser`
 with a pinned `user_data_dir`, opening a throwaway tab per request (`new_tab=True`) and closing
@@ -95,17 +102,17 @@ already ships. Surveyed before designing; each row is a thing we are **not** wri
 | Need | Existing primitive | How it's used here |
 |---|---|---|
 | Failure-state machine (healthy / tripped / probing) | `threetears.models.circuit_breaker.CircuitBreaker` -- CLOSED/OPEN/HALF_OPEN, consecutive-failure threshold, recovery timeout, single-probe admission | Vocabulary and semantics adopted wholesale. See "Circuit state" below for why the *instance* isn't reused directly |
-| Depending on a breaker without dragging in LangChain | `core/http_client.py`'s `CircuitBreakerLike` structural protocol -- `core` deliberately injects rather than importing `threetears.models` | Same seam, same reason: `scrape` takes an injected breaker through the existing protocol |
+| Depending on a breaker without dragging in LangChain | `core/http_client.py`'s `CircuitBreakerLike` structural protocol -- `core` deliberately injects rather than importing `threetears.models` | Same seam, reused: `scrape` takes an injected breaker, through `ProbeObservableBreaker` -- `CircuitBreakerLike` plus a readable `state`, which releasing a probe requires. See §3; the LangChain-weight argument is `core`'s reason for the original seam, not `scrape`'s, since `3tears-models` is already a hard dependency here |
 | Cross-pod attempt counting | `core.coordination.windowed_counter.WindowedCounter`, `distributed_counter.DistributedCounter` | Blocked-attempt counting across a multi-pod fleet, instead of a per-process integer |
 | Retry pacing / not hammering a wall | `core.coordination.token_bucket.TokenBucket` | Paces re-attempts against a target known to be challenging |
 | "Only one pod opens a session for this target" | `core.coordination.lease.KVLease` -- TTL-bounded distributed mutex | Session exclusivity and fencing |
-| "Has this already been done" | `core.coordination.idempotency.IdempotencyKeyStore` | A completed HITL solve is claimed once, not replayed |
+| "Has this already been done" | `core.coordination.idempotency.IdempotencyKeyStore` | **Not used -- see §6.** The idempotency this row anticipated is carried by the health row itself: a solve is stored sealed against one target with an expiry, and re-storing it overwrites rather than replays. A claim-once primitive on top would guard nothing the row does not already make single-valued |
 | Deferred re-attempt ("re-check in 6h") | `3tears-scheduled-jobs` -- payload-agnostic, cross-pod-locked tick engine, `relative_delay` / `one_shot_at` schedule types with missed-fire policy | Scheduling a blocked target's next probe. No bespoke retry loop |
-| Inbound callback from an external system | `3tears-agent-wake` -- webhook subscriptions, `hmac_util`, `webhook_adapter`, `dispatch` | The external queue telling us "this one's cleared" |
+| Inbound callback from an external system | `3tears-agent-wake` -- webhook subscriptions, `hmac_util`, `webhook_adapter`, `dispatch` | **Not used -- see §6.** Not a declared dependency either. "This one's cleared" arrives as a call to `record_human_cleared`, made by the platform that owns the operator; a webhook adapter here would be this package receiving its own consumer's traffic |
 | Storing credentials at rest | `core.security.encryption` -- AES-256-GCM under an operator master key via HKDF, `seal()` / `open_secret()`, master key resolved through `core.security.secret_refs` | Solved-session cookies are credentials. Sealed, never plaintext |
-| Per-resource authorization | `threetears.agent.acl.authorize_on_entity` + `AclCache`, following the `memory/authorize.py`, `identity/authorize.py`, `intention/authorize.py` shape (action constants + namespace + package-specific `AccessDenied`) | Gating HITL session open, per queue |
-| Audit trail | `3tears-agent-audit` -- one `AuditEvent` envelope + `publish_audit`, consumed platform-side into `platform_audit.audit_events` | A human driving an authenticated browser is an audit event |
-| Event publication | `3tears-nats` `Subjects` builders + `subject_permissions` | Announcing "this target needs a human" |
+| Per-resource authorization | `threetears.agent.acl.authorize_on_entity` + `AclCache`, following the `memory/authorize.py`, `identity/authorize.py`, `intention/authorize.py` shape | **Not used -- see §6.** Gating HITL access is the consuming platform's job; this package ships the health-row fact and the hub approval seams instead |
+| Audit trail | `3tears-agent-audit` -- one `AuditEvent` envelope + `publish_audit`, consumed platform-side into `platform_audit.audit_events` | **Not used -- see §6.** Not a declared dependency either. The claim stands that a human driving an authenticated browser IS an audit event; emitting it belongs to the side that knows WHO the human is, which is the platform. This package has no identity to name in the envelope |
+| Event publication | `3tears-nats` `Subjects` builders + `subject_permissions` | **Not used as written -- see §6.** Nothing here ANNOUNCES that a target needs a human: `list_walled()` is a query the platform makes when it wants the queue, so the fact lives on the health row rather than on a subject. `3tears-nats` IS used, for something else entirely -- `serve_owner` / `forward` route a live session's control messages to the pod holding its display, behind the `hitl` extra. Recorded rather than deleted because the anticipated use and the actual one are easy to mistake for each other |
 | "Paused for a human" vocabulary | `threetears.langgraph.streaming` -- `detect_interrupt`, `StreamInterruptEvent`, `tool_status='interrupted'` ("not a failure, the graph is pausing for a human decision") | The platform already has a word for this state. Mirror it rather than coining a parallel one |
 | Traced/retried/circuit-broken HTTP | `core.http_client.TracedHttpClient` | Sidecar-facing calls, replacing raw `httpx` use where practical |
 | Isolated browser context | `sidecar/main.py`'s existing `_create_isolated_tab` | Per-target isolation inside one HITL session |
@@ -183,13 +190,15 @@ vendor-shaped pattern matching in the one place this design rejected it, and wou
 suppress genuine content changes that happen to look like ids. Fingerprinting structure rather
 than text trades one brittleness for another. The response actually taken is **none, here**:
 what bounds the cost of a walled target is not fetching it on every poll, which is
-`blocked_until` and the circuit backoff in section 3. Until that lands, a walled target costs
-one classification per poll -- cheaper than today's candidate round, and no longer destroying
-the recipe, but not the bounded cost the earlier wording promised.
+`blocked_until` and the circuit backoff in section 3. That is what makes the classification
+rate a SEPARATE claim from the fetch rate rather than a restatement of it: the verdict cache
+cannot bound classification here, so only the suppressed fetch can, and section 3's gate is
+therefore load-bearing for both.
 
 The same limit applies to a target walled before it ever won a recipe: it reaches
 classification only after paying a full `generate_candidates` round, because there is no
-stored strategy to fail fast. Backoff is the answer there too.
+stored strategy to fail fast. The same gate is the answer there too, and for the same
+reason -- it sits in front of the fetch, so nothing downstream of the fetch runs at all.
 
 **Three checks, cheapest first, and only the last one costs anything.** Classification is never
 the first question asked on a failure:
@@ -239,6 +248,11 @@ review: the README already records that no consumer currently filters on `valida
 all, so this new value is inert until one does -- a pre-existing gap, out of scope here, but a
 fourth value widens it slightly.
 
+Section 3's fetch circuit later adds a fifth value to the tool's JSON payload, `"backoff"`, without
+adding it to the `ValidationStatus` Literal. The Literal is the domain of what gets *stored* on
+`ScrapeExtraction`, and a suppressed poll stores nothing; `"backoff"` is a statement about our own
+behaviour rather than about a page, so it has no row to live on.
+
 ### 2. Fetch-side health, and a fingerprint to tell failures apart
 
 A new `ScrapeTargetHealth` entity carries:
@@ -249,9 +263,12 @@ A new `ScrapeTargetHealth` entity carries:
 | `consecutive_fetch_failures` | fetch-stage failures (blocked, transport, timeout) -- deliberately separate from the extraction counter |
 | `circuit_state` | `closed` / `open` / `half_open`, the `CircuitBreaker` vocabulary |
 | `blocked_until` | when the next probe is permitted |
-| `last_blocked_at`, `last_block_kind` | evidence for the operator and for tuning detection |
+| `last_blocked_at` | evidence for the operator and for tuning detection |
+| `last_block_kind` | DECLARED BUT NEVER WRITTEN. Kept because the column costs nothing and the distinction it would carry is real, but nothing populates it today, so a reader must not treat it as evidence. `health.py` records the same |
 | `classified_fingerprint`, `classified_verdict`, `classified_evidence` | the verdict cache: which page was last classified, what it was judged to be, and why |
 | `session_state_sealed`, `session_state_expires_at` | §4 |
+| `last_egress` | which exit the last observation was configured to leave by, reported by the fetcher rather than assumed by the caller (§7 -- configured, not observed). Without it "this target is walled" cannot be told apart from "this target is walled FROM THIS EXIT", and one blocked exit poisons a target permanently |
+| `robots_blocked_at`, `robots_blocked_reason` | a `Disallow` that needs a person (§8). Deliberately NOT the circuit's columns: a policy decision is not a fetch failure, and counting it as one would back off a site that works perfectly |
 
 The three `classified_*` columns are what makes "same fingerprint next poll, same verdict, no
 call" implementable. They cannot be folded into `content_fingerprint`, which answers a
@@ -302,17 +319,89 @@ threshold, recovery timeout and single-probe admission are adopted exactly. It i
 the durable store because it is in-memory and `threading.Lock`-based -- process-local by
 construction. A blocked target must stay blocked across pods and restarts, so the durable state
 lives on the `ScrapeTargetHealth` row (`circuit_state`, `consecutive_fetch_failures`,
-`blocked_until` -- shipped in `v010`, still unwritten until Chunk 03), with `WindowedCounter` /
-`DistributedCounter` for the cross-pod counts and `TokenBucket` for probe pacing. Section 2
-settled that; this paragraph said "the recipe row" until the contradiction was caught in
-review, and `ScrapeRecipe` is explicitly left untouched by all of this.
+`blocked_until`), with `WindowedCounter` for the cross-pod counts and `TokenBucket` for probe
+pacing. Section 2 settled that; this paragraph said "the recipe row" until the contradiction
+was caught in review, and `ScrapeRecipe` is explicitly left untouched by all of this.
+
+**How the rules stay in one place, which "adopted exactly" alone does not settle.** Storing
+the state elsewhere is the easy half; the trap is then re-deriving the transitions next to
+the store, because a second copy of a state machine is a second copy that can disagree. So
+`CircuitBreaker` gained a `restore()` classmethod: the durable row is hydrated into a real
+breaker, the transition is driven by calling `check()` / `record_success()` /
+`record_failure()`, and the resulting state is written back. `TargetCircuit` therefore
+contains storage, backoff arithmetic, and the judgement of which outcome counts as a fetch
+failure -- and no transition logic at all. `restore()` deliberately does NOT restore an
+in-flight probe: that belongs to whichever process issued it, and no other process can
+observe it, which is exactly why cross-pod single-probe admission needs the `TokenBucket`
+rather than the flag.
+
+The gate sits at the FETCH boundary, not in the eval loop. This is not a placement
+preference: the eval loop is handed a page that has already been fetched, so a gate there
+could only suppress work downstream of the cost the circuit exists to avoid. A target inside
+its window consequently reaches neither the candidate generator nor the page classifier.
+
+`restore()` not carrying the in-flight flag has a second consequence, beyond needing the
+`TokenBucket`: a restored HALF_OPEN breaker consults no timer at all, so a row left HALF_OPEN
+admits a fresh probe on every poll. That row is reachable whenever a caller dies between the
+fetch and the outcome report, and it would delete the decay while leaving every individual
+transition correct. So the promotion writes `blocked_until` as the probe's own reservation
+and honours it -- a pacer of last resort, built from the column already being written, for a
+deployment that configured no `TokenBucket`.
 
 Where a per-process fast-fail is still wanted, `scrape` accepts an injected breaker through
 `core.http_client`'s existing `CircuitBreakerLike` protocol -- the same seam `core` already uses
-to avoid importing `threetears.models` and its LangChain weight. No new protocol.
+to avoid importing `threetears.models` and its LangChain weight. It is
+injected as a lookup KEYED BY TARGET rather than as one breaker, because a `TargetCircuit`
+serves a whole set of targets: a shared breaker would let one walled target fast-fail every
+other target on the same tool, and let a healthy target's success reset a count another
+target had accumulated. `CircuitBreakerRegistry` is already per-key, and taking the key is
+what keeps that property instead of dropping it at this seam.
+
+Two protocols ARE new, which an earlier draft of this section denied. `ProbeObservableBreaker`
+narrows `CircuitBreakerLike` with a readable `state`, because releasing a probe requires first
+knowing one was admitted, and a breaker that cannot answer that gets wedged rather than
+released -- the constraint belongs in the signature, not in a `getattr`. `ReprobeScheduler` is
+the two-method seam `reprobe.py` satisfies -- book a probe, and cancel one when the circuit
+closes, since a close is the one outcome that books nothing and so cannot supersede an
+outstanding booking by replacing it, so the polling caller never takes on
+`3tears-scheduled-jobs`. Neither adds a dependency: the LangChain-weight argument above is
+about `core`'s reason for the original seam, and `circuit.py` already imports
+`threetears.models.circuit_breaker` at module top, since `3tears-models` is a hard dependency
+of `3tears-scrape` regardless.
+
+The lookup's lifetime is the caller's, and the obvious choice has a sharp edge worth naming.
+`CircuitBreakerRegistry` holds a plain dict with no eviction. Keyed by provider name -- what
+it was built for -- that is bounded by a handful of entries. Keyed by scrape target it is
+not, because `_derive_target_id` mints a fresh `adhoc_<sha256>` per distinct
+`(url, field_schema)`, so a long-running tool handed the bare registry accumulates one
+breaker per URL it has ever scraped. Deliberately not solved by evicting from inside
+`TargetCircuit`: choosing a cache policy for the caller's process would discard circuit state
+a walled target is relying on, on a schedule the caller never asked for. A long-lived
+deployment injects a bounded lookup; a short-lived one has nothing to do.
+
+The two circuits run on very different clocks -- seconds against minutes to hours -- so the
+durable one routinely suppresses a fetch the in-process one has already admitted a probe for.
+That probe then never resolves, and `CircuitBreakerLike` has no way to say "never mind", so
+the suppressed path reports the failure it effectively had. Only where a probe was genuinely
+admitted, though: telling a CLOSED breaker about a fetch that was never attempted trips it on
+failures it never saw, after which the wrong circuit answers `check` and the caller is told to
+retry in seconds when the truth is hours -- turning the suppression into a fixed-cadence poll,
+which is the opposite of the whole section.
 
 Re-probing a blocked target is scheduled through `3tears-scheduled-jobs` (`relative_delay`),
-not a bespoke sleep-and-retry.
+not a bespoke sleep-and-retry. That arrives as the optional `3tears-scrape[reprobe]` extra
+rather than a hard dependency, because scheduled-jobs brings NATS and APScheduler with it and
+a POLLING caller needs none of it -- its next poll is already the re-probe, gated by
+`blocked_until`. Only an event-driven caller has nothing to wake it. The booked job's id is
+derived from the target so a re-booking replaces the outstanding probe; with a random id
+every superseded booking would survive and eventually fire, turning the longest backoff into
+the biggest burst.
+
+A transport failure shares this circuit with a wall, since both mean the content did not
+arrive and retrying immediately will not change that, but only a wall stamps
+`last_blocked_at` -- otherwise the column that answers "when was this target last behind a
+wall" quietly becomes "when did anything last go wrong" and sends an operator hunting for a
+challenge page that was really a DNS failure.
 
 ### 4. Reusing the human's work
 
@@ -326,7 +415,7 @@ already-cleared.
 These are session credentials. Sealed at rest under an operator-supplied master key resolved via
 `secret_refs`, never written plaintext, never logged, and excluded from any debug dump.
 
-Driver contract gains `session_state: str | None = None` on `render()`, following the
+Driver contract gains `session_state: dict[str, Any] | None = None` on `render()`, following the
 established "accept the full signature, use what you need" convention already set by
 `link_selector` / `results_path` / `seen_urls` -- every other backend accepts and ignores it. The
 sidecar applies it to the isolated context before navigating.
@@ -340,24 +429,58 @@ fallback is a dedicated browser for that one target.
 
 ### 5. The HITL session (sidecar)
 
-Container additions: `x11vnc`, `websockify`, noVNC static assets. Xvfb, Chromium and the headful
-launch are already there.
+Container additions, in two groups. For the display itself: `x11vnc`. Xvfb, Chromium and the
+headful launch were already there.
 
-`x11vnc` and `websockify` start **on demand** when a session opens and stop on teardown -- no idle
-VNC surface. This matches the operational model: the display comes up when a person arrives, not
-before.
+`websockify` and the noVNC static assets were here too, and are deliberately gone. Serving the
+client and relaying RFB belong to the MIT container that shares this pod: it ships noVNC in its
+own wheel, pinned to the page that loads it, and reaches `x11vnc` across the pod's shared network
+namespace. Keeping a second, unauthenticated route to the same display would keep exactly what
+the capability check in front of the relay exists to prevent.
+
+For making that display OPERABLE, all added after live verification rather than designed in:
+`openbox` as a window manager, because bare Xvfb maps windows with no decoration and no way to
+switch between them; `tint2` as a taskbar, because without one a minimised window is
+unrecoverable; `x11-xserver-utils` for `xrdb`, which is how `UI_SCALE` reaches openbox and
+tint2 so an operator can size the text; and `x11-utils` for `xprop`, which `entrypoint.sh`
+polls to confirm the window manager actually came up; and `wmctrl` plus `xdotool` to keep Chromium's idle window off the operator's screen and out of their taskbar, since the browser must own a window or it exits and that one belongs to the default context rather than to any target. The image also patches openbox's
+`rc.xml` down to one virtual desktop and unbinds the mousewheel from `GoToDesktop`, because an
+idle scroll on the desktop background silently moved the operator to an empty desktop and their
+targets appeared to vanish.
+
+`x11vnc` starts **on demand** when a session opens and stops on teardown -- no idle VNC surface.
+This matches the operational model: the display comes up when a person arrives, not before.
 
 New sidecar endpoints (the sidecar remains a dumb browser-as-a-service -- no 3tears imports, the
 AGPL boundary is unchanged):
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/hitl/session` | Create a session, start VNC, return `{session_id, vnc_path, token, expires_at}` |
+| `POST /v1/hitl/session` | Create a session, start VNC, return `{session_id, token, expires_at}` |
 | `GET /v1/hitl/session/{id}` | Session state and open tabs |
 | `POST /v1/hitl/session/{id}/tab` | Bring one target into the session: isolated context, navigate, replay `nav_steps` |
-| `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: verify, export sealed state, close the tab, free the slot |
+| `POST /v1/hitl/session/{id}/tab/{tab}/complete` | Human says cleared: export the context's RAW cookies and storage, close the tab, free the slot. This container holds no key and seals nothing; the MIT side seals before anything persists or publishes it |
 | `DELETE /v1/hitl/session/{id}` | Teardown, stop VNC, drop contexts |
-| `GET /vnc/{token}` | The noVNC client itself |
+| `POST` / `GET` / `DELETE /v1/hitl/vnc` | Bring the display up, report whether it is up, take it down. Predates the session API and stays for the case it does not cover |
+
+No response names a place to point a browser, and that is the point: where an operator goes is
+decided by the platform that mounts the operator router, under a prefix this container never
+learns.
+
+**The operator's own surface is not here.** It is a mountable `APIRouter` in `3tears-scrape`
+(`threetears.scrape.operator`), served by the MIT container in this pod: the operator page, the
+vendored noVNC client, and the WebSocket that relays RFB from `x11vnc` over loopback. So a
+platform fronts one origin with one TLS endpoint and one authentication point, and it is the
+origin it already has rather than a second one belonging to this container.
+
+That stream carries the session token in a WebSocket `Sec-WebSocket-Protocol` entry. Forced
+rather than preferred: a browser cannot set arbitrary headers on an upgrade, and the only other
+thing it can do is a query parameter, which writes a live credential into access logs, browser
+history and referrer headers. The page takes the token from the URL FRAGMENT, which never
+reaches a server at all.
+
+Checking that token is a CAPABILITY check and not authorization. Who was entitled to hold one is
+decided by the platform, where identity lives.
 
 **Bounded working set.** A session has a fixed slot count. A target occupies a slot from
 `/tab` until `/complete`; backgrounding a slow one still holds its slot. Items are pulled in as
@@ -369,8 +492,9 @@ operator actually arrives. Waiting therefore costs zero container resources, and
 deterministic because `nav_steps` replay is already how this package reaches gated pages.
 
 **Security.** The session token is unguessable, short-lived, scoped to one session and bound to
-its TTL. `x11vnc` binds loopback only; `websockify` is the sole path in. A session has a hard TTL
-with a reaper. The sidecar never authenticates a human -- it honours a token that the MIT side
+its TTL. `x11vnc` binds loopback only, which on Kubernetes means it is reachable by the MIT
+container sharing this pod's network namespace and by nothing else -- that binding IS the access
+control on the display port, not a hardening extra. A session has a hard TTL with a reaper. The sidecar never authenticates a human -- it honours a token that the MIT side
 minted only after authorizing the request.
 
 **Concurrency, stated honestly.** One Xvfb display means one operator session at a time; a second
@@ -381,18 +505,185 @@ single-display.
 
 ### 6. Authorization, audit, announcement
 
-Authorization lives in the MIT package (`hitl/authorize.py`), never the sidecar, which cannot
-import 3tears. It mirrors `memory/authorize.py` exactly: action constants
-(`scrape.hitl.session.open`, `scrape.hitl.session.view`), a namespace per queue, a package-specific
-`HitlAccessDenied`, evaluated through `authorize_on_entity` with `AclCache`. 3tears ships the
-evaluator; the deployment supplies roles and assignments.
+**This section was rewritten mid-build, and the original plan was WRONG.** It is recorded here
+rather than deleted, because the file inventory below marks two files as deliberately not
+built and this is the reason.
 
-Every session open, tab open, complete, and teardown publishes an `AuditEvent` via
-`publish_audit` -- a human driving a browser holding a target's authenticated session is exactly
-what the unified audit trail is for.
+The original: an RBAC gate at `hitl/authorize.py` mirroring `memory/authorize.py`, a session
+state machine, and audit publishing, all shipped by this package. The error is one of layer.
+3tears is a LIBRARY; the platforms built on it own identity, roles, the operator queue, and
+the conversation that reaches a person. A `HitlAccessDenied` and an `AclCache` lookup here
+would be a second, weaker copy of machinery the hub already runs -- and the one place it would
+diverge is the place that matters, since the sidecar holds no identity and structurally cannot
+evaluate a policy no matter which package the evaluator ships in.
 
-"This target needs a human" is published over NATS using the existing `Subjects` builders. That
-is the whole integration surface with the queue.
+What this package provides instead is the two seams a platform needs, and nothing else:
+
+- **"This target needs a human" is a fact on the health row**, discoverable via
+  `list_walled()`, which answers with both kinds -- a bot wall and a robots refusal. A platform
+  polls it, or subscribes to the existing `Subjects` builders. That is the whole queue surface.
+- **The approval itself is the hub's existing HITL contract**: `Subjects.hub_approval_record()`
+  / `hub_approval_resolve()`, `TearsTool.requires_confirmation`, and the LangGraph interrupt.
+  The hub already does ACL, audit and resume for every other tool that reaches for a person;
+  a scrape reaching for one is not special enough to deserve its own path.
+
+The sidecar's session token proves only that a caller holds something this container minted.
+Deciding who was ENTITLED to it happens where identity lives, which is not here and was never
+going to be.
+
+### 7. Egress: which exit a request leaves by
+
+**Requirement, raised 2026-07-26, mid-build.** TOR egress is fundamental to the scraper, with
+Cloudflare WARP as an option, and both behind a driver seam so a third exit later is one class
+rather than a change to the scraper.
+
+**faidh's existing `ProxyStrategy` is prior art, and this seam does NOT migrate it here.**
+This was decided rather than assumed, against the standing rule that two unrelated egress
+abstractions must not end up in one codebase. They will not, because they are
+not in one codebase: faidh is a consuming application, `threetears.core.egress` is library
+code, and the dependency runs one way. What must not happen -- and would have, silently -- is
+faidh keeping `ProxyStrategy` FOREVER alongside this seam, so that a third exit has to be added
+twice.
+
+The decision: faidh migrates onto `EgressDriver` and deletes `ProxyStrategy`/`DirectProxy`/
+`TorProxy`, as a change in faidh's own repo on faidh's own schedule. It is not a precondition
+for shipping this seam, and it is not optional either; it is tracked in the backlog so
+"later" has somewhere to live rather than being a word in a design document. The shapes already
+correspond -- `DirectProxy` is `DirectEgress`, `TorProxy` is `SocksEgress("tor")` -- which is
+why this is a deletion rather than a rewrite.
+
+**The goal, settled and not to be relitigated.** TOR serves BOTH non-attribution and block
+evasion, and neither reliably. It is wanted for toolbox completeness -- "just another tool in
+our tool box that we need to have so we're complete" -- with the limits understood up front:
+TOR exits are public, enumerable, heavily challenged by bot walls, and frequently blocked
+outright by exactly the attribution-averse sites someone would reach for it against. Routing a
+target through TOR RAISES the challenge rate that sections 1 through 3 exist to lower, and the
+human path in sections 4 through 6 is what pays for that. This is a reason to make the exit
+selectable per target, not a reason to omit it.
+
+**Built in `threetears.core.egress`, not in this package.** Every app on this framework
+eventually wants a request to leave by something other than the container's default route, and
+putting it where it was first needed is how ten apps end up with ten of them. The reuse was
+already there: `core.http_client` calls itself "the one transport" for outbound HTTP and
+already exposed an `httpx.AsyncBaseTransport` seam -- and httpx proxying IS a transport, so an
+exit needed no new plumbing, only a driver that produces one. An explicit transport still wins
+over a configured egress, because that seam is documented as the test seam.
+
+`EgressDriver` has two halves on purpose. An exit is not an HTTP concept, so a driver answers
+both "what transport should httpx bind" and "what does a browser need on its command line". A
+driver that could only do the first would let a deployment proxy its API calls while its
+scrapes went out direct, both reporting the same configured exit -- worse than no proxying,
+because the deployment believes it has the property.
+
+`DirectEgress` is a driver rather than a special case, so "direct" cannot quietly mean "the
+seam was bypassed". An unknown driver name raises rather than falling back to direct, and an
+exit with no address or no name is refused at construction: both are the same failure, an exit
+that reports itself as `tor` in every log and leaves by the container's own IP.
+
+**Nothing here starts a daemon.** A driver describes an exit; running `tor` or `warp-cli` is
+deployment work, and a library owning process lifecycle for someone else's network would be
+wrong about it in every deployment that already had one.
+
+**Per-target, via browser contexts rather than the command-line flag.** An earlier version of
+this section said per-target selection was not possible and one container was one exit. That
+was true of `--proxy-server`, which Chromium applies process-wide, and wrong about contexts:
+`Target.createBrowserContext` takes its own `proxyServer`, so two targets in one browser can
+leave by two exits. The claim was corrected after probing the running image's own CDP
+bindings rather than recalling the flag's behaviour.
+
+So the container's `EGRESS_PROXY` is a DEFAULT, and `RenderRequest.egress_proxy` overrides it
+for one render, which gets its own context and disposes it with the tab. `last_egress` on the
+health row records which exit the render was CONFIGURED to leave by. The value is reported by
+the fetcher rather than assumed by the caller: the sidecar returns it, the driver carries it
+back on `RenderedPage.egress`, and the circuit stamps that rather than a constructor-time name
+which a per-render override would have made wrong. What it buys is that a dropped proxy
+argument surfaces as a mismatch, because an older sidecar that ignores the argument reports its
+own exit instead of echoing the one it was asked for.
+
+It is not evidence that traffic left that way. A per-context proxy Chromium accepted and then
+ignored would still be recorded under the name it was asked for, and nothing inside the process
+can tell the difference. Confirming it needs an observer outside the process, reading the
+address the container presents to a third party; that verification is tracked separately and
+deliberately, because a unit test asserting it would be asserting on its own fake.
+
+`None` means no exit was configured, which is a different fact from choosing the default route.
+That choice is `DirectEgress` and records as `direct`.
+
+With more than one exit, the useful fact stops being "this target is walled" and becomes
+"walled FROM THIS EXIT", without which a target blocked through one route looks permanently
+walled and a working alternative is never tried.
+
+One configuration hazard is worth naming because it is invisible: egress is wired separately on
+the drivers and on `ScrapeTool` itself, and getting either half alone leaks the container's
+address on the other. Drivers proxied with an unproxied gate means the page leaves by the
+configured exit while the `robots.txt` read in front of it does not. The gate proxied with an
+unproxied driver is the worse one, because what goes out direct is the page fetch itself, the
+request the exit was configured for. Both halves work either way; the target simply learns the
+real address from the request nobody was thinking about.
+
+`ScrapeTool` warns on both shapes, reading the gate it actually holds rather than its own
+constructor argument -- a caller can build a `RobotsGate` with its own egress and pass it in, so
+the argument describes what the default gate WOULD have been. It says nothing when robots is
+disabled, since there is no second request to be split from. A warning rather than a refusal,
+since a deployment may want exactly that, but it should have to be a decision.
+
+In the gate-proxied shape the warning names the unproxied drivers, which is how a backend that
+cannot honour an exit at all gets reported. Most backends cannot: `CamoufoxDriver` launches a
+browser with no proxy support, and `DocumentDriver`, `ListingDetailDriver` and
+`MultiDocumentDriver`'s listing fetch each build a bare `httpx.AsyncClient`. Threading an exit
+through them is tracked in the backlog; until then the bypass is loud rather than closed.
+
+Note the asymmetry, because it bounds what this warning is worth. In the drivers-proxied shape
+the message names the PROXIED drivers, so a deployment that proxied what it could and left the
+rest is told about the `robots.txt` read and told nothing about the backends going direct. Two
+configurations reach that shape: proxying drivers individually while leaving the gate alone, and
+passing a gate explicitly, since `ScrapeTool(egress=X, robots=RobotsGate())` gives a gate with no
+exit -- the default gate inherits `egress` only through the absent-argument sentinel, so
+supplying any gate opts out of the inheritance. The gate-proxied shape is what a plain
+`ScrapeTool(egress=...)` produces, and it is the one that reports the bypass.
+
+### 8. robots.txt: wait when asked, escalate when refused
+
+**Requirement, raised 2026-07-26, mid-build.** The option to check `robots.txt` and honour it:
+respect rate limits, and flag a target for a human if it says no bots. Both configurable, both
+enabled by default -- a scraper whose politeness is opt-in is impolite in every deployment
+nobody configured, and those are the deployments nobody is watching.
+
+**The two halves are different decisions.** `Crawl-delay` asks us to be slower and changes
+scheduling only; the target still gets fetched. `Disallow` asks us not to fetch at all, and
+neither obeying nor ignoring it is right: obeying makes a target permanently invisible with no
+way to say "we have an agreement with this site", and ignoring is what gives crawlers their
+reputation. So it escalates, through the same human path a bot wall already takes.
+
+**A human working the page over VNC is not a bot.** The Robots Exclusion Protocol governs
+automated agents, not people operating browsers, so a `Disallow` that stops the unattended
+fetcher does not stop an operator who opens a session and works the target themselves. That is
+what makes the escalation close rather than dead-end. Two things keep it a position rather
+than a loophole: the exemption is for a session a person is actually IN, not "open a session
+and let the robot drive through it", and `Crawl-delay` does NOT get the exemption, because
+load on someone's server is caused equally by either.
+
+**Composition with the fetch circuit.** Both gate the fetch and they are different kinds of
+gate. `Crawl-delay` is a FLOOR on politeness that applies to a target working perfectly;
+`blocked_until` is a CEILING on cost that applies to one that is not. A fetch satisfies both,
+and neither may weaken the other -- in particular a circuit probe is not exempt from the crawl
+delay, or the politeness contract breaks precisely when a target is already unhappy with us.
+
+**Every unusable `robots.txt` means "allowed".** Missing, 500, empty, garbage, unreachable,
+unparseable: they all mean the site has not told us anything, and treating any as a refusal
+lets one bad response to a text file stop a scrape silently -- which looks exactly like a
+target that quietly stopped producing data. The crawl clock starts on a FETCH rather than a
+check, because the circuit can suppress a fetch after robots was consulted and a check that
+led nowhere must not consume the site's patience.
+
+Parsing is `urllib.robotparser` from the standard library. The grammar is looser than its
+reputation and implementations disagree about wildcards and `Allow` precedence; the stdlib's
+reading is defensible, already installed, and adding a package to read a text file fetched
+once per origin is a poor trade. The optional cross-pod pacer is
+`core.coordination.TokenBucket`, the same primitive and reasoning as the circuit's probe pacer:
+without it the delay is honoured per process, which is a lie in a fleet, because five pods each
+waiting ten seconds present a request every two.
+
 
 ---
 
@@ -412,18 +703,60 @@ is the whole integration surface with the queue.
 
 **Create**
 - `packages/scrape/src/threetears/scrape/challenge.py` -- `PageVerdict`, `classify_failed_page`
-- `packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate
-- `packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine
+- `packages/scrape/src/threetears/scrape/health.py` -- `ScrapeTargetHealth` + collection + writers
+- `packages/scrape/src/threetears/scrape/circuit.py` -- `TargetCircuit`, `BackoffPolicy`, the fetch gate
+- `packages/scrape/src/threetears/scrape/reprobe.py` -- scheduled-jobs adapter, `[reprobe]` extra only
+- `packages/scrape/src/threetears/scrape/session_state.py` -- seal, open and store a human's solve
+- `packages/scrape/src/threetears/scrape/robots.py` -- `RobotsGate`, `RobotsPolicy` (§8)
+- `packages/core/src/threetears/core/egress.py` -- `EgressDriver` and friends (§7); in core, not
+  in scrape, because an exit is not a scraping concept
 - `packages/scrape/sidecar/hitl.py` -- session endpoints, VNC lifecycle
-- `packages/scrape/sidecar/static/` -- noVNC assets
+- `packages/scrape/src/threetears/scrape/operator.py` -- the mountable operator router's seams:
+  `build_operator_router`, `relay_stream`, and the protocols a platform injects
+- `packages/scrape/src/threetears/scrape/operator_routes.py` -- the FastAPI wiring, in its own
+  module so annotations resolve against a namespace where FastAPI is imported
+- `packages/scrape/src/threetears/scrape/operator_session.py` -- `claim_session`, so one pod holds
+  one display
+- `packages/scrape/src/threetears/scrape/operator_control.py` -- the four control messages, routed
+  to the pod holding the display
+- `packages/scrape/src/threetears/scrape/operator_assets/` -- the operator page and the vendored
+  noVNC client, with its licence notice
 - tests alongside each
+
+**Planned and NOT built, deliberately**
+- ~~`packages/scrape/src/threetears/scrape/hitl/authorize.py` -- RBAC gate~~
+- ~~`packages/scrape/src/threetears/scrape/hitl/session.py` -- session client + state machine~~
+
+  Both were dropped once §6 was rewritten. 3tears is a library; the platforms that consume it
+  own identity, the operator queue and the conversation that reaches a human. An RBAC gate and
+  a session state machine HERE would be a second, weaker copy of what the hub already has --
+  see §6 for the seams that replaced them (`Subjects.hub_approval_record`,
+  `TearsTool.requires_confirmation`). Listed rather than deleted because the file inventory is
+  the first place a reader checks for "was this forgotten or decided".
+- ~~`packages/scrape/sidecar/static/` -- noVNC assets~~ Not in the SIDECAR, and that part still
+  stands: this container serves no client at all. The reasoning originally given here -- that
+  Debian's `novnc` package ships one, so vendoring would be a fork for nothing -- was
+  **overturned**, and the client is now vendored into the MIT wheel instead
+  (`operator_assets/novnc/`). Two arguments beat it. A seam that requires the consumer to install
+  noVNC separately is homework rather than a seam; and more importantly the page and the RFB
+  module it imports must be the same noVNC release, because RFB's constructor options have changed
+  across versions, so a distro-supplied tree turns "did you install the right noVNC" into a bug
+  class diagnosed from outside the process. Vendoring is not a fork: the tree is unmodified and a
+  digest test says so.
 
 **Modify**
 - `eval_loop.py` -- challenge short-circuit, fingerprint routing, fetch-health updates
-- `collections.py` -- new `ScrapeTargetHealth` entity + `ScrapeTargetHealthCollection`; `ScrapeRecipe` untouched
-- `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed session state)
+- `tool.py` -- the fetch gate and the outcome report; the fetch boundary is where the circuit lives
+- `packages/models/.../circuit_breaker.py` -- `CircuitBreaker.restore()`, the durable-state seam
+- `collections.py` -- untouched by the health work in the end. The entity and collection live
+  in `health.py`, and the planned re-export was dropped rather than added: a second import path
+  for one class is a second thing to keep in step, and consumers import from `health` directly
+- `migrations.py` -- `v010` creates `scrape_target_health` (fetch health, fingerprint, sealed
+  session state); `v011` adds `last_egress`; `v012` adds the robots-block columns. Three
+  migrations rather than one because `v010` had already shipped to `develop` -- an applied
+  migration is immutable, so §7 and §8 add columns rather than editing history
 - `driver.py` + all 8 drivers -- `session_state` parameter (accept-and-ignore except the browser backends)
-- `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc`, `websockify`, noVNC
+- `sidecar/Dockerfile`, `entrypoint.sh` -- `x11vnc` (noVNC ships in the MIT wheel, not here)
 - `tests/test_migrations_drift.py` -- already introspection-based as of the current fix branch, so it picks up the new columns automatically
 - `packages/scrape/README.md`
 
@@ -456,14 +789,26 @@ is the whole integration surface with the queue.
 4. A target with health but no recipe (blocked before it ever extracted successfully) is a health
    row with no recipe row. No strategy-less `ScrapeRecipe` is ever written, and `run_eval_loop`'s
    reuse branch is unchanged.
-5. An operator with a granted role can open a session for a permitted queue; one without is
-   denied with `HitlAccessDenied`, distinguishable from "nothing queued".
-6. A completed solve yields sealed session state that a subsequent unattended render consumes to
+5. A repeatedly blocked target's **fetch rate decays**: the circuit opens at the threshold and
+   each probe that finds the wall still standing doubles the wait, to a ceiling.
+6. Its **classification rate decays too**, which criterion 5 does not imply. Proven over many
+   polls against a page carrying a per-request id -- the shape that provably defeats the
+   verdict cache, so only the suppressed fetch can bound it.
+7. No new state machine exists: the transitions come from `CircuitBreaker` via `restore()`,
+   and the reused primitive is named at each site.
+8. ~~An operator with a granted role can open a session for a permitted queue; one without is
+   denied with `HitlAccessDenied`, distinguishable from "nothing queued".~~ **Withdrawn with
+   the §6 rewrite**, which struck the file this criterion tested. Authorization is the
+   consuming platform's, evaluated where identity lives; the sidecar holds none and cannot
+   satisfy this criterion in any package. What replaces it: the session token proves only that
+   a caller holds something this container minted, and the queue is a fact on the health row
+   that a platform reads and gates for itself.
+9. A completed solve yields sealed session state that a subsequent unattended render consumes to
    fetch the target successfully with no human involved.
-7. Sealed state is unreadable without the master key; a tampered token is rejected.
-8. Session teardown stops `x11vnc`/`websockify` and drops contexts; the TTL reaper collects an
-   abandoned session.
-9. `./scripts/check-all.sh` green; the introspection-based drift guard covers every new column.
+10. Sealed state is unreadable without the master key; a tampered token is rejected.
+11. Session teardown stops `x11vnc` and drops contexts; the TTL reaper collects an
+    abandoned session.
+12. `./scripts/check-all.sh` green; the introspection-based drift guard covers every new column.
 
 ---
 

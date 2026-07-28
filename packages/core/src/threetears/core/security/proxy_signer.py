@@ -10,15 +10,36 @@ The private key never leaves the signer and is never logged.
 from __future__ import annotations
 
 import base64
-from typing import Any
+from typing import Any, NoReturn
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import SecretStr
+from threetears.observe import get_logger
 
 from threetears.core.security.identity_token import IdentityTokenError, build_jwks, jwk_thumbprint
 from threetears.core.security.proxy_assertion import mint_proxy_assertion
 
 __all__ = ["ProxyAssertionSigner"]
+
+
+log = get_logger(__name__)
+
+
+def _key_load_failed(reason: str) -> NoReturn:
+    """Log a signing-key load failure at ERROR, then raise it.
+
+    Distinct from a verification denial, and a level louder: a denial means one caller was
+    refused, whereas this means the service holds no usable signing key and cannot mint at
+    all. It is a deploy error -- an unparseable PEM, an encrypted key with no password, a
+    seed of the wrong length -- and the operator who mis-set it is the only person who can
+    fix it, so it must reach them rather than dying inside a caller's ``except``.
+
+    The reason names the failure shape only. The key material, and the secret it was read
+    from, never appear.
+    """
+    log.error("proxy assertion signing key could not be loaded", extra={"extra_data": {"reason": reason}})
+    raise IdentityTokenError(reason) from None
+
 
 _ED25519_SEED_LEN = 32
 _DEFAULT_TTL_SECONDS = 30
@@ -71,7 +92,7 @@ class ProxyAssertionSigner:
                 raise ValueError(f"expected a {_ED25519_SEED_LEN}-byte seed, got {len(seed)}")
             key = Ed25519PrivateKey.from_private_bytes(seed)
         except ValueError as exc:
-            raise IdentityTokenError(f"invalid proxy assertion signing key ({type(exc).__name__})") from None
+            _key_load_failed(f"invalid proxy assertion signing key ({type(exc).__name__})")
         return cls(signing_key=key, ttl_seconds=ttl_seconds)
 
     @property

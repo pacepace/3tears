@@ -14,8 +14,11 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored: these name top-level build output. Unanchored, `lib/` matches at ANY depth --
+# it swallowed a vendored `.../pako/lib/` tree, and hatchling reads this file with its own
+# matcher that does NOT honour `!` re-inclusion, so the miss reached built artifacts.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -214,3 +217,4 @@ __marimo__/
 
 # macOS folder metadata
 .DS_Store
+

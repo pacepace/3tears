@@ -569,8 +569,13 @@ def _parse_docx(
                 val = getattr(props, attr, None)
                 if val:
                     metadata[attr] = val
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 -- body extraction below is the real product
+            # The document body still parses; only its core properties are lost. The result then
+            # carries no title or author and looks like a document that simply had none.
+            log.debug(
+                "could not read document core properties; metadata omitted",
+                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            )
 
         current_heading: str | None = None
         current_level = 0

@@ -122,7 +122,7 @@ async def test_target_save_and_get_round_trips_through_l3(
     assert fetched is not None
     assert fetched.url == "https://example.gov/warn"
     assert fetched.cadence == "daily"
-    assert fetched.multi_row is False  # SCR-6P2X: defaults False, not requested above
+    assert fetched.multi_row is False  # defaults False, not requested above
 
 
 async def test_target_multi_row_flag_round_trips_through_l3(

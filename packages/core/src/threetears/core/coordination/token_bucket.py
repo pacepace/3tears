@@ -42,7 +42,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "TokenClaimResult",
@@ -176,7 +179,7 @@ class TokenBucket:
 
     def __init__(
         self,
-        nats_client: "NatsClient",
+        nats_client: "KvCapable",
         *,
         bucket_name: str,
         refill_rate: float,
@@ -185,9 +188,9 @@ class TokenBucket:
     ) -> None:
         """configure the bucket; defer KV bucket binding until first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`;
-            the store opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`;
+            the store opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the
             namespace. pick a bucket dedicated to one rate-limiting domain so
             unrelated keys never collide across surfaces
@@ -219,7 +222,7 @@ class TokenBucket:
         self._refill_rate = refill_rate
         self._capacity = capacity
         self._kv_ttl = kv_ttl
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -279,7 +282,61 @@ class TokenBucket:
                 return result
             await asyncio.sleep(max(0.0, min(result.retry_after_seconds, remaining)))
 
-    async def _attempt(self, bucket: "NatsKvBucket", key: str, tokens: float) -> TokenClaimResult:
+    async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
+        """Put back tokens claimed for work that never happened. Returns the resulting count.
+
+        :meth:`claim` consumes, and until now the only recovery was refill over time -- so a
+        caller cancelled between claiming its turn and doing the work held the bucket down for
+        as long as the refill rate took to make it up. That is invisible in one instance and
+        compounds under repeated cancellation: a pod restarting in a loop can hold a key's
+        budget near zero while doing nothing at all.
+
+        **Best effort, and never raises.** This exists to be called from an exception handler
+        that is already unwinding, most often a cancellation. Raising there would replace a
+        recoverable throughput dip with a lost error, so every failure -- KV outage, CAS
+        exhaustion -- is logged and swallowed; the bucket then refills on its own, which is
+        exactly the state this method exists to shorten rather than to guarantee.
+
+        Capped at capacity, so a double refund or a refund of tokens that were never claimed
+        cannot mint budget the bucket never had. That makes it safe to call unconditionally in
+        a handler that may or may not have got as far as claiming.
+
+        :param key: bucket key the tokens were claimed from
+        :ptype key: str
+        :param tokens: how many to return; must not exceed capacity
+        :ptype tokens: float
+        :return: tokens available after the refund. ``-1.0`` means it could not be applied and
+            the bucket will refill instead -- a KV failure or CAS exhaustion. An untouched key
+            returns capacity, since nothing was consumed from it to give back
+        :rtype: float
+        """
+        if tokens <= 0:
+            return -1.0
+        try:
+            bucket = await self._ensure_bucket()
+            for attempt in range(_CAS_MAX_RETRIES):
+                now = datetime.now(UTC)
+                entry = await bucket.get_entry(key=key)
+                if entry is None:
+                    # No key means nothing was ever consumed from it; a refund would be
+                    # inventing budget rather than returning it.
+                    return self._capacity
+                value, revision = entry
+                state = _decode_state(value)
+                elapsed = max(0.0, (now - state.last_refill).total_seconds())
+                current = min(self._capacity, state.tokens + elapsed * self._refill_rate)
+                restored = min(self._capacity, current + tokens)
+                if await bucket.update(key=key, value=_encode_state(restored, now), revision=revision) is not None:
+                    return restored
+                if attempt < _CAS_MAX_RETRIES - 1:
+                    backoff = random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS)  # noqa: S311 - jitter, not security
+                    await asyncio.sleep(backoff)
+            log.warning("token bucket: exhausted CAS retries refunding %s tokens to %r", tokens, key)
+        except Exception:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a refund runs while the caller is already unwinding; raising would turn a self-healing throughput dip into a lost error. Logged with its traceback below
+            log.exception("token bucket: could not refund %s tokens to %r; it will refill instead", tokens, key)
+        return -1.0
+
+    async def _attempt(self, bucket: "KvBucketLike", key: str, tokens: float) -> TokenClaimResult:
         """one refill-then-maybe-consume pass.
 
         retries internally, bounded by :data:`_CAS_MAX_RETRIES`, only
@@ -289,7 +346,7 @@ class TokenBucket:
         outcome this method returns directly.
 
         :param bucket: backing wrapper KV bucket (from :meth:`_ensure_bucket`)
-        :ptype bucket: NatsKvBucket
+        :ptype bucket: KvBucketLike
         :param key: bucket key
         :ptype key: str
         :param tokens: number of tokens this claim consumes
@@ -318,12 +375,12 @@ class TokenBucket:
             new_tokens = current_tokens - tokens
             payload = _encode_state(new_tokens, now)
             if revision is None:
-                # NatsKvBucket.create returns the new revision on success or
+                # KvBucketLike.create returns the new revision on success or
                 # None on CAS conflict (another claimer created the key
                 # between our get_entry miss and this create) -- retry.
                 new_revision = await bucket.create(key=key, value=payload)
             else:
-                # NatsKvBucket.update returns None on revision mismatch --
+                # KvBucketLike.update returns None on revision mismatch --
                 # another claimer consumed from this key between our
                 # get_entry and this update -- retry.
                 new_revision = await bucket.update(key=key, value=payload, revision=revision)
@@ -334,7 +391,7 @@ class TokenBucket:
                 await asyncio.sleep(backoff)
         raise TokenBucketConflict(f"exhausted {_CAS_MAX_RETRIES} CAS retries claiming from bucket {key!r}")
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the TTL'd KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket

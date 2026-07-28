@@ -8,11 +8,11 @@ the consuming application's own live suite (faidh repo).
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 
 from threetears.scrape.drivers.listing_detail import (
     ListingDetailDriver,
@@ -406,4 +406,38 @@ class TestListingDetailDriver:
         driver = ListingDetailDriver(
             row_selector="tr", listing_field_columns={}, detail_link_column=0, detail_field_labels={}
         )
-        assert driver._pace_delay_seconds > 0  # noqa: SLF001 -- asserting the documented default itself
+        assert driver._pace_delay_seconds > 0
+
+
+class TestListingDetailAnnouncesADroppedSolve:
+    """Through render(), because the call site is what was untested.
+
+    Asserting the inherited helper directly left this driver's own `if session_state:` block
+    deletable with the whole suite green.
+    """
+
+    @staticmethod
+    def _handler(request: httpx.Request) -> httpx.Response:
+        listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
+        if str(request.url).endswith("/notices/1"):
+            return httpx.Response(200, content=_detail_html(notice_date="Jun 2, 2026", affected_count="42").encode())
+        return httpx.Response(200, content=listing.encode())
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+        driver = _driver(self._handler)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
+            await driver.render("https://example.gov/warn", session_state={"cookies": [{"name": "s"}]})
+
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
+        mine = [r for r in driver_warnings(caplog, "listing_detail") if "cannot apply it" in r.getMessage()]
+        assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog):
+        driver = _driver(self._handler)
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
+            await driver.render("https://example.gov/warn")
+
+        assert not [r for r in driver_warnings(caplog, "listing_detail") if "cannot apply it" in r.getMessage()]

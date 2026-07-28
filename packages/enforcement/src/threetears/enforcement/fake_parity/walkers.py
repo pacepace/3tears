@@ -48,6 +48,7 @@ import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
+from threetears.enforcement.common.ast_helpers import note_unscanned
 from threetears.enforcement.common.violations import Violation
 
 __all__ = [
@@ -114,7 +115,9 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
-        except OSError, SyntaxError:
+        except (OSError, SyntaxError) as exc:
+            # Any fake declared in this file is now exempt from parity by accident.
+            note_unscanned(py_file, f"could not read or parse: {type(exc).__name__}")
             continue
         source_lines = source.splitlines()
         for node in ast.walk(tree):
@@ -376,7 +379,11 @@ def _import_marker_target(fqname: str) -> type | None:
     module_path, _, attr = fqname.rpartition(".")
     try:
         module = importlib.import_module(module_path)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 -- any import failure means the target is unresolvable
+        # The production protocol this fake claims parity with cannot be loaded, so the fake goes
+        # unchecked. A renamed or moved protocol lands here and looks exactly like a fake that
+        # passed -- which is the drift this gate exists to catch.
+        note_unscanned(fqname, f"parity target could not be imported: {type(exc).__name__}: {exc}")
         return None
     candidate = getattr(module, attr, None)
     if not isinstance(candidate, type):
@@ -420,6 +427,9 @@ def _public_methods(
         try:
             methods[name] = inspect.signature(member)
         except TypeError, ValueError:
+            # NOSILENT: this is the probe that decides whether a member HAS an introspectable
+            # signature. Builtins and C-implemented callables do not, and having no signature to
+            # compare is the expected answer for them, not a failure to look.
             continue
     return methods
 

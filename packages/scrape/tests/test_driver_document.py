@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from _driver_log_helpers import driver_warnings
 from threetears.agent.tools.document import DocumentResult, DocumentSection, OcrConfig
 
 from threetears.scrape.driver import RenderedPage
@@ -580,3 +581,73 @@ class TestDocumentDriver:
 
         assert isinstance(page, RenderedPage)
         await client.aclose()
+
+
+class TestDocumentDriverAnnouncesADroppedSolve:
+    """Through render(), because the call site is what was untested.
+
+    Asserting the base-class helper directly exercised one inherited implementation and left
+    this driver's own `if session_state:` block deletable with the suite green.
+    """
+
+    async def test_render_warns_when_it_drops_a_solve(self, caplog, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.parse_document",
+            AsyncMock(
+                return_value=DocumentResult(text="Acme", title="t", page_count=None, word_count=1, was_ocr=False)
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
+            await driver.render("https://example.gov/warn.txt", session_state={"cookies": [{"name": "s"}]})
+
+        # Scoped to this driver's own logger via the shared helper, so another module's
+        # warning cannot stand in for this one.
+        mine = [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
+        assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
+
+    async def test_an_ordinary_render_stays_quiet(self, caplog, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/plain"}, content=b"fake-bytes")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        driver = DocumentDriver(client=client)
+        monkeypatch.setattr(
+            "threetears.scrape.drivers.document.parse_document",
+            AsyncMock(
+                return_value=DocumentResult(text="Acme", title="t", page_count=None, word_count=1, was_ocr=False)
+            ),
+        )
+
+        with caplog.at_level("WARNING", logger="threetears.scrape.drivers.document"):
+            await driver.render("https://example.gov/warn.txt")
+
+        assert not [r for r in driver_warnings(caplog, "document") if "cannot apply it" in r.getMessage()]
+
+
+async def test_the_filter_does_not_confuse_a_wrapper_for_its_inner_driver(caplog) -> None:
+    """Drives the shared filter, so loosening it fails HERE rather than silently everywhere.
+
+    `MultiDocumentDriver` logs under `...drivers.multi_document`, which `endswith("document")`
+    matches -- so a suffix filter would accept the WRAPPER's record as proof that the inner
+    document driver emitted one. An earlier version of this test asserted
+    `"...multi_document".endswith("document")`, which is a property of `str`: it passed whether
+    the production filter was exact or loose, and therefore guarded nothing.
+    """
+    import logging
+
+    with caplog.at_level("WARNING", logger="threetears.scrape.drivers.multi_document"):
+        logging.getLogger("threetears.scrape.drivers.multi_document").warning(
+            "multi_document driver: cannot apply it (the wrapper's own record)"
+        )
+
+    assert driver_warnings(caplog, "document") == [], (
+        "the wrapper's record was attributed to the inner document driver, so a suffix filter "
+        "would let the wrapper's warning stand in for one this driver never emitted"
+    )
+    assert driver_warnings(caplog, "multi_document"), "the record was emitted and should be findable under its own name"

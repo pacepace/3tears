@@ -355,23 +355,38 @@ class ToolCatalog:
             },
         )
 
-    async def deregister(self, full_name: str) -> None:
+    async def deregister(self, full_name: str) -> bool:
         """remove tool entirely from catalog and delete from KV.
 
         :param full_name: composite key as name@version
         :ptype full_name: str
+        :return: ``True`` when the tool is gone everywhere; ``False`` when only the LOCAL entry was
+            dropped and the shared KV copy survived. A caller that ignores this gets the previous
+            behaviour, but it can now retry -- which matters because ``load_from_kv`` repopulates
+            ``_entries`` from KV, so a node that fails the KV delete re-learns the tool it just
+            deregistered on its next restart, and every other node never stopped advertising it.
+        :rtype: bool
         """
         self._entries.pop(full_name, None)
+        kv_deleted = True
         if self._kv is not None:
             try:
                 kv_key = _sanitize_kv_key(full_name)
                 await self._kv.delete(kv_key)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- the local drop above already succeeded
+                # The local entry is gone but the shared KV copy is not, so every other node still
+                # discovers this tool. Deregistration is not complete, and saying so at info would
+                # have read as a clean removal.
+                kv_deleted = False
+                _logger.warning(
+                    "deregistered tool locally but failed to remove its shared KV entry",
+                    extra={"extra_data": {"full_name": full_name, "error": str(exc)}},
+                )
         _logger.info(
             "deregistered tool from catalog",
-            extra={"extra_data": {"full_name": full_name}},
+            extra={"extra_data": {"full_name": full_name, "kv_deleted": kv_deleted}},
         )
+        return kv_deleted
 
     async def deregister_pod(self, pod_id: str) -> list[str]:
         """remove all endpoints for specified pod.
@@ -388,6 +403,8 @@ class ToolCatalog:
         """
         affected: list[str] = []
         to_remove: list[str] = []
+        #: tools whose SHARED copy still advertises this pod after the sweep.
+        stale_shared: list[str] = []
         for full_name, entry in self._entries.items():
             removed = entry.remove_endpoint(pod_id)
             if not removed:
@@ -397,12 +414,31 @@ class ToolCatalog:
                 to_remove.append(full_name)
             elif self._kv is not None:
                 kv_key = _sanitize_kv_key(full_name)
-                await self._kv.put(
-                    kv_key,
-                    json.dumps(entry.to_dict()).encode("utf-8"),
-                )
+                try:
+                    await self._kv.put(
+                        kv_key,
+                        json.dumps(entry.to_dict()).encode("utf-8"),
+                    )
+                except Exception as exc:  # noqa: BLE001 -- one tool's KV write must not strand the rest
+                    # The in-memory endpoint is ALREADY removed at this point. Letting this
+                    # propagate abandoned the loop mid-way with `_entries` mutated and `affected`
+                    # discarded, so the caller learned nothing about the pods that had been
+                    # processed -- the same partial-failure shape as the deregister below, in the
+                    # same method. The shared copy keeps advertising this endpoint until a later
+                    # write succeeds; that is worth a warning, not a lost sweep.
+                    stale_shared.append(full_name)
+                    _logger.warning(
+                        "removed a pod's endpoint locally but failed to update its shared KV entry",
+                        extra={"extra_data": {"full_name": full_name, "pod_id": pod_id, "error": str(exc)}},
+                    )
         for full_name in to_remove:
-            await self.deregister(full_name)
+            if not await self.deregister(full_name):
+                stale_shared.append(full_name)
+        if stale_shared:
+            _logger.warning(
+                "pod deregistration left shared KV entries stale",
+                extra={"extra_data": {"pod_id": pod_id, "full_names": sorted(set(stale_shared))}},
+            )
         result = affected
         return result
 

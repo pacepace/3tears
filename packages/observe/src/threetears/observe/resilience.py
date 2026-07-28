@@ -6,6 +6,8 @@ services must survive starting in any order and tolerate temporary
 unavailability of their dependencies.
 """
 
+from __future__ import annotations
+
 import asyncio
 import random
 from collections.abc import Awaitable, Callable

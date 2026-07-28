@@ -38,7 +38,6 @@ from threetears.agent.skills.tools import (
     load_skill_create_tool,
     load_skill_delete_tool,
     load_skill_get_tool,
-    load_skill_introspect_tool,
     load_skill_invoke_tool,
     load_skill_list_tool,
     load_skill_report_outcome_tool,
@@ -261,7 +260,9 @@ class TestSkillLifecycle:
         assert create_out.startswith("[skill:")
         # Extract the skill_id
         skill_id_str = create_out.split("[skill:")[1].split("]")[0]
-        skill_id = UUID(skill_id_str)
+        # The parse is the assertion: this raises unless the tool returned a real UUID. Bound to
+        # no name because nothing below needs one, and a dead name reads like an oversight.
+        UUID(skill_id_str)
 
         # List should surface it
         list_out = await list_tool.ainvoke({})
