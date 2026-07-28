@@ -7,9 +7,26 @@ mechanics (default "successful controls", submit-control listing, action resolut
 
 from __future__ import annotations
 
-from threetears.scrape.forms import FormControl, HtmlForm, build_form_post, parse_form
+from threetears.scrape.forms import EventTrigger, FormControl, HtmlForm, build_form_post, parse_form
 
 _PAGE_URL = "https://portal.example.gov/lobby/Directory.aspx"
+
+#: A WebForms page whose ONLY triggers are ``__doPostBack`` anchors -- no named submit control exists.
+#: The quotes are HTML-escaped exactly as a real portal serves them, which is the point of the fixture:
+#: the call is only visible once the markup is parsed, never in the raw bytes.
+_EVENT_DRIVEN_FORM = b"""<html><body>
+<form method="post" action="LobbyistSearch.aspx" id="aspnetForm">
+  <input type="hidden" name="__VIEWSTATE" value="/wEPDwUJODY" />
+  <input type="hidden" name="__EVENTTARGET" value="" />
+  <input type="hidden" name="__EVENTARGUMENT" value="" />
+  <input type="text" name="ctl00$MainContent$txtName" value="" />
+  <a href="javascript:__doPostBack(&#39;ctl00$MainContent$SearchButton&#39;,&#39;&#39;)">Search</a>
+  <a href="javascript:__doPostBack(&#39;ctl00$MainContent$ExportButton&#39;,&#39;&#39;)">Export Selected Year</a>
+  <a href="javascript:__doPostBack(&#39;ctl00$MainContent$Pager&#39;,&#39;2&#39;)">2</a>
+  <a href="javascript:__doPostBack(&#39;ctl00$MainContent$SearchButton&#39;,&#39;&#39;)">Search again</a>
+  <a href="https://elsewhere.example/help">Help</a>
+</form>
+</body></html>"""
 
 _ASPNET_FORM = b"""<html><body>
 <form method="post" action="./Directory.aspx" id="aspnetForm">
@@ -105,3 +122,99 @@ def test_build_form_post_overrides_win_last() -> None:
 def test_build_form_post_no_submit_no_overrides_is_the_defaults() -> None:
     form = HtmlForm(action_url="https://h/x", fields={"__VIEWSTATE": "v"}, submit_controls=())
     assert build_form_post(form) == {"__VIEWSTATE": "v"}
+
+
+# --- __doPostBack event triggers -------------------------------------------------
+
+
+def test_parse_finds_event_triggers_when_no_submit_control_exists() -> None:
+    """A form driven only by ``__doPostBack`` anchors still reports triggers.
+
+    Without this the form parses to zero triggers and a browser-free replay concludes the page cannot
+    be driven at all -- when in fact the browser is doing nothing more than setting two hidden fields.
+    """
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    assert form.submit_controls == ()  # nothing carries a name=value
+    assert [(t.target, t.argument) for t in form.event_triggers] == [
+        ("ctl00$MainContent$SearchButton", ""),
+        ("ctl00$MainContent$ExportButton", ""),
+        ("ctl00$MainContent$Pager", "2"),
+    ]
+
+
+def test_event_triggers_are_deduplicated_but_keep_distinct_arguments() -> None:
+    """Two anchors raising the same event are one trigger; the same control with a different
+    argument is NOT -- that is how a pager names its pages."""
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    targets = [t.target for t in form.event_triggers]
+    assert targets.count("ctl00$MainContent$SearchButton") == 1  # the repeated anchor collapsed
+    pager = [t for t in form.event_triggers if t.target == "ctl00$MainContent$Pager"]
+    assert pager[0].argument == "2"
+
+
+def test_event_trigger_carries_its_label_for_caller_choice() -> None:
+    """The visible text is what lets a caller pick "Search" over "Export" without hardcoding
+    control-name conventions, which vary per portal."""
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    labels = {t.target: t.label for t in form.event_triggers}
+    assert labels["ctl00$MainContent$SearchButton"] == "Search"
+    assert labels["ctl00$MainContent$ExportButton"] == "Export Selected Year"
+
+
+def test_plain_links_are_not_event_triggers() -> None:
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    assert all("elsewhere.example" not in t.target for t in form.event_triggers)
+
+
+def test_event_trigger_read_from_onclick_as_well_as_href() -> None:
+    html = b"""<html><form><input type="hidden" name="__VIEWSTATE" value="v" />
+      <input type="button" onclick="__doPostBack('ctl00$Go','')" value="Go" /></form></html>"""
+    form = parse_form(html, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    assert [t.target for t in form.event_triggers] == ["ctl00$Go"]
+
+
+def test_event_trigger_with_empty_target_is_skipped() -> None:
+    """An empty target posts no identifiable event, so it cannot be a distinguishing trigger."""
+    html = b"""<html><form><input type="hidden" name="__VIEWSTATE" value="v" />
+      <a href="javascript:__doPostBack('','')">nothing</a></form></html>"""
+    form = parse_form(html, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    assert form.event_triggers == ()
+
+
+def test_build_form_post_writes_the_event_fields() -> None:
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    search = next(t for t in form.event_triggers if t.label == "Search")
+    body = build_form_post(form, event=search)
+    assert body["__EVENTTARGET"] == "ctl00$MainContent$SearchButton"
+    assert body["__EVENTARGUMENT"] == ""
+    assert body["__VIEWSTATE"] == "/wEPDwUJODY"  # the form state still rides
+
+
+def test_build_form_post_event_argument_rides_for_a_pager() -> None:
+    form = parse_form(_EVENT_DRIVEN_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    pager = next(t for t in form.event_triggers if t.target.endswith("Pager"))
+    assert build_form_post(form, event=pager)["__EVENTARGUMENT"] == "2"
+
+
+def test_build_form_post_overrides_still_win_over_the_event_fields() -> None:
+    form = HtmlForm(action_url="https://h/x", fields={}, submit_controls=())
+    body = build_form_post(
+        form, event=EventTrigger(target="a", argument="1"), overrides={"__EVENTARGUMENT": "9"}
+    )
+    assert body == {"__EVENTTARGET": "a", "__EVENTARGUMENT": "9"}
+
+
+def test_form_with_no_event_triggers_reports_an_empty_tuple() -> None:
+    """The pre-existing submit-control archetype is untouched — it simply has no event triggers."""
+    form = parse_form(_ASPNET_FORM, base_url=_PAGE_URL, require_field="__VIEWSTATE")
+    assert form is not None
+    assert form.event_triggers == ()
+    assert len(form.submit_controls) == 2
