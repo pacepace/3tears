@@ -174,6 +174,7 @@ at commit time.
 | [`enforcement`](enforcement.md) | Shared static-analysis scanners that enforce architectural invariants at commit time. |
 | [`backup`](backup.md) | Encrypted, GFS-rotated, restore-verified database backups to any object store. |
 | [`object-store`](object-store.md) | Streaming S3-compatible storage for large binary artifacts. |
+| [`geo`](geo.md) | Slippy-map vector tiles built in application code, for a database with no PostGIS: tile addressing, zoom bands, MVT encoding, and a durable tile cache. |
 | [`scrape`](scrape.md) | Self-healing web scraping: LLM-proposed extraction validated against the real page, a circuit that stops paying for a walled target, and a human-handover surface for the pages no unattended fetch will pass. |
 
 ### Agent framework
