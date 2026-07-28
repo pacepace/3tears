@@ -8,7 +8,16 @@ no LLM call at all (just re-executing its stored selectors); only when
 generation re-run, survivors get compared by an LLM judge against the real
 page content, and the winner is persisted as the new recipe.
 
-**Exception: ``StrategyType`` ``"per_document"``** (2026-07-15) has no
+**Two exceptions, and they are exceptions to the whole cycle rather than variations
+of it: ``StrategyType`` ``"per_document"`` and ``"multi_row_vision"``.** Neither has
+a cached pattern to reuse, so neither can make a poll free, and each persists a
+marker ``ScrapeRecipe`` for operational visibility rather than for reuse -- a recipe
+row existing is not a recipe being reused. ``multi_row_vision``'s reason is its own
+(``find_tables()``, the text substrate a pattern would be cached against, fails on
+its table); see :func:`_run_multi_row_vision_extraction`, which costs an extraction
+call AND an unconditional grounding judge on every poll.
+
+``"per_document"`` (2026-07-15) has no
 cached-recipe cycle at all -- some real multi-document
 targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern
@@ -1667,10 +1676,18 @@ async def run_eval_loop_multi_row(
 
     The multi-row counterpart to :func:`run_eval_loop` -- extracts every matching
     record on the page (``structured_fields={"records": [...]}``), not a single set
-    of values. Reuses *target_id*'s existing recipe (no LLM call) while it's
-    healthy; once ``consecutive_validation_failures`` crosses *failure_threshold*,
-    regenerates candidates and consults the LLM judge for a new winner -- same
-    cadence as :func:`run_eval_loop`, just row-shaped throughout.
+    of values.
+
+    **The reuse below describes the ``css`` and ``regex`` strategies only.** This
+    function also dispatches ``per_document`` and ``multi_row_vision``, and neither
+    has a cached pattern to reuse: each pays LLM calls on every poll regardless of
+    how healthy its recipe row looks. Read *strategy_type* below before costing a
+    target from this paragraph.
+
+    For ``css``/``regex``: reuses *target_id*'s existing recipe (no LLM call) while
+    it's healthy; once ``consecutive_validation_failures`` crosses
+    *failure_threshold*, regenerates candidates and consults the LLM judge for a new
+    winner -- same cadence as :func:`run_eval_loop`, just row-shaped throughout.
 
     :param target_id: the target this fetch belongs to
     :ptype target_id: str

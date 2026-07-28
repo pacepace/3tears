@@ -40,10 +40,13 @@ which is not fetch it.
   the winner by comparing extracted values against page content, persist the
   winner as a recipe, and reuse it with zero LLM calls until it stops validating.
   That is the `css` and `regex` path. The `per_document` and `multi_row_vision`
-  strategies deliberately have no reusable pattern -- their targets share no
-  structure a recipe could learn -- so each pays an LLM call every poll and the
-  recipe they persist is a marker for visibility, not something reused to skip a
-  call. Worth knowing before costing a target, since it is the difference between
+  strategies deliberately have no reusable pattern, for different reasons:
+  `per_document`'s targets share no template a recipe could generalise across,
+  while `multi_row_vision`'s problem is that `find_tables()` -- the text substrate a
+  cached pattern would key against -- fails on its table. So each pays LLM calls
+  every poll (one per document, or two over the whole table, the extraction pass
+  plus an unconditional grounding judge), and the recipe they persist is a marker
+  for visibility rather than something reused to skip a call. Worth knowing before costing a target, since it is the difference between
   paying once and paying per poll.
 - **`classify_failed_page`** -- asks what a failed page IS. A wall leaves the
   recipe byte-identical and records `blocked`; a genuinely changed page
