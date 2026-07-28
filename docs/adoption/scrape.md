@@ -26,9 +26,12 @@ which is not fetch it.
 ## What it does
 
 - **`ScrapeDriver`** -- a backend-agnostic render contract (`RenderedPage`,
-  `NavStep`, `NetworkCall`). Eight implementations ship, from a real headful
-  Chromium behind an isolated sidecar to in-process stealth Firefox, documents
-  (PDF/DOCX/XLSX/CSV), plain JSON APIs, and authenticated in-session XHR capture.
+  `NavStep`, `NetworkCall`). Implementations ship for a real headful Chromium
+  behind an isolated sidecar, in-process stealth Firefox, documents
+  (PDF/DOCX/XLSX/CSV), plain JSON APIs, authenticated in-session XHR capture, and
+  the listing-plus-detail and multi-document shapes. See
+  `threetears.scrape.drivers` for the current set -- a number here would rot the
+  first time one is added.
 - **The eval loop** (`run_eval_loop`, `run_eval_loop_multi_row`) -- propose
   candidates, validate each structurally against the real page, have a judge pick
   the winner by comparing extracted values against page content, persist the

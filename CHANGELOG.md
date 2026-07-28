@@ -22,6 +22,25 @@ packages (bumped in lock-step).
 > neither. Run `./scripts/bump-version.sh 0.20.0`, which moves every package's version AND every
 > intra-family bound together, then `--verify 0.20.0` before anything is published.
 
+**Naming conventions are now gated, and the measurement is the news.** Ruff's `N` (pep8-naming)
+rules are on repo-wide. They were enabled because the question "do we do things inconsistently" had
+never been answered with numbers, and the answer is no: functions, classes, variables and constants
+are consistent across every package, and 104 of the findings were ruff disagreeing with a house
+style applied uniformly rather than the codebase disagreeing with itself.
+
+Two rules are off, with the reason recorded at the setting rather than left to be rediscovered.
+`N818` -- exceptions here are named for the CONDITION (`LeaseUnavailable`, `SessionNotFound`,
+`AccessDenied`), and adopting the `Error` suffix would rename thirty-two public exception types
+across published wheels to buy a suffix. `N811` -- the same false positive every time: ruff reads
+SQLAlchemy's `UUID` CLASS as a constant when it is aliased to disambiguate it from `uuid.UUID`.
+`N803`/`N806` are off for TESTS only, because `N803` had zero findings in any `src` tree, so the
+rule stays live exactly where a real naming mistake would matter.
+
+Everything the rules genuinely caught was fixed rather than ignored: one local named as a constant
+in shipped code, three test classes and one test function. Verified live by mis-naming a class and a
+function in `src` and watching the rules fire, and the sidecar's nested `ruff.toml` names `N` itself
+because a nested config replaces the root's rather than extending it.
+
 **Fix: four names were public in practice and absent from the declared surface (`3tears`).**
 `threetears.core` resolves `Keyset`, `Page`, `decode_cursor` and `encode_cursor` through its lazy
 PEP 562 map -- they import, and this package's own pagination tests use them through

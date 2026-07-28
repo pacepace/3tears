@@ -29,7 +29,6 @@ def test_the_module_imports_without_the_optional_web_framework() -> None:
     repo's own venv.
     """
     import importlib
-    import sys
 
     module = importlib.import_module("threetears.scrape.operator")
     source = (module.__file__ or "").replace(".pyc", ".py")
@@ -44,7 +43,6 @@ def test_the_module_imports_without_the_optional_web_framework() -> None:
     # module is legitimately loaded and the honest form would fail for a reason that says nothing
     # about the extra. The source check above is the whole of the claim; a tautology dressed as a
     # second one only makes the first look weaker than it is.
-    assert sys is not None  # noqa: S101 - `sys` is imported for the note above, not for a check
 
 
 class TestTheTokenIsReadFromTheSubprotocol:
@@ -312,6 +310,7 @@ class TestThePageAndItsClientSurviveAPrefix:
         than quietly dropped.
         """
         from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
 
         with TestClient(_mounted_app(prefix="")) as client:  # type: ignore[arg-type]
             page = client.get("/")
@@ -320,6 +319,17 @@ class TestThePageAndItsClientSurviveAPrefix:
         assert page.status_code == 200, "the page is not served when the router is mounted at the root"
         assert "Human handover" in page.text
         assert asset.status_code == 200, "the vendored client is not served when mounted at the root"
+
+        # And the SOCKET at the root, which is the third leg of "the whole flow". The page and the
+        # client are static; the WebSocket is the one whose path resolution actually changes shape
+        # when there is no prefix, and asserting only the two static ones while the docstring
+        # claimed the whole flow would have been the same overclaim this test exists to remove.
+        checked: list[str] = []
+        with TestClient(_mounted_app(checked=checked, prefix="")) as client:  # type: ignore[arg-type]
+            with pytest.raises(WebSocketDisconnect):
+                with client.websocket_connect("/ws", subprotocols=["binary", "hitl-token.wrong"]):
+                    pytest.fail("a wrong token opened the display at the root")
+        assert checked == ["wrong"], "the upgrade never reached the WebSocket route at the root"
 
     def test_the_novnc_client_the_page_imports_is_served(self) -> None:
         """The page's own import, resolved the way a browser resolves it.

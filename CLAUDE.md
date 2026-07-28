@@ -91,13 +91,13 @@ The `threetears/` and `threetears/agent/` directories must **never** have `__ini
 
 ## Git / PR Workflow
 
-- **NEVER squash-merge, ever.** Every PR merge — feature→develop, develop→main,
-  any of them — MUST use a real merge commit (`gh pr merge --merge`). Never
+- **NEVER squash-merge, ever.** Every PR merge -- feature→develop, develop→main,
+  any of them -- MUST use a real merge commit (`gh pr merge --merge`). Never
   `--squash`, never `--rebase`. Squashing collapses commit history and can
   silently drop or corrupt file content relative to what the branch actually
   contained, with no diff-review step catching it before or after. If a PR
   needs cleaner history, fix it on the branch before merging (interactive
-  rebase there is fine) — never let the merge step itself do the squashing.
+  rebase there is fine) -- never let the merge step itself do the squashing.
 - Never force-push anything, ever (no `--force`, no `--force-with-lease`);
   restructure via a new branch + new PR instead.
 - Feature-branch all medium+ work; merge order respects PR stacking.
@@ -107,7 +107,7 @@ The `threetears/` and `threetears/agent/` directories must **never** have `__ini
 - **Republishing an already-tagged version** (a package missed the upload,
   a partial publish needs completing): do NOT move the tag and do NOT bump
   the version to carry one artifact.
-  1. Land the fix on `main` via a hotfix branch — a release must be cut
+  1. Land the fix on `main` via a hotfix branch -- a release must be cut
      from `main`, and `develop` usually holds unreleased work that must
      not ship.
   2. **Also merge it to `develop` BEFORE dispatching.** GitHub only offers

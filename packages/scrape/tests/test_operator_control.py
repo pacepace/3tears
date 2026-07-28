@@ -189,10 +189,18 @@ class TestAHandoverReleasesWhatThisPodWasHolding:
         assert display.closed == 0, "serving closed a session that ended normally"
 
     async def test_a_sidecar_that_will_not_close_does_not_mask_the_outcome(self) -> None:
-        """This runs in a `finally` on the way out of a session that already went wrong."""
+        """This runs in a `finally` on the way out of a session that already went wrong.
+
+        The attempt is RECORDED and asserted, not just the absence of an exception. Without that
+        this test passes when the release is never reached at all -- which is the same hole as
+        asserting a refusal that the framework could also produce, and it is worth naming twice
+        because I wrote it the weak way first.
+        """
+        attempts: list[bool] = []
 
         class _Refuses(RecordingDisplay):
             async def close_session(self) -> dict[str, object]:
+                attempts.append(True)
                 raise RuntimeError("the sidecar is not answering")
 
         bus, display = FakeBus(), _Refuses()
@@ -200,6 +208,10 @@ class TestAHandoverReleasesWhatThisPodWasHolding:
         # Must not raise: the sidecar's TTL is still the backstop.
         async with serve_session(bus, claim, display, session_state_key=_KEY):  # type: ignore[arg-type]
             claim.lost.set()
+
+        assert attempts == [True], (
+            "the release was never attempted, so this proves nothing about a sidecar that refuses"
+        )
 
 
 class TestTheContractRefusesWhatItCannotCarryOut:
