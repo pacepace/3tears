@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.bootstrap import ToolServerBootstrap
+from threetears.observe import HealthTier
 
 
 class _FakeToolServer:
@@ -137,16 +138,54 @@ class TestHealthServerReadinessGate:
         assert health_server is not None
         try:
             # before the JWKS warms: the jwks_warmed component is unhealthy -> overall NOT-READY.
-            before = health_server.get_status()
+            before = await health_server.get_status(HealthTier.READY)
             comps = {c.name: c.healthy for c in before.components}
             assert "jwks_warmed" in comps, "the tool-pod health server must wire a jwks_warmed readiness gate"
             assert comps["jwks_warmed"] is False
             assert before.healthy is False
             # after the first successful JWKS fetch: the gate clears -> READY.
             srv.jwks_warmed = True
-            after = health_server.get_status()
+            after = await health_server.get_status(HealthTier.READY)
             assert all(c.healthy for c in after.components)
             assert after.healthy is True
+        finally:
+            await health_server.stop()
+
+    async def test_cold_jwks_cache_does_not_fail_liveness(self) -> None:
+        """the readiness gate must be invisible to the liveness verdict.
+
+        this is what buys the tool pods a livenessProbe: under the old aliased
+        contract a cold JWKS cache took /healthz down too, so the only safe
+        deployment was to ship with no livenessProbe and no restart-on-wedge net.
+        """
+        srv = _ReadinessFakeServer()
+        srv.jwks_warmed = False
+        srv.tools_count = 0
+        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
+        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
+        assert health_server is not None
+        try:
+            live = await health_server.get_status(HealthTier.LIVE)
+            ready = await health_server.get_status(HealthTier.READY)
+            assert live.healthy is True, "a cold JWKS cache must never restart the pod"
+            assert [c.name for c in live.components] == ["nats"]
+            assert ready.healthy is False
+        finally:
+            await health_server.stop()
+
+    async def test_dead_nats_fails_both_tiers(self) -> None:
+        """a terminally wedged data plane restarts the pod AND pulls it from rotation."""
+        srv = _ReadinessFakeServer()
+        srv.is_healthy = False
+        srv.jwks_warmed = True
+        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
+        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
+        assert health_server is not None
+        try:
+            live = await health_server.get_status(HealthTier.LIVE)
+            ready = await health_server.get_status(HealthTier.READY)
+            assert live.healthy is False
+            assert ready.healthy is False
         finally:
             await health_server.stop()
 

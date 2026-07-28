@@ -19,16 +19,38 @@ blob. The opened value is returned inside a :class:`SecretStr` so it cannot leak
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import base64
 import os
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from threetears.observe import get_logger
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import SecretStr
 
 __all__ = ["DecryptionError", "open_secret", "seal"]
+
+
+log = get_logger(__name__)
+
+
+def _reject(reason: str) -> NoReturn:
+    """Log the rejection, then raise it.
+
+    Every failure path goes through here so the log line and the exception cannot drift
+    apart, and so a rejection added later cannot silently log nothing.
+
+    A failed decrypt is worth an operator's attention: a burst of them is either a key
+    rotation that has gone wrong or something feeding the service ciphertext it did not
+    mint. Only the structural reason is recorded -- never the token, the plaintext, the key,
+    or any part of the nonce.
+    """
+    log.warning("decryption rejected", extra={"extra_data": {"reason": reason}})
+    raise DecryptionError(reason) from None
+
 
 _VERSION = 0x01
 _NONCE_LEN = 12  # AES-GCM standard nonce length
@@ -79,19 +101,19 @@ def open_secret(token: str, key: SecretStr) -> SecretStr:
         # (urlsafe_b64decode has no validate kwarg; b64decode with altchars does).
         raw = base64.b64decode(btoken, altchars=b"-_", validate=True)
     except (ValueError, UnicodeEncodeError) as exc:
-        raise DecryptionError(f"malformed token: not valid base64 ({type(exc).__name__}).") from None
+        _reject(f"malformed token: not valid base64 ({type(exc).__name__}).")
     # Reject non-canonical encodings so a stored token has exactly one string form (no
     # junk-appended variant that maps to the same secret) — defence beyond validate=True.
     if base64.urlsafe_b64encode(raw) != btoken:
-        raise DecryptionError("malformed token: non-canonical base64.")
+        _reject("malformed token: non-canonical base64.")
     if len(raw) < 1 + _NONCE_LEN + 16:  # version + nonce + at least the GCM tag
-        raise DecryptionError("malformed token: too short to contain version + nonce + tag.")
+        _reject("malformed token: too short to contain version + nonce + tag.")
     header, nonce, ciphertext = raw[0:1], raw[1 : 1 + _NONCE_LEN], raw[1 + _NONCE_LEN :]
     if header[0] != _VERSION:
-        raise DecryptionError(f"unsupported token version {header[0]!r}; this build seals v{_VERSION}.")
+        _reject(f"unsupported token version {header[0]!r}; this build seals v{_VERSION}.")
     try:
         # header passed as AAD — must match what seal() authenticated, or the tag fails.
         plaintext = AESGCM(_derive_key(key)).decrypt(nonce, ciphertext, header)
     except InvalidTag:
-        raise DecryptionError("decryption failed: wrong master key or tampered ciphertext.") from None
+        _reject("decryption failed: wrong master key or tampered ciphertext.")
     return SecretStr(plaintext.decode("utf-8"))

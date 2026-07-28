@@ -26,6 +26,7 @@ agent-wake ``EncryptionService`` / ``WakeConfig`` precedent.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
@@ -111,8 +112,14 @@ class ScheduleStore(Protocol):
         now: datetime,
         *,
         limit: int = 200,
-    ) -> list[DueSchedule]:
+    ) -> Sequence[DueSchedule]:
         """Return active schedules whose ``next_fire_at <= now``.
+
+        ``Sequence``, not ``list``: ``list`` is invariant, so an implementation returning
+        its own concrete ``list[SomeEntity]`` could never satisfy this Protocol even though
+        ``SomeEntity`` satisfies :class:`DueSchedule` -- which is exactly the pattern this
+        Protocol's own docstring describes. The covariant type is what makes the documented
+        usage type-check.
 
         Cross-partition scan (the engine enumerates ready jobs across
         every partition). Ordered by ``next_fire_at`` ASC, capped at

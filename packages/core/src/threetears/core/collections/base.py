@@ -20,7 +20,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Final, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
@@ -30,9 +30,14 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry
-from threetears.nats import NatsClient, NatsKvBucket
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
+
+if TYPE_CHECKING:
+    # annotation-only: importing these eagerly would load the NATS client into
+    # every L1-only consumer of this module. the `isinstance` below tests the
+    # local `_NatsClientFromRegistry` sentinel, not `NatsClient`.
+    from threetears.nats import NatsClient, NatsKvBucket
 
 __all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "EntityT"]
 
@@ -927,6 +932,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
             span = _trace.get_current_span()
             span.set_attribute(key, value)
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 

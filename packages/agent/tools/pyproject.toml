@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-tools"
-version = "0.19.3"
+version = "0.20.0"
 description = "Tool framework for LLM agents -- routing, execution, and builtin tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,13 +22,15 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.19.0,<0.20.0",
-    "3tears-agent-audit>=0.19.0,<0.20.0",
-    "3tears-agent-memory>=0.19.0,<0.20.0",
-    "3tears-langgraph>=0.19.0,<0.20.0",
-    "3tears-media-contracts>=0.19.0,<0.20.0",
-    "3tears-nats>=0.19.0,<0.20.0",
-    "3tears-observe>=0.19.0,<0.20.0",
+    "3tears>=0.20.0,<0.21.0",
+    "3tears-agent-audit>=0.20.0,<0.21.0",
+    "3tears-agent-memory>=0.20.0,<0.21.0",
+    "3tears-langgraph>=0.20.0,<0.21.0",
+    "3tears-media-contracts>=0.20.0,<0.21.0",
+    # [client]: this package uses the NATS client at runtime, and nats-py is an
+    # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
+    "3tears-nats[client]>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
     "langchain-core",
     "httpx",
     "prometheus-client>=0.20",

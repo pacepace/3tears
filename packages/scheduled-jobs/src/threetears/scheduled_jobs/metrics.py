@@ -200,10 +200,19 @@ class ScheduledJobsMetricsEmitter:
                 self._resolved_registry.unregister(collector)
             except KeyError:
                 # collector wasn't on the registry -- benign race; continue.
+                log.debug(
+                    "metrics collector was already off the registry",
+                    extra={"extra_data": {"collector": type(collector).__name__}},
+                )
                 continue
             except ValueError:
-                # registered against a different registry than ours; also
-                # benign for the unregister-best-effort flow.
+                # Registered against a different registry than ours. Benign for this best-effort
+                # unregister, but a steady stream of it means the resolved registry is not the one
+                # the collectors were built against, which is a wiring mistake worth seeing.
+                log.debug(
+                    "metrics collector belongs to a different registry; left in place",
+                    extra={"extra_data": {"collector": type(collector).__name__}},
+                )
                 continue
         self._fires = None
         self._failures = None

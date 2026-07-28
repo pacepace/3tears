@@ -33,7 +33,6 @@ design points:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
@@ -150,10 +149,18 @@ class AsyncSyncBridge:
         try:
             result = await wrapped
         except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
+            try:
                 cancel_result = cancel_cb()
                 if asyncio.iscoroutine(cancel_result):
                     await cancel_result
+            except Exception as exc:  # noqa: BLE001 -- the CancelledError below is the caller's answer
+                # The cancellation still propagates, but the work it was meant to stop may not have
+                # stopped: a failed driver-side cancel can leave a statement running server-side
+                # while this side reports cancelled.
+                log.warning(
+                    "cancel callback failed; work may still be running",
+                    extra={"extra_data": {"bridge": self._name, "error": str(exc)}},
+                )
             raise
         return result
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.19.3"
+version = "0.20.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,10 +22,23 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.19.0,<0.20.0",
+    "3tears-observe>=0.20.0,<0.21.0",
+    "pydantic>=2.10",
+]
+
+[project.optional-dependencies]
+# The NATS client itself. Six submodules import it (client, kv, forward, oplog,
+# cross_worker_cancel, distributed_lock) and are lazy-loaded from
+# `threetears.nats.__getattr__`, so error types, subject grammar, transport
+# Protocols, and the auth-callout/user-JWT codecs are usable without it.
+#
+# This is what lets `3tears` be installed for the L1 SQLite tier alone: `nkeys`
+# publishes no wheels, so an unconditional dependency means a source build on
+# every install — including aarch64 targets that have prebuilt wheels for
+# everything else in the tree.
+client = [
     "nats-py>=2.10",
     "nkeys>=0.2",
-    "pydantic>=2.10",
 ]
 
 [project.urls]

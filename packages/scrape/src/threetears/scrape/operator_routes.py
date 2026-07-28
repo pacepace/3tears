@@ -136,6 +136,8 @@ def build_router(
             # close raising would escape the handler and replace the warning above, which is the
             # only line carrying the session id, with a framework traceback that carries none. The
             # socket is finished either way; telling it so is a courtesy, not a step.
+            # NOSILENT: the reason is already logged above with the session id; this close is a
+            # courtesy to a peer that is probably gone, and cannot change the outcome either way.
             with suppress(
                 Exception
             ):  # prawduct:allow prawduct/broad-except -- see above; the diagnosis is already logged and this close cannot change the outcome

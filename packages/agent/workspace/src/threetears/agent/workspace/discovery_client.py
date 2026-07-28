@@ -287,9 +287,14 @@ class NamespaceDiscoveryClient:
                 ).model_dump()
                 error_code = str(envelope.get("error_code", error_code))
                 error_message = str(envelope.get("error_message", error_message))
-            except Exception:
-                # best-effort: leave the defaults in place
-                pass
+            except Exception as exc:  # noqa: BLE001 -- the DiscoveryClientError below is the report
+                # Only enriching the message; the failure is raised either way. Logged so a
+                # generic "discovery returned success=false" is traceable to an unparseable body
+                # rather than read as all the detail the server sent.
+                log.debug(
+                    "could not parse the discovery error envelope; using default error text",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
             raise DiscoveryClientError(
                 f"namespace.discover failed: {error_code}: {error_message}",
             )

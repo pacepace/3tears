@@ -320,6 +320,7 @@ class DuckDBBackend:
             for conn in self._pooled_connections:
                 try:
                     conn.close()
+                # NOSILENT: teardown best-effort; a connection that will not close is already gone
                 except Exception:  # noqa: BLE001
                     pass
             self._pooled_connections = []
@@ -327,6 +328,7 @@ class DuckDBBackend:
         if self._db is not None:
             try:
                 self._db.close()
+            # NOSILENT: teardown best-effort; a connection that will not close is already gone
             except Exception:  # noqa: BLE001
                 pass
         self._db = None
@@ -389,6 +391,7 @@ class DuckDBBackend:
 
             if isinstance(sa_type, Vector):
                 return "VARCHAR_VECTOR"
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 

@@ -33,7 +33,13 @@ def _get_mcp_timeout() -> int:
         try:
             return int(raw)
         except ValueError:
-            pass
+            # An operator deliberately set this and is silently getting the default instead --
+            # "30s" or "2m" lands here. Warning, because the symptom is timeouts at the wrong
+            # value with the environment appearing to say otherwise.
+            log.warning(
+                "THREETEARS_MCP_TIMEOUT is not an integer; using the default instead",
+                extra={"extra_data": {"raw": raw[:32], "default_seconds": 120}},
+            )
     return 120
 
 

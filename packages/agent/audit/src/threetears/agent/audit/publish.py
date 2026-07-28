@@ -25,10 +25,18 @@ idempotency indexes on ``audit_events``.
 
 from __future__ import annotations
 
-from threetears.nats import NatsClient, Subject
+from typing import TYPE_CHECKING
+
+from threetears.nats import Subject
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
+
+if TYPE_CHECKING:
+    # From the submodule, not the package: these are Protocols that `threetears.nats`
+    # stopped re-exporting when its nats-py-backed surface went lazy. Annotation-only,
+    # so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import JetStreamPublisher
 
 __all__ = ["publish_audit"]
 
@@ -39,7 +47,7 @@ log = get_logger(__name__)
 async def publish_audit(
     event: AuditEvent,
     *,
-    nats_client: NatsClient | None,
+    nats_client: JetStreamPublisher | None,
     namespace: str,
 ) -> None:
     """
@@ -67,7 +75,7 @@ async def publish_audit(
     :ptype event: AuditEvent
     :param nats_client: connected canonical
         :class:`threetears.nats.NatsClient` wrapper; ``None`` is a no-op
-    :ptype nats_client: NatsClient | None
+    :ptype nats_client: JetStreamPublisher | None
     :param namespace: NATS subject namespace (environment-scoped
         prefix from ``THREETEARS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str

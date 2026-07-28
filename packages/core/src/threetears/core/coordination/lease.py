@@ -17,9 +17,9 @@ usage::
         ...
 
 ``nats_client`` is the canonical
-:class:`threetears.nats.NatsClient` wrapper. the lease opens its
-bucket via :meth:`NatsClient.kv_bucket` so all CAS / miss semantics
-flow through :class:`NatsKvBucket`'s typed return shape (``None`` on
+:class:`threetears.nats.kv.KvCapable` wrapper. the lease opens its
+bucket via :meth:`KvCapable.kv_bucket` so all CAS / miss semantics
+flow through :class:`KvBucketLike`'s typed return shape (``None`` on
 conflict instead of raising :class:`KeyWrongLastSequenceError`).
 
 all KV envelope payloads flow through
@@ -42,7 +42,10 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
 __all__ = [
     "KVLease",
@@ -255,7 +258,7 @@ class KVLease:
 
     def __init__(
         self,
-        nats_client: "NatsClient",
+        nats_client: "KvCapable",
         bucket_name: str | None = None,
         pod_id: str | None = None,
     ) -> None:
@@ -268,9 +271,9 @@ class KVLease:
         unique per factory instance.
 
         :param nats_client: connected canonical
-            :class:`threetears.nats.NatsClient` wrapper; the lease
-            opens its KV bucket through :meth:`NatsClient.kv_bucket`
-        :ptype nats_client: NatsClient
+            :class:`threetears.nats.kv.KvCapable` wrapper; the lease
+            opens its KV bucket through :meth:`KvCapable.kv_bucket`
+        :ptype nats_client: KvCapable
         :param bucket_name: explicit bucket name; None uses env-derived default
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
@@ -281,7 +284,7 @@ class KVLease:
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex[:12]}"
-        self._bucket: "NatsKvBucket | None" = None
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -316,19 +319,19 @@ class KVLease:
         result = f"{ns}_leases" if ns else "leases"
         return result
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open existing bucket or create it with history=1 on first call.
 
         lazy, async-safe: an ``asyncio.Lock`` serializes first-call setup
         so two concurrent acquires do not race to create the same
-        bucket. routes through :meth:`NatsClient.kv_bucket` which
+        bucket. routes through :meth:`KvCapable.kv_bucket` which
         idempotently creates-or-binds. the wrapper auto-prefixes the
         bucket name with the connected client's namespace prefix; the
         lease's ``bucket_name`` is treated as the bucket suffix the
         wrapper layers on top of that prefix.
 
         :return: backing wrapper-typed KV bucket
-        :rtype: NatsKvBucket
+        :rtype: KvBucketLike
         """
         if self._bucket is not None:
             return self._bucket
@@ -396,7 +399,7 @@ class KVLease:
 
     async def _try_once(
         self,
-        bucket: "NatsKvBucket",
+        bucket: "KvBucketLike",
         key: str,
         ttl_seconds: int,
     ) -> LeaseHandle | None:
@@ -407,7 +410,7 @@ class KVLease:
         or fail-fast.
 
         :param bucket: backing wrapper KV bucket (from :meth:`_ensure_bucket`)
-        :ptype bucket: NatsKvBucket
+        :ptype bucket: KvBucketLike
         :param key: KV key under which lease entry lives
         :ptype key: str
         :param ttl_seconds: TTL to record in envelope when winning
@@ -419,7 +422,7 @@ class KVLease:
         date_expires = now + timedelta(seconds=ttl_seconds)
         payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
         result: LeaseHandle | None = None
-        # NatsKvBucket.create returns the new revision on success or
+        # KvBucketLike.create returns the new revision on success or
         # ``None`` on CAS conflict (key already exists). no exception
         # to catch for the conflict path -- the wrapper hides
         # KeyWrongLastSequenceError behind the typed ``None`` return.
@@ -438,7 +441,7 @@ class KVLease:
 
     async def _maybe_reclaim_stale(
         self,
-        bucket: "NatsKvBucket",
+        bucket: "KvBucketLike",
         key: str,
         ttl_seconds: int,
         now: datetime,
@@ -447,7 +450,7 @@ class KVLease:
         """attempt CAS reclaim when existing entry is expired; else return None.
 
         :param bucket: backing wrapper KV bucket
-        :ptype bucket: NatsKvBucket
+        :ptype bucket: KvBucketLike
         :param key: KV key under which lease entry lives
         :ptype key: str
         :param ttl_seconds: TTL to record on successful reclaim
@@ -461,7 +464,7 @@ class KVLease:
         :rtype: LeaseHandle | None
         """
         result: LeaseHandle | None = None
-        # NatsKvBucket.get_entry returns (value, revision) on hit or
+        # KvBucketLike.get_entry returns (value, revision) on hit or
         # ``None`` on miss; the entry could vanish between the create
         # race and this read so a None return means "caller will
         # retry" same as if it had been a KeyNotFound raise.
@@ -474,7 +477,7 @@ class KVLease:
             # still held by a live holder
             return None
         payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
-        # NatsKvBucket.update returns the new revision on success or
+        # KvBucketLike.update returns the new revision on success or
         # ``None`` on CAS conflict; another pod may have reclaimed the
         # stale entry between our get_entry and update.
         new_revision = await bucket.update(key=key, value=payload, revision=revision)
@@ -519,7 +522,7 @@ class KVLease:
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
         payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
-        # NatsKvBucket.update returns ``None`` on revision mismatch,
+        # KvBucketLike.update returns ``None`` on revision mismatch,
         # mapping the previous KeyWrongLastSequenceError raise into a
         # typed conflict signal we surface as LeaseLost.
         new_revision = await bucket.update(key=handle.key, value=payload, revision=handle.revision)
@@ -555,7 +558,7 @@ class KVLease:
             return
         # CAS delete keyed on the handle's revision so a stale-after-
         # check delete cannot evict a successor's freshly reclaimed
-        # entry. NatsKvBucket.delete returns False on revision mismatch
+        # entry. KvBucketLike.delete returns False on revision mismatch
         # which is treated as "raced with another writer; entry
         # effectively gone from our view" -- diagnostic-only here.
         deleted = await bucket.delete(key=handle.key, revision=handle.revision)

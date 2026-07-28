@@ -165,7 +165,7 @@ class TestWalkerSelection:
         # but "detect" skips the integrity walker.
         stale = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=99,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -208,7 +208,7 @@ class TestWalkerSelection:
         )
         stale = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=99,
+            class_name="Foo",
             attr_name="_phantom",
             rationale=_VALID_RATIONALE,
         )
@@ -240,7 +240,7 @@ class TestAllowlistIntegration:
         repo, src = _build_violation_repo(tmp_path)
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -261,7 +261,7 @@ class TestAllowlistIntegration:
         repo, src = _build_violation_repo(tmp_path)
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -287,7 +287,7 @@ class TestAllowlistIntegration:
         )
         entry = DictStateAllowlistEntry(
             file="src/pkg/mod.py",
-            line=3,
+            class_name="Foo",
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
@@ -317,7 +317,7 @@ class TestExemptionFile:
         repo, src = _build_violation_repo(tmp_path)
         ex_path = repo / "_dict_state_exemptions.txt"
         ex_path.write_text(
-            "# rationale: legitimately ephemeral, documented in the module docstring\nsrc/pkg/mod.py:3:_cache\n"
+            "# rationale: legitimately ephemeral, documented in the module docstring\nsrc/pkg/mod.py:3:Foo._cache\n"
         )
         monkeypatch.setenv("DICT_TEST_MODE", "strict")
         config = DictStateConfig(
@@ -346,7 +346,7 @@ class TestExemptionFile:
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         ex_path = repo / "_dict_state_exemptions.txt"
-        ex_path.write_text("# rationale: tests need this\nsrc/pkg/mod.py:3:_cache\n")
+        ex_path.write_text("# rationale: tests need this\nsrc/pkg/mod.py:3:Foo._cache\n")
         config = DictStateConfig(
             repo_root=repo,
             src_roots=(src,),

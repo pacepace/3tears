@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.coordination.windowed_counter import WindowState
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerRegistry,
@@ -316,9 +317,12 @@ class _FakeBreaker:
 class _FakeFleetCounter:
     """Counts blocked observations the way a cross-pod windowed counter would."""
 
-    def __init__(self, *, start: int = 0, explode: bool = False) -> None:
+    def __init__(self, *, start: int = 0, explode: bool = False, window_start: float = 0.0) -> None:
         self._count = start
         self._explode = explode
+        # A fixed epoch rather than a real clock: nothing here asserts on elapsed time, and a
+        # moving value would make the state this returns unreproducible for no gain.
+        self._window_start = window_start
 
     async def record_attempt(self, key: str) -> int:
         del key
@@ -334,6 +338,19 @@ class _FakeFleetCounter:
     async def is_over_threshold(self, key: str, *, threshold: int) -> bool:
         del key
         return self._count > threshold
+
+    async def state(self, key: str) -> WindowState | None:
+        del key
+        # ``None`` means no window, which is what an untouched key has -- not a zero count.
+        if self._count == 0:
+            return None
+        return WindowState(count=self._count, window_start=self._window_start)
+
+    async def clear(self, key: str) -> None:
+        # The production method is documented to fail open always, so this never raises even
+        # when ``explode`` is set.
+        del key
+        self._count = 0
 
 
 # parity-with: threetears.core.coordination.token_bucket.TokenBucket

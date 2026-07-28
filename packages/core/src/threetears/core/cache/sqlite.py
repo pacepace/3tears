@@ -147,6 +147,7 @@ class SQLiteBackend:
                 from uuid_utils import UUID as UuidUtilsUUID
 
                 sqlite3.register_adapter(UuidUtilsUUID, str)
+            # NOSILENT: optional dependency probe; absence is a supported configuration
             except ImportError:
                 pass
             self._initialized = True
@@ -482,6 +483,7 @@ class SQLiteBackend:
             for conn in self._pooled_connections:
                 try:
                     conn.close()
+                # NOSILENT: teardown best-effort; a connection that will not close is already gone
                 except Exception:  # noqa: BLE001
                     pass
             self._pooled_connections = []
@@ -548,6 +550,7 @@ class SQLiteBackend:
 
             if isinstance(sa_type, Vector):
                 return "TEXT_VECTOR"
+        # NOSILENT: optional dependency probe; absence is a supported configuration
         except ImportError:
             pass
 

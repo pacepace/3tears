@@ -224,6 +224,7 @@ class HeartbeatSubscriber:
             try:
                 await self._check_task
             except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
                 pass
             self._check_task = None
         if self._sub is not None and self._nc is not None:

@@ -21,7 +21,7 @@ import pytest
 from threetears.core.coordination import ReplayGuard
 from threetears.nats import KvError
 
-from ._fake_kv import FakeNatsClient
+from threetears.core.testing.kv import FakeNatsClient
 
 
 @pytest.fixture

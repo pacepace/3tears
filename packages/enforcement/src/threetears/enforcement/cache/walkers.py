@@ -45,6 +45,7 @@ from threetears.enforcement.common import (
     Violation,
     collect_class_base_graph,
     iter_python_files,
+    note_unscanned,
     parse_python_file,
     relative_posix_path,
     transitively_subclasses_any,
@@ -568,6 +569,7 @@ def find_direct_pool_access(
             try:
                 raw_lines = source.read_text(encoding="utf-8").splitlines()
             except UnicodeDecodeError:
+                note_unscanned(source, "not valid utf-8")
                 continue
             parents = _build_parent_map(tree)
             for node in ast.walk(tree):

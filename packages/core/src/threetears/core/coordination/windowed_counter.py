@@ -2,7 +2,7 @@
 primitive, sibling to :class:`~threetears.core.coordination.replay_guard.ReplayGuard` and
 :class:`~threetears.core.coordination.replay_guard.RevocationGuard`, but a different shape: those
 two answer "have I seen this exact key" (bare presence / timestamped presence); this answers "how
-many times has this key been attempted inside a moving time window" -- the shape a throttle or
+many times has this key been attempted inside a fixed window anchored at its first attempt" -- the shape a throttle or
 rate limiter needs (e.g. "no more than N login attempts per IP per minute").
 
     counter = WindowedCounter(nats_client, bucket_name="login_ip_throttle", window_seconds=60)
@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import random
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -48,32 +50,50 @@ from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
-    from threetears.nats import NatsClient, NatsKvBucket
+    # From the submodule, not the package: these three are Protocols that
+    # `threetears.nats` stopped re-exporting when its nats-py-backed surface went lazy.
+    # Annotation-only, so the eager `kv` import here costs an L1 consumer nothing.
+    from threetears.nats.kv import KvBucketLike, KvCapable
 
-__all__ = ["WindowedCounter"]
+__all__ = ["WindowState", "WindowedCounter"]
 
 log = get_logger(__name__)
 
-_MAX_CAS_ATTEMPTS = 5
+#: matched to the sibling primitives in this package (`distributed_counter`, `token_bucket`),
+#: whose 30 is empirical: 8 retries raised a conflict on ~75% of runs under a 25-connection
+#: integration test, zero at 30. the contention this counter sees is a credential-stuffing
+#: burst against ONE key, which is exactly that case -- a budget tuned for the quiet path
+#: degrades precisely when the counter is the control that matters.
+_MAX_CAS_ATTEMPTS = 30
+
+#: full-jitter backoff bound between CAS retries, seconds. without it, retries collide in
+#: lockstep and the budget is spent on the same instant repeatedly. same value as the siblings.
+_CAS_RETRY_BACKOFF_SECONDS = 0.02
 
 
 @dataclass(frozen=True, slots=True)
-class _WindowState:
+class WindowState:
+    """A key's live window: how many attempts, and when the window opened.
+
+    ``window_start`` is exposed so a caller can report a truthful "retry after" -- the time
+    remaining, not the whole window length.
+    """
+
     count: int
     window_start: float
 
 
-def _encode(state: _WindowState) -> bytes:
+def _encode(state: WindowState) -> bytes:
     return json.dumps({"count": state.count, "window_start": state.window_start}).encode("utf-8")
 
 
-def _decode(value: bytes) -> _WindowState:
+def _decode(value: bytes) -> WindowState:
     payload = json.loads(value)
-    return _WindowState(count=int(payload["count"]), window_start=float(payload["window_start"]))
+    return WindowState(count=int(payload["count"]), window_start=float(payload["window_start"]))
 
 
 class WindowedCounter:
-    """per-key attempt counter over a fixed sliding window, in a NATS JetStream KV bucket.
+    """per-key attempt counter over a fixed window anchored at the first attempt, in a NATS JetStream KV bucket.
 
     generic: the caller supplies the key (already hashed if it carries anything sensitive -- this
     class hashes it again into a KV-safe form regardless, but does not otherwise interpret it) and
@@ -82,25 +102,31 @@ class WindowedCounter:
 
     def __init__(
         self,
-        nats_client: "NatsClient",
+        nats_client: "KvCapable",
         *,
         bucket_name: str,
         window_seconds: int,
         fail_open: bool = False,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         """configure the counter; defer bucket binding until the first use.
 
-        :param nats_client: connected canonical :class:`threetears.nats.NatsClient`
-        :ptype nats_client: NatsClient
+        :param nats_client: connected canonical :class:`threetears.nats.kv.KvCapable`
+        :ptype nats_client: KvCapable
         :param bucket_name: KV bucket suffix; the wrapper prefixes it with the namespace. Pick a
             bucket dedicated to one throttle purpose (e.g. ``login_ip_throttle``) so unrelated
             counters never collide across surfaces, and so two independent counters (e.g. an
             edge-tier and a core-tier throttle over the "same" logical key) can be given
             deliberately SEPARATE buckets with different write access
         :ptype bucket_name: str
-        :param window_seconds: length of the sliding window in seconds. MUST be positive: a
+        :param window_seconds: length of the fixed window in seconds, measured from the first
+            attempt in it. MUST be positive: a
             non-positive window would mean the count never resets
         :ptype window_seconds: int
+        :param clock: the time source, injectable so a test can stand on the window boundary.
+            without a seam here the window semantics are untestable, which is how a
+            wall-clock-ordinal implementation once passed for an anchored one
+        :ptype clock: Callable[[], float]
         :param fail_open: on a :class:`~threetears.nats.KvError` (KV transport failure), whether
             to treat the key as NOT over any threshold (``fail_open=True`` -- `record_attempt`
             returns ``0``, `count` returns ``0``, a warning is logged) rather than propagating the
@@ -115,7 +141,8 @@ class WindowedCounter:
         self._bucket_name = bucket_name
         self._window = timedelta(seconds=window_seconds)
         self._fail_open = fail_open
-        self._bucket: "NatsKvBucket | None" = None
+        self._clock = clock
+        self._bucket: "KvBucketLike | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -126,6 +153,18 @@ class WindowedCounter:
         :rtype: str
         """
         return self._bucket_name
+
+    @property
+    def clock(self) -> "Callable[[], float]":
+        """the time source this counter reads.
+
+        exposed so an adapter computing a "retry after" uses the SAME clock the window is
+        measured with; two clocks in one verdict is two answers.
+
+        :return: the configured clock
+        :rtype: Callable[[], float]
+        """
+        return self._clock
 
     @property
     def fail_open(self) -> bool:
@@ -180,6 +219,44 @@ class WindowedCounter:
             raise
         return 0 if state is None else state.count
 
+    async def state(self, key: str) -> WindowState | None:
+        """the live window for ``key``, or ``None`` if absent or expired.
+
+        Unlike :meth:`count`, this exposes ``window_start`` too, so a caller reporting a
+        ``Retry-After`` can say how long is actually left rather than restating the window.
+
+        :param key: the identifier to look up
+        :ptype key: str
+        :return: the live window state, or ``None``
+        :rtype: WindowState | None
+        :raises threetears.nats.KvError: on a KV transport failure, when ``fail_open=False``
+        """
+        try:
+            return await self._read_live_state(key)
+        except KvError:
+            if self._fail_open:
+                log.warning("WindowedCounter %s fail-open on KvError for state", self._bucket_name)
+                return None
+            raise
+
+    async def clear(self, key: str) -> None:
+        """drop ``key``'s counter entirely -- the "successful authentication" reset.
+
+        Always fail-open on a `KvError`, regardless of the configured posture: failing to
+        clear leaves a stale counter that can only ever deny too much, and raising here would
+        turn a successful login into an error.
+
+        :param key: the identifier to reset
+        :ptype key: str
+        """
+        try:
+            bucket = await self._ensure_bucket()
+            await bucket.delete(key=self._key(key))
+        except KvError:
+            log.warning(
+                "WindowedCounter %s could not clear a counter; it will expire with the window", self._bucket_name
+            )
+
     async def is_over_threshold(self, key: str, *, threshold: int) -> bool:
         """``True`` if ``key``'s live count is at or above ``threshold``, without recording a new
         attempt.
@@ -197,39 +274,44 @@ class WindowedCounter:
     async def _record_attempt(self, key: str) -> int:
         bucket = await self._ensure_bucket()
         kv_key = self._key(key)
-        now = time.time()
+        now = self._clock()
         for _ in range(_MAX_CAS_ATTEMPTS):
             entry = await bucket.get_entry(key=kv_key)
             if entry is None:
-                created = await bucket.create(key=kv_key, value=_encode(_WindowState(count=1, window_start=now)))
+                created = await bucket.create(key=kv_key, value=_encode(WindowState(count=1, window_start=now)))
                 if created is not None:
                     return 1
                 continue  # lost the create race -- next loop iteration falls into the update path
             value, revision = entry
             state = _decode(value)
             if now - state.window_start > self._window.total_seconds():
-                next_state = _WindowState(count=1, window_start=now)
+                next_state = WindowState(count=1, window_start=now)
             else:
-                next_state = _WindowState(count=state.count + 1, window_start=state.window_start)
+                next_state = WindowState(count=state.count + 1, window_start=state.window_start)
             if await bucket.update(key=kv_key, value=_encode(next_state), revision=revision) is not None:
                 return next_state.count
-        # CAS retries exhausted under heavy concurrent contention on the SAME key -- exceedingly
-        # unlikely in practice. Read back whatever is there now rather than silently under-counting
-        # to 0 or 1; the next attempt still sees accurate state either way.
+            await asyncio.sleep(random.uniform(0, _CAS_RETRY_BACKOFF_SECONDS))  # noqa: S311
+        # CAS retries exhausted: the increment was LOST, so the count read back under-reports
+        # by at least one. Logged rather than swallowed -- losing writes is what a burst against
+        # one key causes, and this counter is a security control on exactly that burst.
+        log.warning(
+            "WindowedCounter %s lost an increment to CAS contention; the count is under-reported",
+            self._bucket_name,
+        )
         live_state = await self._read_live_state(key)
         return 1 if live_state is None else live_state.count
 
-    async def _read_live_state(self, key: str) -> _WindowState | None:
+    async def _read_live_state(self, key: str) -> WindowState | None:
         bucket = await self._ensure_bucket()
         value = await bucket.get(key=self._key(key))
         if value is None:
             return None
         state = _decode(value)
-        if time.time() - state.window_start > self._window.total_seconds():
+        if self._clock() - state.window_start > self._window.total_seconds():
             return None
         return state
 
-    async def _ensure_bucket(self) -> "NatsKvBucket":
+    async def _ensure_bucket(self) -> "KvBucketLike":
         """open (or bind) the windowed KV bucket once; async-safe lazy init."""
         if self._bucket is not None:
             return self._bucket

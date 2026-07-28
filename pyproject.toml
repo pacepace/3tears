@@ -29,6 +29,12 @@ dev-dependencies = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp>=1.28",
     "duckdb>=1.0",
+    # the NATS client is an optional extra of 3tears-nats (`[client]`) so that
+    # an L1-SQLite-only consumer is not forced to build `nkeys`, which ships no
+    # wheels. installed in dev so the nats + L2 test suites exercise the real
+    # client rather than getting skipped.
+    "nats-py>=2.10",
+    "nkeys>=0.2",
     "simpleeval>=1.0.4",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",
@@ -86,6 +92,13 @@ dev-dependencies = [
     # whole module goes unchecked. Only the CLI BINARY + Node are runtime requirements;
     # the python packages import fine without them, so this costs nothing here.
     "langchain-claude-code>=0.1.0",
+    # threetears.iam's SAML service provider is behind the `saml` extra, so without this the
+    # whole module -- including its XXE and billion-laughs regression tests -- would collect
+    # as an ImportError and skip. Same rationale as prometheus-client and the datasources
+    # drivers above: optional for consumers, mandatory for the workspace test run. pysaml2
+    # itself is NOT pinned here, because it needs the xmlsec1 system binary and nothing in
+    # this package imports it -- assertion verification is the consumer's call.
+    "defusedxml>=0.7",
 ]
 
 [tool.ruff]
@@ -381,6 +394,7 @@ mypy_path = [
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
     "packages/geo/src",
+    "packages/iam/src",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
@@ -403,6 +417,7 @@ files = [
     "packages/enforcement/src",
     "packages/epoch/src",
     "packages/geo/src",
+    "packages/iam/src",
     "packages/langgraph/src",
     "packages/mcp/src",
     "packages/media-contracts/src",
@@ -461,6 +476,16 @@ module = [
     "shapely.*",
     "mapbox_vector_tile",
     "mapbox_vector_tile.*",
+    # threetears.iam's SAML service provider. defusedxml ships no stubs, and pysaml2's are
+    # incomplete; both arrive only via the `saml` extra, so a consumer without it never
+    # reaches these imports at all.
+    "defusedxml",
+    "defusedxml.*",
+    "saml2",
+    "saml2.*",
+    # threetears.iam's TOTP second factor.
+    "pyotp",
+    "pyotp.*",
 ]
 ignore_missing_imports = true
 

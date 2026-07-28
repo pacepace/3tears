@@ -6,7 +6,7 @@ REALISM / LIMITS
 the workspace integration tests in this directory wire together the
 REAL :class:`threetears.agent.workspace.tools.*` tool classes with:
 
-- **fake NATS KV**: :class:`_fake_kv.FakeNatsClient` from the core unit
+- **fake NATS KV**: :class:`threetears.core.testing.kv.FakeNatsClient` (published test infra)
   tests. the CAS semantics match real nats-py :class:`KeyValue` -- same
   fake :class:`WorkspaceFileLease` uses in ``test_bind_lease_race.py``.
   :meth:`publish` is added here so audit envelopes are captured in-
@@ -63,7 +63,7 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
-from _fake_kv import FakeNatsClient as _FakeNatsKVClient  # type: ignore[import-not-found]
+from threetears.core.testing.kv import FakeNatsClient as _FakeNatsKVClient
 
 from threetears.agent.tools.call_scope import (
     ToolCallScope,

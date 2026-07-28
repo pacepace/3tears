@@ -2419,6 +2419,7 @@ class ToolServer:
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
                 pass
             self._heartbeat_task = None
 
@@ -2427,6 +2428,7 @@ class ToolServer:
             try:
                 await self._nats_reauth_task
             except asyncio.CancelledError:
+                # NOSILENT: this IS the cancellation requested on the line above
                 pass
             self._nats_reauth_task = None
 

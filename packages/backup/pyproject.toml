@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-backup"
-version = "0.19.3"
+version = "0.20.0"
 description = "Encrypted, GFS-rotated database backups to any ObjectStore, with restore verification"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -27,9 +27,9 @@ classifiers = [
 # AEAD primitive; media-contracts is the ObjectStore protocol; observe is
 # structured logging.
 dependencies = [
-    "3tears-media-contracts>=0.19.0,<0.20.0",
-    "3tears-object-store>=0.19.0,<0.20.0",
-    "3tears-observe>=0.19.0,<0.20.0",
+    "3tears-media-contracts>=0.20.0,<0.21.0",
+    "3tears-object-store>=0.20.0,<0.21.0",
+    "3tears-observe>=0.20.0,<0.21.0",
 ]
 
 [project.urls]

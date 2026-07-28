@@ -20,7 +20,7 @@ out of scope for shard-18. The pragmatic compromise in this directory:
 | `test_audit_event_landed.py` | fake (publish-recording + in-process subscription dispatch) | fake (asyncpg-shaped) | real `threetears.agent.audit.publish_audit`; stub consumer feeds a stub `AuditEventCollection` |
 | `test_validator_rejection.py` | n/a | fake (asyncpg-shaped) | real `dispatch_validators` + real `FsWriteTool` |
 
-The fake NATS KV comes from `packages/core/tests/unit/coordination/_fake_kv.py`
+The fake NATS KV comes from `threetears.core.testing.kv`
 (shared via `tests/conftest.py` sys.path injection). Its CAS semantics
 are functionally equivalent to real nats-py `KeyValue` for the lease
 contract, so lease-serialization assertions reflect what two real pods
@@ -62,7 +62,7 @@ drift from production SQL fails loudly rather than silently no-opping.
 When testcontainers NATS + YugabyteDB become available to the 3tears
 package test suite:
 
-1. Replace the `_fake_kv.FakeNatsClient` / `RecordingFakeNatsClient`
+1. Replace the `threetears.core.testing.kv.FakeNatsClient` / `RecordingFakeNatsClient`
    imports with a real `nats.connect(...)` helper against the
    container; lease tests stay unchanged.
 2. Replace `_FakePool` with a real asyncpg pool pointing at a per-test

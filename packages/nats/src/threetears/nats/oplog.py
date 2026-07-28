@@ -446,16 +446,31 @@ class OpLog:
 
         try:
             done = False
+            last_yielded = from_seq - 1
             while not done:
                 try:
                     msgs = await psub.fetch(_REPLAY_BATCH, timeout=_REPLAY_FETCH_TIMEOUT)
                 except TimeoutError:
-                    # Drained tail: fetch could not fill a batch within the timeout. Together
-                    # with the `seq >= last_seq` exit below this is the normal terminator when
-                    # the final batch is short. nats-py's FetchTimeoutError subclasses builtins
-                    # TimeoutError, so this catches it. A real transport failure is NOT a
-                    # timeout and must NOT be mistaken for end-of-stream: a silently-truncated
-                    # replay would corrupt materialise / failover (the durability invariant).
+                    # Reaching here always means the replay stopped short of the head: the
+                    # `seq >= last_seq` exit below is the clean terminator, and `from_seq >
+                    # last_seq` already returned above, so a timeout can only land with
+                    # `last_yielded < last_seq`. nats-py's FetchTimeoutError subclasses builtins
+                    # TimeoutError, so this catches it. The cause is not knowable from here --
+                    # a purged/expired gap ahead of the head reads identically to a broker too
+                    # slow to answer -- and both hand the consumer a short replay, which is the
+                    # shape that corrupts materialise / failover (the durability invariant). So
+                    # the gap is reported rather than passed off as a clean tail.
+                    log.warning(
+                        "op-log replay ended short of the stream head",
+                        extra={
+                            "extra_data": {
+                                "stream": self._stream,
+                                "from_seq": from_seq,
+                                "last_yielded_seq": last_yielded,
+                                "last_seq": last_seq,
+                            }
+                        },
+                    )
                     break
                 except APIError as exc:
                     raise OpLogError(f"op-log replay failed (fetch): stream={self._stream}: {exc!r}") from exc
@@ -466,6 +481,7 @@ class OpLog:
                     headers = msg.headers or {}
                     op_id = headers.get(Header.MSG_ID, "")
                     yield OpRecord(seq=seq, payload=bytes(msg.data), op_id=op_id)
+                    last_yielded = seq
                     if seq >= last_seq:
                         done = True
                         break

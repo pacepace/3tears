@@ -425,11 +425,10 @@ def _parse_skill_id(raw: str) -> UUID | None:
     try:
         return UUID(candidate)
     except ValueError:
-        # malformed UUID literal (typo, wrong format, etc.)
-        return None
-    except AttributeError:
-        # defensive: handles unusual non-string candidates that
-        # uuid.UUID rejects via attribute access on its input
+        # Malformed UUID literal (typo, wrong format, etc.). The caller turns None into a
+        # tool-error the model sees, so this only needs to be legible to an operator asking
+        # why a skill lookup keeps missing.
+        log.debug("skill id did not parse as a UUID", extra={"extra_data": {"candidate": candidate}})
         return None
 
 

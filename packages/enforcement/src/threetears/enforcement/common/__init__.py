@@ -7,6 +7,7 @@ reaching into submodule paths.
 
 from threetears.enforcement.common.ast_helpers import (
     iter_python_files,
+    note_unscanned,
     parse_python_file,
     relative_posix_path,
     is_private_name,
@@ -71,6 +72,7 @@ __all__ = [
     "is_private_name",
     "is_suppress_call",
     "iter_python_files",
+    "note_unscanned",
     "parse_exemptions_with_rationale",
     "parse_python_file",
     "relative_posix_path",

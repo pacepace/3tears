@@ -50,16 +50,24 @@ Usage at a call site
         },
     )
 
-call sites that need to override a helper value (for example a fixture
-that wants a shorter ``command_timeout``) may pass the kwarg explicitly
-AFTER the splat; Python applies later kwargs over earlier ones so the
-call site wins::
+a call site may pass any kwarg this helper does NOT return alongside the
+splat, which is the ordinary case::
 
     pool = await asyncpg.create_pool(
         dsn,
         **get_pg_pool_kwargs(),
-        command_timeout=5,  # overrides helper default for this call site
+        command_timeout=5,  # not returned by the helper, so no collision
     )
+
+**overriding a value the helper DOES return needs a dict, not a second
+kwarg.** ``f(**d, a=2)`` where ``d`` contains ``a`` raises
+``TypeError: got multiple values for keyword argument 'a'`` -- it does
+not let the later one win. This block previously said the opposite,
+with ``command_timeout`` as the worked example, which would have crashed
+pod startup the day this helper grew that key. Override by merging::
+
+    kwargs = {**get_pg_pool_kwargs(), "max_inactive_connection_lifetime": 60}
+    pool = await asyncpg.create_pool(dsn, **kwargs)
 
 Anti-patterns
 -------------

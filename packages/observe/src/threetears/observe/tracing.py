@@ -107,6 +107,9 @@ def _record_safe_result(span: Any, result: Any) -> None:
         try:
             span.set_attribute("result.count", len(result))
         except TypeError:
+            # NOSILENT: the count is optional span decoration and this is per-call on a hot path.
+            # An object that advertises __len__ and then refuses len() simply has no count to
+            # record; the traced call itself is unaffected and must not be disturbed by it.
             pass
 
 

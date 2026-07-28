@@ -328,9 +328,9 @@ packages/observe/src/threetears/observe/setup.py:169:_TRACER_PROVIDER_SET_ONCE
 # rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
 packages/observe/src/threetears/observe/setup.py:169:_done
 # rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
-packages/observe/src/threetears/observe/setup.py:288:_TRACER_PROVIDER_SET_ONCE
+packages/observe/src/threetears/observe/setup.py:302:_TRACER_PROVIDER_SET_ONCE
 # rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
-packages/observe/src/threetears/observe/setup.py:288:_done
+packages/observe/src/threetears/observe/setup.py:302:_done
 
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
 packages/observe/tests/test_metrics.py:22:_prometheus_available
