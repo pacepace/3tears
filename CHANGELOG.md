@@ -4,22 +4,28 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.20.0 -- 2026-07-28
 
-> **0.20.0 carries new public API from two directions.** The workspace was already bumped to
-> 0.20.0 for `3tears-iam`; this branch needs the same MINOR bump on its own merits, because
-> `threetears.core.egress` on `3tears` and the operator surfaces on `3tears-scrape` are both new
-> public API rather than fixes.
+> **A MINOR bump, because three distributions gain new public API and one changes an existing
+> contract.** `3tears-iam` is a new distribution, first published at this version.
+> `threetears.core.egress` is new on `3tears`, and the operator surfaces are new on
+> `3tears-scrape`. Separately, **`3tears-nats` no longer installs the NATS client by default**,
+> which is breaking for consumers and is written up in its own entry below -- read it before
+> upgrading.
 >
-> `threetears.scrape` imports `threetears.core.egress`, which exists on no released version, so the
-> two distributions must move together -- which lockstep versioning already guarantees. Shipping
-> this as a patch would leave `3tears-scrape` declaring `3tears>=0.19.0,<0.20.0` while importing a
-> module no published 0.19.x contains: resolvable by pip and broken at import, the exact
-> mixed-family failure these bounds exist to make impossible.
+> `threetears.scrape` imports `threetears.core.egress`, which exists on no earlier release, so
+> those two distributions had to move together -- which lockstep versioning already guarantees.
+> Releasing this as a patch would have left `3tears-scrape` declaring `3tears>=0.19.0,<0.20.0`
+> while importing a module no published 0.19.x contains: resolvable by pip and broken at import,
+> the exact mixed-family failure these bounds exist to make impossible.
 >
-> A version bump only rewrites bounds that exist when it runs. `bump-version.sh 0.20.0` ran on
-> `develop` before this branch's `hitl` and `reprobe` extras existed, so those two kept `<0.20.0`
-> bounds against a 0.20.0 package and the merge is where they were corrected. Any branch adding an
+> **Pin the whole family to 0.20.0 exactly.** A mixed family is what the bounds are here to
+> prevent, and pinning is what makes that guarantee hold on your side of the install.
+>
+> A version bump only rewrites the intra-family bounds that exist at the moment it runs.
+> `bump-version.sh 0.20.0` ran before the `hitl` and `reprobe` extras on `3tears-scrape` were
+> written, so both kept a `<0.20.0` ceiling while declaring against a 0.20.0 package, and the merge
+> that brought them together is where that was caught and corrected. Any branch that adds an
 > intra-family dependency across a bump has to re-check its own bounds; `--verify` is what says so.
 
 
@@ -323,15 +329,24 @@ no file under `novnc/` can be read as a modified noVNC file.
 `modified: false` is checked, not promised: a test recomputes the tree digest, and the fix for a
 failure is to mark the modification, never to restamp the digest.
 
-**Two separate mechanisms would each have shipped a dead display**, and both are now held by
-test. The stock Python `.gitignore` carries a bare `lib/` rule; with no leading slash it matches
-at any depth, so it matched `vendor/pako/lib/` -- every zlib module noVNC's compressed-encoding
-decoders import. Twelve files, absent from the repository, with the working tree looking
-complete. A `!` re-inclusion fixes that for git and does not fix it for hatchling, which reads
-ignore files with its own matcher and does not honour the negation, so the wheel was still built
-without them; `[tool.hatch.build.targets.wheel] artifacts` is what covers that half. Nothing
-readable from the source tree distinguishes the two cases, which is why one test builds a real
-wheel and looks inside it.
+**One ignore rule would have shipped a dead display three different ways**, and it is now held
+by test on both build targets. The stock Python `.gitignore` carries a `lib/` rule for top-level
+build output; unanchored it matches at any depth, so it matched `vendor/pako/lib/` -- every zlib
+module noVNC's compressed-encoding decoders import. Twelve files, absent from the repository,
+with the working tree looking complete. A `!` re-inclusion fixes that for git and not for
+hatchling, which reads ignore files with its own matcher and does not honour the negation, so the
+built archives were still missing them. The rule is now anchored to `/lib/`, which is what it
+always meant -- every nested `lib/` on disk sits under an already-ignored `.venv/` or
+`.mypy_cache/` -- and that fixes every build target at once rather than per-target.
+
+Nothing readable from the source tree distinguishes "this ships" from "this is dropped", so the
+guard is a test that builds real archives and looks inside them. **The build command is part of
+what it has to get right.** `uv build` invoked against a package directory resolves ignore rules
+from there, where the root `.gitignore` does not apply -- so the first version of that test
+shipped all twelve modules and passed, while `uv build --all-packages` from the workspace root,
+which is what `release.yml` runs, dropped every one of them. The test now builds the way the
+release builds, and covers the sdist as well as the wheel, since an ignore rule was never
+wheel-specific and only the wheel had ever been checked.
 
 **A blocked scrape target now backs off, instead of being hammered forever
 (`3tears-scrape`).** Telling a bot wall apart from a site redesign already stopped a
