@@ -58,11 +58,39 @@ close concurrency (DS-09-12 / DS-10-07):
   marks the driver closed but does NOT call ``pool.close()`` -- the
   L3 lifecycle owns the pool. external (non-borrowed) drivers call
   ``await self._pool.close()`` exactly once.
+
+transactions, per-statement timeouts, and the read path (dsd-task-01):
+
+this driver is the local stand-in for Redshift, so it presents the
+SAME surface -- a transaction API implemented on one engine and not the
+other diverges silently until production. the mechanisms differ where
+the engines do:
+
+- **transactions** wrap ``asyncpg``'s own ``Connection.transaction``.
+  :meth:`AsyncpgDriver.begin` acquires WITHOUT the ``async with`` form
+  so the connection stays checked out across statements; the release is
+  :meth:`AsyncpgDriver._transaction_finish`'s job.
+- **the per-statement timeout override is ``SET LOCAL
+  statement_timeout``**, issued inside a transaction the driver opens
+  for the purpose. the transaction is not optional: ``SET LOCAL``
+  outside a block is a no-op with a warning, so without it the override
+  would silently leave the statement on the pool's ceiling. a
+  ``RESET statement_timeout`` runs from a ``finally`` as the second
+  line of defence.
+- **the read path holds no snapshot** here: asyncpg runs each statement
+  outside an explicit block unless the caller opens one, and
+  ``Pool.release`` runs ``Connection.reset`` (``ROLLBACK`` when in a
+  transaction, then ``CLOSE ALL`` / ``UNLISTEN *`` / ``RESET ALL`` --
+  ``asyncpg/connection.py``, ``get_reset_query``). the configured
+  ``search_path`` survives that ``RESET ALL`` because it is sent in the
+  pgwire STARTUP packet and is therefore the session default.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -76,12 +104,16 @@ from threetears.datasources.config import (
 )
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
+    build_reset_statement_timeout_sql,
     build_search_path_value,
+    build_set_local_statement_timeout_sql,
 )
 from threetears.datasources.drivers.base import (
+    CallbackTransaction,
     ColumnRow,
     Driver,
     TableRow,
+    Transaction,
     _check_otel_metrics,
     _instrument_cache,
     _observed,
@@ -203,6 +235,31 @@ class DriverCancellationError(asyncio.CancelledError):
 # entirely (no host/port/credentials) and is handled separately.
 _PgConfig = PostgresConnectionConfig | YugabyteConnectionConfig
 _AnyConfig = _PgConfig | AgentInternalConnectionConfig
+
+
+@dataclasses.dataclass
+class _Checkout:
+    """one pooled connection pinned for a transaction's lifetime.
+
+    the transaction path acquires WITHOUT the ``async with`` form, so
+    the release is this driver's responsibility rather than the
+    context manager's. carrying the connection, its asyncpg
+    transaction handle, and whether a per-statement timeout was
+    applied on one object keeps the finish path from drifting.
+
+    :param conn: the pinned pooled connection
+    :ptype conn: asyncpg.Connection
+    :param transaction: the live asyncpg transaction on that connection
+    :ptype transaction: Any
+    :param timeout_overridden: True once a ``SET LOCAL
+        statement_timeout`` has run on this checkout, so the finish
+        path resets it before the connection returns to the pool
+    :ptype timeout_overridden: bool
+    """
+
+    conn: Any
+    transaction: Any
+    timeout_overridden: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -430,17 +487,55 @@ class AsyncpgDriver(Driver):
             raise DriverConnectError(f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}")
         return pool
 
+    async def _reset_statement_timeout(self, conn: asyncpg.Connection[Any]) -> None:
+        """restore the connection's session-default ``statement_timeout``.
+
+        the per-statement override is issued as ``SET LOCAL`` inside a
+        transaction, so it already unwinds when that transaction ends
+        -- this is the second line of defence, for the case where the
+        engine (or a future asyncpg change) degrades the scoping. it
+        runs from a ``finally`` because a reset skipped on the error
+        path is exactly the leak.
+
+        the search path is unaffected: it is sent in the pgwire STARTUP
+        packet, so it IS the session default that ``RESET`` restores.
+
+        :param conn: connection whose timeout is being restored
+        :ptype conn: asyncpg.Connection
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await conn.execute(build_reset_statement_timeout_sql())
+        except Exception as exc:  # noqa: BLE001 -- release path must not raise over the caller's result
+            # asyncpg's own pool release runs ``RESET ALL``, so a failure
+            # here degrades to that rather than leaking; log it anyway,
+            # because a reset that keeps failing is how a leak starts.
+            log.warning(
+                "asyncpg statement_timeout reset failed on release",
+                extra={"extra_data": {"error": str(exc), "error_type": type(exc).__name__}},
+            )
+
     async def _acquire_and_run(
         self,
         coro_fn: Callable[[asyncpg.Connection[Any]], Awaitable[Any]],
+        *,
+        timeout_seconds: int | None = None,
     ) -> Any:
         """acquire a connection from the pool + route the call through cancellation.
 
-        canonical wrapper every query-emitting method routes through.
+        canonical wrapper every single-statement method routes through.
         the connection is acquired BEFORE the cancellation helper so
         ``conn.cancel`` is wired as the cancel callback; this is the
         whole reason :meth:`Driver._with_cancellation` takes a
         callable rather than the awaitable itself.
+
+        when ``timeout_seconds`` is supplied the statement runs inside
+        an explicit transaction carrying ``SET LOCAL
+        statement_timeout``. the transaction is not optional: ``SET
+        LOCAL`` outside a transaction block is a no-op with a warning,
+        so without it the override would silently do nothing and the
+        statement would run on the pool's ceiling.
 
         the wrapped cancel callback also bumps the
         :data:`datasource.driver.cancellation.fired` counter (manual
@@ -450,12 +545,16 @@ class AsyncpgDriver(Driver):
 
         :param coro_fn: callable that takes the acquired :class:`asyncpg.Connection`
             and returns the awaitable to run
-        :ptype coro_fn: Callable[[asyncpg.Connection], Awaitable[T]]
+        :ptype coro_fn: Callable[[asyncpg.Connection], Awaitable[Any]]
+        :param timeout_seconds: per-statement timeout override in
+            seconds, or None to run on the connection's ceiling
+        :ptype timeout_seconds: int | None
         :return: whatever ``coro_fn(conn)`` resolved to
-        :rtype: T
+        :rtype: Any
         :raises asyncio.CancelledError: propagated after best-effort
             backend cancellation via :meth:`asyncpg.Connection.cancel`
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
@@ -472,10 +571,23 @@ class AsyncpgDriver(Driver):
                     cancel_counter.add(1, attributes={"driver_type": "asyncpg"})
                 return conn.cancel()  # NOT terminate() -- see DS-10-08
 
-            return await self._with_cancellation(
-                lambda: coro_fn(conn),
-                cancel_callback=_on_cancel,
-            )
+            if timeout_seconds is None:
+                result = await self._with_cancellation(
+                    lambda: coro_fn(conn),
+                    cancel_callback=_on_cancel,
+                )
+            else:
+                set_local_sql = build_set_local_statement_timeout_sql(timeout_seconds)
+                try:
+                    async with conn.transaction():
+                        await conn.execute(set_local_sql)
+                        result = await self._with_cancellation(
+                            lambda: coro_fn(conn),
+                            cancel_callback=_on_cancel,
+                        )
+                finally:
+                    await self._reset_statement_timeout(conn)
+        return result
 
     # -------------------------------------------------------------------
     # Driver ABC: query surface
@@ -483,51 +595,217 @@ class AsyncpgDriver(Driver):
 
     @traced
     @_observed(driver_type="asyncpg")
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement; materialize all rows in memory.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds, applied as ``SET LOCAL statement_timeout`` inside
+            a transaction so it cannot leak to the next borrower of
+            this pooled connection. None leaves the pool's
+            ``command_timeout`` ceiling in force
+        :ptype timeout_seconds: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         :raises DriverConnectError: if the lazy pool creation fails
         """
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
+        # validate BEFORE a connection leaves the pool: a bad override
+        # is a caller bug, not a reason to burn a checkout.
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
         # placeholder translation is a no-op for asyncpg (it uses $N
         # natively); calling the helper anyway keeps the contract
         # consistent across drivers.
         translated = _translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
             lambda conn: conn.fetch(translated, *params),
+            timeout_seconds=timeout_seconds,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
         return result
 
     @traced
     @_observed(driver_type="asyncpg")
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds; see :meth:`fetch`
+        :ptype timeout_seconds: int | None
         :return: nothing
         :rtype: None
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
         if self._closed:
             raise RuntimeError("AsyncpgDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
         translated = _translate_placeholders(sql, "asyncpg")
         await self._acquire_and_run(
             lambda conn: conn.execute(translated, *params),
+            timeout_seconds=timeout_seconds,
         )
+
+    # -------------------------------------------------------------------
+    # Driver ABC: transaction surface (DSD-01-01 / DSD-01-02)
+    # -------------------------------------------------------------------
+
+    @traced
+    async def begin(self) -> Transaction:
+        """open a transaction pinned to one pooled connection.
+
+        acquires WITHOUT the ``async with`` form, because the
+        connection must stay checked out across statements until the
+        caller commits or rolls back. that makes the release this
+        driver's job -- :meth:`_transaction_finish` owns it, and every
+        exit path routes through there.
+
+        :return: a live transaction handle over the pinned connection
+        :rtype: Transaction
+        :raises RuntimeError: if the driver was previously closed
+        :raises DriverConnectError: if the lazy pool creation fails
+        """
+        if self._closed:
+            raise RuntimeError("AsyncpgDriver is closed")
+        pool = await self._ensure_pool()
+        conn = await pool.acquire()
+        try:
+            transaction = conn.transaction()
+            await transaction.start()
+        except BaseException:
+            await pool.release(conn)
+            raise
+        checkout = _Checkout(conn=conn, transaction=transaction)
+        return CallbackTransaction(
+            on_fetch=functools.partial(self._transaction_fetch, checkout),
+            on_execute=functools.partial(self._transaction_execute, checkout),
+            on_finish=functools.partial(self._transaction_finish, checkout),
+        )
+
+    async def _transaction_fetch(
+        self,
+        checkout: _Checkout,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> list[dict[str, Any]]:
+        """run a SELECT on the transaction's pinned connection.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: list of column-name -> value dicts in row order
+        :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
+        """
+        translated = _translate_placeholders(sql, "asyncpg")
+        await self._apply_transaction_timeout(checkout, timeout_seconds)
+        records = await self._with_cancellation(
+            lambda: checkout.conn.fetch(translated, *params),
+            cancel_callback=lambda: checkout.conn.cancel(),
+        )
+        result: list[dict[str, Any]] = [dict(r) for r in records]
+        return result
+
+    async def _transaction_execute(
+        self,
+        checkout: _Checkout,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> None:
+        """run a DML / DDL statement on the transaction's pinned connection.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
+        """
+        translated = _translate_placeholders(sql, "asyncpg")
+        await self._apply_transaction_timeout(checkout, timeout_seconds)
+        await self._with_cancellation(
+            lambda: checkout.conn.execute(translated, *params),
+            cancel_callback=lambda: checkout.conn.cancel(),
+        )
+
+    async def _apply_transaction_timeout(
+        self,
+        checkout: _Checkout,
+        timeout_seconds: int | None,
+    ) -> None:
+        """issue the transaction-local timeout for the next statement.
+
+        a transaction block is already open, so ``SET LOCAL`` scopes
+        correctly and unwinds with the caller's commit or rollback.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
+        """
+        if timeout_seconds is not None:
+            set_local_sql = build_set_local_statement_timeout_sql(timeout_seconds)
+            checkout.timeout_overridden = True
+            await checkout.conn.execute(set_local_sql)
+
+    async def _transaction_finish(self, checkout: _Checkout, commit: bool) -> None:
+        """end the transaction, reset the timeout, release the connection.
+
+        the reset and the pool release are both in ``finally`` blocks:
+        a reset skipped on the error path is the leak, and a
+        connection not returned on the error path starves the pool.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param commit: True to commit, False to roll back
+        :ptype commit: bool
+        :return: nothing
+        :rtype: None
+        :raises Exception: a failing commit propagates; the connection
+            is still released
+        """
+        pool = self._pool
+        try:
+            if commit:
+                await checkout.transaction.commit()
+            else:
+                await checkout.transaction.rollback()
+        finally:
+            try:
+                if checkout.timeout_overridden:
+                    await self._reset_statement_timeout(checkout.conn)
+            finally:
+                if pool is not None:
+                    await pool.release(checkout.conn)
 
     @traced
     async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:

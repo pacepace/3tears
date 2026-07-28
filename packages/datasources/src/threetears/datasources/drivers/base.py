@@ -59,15 +59,19 @@ import inspect
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any, TypedDict, TypeVar
+from types import TracebackType
+from typing import Any, TypeAlias, TypedDict, TypeVar
 
 from threetears.observe import get_logger
 
 __all__ = [
+    "CallbackTransaction",
     "ColumnCoverage",
     "ColumnRow",
     "Driver",
     "TableRow",
+    "Transaction",
+    "TransactionContext",
 ]
 
 log = get_logger(__name__)
@@ -373,6 +377,305 @@ def _observed(driver_type: str) -> Callable[[F], F]:
 
 
 # ---------------------------------------------------------------------------
+# Transaction surface (DSD-01-01 / DSD-01-02)
+# ---------------------------------------------------------------------------
+
+
+#: signature of the driver-supplied fetch hook a :class:`CallbackTransaction`
+#: forwards to. params arrive as a tuple rather than varargs so the hook can
+#: be a plain bound method with a fixed arity.
+TransactionFetchHook: TypeAlias = Callable[[str, tuple[Any, ...], "int | None"], Awaitable[list[dict[str, Any]]]]
+
+#: signature of the driver-supplied execute hook.
+TransactionExecuteHook: TypeAlias = Callable[[str, tuple[Any, ...], "int | None"], Awaitable[None]]
+
+#: signature of the driver-supplied finish hook. the bool is True for
+#: commit, False for rollback. the hook owns ending the backend
+#: transaction AND returning the pinned connection to its pool / cache,
+#: because those two must happen exactly once and in that order.
+TransactionFinishHook: TypeAlias = Callable[[bool], Awaitable[None]]
+
+
+class Transaction(ABC):
+    """a multi-statement unit of work pinned to ONE backend session.
+
+    the shape mirrors ``asyncpg``'s own transaction API so a reader who
+    knows one knows the other. every statement issued through this
+    handle runs on the same backend session for the transaction's
+    lifetime -- which is the whole point: promotion's ``CREATE TABLE
+    AS`` / ``DROP`` / ``ALTER`` / ``GRANT`` sequence is only atomic if
+    the statements share a session.
+
+    obtain one via :meth:`Driver.transaction` (the context manager,
+    which commits on clean exit and rolls back on exception) or
+    :meth:`Driver.begin` (explicit, when the commit point is decided
+    somewhere the ``async with`` block cannot reach). a handle from
+    :meth:`Driver.begin` MUST be committed or rolled back -- an
+    abandoned one holds its pooled connection until the driver closes.
+
+    holding a transaction open reduces the driver's effective pool
+    capacity for its duration. that coupling is why the executor's
+    admission control caps build concurrency at enqueue rather than
+    letting arbitrarily many transactions contend for the cache; the
+    two knobs must not be tuned independently.
+    """
+
+    @abstractmethod
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
+        """run a SELECT on this transaction's pinned session.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds. applied transaction-locally, so it bounds THIS
+            statement and unwinds with the transaction. None leaves the
+            connection's configured ceiling in force
+        :ptype timeout_seconds: int | None
+        :return: list of column-name -> value dicts in row order
+        :rtype: list[dict[str, Any]]
+        :raises RuntimeError: if the transaction already finished
+        """
+
+    @abstractmethod
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+        """run a DML / DDL statement on this transaction's pinned session.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds; transaction-local. None leaves the connection's
+            configured ceiling in force
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+
+    @abstractmethod
+    async def commit(self) -> None:
+        """commit the transaction and release its pinned session.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+
+    @abstractmethod
+    async def rollback(self) -> None:
+        """roll the transaction back and release its pinned session.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+
+
+class CallbackTransaction(Transaction):
+    """concrete :class:`Transaction` driven by three driver-supplied hooks.
+
+    both concrete drivers construct one of these rather than each
+    shipping its own :class:`Transaction` subclass. the finished-guard,
+    the "released exactly once" invariant, and the argument shape then
+    live in ONE place, which is what makes the two drivers provably the
+    same surface instead of two implementations that agree today.
+
+    the hooks are bound methods of the driver, so this class never
+    reaches into driver internals.
+
+    :param on_fetch: driver hook running a SELECT on the pinned session
+    :ptype on_fetch: TransactionFetchHook
+    :param on_execute: driver hook running a DML / DDL statement on the
+        pinned session
+    :ptype on_execute: TransactionExecuteHook
+    :param on_finish: driver hook ending the backend transaction and
+        releasing the pinned connection. receives True for commit and
+        False for rollback
+    :ptype on_finish: TransactionFinishHook
+    """
+
+    def __init__(
+        self,
+        *,
+        on_fetch: TransactionFetchHook,
+        on_execute: TransactionExecuteHook,
+        on_finish: TransactionFinishHook,
+    ) -> None:
+        """capture the three driver hooks; mark the transaction live.
+
+        :param on_fetch: driver hook running a SELECT
+        :ptype on_fetch: TransactionFetchHook
+        :param on_execute: driver hook running a DML / DDL statement
+        :ptype on_execute: TransactionExecuteHook
+        :param on_finish: driver hook ending + releasing the session
+        :ptype on_finish: TransactionFinishHook
+        :return: nothing
+        :rtype: None
+        """
+        self._on_fetch = on_fetch
+        self._on_execute = on_execute
+        self._on_finish = on_finish
+        self._finished = False
+
+    @property
+    def finished(self) -> bool:
+        """whether the transaction has already committed or rolled back.
+
+        :return: True once a finish hook has been dispatched
+        :rtype: bool
+        """
+        return self._finished
+
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
+        """run a SELECT on the pinned session.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param timeout_seconds: transaction-local timeout override
+        :ptype timeout_seconds: int | None
+        :return: list of column-name -> value dicts in row order
+        :rtype: list[dict[str, Any]]
+        :raises RuntimeError: if the transaction already finished
+        """
+        self._reject_when_finished()
+        return await self._on_fetch(sql, params, timeout_seconds)
+
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
+        """run a DML / DDL statement on the pinned session.
+
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional placeholder values
+        :ptype params: Any
+        :param timeout_seconds: transaction-local timeout override
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+        self._reject_when_finished()
+        await self._on_execute(sql, params, timeout_seconds)
+
+    async def commit(self) -> None:
+        """commit and release the pinned session.
+
+        the finished flag is set BEFORE the hook runs: a hook that
+        raises still consumed the connection release, and letting a
+        caller retry the commit would double-release it.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+        self._reject_when_finished()
+        self._finished = True
+        await self._on_finish(True)
+
+    async def rollback(self) -> None:
+        """roll back and release the pinned session.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+        self._reject_when_finished()
+        self._finished = True
+        await self._on_finish(False)
+
+    def _reject_when_finished(self) -> None:
+        """raise when the transaction has already been committed or rolled back.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: if the transaction already finished
+        """
+        if self._finished:
+            raise RuntimeError("transaction already committed or rolled back")
+
+
+class TransactionContext:
+    """async context manager returned by :meth:`Driver.transaction`.
+
+    commits on a clean exit, rolls back on ANY exception including
+    :class:`asyncio.CancelledError`. concrete on this layer rather than
+    per driver, so the two drivers cannot disagree about what a bare
+    ``async with driver.transaction()`` means.
+
+    a rollback that itself fails is logged, never substituted for the
+    caller's exception -- the caller acts on the failure they caused,
+    and a failed rollback is observability.
+
+    :param driver: driver whose :meth:`Driver.begin` opens the session
+    :ptype driver: Driver
+    """
+
+    def __init__(self, driver: Driver) -> None:
+        """capture the driver; open nothing yet.
+
+        :param driver: driver whose :meth:`Driver.begin` opens the session
+        :ptype driver: Driver
+        :return: nothing
+        :rtype: None
+        """
+        self._driver = driver
+        self._transaction: Transaction | None = None
+
+    async def __aenter__(self) -> Transaction:
+        """open the transaction and hand back its handle.
+
+        :return: the live transaction handle
+        :rtype: Transaction
+        """
+        transaction = await self._driver.begin()
+        self._transaction = transaction
+        return transaction
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool:
+        """commit on a clean exit; roll back on any exception.
+
+        :param exc_type: exception class raised in the body, or None
+        :ptype exc_type: type[BaseException] | None
+        :param exc: exception instance raised in the body, or None
+        :ptype exc: BaseException | None
+        :param traceback: traceback of the raised exception, or None
+        :ptype traceback: TracebackType | None
+        :return: False -- the caller's exception is never suppressed
+        :rtype: bool
+        """
+        transaction = self._transaction
+        if transaction is not None:
+            if exc_type is None:
+                await transaction.commit()
+            else:
+                try:
+                    await transaction.rollback()
+                except Exception as rollback_exc:  # noqa: BLE001 -- the body's exception is the caller's answer
+                    # the transaction may still be open server-side; the
+                    # connection is evicted by the driver's finish hook
+                    # either way, so this is observability, not control flow.
+                    log.warning(
+                        "transaction rollback failed; original error propagates",
+                        extra={
+                            "extra_data": {
+                                "error": str(rollback_exc),
+                                "error_type": type(rollback_exc).__name__,
+                            }
+                        },
+                    )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Driver ABC (DS-09-01..06)
 # ---------------------------------------------------------------------------
 
@@ -404,6 +707,31 @@ class Driver(ABC):
         backend call through :meth:`_with_cancellation` so the
         propagation logic lives in one place.
 
+    transaction contract (DSD-01-01 / DSD-01-02):
+        :meth:`begin` opens a multi-statement unit of work pinned to
+        ONE backend session; :meth:`transaction` wraps it in the shared
+        async context manager that commits on clean exit and rolls back
+        on exception. a promote is only atomic if its statements share
+        a session, which is why the ABC carries this rather than each
+        driver improvising.
+
+    per-statement timeout contract (DSD-01-03 / DSD-01-04):
+        :meth:`fetch` and :meth:`execute` take ``timeout_seconds``. the
+        datasource's configured timeout is a connection-level CEILING;
+        the override bounds one statement below it. drivers MUST apply
+        the override transaction-locally (or reset it on release, in a
+        ``finally``) -- a session-scoped ``SET`` on a pooled connection
+        leaks the previous borrower's bound to the next one, and the
+        resulting failure is nondeterministic.
+
+    read-path contract (DSD-01-05):
+        a completed statement MUST NOT return its connection to the
+        pool holding an open transaction. an idle-in-transaction
+        connection keeps its snapshot and locks, which is what makes a
+        ``DROP`` or an ownership change block behind a *finished*
+        query. this is a prerequisite for reaping and stats sharing one
+        warehouse, not a tidy-up.
+
     row-shape contract (DS-09-10):
         :meth:`list_tables` returns :class:`TableRow` dicts and
         :meth:`list_columns` returns :class:`ColumnRow` dicts. the
@@ -428,7 +756,7 @@ class Driver(ABC):
     """
 
     @abstractmethod
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run an arbitrary SELECT statement; materialize all rows in memory.
 
         for result sets large enough to risk OOM, prefer
@@ -439,27 +767,81 @@ class Driver(ABC):
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds. the datasource's configured timeout is a
+            connection-level CEILING, not the per-statement value: one
+            number cannot govern an hour-long build statement, a
+            reaper ``DROP``, and a bounded interactive aggregate alike.
+            the override is applied transaction-locally so it cannot
+            leak to the next borrower of a pooled connection. None
+            leaves the ceiling in force
+        :ptype timeout_seconds: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         :raises asyncio.CancelledError: propagated after best-effort
             backend cancellation
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
 
     @abstractmethod
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run an arbitrary DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds; see :meth:`fetch`. None leaves the connection's
+            configured ceiling in force
+        :ptype timeout_seconds: int | None
         :return: nothing
         :rtype: None
         :raises asyncio.CancelledError: propagated after best-effort
             backend cancellation
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
+
+    @abstractmethod
+    async def begin(self) -> Transaction:
+        """open a transaction pinned to ONE backend session.
+
+        the caller MUST finish the returned handle with
+        :meth:`Transaction.commit` or :meth:`Transaction.rollback` --
+        an abandoned handle holds its pooled connection until the
+        driver closes. prefer :meth:`transaction`, which guarantees the
+        finish, and reach for ``begin`` only when the commit point is
+        decided somewhere an ``async with`` block cannot reach.
+
+        the pinned connection is out of the pool / cache for the
+        transaction's whole life, so a transaction reduces effective
+        pool capacity for its duration.
+
+        :return: a live transaction handle
+        :rtype: Transaction
+        :raises RuntimeError: if the driver was previously closed
+        """
+
+    def transaction(self) -> TransactionContext:
+        """return an async context manager wrapping :meth:`begin`.
+
+        commits on a clean exit, rolls back on any exception::
+
+            async with driver.transaction() as tx:
+                await tx.execute("CREATE TABLE ... AS SELECT ...")
+                await tx.execute("GRANT SELECT ON ... TO ...")
+
+        concrete on the ABC so every driver presents exactly the same
+        commit / rollback semantics. do NOT hold a transaction open
+        across a tool-call boundary: transactions belong to the
+        executor and the promoter, both of which run off the tool path.
+
+        :return: the shared transaction context manager
+        :rtype: TransactionContext
+        """
+        return TransactionContext(self)
 
     async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:
         """stream rows for large result sets.

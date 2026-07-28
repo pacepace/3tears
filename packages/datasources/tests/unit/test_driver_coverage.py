@@ -35,13 +35,22 @@ class _RecordingDriver(Driver):
         self.last_sql: str | None = None
         self.fetch_calls = 0
 
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         self.last_sql = sql
         self.fetch_calls += 1
         return [dict(self._agg_row)]
 
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         return None
+
+    async def begin(self) -> Any:
+        """stub transaction handle; the ABC requires the method.
+
+        :return: never returns
+        :rtype: Any
+        :raises NotImplementedError: this stub has no backend to pin
+        """
+        raise NotImplementedError("stub driver has no session to pin")
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         return []
