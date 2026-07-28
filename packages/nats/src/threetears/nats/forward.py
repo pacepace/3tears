@@ -19,7 +19,12 @@ design
   :meth:`Subjects.room`: app-supplied keys may contain ``.``, spaces,
   ``*`` or ``>`` (all illegal/ambiguous in a NATS subject token), and a
   one-way digest sidesteps every one of them while staying collision-
-  resistant and deterministic.
+  resistant and deterministic. both ends may optionally name a
+  ``family``, which selects :meth:`Subjects.forward_scoped` instead: an
+  extra hashed segment ahead of the key, so a NATS permission can be
+  granted per family. the unscoped subject has nothing but the key
+  digest in it, so a grant over it necessarily covers every key in the
+  namespace.
 
 - **owner side** — :func:`serve_owner` subscribes the key's forward
   subject in a **queue group keyed by that subject**. the queue group is
@@ -68,7 +73,7 @@ from nats.errors import NoRespondersError as _NatsNoRespondersError, TimeoutErro
 from threetears.observe import get_logger
 
 from threetears.nats.errors import NatsClientError, RequestError
-from threetears.nats.subjects import Subjects
+from threetears.nats.subjects import Subject, Subjects
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient, Subscription
@@ -203,11 +208,36 @@ def _decode_reply(frame: bytes) -> bytes:
     raise ForwardError(f"owner replied with an unknown frame tag: 0x{tag:02x}")
 
 
+def _subject_for(key: str, family: str | None) -> Subject:
+    """resolve the forward subject for ``key``, family-scoped when ``family`` is given.
+
+    ``None`` selects the unscoped :meth:`Subjects.forward` subject, which is
+    what every caller that does not name a family rides. a family selects
+    :meth:`Subjects.forward_scoped`, whose extra segment is the only thing a
+    subject permission can discriminate on (the key segment is a digest of an
+    arbitrary application string). the two are distinct subjects, so an owner
+    and a caller that disagree about the family simply never meet -- there is
+    no partial overlap to reason about.
+
+    :param key: ownership key
+    :ptype key: str
+    :param family: forward family, or ``None`` for the unscoped subject
+    :ptype family: str | None
+    :return: the subject both ends derive for this key
+    :rtype: Subject
+    """
+    if family is None:
+        return Subjects.forward(key)
+    return Subjects.forward_scoped(family, key)
+
+
 @asynccontextmanager
 async def serve_owner(
     nats: NatsClient,
     key: str,
     handler: ForwardHandler,
+    *,
+    family: str | None = None,
 ) -> AsyncIterator[None]:
     """serve forwarded requests for ``key`` while this context is active.
 
@@ -240,11 +270,16 @@ async def serve_owner(
         request; raising surfaces to the caller as
         :class:`ForwardedHandlerError`
     :ptype handler: ForwardHandler
+    :param family: optional forward family; the caller's :func:`forward` must
+        name the SAME family or the two never meet. a family makes the subject
+        grantable per family (:meth:`Subjects.forward_scoped_wildcard`), which
+        the unscoped shape cannot be. ``None`` keeps today's subject.
+    :ptype family: str | None
     :return: async iterator yielding ``None`` while serving
     :rtype: AsyncIterator[None]
     :raises SubscribeError: if subscription registration fails
     """
-    subject = Subjects.forward(key)
+    subject = _subject_for(key, family)
 
     async def _on_request(msg: IncomingMessage) -> None:
         """run the handler and reply with a framed result.
@@ -298,6 +333,7 @@ async def forward(
     payload: bytes,
     *,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
+    family: str | None = None,
 ) -> bytes:
     """forward ``payload`` to whichever pod currently serves ``key``.
 
@@ -318,6 +354,10 @@ async def forward(
     :ptype payload: bytes
     :param timeout: max wait for the owner's reply
     :ptype timeout: timedelta
+    :param family: optional forward family; must match the family the owner
+        passed to :func:`serve_owner`. a mismatch is indistinguishable from
+        "no owner", because the two families are different subjects.
+    :ptype family: str | None
     :return: the owner handler's reply bytes
     :rtype: bytes
     :raises NoOwnerError: if no pod currently serves the key (no
@@ -325,7 +365,7 @@ async def forward(
     :raises ForwardedHandlerError: if the owner's handler raised
     :raises RequestError: on any other transport failure
     """
-    subject = Subjects.forward(key)
+    subject = _subject_for(key, family)
     try:
         frame = await nats.request_raw(subject=subject, payload=payload, timeout=timeout)
     except RequestError as exc:

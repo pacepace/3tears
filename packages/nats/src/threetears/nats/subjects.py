@@ -161,6 +161,28 @@ def _sanitize(segment: str | UUID) -> str:
     return raw.replace(".", "-")
 
 
+def _digest_token(value: str) -> str:
+    """hash a raw value into a subject-safe token.
+
+    the SHA-256 hex digest of ``value``: ``[0-9a-f]`` only, so a value carrying
+    ``.``, a space, ``*`` or ``>`` (all illegal or ambiguous in a NATS subject
+    token) can neither overload the separator nor inject a wildcard.
+    collision-resistant and deterministic, so two processes starting from the
+    same raw value derive the same token; one-way, which costs nothing because
+    both ends already hold the raw value.
+
+    shared by :meth:`Subjects.room`, :meth:`Subjects.forward` and the
+    family-scoped forward builders, so the token rule has one implementation
+    rather than one per family.
+
+    :param value: raw value to tokenize
+    :ptype value: str
+    :return: 64-character lowercase hex token
+    :rtype: str
+    """
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _routing_token(pod_id: str | UUID) -> str:
     """render a pod-id into its tool-subject routing token(s), preserving structural dots.
 
@@ -1091,8 +1113,7 @@ class Subjects:
         """
         if not room_id:
             raise ValueError("room_id must be non-empty")
-        token = hashlib.sha256(room_id.encode("utf-8")).hexdigest()
-        return Subject(path=f"{_ns()}.channels.room.{token}", kind="point")
+        return Subject(path=f"{_ns()}.channels.room.{_digest_token(room_id)}", kind="point")
 
     # ------------------------------------------------------------------
     # owner-routed forward (request -> whichever pod serves a key)
@@ -1128,8 +1149,111 @@ class Subjects:
         """
         if not key:
             raise ValueError("key must be non-empty")
-        token = hashlib.sha256(key.encode("utf-8")).hexdigest()
-        return Subject(path=f"{_ns()}.forward.{token}", kind="point")
+        return Subject(path=f"{_ns()}.forward.{_digest_token(key)}", kind="point")
+
+    @classmethod
+    def forward_scoped(cls, family: str, key: str) -> Subject:
+        """request/reply subject for owner-routed forwarding of one key WITHIN a family.
+
+        the family-scoped sibling of :meth:`forward`, which renders
+        ``{ns}.forward.{sha256hex(key)}`` -- one variable segment, and it is a
+        digest of an arbitrary application string. a permission grant over that
+        shape can therefore only be the whole subtree, and any principal
+        holding it may serve EVERY owner-routed key in the namespace. the
+        family segment is what a grant can discriminate on: a principal is
+        granted :meth:`forward_scoped_wildcard` for the families it serves and
+        nothing else.
+
+        BOTH segments are hashed here, and ``family`` is deliberately taken as
+        its raw value rather than as a precomputed token. a family typically
+        carries an identity that nothing upstream validates (a tool's
+        registered name is a bare ``str`` with no pattern), so a caller allowed
+        to supply the token ready-made could put a space, a ``*`` or a ``>``
+        into the subject. this classmethod is the one place that property can
+        be enforced for every caller at once, which is the reasoning that put
+        the digest inside :meth:`forward` and :meth:`room` rather than at their
+        call sites.
+
+        :meth:`forward` is unaffected: its subject carries one segment after
+        ``forward`` and this one carries two, so the two shapes never collide
+        and no existing caller changes.
+
+        :param family: raw family value (a deployment constant supplied by the
+            calling module, e.g. :meth:`hitl_forward_family`; never user data)
+        :ptype family: str
+        :param key: ownership key (arbitrary app-supplied string)
+        :ptype key: str
+        :return: subject ``{ns}.forward.{sha256hex(family)}.{sha256hex(key)}``
+        :rtype: Subject
+        :raises ValueError: if family or key is empty
+        """
+        if not family:
+            raise ValueError("family must be non-empty")
+        if not key:
+            raise ValueError("key must be non-empty")
+        return Subject(
+            path=f"{_ns()}.forward.{_digest_token(family)}.{_digest_token(key)}",
+            kind="point",
+        )
+
+    @classmethod
+    def forward_scoped_wildcard(cls, family: str) -> Subject:
+        """grant pattern spanning every owner-routed key in ONE forward family.
+
+        the shape :mod:`threetears.nats.subject_permissions` mints for a
+        principal that serves or calls a single family: the family segment is
+        an exact literal and only the key segment is wildcarded. exact rather
+        than wildcarded on the family because the token is computable from the
+        same row that authorizes the principal, so widening it buys nothing.
+
+        there is no narrower form available for the family segment either: a
+        NATS wildcard matches a WHOLE token, so ``{sha256hex(family)}`` and
+        ``*`` are the only two options and a prefix such as ``hitl-*`` matches
+        nothing but the literal token ``hitl-*``.
+
+        :param family: raw family value (hashed here, exactly as
+            :meth:`forward_scoped` hashes it)
+        :ptype family: str
+        :return: subject ``{ns}.forward.{sha256hex(family)}.*``
+        :rtype: Subject
+        :raises ValueError: if family is empty
+        """
+        if not family:
+            raise ValueError("family must be non-empty")
+        return Subject(path=f"{_ns()}.forward.{_digest_token(family)}.*", kind="pattern")
+
+    @classmethod
+    def hitl_forward_family(cls, tool_namespace_name: str) -> str:
+        """derive the forward family for one tool's human-in-the-loop session control plane.
+
+        returns a plain family STRING (not a :class:`Subject`), for
+        :meth:`forward_scoped` / :meth:`forward_scoped_wildcard` to hash into a
+        subject token. it is derived from the tool's REGISTERED namespace name
+        (``tools.{mcp_name}.{version}``, as
+        ``threetears.agent.tools.server.tool_namespace_name`` builds it) rather
+        than from a separately configured zone identifier, so there is no
+        second value that can disagree with the tool a pod actually registered:
+        a pod's grant is minted by hashing the entries of the same
+        ``allowed_namespaces`` list that filters its registration.
+
+        the tool name is carried RAW in the returned family because the subject
+        builders hash it; nothing here needs it to be subject-safe, and it is
+        not, since a registered tool name is unvalidated.
+
+        one family PER TOOL rather than a flat ``hitl`` family, because
+        :func:`threetears.nats.serve_owner` queue-groups on the subject: a pod
+        serving one tool that could subscribe another tool's session-control
+        subject would take a SHARE of its messages, not merely observe them.
+
+        :param tool_namespace_name: the serving tool's registered namespace name
+        :ptype tool_namespace_name: str
+        :return: the raw forward family for that tool's sessions
+        :rtype: str
+        :raises ValueError: if tool_namespace_name is empty
+        """
+        if not tool_namespace_name:
+            raise ValueError("tool_namespace_name must be non-empty")
+        return f"hitl-{tool_namespace_name}"
 
     # knowledge (correction-harvest drafts)
     # ------------------------------------------------------------------

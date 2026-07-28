@@ -307,21 +307,34 @@ class TestStaleLease:
 
 
 class TestBucketDefaults:
-    """default bucket name derives from THREETEARS_NATS_SUBJECT_NAMESPACE."""
+    """the default bucket name is a constant SUFFIX; the transport owns the prefix."""
 
-    async def test_default_bucket_uses_namespace_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
+    async def test_default_bucket_does_not_vary_with_the_namespace_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the namespace must NOT reach this default, and that is the whole point.
+
+        ``kv_bucket`` layers the connection's own ``{namespace}-`` over whatever it is
+        handed. A default that read the namespace itself produced ``{ns}-{ns}_leases``
+        -- the namespace twice -- and named a bucket that the KV grant minted for it
+        did not cover, so the first acquire blocked to its deadline rather than raising.
+
+        This asserts the property directly (same name under a set and an unset env) so
+        a reintroduced env read fails here rather than in a deployment. Note the fake
+        below deliberately skips the prefix the real wrapper applies, which is exactly
+        why the original defect was invisible to every unit test of this class -- so the
+        assertion is on the name PASSED to the transport, not on a composed one.
+        """
         client = FakeNatsClient()
+        monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", "prod14")
         lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
         await lease.acquire("lock/a", ttl_seconds=30)
-        # bucket should exist under "prod14_leases"
-        bucket = await _bucket_for(client, "prod14_leases")
-        value = await bucket.get(key="lock/a")
-        assert value is not None
-        envelope = _decode_envelope(value)
-        assert envelope["holder"] == "pod-alpha"
+        bucket = await _bucket_for(client, "leases")
+        assert await bucket.get(key="lock/a") is not None
+        assert "prod14" not in lease.bucket_name
 
-    async def test_default_bucket_fallback_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
+        assert KVLease(nats_client=FakeNatsClient(), pod_id="p").bucket_name == lease.bucket_name  # type: ignore[arg-type]
+
+    async def test_default_bucket_is_the_leases_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]

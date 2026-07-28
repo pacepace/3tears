@@ -297,17 +297,30 @@ namespace. The key is a SHA-256 digest of an arbitrary application string, so th
 nothing a grant can discriminate on.
 
 The fix is an enhancement to the existing builder rather than a coarse grant: a family segment
-between the prefix and the digest, so `{ns}.forward.{family}.{sha256hex(key)}` is grantable per
-family. The family is a single sanitized token supplied by the CALLING MODULE as a deployment
-constant, never by a caller and never from user data. `Subjects.forward(key)` keeps its current
-shape and behaviour for every existing caller; the scoped variant is additive.
+between the prefix and the digest, so `{ns}.forward.{sha256hex(family)}.{sha256hex(key)}` is
+grantable per family. The family is supplied by the CALLING MODULE as a deployment constant rather
+than by a request-time caller -- but it is NOT trusted input, because it is derived from a
+registered tool name that nothing validates, which is exactly why the builder hashes it. `Subjects.forward(key)` keeps its current shape and behaviour
+for every existing caller; the scoped variant is additive, and the two never collide because one
+carries a single segment after `forward` and the other carries two.
+
+**`Subjects.forward_scoped` hashes the family too, rather than accepting a ready-made token.** As
+built, the family is a raw string and the builder digests it, so `[0-9a-f]`-only is a property of
+the one classmethod every caller goes through rather than a convention each call site is trusted to
+follow. That matters precisely because the family carries an unvalidated tool name (below): a caller
+allowed to precompute the token could put a space, a `*` or a `>` into the subject, and into the
+GRANT minted from it. It is the same reason the digest sits inside `Subjects.forward` and
+`Subjects.room` rather than at their call sites. `Subjects.forward_scoped_wildcard(family)` renders
+the grant, `{ns}.forward.{sha256hex(family)}.*`, from the same derivation -- exact on the family,
+wildcard on the key alone. A NATS wildcard matches a whole token, so there is no partial-token form
+available here: the family segment is either one exact literal or `*`.
 
 **The family carries the serving tool's identity, not just the concern.** For the operator surface
-it is `hitl-{tool_digest}`, so the subjects are `{ns}.forward.hitl-a3f9c2....{session_digest}` and
-a pod's grant is that exact literal followed by `.*`. A flat `hitl` family would let a pod serving
-one tool join the queue group for another tool's session control subject -- and `serve_owner`
-queue-groups on the subject deliberately, so that is not eavesdropping but a SHARE OF THE
-MESSAGES.
+it is `Subjects.hitl_forward_family(tool_namespace_name)`, which is `hitl-` followed by the tool's
+registered namespace name, hashed by the builders into the subject's first segment. A flat `hitl`
+family would let a pod serving one tool join the queue group for another tool's session control
+subject -- and `serve_owner` queue-groups on the subject deliberately, so that is not eavesdropping
+but a SHARE OF THE MESSAGES.
 
 The damage from the flat form is bounded rather than catastrophic, and the bound is worth
 recording so nobody over-corrects later: the interloper would have to already know the session id
@@ -497,7 +510,12 @@ does not block anything here at `replicaCount: 1`.
 - new `packages/nats/src/threetears/nats/pipe.py` -- the primitive
 - `packages/nats/src/threetears/nats/subjects.py` -- `Subjects.pipe`, scoped `forward`
 - `packages/nats/src/threetears/nats/subject_permissions.py` -- `_tool_pod` and `_hub` grants,
-  plus the `{ns}_leases` bucket for `_tool_pod`
+  plus the lease bucket for `_tool_pod`. That bucket is `{ns}-{ns}_leases`, not the `{ns}_leases`
+  spelling `KVLease._default_bucket_name` returns: the lease passes its bucket name to
+  `NatsClient.kv_bucket` as a SUFFIX and the client layers its own `{ns}-` prefix over it. Written
+  out because the un-prefixed grant fails silently -- a pod that cannot open the bucket is handed
+  `lease=None` and serves the display unclaimed, and `test_forward_grants_live.py` is where the
+  distinction is actually proven
 - `packages/nats/src/threetears/nats/__init__.py` -- lazy re-exports in the existing hand-rolled
   PEP 562 shape
 - new `packages/nats/tests/unit/test_pipe.py`, new
