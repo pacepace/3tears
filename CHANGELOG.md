@@ -4,11 +4,20 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.20.1 -- 2026-07-28
+## v0.21.0 -- 2026-07-28
 
-> **No package content changed. This release exists because `threetears-base` could not be
-> built from a cold cache**, and every consumer resolves the 3tears checkout by version tag,
-> so an unreleased fix on `develop` reaches none of them.
+> **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,
+> `HtmlForm.event_triggers`, `build_form_post(event=...)`). Additive and backward-compatible
+> -- `event_triggers` defaults to `()` and a form with only submit controls parses exactly as
+> before -- but new surface is a minor here, per the discipline v0.20.0 set out.
+>
+> **The urgent half is the build fix.** `threetears-base` could not be built from a cold
+> cache, which is why nothing had deployed; every consumer resolves its 3tears checkout by
+> version tag, so an unreleased fix on `develop` reaches none of them.
+>
+> These shipped together deliberately rather than as a 0.20.1 hotfix plus a later 0.21.0.
+> No consumer of the build fix uses `threetears.scrape` at all, so splitting them would have
+> bought a tidier release boundary and cost a second round of pin edits across six repos.
 
 **`threetears-base` failed every cold build, and had since 15 July.** The wheels stage
 enumerated packages with `find /build/packages -name pyproject.toml` and built each hit --
@@ -38,6 +47,25 @@ This is the failure a deployment behind a proxying front-end actually hits -- a 
 `htu` against the origin it called, so every URI involved looks individually correct while
 every refresh is denied. Diagnosing one instance cost a day, with the issuer logging nothing
 at all.
+
+**`3tears-scrape` can now drive a form that has no submit button.** A server-rendered form
+submits either via a named submit control (`name=value`) or via
+`__doPostBack(target, argument)` on an anchor or script-driven element, which sets the
+`__EVENTTARGET` / `__EVENTARGUMENT` hidden fields and posts the same form. Only the first was
+parsed, so a form driven entirely the second way reported zero triggers and a browser-free
+replay concluded it could not be driven at all -- when the browser was doing nothing more
+than writing two hidden fields.
+
+`HtmlForm.event_triggers` now carries them and `build_form_post(event=...)` serializes them.
+Each keeps its visible label, so a caller chooses "Search" over "Export" or "Clear" without
+hardcoding per-portal control-name conventions. Triggers de-duplicate on
+`(target, argument)`: two anchors raising the same event are one trigger, while the same
+control with a different argument stays distinct, which is how a pager names its pages.
+
+The calls are read from PARSED attribute values, never the raw markup -- portals serve them
+HTML-escaped (`__doPostBack(&#39;x&#39;,&#39;&#39;)`), so scanning bytes finds nothing on
+exactly the pages this exists for. Verified against a live portal whose form has zero named
+submit controls: 947 rows x 9 columns through `parse_form` + `build_form_post`.
 
 ## v0.20.0 -- 2026-07-28
 
