@@ -22,23 +22,26 @@ to its deadline -- indistinguishable from an unreachable broker. Every unit test
 ran against a fake whose own docstring records that it "skips the namespace prefix the real wrapper
 layers on top", so the defect was structurally invisible to them.
 
-Three bucket-naming conventions were in play across the grant table, and only two are real:
+THREE bucket-naming conventions are in play, and all three are legitimate:
 
-- opened via `kv_bucket()`, which prefixes -- the grant is `{ns}-<suffix>`
-- opened by a direct `js.key_value(bucket=...)`, which does not -- the grant is the bare name, and
-  `threetears.registry.server`'s catalog is the one case
-- spelled `{ns}_<name>` -- matching neither, so granting access to nothing
+- opened via `kv_bucket()`, which layers `{ns}-` over a suffix -- the grant is `{ns}-<suffix>`
+- opened by a direct `js.key_value(bucket=...)` with a bare constant, which receives no prefix --
+  the grant is that bare name, and `threetears.registry.server`'s catalog is the case
+- opened by a direct `js.create_key_value(bucket=...)` with a name the component builds itself as
+  `f"{namespace}_thing"` -- the grant is that name verbatim, underscore included. The hub's
+  `AgentConfigKV` does this and its own docstring calls the result platform-historical.
 
-Grants removed as dead: `{ns}_agent_config`, `{ns}_agent_sessions`, `{ns}_revoked_tokens`,
-`{ns}_login_lockouts`, `{ns}_rate_limits`. Those are Postgres TABLE names; every three-tier
-collection shares one L2 bucket, `{ns}-collections`, which was and remains granted. Removing a
-grant that names a bucket no convention produces cannot change behaviour, because it authorised
-nothing. Corrected: `{ns}_tool_catalog` to `tool_catalog` (unprefixed, direct opener) and
-`{ns}_pop_nonces` to `{ns}-pop_nonces`.
+So no rule can be written over the SHAPE of a grant string: `{ns}_agent_config` and a typo for
+`{ns}-agent_config` are indistinguishable by inspection and only one is wrong. Two grants are
+corrected here because both sides could be read: `{ns}_tool_catalog` to `tool_catalog` (the
+registry's own default, unprefixed) and `{ns}_pop_nonces` to `{ns}-pop_nonces` (constructed as
+`ReplayGuard(nc, bucket_name="pop_nonces")`, so the transport prefixes it). Every other grant is
+left exactly as it was.
 
-`tests/enforcement/test_kv_bucket_grant_naming.py` now rejects the `{ns}_` spelling for every
-principal and pins the lease grant against `KVLease`'s live default as a PAIR, so the two cannot
-drift apart again.
+`tests/enforcement/test_kv_bucket_grant_naming.py` pins the two pairings whose halves BOTH live in
+this repository -- the lease grant against `KVLease`'s live default, and the catalog grant against
+`RegistryServer`'s own parameter default -- so neither can drift. It deliberately asserts no rule
+about grant shape, because the third convention makes any such rule wrong.
 
 **Upgrade note.** A deployment that ran without enforced permissions has live entries under the old
 `{ns}-{ns}_leases` bucket; after upgrading, holders open `{ns}-leases` and the old entries are

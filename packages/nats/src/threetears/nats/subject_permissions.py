@@ -243,6 +243,7 @@ def _agent_pod(
         allow_responses=True,  # replies to the hub's route request
         inbox_prefix=inbox,
         kv_buckets=(
+            f"{ns}_agent_config",  # direct js.create_key_value in the hub; no transport prefix
             f"{ns}-collections",
             "checkpoints",
             # memory extraction throttle: the agent's MemoryExtractor uses a
@@ -444,13 +445,18 @@ def _hub(
         allow_responses=True,
         inbox_prefix=inbox,
         kv_buckets=(
-            # NOTE ON WHAT IS *NOT* HERE. Grants once existed for agent_config, agent_sessions,
-            # revoked_tokens, login_lockouts and rate_limits. Those are Postgres TABLES, not KV
-            # buckets -- every three-tier collection shares ONE L2 bucket, ``L2_BUCKET_SUFFIX``,
-            # which is the ``{ns}-collections`` entry below. The removed names matched no opener
-            # in any of this codebase's three bucket-naming conventions, so they granted access to
-            # nothing and their removal changes no behaviour. Re-adding a per-entity bucket name
-            # here is the mistake to avoid: the entity is a table, the bucket is shared.
+            # THE UNDERSCORE SPELLING IS NOT A TYPO, and it is not the transport's convention
+            # either. A bucket created by a DIRECT ``js.create_key_value(bucket=...)`` never
+            # receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that builds
+            # its own ``f"{namespace}_thing"`` name owns that name verbatim. ``AgentConfigKV`` in
+            # the hub does exactly that and calls it "platform-historical". Do not "normalise"
+            # these to ``{ns}-``: that renames a live bucket and the symptom is a silent
+            # JetStream timeout, not an error.
+            f"{ns}_agent_config",
+            f"{ns}_agent_sessions",
+            f"{ns}_revoked_tokens",
+            f"{ns}_login_lockouts",
+            f"{ns}_rate_limits",
             f"{ns}-collections",
         ),
         streams=(f"{ns}_channels_deliver",),
