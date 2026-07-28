@@ -45,7 +45,9 @@ class TestResolutionSet:
             Unit.model_validate({"name": "x", "resolutions": []})
 
     def test_bridge_only_resolution_has_no_source(self) -> None:
-        resolution = Resolution.model_validate({"bridge": "match_union"})
+        resolution = Resolution.model_validate(
+            {"bridge": {"relation": "match_union", "alias": "mat"}},
+        )
         assert resolution.source is None
 
     def test_resolution_with_no_predicate_is_legal(self) -> None:
@@ -163,8 +165,23 @@ class TestQualificationScoping:
             Qualification(applies_to=["doj", "doj"])
 
     def test_qualification_carries_relations(self) -> None:
-        qualification = Qualification.model_validate({"relations": ["voter_file_segmented"]})
-        assert qualification.relations == ["voter_file_segmented"]
+        """the unconditional entity join is a relation, not a predicate.
+
+        ``voter_file_segmented`` is INNER-joined at qualification with no
+        authored predicate mentioning it, so any entity absent from the
+        voter file is dropped from the qualified set. That is a definition
+        of the set rather than a filter over it, and a ``Qualification``
+        carrying only a predicate cannot express it.
+        """
+        qualification = Qualification.model_validate(
+            {
+                "relations": [
+                    {"relation": "voter_file_segmented", "alias": "vf", "join": "inner"},
+                ],
+            },
+        )
+        assert [r.relation for r in qualification.relations] == ["voter_file_segmented"]
+        assert qualification.relations[0].alias == "vf"
 
 
 class TestQualificationNamespaceGuard:
@@ -258,10 +275,34 @@ class TestResolutionNamespaceGuard:
             )
 
     def test_measure_is_bindable_in_having(self) -> None:
+        """``measure.<name>`` binds in having, and only for a declared one.
+
+        The measure has to exist on the resolution: a having naming one
+        nothing computes is an authoring error the warehouse would
+        otherwise report as an unresolved identifier at build time, after
+        the schema is already half built.
+        """
         resolution = Resolution.model_validate(
-            {"having": {"compare": {"left": "measure.contribution_sum", "op": ">", "right": 2000}}}
+            {
+                "measures": [
+                    {
+                        "name": "contribution_sum",
+                        "expression": "SUM(source.contribution::float * 1.0 / bridge.candidate_count::float)",
+                        "grain": ["voterbase_id", "list_id"],
+                        "scope": "resolution",
+                    }
+                ],
+                "having": {"compare": {"left": "measure.contribution_sum", "op": ">", "right": 2000}},
+            }
         )
         assert resolution.having is not None
+
+    def test_having_naming_an_undeclared_measure_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            Resolution.model_validate(
+                {"having": {"compare": {"left": "measure.contribution_sum", "op": ">", "right": 2000}}}
+            )
+        assert "contribution_sum" in str(excinfo.value)
 
     def test_resolved_is_refused_in_having(self) -> None:
         with pytest.raises(ValidationError):
@@ -324,25 +365,59 @@ class TestModelShape:
             Qualification.model_validate({"vb_candidates": 10})
 
     def test_unit_round_trips(self) -> None:
+        """the corpus's duplicate-name unit round-trips through both seams.
+
+        ``journalists_health_policy`` is declared twice with different
+        sources and joins, and both bodies emit, so it is the shape that
+        forces ``resolutions`` to be a list. Carrying the real
+        ``BridgeRef`` and ``RelationRef`` here rather than a name keeps
+        the round-trip honest about what a resolution actually holds.
+        """
+        bridge = {
+            "relation": "match_union",
+            "alias": "mat",
+            "quality_measures": [
+                {
+                    "name": "candidate_count",
+                    "column": "candidate_count",
+                    "direction": "lower_is_better",
+                    "threshold_semantics": "at_most",
+                    "unmeasured_is_null": True,
+                }
+            ],
+            "on": None,
+        }
         payload = {
             "name": "journalists_health_policy",
             "emits": None,
             "resolutions": [
                 {
                     "source": "employment_facts",
-                    "bridge": "match_union",
-                    "relations": ["edu"],
+                    "bridge": bridge,
+                    "relations": [
+                        {
+                            "relation": "education_ext",
+                            "alias": "edu",
+                            "join": "left",
+                            "on": None,
+                            "optional": True,
+                            "when": None,
+                        }
+                    ],
+                    "measures": [],
                     "predicate": None,
                     "having": None,
                 },
                 {
                     "source": None,
-                    "bridge": "match_union",
+                    "bridge": bridge,
                     "relations": [],
+                    "measures": [],
                     "predicate": None,
                     "having": None,
                 },
             ],
             "qualify": None,
+            "exclude": None,
         }
         assert Unit.model_validate(payload).model_dump() == payload

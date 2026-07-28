@@ -39,14 +39,12 @@ refused in a resolution predicate because they name rows that do not
 exist yet. Both mis-binds are otherwise silent and both change the
 audience.
 
-Seams this shard leaves open, named so they are not mistaken for
-omissions: ``Unit.exclude`` (``ExclusionSpec``) lands in
-``dsm-task-01b``; ``Resolution.measures`` and the real types behind
-``source`` / ``bridge`` / ``relations`` land in ``dsm-task-01c`` and
-``-01d``; ``Unit.provenance`` and ``Resolution.provenance``
-(``ProvenanceSpec``) land in ``dsm-task-01d``. Until then those fields
-carry the authored NAME of the thing they reference, and
-``extra="forbid"`` refuses anything else loudly.
+Seams still open, named so they are not mistaken for omissions:
+``Resolution.source`` carries the authored NAME of its fact source until
+``dsm-task-01d`` replaces it with ``SourceRef``, and ``Unit.provenance``
+/ ``Resolution.provenance`` (``ProvenanceSpec``) land there too. Until
+then that field carries a name and ``extra="forbid"`` refuses anything
+else loudly.
 """
 
 from __future__ import annotations
@@ -56,8 +54,16 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from threetears.datasources.definition.bridge import BridgeRef
+from threetears.datasources.definition.exclusion import ExclusionSpec
 from threetears.datasources.definition.expression import Predicate
+from threetears.datasources.definition.measure import (
+    Measure,
+    validate_having_measures,
+    validate_unique_measure_names,
+)
 from threetears.datasources.definition.namespace import BindingStage, reject_unbindable
+from threetears.datasources.definition.relation import RelationRef, validate_relation_aliases
 
 __all__ = [
     "DuplicateUnitName",
@@ -96,10 +102,10 @@ class Resolution(BaseModel):
 
     :ivar source: fact source name, or ``None`` for a bridge-only
         resolution; ``dsm-task-01d`` replaces the type with ``SourceRef``
-    :ivar bridge: bridge relation name, or ``None`` for a literal source;
-        ``dsm-task-01c`` replaces the type with ``BridgeRef``
-    :ivar relations: per-resolution FROM extensions, by authored alias;
-        ``dsm-task-01c`` replaces the element type with ``RelationRef``
+    :ivar bridge: bridge this resolution matches through, or ``None`` for
+        a literal source
+    :ivar relations: per-resolution FROM extensions, by authored alias
+    :ivar measures: aggregates computed inside this resolution
     :ivar predicate: filter over ``source.*`` / ``bridge.*`` / ``entity.*``
         / ``rel.<alias>.*`` / ``param.*``
     :ivar having: post-aggregate filter, the only place ``measure.<name>``
@@ -109,8 +115,9 @@ class Resolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str | None = None
-    bridge: str | None = None
-    relations: list[str] = Field(default_factory=list)
+    bridge: BridgeRef | None = None
+    relations: list[RelationRef] = Field(default_factory=list)
+    measures: list[Measure] = Field(default_factory=list)
     predicate: Predicate | None = None
     having: Predicate | None = None
 
@@ -118,15 +125,25 @@ class Resolution(BaseModel):
     def _predicates_bind_legal_namespaces(self) -> Self:
         """refuse ``resolved.*`` and ``measure.*`` outside where they exist.
 
+        also refuses a duplicate relation alias, a predicate naming an
+        alias no relation declares, and a ``having`` naming a measure this
+        resolution does not compute. all three are authoring errors that
+        the warehouse would otherwise report as an unresolved identifier
+        at build time, after the schema is already half built.
+
         :returns: validated resolution
         :rtype: Resolution
         :raises ValueError: a predicate binds a namespace the stage does
-            not carry
+            not carry, an alias is duplicated or undeclared, or a having
+            names an undeclared measure
         """
         if self.predicate is not None:
             reject_unbindable(self.predicate.references, BindingStage.RESOLUTION, "Resolution.predicate")
         if self.having is not None:
             reject_unbindable(self.having.references, BindingStage.HAVING, "Resolution.having")
+        validate_relation_aliases(self.relations)
+        validate_unique_measure_names(self.measures)
+        validate_having_measures(self.having, self.measures)
         return self
 
 
@@ -135,8 +152,8 @@ class Qualification(BaseModel):
 
     :ivar name: authored label for the unit group this arm was known by,
         or ``None`` when the group is anonymous, as every corpus group is
-    :ivar relations: joins this stage adds; ``dsm-task-01c`` replaces the
-        element type with ``RelationRef``
+    :ivar relations: joins this stage adds, including the unconditional
+        entity join that defines the qualified set
     :ivar predicate: filter over ``resolved.*`` / ``entity.*`` /
         ``rel.<alias>.*`` / ``param.*``
     :ivar applies_to: unit names this arm covers; ``None`` means the
@@ -146,7 +163,7 @@ class Qualification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    relations: list[str] = Field(default_factory=list)
+    relations: list[RelationRef] = Field(default_factory=list)
     predicate: Predicate | None = None
     applies_to: list[str] | None = None
 
@@ -166,6 +183,7 @@ class Qualification(BaseModel):
                 raise ValueError("applies_to names a unit twice")
         if self.predicate is not None:
             reject_unbindable(self.predicate.references, BindingStage.QUALIFICATION, "Qualification.predicate")
+        validate_relation_aliases(self.relations)
         return self
 
 
@@ -180,6 +198,13 @@ class Unit(BaseModel):
         unit declared twice becomes two entries rather than one
     :ivar qualify: per-unit qualification; definition-level arms scoped by
         ``applies_to`` sit beside it on the definition
+    :ivar exclude: residual subtraction this unit applies, or ``None``.
+        Its stage, key, and level are required with no defaults, because
+        each default silently reproduces a distinct hole: subtracting the
+        pre-qualification set strands a person in neither unit,
+        entity-keyed and record-keyed exclusion give different audiences,
+        and pre- and post-aggregate exclusion differ because the anti-join
+        sits before the group-by that computes the quality measure
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -187,6 +212,7 @@ class Unit(BaseModel):
     name: str = Field(min_length=1)
     emits: list[str] | None = None
     resolutions: list[Resolution] = Field(min_length=1)
+    exclude: ExclusionSpec | None = None
     qualify: Qualification | None = None
 
     @model_validator(mode="after")
