@@ -183,9 +183,11 @@ class ScrapeTarget(BaseEntity):
     def driver_backend(self) -> str:
         """Which ``ScrapeDriver`` backend renders this target.
 
-        One of eight, resolved by the caller (this entity stores the string
-        and never constructs a driver itself): ``"nodriver"`` (headless
-        Chromium via the HTTP sidecar), ``"camoufox"`` (in-process stealth
+        Resolved by the caller, which this entity never does -- it stores the
+        string and constructs nothing: ``"nodriver"`` (a HEADFUL Chromium on an
+        Xvfb display, via the HTTP sidecar; headful because real sites treat it
+        differently from headless and because a display is what a human can be
+        handed), ``"camoufox"`` (in-process stealth
         Firefox), ``"document"`` (PDF/DOCX/XLSX/CSV/TXT/MD/LaTeX parsed into
         synthetic HTML), ``"api"`` (a stateless JSON GET, needing
         :attr:`api_results_path`/:attr:`api_fragment_field`),
