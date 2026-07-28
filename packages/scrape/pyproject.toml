@@ -110,20 +110,6 @@ Repository = "https://github.com/pacepace/3tears"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
-# Vendored noVNC's pako, which hatchling otherwise leaves out of the wheel.
-#
-# The root .gitignore carries the stock Python `lib/` rule. It has no leading slash, so it
-# matches at any depth -- including `operator_assets/novnc/vendor/pako/lib/`, which is every
-# zlib module `core/inflator.js` and `core/deflator.js` import. A `!` re-inclusion in
-# .gitignore fixes it for git, and does NOT fix it for hatchling: hatchling reads VCS ignore
-# files with its own matcher and does not honour the negation. `artifacts` is the mechanism for
-# exactly this -- include these regardless of what the VCS says.
-#
-# The failure this prevents is a quiet one. The source tree looks complete, every test passes,
-# and the display dies on the first compressed framebuffer update in whatever deployment
-# installed the wheel. `tests/test_operator_assets.py` builds a wheel and looks inside it,
-# because nothing checkable from the source tree could have caught this.
-artifacts = ["src/threetears/scrape/operator_assets/novnc/vendor/pako/lib/**"]
 
 [tool.uv.sources]
 3tears = { workspace = true }

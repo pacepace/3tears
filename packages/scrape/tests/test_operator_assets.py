@@ -17,6 +17,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tarfile
 import tomllib
 import zipfile
 from pathlib import Path
@@ -24,6 +25,10 @@ from pathlib import Path
 import pytest
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+#: The workspace root. Load-bearing: hatchling resolves ignore rules against the directory the
+#: build is invoked from, so building here and building from the package directory select
+#: different files. The release builds from the workspace root, so the tests must too.
+_REPO_ROOT = _PACKAGE_ROOT.parent.parent
 _ASSETS = _PACKAGE_ROOT / "src" / "threetears" / "scrape" / "operator_assets"
 _NOVNC = _ASSETS / "novnc"
 _PROVENANCE = _ASSETS / "novnc-provenance.json"
@@ -118,13 +123,22 @@ class TestTheAssetsCanActuallyShip:
     """A tree that is perfect in the repository and absent from the wheel is a dead display.
 
     Both halves of that sentence get a test, because they are different failures with the same
-    symptom. The stock Python ``.gitignore`` carries a bare ``lib/`` rule; it has no leading
-    slash, so it matches at any depth, and it matches ``vendor/pako/lib/`` -- every zlib module
+    symptom. The stock Python ``.gitignore`` carries a ``lib/`` rule for top-level build output.
+    Unanchored it matches at any depth, including ``vendor/pako/lib/`` -- every zlib module
     ``core/inflator.js`` and ``core/deflator.js`` import. Twelve files. Left ignored they are
     absent from a fresh clone; re-included with a ``!`` rule they are present for git and STILL
-    absent from the wheel, because hatchling reads ignore files with its own matcher and does
-    not honour the negation. The working tree looks complete either way and the display dies on
-    the first compressed framebuffer update.
+    absent from a built archive, because hatchling reads ignore files with its own matcher and
+    does not honour the negation. The working tree looks complete either way and the display dies
+    on the first compressed framebuffer update. The rule is anchored (``/lib/``) for that reason.
+
+    **Build the way the release builds.** These tests cost a real build each because nothing
+    readable from the source tree distinguishes "hatchling will ship this" from "hatchling will
+    drop this" -- and the choice of build command is part of what is being tested, not a detail.
+    An earlier version of the wheel test passed the package directory to ``uv build``, which
+    makes hatchling resolve ignore rules from there, where the root ``.gitignore`` does not
+    apply. It shipped all twelve modules and passed, while ``uv build --all-packages`` from the
+    workspace root -- what ``release.yml`` actually runs -- dropped every one of them. A test
+    that builds differently from the release proves nothing about the release.
     """
 
     def test_no_vendored_file_is_excluded_by_gitignore(self) -> None:
@@ -145,41 +159,75 @@ class TestTheAssetsCanActuallyShip:
         ignored = [line for line in result.stdout.splitlines() if line.strip()]
         assert not ignored, f"vendored assets are excluded by a gitignore rule: {ignored}"
 
-    def test_every_operator_asset_reaches_a_built_wheel(self, tmp_path: Path) -> None:
-        """The only check that could have caught the hatchling half, so it builds a real wheel.
+    @staticmethod
+    def _build(out_dir: Path) -> tuple[Path, Path]:
+        """Build this package's wheel and sdist the way ``release.yml`` does, or skip.
 
-        Nothing readable from the source tree distinguishes "hatchling will ship this" from
-        "hatchling will drop this" -- the passing gitignore test above coexisted with a wheel
-        missing all twelve pako modules. Asserting on the config instead would pin today's
-        spelling of the fix rather than the property, and the property is that the files are
-        in the archive a deployment installs.
+        Invoked from the workspace root and naming the package by distribution name, because
+        that is the ignore-resolution context the release builds in. ``--all-packages`` is the
+        literal release command; naming one package is the same context for a twenty-ninth of
+        the work.
         """
         uv = shutil.which("uv")
         if uv is None:
-            pytest.skip("uv is not available, so no wheel can be built")
+            pytest.skip("uv is not available, so nothing can be built")
         result = subprocess.run(  # noqa: S603 - fixed argv, repo-local paths
-            [uv, "build", "--wheel", str(_PACKAGE_ROOT), "--out-dir", str(tmp_path)],
+            [uv, "build", "--package", "3tears-scrape", "--out-dir", str(out_dir)],
             capture_output=True,
             text=True,
+            cwd=_REPO_ROOT,
             check=False,
         )
-        assert result.returncode == 0, f"the wheel would not build: {result.stderr}"
-        wheels = list(tmp_path.glob("*.whl"))
+        assert result.returncode == 0, f"the distributions would not build: {result.stderr}"
+        wheels = list(out_dir.glob("*.whl"))
+        sdists = list(out_dir.glob("*.tar.gz"))
         assert len(wheels) == 1, f"expected exactly one wheel, got {[w.name for w in wheels]}"
+        assert len(sdists) == 1, f"expected exactly one sdist, got {[s.name for s in sdists]}"
+        return wheels[0], sdists[0]
 
-        # EVERY file under `operator_assets/`, not just the vendored tree. The operator page and
-        # the provenance record are non-Python files too, so they are excluded by exactly the
-        # same mechanisms -- and a page missing from the wheel is a mount that 500s on the one
-        # request an operator makes. Anchoring on the assets root rather than on `novnc/` means a
-        # file added here later is covered without anybody remembering to extend this.
+    #: EVERY file under ``operator_assets/``, not just the vendored tree. The operator page and
+    #: the provenance record are non-Python files too, so they are dropped by exactly the same
+    #: mechanisms -- and a page missing from an archive is a mount that 500s on the one request an
+    #: operator makes. Anchoring on the assets root means a file added here later is covered
+    #: without anybody remembering to extend these tests.
+    @staticmethod
+    def _expected() -> set[str]:
+        return {p.relative_to(_ASSETS).as_posix() for p in _ASSETS.rglob("*") if p.is_file()}
+
+    def test_every_operator_asset_reaches_a_built_wheel(self, tmp_path: Path) -> None:
+        """The property is that the files are in the archive a deployment installs."""
+        wheel_path, _sdist = self._build(tmp_path)
         prefix = "threetears/scrape/operator_assets/"
-        with zipfile.ZipFile(wheels[0]) as wheel:
+        with zipfile.ZipFile(wheel_path) as wheel:
             # `.dist-info/licenses/` holds copies of the same paths, so match on the package
             # prefix rather than a substring, or a missing asset is masked by its licence twin.
             shipped = {name[len(prefix) :] for name in wheel.namelist() if name.startswith(prefix)}
-        on_disk = {p.relative_to(_ASSETS).as_posix() for p in _ASSETS.rglob("*") if p.is_file()}
-        assert not (on_disk - shipped), f"operator assets are missing from the wheel: {sorted(on_disk - shipped)}"
+        missing = self._expected() - shipped
+        assert not missing, f"operator assets are missing from the wheel: {sorted(missing)}"
         # Named explicitly as well, because the set comparison above would also pass if the
         # assets directory were somehow empty on disk.
         assert "operator.html" in shipped, "the operator page is not in the wheel"
         assert "novnc/core/rfb.js" in shipped, "the noVNC client is not in the wheel"
+        assert "novnc/vendor/pako/lib/zlib/inflate.js" in shipped, (
+            "pako's zlib modules are not in the wheel, so the display dies on the first compressed framebuffer update"
+        )
+
+    def test_every_operator_asset_reaches_a_built_sdist(self, tmp_path: Path) -> None:
+        """The sdist too, because it is published alongside the wheel and was missing them.
+
+        The exclusion that dropped these files was never wheel-specific -- it came from an
+        ignore rule, which both build targets read. Only the wheel was checked, so the sdist was
+        never known to be broken, and the release that first ships these assets would have
+        published one that cannot decompress a framebuffer. Whatever keeps assets in one archive
+        has to be shown to keep them in the other.
+        """
+        _wheel, sdist_path = self._build(tmp_path)
+        with tarfile.open(sdist_path) as sdist:
+            names = sdist.getnames()
+        # The sdist is rooted at `<name>-<version>/`, which carries the version -- so strip the
+        # first component rather than matching a prefix that has to be updated every release.
+        marker = "/src/threetears/scrape/operator_assets/"
+        shipped = {name.split(marker, 1)[1] for name in names if marker in name}
+        missing = self._expected() - shipped
+        assert not missing, f"operator assets are missing from the sdist: {sorted(missing)}"
+        assert "novnc/vendor/pako/lib/zlib/inflate.js" in shipped, "pako's zlib modules are not in the sdist"
