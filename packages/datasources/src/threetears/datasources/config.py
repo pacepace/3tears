@@ -303,8 +303,10 @@ class RedshiftConnectionConfig(BaseModel):
         lower = cold-start TLS cost on most queries; higher = more
         idle Redshift sessions held
     :param query_timeout_seconds: Redshift-side ``statement_timeout``
-        (in ms server-side; driver converts). trade-off: same as
-        ``command_timeout_seconds`` above
+        (in ms server-side; driver converts), applied at connection open
+        as the connection-level ceiling. per-statement overrides are
+        passed to ``fetch`` / ``execute`` as ``timeout_seconds=`` and sit
+        below it. trade-off: same as ``command_timeout_seconds`` above
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -352,7 +354,14 @@ class RedshiftConnectionConfig(BaseModel):
     )
     query_timeout_seconds: int = Field(
         default=300,
-        description="redshift statement_timeout; caps individual queries",
+        description="redshift statement_timeout, applied once at connection open. this is the "
+        "connection-level CEILING, not the value every statement runs under: a caller passes "
+        "timeout_seconds= to fetch or execute for a per-statement override below it, applied as "
+        "SET LOCAL and reset on release so it cannot leak to the next borrower of a cached "
+        "connection. the default suits interactive reads, where the rule is that the warehouse "
+        "kills a query whose caller has gone away. a build datasource inverts that -- no caller "
+        "waits on it and the pod does not stop an abandoned call -- so it carries a ceiling "
+        "sized to the longest legitimate statement instead",
     )
     tcp_keepalive: bool = Field(
         default=True,
