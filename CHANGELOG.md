@@ -6,14 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-> **This release must be a MINOR bump (0.20.0), not a patch.** `threetears.scrape` imports
-> `threetears.core.egress`, and `threetears.scrape.operator*` ships four new public contract
-> surfaces -- new public API on two distributions, which is a minor by this project's own rule.
-> The reason this sentence is here rather than only in a build plan: `.prawduct/` is gitignored and
-> build plans are deleted when work ships, so `bump-version.sh` and whoever runs it would see
-> neither. Releasing this as 0.19.4 would leave `3tears-scrape` declaring `3tears>=0.19.0,<0.20.0`
-> while importing a module no published 0.19.x contains -- resolvable by pip and broken at import,
-> which is exactly the mixed-family failure this project bounds versions to make impossible.
+> **This release is 0.20.0**, decided rather than inferred, and it is a MINOR bump rather than a
+> patch because two distributions gain new public API: `threetears.core.egress` on `3tears`, and
+> the four operator surfaces on `3tears-scrape`.
+>
+> `threetears.scrape` imports `threetears.core.egress`, which exists on no released version -- it
+> ships here for the first time -- so the two packages must move together, which lockstep
+> versioning already guarantees. Shipping this as 0.19.4 instead would leave `3tears-scrape`
+> declaring `3tears>=0.19.0,<0.20.0` while importing a module no published 0.19.x contains:
+> resolvable by pip and broken at import, the exact mixed-family failure these bounds exist to make
+> impossible.
+>
+> This sentence lives here because the alternatives do not travel. `.prawduct/` is gitignored and a
+> build plan is deleted when its work ships, so `bump-version.sh` and whoever runs it would see
+> neither. Run `./scripts/bump-version.sh 0.20.0`, which moves every package's version AND every
+> intra-family bound together, then `--verify 0.20.0` before anything is published.
 
 **Fix: four names were public in practice and absent from the declared surface (`3tears`).**
 `threetears.core` resolves `Keyset`, `Page`, `decode_cursor` and `encode_cursor` through its lazy
