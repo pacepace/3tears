@@ -39,6 +39,12 @@ which is not fetch it.
   candidates, validate each structurally against the real page, have a judge pick
   the winner by comparing extracted values against page content, persist the
   winner as a recipe, and reuse it with zero LLM calls until it stops validating.
+  That is the `css` and `regex` path. The `per_document` and `multi_row_vision`
+  strategies deliberately have no reusable pattern -- their targets share no
+  structure a recipe could learn -- so each pays an LLM call every poll and the
+  recipe they persist is a marker for visibility, not something reused to skip a
+  call. Worth knowing before costing a target, since it is the difference between
+  paying once and paying per poll.
 - **`classify_failed_page`** -- asks what a failed page IS. A wall leaves the
   recipe byte-identical and records `blocked`; a genuinely changed page
   regenerates on the first failure rather than waiting for a threshold.
