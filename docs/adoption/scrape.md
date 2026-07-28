@@ -44,9 +44,12 @@ which is not fetch it.
   `per_document`'s targets share no template a recipe could generalise across,
   while `multi_row_vision`'s problem is that `find_tables()` -- the text substrate a
   cached pattern would key against -- fails on its table. So each pays LLM calls
-  every poll (one per document, or two over the whole table, the extraction pass
-  plus an unconditional grounding judge), and the recipe they persist is a marker
-  for visibility rather than something reused to skip a call. Worth knowing before costing a target, since it is the difference between
+  every poll, and more than one apiece: `per_document` spends a chunked extraction
+  per document, split by field count so it scales with the schema, plus an
+  unconditional grounding judge; `multi_row_vision` spends two over the whole
+  table, extraction then the same kind of judge, and the recipe they persist is a marker
+  for visibility rather than something reused to skip a call. Worth knowing
+  before costing a target, since it is the difference between
   paying once and paying per poll.
 - **`classify_failed_page`** -- asks what a failed page IS. A wall leaves the
   recipe byte-identical and records `blocked`; a genuinely changed page

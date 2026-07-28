@@ -22,7 +22,8 @@ cached-recipe cycle at all -- some real multi-document
 targets (independently-worded documents sharing no template, see
 ``drivers/multi_document.py``) genuinely cannot be served by a pattern
 learned once and reused; every document gets its own fresh LLM extraction
-call on every poll instead (:func:`_run_per_document_extraction`).
+extraction on every poll instead -- chunked by field count, plus an unconditional
+grounding judge per document (:func:`_run_per_document_extraction`).
 """
 
 from __future__ import annotations
@@ -125,11 +126,11 @@ DEFAULT_FAILURE_THRESHOLD = 3
 #: Default candidate count per (re)generation round.
 DEFAULT_CANDIDATE_COUNT = 3
 
-#: Hard outer deadline for ONE document's ``extract_fields_directly`` call inside
+#: Hard outer deadline for ONE document's extraction inside
 #: ``"per_document"`` StrategyType (:func:`_run_per_document_extraction`) -- live-
 #: reproduced (a real West Virginia document): the underlying chat
 #: client can hang well past its own configured per-attempt timeout with zero
-#: further retry activity, so ``extract_fields_directly``'s own *timeout*/*attempts*
+#: further retry activity, so the extractor's own *timeout*/*attempts*
 #: parameters alone are not a reliable bound. 90s covers every well-behaved case
 #: seen live (a successful call takes single-digit seconds; a well-behaved retry
 #: cycle through several failed attempts still lands well under a minute) with
@@ -1714,7 +1715,7 @@ async def run_eval_loop_multi_row(
     :param strategy_type: ``"css"`` (row/field CSS selectors), ``"regex"``
         (a single pattern matched repeatedly via ``re.finditer`` against the
         page's plain text, one match per record), ``"per_document"`` (no
-        cached pattern at all -- a fresh LLM extraction call per document,
+        cached pattern at all -- a fresh chunked extraction plus a grounding judge per document,
         every poll), or ``"multi_row_vision"`` (a single PDF whose own table
         structure defeats text-based extraction -- a vision read of the
         whole table, every record grounded before counting; see
