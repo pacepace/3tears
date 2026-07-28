@@ -28,10 +28,11 @@ which is not fetch it.
 - **`ScrapeDriver`** -- a backend-agnostic render contract (`RenderedPage`,
   `NavStep`, `NetworkCall`). Implementations ship for a real headful Chromium
   behind an isolated sidecar, in-process stealth Firefox, documents
-  (PDF/DOCX/XLSX/CSV), plain JSON APIs, authenticated in-session XHR capture, and
-  the listing-plus-detail and multi-document shapes. See
-  `threetears.scrape.drivers` for the current set -- a number here would rot the
-  first time one is added.
+  (PDF/DOCX/XLSX/CSV), plain JSON APIs, authenticated in-session XHR capture, the
+  listing-plus-detail and multi-document shapes, and a forced download for a
+  document sitting behind a real challenge. `threetears.scrape.drivers` is the
+  current set: read it there rather than trusting a list here, since neither a
+  count nor an enumeration survives the next one being added.
 - **The eval loop** (`run_eval_loop`, `run_eval_loop_multi_row`) -- propose
   candidates, validate each structurally against the real page, have a judge pick
   the winner by comparing extracted values against page content, persist the
