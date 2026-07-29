@@ -134,8 +134,17 @@ misparsing a newer one's frame.
 
 *The error model separates its layers, so a traceback names which end failed.* `PipeProtocolError` for
 a malformed frame, an unknown tag or an unagreeable version -- the two ends do not speak the same
-protocol, which no reconnect repairs. `PipeSequenceGapError` for a fault detected locally, and
-`PipeRemoteError`, carrying the peer's exception type name and message, for one the peer reported.
+protocol, which no reconnect repairs. `PipeSequenceGapError` for positive local evidence a frame was lost,
+`PipeIdleTimeout` for a local conclusion drawn from silence (a peer that could not report anything
+because it stopped existing), and `PipeRemoteError`, carrying the peer's exception type name and
+message, for one the peer actually reported. The middle one is separate from the last precisely
+because attributing silence to a peer report names the thing that provably did not happen.
+
+Also newly public on `3tears-nats`: `PipeIdleTimeout` and `DEFAULT_IDLE_TIMEOUT`. Every wait on a
+LIVE stream is now bounded -- before them, a peer that stopped existing without publishing left the
+far end blocked forever with no exception and no log, which a caller cannot tell from a peer merely
+being quiet. The bound is generous because an idle stream is ordinary here: an operator reading a
+challenge produces nothing for long stretches.
 All are terminal: a receiver that saw a gap RAISES rather than skipping, because the payloads this
 carries do not resynchronise and a tolerated gap turns a detectable fault into a frozen screen.
 

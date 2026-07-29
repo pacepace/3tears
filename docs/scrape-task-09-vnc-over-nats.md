@@ -350,9 +350,12 @@ nothing wants]**
 failed without correlating two logs. An attach that finds no owner surfaces as the forward
 primitive's own `NoOwnerError`. A malformed frame, an unknown tag or an unagreeable version is
 `PipeProtocolError` -- the two ends do not speak the same protocol, which no reconnect repairs.
-Once a stream is live, a fault detected LOCALLY is `PipeSequenceGapError` and a fault the PEER
-reported is `PipeRemoteError`, carrying the peer's exception type name and message the way
-`ForwardedHandlerError` already does. Every one of them is terminal: there is no
+Once a stream is live there are three, and the split between the last two is the point.
+`PipeSequenceGapError` is positive local evidence a frame was lost. `PipeIdleTimeout` is a local
+conclusion drawn from SILENCE, for the case a peer could not report anything at all -- killed,
+partitioned, evicted -- so calling it a peer report would name the one thing that provably did not
+happen. `PipeRemoteError` is a fault the PEER reported, carrying its exception type name and
+message the way `ForwardedHandlerError` already does. Every one of them is terminal: there is no
 resynchronisation here, because the payloads have none either.
 
 **[DECISION: model a stream-level failure as a frame the peer sends, rather than letting a dead

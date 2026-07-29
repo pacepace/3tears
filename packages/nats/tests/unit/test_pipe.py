@@ -29,6 +29,7 @@ from threetears.nats.pipe import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
     PipeEndpoint,
+    PipeTransport,
     attach_pipe,
     PipeIdleTimeout,
     PipeError,
@@ -744,7 +745,7 @@ class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
     negotiation and stays allowed.
     """
 
-    class _CannedOwner:
+    class _CannedOwner(PipeTransport):  # parity-with: threetears.nats.pipe.PipeTransport
         """Answers any forward with one prepared attach reply."""
 
         def __init__(self, reply: dict[str, object]) -> None:
@@ -763,7 +764,7 @@ class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
             **offer,
             **reply_over,
         }
-        await attach_pipe(self._CannedOwner(reply), "k", family="fam", **offer)  # type: ignore[arg-type]
+        await attach_pipe(self._CannedOwner(reply), "k", family="fam", **offer)
 
     async def test_an_honoured_offer_attaches(self) -> None:
         await self._attach_with_reply()
@@ -778,3 +779,42 @@ class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
     async def test_a_raised_limit_is_refused(self, raised: dict[str, int]) -> None:
         with pytest.raises(PipeProtocolError, match="did not offer"):
             await self._attach_with_reply(**raised)
+
+
+async def test_a_close_cannot_land_between_two_frames_of_a_concurrent_send() -> None:
+    """The close consumes a data sequence, so it must not interleave with a send.
+
+    A receiver reads a close as end of stream. If one lands between two frames of a concurrent
+    send, the peer treats a TRUNCATION as a complete transfer, which is the exact outcome that
+    making the close sequenced was meant to rule out.
+
+    The transport here YIELDS on every publish, and that is the whole point of the case rather
+    than incidental. The shared fake delivers synchronously, so a send runs to completion with no
+    await point a close could slip into, and a test built on it passes whether or not the lock
+    exists. A real client yields at every publish. The harness has to reproduce that or it is
+    asserting the fake's ordering rather than the pipe's.
+    """
+
+    class _YieldingBus(_Bus):
+        async def deliver(self, subject_path: str, payload: bytes) -> None:
+            await asyncio.sleep(0)
+            await super().deliver(subject_path, payload)
+
+    bus = _YieldingBus()
+    endpoint = _endpoint(max_chunk=16, credit=4096)
+    owner, caller = await _wired_pair(bus, endpoint)
+
+    payload = b"y" * 160  # ten frames, so a close has somewhere to land in the middle
+    sender = asyncio.create_task(owner.send(payload))
+    await asyncio.sleep(0)
+    closer = asyncio.create_task(owner.send_close())
+    await sender
+    await closer
+
+    received = bytearray()
+    while (chunk := await caller.receive()) is not None:
+        received.extend(chunk)
+    assert bytes(received) == payload, (
+        f"got {len(received)} of {len(payload)} bytes before the close: it landed inside the "
+        f"send, so the peer saw a truncated stream end cleanly"
+    )
