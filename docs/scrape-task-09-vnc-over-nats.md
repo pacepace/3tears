@@ -226,7 +226,7 @@ listed thing, not a parallel one.
 | Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}-leases` ungranted to tool pods |
 | Which pod owns a display | `threetears.scrape.operator_session.claim_session` | none |
 | Control messages to that pod | `threetears.scrape.operator_control` | none, once `forward` is granted |
-| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | closed: `relay_stream` takes a `DisplayTransport`, defaulting to the TCP opener |
+| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | closed: `relay_stream` AND `build_operator_router` both take a `DisplayTransport`, defaulting to the TCP opener. The seam on `relay_stream` alone was not enough -- a consumer could not reach it without reimplementing the WebSocket route |
 | Hub-side subscribe-then-forward shape | `aibots.hub.router.stream_bridge` | its unbounded queue is wrong for bytes; reuse the shape, not the buffering |
 | Authenticated, metered, audited call into a tool pod | `aibots.hub.ingress.dispatch_core` -> `CallProxy` | none; the attach rides it |
 | WebSocket on the hub | `app.add_api_websocket_route` | none |

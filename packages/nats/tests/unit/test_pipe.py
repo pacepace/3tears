@@ -29,7 +29,6 @@ from threetears.nats.pipe import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
     PipeEndpoint,
-    PipeTransport,
     attach_pipe,
     PipeIdleTimeout,
     PipeError,
@@ -745,7 +744,16 @@ class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
     negotiation and stays allowed.
     """
 
-    class _CannedOwner(PipeTransport):  # parity-with: threetears.nats.pipe.PipeTransport
+    # parity-with: threetears.nats.transport.StreamTransport
+    #
+    # A MARKER rather than a subclass, deliberately. ``attach_pipe`` reaches this through
+    # ``forward``, which calls ``request_raw`` -- declared on ``StreamTransport`` and NOT on
+    # ``PipeTransport``, so the obvious-looking base is the wrong one. Subclassing either would
+    # also be worse than nothing here: a Protocol's inherited ``...`` bodies make an unimplemented
+    # call return ``None`` silently, where an undeclared fake raises ``AttributeError`` and says
+    # so. The parity gate exists to catch drift, and inheriting stubs is how a fake passes it
+    # while hiding exactly what it was meant to surface.
+    class _CannedOwner:
         """Answers any forward with one prepared attach reply."""
 
         def __init__(self, reply: dict[str, object]) -> None:

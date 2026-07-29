@@ -232,7 +232,10 @@ async def test_a_real_display_is_driven_through_the_pipe(nats_container: str, di
     being an assumption -- and at a full screen it is several megabytes, which puts it well past
     the credit window and makes this the first time the flow control runs against a real producer.
     """
-    family = Subjects.hitl_forward_family(_TOOL)
+    # The DISPLAY STREAM family, not the control plane's. A session is owner-routed twice on the
+    # same key, so the two derive different families deliberately -- sharing one would put both
+    # on a single subject and let the queue group split a pod's messages between two handlers.
+    family = Subjects.hitl_pipe_family(_TOOL)
     claim = SessionClaim(session_id=_SESSION)
 
     async def _where(session_id: str) -> tuple[str, int]:

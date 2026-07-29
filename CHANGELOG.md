@@ -156,6 +156,7 @@ LIVE stream is now bounded -- before them, a peer that stopped existing without 
 far end blocked forever with no exception and no log, which a caller cannot tell from a peer merely
 being quiet. The bound is generous because an idle stream is ordinary here: an operator reading a
 challenge produces nothing for long stretches.
+
 All are terminal: a receiver that saw a gap RAISES rather than skipping, because the payloads this
 carries do not resynchronise and a tolerated gap turns a detectable fault into a frozen screen.
 

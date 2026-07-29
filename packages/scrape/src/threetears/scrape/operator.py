@@ -38,6 +38,7 @@ would put policy evaluation in a library that cannot see a policy.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -352,6 +353,21 @@ async def relay_stream(
     finally:
         for task in watched:
             task.cancel()
+        # AWAITED, not merely cancelled. `cancel()` only REQUESTS cancellation: a pump parked
+        # inside a publish keeps running until the loop next schedules it, so closing the writer
+        # first can pull the connection from under a send still in flight. On a TCP transport that
+        # is a confusing late traceback; on a bus-backed one it can put a frame on the wire after
+        # the stream is finished, which the peer reads as a sequence it cannot place. Exceptions
+        # are collected rather than raised because every pump's own outcome was already retrieved
+        # and reported above.
+        #
+        # The suppression is the subtle half: this is a `finally`, reached BY cancellation as
+        # often as by an ordinary end, and awaiting while the enclosing task is cancelled would
+        # re-raise out of the cleanup and skip the close below.
+        # NOSILENT: only a CancelledError aimed at THIS task mid-cleanup is suppressed, and it is
+        # not lost -- Python resumes propagating it once this `finally` completes.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*watched, return_exceptions=True)
         writer.close()
         try:
             await writer.wait_closed()
