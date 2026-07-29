@@ -125,7 +125,7 @@ async def _attach(bus: FakeBus, *, family: str | None = None) -> PipeEndpoint:
     return await attach_pipe(
         bus,  # type: ignore[arg-type]
         _SESSION,
-        family=Subjects.hitl_forward_family(_TOOL) if family is None else family,
+        family=Subjects.hitl_pipe_family(_TOOL) if family is None else family,
         timeout=timedelta(seconds=5),
     )
 
@@ -172,7 +172,7 @@ class TestTheDisplayReachesAnOperatorThroughThePipe:
 
         async with serve_display(bus, claim, tool=_TOOL, pod_id=_POD, display=_where(display)):  # type: ignore[arg-type]
             with pytest.raises(NoOwnerError):
-                await _attach(bus, family=Subjects.hitl_forward_family("tools.scrape-zone_beta.1-0-0"))
+                await _attach(bus, family=Subjects.hitl_pipe_family("tools.scrape-zone_beta.1-0-0"))
 
         assert display.connections == 0, "a pod served an attach addressed to another tool's family"
 
@@ -275,3 +275,23 @@ class TestALostClaimEndsALiveStream:
                 assert not display.disconnected.is_set(), "the display was let go before the claim was lost"
                 claim.lost.set()
                 await asyncio.wait_for(display.disconnected.wait(), timeout=5)
+
+
+async def test_the_display_stream_and_the_control_plane_never_share_a_subject() -> None:
+    """One session is owner-routed twice, and the two must not derive the same subject.
+
+    ``serve_owner`` subscribes with a queue group keyed on the subject, so if a session's
+    control plane and its display stream shared a family the broker would split one pod's
+    messages between the two handlers -- roughly half its control messages arriving at the
+    stream's attach handler and half its attaches at the control handler. Each would look
+    like a malformed request rather than a misrouted one, which is why this is asserted on
+    the SUBJECTS rather than left to a round-trip test that would pass whenever both ends
+    happened to agree.
+    """
+    from threetears.nats import Subjects
+
+    tool = "tools.scrape-zone_alpha.1-0-0"
+    session = "session-abc"
+    control = Subjects.forward_scoped(Subjects.hitl_forward_family(tool), session).path
+    stream = Subjects.forward_scoped(Subjects.hitl_pipe_family(tool), session).path
+    assert control != stream, "a session's control plane and display stream derive one subject"

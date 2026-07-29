@@ -417,12 +417,17 @@ class TestHitlSessionControlGrants:
         """
         perm = self._pod("tools.evil name.* > .1-0-0")
         granted = [s for s in perm.subscribe if s.startswith(f"{_NS}.forward.")]
-        assert len(granted) == 1
-        family_token = granted[0].removeprefix(f"{_NS}.forward.").removesuffix(".*")
-        assert set(family_token) <= set("0123456789abcdef")
-        assert len(family_token) == 64
-        for illegal in (" ", "*", ">"):
-            assert illegal not in family_token
+        assert granted, "the pod holds no session grant at all"
+        # Every family the pod is granted, not a fixed number of them: one session is
+        # owner-routed twice (its control plane and its display stream ride separate families
+        # so they cannot collide on one queue group), and a tally here would assert the count
+        # rather than the property, then rot the next time the shape changes.
+        for subject in granted:
+            family_token = subject.removeprefix(f"{_NS}.forward.").removesuffix(".*")
+            assert set(family_token) <= set("0123456789abcdef"), subject
+            assert len(family_token) == 64, subject
+            for illegal in (" ", "*", ">"):
+                assert illegal not in family_token
 
     def test_pod_without_authorized_tools_gets_no_session_grant(self) -> None:
         """fail closed: a pod serving no human session holds nothing on this family."""

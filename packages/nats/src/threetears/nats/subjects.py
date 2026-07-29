@@ -1234,6 +1234,34 @@ class Subjects:
         return Subject(path=f"{_ns()}.forward.{_digest_token(family)}.*", kind="pattern")
 
     @classmethod
+    def hitl_pipe_family(cls, tool_namespace_name: str) -> str:
+        """derive the forward family a session's DISPLAY STREAM attaches on.
+
+        distinct from :meth:`hitl_forward_family`, and the distinctness is load-bearing rather
+        than tidy. both a session's control plane and its display stream are owner-routed on the
+        SAME key -- the session id -- so if they shared a family they would derive the same
+        subject, and :func:`threetears.nats.serve_owner` subscribes with a queue group keyed on
+        that subject. a pod serving both would then have the broker split its messages between
+        the two handlers: roughly half its control messages delivered to the stream's attach
+        handler and half its attaches to the control handler, each looking like a malformed
+        request rather than a misrouted one.
+
+        two families on one key is the fix because the key is what identifies the SESSION, and a
+        session legitimately has two owner-routed surfaces. the alternative -- multiplexing both
+        onto one subject behind a discriminator -- would put a routing decision inside a handler
+        that the subject layer can make correctly on its own.
+
+        :param tool_namespace_name: the serving tool's registered namespace name
+        :ptype tool_namespace_name: str
+        :return: the raw forward family for that tool's display streams
+        :rtype: str
+        :raises ValueError: if tool_namespace_name is empty
+        """
+        if not tool_namespace_name:
+            raise ValueError("tool_namespace_name must be non-empty")
+        return f"hitl-pipe-{tool_namespace_name}"
+
+    @classmethod
     def forward_scoped_any_family(cls) -> Subject:
         """grant pattern spanning EVERY family's owner-routed keys, and no unscoped key.
 

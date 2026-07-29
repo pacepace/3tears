@@ -632,3 +632,71 @@ def test_pipe_any_pod_grant_keeps_the_direction_exact() -> None:
     assert up.path == "3tears.pipe.*.*.*.up"
     assert up.kind == "pattern"
     assert Subjects.pipe_any_pod_wildcard("down").path == "3tears.pipe.*.*.*.down"
+
+
+class TestPeerSuppliedCoordinatesCannotWidenASubscription:
+    """The attach reply's ``pod_id`` and ``nonce`` are the one peer strings a subject renders.
+
+    Everything else a peer names is hashed. These two are rendered into segments, and the
+    caller SUBSCRIBES what they render -- so a wildcard here widens that subscription across
+    every pod and every stream of the tool, and the caller's own grant permits it because a
+    grant cannot tell a literal segment from a wildcard one.
+    """
+
+    @staticmethod
+    def _endpoint(**over: object) -> PipeEndpoint:
+        base: dict[str, object] = {
+            "tool": "tools.scrape-zone_alpha.1-0-0",
+            "pod_id": "pod-1",
+            "nonce": "abc123",
+            "max_chunk": 1024,
+            "credit": 4096,
+            "version": PIPE_PROTOCOL_VERSION,
+        }
+        base.update(over)
+        return PipeEndpoint(**base)  # type: ignore[arg-type]
+
+    def test_a_legitimate_endpoint_still_builds(self) -> None:
+        assert self._endpoint().pod_id == "pod-1"
+
+    @pytest.mark.parametrize("hostile", ["*", ">", "a b", "x\ty", "a\nb", ""])
+    @pytest.mark.parametrize("field", ["pod_id", "nonce"])
+    def test_a_wildcard_or_whitespace_coordinate_is_refused(self, field: str, hostile: str) -> None:
+        with pytest.raises(PipeProtocolError):
+            self._endpoint(**{field: hostile})
+
+
+async def test_a_window_that_is_not_a_multiple_of_the_chunk_never_overruns() -> None:
+    """Admission must count the frame it is about to send, not only what is already out.
+
+    Every other credit case here uses a window that is an exact multiple of the chunk, and an
+    admission rule of "stop once unacked REACHES credit" satisfies all of them. It is wrong for
+    every other window: a sender one byte under the limit still emits a whole chunk, putting
+    ``credit - 1 + chunk`` in flight against a receiver that faults ABOVE ``credit``. The peer
+    then tears the stream down for an overrun the sender believed it had avoided, and the fault
+    names the receiving end.
+
+    A deliberately misaligned window is the whole point of this case, and the path is the real
+    one: a relay reads whatever a socket hands it, so an exactly-aligned window is the exception.
+    """
+    bus = _Bus()
+    # 1000 is not a multiple of 300 -- three frames leave 100 bytes of headroom, which is less
+    # than a whole chunk, so a fourth is only admissible if admission weighs the frame.
+    endpoint = _endpoint(max_chunk=300, credit=1000)
+    owner, _caller = await _wired_pair(bus, endpoint)
+    source = _CountingSource(b"z" * 300, chunks=32)
+
+    async def _produce() -> None:
+        while chunk := await source.read():
+            await owner.send(chunk)
+
+    producer = asyncio.create_task(_produce())
+    await _settle()
+    try:
+        assert owner.unacked_bytes <= endpoint.credit, (
+            f"put {owner.unacked_bytes} bytes in flight against a window of {endpoint.credit}; "
+            f"a receiver faulting above {endpoint.credit} would tear the stream down and blame "
+            f"the wrong end"
+        )
+    finally:
+        producer.cancel()

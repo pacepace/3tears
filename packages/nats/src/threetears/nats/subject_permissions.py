@@ -279,8 +279,13 @@ def _tool_pod(
     # segment is a digest of an arbitrary application string there is nothing else in the subject
     # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
     # under ``allow_responses`` and never originates a forward.
+    # BOTH families per tool. a session's control plane and its display stream are owner-routed
+    # on the same key, so they must derive different subjects or the queue group ``serve_owner``
+    # uses would split one pod's messages between the two handlers.
     hitl_sessions = tuple(
-        str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(name))) for name in (tool_namespaces or ())
+        str(Subjects.forward_scoped_wildcard(derive(name)))
+        for name in (tool_namespaces or ())
+        for derive in (Subjects.hitl_forward_family, Subjects.hitl_pipe_family)
     )
     # the byte pipe itself: once an attach has been answered on the control plane above, the pod
     # streams bytes on subjects that name its OWN tool digest and its OWN pod id as exact literals.

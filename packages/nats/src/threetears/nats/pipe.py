@@ -839,8 +839,9 @@ class PipeStream:
                 raise PipeError(f"pipe stream {self._endpoint.nonce} was half-closed; no further bytes can be sent")
             view = memoryview(data)
             for offset in range(0, len(view), self._endpoint.max_chunk):
-                await self._await_credit()
-                await self._emit_sequenced(_TAG_DATA, bytes(view[offset : offset + self._endpoint.max_chunk]))
+                chunk = bytes(view[offset : offset + self._endpoint.max_chunk])
+                await self._await_credit(len(chunk))
+                await self._emit_sequenced(_TAG_DATA, chunk)
 
     async def send_close(self) -> None:
         """half-close this end: the peer's :meth:`receive` will return ``None``.
@@ -874,17 +875,29 @@ class PipeStream:
         """
         await self._emit_control(_TAG_ERROR, 0, _encode_error_body(exc))
 
-    async def _await_credit(self) -> None:
-        """block until the peer has acknowledged enough to leave the window."""
+    async def _await_credit(self, frame_size: int) -> None:
+        """block until *frame_size* more bytes fit inside the peer's window.
+
+        The size matters, and admitting on the OUTSTANDING total alone was an off-by-one that
+        only exact-multiple windows hid. A sender that stopped at ``unacked < credit`` could
+        still be one byte under the limit and then emit a whole ``max_chunk``, putting
+        ``credit - 1 + max_chunk`` bytes in flight against a receiver that faults above
+        ``credit``. The peer would then tear the stream down for an overrun the sender believed
+        it had avoided, and the fault would name the receiving end.
+
+        It is reachable on the real path rather than in theory: a relay reads whatever a socket
+        hands it, so frames are arbitrary partial sizes and a window that is an exact multiple of
+        the chunk size is the exception rather than the rule.
+        """
         while True:
             self._raise_if_faulted()
-            if self._unacked_bytes < self._endpoint.credit:
+            if self._unacked_bytes + frame_size <= self._endpoint.credit:
                 return
             self._credit.clear()
             # re-check after clearing: an acknowledgement that landed between
             # the test above and the clear would otherwise have set an event we
             # just unset, and this call would wait for an ack already spent.
-            if self._unacked_bytes < self._endpoint.credit:
+            if self._unacked_bytes + frame_size <= self._endpoint.credit:
                 return
             await self._credit.wait()
 

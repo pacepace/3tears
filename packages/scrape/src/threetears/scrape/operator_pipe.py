@@ -187,7 +187,7 @@ async def serve_display(
         # Derived here rather than taken as a parameter, so a pod cannot serve under a family that
         # names a tool other than the one it told the caller it is. The caller derives the same
         # family from the same name, which is what makes the two ends meet at all.
-        family=Subjects.hitl_forward_family(tool),
+        family=Subjects.hitl_pipe_family(tool),
         credit=credit,
         max_chunk=max_chunk,
     ):
