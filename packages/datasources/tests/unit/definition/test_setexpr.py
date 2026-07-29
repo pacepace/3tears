@@ -293,6 +293,27 @@ class TestIntersectInTwoPositions:
     def test_a_resolution_intersect_carries_no_operator_field(self) -> None:
         assert "op" not in ResolutionIntersect.model_fields
 
+    @pytest.mark.parametrize("alias", ["prior audience", "prior-audience", "2024", "prior.audience", ""])
+    def test_a_non_identifier_intersect_alias_is_refused(self, alias: str) -> None:
+        """an alias that cannot be spelled ``rel.<alias>`` is unaddressable.
+
+        the alias is half of a namespaced reference, so a non-identifier
+        leaves the intersected side reachable by no predicate at all. the
+        compiler would then report an unresolved name against a definition
+        this model accepted, which reads as a compiler defect rather than
+        an authoring one. RelationRef.alias is validated for the same
+        reason and this matches it.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ResolutionIntersect.model_validate(
+                {
+                    "alias": alias,
+                    "against": {"scope": "dataset", "dataset": "amz_universe_2024", "artifact": "wide"},
+                    "key_columns": ["voterbase_id"],
+                },
+            )
+        assert "is not an identifier" in str(excinfo.value) or "at least 1 character" in str(excinfo.value)
+
     def test_a_composition_intersect_carries_no_stage_or_position_field(self) -> None:
         assert {"stage", "position", "phase", "after"} & set(SetExpr.model_fields) == set()
 

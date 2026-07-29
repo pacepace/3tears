@@ -229,14 +229,25 @@ class ResolutionIntersect(BaseModel):
     payload: list[ResolutionIntersectColumn] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _key_and_payload_are_distinct(self) -> Self:
-        """reject a repeated key column or output column.
+    def _alias_is_addressable_and_columns_are_distinct(self) -> Self:
+        """reject an unaddressable alias, or a repeated key or output column.
+
+        the alias must be an identifier for the same reason
+        :class:`~threetears.datasources.definition.relation.RelationRef`'s
+        must: it is the ``rel.<alias>`` half of a namespaced reference, so
+        a non-identifier alias leaves the intersected side addressable by
+        no predicate at all. that failure surfaces as an unresolved name
+        against a definition the model itself accepted, which reads as a
+        compiler defect rather than an authoring one.
 
         :returns: validated node
         :rtype: ResolutionIntersect
-        :raises ValueError: the key columns or a payload output name
-            repeat, or a key column is blank
+        :raises ValueError: the alias is not an identifier, the key
+            columns or a payload output name repeat, or a key column is
+            blank
         """
+        if not self.alias.isidentifier():
+            raise ValueError(f"intersect alias {self.alias!r} is not an identifier")
         if any(not column.strip() for column in self.key_columns):
             raise ValueError(f"{self.alias}: key_columns carries a blank column name")
         if len(self.key_columns) != len(set(self.key_columns)):
