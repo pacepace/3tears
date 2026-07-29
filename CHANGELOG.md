@@ -4,7 +4,18 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.22.0 -- 2026-07-29
+
+> **A MINOR bump, because three distributions gain new public API and one gains a new keyword on
+> five published functions.** `3tears-nats` gains `threetears.nats.pipe` (a payload-agnostic byte
+> pipe), the family-scoped forward builders and the HITL family derivations. `3tears` gains the
+> HITL namespace vocabulary. `3tears-scrape` consumes both, and its `operator_control` helpers gain
+> an optional `tool` keyword.
+>
+> **Pin the whole family to 0.22.0 exactly.** `threetears.scrape.operator_pipe` imports
+> `threetears.nats.pipe`, which exists on no earlier release, so a mixed family resolves and then
+> fails at import -- which is what the intra-family bounds exist to make impossible, and what
+> pinning makes true on your side of the install.
 
 **`3tears` fixes a `KVLease` default that named its bucket with the namespace twice, and
 `3tears-nats` corrects the two KV grants whose openers could be read.** BEHAVIOUR
