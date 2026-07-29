@@ -322,9 +322,12 @@ network -- and it also means a process terminating the operator's WebSocket anyw
 address to connect to and no way to be given one. So `relay_stream`, the function that WebSocket
 runs, does not open the connection itself. Its `transport` does: it is handed the endpoint your
 `display` callable resolved, decides what reaching that endpoint means, and yields the reader
-and writer the bytes move between. Called with none -- which is how the router calls it -- it
-opens a plain TCP connection to that endpoint, which is the co-located pod above and is exactly
-what the relay has always done.
+and writer the bytes move between. Called with none it opens a plain TCP connection to that
+endpoint, which is the co-located pod above and is exactly what the relay has always done.
+
+`build_operator_router` takes one too and passes it straight through, so a deployment whose
+display sits in a pod with no inbound network path supplies a transport there and changes nothing
+else. Omit it and the router behaves exactly as it always has.
 
 **The pod's own end of that is `serve_display()`,** in `threetears.scrape.operator_pipe`. A pod
 holding a session's claim serves its display onto a NATS byte pipe, bridging the `x11vnc` beside

@@ -181,14 +181,17 @@ mandatory: a process terminating the operator's WebSocket had to share a network
 `x11vnc`. A deployed tool pod cannot offer that to anything outside it -- no Service, no Ingress,
 no inbound path at all -- so this is what stood between the operator surface and a cluster.
 
-New public API on `threetears.scrape.operator`, all additive: a `transport` keyword on
-`relay_stream`, and the `DisplayTransport`, `DisplayReader` and `DisplayWriter` protocols
-describing what one is. A transport is handed the endpoint `DisplayEndpoint` resolved, decides
+New public API on `threetears.scrape.operator`, all additive: a `transport` keyword on BOTH
+`relay_stream` and `build_operator_router`, and the `DisplayTransport`, `DisplayReader` and
+`DisplayWriter` protocols describing what one is. A transport is handed the endpoint `DisplayEndpoint` resolved, decides
 what reaching it means, and yields a reader-like and a writer-like pair; the relay interprets
 neither the endpoint nor a byte that crosses the pair.
 
-**No behaviour changes and nothing new is reachable through it here.** Omitting `transport` opens
-the same TCP connection to the same endpoint, which is what `build_operator_router` does. The
+**No behaviour change for anyone not passing one.** Omitting `transport` opens the same TCP
+connection to the same endpoint, which is what both the relay and the router do by default. The
+router carries the parameter rather than only the relay because otherwise a consumer could not
+reach the seam without reimplementing the WebSocket route -- and a verification built on such a
+stand-in would be testing the stand-in. The
 whole value of the seam is that a transport reaching a display over a message bus can be supplied
 by a deployment that has one, without forking this module -- and its acceptance was that the
 existing relay tests pass unedited, which they do.
@@ -228,8 +231,11 @@ than the one it tells its caller it is.
 own Xvfb, over a real broker: a complete RFB handshake in both directions and then one full
 1920x1080 framebuffer, 8.29 MB, reassembled to the size the geometry predicts. That is eight times
 the credit window, so the flow control ran against real traffic rather than a synthetic producer.
-An operator at a browser is what remains, and it is queued as an operator verification rather than
-claimed here.
+An operator at a browser has since driven it: a real display through the pipe, mouse and keyboard
+reaching it, and a video played under sustained load. What that does NOT produce is a steady-state
+bandwidth figure, because the window manager moves an outline rather than window contents, so a
+drag is one repaint on drop rather than continuous load. The window is evidenced against the
+failure it guards, not tuned.
 
 
 **`3tears` gains the namespace vocabulary a human display session is authorized against, and

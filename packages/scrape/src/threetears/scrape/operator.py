@@ -364,8 +364,8 @@ async def relay_stream(
         # that `cancel()` only REQUESTS cancellation, so a pump may still be running here. That is
         # true. It is also bounded without an await: `_to_display` is the only pump touching
         # *writer*, and closing the socket is what stops it; `_to_client` sends to the OPERATOR
-        # and never touches *writer*, so its lifetime is the transport's contract rather than this
-        # function's. What is NOT claimed is that awaiting first would skip the close -- an earlier
+        # and never touches *writer*, so what bounds it is the CALLER'S `send` -- the WebSocket on
+        # one deployment, a pipe stream on another -- rather than anything this function holds. What is NOT claimed is that awaiting first would skip the close -- an earlier
         # version of this note asserted that as a rule about cancellation and a sabotage test
         # disproved it, since a cancellation is delivered once rather than at every subsequent
         # await. The ordering is therefore the cautious choice, not a proven necessity. | user can
