@@ -11,7 +11,7 @@ election, fencing tokens).
 
 usage::
 
-    lease = KVLease(nats_client, bucket_name="prod14_leases")
+    lease = KVLease(nats_client, bucket_name="leases")
     handle = await lease.acquire("workspace/customer-x/path")
     async with handle:
         ...
@@ -31,7 +31,6 @@ correctly with the rest of the codebase.
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -264,17 +263,20 @@ class KVLease:
     ) -> None:
         """configure factory; defer bucket creation until first acquire.
 
-        default ``bucket_name`` is
-        ``f"{THREETEARS_NATS_SUBJECT_NAMESPACE}_leases"`` when the env
-        var is set, or ``"leases"`` as unscoped fallback. default
-        ``pod_id`` is ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and
-        unique per factory instance.
+        ``bucket_name`` is a SUFFIX, not a full name: it is handed to
+        :meth:`KvCapable.kv_bucket`, which layers the connection's own
+        ``{namespace}-`` over it. Passing a name that already carries the
+        namespace therefore produces it twice. The default is the constant
+        ``"leases"`` for exactly that reason. default ``pod_id`` is
+        ``f"pod-{uuid7().hex[:12]}"`` -- time-ordered and unique per factory
+        instance.
 
         :param nats_client: connected canonical
             :class:`threetears.nats.kv.KvCapable` wrapper; the lease
             opens its KV bucket through :meth:`KvCapable.kv_bucket`
         :ptype nats_client: KvCapable
-        :param bucket_name: explicit bucket name; None uses env-derived default
+        :param bucket_name: explicit bucket-name SUFFIX (the transport adds the
+            namespace prefix); None uses the constant default
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
         :ptype pod_id: str | None
@@ -307,17 +309,24 @@ class KVLease:
 
     @staticmethod
     def _default_bucket_name() -> str:
-        """derive default bucket name from platform namespace env var.
+        """the bucket-name SUFFIX this lease opens by default.
 
-        reads ``THREETEARS_NATS_SUBJECT_NAMESPACE`` at call time (not
-        import time) so tests can monkeypatch it.
+        a SUFFIX, not a full name, because that is what
+        :meth:`threetears.nats.kv.KvCapable.kv_bucket` takes: it layers the
+        connection's own ``{namespace}-`` prefix over whatever it is handed. an
+        earlier version of this returned ``f"{ns}_leases"``, reading the
+        namespace itself and baking it in, which made the bucket that actually
+        materialised ``{ns}-{ns}_leases`` -- the namespace twice. Nothing
+        detected it because a KV grant that names a bucket no opener produces
+        is not an error, it is a silent JetStream timeout on first use.
 
-        :return: ``"{ns}_leases"`` when env set, else ``"leases"``
+        The namespace therefore must NOT be read here. It is the transport's to
+        apply, and applying it in both places is how it got applied twice.
+
+        :return: the constant suffix ``"leases"``
         :rtype: str
         """
-        ns = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
-        result = f"{ns}_leases" if ns else "leases"
-        return result
+        return "leases"
 
     async def _ensure_bucket(self) -> "KvBucketLike":
         """open existing bucket or create it with history=1 on first call.

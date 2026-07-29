@@ -4,7 +4,7 @@ re-exports the public surface every consumer should bind to. callers
 should NOT reach into submodules (``threetears.nats.client`` etc.) for
 public types — the re-exports here are the stable api.
 
-nine of those submodules reach ``nats-py`` or ``nkeys``; the rest are pure
+some of those submodules reach ``nats-py`` or ``nkeys``; the rest are pure
 python. those names are therefore resolved **lazily** (PEP 562) so
 that importing this package — which happens transitively for anyone
 touching ``threetears.core.collections`` — does not drag the NATS client
@@ -15,7 +15,7 @@ deliberately eager: those modules cost nothing.
 .. note::
    when this package requires python >= 3.15, delete ``_LAZY_SUBMOD_ATTRS``,
    ``_LazyReexportModule``, ``__getattr__``, ``__dir__`` and the
-   ``TYPE_CHECKING`` block, and simply prefix the nine plain imports with PEP
+   ``TYPE_CHECKING`` block, and simply prefix each of those plain imports with PEP
    810's ``lazy`` keyword instead. ``_LazyReexportModule`` goes with them:
    a ``lazy from`` binds the name at the import statement, restoring the
    eager ordering that kept the submodule from shadowing its re-export.
@@ -54,6 +54,27 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         NoOwnerError,
         forward,
         serve_owner,
+    )
+    from threetears.nats.pipe import (
+        DEFAULT_ATTACH_TIMEOUT,
+        DEFAULT_CREDIT_WINDOW_BYTES,
+        DEFAULT_MAX_CHUNK_BYTES,
+        DEFAULT_READY_TIMEOUT,
+        DEFAULT_IDLE_TIMEOUT,
+        MIN_PIPE_PROTOCOL_VERSION,
+        PipeIdleTimeout,
+        PIPE_PROTOCOL_VERSION,
+        PipeEndpoint,
+        PipeError,
+        PipeProtocolError,
+        PipeRemoteError,
+        PipeSequenceGapError,
+        PipeStream,
+        PipeStreamHandler,
+        PipeTransport,
+        attach_pipe,
+        open_pipe,
+        serve_pipe,
     )
     from threetears.nats.auth_callout import (
         AuthCalloutRequest,
@@ -101,6 +122,7 @@ from threetears.nats.subject_permissions import (
     inbox_prefix_for,
 )
 from threetears.nats.subjects import (
+    PipeDirection,
     Subject,
     SubjectKind,
     Subjects,
@@ -114,7 +136,7 @@ from threetears.nats.transport import (
     StreamTransport,
 )
 
-#: submodule -> public names, for the nine submodules that reach ``nats-py`` or
+#: submodule -> public names, for every submodule that reaches ``nats-py`` or
 #: ``nkeys`` (directly or transitively). everything here resolves on first
 #: attribute access rather than at package import, so an L1-only consumer never
 #: loads the client. keep in sync with the ``TYPE_CHECKING`` block above and
@@ -142,6 +164,27 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "NoOwnerError",
         "forward",
         "serve_owner",
+    ),
+    "pipe": (
+        "DEFAULT_ATTACH_TIMEOUT",
+        "DEFAULT_CREDIT_WINDOW_BYTES",
+        "DEFAULT_MAX_CHUNK_BYTES",
+        "DEFAULT_IDLE_TIMEOUT",
+        "DEFAULT_READY_TIMEOUT",
+        "MIN_PIPE_PROTOCOL_VERSION",
+        "PIPE_PROTOCOL_VERSION",
+        "PipeEndpoint",
+        "PipeError",
+        "PipeIdleTimeout",
+        "PipeProtocolError",
+        "PipeRemoteError",
+        "PipeSequenceGapError",
+        "PipeStream",
+        "PipeStreamHandler",
+        "PipeTransport",
+        "attach_pipe",
+        "open_pipe",
+        "serve_pipe",
     ),
     "auth_callout": ("AuthCalloutRequest", "decode_auth_request", "mint_auth_response"),
     "auth_callout_responder": (
@@ -241,6 +284,7 @@ __all__ = [
     "Subscription",
     "TokenCallback",
     # subjects
+    "PipeDirection",
     "Subject",
     "SubjectKind",
     "Subjects",
@@ -289,6 +333,26 @@ __all__ = [
     "NoOwnerError",
     "forward",
     "serve_owner",
+    # byte pipe (a stream to whichever pod owns a key)
+    "DEFAULT_ATTACH_TIMEOUT",
+    "DEFAULT_CREDIT_WINDOW_BYTES",
+    "DEFAULT_MAX_CHUNK_BYTES",
+    "DEFAULT_IDLE_TIMEOUT",
+    "DEFAULT_READY_TIMEOUT",
+    "MIN_PIPE_PROTOCOL_VERSION",
+    "PIPE_PROTOCOL_VERSION",
+    "PipeEndpoint",
+    "PipeError",
+    "PipeIdleTimeout",
+    "PipeProtocolError",
+    "PipeRemoteError",
+    "PipeSequenceGapError",
+    "PipeStream",
+    "PipeStreamHandler",
+    "PipeTransport",
+    "attach_pipe",
+    "open_pipe",
+    "serve_pipe",
     # transport Protocols + message envelope
     "IncomingMessage",
     "MessageCallback",

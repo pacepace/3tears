@@ -29,6 +29,7 @@ cross-tenant direct-read / destroy a bare ``$JS.API.>`` would expose (see
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -124,6 +125,7 @@ def build_permissions(
     agent_id: str | None = None,
     pod_id: str | None = None,
     conn_id: str | None = None,
+    tool_namespaces: Sequence[str] | None = None,
 ) -> PrincipalPermissions:
     """resolve the concrete allow-list for one connecting principal.
 
@@ -140,12 +142,19 @@ def build_permissions(
     :ptype pod_id: str | None
     :param conn_id: a connection-unique id for the scoped inbox; defaults to ``pod_id``
     :ptype conn_id: str | None
+    :param tool_namespaces: the tool namespace names this pod is authorized to serve -- the
+        ``allowed_namespaces`` list on its tool-pods row, the same list
+        ``RegistrationHandler._authenticate_and_filter`` filters its manifest against. each entry
+        becomes one EXACT per-tool subject grant, so registration filtering and subject permissions
+        read from one source of truth. omitting it grants none of them (a pod that serves no
+        human-in-the-loop session needs none).
+    :ptype tool_namespaces: Sequence[str] | None
     :return: the resolved permissions
     :rtype: PrincipalPermissions
     :raises ValueError: when a required id for the principal is missing
     """
     resolver = _RESOLVERS[principal]
-    return resolver(agent_id=agent_id, pod_id=pod_id, conn_id=conn_id)
+    return resolver(agent_id=agent_id, pod_id=pod_id, conn_id=conn_id, tool_namespaces=tool_namespaces)
 
 
 def _require(value: str | None, *, name: str, principal: Principal) -> str:
@@ -155,7 +164,13 @@ def _require(value: str | None, *, name: str, principal: Principal) -> str:
     return value
 
 
-def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _agent_pod(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     a = _require(agent_id, name="agent_id", principal=Principal.AGENT_POD)
     p = _require(pod_id, name="pod_id", principal=Principal.AGENT_POD)
     inbox = inbox_prefix_for(Principal.AGENT_POD, conn_id=conn_id or p)
@@ -228,7 +243,7 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
         allow_responses=True,  # replies to the hub's route request
         inbox_prefix=inbox,
         kv_buckets=(
-            f"{ns}_agent_config",
+            f"{ns}_agent_config",  # direct js.create_key_value in the hub; no transport prefix
             f"{ns}-collections",
             "checkpoints",
             # memory extraction throttle: the agent's MemoryExtractor uses a
@@ -246,10 +261,40 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
     )
 
 
-def _tool_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _tool_pod(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
     ns = _ns()
+    # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
+    # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
+    # to it. one EXACT family literal per authorized tool, minted by hashing the SAME
+    # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
+    # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
+    # segment is a digest of an arbitrary application string there is nothing else in the subject
+    # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
+    # under ``allow_responses`` and never originates a forward.
+    # BOTH families per tool. a session's control plane and its display stream are owner-routed
+    # on the same key, so they must derive different subjects or the queue group ``serve_owner``
+    # uses would split one pod's messages between the two handlers.
+    hitl_sessions = tuple(
+        str(Subjects.forward_scoped_wildcard(derive(name)))
+        for name in (tool_namespaces or ())
+        for derive in (Subjects.hitl_forward_family, Subjects.hitl_pipe_family)
+    )
+    # the byte pipe itself: once an attach has been answered on the control plane above, the pod
+    # streams bytes on subjects that name its OWN tool digest and its OWN pod id as exact literals.
+    # only the per-attach nonce is wildcarded, and it cannot be anything else -- the pod mints it
+    # per stream, long after these grants were issued. the direction segment is part of each pattern
+    # rather than a ``>`` tail so PUBLISH reaches only the pod's own half (``down``) and SUBSCRIBE
+    # only the caller's (``up``); one ``>`` grant would let the owner publish onto both.
+    pipe_down = tuple(str(Subjects.pipe_pod_wildcard(name, p, "down")) for name in (tool_namespaces or ()))
+    pipe_up = tuple(str(Subjects.pipe_pod_wildcard(name, p, "up")) for name in (tool_namespaces or ()))
     publish = (
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat(p)),  # own pod only
@@ -264,22 +309,46 @@ def _tool_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) 
         # its call's engagement_id -> the authorized target set (same forwarded
         # identity-token auth; the hub verifies + tenant-scopes). read-only.
         str(Subjects.hub_engagement_scope()),
+        *pipe_down,  # own authorized tools' streams, own pod id, own half only
     )
     subscribe = (
         f"{inbox}.>",
         str(Subjects.tools_internal(p)),  # own pod's proxied calls only
         str(Subjects.tools_probe(p)),  # own pod's liveness probes only
+        *hitl_sessions,  # own authorized tools' session control plane only
+        *pipe_up,  # own authorized tools' streams, own pod id, caller's half only
     )
     return PrincipalPermissions(
         publish=publish,
         subscribe=subscribe,
         allow_responses=True,  # replies to the registry's forwarded call + probe
         inbox_prefix=inbox,
-        kv_buckets=(f"{ns}-proxy_assertion_nonces",),
+        kv_buckets=(
+            f"{ns}-proxy_assertion_nonces",
+            # the display claim: a pod serving a human session holds a ``KVLease`` for as long as
+            # it serves. every name here is the bucket that MATERIALISES: ``kv_bucket`` takes a
+            # suffix and layers the connection's ``{ns}-`` over it.
+            #
+            # WHAT A MISSING GRANT ACTUALLY DOES, because two earlier versions of this comment got
+            # it wrong in the same way. It does NOT yield ``lease=None`` and serve the display
+            # unclaimed: that value is the dependency-injection path, set by a platform passing no
+            # lease at all. With a lease supplied and this grant absent, ``KVLease.acquire``
+            # defers opening the bucket to first use and that open raises ``KvError`` after a
+            # JetStream timeout, which nothing catches. The symptom is a hard failure on the first
+            # claim rather than a silent double-serve -- and because the open is deferred, a
+            # platform cannot learn at construction time that it should downgrade.
+            f"{ns}-leases",
+        ),
     )
 
 
-def _registry(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _registry(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.REGISTRY)
     inbox = inbox_prefix_for(Principal.REGISTRY, conn_id=c)
     ns = _ns()
@@ -309,11 +378,29 @@ def _registry(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) 
         subscribe=subscribe,
         allow_responses=True,  # replies to agents' tools.call / tools.discover
         inbox_prefix=inbox,
-        kv_buckets=(f"{ns}_tool_catalog", f"{ns}_pop_nonces"),
+        kv_buckets=(
+            # UNPREFIXED, and deliberately so: the registry opens its catalog with a direct
+            # ``js.key_value(bucket=...)`` (``threetears.registry.server``) rather than through
+            # ``kv_bucket``, so no namespace prefix is ever applied to it. The other two
+            # conventions in this file both prefix; this one is the exception and is the reason
+            # the enforcement test allows a bare name.
+            "tool_catalog",
+            # constructed at ``threetears.registry.server`` as
+            # ``ReplayGuard(nc, bucket_name="pop_nonces", ...)`` -- a live call site in this
+            # repository, not the usage example in ``ReplayGuard``'s own docstring -- and
+            # ``ReplayGuard`` opens through ``kv_bucket``, so this one carries the prefix.
+            f"{ns}-pop_nonces",
+        ),
     )
 
 
-def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _hub(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     # the hub is the broadest principal: trust anchor + control plane + L3 broker + router. it owns
     # the whole {ns}.hub.*, {ns}.agents.*, {ns}.l3.*, and the platform-write event streams. it is
     # still NOT granted a bare `>` -- every grant below is a named family within the namespace.
@@ -331,10 +418,24 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
         f"{ns}.hub.channel.installs.changed",  # notifies channel adapters of install changes
+        # human-in-the-loop session control plane: the hub terminates the operator's WebSocket and
+        # forwards session control to whichever pod holds that display. unlike the pod side this
+        # cannot be an exact family literal -- one hub connection fronts EVERY tool, so there is no
+        # per-connection list to mint from. a NATS wildcard matches a whole token, so the family
+        # segment is either one exact literal or ``*``; there is no prefix form. the two-token
+        # pattern does not match the UNSCOPED ``{ns}.forward.{key}`` family, which stays granted to
+        # nobody. publish only: the hub calls, the pod serves.
+        str(Subjects.forward_scoped_any_family()),
+        # the byte pipe's caller half. the same reasoning as the forward family directly above: one
+        # hub connection fronts EVERY tool and every pod, so there is no per-connection list to mint
+        # exact literals from. what stays exact is the DIRECTION -- the hub publishes only on ``up``,
+        # so no wildcard here reaches an owner's own half of any stream.
+        str(Subjects.pipe_any_pod_wildcard("up")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
         f"{inbox}.>",
+        str(Subjects.pipe_any_pod_wildcard("down")),  # every pod's stream to it, never a pod's own half
         str(Subjects.hub_handshake()),  # mints identity tokens
         str(Subjects.hub_jwks()),  # serves the JWKS
         str(Subjects.hub_secrets_request()),
@@ -374,18 +475,47 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         allow_responses=True,
         inbox_prefix=inbox,
         kv_buckets=(
+            # THE UNDERSCORE SPELLING IS NOT NECESSARILY A TYPO, and that is the whole reason
+            # these are here. A bucket created by a DIRECT ``js.create_key_value(bucket=...)``
+            # never receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that
+            # builds its own ``f"{namespace}_thing"`` name owns that name verbatim.
+            #
+            # PROVEN for ``agent_config`` only: the hub's ``AgentConfigKV`` creates it that way
+            # and its own docstring calls it platform-historical, and the agent router reads it
+            # back. Every OTHER underscore-spelled entry below is kept on PRECAUTION rather than
+            # on evidence: no opener was found for it in either repository, but "not found" is not
+            # "absent", and the two failure directions are not symmetric. A grant naming a bucket
+            # nothing opens costs permission surface; removing one that something does open costs
+            # a JetStream operation that blocks to its deadline instead of raising, which reads as
+            # an unreachable broker. Removing them on absence-of-evidence is the mistake that was
+            # already made here once.
+            #
+            # Do not "normalise" any of these to ``{ns}-``: that renames a live bucket.
             f"{ns}_agent_config",
             f"{ns}_agent_sessions",
             f"{ns}_revoked_tokens",
             f"{ns}_login_lockouts",
             f"{ns}_rate_limits",
+            # ADDED rather than corrected, and the distinction matters. The hub's own router rate
+            # limiter creates ``f"{namespace}_ratelimit"`` -- singular, no trailing ``s`` -- with a
+            # direct ``js.create_key_value``, and no grant named it, so the limiter's first
+            # operation blocked to its deadline instead of raising. ``{ns}_rate_limits`` above is
+            # NOT removed in the same breath: nothing proves it dead, and this file has already
+            # been burned once by treating "no opener found" as "no opener".
+            f"{ns}_ratelimit",
             f"{ns}-collections",
         ),
         streams=(f"{ns}_channels_deliver",),
     )
 
 
-def _gateway(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _gateway(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.GATEWAY)
     inbox = inbox_prefix_for(Principal.GATEWAY, conn_id=c)
     ns = _ns()
@@ -414,7 +544,13 @@ def _gateway(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -
     )
 
 
-def _channel_adapter(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
+def _channel_adapter(
+    *,
+    agent_id: str | None,
+    pod_id: str | None,
+    conn_id: str | None,
+    tool_namespaces: Sequence[str] | None,
+) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.CHANNEL_ADAPTER)
     inbox = inbox_prefix_for(Principal.CHANNEL_ADAPTER, conn_id=c)
     ns = _ns()

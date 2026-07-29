@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scheduled-jobs"
-version = "0.21.0"
+version = "0.22.0"
 description = "Generic, payload-agnostic, multipod-safe scheduled-jobs core -- cross-pod-locked tick engine, reschedule math, store protocols, and a default kind+payload store"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,11 +21,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.21.0,<0.22.0",
+    "3tears>=0.22.0,<0.23.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.21.0,<0.22.0",
-    "3tears-observe>=0.21.0,<0.22.0",
+    "3tears-nats[client]>=0.22.0,<0.23.0",
+    "3tears-observe>=0.22.0,<0.23.0",
     "uuid-utils",
     # APScheduler is used as a pure utility ONLY by the ``cron`` schedule
     # branch in ``compute_next_fire_at`` (lazy local import inside that one
