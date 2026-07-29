@@ -169,6 +169,16 @@ MIN_PIPE_PROTOCOL_VERSION: Final[int] = 1
 #: 64 KiB sits under even an untuned NATS ``max_payload`` of 1 MB with room for
 #: the header and the subject, so the pipe works on a broker nobody has tuned;
 #: a deployment with a raised limit can negotiate upward at attach.
+#:
+#: RAISING THIS IS NOT A FREE WIN, and a deployment that has raised ``max_payload``
+#: should not assume it wants to. a bigger frame is fewer messages, but the first
+#: consumer here carries an INTERACTIVE display: a receiver cannot render a partial
+#: frame, so a larger chunk adds latency before anything appears, and it coarsens
+#: credit accounting, since the window is spent and released in whole frames. the
+#: opposite trade belongs to a consumer moving a file, which has no partial-render
+#: problem and wants the message count down. that is precisely why the value is
+#: negotiated per attach rather than set once here -- the right answer differs by
+#: PAYLOAD, and this module deliberately knows nothing about payloads.
 DEFAULT_MAX_CHUNK_BYTES: Final[int] = 64 * 1024
 
 #: unacknowledged bytes a sender may have outstanding before it blocks.

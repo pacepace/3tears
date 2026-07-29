@@ -182,12 +182,17 @@ built permission set as config-mode `authorization`. Both use
 
 ## What is assumed
 
-- **[ASSUMPTION: the in-cluster NATS `max_payload` is at least a few hundred KB | LOW impact]**
-  The compose configs in `14-eng-ai-bot/docker/config/nats/` set 16 MB and the prod config's
-  comment says it MUST be raised above the 1 MB default. The cluster's NATS comes from a separate
-  chart (`nats.nats.svc.cluster.local`) that was not read. Mitigation: the pipe's chunk size is
-  negotiated at attach and defaults to `_RELAY_CHUNK_BYTES` (64 KiB), which is under even the
-  untuned 1 MB default. Verify the deployed value before tuning upward.
+- **RESOLVED 2026-07-29 (Pace): the deployment runs `max_payload` at 16 MB.** This was carried as
+  a LOW-impact assumption because the cluster's NATS comes from a separate chart that could not be
+  read from here. It is now a stated deployment fact, and it closes rather than changes anything:
+  the pipe's default chunk was chosen to fit under an UNTUNED 1 MB broker, which is a property
+  worth keeping in a library that does not know whose broker it will run on.
+
+  What 16 MB buys is headroom a consumer can negotiate INTO, not a default worth raising. See the
+  note on `DEFAULT_MAX_CHUNK_BYTES`: for an interactive display a larger chunk is actively worse,
+  because a receiver cannot render a partial frame and credit accounting gets coarser. A
+  non-interactive consumer moving a file has the opposite trade, and the attach negotiation is
+  where it says so.
 
 - **[ASSUMPTION: steady-state RFB bandwidth for a human clearing a challenge is tens of KB/s, not
   megabytes per second | MED impact]** Reasoned from encoding, not measured: noVNC negotiates
