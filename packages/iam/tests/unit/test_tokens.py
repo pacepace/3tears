@@ -93,7 +93,9 @@ def _wire_payload(claims: SessionClaims, **extra: object) -> dict[str, object]:
 
 def test_eddsa_round_trip(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
     claims = _claims(customer_id="tenant-1")
-    verified = verify_session_token(mint_session_token(claims, signer=ed_signer), verifier=ed_verifier)
+    verified = verify_session_token(
+        mint_session_token(claims, signer=ed_signer), verifier=ed_verifier, expected_type=TokenType.ACCESS
+    )
     assert verified.sub == "user-1"
     assert verified.customer_id == "tenant-1"
     assert verified.aud == (_AUDIENCE,)
@@ -103,7 +105,9 @@ def test_eddsa_round_trip(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVeri
 def test_hs256_round_trip() -> None:
     signer = HmacSigner(_SECRET)
     verifier = HmacVerifier(_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
-    verified = verify_session_token(mint_session_token(_claims(), signer=signer), verifier=verifier)
+    verified = verify_session_token(
+        mint_session_token(_claims(), signer=signer), verifier=verifier, expected_type=TokenType.ACCESS
+    )
     assert verified.sub == "user-1"
 
 
@@ -112,8 +116,12 @@ def test_both_schemes_produce_the_same_claims(ed_signer: Ed25519Signer, ed_verif
     # into different security postures.
     claims = _claims(customer_id="tenant-1", act="admin-1", act_reason="support")
     hmac_verifier = HmacVerifier(_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
-    from_ed = verify_session_token(mint_session_token(claims, signer=ed_signer), verifier=ed_verifier)
-    from_hs = verify_session_token(mint_session_token(claims, signer=HmacSigner(_SECRET)), verifier=hmac_verifier)
+    from_ed = verify_session_token(
+        mint_session_token(claims, signer=ed_signer), verifier=ed_verifier, expected_type=TokenType.ACCESS
+    )
+    from_hs = verify_session_token(
+        mint_session_token(claims, signer=HmacSigner(_SECRET)), verifier=hmac_verifier, expected_type=TokenType.ACCESS
+    )
     assert from_ed == from_hs
 
 
@@ -121,7 +129,9 @@ def test_impersonation_claims_survive_the_round_trip(
     ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier
 ) -> None:
     claims = _claims(act="admin-1", act_reason="impersonation", act_restriction="view")
-    verified = verify_session_token(mint_session_token(claims, signer=ed_signer), verifier=ed_verifier)
+    verified = verify_session_token(
+        mint_session_token(claims, signer=ed_signer), verifier=ed_verifier, expected_type=TokenType.ACCESS
+    )
     assert verified.is_impersonation
     assert verified.act == "admin-1"
     assert verified.act_restriction == "view"
@@ -130,14 +140,18 @@ def test_impersonation_claims_survive_the_round_trip(
 
 
 def test_a_plain_token_is_not_an_impersonation(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
-    verified = verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=ed_verifier)
+    verified = verify_session_token(
+        mint_session_token(_claims(), signer=ed_signer), verifier=ed_verifier, expected_type=TokenType.ACCESS
+    )
     assert not verified.is_impersonation
     assert verified.act is None
 
 
 def test_dpop_binding_survives_the_round_trip(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
     verified = verify_session_token(
-        mint_session_token(_claims(cnf="thumbprint-value"), signer=ed_signer), verifier=ed_verifier
+        mint_session_token(_claims(cnf="thumbprint-value"), signer=ed_signer),
+        verifier=ed_verifier,
+        expected_type=TokenType.ACCESS,
     )
     assert verified.cnf == "thumbprint-value"
 
@@ -146,14 +160,18 @@ def test_tampered_token_is_rejected(ed_signer: Ed25519Signer, ed_verifier: Ed255
     token = mint_session_token(_claims(), signer=ed_signer)
     header, payload, signature = token.split(".")
     with pytest.raises(TokenError):
-        verify_session_token(f"{header}.{payload}.{signature[:-4]}AAAA", verifier=ed_verifier)
+        verify_session_token(
+            f"{header}.{payload}.{signature[:-4]}AAAA", verifier=ed_verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_expired_token_is_rejected(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
     past = int((datetime.now(UTC) - timedelta(hours=2)).timestamp())
     with pytest.raises(TokenError):
         verify_session_token(
-            mint_session_token(_claims(iat=past, exp=past + 60), signer=ed_signer), verifier=ed_verifier
+            mint_session_token(_claims(iat=past, exp=past + 60), signer=ed_signer),
+            verifier=ed_verifier,
+            expected_type=TokenType.ACCESS,
         )
 
 
@@ -164,7 +182,9 @@ def test_wrong_issuer_is_rejected(ed_signer: Ed25519Signer, signing_key: Ed25519
         audience=_AUDIENCE,
     )
     with pytest.raises(TokenError):
-        verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=verifier)
+        verify_session_token(
+            mint_session_token(_claims(), signer=ed_signer), verifier=verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_wrong_audience_is_rejected(ed_signer: Ed25519Signer, signing_key: Ed25519PrivateKey) -> None:
@@ -176,41 +196,49 @@ def test_wrong_audience_is_rejected(ed_signer: Ed25519Signer, signing_key: Ed255
         audience="platform:external",
     )
     with pytest.raises(TokenError):
-        verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=verifier)
+        verify_session_token(
+            mint_session_token(_claims(), signer=ed_signer), verifier=verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_unknown_kid_is_rejected(ed_signer: Ed25519Signer) -> None:
     other = Ed25519PrivateKey.generate()
     verifier = Ed25519JwksVerifier(jwks=build_jwks({"key-2": other.public_key()}), issuer=_ISSUER, audience=_AUDIENCE)
     with pytest.raises(TokenError, match="no JWKS key matches"):
-        verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=verifier)
+        verify_session_token(
+            mint_session_token(_claims(), signer=ed_signer), verifier=verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_empty_jwks_fails_closed(ed_signer: Ed25519Signer) -> None:
     # The normal state of a verifier whose key set has not warmed yet: reject, and say so.
     verifier = Ed25519JwksVerifier(jwks={"keys": []}, issuer=_ISSUER, audience=_AUDIENCE)
     with pytest.raises(TokenError, match="no keys"):
-        verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=verifier)
+        verify_session_token(
+            mint_session_token(_claims(), signer=ed_signer), verifier=verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_alg_none_is_rejected(ed_verifier: Ed25519JwksVerifier) -> None:
     # The classic unsigned-token attack.
     unsigned = jwt.encode(_wire_payload(_claims()), key="", algorithm="none")
     with pytest.raises(TokenError, match="only EdDSA is accepted"):
-        verify_session_token(unsigned, verifier=ed_verifier)
+        verify_session_token(unsigned, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_hs256_token_is_rejected_by_the_eddsa_verifier(ed_verifier: Ed25519JwksVerifier) -> None:
     # Algorithm confusion: the header must not get to choose how verification happens.
     token = mint_session_token(_claims(), signer=HmacSigner(_SECRET))
     with pytest.raises(TokenError, match="only EdDSA is accepted"):
-        verify_session_token(token, verifier=ed_verifier)
+        verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_eddsa_token_is_rejected_by_the_hs256_verifier(ed_signer: Ed25519Signer) -> None:
     verifier = HmacVerifier(_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
     with pytest.raises(TokenError, match="only HS256 is accepted"):
-        verify_session_token(mint_session_token(_claims(), signer=ed_signer), verifier=verifier)
+        verify_session_token(
+            mint_session_token(_claims(), signer=ed_signer), verifier=verifier, expected_type=TokenType.ACCESS
+        )
 
 
 def test_a_smuggled_role_claim_is_rejected(signing_key: Ed25519PrivateKey, ed_verifier: Ed25519JwksVerifier) -> None:
@@ -218,7 +246,7 @@ def test_a_smuggled_role_claim_is_rejected(signing_key: Ed25519PrivateKey, ed_ve
     payload = _wire_payload(_claims(), role="platform-admin")
     smuggled = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
     with pytest.raises(TokenError, match="forbidden claims"):
-        verify_session_token(smuggled, verifier=ed_verifier)
+        verify_session_token(smuggled, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_type_confusion_is_rejected(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
@@ -289,14 +317,48 @@ def test_token_pair_carries_a_supplied_auth_time_forward(ed_signer: Ed25519Signe
     assert pair.claims.iat > original
 
 
-def test_multiple_audiences_encode_as_a_list(ed_signer: Ed25519Signer, signing_key: Ed25519PrivateKey) -> None:
+def test_a_token_may_not_name_several_audiences(ed_signer: Ed25519Signer, signing_key: Ed25519PrivateKey) -> None:
+    """One audience per token, refused at BOTH ends.
+
+    This replaces a test that asserted the opposite. An audience says which side of a trust
+    boundary a credential belongs to, so a token naming two is valid on both at once and this
+    model has no meaning for it. PyJWT cannot refuse it -- it matches on INTERSECTION, so
+    `aud: [internal, external]` satisfies a verifier accepting only `internal`, which is how a
+    token that has left the platform comes back in. Both consumers of this package had
+    independently reimplemented the refusal, each documenting the same reasoning; it belongs
+    here instead.
+
+    A VERIFIER may still accept several audiences -- one verifier serving several boundaries.
+    The rule is about what a single token may claim.
+    """
+    with pytest.raises(TokenError, match="exactly one audience"):
+        mint_session_token(_claims(aud=("platform:internal", "platform:external")), signer=ed_signer)
+
+    # And refused on the way in, for a token some other minter produced.
     verifier = Ed25519JwksVerifier(
         jwks=build_jwks({"key-1": signing_key.public_key()}),
         issuer=_ISSUER,
         audience=["platform:internal", "platform:external"],
     )
-    token = mint_session_token(_claims(aud=("platform:internal", "platform:external")), signer=ed_signer)
-    assert verify_session_token(token, verifier=verifier).aud == ("platform:internal", "platform:external")
+    forged = ed_signer.sign({**_wire_payload(_claims()), "aud": ["platform:internal", "platform:external"]})
+    with pytest.raises(TokenError, match="exactly one audience"):
+        verify_session_token(forged, verifier=verifier, expected_type=TokenType.ACCESS)
+
+
+def test_a_verifier_may_still_accept_several_audiences(
+    ed_signer: Ed25519Signer, signing_key: Ed25519PrivateKey
+) -> None:
+    """The distinction the rule above turns on: the verifier's set, not the token's claim."""
+    verifier = Ed25519JwksVerifier(
+        jwks=build_jwks({"key-1": signing_key.public_key()}),
+        issuer=_ISSUER,
+        audience=["platform:internal", "platform:external"],
+    )
+    token = mint_session_token(_claims(aud=("platform:external",)), signer=ed_signer)
+
+    assert sole_audience(verify_session_token(token, verifier=verifier, expected_type=TokenType.ACCESS)) == (
+        "platform:external"
+    )
 
 
 def test_error_never_leaks_the_token(ed_signer: Ed25519Signer, signing_key: Ed25519PrivateKey) -> None:
@@ -305,7 +367,7 @@ def test_error_never_leaks_the_token(ed_signer: Ed25519Signer, signing_key: Ed25
     )
     token = mint_session_token(_claims(), signer=ed_signer)
     with pytest.raises(TokenError) as excinfo:
-        verify_session_token(token, verifier=verifier)
+        verify_session_token(token, verifier=verifier, expected_type=TokenType.ACCESS)
     assert token not in str(excinfo.value)
 
 
@@ -319,7 +381,7 @@ def test_missing_required_claim_is_rejected(
     del payload[missing]
     token = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
     with pytest.raises(TokenError):
-        verify_session_token(token, verifier=ed_verifier)
+        verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_unrecognized_token_type_is_rejected(signing_key: Ed25519PrivateKey, ed_verifier: Ed25519JwksVerifier) -> None:
@@ -327,7 +389,7 @@ def test_unrecognized_token_type_is_rejected(signing_key: Ed25519PrivateKey, ed_
     payload = _wire_payload(_claims(), type="not-a-real-type")
     token = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
     with pytest.raises(TokenError, match="unrecognized token type"):
-        verify_session_token(token, verifier=ed_verifier)
+        verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
 
 def test_jwks_entry_that_is_not_ed25519_is_rejected(ed_signer: Ed25519Signer) -> None:
@@ -338,7 +400,7 @@ def test_jwks_entry_that_is_not_ed25519_is_rejected(ed_signer: Ed25519Signer) ->
     ec_jwk["kid"] = "key-1"
     verifier = Ed25519JwksVerifier(jwks={"keys": [ec_jwk]}, issuer=_ISSUER, audience=_AUDIENCE)
     with pytest.raises(TokenError, match="not an Ed25519 public key"):
-        verify_session_token(token, verifier=verifier)
+        verify_session_token(token, verifier=verifier, expected_type=TokenType.ACCESS)
 
 
 @pytest.mark.parametrize("bad_jwks", [{"keys": []}, {"no_keys": 1}, []])
@@ -348,7 +410,7 @@ def test_malformed_or_empty_jwks_fails_closed(ed_signer: Ed25519Signer, bad_jwks
     token = mint_session_token(_claims(), signer=ed_signer)
     verifier = Ed25519JwksVerifier(jwks=bad_jwks, issuer=_ISSUER, audience=_AUDIENCE)  # type: ignore[arg-type]
     with pytest.raises(TokenError):
-        verify_session_token(token, verifier=verifier)
+        verify_session_token(token, verifier=verifier, expected_type=TokenType.ACCESS)
 
 
 def test_sole_audience_returns_the_single_value() -> None:
@@ -382,14 +444,14 @@ class TestIdentityOnlyIsEnforcedAsymmetrically:
         token = ed_signer.sign(_wire_payload(_claims(), **{claim: "anything"}))
 
         with pytest.raises(TokenError, match="forbidden"):
-            verify_session_token(token, verifier=ed_verifier)
+            verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
     def test_every_forbidden_name_is_refused(self, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
         """Membership implies proof: no name sits in the set untested."""
         for claim in sorted(FORBIDDEN_CLAIMS):
             token = ed_signer.sign(_wire_payload(_claims(), **{claim: "anything"}))
             with pytest.raises(TokenError, match="forbidden"):
-                verify_session_token(token, verifier=ed_verifier)
+                verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
     def test_an_unrecognized_identity_claim_verifies(
         self, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier
@@ -397,7 +459,7 @@ class TestIdentityOnlyIsEnforcedAsymmetrically:
         """A newer peer's benign claim must not 401 every request an older peer sees."""
         token = ed_signer.sign(_wire_payload(_claims(), locale="en-IE"))
 
-        claims = verify_session_token(token, verifier=ed_verifier)
+        claims = verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
         assert claims.sub == "user-1"
 
@@ -407,7 +469,7 @@ class TestIdentityOnlyIsEnforcedAsymmetrically:
         """Ignored means ignored -- it is readable nowhere on the returned claims."""
         token = ed_signer.sign(_wire_payload(_claims(), locale="en-IE"))
 
-        claims = verify_session_token(token, verifier=ed_verifier)
+        claims = verify_session_token(token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
 
         assert not hasattr(claims, "locale")
 
