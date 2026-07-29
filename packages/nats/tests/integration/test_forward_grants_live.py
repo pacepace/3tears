@@ -255,7 +255,8 @@ async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
     if not check_docker_available():
         pytest.skip("Docker not available")
 
-    # KVLease reads this at call time to derive its default bucket name, exactly as a
+    # The namespace the grants render under. KVLease no longer reads it -- its default is a bare
+    # suffix and the transport applies the prefix -- so this is set for the SUBJECT builders, exactly as a
     # deployed pod does; the wrapper then layers its own namespace prefix over it.
     monkeypatch.setenv("THREETEARS_NATS_SUBJECT_NAMESPACE", _NS)
 

@@ -26,7 +26,7 @@ limit), which is race-free with nothing more than an atomic add.
 usage::
 
     counter = DistributedCounter(
-        nats_client, bucket_name="prod14_ratelimit_requests", ttl=timedelta(minutes=2)
+        nats_client, bucket_name="ratelimit_requests", ttl=timedelta(minutes=2)
     )
     new_value = await counter.increment(f"user-42:{window_start}")
     if new_value > limit:

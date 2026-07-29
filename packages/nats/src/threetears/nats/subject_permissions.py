@@ -363,8 +363,10 @@ def _registry(
             # conventions in this file both prefix; this one is the exception and is the reason
             # the enforcement test allows a bare name.
             "tool_catalog",
-            # ``ReplayGuard(nats_client, bucket_name="pop_nonces")`` goes through ``kv_bucket``,
-            # so this one does carry the prefix.
+            # constructed at ``threetears.registry.server`` as
+            # ``ReplayGuard(nc, bucket_name="pop_nonces", ...)`` -- a live call site in this
+            # repository, not the usage example in ``ReplayGuard``'s own docstring -- and
+            # ``ReplayGuard`` opens through ``kv_bucket``, so this one carries the prefix.
             f"{ns}-pop_nonces",
         ),
     )
@@ -445,13 +447,21 @@ def _hub(
         allow_responses=True,
         inbox_prefix=inbox,
         kv_buckets=(
-            # THE UNDERSCORE SPELLING IS NOT A TYPO, and it is not the transport's convention
-            # either. A bucket created by a DIRECT ``js.create_key_value(bucket=...)`` never
-            # receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that builds
-            # its own ``f"{namespace}_thing"`` name owns that name verbatim. ``AgentConfigKV`` in
-            # the hub does exactly that and calls it "platform-historical". Do not "normalise"
-            # these to ``{ns}-``: that renames a live bucket and the symptom is a silent
-            # JetStream timeout, not an error.
+            # THE UNDERSCORE SPELLING IS NOT NECESSARILY A TYPO, and that is the whole reason
+            # these are here. A bucket created by a DIRECT ``js.create_key_value(bucket=...)``
+            # never receives the ``{ns}-`` prefix ``kv_bucket`` layers on, so a component that
+            # builds its own ``f"{namespace}_thing"`` name owns that name verbatim.
+            #
+            # PROVEN for ``agent_config`` only: the hub's ``AgentConfigKV`` creates it that way
+            # and its own docstring calls it platform-historical, and the agent router reads it
+            # back. The other three are kept on PRECAUTION, not on evidence -- no opener for them
+            # was found in either repository, but "not found" is not "absent", and the two
+            # failure directions are not symmetric: a grant naming a bucket nothing opens costs
+            # permission surface, while removing one something does open costs a silent
+            # JetStream timeout that looks exactly like an unreachable broker. Removing them on
+            # absence-of-evidence is the mistake that was already made here once.
+            #
+            # Do not "normalise" any of these to ``{ns}-``: that renames a live bucket.
             f"{ns}_agent_config",
             f"{ns}_agent_sessions",
             f"{ns}_revoked_tokens",

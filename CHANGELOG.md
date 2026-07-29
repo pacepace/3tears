@@ -7,7 +7,7 @@ packages (bumped in lock-step).
 ## Unreleased
 
 **`3tears` fixes a `KVLease` default that named its bucket with the namespace twice, and
-`3tears-nats` reconciles every KV grant with the bucket its opener actually creates.** BEHAVIOUR
+`3tears-nats` corrects the two KV grants whose openers could be read.** BEHAVIOUR
 CHANGE on both, and worth reading before upgrading.
 
 `KVLease._default_bucket_name()` read `THREETEARS_NATS_SUBJECT_NAMESPACE` and returned
