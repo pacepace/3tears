@@ -16,8 +16,13 @@ is AGPL-3.0 and therefore isolated to its own container -- it imports nothing fr
 or NATS primitives, so anything it did with them would be a hand-rolled reimplementation one
 boundary away from the real thing. The split is therefore not cosmetic: the MIT half owns the
 operator's socket, the session's lease and the control subject, and the AGPL half owns Xvfb,
-Chromium and x11vnc and nothing else. They share a Kubernetes pod, so the MIT half reaches the
-display over loopback.
+Chromium and x11vnc and nothing else. Where the two share a Kubernetes pod, the MIT half reaches
+the display over loopback by connecting to it, and that is what :func:`relay_stream` does with no
+transport supplied. Where they do not -- a hub terminating an operator's socket is in neither
+container and has no route into that pod at all -- the same function takes a transport that
+reaches the display some other way, and moves the same bytes over it. The pod's own end of that
+second arrangement is :mod:`threetears.scrape.operator_pipe`, which serves the display onto a
+stream for as long as the pod holds the session's claim.
 
 **Every URL emitted here is relative.** A platform mounts this under a prefix of its choosing,
 at a depth this module can never learn, so a leading slash would resolve against the origin
@@ -48,6 +53,9 @@ __all__ = [
     "ClaimLookup",
     "ClaimWatch",
     "DisplayEndpoint",
+    "DisplayReader",
+    "DisplayTransport",
+    "DisplayWriter",
     "SessionAuthorizer",
     "build_operator_router",
     "relay_stream",
@@ -104,6 +112,61 @@ class DisplayEndpoint(Protocol):
 
     async def __call__(self, session_id: str) -> tuple[str, int]:
         """Resolve *session_id* to the host and port of its RFB server."""
+        ...
+
+
+class DisplayReader(Protocol):
+    """The reading half of an open connection to a display.
+
+    Exactly what :class:`asyncio.StreamReader` already offers and nothing more, so the default
+    transport satisfies it without an adapter and a substitute has a short list to implement.
+    """
+
+    async def read(self, n: int) -> bytes:
+        """Return at most *n* bytes, or empty once the far end has finished."""
+        ...
+
+
+class DisplayWriter(Protocol):
+    """The writing half of an open connection to a display.
+
+    The four methods a relay uses on :class:`asyncio.StreamWriter`: two to move bytes and two to
+    let go of them. Closing is included because the relay is what closes this -- whatever the
+    transport opened is released on the way out, and a substitute that could not be closed would
+    leak one per operator session.
+    """
+
+    def write(self, data: bytes) -> None:
+        """Queue *data* for the display."""
+        ...
+
+    async def drain(self) -> None:
+        """Wait until the queued bytes have been handed onwards."""
+        ...
+
+    def close(self) -> None:
+        """Start closing this half."""
+        ...
+
+    async def wait_closed(self) -> None:
+        """Wait for the close to finish."""
+        ...
+
+
+class DisplayTransport(Protocol):
+    """Opens the pair of streams a relay carries bytes over.
+
+    The narrowest substitutable thing: it yields a reader-like and a writer-like pair and
+    nothing else. It is handed the endpoint :class:`DisplayEndpoint` resolved and decides what
+    reaching that endpoint means -- the default reads it as a TCP address, and one built for a
+    deployment where no TCP address can reach the display is free to read it as a key instead.
+    The relay itself interprets neither value, and interprets nothing that travels over the
+    pair either: RFB is a stateful binary protocol that does not resynchronise, so anything on
+    this path that understood it could get it wrong.
+    """
+
+    async def __call__(self, host: str, port: int) -> tuple[DisplayReader, DisplayWriter]:
+        """Open a connection to the display resolved to *host* and *port*."""
         ...
 
 
@@ -165,15 +228,26 @@ def token_from_subprotocols(offered: str) -> str:
     return ""
 
 
+async def _open_tcp_display(host: str, port: int) -> tuple[DisplayReader, DisplayWriter]:
+    """Connect to the display over TCP, which is what a relay with no transport does.
+
+    A named function rather than a lambda over :func:`asyncio.open_connection` so the behaviour
+    it preserves has somewhere to be stated: a display sharing this process's network namespace
+    is reached by connecting to it, and the transport parameter changes nothing about that for a
+    caller who does not pass one.
+    """
+    return await asyncio.open_connection(host, port)
+
+
 async def _await_stop(until: Callable[[], Awaitable[None]]) -> None:
     """Await a caller-supplied stop signal, so it can be raced as a task.
 
     Takes a CALLABLE rather than an awaitable, and that is not style. An awaitable built at the
     call site is a coroutine that exists whether or not this relay ever gets far enough to await
-    it -- and the first thing the relay does is open a socket, whose failure is a handled case
-    that returns early. On that path the coroutine was created, never awaited, and surfaced as a
-    ``RuntimeWarning`` in whatever ran next. Deferring construction to here means there is nothing
-    to leak.
+    it -- and the first thing the relay does is open the display connection, whose failure is a
+    handled case that returns early. On that path the coroutine was created, never awaited, and
+    surfaced as a ``RuntimeWarning`` in whatever ran next. Deferring construction to here means
+    there is nothing to leak.
     """
     await until()
 
@@ -184,6 +258,7 @@ async def relay_stream(
     host: str,
     port: int,
     *,
+    transport: DisplayTransport | None = None,
     until: Callable[[], Awaitable[None]] | None = None,
     benign: tuple[type[BaseException], ...] = (),
 ) -> None:
@@ -193,24 +268,30 @@ async def relay_stream(
     whose structure this has no business knowing: anything it understood, it could get wrong,
     and getting it wrong corrupts a stream that has no way to resync.
 
-    **One seam, kept narrow on purpose.** Bytes in, bytes out, over a plain TCP connection --
-    today a loopback one to the sidecar sharing this pod. On Kubernetes a WebSocket pins to
-    whichever pod the ingress routed it to, and the display lives in exactly one pod, so landing
-    on the wrong one is possible. The cheap answer, and the one taken, is to make any pod the
-    right pod: claim the session, bring that pod's display up, and re-open whatever was not
-    finished. A completed target is already durable, because its state is exported and sealed
-    the moment the human says done, so a reconnect costs one in-flight challenge rather than a
-    session.
+    **One seam, kept narrow on purpose.** Bytes in, bytes out, over whatever *transport* opened --
+    by default a plain TCP connection to *host* and *port*, which is a loopback one to the sidecar
+    sharing this pod. On Kubernetes a WebSocket pins to whichever pod the ingress routed it to, and
+    the display lives in exactly one pod, so landing on the wrong one is possible. The cheap
+    answer, and the one taken, is to make any pod the right pod: claim the session, bring that
+    pod's display up, and re-open whatever was not finished. A completed target is already durable,
+    because its state is exported and sealed the moment the human says done, so a reconnect costs
+    one in-flight challenge rather than a session.
 
-    **If that proves too expensive**, the alternative is relaying these same bytes to the pod
-    that does hold the display, over NATS, keyed on the session id. Only this function changes.
-    Know what it costs before reaching for it: core NATS is at-most-once, so one dropped message
-    under slow-consumer conditions corrupts the stream permanently and presents to the operator
-    as a frozen screen rather than an error; and a full-screen update is megabytes, continuous
-    while somebody works, on the bus every other subject shares. The trade is real work saved
-    against a worse failure mode, and it should be settled on measurements -- how often these
-    sockets drop and land elsewhere, and how long a target stays open -- rather than on taste.
+    **That whole arrangement needs the socket and the display in one pod, and a deployed tool
+    pod cannot give it that.** A tool pod carries no Service and no Ingress: it dials out and
+    nothing dials in, so a process terminating the operator's WebSocket anywhere else has no
+    address to connect to and no way to be given one. Reaching the display over the bus that pod
+    already holds open is not a cheaper alternative to be weighed against this one, it is the
+    only route -- and *transport* is where it plugs in. What that costs is a property of the
+    transport rather than of this function: core NATS is at-most-once, so one message lost under
+    slow-consumer conditions corrupts a stream that cannot resynchronise, which is why a
+    bus-backed one has to make a gap detectable instead of skippable.
 
+    :param transport: opens the reader and writer this moves bytes between, and is handed *host*
+        and *port* to say which display. Defaults to a plain TCP connection, so a caller who
+        passes nothing gets exactly the behaviour that shipped before this parameter existed.
+        The endpoint is passed through uninterpreted -- see :class:`DisplayTransport`.
+    :ptype transport: DisplayTransport | None
     :param until: called and awaited alongside the relay; when it completes first the relay ends.
         This is how a pod that has stopped owning the session stops showing it -- see
         :meth:`threetears.scrape.operator_session.SessionClaim.until_lost`. A callable rather than
@@ -223,10 +304,12 @@ async def relay_stream(
         tab is reported as an unreachable display. This function must not import a web framework
         to know that, so the caller names the types.
     :ptype benign: tuple[type[BaseException], ...]
-    :raises OSError: when the RFB server cannot be reached, or when a pump fails mid-stream for a
-        reason not listed in *benign*.
+    :raises OSError: when a pump fails mid-stream for a reason not listed in *benign*. Failing to
+        reach the display raises whatever the transport raises, which for the default one is the
+        ``OSError`` an unreachable or refused TCP endpoint produces.
     """
-    reader, writer = await asyncio.open_connection(host, port)
+    open_display: DisplayTransport = transport if transport is not None else _open_tcp_display
+    reader, writer = await open_display(host, port)
 
     async def _to_client() -> None:
         while data := await reader.read(_RELAY_CHUNK_BYTES):
@@ -269,6 +352,24 @@ async def relay_stream(
     finally:
         for task in watched:
             task.cancel()
+        # The close comes first, and the honest reason is conservatism rather than a mechanism
+        # this code can demonstrate. Two attempts to await the cancelled pumps before it were made
+        # and each broke something specific: moving the close after a `gather` propagated
+        # `CancelledError` out of cleanup and failed the router test that drives the real
+        # WebSocket path, and suppressing that is not available because suppressing
+        # `CancelledError` does NOT re-raise it -- the task would finish as though never
+        # cancelled.
+        #
+        # [DECISION: keep the close first and do not await the cancelled pumps | A review noted
+        # that `cancel()` only REQUESTS cancellation, so a pump may still be running here. That is
+        # true. It is also bounded without an await: `_to_display` is the only pump touching
+        # *writer*, and closing the socket is what stops it; `_to_client` sends to the OPERATOR
+        # and never touches *writer*, so what bounds it is the CALLER'S `send` -- the WebSocket on
+        # one deployment, a pipe stream on another -- rather than anything this function holds. What is NOT claimed is that awaiting first would skip the close -- an earlier
+        # version of this note asserted that as a rule about cancellation and a sabotage test
+        # disproved it, since a cancellation is delivered once rather than at every subsequent
+        # await. The ordering is therefore the cautious choice, not a proven necessity. | user can
+        # veto: a shielded reaper outside this `finally` is the shape to reach for]
         writer.close()
         try:
             await writer.wait_closed()
@@ -281,6 +382,7 @@ def build_operator_router(
     authorize: SessionAuthorizer,
     display: DisplayEndpoint,
     claim: ClaimLookup | None = None,
+    transport: DisplayTransport | None = None,
 ) -> APIRouter:
     """Build the router a platform mounts to give its operators a display.
 
@@ -296,6 +398,12 @@ def build_operator_router(
         handover takes the session elsewhere. ``None`` on a deployment with one pod, which has
         no handover to survive -- see :class:`ClaimLookup` for what leaving it out costs.
     :ptype claim: ClaimLookup | None
+    :param transport: opens the connection to the display. ``None`` connects by TCP to whatever
+        *display* resolved, which is the co-located arrangement and what every existing caller
+        gets. A deployment whose display is in a pod with no inbound network path supplies one
+        that reaches it another way, and *display*'s host and port are then passed through
+        uninterpreted for that transport to read however it likes.
+    :ptype transport: DisplayTransport | None
     :return: a router carrying the operator page, the noVNC client and the RFB WebSocket, ready
         to mount under any prefix
     :rtype: APIRouter
@@ -320,4 +428,5 @@ def build_operator_router(
         claim=claim,
         assets=OPERATOR_ASSETS,
         page=OPERATOR_PAGE,
+        transport=transport,
     )

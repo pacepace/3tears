@@ -32,7 +32,9 @@ client by design.
 
 `relay_stream`'s own docstring anticipated this and named the alternative: relay the same bytes
 to the pod that holds the display, over NATS, keyed on the session id. That alternative is now
-the only door, so the trade it described ("settle it on measurements") no longer has two sides.
+the only door, so the trade it described no longer has two sides. (That passage has since been
+rewritten in the code to say so; it is quoted here as the state that motivated this design, not as
+text a reader will find at HEAD.)
 
 **The deliverable is not a VNC feature.** It is a general-purpose, payload-agnostic byte pipe
 between any caller and whichever pod owns a key, riding the same owner-routing that
@@ -43,6 +45,12 @@ identical no-inbound-path problem.
 ---
 
 ## Verified, not assumed
+
+**This section records the state BEFORE the work in this document, and is deliberately not
+updated as chunks land.** It is the evidence the design rests on, and rewriting it as things get
+fixed would destroy the reasoning while leaving the conclusions. Where a claim has since been
+closed, that is marked inline with what closed it. Anything unmarked was still true at the last
+sweep.
 
 **The display path is loopback-only, and that is deliberate.**
 `packages/scrape/sidecar/hitl.py` binds `x11vnc` to `127.0.0.1` on `_RFB_PORT = 5900` and its
@@ -62,10 +70,15 @@ family -- not `_tool_pod`, not `_hub`, not `_registry`. So `operator_control.ser
 with it `open_tab` / `complete_tab` / `close_session` / `read_state`, is denied by auth-callout in
 any deployment that enforces these grants.
 
-**The session claim is blocked the same way.** `KVLease` defaults its bucket to `{ns}_leases`
+**The session claim is blocked the same way.** `KVLease` defaults its bucket suffix to `leases`,
+which the transport prefixes to `{ns}-leases`
 (`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s `kv_buckets` grant is
-`({ns}-proxy_assertion_nonces,)` alone. A platform that cannot open the bucket passes `lease=None`,
-and `claim_session` then logs its two-pods-can-serve-one-display warning and yields anyway.
+`({ns}-proxy_assertion_nonces,)` alone, so the bucket is ungranted. **CLOSED:** `{ns}-leases` is
+now granted to `_tool_pod`, and `KVLease`'s default is the bare suffix rather than a
+namespace-bearing name. `KVLease.acquire` defers the
+open to first use and it then raises `KvError` after a JetStream timeout -- a hard failure on first
+claim, not a silent downgrade. (`lease=None`, which does make `claim_session` yield unclaimed with a
+warning, is the separate case of a platform passing no lease at all.)
 
 **NATS publish has no backpressure, and the client already measures the consequence.**
 `packages/nats/src/threetears/nats/client.py` sets an explicit bounded `pending_size`
@@ -74,6 +87,25 @@ consecutive outbound overflows on `overflow_events`, and folds a sustained run o
 `is_healthy` so a `/healthz` trips and the pod is restarted. What it does not expose is any
 per-subscription pending limit: `NatsClient.subscribe` takes `subject`, `cb`, `queue`,
 `max_in_flight` and `deadletter_on_failure`, and nothing else.
+
+**And what nats-py offers underneath does not close that gap, which was read rather than
+recalled.** In the pinned 2.15.0, `nats/aio/subscription.py` takes `pending_msgs_limit` and
+`pending_bytes_limit` (defaulting to 512 Ki messages and 128 MiB) and exposes `pending_msgs`,
+`pending_bytes` and `delivered` read-only. The slow-consumer signal itself is in
+`nats/aio/client.py`'s `_process_msg`: once a subscription's pending bytes reach its limit the
+client **drops the message** and invokes the connection-wide `error_cb` with a
+`SlowConsumerError`. It raises nothing at the subscriber, and the wrapper's `error_cb` logs it
+and counts only auth violations, so the loss is not observable where it happens.
+
+That decides the design rather than merely informing it. **The pipe works ABOVE the wrapper and
+does not widen `NatsClient.subscribe`,** for three reasons that are properties of the code
+above: the signal arrives AFTER the drop, so plumbing it through could not prevent loss; the
+limits change only WHEN a drop happens, not whether, whereas a credit window is end-to-end and
+bounds what is in flight at all; and the loss the limits would report is already covered, because
+a dropped frame is a sequence gap and a gap is a teardown. Widening a shipped surface every other
+caller uses, to expose a knob that is strictly weaker than the mechanism this needs anyway, is
+the trade that was declined. What the limits DO constrain is the credit window's upper bound,
+recorded with the default.
 
 **A stream subject leads with its authenticated segment.** `Subjects.gateway_stream` and
 `Subjects.hub_stream` both put the authenticated principal id first, and both docstrings state
@@ -150,19 +182,25 @@ built permission set as config-mode `authorization`. Both use
 
 ## What is assumed
 
-- **[ASSUMPTION: the in-cluster NATS `max_payload` is at least a few hundred KB | LOW impact]**
-  The compose configs in `14-eng-ai-bot/docker/config/nats/` set 16 MB and the prod config's
-  comment says it MUST be raised above the 1 MB default. The cluster's NATS comes from a separate
-  chart (`nats.nats.svc.cluster.local`) that was not read. Mitigation: the pipe's chunk size is
-  negotiated at attach and defaults to `_RELAY_CHUNK_BYTES` (64 KiB), which is under even the
-  untuned 1 MB default. Verify the deployed value before tuning upward.
+- **RESOLVED 2026-07-29 (Pace): the deployment runs `max_payload` at 16 MB.** This was carried as
+  a LOW-impact assumption because the cluster's NATS comes from a separate chart that could not be
+  read from here. It is now a stated deployment fact, and it closes rather than changes anything:
+  the pipe's default chunk was chosen to fit under an UNTUNED 1 MB broker, which is a property
+  worth keeping in a library that does not know whose broker it will run on.
+
+  What 16 MB buys is headroom a consumer can negotiate INTO, not a default worth raising. See the
+  note on `DEFAULT_MAX_CHUNK_BYTES`: for an interactive display a larger chunk is actively worse,
+  because a receiver cannot render a partial frame and credit accounting gets coarser. A
+  non-interactive consumer moving a file has the opposite trade, and the attach negotiation is
+  where it says so.
 
 - **[ASSUMPTION: steady-state RFB bandwidth for a human clearing a challenge is tens of KB/s, not
   megabytes per second | MED impact]** Reasoned from encoding, not measured: noVNC negotiates
   Tight/ZRLE, `x11vnc` serves them, and a person reading a challenge is a mostly-static screen
   with small dirty rectangles. The multi-MB bursts are the first frame and page loads.
-  `relay_stream`'s docstring asserts the pessimistic reading ("a full-screen update is megabytes,
-  continuous"). Mitigation: the credit window bounds the damage either way, and the first chunk's
+  `relay_stream`'s docstring asserted the pessimistic reading, that a full-screen update is
+  megabytes and continuous. (That wording has since been rewritten, so it is described here rather
+  than quoted -- the assumption it motivated is still open.) Mitigation: the credit window bounds the damage either way, and the first chunk's
   integration test drives a deliberately slow consumer so the behaviour under a bad assumption is
   the tested path rather than the surprise.
 
@@ -185,10 +223,10 @@ listed thing, not a parallel one.
 | Route to the pod owning a key | `threetears.nats.forward` / `serve_owner` | none for the rendezvous; the subject family is ungranted |
 | Subject construction | `threetears.nats.Subjects` | needs a `pipe` builder; `forward` needs a scoped variant so grants can be family-scoped |
 | Bounded outbound buffer, overflow telemetry | `NatsClient` `pending_size` / `overflow_events` / `is_healthy` | no per-subscription inbound limit |
-| Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}_leases` ungranted to tool pods |
+| Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}-leases` ungranted to tool pods |
 | Which pod owns a display | `threetears.scrape.operator_session.claim_session` | none |
 | Control messages to that pod | `threetears.scrape.operator_control` | none, once `forward` is granted |
-| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | `relay_stream` hardcodes a TCP transport |
+| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | closed: `relay_stream` AND `build_operator_router` both take a `DisplayTransport`, defaulting to the TCP opener. The seam on `relay_stream` alone was not enough -- a consumer could not reach it without reimplementing the WebSocket route |
 | Hub-side subscribe-then-forward shape | `aibots.hub.router.stream_bridge` | its unbounded queue is wrong for bytes; reuse the shape, not the buffering |
 | Authenticated, metered, audited call into a tool pod | `aibots.hub.ingress.dispatch_core` -> `CallProxy` | none; the attach rides it |
 | WebSocket on the hub | `app.add_api_websocket_route` | none |
@@ -211,10 +249,16 @@ is. It carries bytes; it interprets none of them.
 subject. Whichever pod holds the key answers with the concrete stream coordinates:
 
 ```
-attach  -> {"op": "attach", "credit": <bytes>, "max_chunk": <bytes>}
+attach  -> {"op": "attach", "version": <int>, "credit": <bytes>, "max_chunk": <bytes>}
 reply   <- {"tool": "tools.scrape-zone_alpha.1-0-0", "pod_id": "...", "nonce": "...",
-            "max_chunk": <bytes>, "credit": <bytes>}
+            "max_chunk": <bytes>, "credit": <bytes>, "version": <int>}
 ```
+
+Both limits are what the sending side asks for and the OWNER reconciles: it lowers each to its
+own maximum, and lowers `max_chunk` to the agreed window as well. A window smaller than one
+frame is not a slow pipe but a stopped one, because the first frame already overruns what the
+receiver agreed to hold, so that pair is an invariant on the coordinates themselves and is
+checked on both sides rather than only where they are minted.
 
 **The owner states which tool it is serving, and cannot usefully lie about it.** The caller derives
 `{tool_digest}` by hashing this value, so it needs the readable form and the owner is the
@@ -262,13 +306,68 @@ and the mitigation is the same -- the readable tool identity rides in the attach
 log line, never in the subject.
 
 **Framing is a fixed-width header and a body.** A monotonic per-direction sequence, and a small
-tag distinguishing data from a credit acknowledgement, so an ack needs no second subject:
+tag distinguishing data from control, so an acknowledgement needs no subject of its own:
 
 ```
-byte 0      tag: 0x00 data, 0x01 credit-ack
-bytes 1..4  uint32 big-endian sequence (data) or acked-through sequence (credit-ack)
-bytes 5..    body (data only)
+byte 0      tag
+bytes 1..4  uint32 big-endian sequence
+bytes 5..   body
 ```
+
+The tag set was chosen by enumerating what a receiver has to answer and what a plausible next
+consumer needs, rather than by adding the minimum that made RFB work:
+
+| tag | meaning | sequence field | why it exists |
+|---|---|---|---|
+| `0x00` | data | the data sequence | is this in order |
+| `0x01` | credit | highest sequence the peer has CONSUMED | how much may I still send |
+| `0x02` | close | the next data sequence | graceful half-close, and see below |
+| `0x03` | error | unused | a stream-level failure, rather than silence |
+| `0x04` | ready | unused | the caller has subscribed |
+
+A byte leaves the rest of the space unused, so a later consumer that wants something else is a
+tag addition rather than a header change.
+
+Three of those are decisions rather than bookkeeping. **Close consumes the next data sequence**,
+so a final data frame lost in flight makes the close arrive with the wrong sequence and tear the
+stream down, instead of presenting a truncated stream as a complete one. **Credit is cumulative
+and acknowledges CONSUMPTION, not arrival**: cumulative so a lost acknowledgement is repaired by
+the next one rather than stranding the window, and on consumption because backpressure that
+stops at the receiving socket does not reach the human who is slow. **Ready exists because core
+NATS delivers nothing to a subject with no current subscriber**: an owner that started producing
+on the heels of its reply would lose its opening bytes, which for RFB is the whole first frame.
+
+**Versioning is negotiated at attach, and carried on no frame.** The version cannot change
+mid-stream, so a byte on every frame of a continuous multi-megabyte stream buys nothing. The
+caller names the highest version it speaks, the owner replies with the version it chose (never
+higher), and either side that cannot speak the result refuses before a byte moves. Adding a tag
+is therefore a version bump, and an unknown tag is REFUSED rather than skipped -- which is what
+stops a newer peer's frame from being silently misparsed by an older one.
+
+**[DECISION: negotiate the framing version once in the attach exchange rather than carrying a
+version field per frame | the version is constant for a stream's life, and the fat direction
+pays the per-frame cost continuously; refusing an unknown tag is what makes the negotiated
+version enforceable without one | user can veto in favour of a per-frame version byte, which
+costs throughput on the display path and buys the ability to change framing mid-stream, which
+nothing wants]**
+
+**The error model separates its layers deliberately** (a live stream can fault locally on a gap, locally on a silent peer, or on a fault the peer reported), so a traceback says which end
+failed without correlating two logs. An attach that finds no owner surfaces as the forward
+primitive's own `NoOwnerError`. A malformed frame, an unknown tag or an unagreeable version is
+`PipeProtocolError` -- the two ends do not speak the same protocol, which no reconnect repairs.
+Once a stream is live there are three, and the split between the last two is the point.
+`PipeSequenceGapError` is positive local evidence a frame was lost. `PipeIdleTimeout` is a local
+conclusion drawn from SILENCE, for the case a peer could not report anything at all -- killed,
+partitioned, evicted -- so calling it a peer report would name the one thing that provably did not
+happen. `PipeRemoteError` is a fault the PEER reported, carrying its exception type name and
+message the way `ForwardedHandlerError` already does. Every one of them is terminal: there is no
+resynchronisation here, because the payloads have none either.
+
+**[DECISION: model a stream-level failure as a frame the peer sends, rather than letting a dead
+producer present as silence | a display process that exits is the expected failure and an
+operator staring at a frozen screen cannot tell it from a slow link; the error frame turns it
+into a named exception at the far end | user can veto and rely on a heartbeat plus timeout,
+which detects the same thing later and without the cause]**
 
 **A gap is a teardown, never a delivery.** RFB has no resynchronisation, so a receiver that sees
 `seq != last + 1` raises rather than skipping. This is the whole reason core NATS is safe here:
@@ -282,8 +381,18 @@ refusal).
 existing equivalent and the part most likely to be wrong if it is skipped. Reading from a socket
 and publishing is unbounded: a slow operator does not slow the producer, it fills the producer's
 pending buffer until the connection wedges. So the consumer publishes a credit-ack every half
-window, and the producer stops reading its source once unacked bytes exceed the window. The fat
-direction (`down`, the display) needs it; `up` carries keystrokes and pointer events and does not.
+window, and the producer stops reading its source once unacked bytes exceed the window.
+
+**Credit runs in both directions even though only one of them is fat.** `down` is what needs it;
+`up` carries keystrokes and pointer events. Running it symmetrically is nonetheless LESS code
+than the asymmetric form, because the two ends are then the same object, and the thin direction
+simply never fills its window. Written down because "only `down` needs it" reads like an
+instruction to build it only there, and the implementation deliberately does not.
+
+**As built, the acknowledgement rides the peer's own outbound subject** -- the acknowledgement
+for `down` goes out on `up`, tagged as control -- so the pair of subjects the stream already has
+is all it needs. A control frame consumes no data sequence, which is what keeps the data
+sequence contiguous and the gap check meaningful.
 
 **Core NATS, not JetStream, and the reasons are specific.** JetStream would persist the pixels of
 a human's authenticated session to disk; at-least-once delivery produces duplicates that corrupt
@@ -297,17 +406,30 @@ namespace. The key is a SHA-256 digest of an arbitrary application string, so th
 nothing a grant can discriminate on.
 
 The fix is an enhancement to the existing builder rather than a coarse grant: a family segment
-between the prefix and the digest, so `{ns}.forward.{family}.{sha256hex(key)}` is grantable per
-family. The family is a single sanitized token supplied by the CALLING MODULE as a deployment
-constant, never by a caller and never from user data. `Subjects.forward(key)` keeps its current
-shape and behaviour for every existing caller; the scoped variant is additive.
+between the prefix and the digest, so `{ns}.forward.{sha256hex(family)}.{sha256hex(key)}` is
+grantable per family. The family is supplied by the CALLING MODULE as a deployment constant rather
+than by a request-time caller -- but it is NOT trusted input, because it is derived from a
+registered tool name that nothing validates, which is exactly why the builder hashes it. `Subjects.forward(key)` keeps its current shape and behaviour
+for every existing caller; the scoped variant is additive, and the two never collide because one
+carries a single segment after `forward` and the other carries two.
+
+**`Subjects.forward_scoped` hashes the family too, rather than accepting a ready-made token.** As
+built, the family is a raw string and the builder digests it, so `[0-9a-f]`-only is a property of
+the one classmethod every caller goes through rather than a convention each call site is trusted to
+follow. That matters precisely because the family carries an unvalidated tool name (below): a caller
+allowed to precompute the token could put a space, a `*` or a `>` into the subject, and into the
+GRANT minted from it. It is the same reason the digest sits inside `Subjects.forward` and
+`Subjects.room` rather than at their call sites. `Subjects.forward_scoped_wildcard(family)` renders
+the grant, `{ns}.forward.{sha256hex(family)}.*`, from the same derivation -- exact on the family,
+wildcard on the key alone. A NATS wildcard matches a whole token, so there is no partial-token form
+available here: the family segment is either one exact literal or `*`.
 
 **The family carries the serving tool's identity, not just the concern.** For the operator surface
-it is `hitl-{tool_digest}`, so the subjects are `{ns}.forward.hitl-a3f9c2....{session_digest}` and
-a pod's grant is that exact literal followed by `.*`. A flat `hitl` family would let a pod serving
-one tool join the queue group for another tool's session control subject -- and `serve_owner`
-queue-groups on the subject deliberately, so that is not eavesdropping but a SHARE OF THE
-MESSAGES.
+it is `Subjects.hitl_forward_family(tool_namespace_name)`, which is `hitl-` followed by the tool's
+registered namespace name, hashed by the builders into the subject's first segment. A flat `hitl`
+family would let a pod serving one tool join the queue group for another tool's session control
+subject -- and `serve_owner` queue-groups on the subject deliberately, so that is not eavesdropping
+but a SHARE OF THE MESSAGES.
 
 The damage from the flat form is bounded rather than catastrophic, and the bound is worth
 recording so nobody over-corrects later: the interloper would have to already know the session id
@@ -392,8 +514,8 @@ Nor is a customer-only namespace enough. `hitl.<customer_id_hex>` isolates tenan
 an operator entitled to customer X on the general internet could attach to customer X's zone-alpha
 display, which is a reach into the firewalled network they were never granted.
 
-So the session namespace derives from BOTH, in the shape the platform already uses for
-`memories.<agent_id_hex>.<customer_id_hex>`:
+So the session namespace derives from BOTH, following the identity-then-customer shape of
+`memories.<agent_id>.<customer_id>`:
 
 ```
 hitl.<tool-namespace-name minus its `tools.` prefix>.<customer_id_hex>
@@ -405,10 +527,19 @@ Spelled out rather than left as "the tool segment", because the version is part 
 earlier phrasing here left that ambiguous. The paragraph below on version granularity says why it
 has to be.
 
+**The customer is the FULL hex, which is where this departs from the shape it follows.**
+`memory_namespace_name` and `intention_namespace_name` truncate each id to eight characters, and
+both say why they can: those rows are resolved by their (owner agent, customer) pair and the name
+is a display handle. This row is resolved BY NAME, through `authorize()`'s
+`namespace_collection.get_by_name`, so a truncated hex is a real chance of two tenants landing on
+one row. That is the exposure the name exists to prevent, so it does not get to be a display
+handle.
+
 One `authorize()` call then carries both facts: you may attach to a zone-alpha display, and only
-for your own tenant. The rows carry `customer_id`, so `type_customer`-scoped role assignments do
-the tenant isolation the evaluator already performs everywhere else, with no bespoke check anywhere
-on the path.
+for your own tenant. The row carrying `customer_id` is what lets the evaluator's cross-customer
+wall engage at all: `_filter_memberships` and `_walk_assignments` each count a customer-scoped
+membership or group only against a namespace of that same customer. That is the isolation it
+already performs everywhere else, with no bespoke check anywhere on the path.
 
 **The subject token is DERIVED from the tool identity, and it is a digest.** This is the decision
 that makes everything above need no naming convention, so it is recorded rather than left implied.
@@ -459,6 +590,14 @@ telling the same story.
 group needs the `hitl.attach` role on the zone's session namespace, so a zone-beta operator simply
 has no assignment that reaches a zone-alpha display.
 
+That holds for a `namespace`-scoped assignment, which is the shape an operator grant takes. The
+other door is named here rather than left for someone to find: a `type_customer`-scoped assignment
+over the `hitl` type covers every namespace of that type for its customer, so it reaches that
+customer's displays in EVERY zone. `RoleAssignment.covers` says so plainly and it is the right
+answer to the question that grant asks. The name isolates zones; it does not stop an administrator
+from writing a grant that deliberately spans them, and an operator grant that should not span them
+must be namespace-scoped.
+
 **What is NOT verified, and should be known.** Nothing confirms that a pod registering
 `scrape.zone_alpha` is ACTUALLY placed on the zone-alpha network. `allowed_namespaces` proves it was
 authorized to claim that identity; the network placement is a chart and NetworkPolicy fact. That is
@@ -497,7 +636,17 @@ does not block anything here at `replicaCount: 1`.
 - new `packages/nats/src/threetears/nats/pipe.py` -- the primitive
 - `packages/nats/src/threetears/nats/subjects.py` -- `Subjects.pipe`, scoped `forward`
 - `packages/nats/src/threetears/nats/subject_permissions.py` -- `_tool_pod` and `_hub` grants,
-  plus the `{ns}_leases` bucket for `_tool_pod`
+  plus the lease bucket for `_tool_pod`, which is `{ns}-leases`: `KVLease` returns the bare suffix
+  and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it. Written out because the wrong
+  spelling fails at the FIRST CLAIM, where `KVLease.acquire`'s deferred bucket open raises `KvError`
+  after a JetStream timeout. `test_forward_grants_live.py` proves the grant against a real broker, and
+  `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant and the lease's own default as a
+  pair so they cannot drift.
+
+  **Do not infer a naming rule from that.** Three conventions are live: `kv_bucket()` prefixes a
+  suffix, a direct `js.key_value(bucket=...)` prefixes nothing, and a component that builds its own
+  `f"{namespace}_thing"` name and creates it directly owns that name verbatim. A grant's spelling
+  cannot tell you which applies, so a chunk touching grants reads the opener, never the shape
 - `packages/nats/src/threetears/nats/__init__.py` -- lazy re-exports in the existing hand-rolled
   PEP 562 shape
 - new `packages/nats/tests/unit/test_pipe.py`, new
@@ -600,8 +749,22 @@ does not block anything here at `replicaCount: 1`.
    inherits the whole authorization and metering stack; sending it on `forward` directly is
    simpler and inherits none of it. The recommendation is `dispatch_core`, and the cost is that
    the tool-mesh call shape has to carry a stream handle in its reply.
-3. **Credit window default.** Wants a number chosen against a measurement rather than taste. The
-   first chunk's slow-consumer test is where that measurement comes from.
+3. **RESOLVED, and the derivation is the durable part rather than the number.** The credit window
+   default is sized against the bandwidth-delay product, which is the window below which a sender
+   stalls waiting for credit it has already earned: sustained throughput multiplied by the
+   round-trip latency of one credit acknowledgement. Both are measured, by
+   `test_credit_window_sizing_measurements` in `packages/nats/tests/integration/`, and that test
+   asserts only that they are sane. Both move by a factor of several between runs on the SAME
+   machine, so the durable record is the method and the margin rather than a range: measured over
+   a testcontainer broker on a developer machine, throughput came out in the tens of MB/s against
+   acknowledgement round trips of a few milliseconds, and the worst PAIRING observed gave a
+   product near 190 KB; the 1 MiB default clears that several times over. Pinning either number
+   would fail on the next run, let alone the next machine. It is bounded from above by a value read out of nats-py rather than
+   assumed: a subscription's pending bytes reaching `DEFAULT_SUB_PENDING_BYTES_LIMIT` (128 MiB)
+   is what makes that client drop a message and report a slow consumer, and `NatsClient.subscribe`
+   does not override it, so a window two orders of magnitude under it cannot be what trips it.
+   What has NOT been measured is real framebuffer traffic, which is why this is a defensible
+   starting value rather than a tuned one.
 4. **RESOLVED 2026-07-28, kept here because the reasoning outlives the question.** Whether the
    subject's zone token is derived or configured: DERIVED, as a digest of the tool's namespace name
    (section 5 carries the decision). The concern that deriving forces a naming convention is what

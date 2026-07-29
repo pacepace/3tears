@@ -6,13 +6,38 @@ namespace-name shape under namespace-task-01 phase 9.5.
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from uuid import UUID
+
 import pytest
 
 from threetears.core.namespaces import (
+    HITL_NAMESPACE_TYPE,
     PLURAL_PREFIX_BY_NAMESPACE_TYPE,
+    PLURAL_PREFIX_HITL,
+    PLURAL_PREFIX_TOOL,
+    HitlSessionNamespace,
+    build_hitl_namespace_name,
     build_namespace_name,
     sanitize_segment,
 )
+
+# Two customers whose first eight hex characters are IDENTICAL. The
+# eight-character form is what ``memories.`` and ``intentions.`` names
+# use, so it is the plausible wrong spelling here -- and under it these
+# two tenants would land on one namespace row. Every cross-tenant
+# assertion below is written against this pair so that the wrong
+# spelling cannot pass it.
+CUSTOMER_X = UUID("7f3c9a1d-1111-4111-8111-000000000001")
+CUSTOMER_Z = UUID("7f3c9a1d-2222-4222-8222-000000000002")
+
+# Zone alpha and zone beta at one version, plus zone alpha at a second
+# version differing only in its patch component. A name that dropped
+# the tool segment collapses the first pair; one that dropped or
+# truncated the version collapses the second.
+TOOL_NS_ALPHA = build_namespace_name(PLURAL_PREFIX_TOOL, "scrape.zone_alpha", "1.0.0")
+TOOL_NS_BETA = build_namespace_name(PLURAL_PREFIX_TOOL, "scrape.zone_beta", "1.0.0")
+TOOL_NS_ALPHA_NEXT = build_namespace_name(PLURAL_PREFIX_TOOL, "scrape.zone_alpha", "1.0.1")
 
 
 class TestSanitizeSegment:
@@ -79,6 +104,7 @@ class TestPluralPrefixMapping:
             ("conversation", "conversations"),
             ("customer", "customers"),
             ("datasource", "datasources"),
+            ("hitl", "hitl"),
             ("knowledge", "knowledge"),
             ("memory", "memories"),
             ("model", "models"),
@@ -98,4 +124,106 @@ class TestPluralPrefixMapping:
         # namespace-task-01 phase 11 adds ``audit``; phase 12 adds
         # ``customer`` + ``api_key``; knowledge-task-01 adds
         # ``knowledge`` (mass noun, non-pluralized prefix).
-        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 15
+        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 16
+
+
+class TestBuildHitlNamespaceName:
+    """tests for :func:`build_hitl_namespace_name`."""
+
+    def test_matches_the_documented_shape(self) -> None:
+        assert TOOL_NS_ALPHA == "tools.scrape-zone_alpha.1-0-0"
+        assert build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X) == f"hitl.scrape-zone_alpha.1-0-0.{CUSTOMER_X.hex}"
+
+    def test_components_are_the_tool_components_between_prefix_and_customer(self) -> None:
+        name = build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X)
+        assert name.split(".") == [PLURAL_PREFIX_HITL, *TOOL_NS_ALPHA.split(".")[1:], CUSTOMER_X.hex]
+
+    def test_two_zones_at_one_version_do_not_collide(self) -> None:
+        # the customer-only shape passes every cross-tenant assertion
+        # and fails this one: an operator entitled to this customer on
+        # one network would reach its display on another.
+        alpha = build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X)
+        beta = build_hitl_namespace_name(TOOL_NS_BETA, CUSTOMER_X)
+        assert alpha != beta
+
+    def test_two_versions_of_one_zone_do_not_collide(self) -> None:
+        # entitlement is per version, because tools.<mcp>.<version> is
+        # its own row with its own assignments.
+        first = build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X)
+        second = build_hitl_namespace_name(TOOL_NS_ALPHA_NEXT, CUSTOMER_X)
+        assert first != second
+
+    def test_two_customers_of_one_zone_do_not_collide(self) -> None:
+        assert build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X) != build_hitl_namespace_name(
+            TOOL_NS_ALPHA, CUSTOMER_Z
+        )
+
+    def test_carries_the_full_customer_hex(self) -> None:
+        # the two constants share their first eight hex characters, so
+        # a truncated spelling would put both tenants on one row.
+        assert CUSTOMER_X.hex[:8] == CUSTOMER_Z.hex[:8]
+        assert build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X).endswith(f".{CUSTOMER_X.hex}")
+
+    def test_a_dot_in_a_tool_name_cannot_add_a_component(self) -> None:
+        # nothing validates a tool's mcp name, so this input is a
+        # property to hold rather than a convention to follow. the dots
+        # were already mapped to ``-`` when the tool namespace name was
+        # built, which is what keeps the customer the last component.
+        hostile_tool_ns = build_namespace_name(PLURAL_PREFIX_TOOL, "scrape zone_alpha.*.>", "1.0.0")
+        name = build_hitl_namespace_name(hostile_tool_ns, CUSTOMER_X)
+        assert len(name.split(".")) == 4
+        assert name.split(".")[-1] == CUSTOMER_X.hex
+        assert name != build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X)
+
+    def test_a_hostile_tool_name_keeps_its_characters(self) -> None:
+        # DELIBERATE: a namespace name is a database row value, not a
+        # subject token. the digesting that makes an unvalidated tool
+        # name safe happens where subjects are built; doing it here as
+        # well would cost the legibility the readable segment exists
+        # for. only ``.`` is touched, by the shared sanitizer.
+        name = build_hitl_namespace_name(
+            build_namespace_name(PLURAL_PREFIX_TOOL, "scrape zone_alpha *>", "1.0.0"),
+            CUSTOMER_X,
+        )
+        assert name == f"hitl.scrape zone_alpha *>.1-0-0.{CUSTOMER_X.hex}"
+
+    @pytest.mark.parametrize(
+        "not_a_tool_name",
+        [
+            "hitl.scrape-zone_alpha.1-0-0",
+            "memories.aaaaaaaa.bbbbbbbb",
+            "tools",
+            "toolsx.a.b",
+            "",
+        ],
+    )
+    def test_rejects_a_name_that_is_not_a_tool_namespace_name(self, not_a_tool_name: str) -> None:
+        with pytest.raises(ValueError, match="must start with"):
+            build_hitl_namespace_name(not_a_tool_name, CUSTOMER_X)
+
+    @pytest.mark.parametrize("degenerate", ["tools.", "tools.scrape-zone_alpha.", "tools..1-0-0"])
+    def test_rejects_an_empty_component(self, degenerate: str) -> None:
+        with pytest.raises(ValueError, match="empty component"):
+            build_hitl_namespace_name(degenerate, CUSTOMER_X)
+
+
+class TestHitlSessionNamespace:
+    """tests for the :class:`HitlSessionNamespace` seam."""
+
+    def test_states_the_name_the_builder_renders(self) -> None:
+        session = HitlSessionNamespace(tool_namespace_name=TOOL_NS_ALPHA, customer_id=CUSTOMER_X)
+        assert session.namespace_name == build_hitl_namespace_name(TOOL_NS_ALPHA, CUSTOMER_X)
+
+    def test_states_the_namespace_type_of_the_row_it_names(self) -> None:
+        session = HitlSessionNamespace(tool_namespace_name=TOOL_NS_ALPHA, customer_id=CUSTOMER_X)
+        assert session.namespace_type == HITL_NAMESPACE_TYPE
+        assert PLURAL_PREFIX_BY_NAMESPACE_TYPE[session.namespace_type] == PLURAL_PREFIX_HITL
+
+    def test_validates_at_construction_rather_than_at_attach_time(self) -> None:
+        with pytest.raises(ValueError, match="must start with"):
+            HitlSessionNamespace(tool_namespace_name="scrape-zone_alpha.1-0-0", customer_id=CUSTOMER_X)
+
+    def test_is_frozen(self) -> None:
+        session = HitlSessionNamespace(tool_namespace_name=TOOL_NS_ALPHA, customer_id=CUSTOMER_X)
+        with pytest.raises(FrozenInstanceError):
+            session.tool_namespace_name = TOOL_NS_BETA  # type: ignore[misc]

@@ -1,6 +1,6 @@
 """unit tests for the lazy re-export surface of :mod:`threetears.nats`.
 
-nine submodules reach ``nats-py`` or ``nkeys``; the rest are pure python.
+some submodules reach ``nats-py`` or ``nkeys``; the rest are pure python.
 the nats-py-backed names are resolved lazily (PEP 562) so that importing
 this package -- which happens transitively for anyone touching
 ``threetears.core.collections`` -- does not drag the NATS client into a

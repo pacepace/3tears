@@ -1,10 +1,13 @@
 """unit tests for :mod:`threetears.nats.forward`.
 
 cover the wire-framing round-trip (ok payload vs error frame), the
-handler-exception -> error-frame mapping, subject derivation
-(deterministic, subject-safe, collision-distinct), and the
-empty/unknown-tag guards. the two-pod owner-routing proof against a
-real broker lives in the integration suite.
+handler-exception -> error-frame mapping, subject derivation for both the
+unscoped and the family-scoped shape (deterministic, subject-safe,
+collision-distinct, and pinned byte-for-byte on the unscoped one every
+deployed owner already subscribes), and the empty/unknown-tag guards. the
+two-pod owner-routing proof against a real broker lives in the integration
+suite, as does the proof that a real server's matcher enforces the
+family-scoped grant.
 """
 
 from __future__ import annotations
@@ -20,7 +23,14 @@ from threetears.nats import (
     Subjects,
     set_default_namespace,
 )
-from threetears.nats.forward import _TAG_ERR, _TAG_OK, _decode_reply, _encode_err, _encode_ok
+from threetears.nats.forward import (
+    _TAG_ERR,
+    _TAG_OK,
+    _decode_reply,
+    _encode_err,
+    _encode_ok,
+    _subject_for,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +76,146 @@ def test_forward_subject_rejects_empty_key() -> None:
     """an empty key is a programming error, not a silent empty token."""
     with pytest.raises(ValueError, match="key must be non-empty"):
         Subjects.forward("")
+
+
+def test_forward_subject_output_is_byte_identical_to_the_shipped_form() -> None:
+    """the unscoped subject is pinned to a literal, not re-derived from the implementation.
+
+    every deployed pod already subscribes this exact string, and the
+    family-scoped sibling shares the hashing helper with it. re-deriving the
+    expected value with ``hashlib`` here would agree with any change to that
+    helper, including one that silently moved every existing owner's subject.
+    """
+    assert (
+        Subjects.forward("repo-x:branch-y").path
+        == "3tears.forward.b4b7d226624dbb97a4f939231c6434aa33f96c0cd1bc5b7621eaeedf86975a62"
+    )
+    assert Subjects.forward("repo-x:branch-y").kind == "point"
+
+
+# --------------------------------------------------------------------------
+# subject derivation: family-scoped
+# --------------------------------------------------------------------------
+
+
+def test_forward_scoped_subject_hashes_family_and_key() -> None:
+    """the scoped subject is ``{ns}.forward.{sha256hex(family)}.{sha256hex(key)}``."""
+    subject = Subjects.forward_scoped("hitl-tools.scrape-zone_alpha.1-0-0", "session-42")
+    assert subject.path == (
+        "3tears.forward."
+        "89238c846facc157dce6f7338116d60b771c8ff32a658c0f75fd7723368ee131."
+        "92e76c732d82ec49fb40ff0bb444430c52f63577fe1a055ea119693241b2d291"
+    )
+    assert subject.kind == "point"
+
+
+def test_forward_scoped_subject_does_not_collide_with_the_unscoped_family() -> None:
+    """the scoped shape carries two segments after ``forward``, the unscoped one carries one.
+
+    an unscoped subscriber therefore never receives a scoped message and a
+    permission granted over one shape never spans the other.
+    """
+    scoped = Subjects.forward_scoped("hitl-tools.scrape-zone_alpha.1-0-0", "session-42")
+    unscoped = Subjects.forward("session-42")
+    assert len(scoped.path.split(".")) == len(unscoped.path.split(".")) + 1
+    assert scoped.path != unscoped.path
+    assert not scoped.path.startswith(unscoped.path)
+
+
+def test_forward_scoped_subject_separates_families_for_one_key() -> None:
+    """the same key under two families is two subjects -- the point of the segment."""
+    key = "session-42"
+    alpha = Subjects.forward_scoped("hitl-tools.scrape-zone_alpha.1-0-0", key)
+    beta = Subjects.forward_scoped("hitl-tools.scrape-zone_beta.1-0-0", key)
+    assert alpha.path != beta.path
+    # and only the family segment moved: the key segment is shared.
+    assert alpha.path.rsplit(".", 1)[-1] == beta.path.rsplit(".", 1)[-1]
+
+
+def test_forward_scoped_subject_is_deterministic() -> None:
+    """two processes starting from the same family + key derive the same subject."""
+    a = Subjects.forward_scoped("hitl-t", "k")
+    b = Subjects.forward_scoped("hitl-t", "k")
+    assert a.path == b.path
+
+
+def test_forward_scoped_subject_survives_a_hostile_tool_name() -> None:
+    """a family carrying a space, a ``*`` and a ``>`` still yields ``[0-9a-f]`` tokens.
+
+    not hypothetical: ``ToolManifestEntry.name`` is an unvalidated bare ``str``
+    and ``RegistrationHandler._validate_manifest`` checks only that ``pod_id``
+    and ``tools`` are non-empty, so a name like this reaches the builder. a
+    sanitizer would not close it -- both sanitizers in the codebase replace
+    dots and nothing else, so the space would produce an illegal subject and
+    the ``*`` / ``>`` would inject wildcards into a GRANT.
+    """
+    hostile = Subjects.hitl_forward_family("tools.evil name.* > .1-0-0")
+    subject = Subjects.forward_scoped(hostile, "a key with > and * in it")
+
+    prefix, family_token, key_token = subject.path.rsplit(".", 2)
+    assert prefix == "3tears.forward"
+    for token in (family_token, key_token):
+        assert set(token) <= set("0123456789abcdef"), token
+        assert len(token) == 64
+    # and nothing hostile survived anywhere in the rendered subject.
+    for illegal in (" ", "*", ">"):
+        assert illegal not in subject.path
+
+
+@pytest.mark.parametrize(
+    ("family", "key", "match"),
+    [
+        ("", "k", "family must be non-empty"),
+        ("hitl-t", "", "key must be non-empty"),
+    ],
+)
+def test_forward_scoped_subject_rejects_empty_segments(family: str, key: str, match: str) -> None:
+    """an empty segment is a programming error, never a silent empty token."""
+    with pytest.raises(ValueError, match=match):
+        Subjects.forward_scoped(family, key)
+
+
+def test_forward_scoped_wildcard_is_an_exact_family_with_a_wildcard_key() -> None:
+    """the grant pattern pins the family literal and wildcards only the key."""
+    pattern = Subjects.forward_scoped_wildcard("hitl-tools.scrape-zone_alpha.1-0-0")
+    assert pattern.path == "3tears.forward.89238c846facc157dce6f7338116d60b771c8ff32a658c0f75fd7723368ee131.*"
+    assert pattern.kind == "pattern"
+    # it matches the concrete subject the same family builds, and no other.
+    concrete = Subjects.forward_scoped("hitl-tools.scrape-zone_alpha.1-0-0", "session-42")
+    assert concrete.path.rsplit(".", 1)[0] == pattern.path.rsplit(".", 1)[0]
+    other = Subjects.forward_scoped("hitl-tools.scrape-zone_beta.1-0-0", "session-42")
+    assert other.path.rsplit(".", 1)[0] != pattern.path.rsplit(".", 1)[0]
+
+
+def test_forward_scoped_wildcard_rejects_empty_family() -> None:
+    """an empty family would render a grant with an empty token in it."""
+    with pytest.raises(ValueError, match="family must be non-empty"):
+        Subjects.forward_scoped_wildcard("")
+
+
+def test_hitl_family_is_derived_from_the_tool_namespace_name() -> None:
+    """the family is a plain string derived from the registered tool namespace name."""
+    assert Subjects.hitl_forward_family("tools.scrape-zone_alpha.1-0-0") == "hitl-tools.scrape-zone_alpha.1-0-0"
+
+
+def test_hitl_family_separates_tools_and_is_deterministic() -> None:
+    """two tools derive two families; one tool derives one, in every process."""
+    alpha = Subjects.hitl_forward_family("tools.scrape-zone_alpha.1-0-0")
+    beta = Subjects.hitl_forward_family("tools.scrape-zone_beta.1-0-0")
+    assert alpha != beta
+    assert alpha == Subjects.hitl_forward_family("tools.scrape-zone_alpha.1-0-0")
+
+
+def test_hitl_family_rejects_an_empty_tool_namespace_name() -> None:
+    """an empty tool name would collapse every tool onto one family."""
+    with pytest.raises(ValueError, match="tool_namespace_name must be non-empty"):
+        Subjects.hitl_forward_family("")
+
+
+def test_subject_for_selects_scoped_only_when_a_family_is_named() -> None:
+    """the transport helper both public functions route through picks by ``family``."""
+    assert _subject_for("k", None).path == Subjects.forward("k").path
+    assert _subject_for("k", "hitl-t").path == Subjects.forward_scoped("hitl-t", "k").path
 
 
 # --------------------------------------------------------------------------

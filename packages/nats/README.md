@@ -8,6 +8,8 @@ Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives 
 - `Subject` + `Subjects` -- opaque subject dataclass and factory of every canonical subject family used by 3tears applications. Replaces ad-hoc `f"{namespace}.tools.call"` string-concatenation across the platform.
 - `NatsKvBucket` -- operations against one JetStream KV bucket (`get` / `put` / `delete` / `create` / `update` / `get_entry`). Bucket name auto-prefixed by the connected client's `nats_subject_namespace`.
 - `nats_distributed_lock` -- TTL-based distributed lock primitive built on `NatsKvBucket.create` (put-if-absent). Atomic acquisition + background heartbeat + automatic cleanup; on holder death the TTL expires the key.
+- `forward` / `serve_owner` -- payload-agnostic owner-routed request/reply: send a request to whichever pod currently serves a key and get its reply back. A separate election mechanism decides who owns the key; this only carries the message.
+- `attach_pipe` / `serve_pipe` / `open_pipe` -- a payload-agnostic byte pipe to whichever pod owns a key, for reaching a process that has no inbound network path. Rendezvous rides `forward`; the stream then moves to its own subjects with a sequenced framing (a lost frame raises rather than being skipped) and a credit window that stops the producer reading its source when the consumer falls behind.
 - `StreamTransport` -- narrow Protocol used by streaming consumers; lets test fakes substitute for the live client.
 - Errors -- `NatsClientError`, `SubscribeError`, `PublishError`, `RequestError`, `KvError`.
 

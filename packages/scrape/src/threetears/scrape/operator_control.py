@@ -42,7 +42,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
-from threetears.nats import DEFAULT_FORWARD_TIMEOUT, forward, serve_owner
+from threetears.nats import DEFAULT_FORWARD_TIMEOUT, Subjects, forward, serve_owner
 from threetears.observe import get_logger
 
 from .session_state import DEFAULT_SESSION_STATE_TTL, open_session_state, seal_session_state
@@ -230,6 +230,7 @@ async def serve_session(
     *,
     session_state_key: SecretStr,
     session_state_ttl: timedelta = DEFAULT_SESSION_STATE_TTL,
+    tool: str | None = None,
 ) -> AsyncIterator[None]:
     """Answer this session's control messages for as long as this pod owns it.
 
@@ -260,6 +261,12 @@ async def serve_session(
     :ptype session_state_key: SecretStr
     :param session_state_ttl: how long a sealed solve is trusted
     :ptype session_state_ttl: timedelta
+    :param tool: the registered namespace name of the tool serving this session, e.g.
+        ``tools.scrape-zone_alpha.1-0-0``. Naming it moves the session's control messages onto the
+        forward family a tool pod is actually granted; the unscoped default is granted to no
+        principal, so a deployment enforcing its grants needs this. ``None`` keeps the previous
+        subject and is the compatible default.
+    :ptype tool: str | None
     :return: an async iterator yielding while the session is served
     :rtype: AsyncIterator[None]
     :raises RuntimeError: if the claim has already been lost, since serving would be answering
@@ -291,7 +298,7 @@ async def serve_session(
             )
         )
 
-    async with serve_owner(nats, claim.session_id, _handle):
+    async with serve_owner(nats, claim.session_id, _handle, family=_family_for(tool)):
         try:
             yield
         finally:
@@ -334,15 +341,32 @@ async def _release_a_session_this_pod_no_longer_owns(claim: SessionClaim, displa
         )
 
 
+def _family_for(tool: str | None) -> str | None:
+    """Derive the forward family a session's control messages ride, or ``None`` for the old one.
+
+    ``None`` keeps the UNSCOPED subject every existing caller uses, so nothing that does not
+    name a tool changes behaviour. Naming one moves the session onto
+    :meth:`threetears.nats.Subjects.hitl_forward_family`, which is the family a tool pod is
+    actually granted -- the unscoped one is granted to no principal at all, so a deployment that
+    enforces its grants cannot serve a session without this.
+
+    Both ends derive it here rather than each building its own, because an owner and a caller
+    that disagree about the family do not fail loudly: they subscribe and publish different
+    subjects, and the caller sees only that nothing answers.
+    """
+    return None if tool is None else Subjects.hitl_forward_family(tool)
+
+
 async def _send(
     nats: NatsClient,
     session_id: str,
     message: dict[str, Any],
     *,
     timeout: timedelta,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     """Send one control message to whichever pod holds *session_id*, and read its reply."""
-    reply = await forward(nats, session_id, _encode(message), timeout=timeout)
+    reply = await forward(nats, session_id, _encode(message), timeout=timeout, family=_family_for(tool))
     decoded: dict[str, Any] = json.loads(reply.decode("utf-8"))
     return decoded
 
@@ -356,6 +380,7 @@ async def open_tab(
     nav_steps: list[dict[str, Any]] | None = None,
     session_state_sealed: str | None = None,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     """Put one target in front of the operator working *session_id*.
 
@@ -383,6 +408,7 @@ async def open_tab(
             "session_state_sealed": session_state_sealed,
         },
         timeout=timeout,
+        tool=tool,
     )
 
 
@@ -392,6 +418,7 @@ async def complete_tab(
     *,
     tab_id: str,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     """Take a cleared tab back, and with it the human's work.
 
@@ -402,7 +429,7 @@ async def complete_tab(
     :raises NoOwnerError: if no pod currently holds the session
     :raises ForwardedHandlerError: if the owning pod refused or failed
     """
-    return await _send(nats, session_id, {"op": COMPLETE_TAB, "tab_id": tab_id}, timeout=timeout)
+    return await _send(nats, session_id, {"op": COMPLETE_TAB, "tab_id": tab_id}, timeout=timeout, tool=tool)
 
 
 async def close_session(
@@ -410,13 +437,14 @@ async def close_session(
     session_id: str,
     *,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     """End the session and release its display.
 
     :raises NoOwnerError: if no pod currently holds the session
     :raises ForwardedHandlerError: if the owning pod refused or failed
     """
-    return await _send(nats, session_id, {"op": CLOSE_SESSION}, timeout=timeout)
+    return await _send(nats, session_id, {"op": CLOSE_SESSION}, timeout=timeout, tool=tool)
 
 
 async def read_state(
@@ -424,10 +452,11 @@ async def read_state(
     session_id: str,
     *,
     timeout: timedelta = DEFAULT_FORWARD_TIMEOUT,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     """Read free slots and the live tab set from whichever pod holds the session.
 
     :raises NoOwnerError: if no pod currently holds the session
     :raises ForwardedHandlerError: if the owning pod refused or failed
     """
-    return await _send(nats, session_id, {"op": READ_STATE}, timeout=timeout)
+    return await _send(nats, session_id, {"op": READ_STATE}, timeout=timeout, tool=tool)

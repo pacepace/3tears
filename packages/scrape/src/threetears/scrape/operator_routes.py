@@ -35,7 +35,7 @@ from threetears.observe import get_logger
 from .operator import relay_stream, token_from_subprotocols
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
-    from .operator import ClaimLookup, DisplayEndpoint, SessionAuthorizer
+    from .operator import ClaimLookup, DisplayEndpoint, DisplayTransport, SessionAuthorizer
 
 __all__ = ["build_router"]
 
@@ -49,6 +49,7 @@ def build_router(
     claim: ClaimLookup | None,
     assets: Path,
     page: Path,
+    transport: DisplayTransport | None = None,
 ) -> APIRouter:
     """Wire the operator page, the vendored client and the RFB WebSocket onto one router.
 
@@ -118,6 +119,7 @@ def build_router(
                 websocket.receive_bytes,
                 host,
                 port,
+                transport=transport,
                 until=held.until_lost if held is not None else None,
                 # An operator closing their tab is the ORDINARY end of a session, and Starlette
                 # signals it by raising -- for a clean close exactly as for a dirty one. Without

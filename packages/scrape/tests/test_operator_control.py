@@ -44,6 +44,43 @@ def _claim() -> SessionClaim:
     return SessionClaim(session_id=_SESSION)
 
 
+class TestTheForwardFamilyASessionRidesOn:
+    """Naming a tool moves a session onto the family a tool pod is actually granted."""
+
+    _TOOL = "tools.scrape-zone_alpha.1-0-0"
+
+    async def test_naming_a_tool_moves_the_session_off_the_ungranted_subject(self) -> None:
+        """The unscoped forward family is granted to no principal, so a session must leave it.
+
+        Asserted on the SUBJECT the owner subscribes rather than on a round trip, because a round
+        trip passes whenever both ends agree -- including when both are still on the subject
+        nothing is permitted to serve.
+        """
+        bus, display = FakeBus(), RecordingDisplay()
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, tool=self._TOOL):  # type: ignore[arg-type]
+            scoped = [str(r.subject) for r in bus.registrations]
+        bus_unscoped, display2 = FakeBus(), RecordingDisplay()
+        async with serve_session(bus_unscoped, _claim(), display2, session_state_key=_KEY):  # type: ignore[arg-type]
+            unscoped = [str(r.subject) for r in bus_unscoped.registrations]
+        assert scoped != unscoped, "naming a tool did not change the subject the owner serves"
+        # the scoped subject carries a family segment between the prefix and the key digest.
+        assert all(len(s.split(".")) > len(u.split(".")) for s in scoped for u in unscoped)
+
+    async def test_owner_and_caller_must_name_the_same_tool_to_meet(self) -> None:
+        """A family mismatch is silent by construction, so it is pinned here.
+
+        The two ends simply address different subjects; nothing raises at either end until the
+        caller's own timeout. That is why both derive the family from one helper rather than
+        each building it.
+        """
+        bus, display = FakeBus(), RecordingDisplay()
+        async with serve_session(bus, _claim(), display, session_state_key=_KEY, tool=self._TOOL):  # type: ignore[arg-type]
+            same = await read_state(bus, _SESSION, tool=self._TOOL)  # type: ignore[arg-type]
+            assert same is not None
+            with pytest.raises(Exception):
+                await read_state(bus, _SESSION, tool="tools.other-tool.1-0-0")  # type: ignore[arg-type]
+
+
 class TestAMessageReachesThePodHoldingTheSession:
     """Addressed to the session, not to a pod, and the two ends must agree on where that is."""
 
