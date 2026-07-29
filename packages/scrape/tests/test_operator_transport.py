@@ -259,3 +259,48 @@ class TestASubstitutedTransportRelaysExactlyAsTheTcpDefaultDoes:
                 relay_stream(lambda _d: asyncio.sleep(0), asyncio.Event().wait, *_NOT_AN_ADDRESS, transport=_refuses),
                 timeout=5,
             )
+
+
+async def test_a_router_built_with_a_transport_reaches_the_display_through_it() -> None:
+    """The seam must be reachable through the ROUTER, not only by calling relay_stream.
+
+    A deployment whose display sits in a pod with no inbound network path mounts this router
+    and supplies a transport; if the router could not carry one, that deployment would have to
+    reimplement the WebSocket half to use the seam, and any verification done against such a
+    stand-in would be testing the stand-in.
+
+    The endpoint handed back is deliberately not an address, so a regression to a self-opened
+    TCP connection cannot pass by reaching something real.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from threetears.scrape.operator import build_operator_router
+
+    opened: list[tuple[str, int]] = []
+    to_client = _FakeDisplayReader([b"RFB 003.008\n"])
+    from_client = _FakeDisplayWriter()
+
+    async def _transport(host: str, port: int):
+        opened.append((host, port))
+        return to_client, from_client
+
+    async def _authorize(token: str) -> str | None:
+        return "session-1" if token == "good" else None
+
+    async def _display(_session: str) -> tuple[str, int]:
+        return ("not-an-address", 0)
+
+    app = FastAPI()
+    app.include_router(
+        build_operator_router(authorize=_authorize, display=_display, transport=_transport),
+        prefix="/a/b/hitl",
+    )
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/a/b/hitl/ws", subprotocols=["binary", "hitl-token.good"]) as ws,
+    ):
+        assert ws.receive_bytes() == b"RFB 003.008\n"
+    assert opened == [("not-an-address", 0)], (
+        "the router did not use the transport it was given; it resolved the endpoint itself"
+    )

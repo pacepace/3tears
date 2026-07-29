@@ -364,6 +364,7 @@ def build_operator_router(
     authorize: SessionAuthorizer,
     display: DisplayEndpoint,
     claim: ClaimLookup | None = None,
+    transport: DisplayTransport | None = None,
 ) -> APIRouter:
     """Build the router a platform mounts to give its operators a display.
 
@@ -379,6 +380,12 @@ def build_operator_router(
         handover takes the session elsewhere. ``None`` on a deployment with one pod, which has
         no handover to survive -- see :class:`ClaimLookup` for what leaving it out costs.
     :ptype claim: ClaimLookup | None
+    :param transport: opens the connection to the display. ``None`` connects by TCP to whatever
+        *display* resolved, which is the co-located arrangement and what every existing caller
+        gets. A deployment whose display is in a pod with no inbound network path supplies one
+        that reaches it another way, and *display*'s host and port are then passed through
+        uninterpreted for that transport to read however it likes.
+    :ptype transport: DisplayTransport | None
     :return: a router carrying the operator page, the noVNC client and the RFB WebSocket, ready
         to mount under any prefix
     :rtype: APIRouter
@@ -403,4 +410,5 @@ def build_operator_router(
         claim=claim,
         assets=OPERATOR_ASSETS,
         page=OPERATOR_PAGE,
+        transport=transport,
     )
