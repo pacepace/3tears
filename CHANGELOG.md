@@ -6,9 +6,17 @@ packages (bumped in lock-step).
 
 ## v0.22.1 -- 2026-07-29
 
-> **A PATCH bump, because no surface is added and no caller changes.** `3tears-iam` gains one
-> exported constant (`FORBIDDEN_CLAIMS`) and every existing signature, argument and return type
-> is untouched. What changes is a verification RULE inside a function that already had one.
+> **A PATCH bump, released as one deliberately -- and it is not a no-op for callers.** Three
+> verification rules in `3tears-iam` change, one of them a required argument
+> (`verify_session_token`'s `expected_type`) and one a narrowed parameter type
+> (`mint_token_pair`'s `audience`). Every caller in this repository and in both consuming
+> products already satisfies both, so nothing that exists breaks; a caller outside them could.
+>
+> Recorded plainly rather than filed as a MINOR because the owner's call was that these are
+> corrections to existing verification behaviour rather than new capability, and because the
+> 0.22.x consumers pin `>=0.22.0,<0.23.0` -- a MINOR would sit outside every ceiling and force
+> a second lockstep pass across five repositories to deliver three fixes they all want. Any
+> consumer relying on the corrected rules should floor at `>=0.22.1`.
 
 **`3tears-iam` stops making an added identity claim a fleet-wide flag day, without loosening
 what "identity only" means.** BEHAVIOUR CHANGE on `verify_session_token`, and the reason it is
@@ -42,7 +50,38 @@ own bug and fails loudly; on verify the payload came from someone else's version
 identity-only invariant where the payload is BUILT costs nothing, and enforcing it as an exact
 set where the payload ARRIVES cost an outage to prevent a typo.
 
-**What to check before upgrading.** If you relied on `verify_session_token` rejecting an
+**`3tears-iam` also closes two holes found while adapting the Hub to this package, both of
+which let a token through that no consumer wanted.** Behaviour changes, and the second is a
+signature change.
+
+**A token may now name only ONE audience, refused at mint and at verify.** An audience says
+which side of a trust boundary a credential belongs to, so a token naming two is valid on both
+at once and this model has no meaning for it. PyJWT cannot refuse that: it matches on
+INTERSECTION, so `aud: [internal, external]` satisfies a verifier configured to accept only
+`internal` -- which is how a token that has left the platform comes back in. `sole_audience`
+existed as the checked way to read the claim back, but it was a courtesy the caller had to
+remember, and BOTH consumers of this package had independently reimplemented the refusal, each
+with its own comment explaining the same reasoning. A security rule that depends on being
+remembered is a rule the next consumer will not have, so it now lives in
+`verify_session_token`. `mint_session_token` refuses it too -- minting a token this package's
+own verifier rejects is a failure discovered by the holder rather than by whoever minted it --
+and `mint_token_pair`'s `audience` parameter is correspondingly `str` rather than
+`str | Sequence[str]`, since the wider annotation now describes something that always fails.
+
+A VERIFIER may still accept several audiences: one verifier legitimately serving several trust
+boundaries is a different thing from one token claiming several.
+
+**`verify_session_token`'s `expected_type` is now REQUIRED.** It defaulted to `None`, meaning
+no type check, and the docstring said "pass this" -- a convention where a control was needed.
+Omitting it accepted a refresh token wherever an access token was expected, which is a
+privilege escalation: refresh tokens live far longer and are handled far more casually. Every
+caller in this repository and in the two consuming products already passed it, so the required
+argument breaks nothing that exists and closes the door on the next call site.
+
+**What to check before upgrading.** `verify_session_token` calls must pass `expected_type`.
+Any code minting or accepting a multi-audience token needs a decision about which boundary it
+actually belongs to -- there is no flag to restore the old behaviour, because the old
+behaviour had no semantics. If you relied on `verify_session_token` rejecting an
 unrecognized claim as an integrity signal -- as opposed to rejecting an authorization claim --
 that rejection is gone, and the signature plus `iss` check is the stronger version of it. A
 `TokenError` for this case now reads `token carries forbidden claims:` rather than

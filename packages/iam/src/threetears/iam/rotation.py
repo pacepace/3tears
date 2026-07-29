@@ -58,6 +58,7 @@ from threetears.iam.tokens import (
     TokenType,
     TokenVerifier,
     mint_token_pair,
+    sole_audience,
     verify_session_token,
 )
 from threetears.observe import get_logger
@@ -251,7 +252,11 @@ async def rotate_refresh_token(
         subject=claims.sub,
         session_id=claims.sid,
         issuer=claims.iss,
-        audience=claims.aud,
+        # Read back through the checked accessor rather than passed as the tuple it is
+        # stored in: the rotated pair must carry the SAME single audience the redeemed
+        # token did, and `sole_audience` is what refuses to guess if it somehow carries
+        # more than one.
+        audience=sole_audience(claims),
         signer=signer,
         # Carried forward unchanged: a refresh proves continuity, not authentication.
         auth_time=claims.auth_time,
