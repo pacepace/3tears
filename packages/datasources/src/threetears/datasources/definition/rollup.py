@@ -44,7 +44,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.datasources.definition.exclusion import ArtifactHandle
+from threetears.datasources.definition.source import ArtifactRef
 from threetears.datasources.definition.expression import Predicate
 
 __all__ = ["LabelArm", "Rollup", "RollupEmit"]
@@ -112,7 +112,7 @@ class Rollup(BaseModel):
     name: str = Field(min_length=1)
     members: list[str] = Field(min_length=1)
     otherwise: str | None = Field(default=None, min_length=1)
-    over: ArtifactHandle | None = None
+    over: ArtifactRef | None = None
     emit: list[RollupEmit] = Field(min_length=1)
 
     @model_validator(mode="after")

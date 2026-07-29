@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.datasources.definition.exclusion import ArtifactHandle
+from threetears.datasources.definition.source import ArtifactRef
 from threetears.datasources.definition.rollup import LabelArm, Rollup, RollupEmit
 
 _FEDERAL_LEVEL = (
@@ -86,11 +86,11 @@ class TestRollupShape:
             {
                 "name": "tagz_segment",
                 "members": ["academy_members"],
-                "over": {"dataset": "universal_2026_core"},
+                "over": {"scope": "dataset", "dataset": "universal_2026_core", "artifact": "provenance"},
                 "emit": ["long_label"],
             }
         )
-        assert isinstance(rollup.over, ArtifactHandle)
+        assert isinstance(rollup.over, ArtifactRef)
         assert rollup.over.dataset == "universal_2026_core"
 
     def test_over_defaults_to_none(self) -> None:

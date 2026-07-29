@@ -54,7 +54,7 @@ from typing import Final, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.datasources.definition.exclusion import ArtifactHandle
+from threetears.datasources.definition.source import ArtifactRef
 from threetears.datasources.definition.expression import Expression
 from threetears.datasources.definition.namespace import BindingStage, reject_unbindable
 from threetears.datasources.definition.rollup import LabelArm
@@ -220,7 +220,7 @@ class ResolutionIntersect(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     alias: str = Field(min_length=1)
-    against: ArtifactHandle
+    against: ArtifactRef
     key_columns: list[str] = Field(min_length=1)
     payload: list[ResolutionIntersectColumn] = Field(default_factory=list)
 

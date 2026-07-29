@@ -1,29 +1,38 @@
-"""corpus-mapping coverage for ``dsm-task-01a``'s slice of the definition model.
+"""corpus-mapping coverage for the definition model.
 
-This is the shard's acceptance bar, not a fixture set. D3 is explicit that
-``dsm-task-01a``-``d`` are accepted against ``corpus-task-01``'s mapping
-rather than against fixtures drawn from the design, because a fixture set
-drawn from the same document lets the model pass by omission.
+This is the model shards' acceptance bar, not a fixture set. D3 is
+explicit that ``dsm-task-01a``-``d`` are accepted against
+``corpus-task-01``'s mapping rather than against fixtures drawn from the
+design, because a fixture set drawn from the same document lets the model
+pass by omission.
 
-Each row below names a semantic the corpus carries, an ``anchor`` that
+The module has TWO halves, and they check different things on purpose.
+
+**The curated table** (:data:`IN_SCOPE_ROWS`) is the CI-authoritative
+half. Each row names a semantic the corpus carries, an ``anchor`` that
 must appear verbatim in ``docs/corpus-mapping.md``, and exactly one
 resolution: a dotted path that must resolve against
-:mod:`threetears.datasources.definition`, or a recorded decision.
+:mod:`threetears.datasources.definition`, or a recorded decision. It grew
+one shard at a time -- ``-01a`` seeded it, ``-01b`` and ``-01c`` widened
+it, and ``-01d`` finished it.
 
-Scope is this shard's fields only -- ``GrainSpec``, ``ParameterSpec``,
-``Unit``, ``Resolution``, ``Qualification``, the seven-name namespace, and
-``Comparison``. ``dsm-task-01b``, ``-01c``, and ``-01d`` extend this
-module as each lands; ``dsm-task-01d`` (DSM-01D-20) is where it asserts
-coverage of the WHOLE mapping.
+**The whole-mapping half** (:class:`TestWholeMappingCoverage`) is
+DSM-01D-20 and is built the other way round: it enumerates every row of
+the mapping document MECHANICALLY and requires each to resolve to a model
+symbol that exists, a recorded decision, or a recorded resolution class.
+The curated table alone cannot discharge the bar, because a model can
+pass a table it also wrote.
 
 The mapping document lives in the sibling ripple repo, which 3tears must
-not take a build dependency on. The row table is therefore checked in
-here, and :class:`TestMappingDocumentCrossCheck` re-verifies every anchor
-against the live document when that repo is reachable.
+not take a build dependency on. The curated table is therefore checked in
+here and holds on its own; the document-driven half skips when that repo
+is not reachable, and :class:`TestMappingDocumentCrossCheck` re-verifies
+every curated anchor against the live document when it is.
 """
 
 from __future__ import annotations
 
+import collections
 import os
 import re
 from dataclasses import dataclass
@@ -891,7 +900,7 @@ IN_SCOPE_ROWS: tuple[MappingRow, ...] = (
         "P3/4.9",
         "The **long table is the accumulator**",
         "every custom unit reads the partially-built long table mid-build",
-        field_path="ArtifactHandle.stage",
+        field_path="ArtifactRef.stage",
     ),
     MappingRow(
         "P3/4.10",
@@ -904,7 +913,7 @@ IN_SCOPE_ROWS: tuple[MappingRow, ...] = (
         ),
     ),
     MappingRow(
-        "P3/S16",
+        "P2/B6/S16",
         "**The residual mechanism, in full.**",
         "all four dimensions confirmed present and all four must be authored",
         field_path="ExclusionSpec",
@@ -919,13 +928,13 @@ IN_SCOPE_ROWS: tuple[MappingRow, ...] = (
         "P4/114",
         "The staff cohort's own membership rule is 5 `LIKE` patterns",
         "the subtrahend is a computed relation, not a unit of this definition",
-        field_path="ArtifactHandle.table",
+        field_path="ArtifactRef.table",
     ),
     MappingRow(
         "P4/135",
         "**Upstream audience reference, ×2, unioned into a single exclusion set**",
         "two upstream datasets subtracted as one exclusion",
-        field_path="ArtifactHandle.dataset",
+        field_path="ArtifactRef.dataset",
     ),
     MappingRow(
         "P5/57",
@@ -1677,6 +1686,261 @@ IN_SCOPE_ROWS: tuple[MappingRow, ...] = (
             "refuses to carry, so the migration authors the join kind each unit actually ran with"
         ),
     ),
+    # ---- dsm-task-01d: sources, provenance, delivery, and the hash -------
+    MappingRow(
+        "P1/1.1",
+        "D9b resolves to 15, the template DDL",
+        "the pinned provenance contract is the DDL's 15 columns, arbitrated by the positional INSERT",
+        field_path="ProvenanceSpec.columns",
+    ),
+    MappingRow(
+        "P1/1.3",
+        "Three of the five parity artifacts have no committed reference",
+        "which artifacts a definition emits is declared, because the renderer wrote two of five",
+        field_path="ArtifactSpec.artifact",
+    ),
+    MappingRow(
+        "P2/B1/R01",
+        "Three unit sources concatenated in fixed template order",
+        "one flat authored unit list; the three-file split is a prototype layout artifact",
+        field_path="DatasetDefinition.units",
+    ),
+    MappingRow(
+        "P2/B1/R17",
+        "each require a prior run's table",
+        "the dependency on a prior stage becomes a declared reference",
+        field_path="ArtifactRef.scope",
+    ),
+    MappingRow(
+        "P2/B2/H02",
+        "5 literal entity sets, ~1700 ids total",
+        "the hand-match units are a first-class source kind",
+        field_path="LiteralEntities.entity_ids",
+    ),
+    MappingRow(
+        "P2/B2/H03",
+        "Whitespace-dirty entries — 5 ids with a leading space",
+        "five committed ids carry a leading space and would silently match zero rows",
+        field_path="LiteralEntities.normalization",
+    ),
+    MappingRow(
+        "P2/B2/H04",
+        "Duplicate ids within one set",
+        "set semantics; the authored list is stored verbatim and de-duplicated on emission",
+        field_path="LiteralEntities.normalized_ids",
+    ),
+    MappingRow(
+        "P2/B2/H05",
+        "needs no bri",
+        "a literal entity set carries no bridge and no quality measure",
+        field_path="EntityIdNormalization.changed_anything",
+    ),
+    MappingRow(
+        "P2/B3/D02",
+        "Provenance contract: 14 columns",
+        "the readme's 14 was never executable; the pinned contract is the DDL's 15",
+        field_path="ProvenanceContractViolation",
+    ),
+    MappingRow(
+        "P2/B3/D06",
+        "Relationship output contract: 8 fields",
+        "the expansion-provenance artifact is the fifth artifact kind",
+        field_path="ArtifactKind.RELATIONSHIP_UNION",
+    ),
+    MappingRow(
+        "P2/B4/T01",
+        "Long artifact DDL, 5 columns",
+        "each artifact declares its own column set; neither the set nor the artifact list is universal",
+        field_path="ArtifactSpec.columns",
+    ),
+    MappingRow(
+        "P2/B4/T02",
+        "`GRANT SELECT … TO GROUP INFLUENCERS` at every stage",
+        "a warehouse grant to a group, explicitly not hashed",
+        field_path="GrantSpec.grantee_kind",
+    ),
+    MappingRow(
+        "P2/B4/T27",
+        "Custom units spliced as a derived table",
+        "the raw body is a source kind rather than a directory of unrenderable files",
+        field_path="RawSelect.raw_sql",
+    ),
+    MappingRow(
+        "P2/B4/T28",
+        "Custom-unit provenance spliced with **no wrapper at all**",
+        "the body must satisfy the pinned columns and the compiler verifies it",
+        field_path="RawSelect.provenance",
+    ),
+    MappingRow(
+        "P2/B4/T39",
+        "Expansion union DDL, 8 columns",
+        "the expansion provenance artifact declares its own eight columns",
+        field_path="ArtifactSpec.grain",
+    ),
+    MappingRow(
+        "P2/B4/T42",
+        "Expansion provenance `fact` = `hh.influencer_voterbase_id`",
+        "which member brought each expansion member in",
+        field_path="Expansion.provenance",
+    ),
+    MappingRow(
+        "P2/B4/T45",
+        "Per-edge predicates scoped by unit",
+        "the walk is scoped to a unit set, not to the whole audience",
+        field_path="Expansion.applies_to",
+    ),
+    MappingRow(
+        "P2/B4/T46",
+        "Expansion edge is `{analytics}.household`",
+        "the edge is a governed relation reference",
+        field_path="Expansion.edge",
+    ),
+    MappingRow(
+        "P2/B4/T49",
+        "branches from a **non-grain key**",
+        "one committed edge joins on list_id rather than on the entity",
+        field_path="Expansion.covers",
+    ),
+    MappingRow(
+        "P2/B4/T51",
+        "Wide pivot: one `MAX(CASE WHEN unit = '…' THEN 1 ELSE 0 END)` column per settings entry",
+        "the wide artifact is one of the five declared artifacts",
+        field_path="ArtifactKind.WIDE",
+    ),
+    MappingRow(
+        "P2/B4/T54",
+        "Direct-vs-expansion flag: `1 as influencer` / `0 as influencer`",
+        "a delivered derived column over a literal",
+        field_path="DeliverySpec.columns",
+    ),
+    MappingRow(
+        "P2/B4/T57",
+        "Provenance DDL, 15 columns",
+        "the authoritative contract, pinned once in the binding",
+        field_path="ProvenanceSpec.column_names",
+    ),
+    MappingRow(
+        "P2/B4/T58",
+        "Provenance anchors on the long table",
+        "every body inner-joins the long table on the entity and the unit literal",
+        field_path="ProvenanceSpec.anchor",
+    ),
+    MappingRow(
+        "P2/B4/T59",
+        "a per-source co",
+        "a per-source conditional projection, authored per column",
+        field_path="ProvenanceColumn.expression",
+    ),
+    MappingRow(
+        "P2/B4/T60",
+        "Provenance `GROUP BY` computed by **positional arithmetic**",
+        "every provenance body is an aggregate query and its grain is authored",
+        field_path="ProvenanceSpec.grain",
+    ),
+    MappingRow(
+        "P2/B4/T62",
+        "Provenance column named `linkedin_industry` in the body but `linkedin_industries` in the DDL",
+        "the positional INSERT hides the mismatch today and the projection check surfaces it",
+        field_path="ProvenanceSpec.verify_columns_against",
+    ),
+    MappingRow(
+        "P2/B4/T63",
+        "Provenance `type` column is the `facts_table` value for standard units",
+        "a body projects a derived label the unit never had",
+        field_path="ProvenanceSpec.measures",
+    ),
+    MappingRow(
+        "P2/B4/T72",
+        "No template emits `DISTKEY`/`SORTKEY`/`DISTSTYLE`/`ENCODE`",
+        "physical layout is a gap the prototype has, not a semantic to port",
+        field_path="PhysicalLayout",
+    ),
+    MappingRow(
+        "P2/B4/T73",
+        "Physical layout hand-edited **into the tool's own generated output**",
+        "layout attaches to any materialized artifact and is never hashed",
+        field_path="ArtifactSpec.layout",
+    ),
+    MappingRow(
+        "P2/B4/T74",
+        "Full column-level physical spec",
+        "per-column encodings, which Redshift's CTAS grammar cannot express",
+        field_path="ColumnEncoding.AZ64",
+    ),
+    MappingRow(
+        "P2/B4/T75",
+        "Delivered width is part of the contract",
+        "two delivered columns are sized to their exact category strings",
+        field_path="DerivedColumn.sql_type",
+    ),
+    MappingRow(
+        "P2/B4/T76",
+        "`LISTAGG(DISTINCT …) WITHIN GROUP (ORDER BY …)` — 5 ordered sites",
+        "ordered string aggregation, which needs an open expression",
+        field_path="DerivedColumn.expression",
+    ),
+    MappingRow(
+        "P2/B4/T78",
+        "`is_unique_match` = `MAX(CASE WHEN candidate_count = 1 THEN 1 ELSE 0 END)`",
+        "a conditional-aggregate flag computed over a named artifact",
+        field_path="DerivedColumn.over",
+    ),
+    MappingRow(
+        "P2/B4/T83",
+        "S3 + `COPY` cross-cluster last mile",
+        "a cross-warehouse materialization hop on the delivered table",
+        decision=(
+            "excluded by recorded decision: two datasource rows against DIFFERENT warehouses are "
+            "not joinable in one statement, so a materialization hop is out of scope and is named "
+            "as such rather than implied by a blanket per-definition rule"
+        ),
+    ),
+    MappingRow(
+        "P2/B5/J04",
+        "Parameter-declaration-by-comment",
+        "a raw body's parameters are a declared signature rather than a comment convention",
+        field_path="RawSelect.parameters",
+    ),
+    MappingRow(
+        "P2/B5/J05",
+        "checks supplied→used but **never** used→supplied",
+        "the signature is verified in both directions at authoring",
+        field_path="ParameterSignatureViolation",
+    ),
+    MappingRow(
+        "P3/3.14",
+        "A custom unit reads an **out-of-band prior audience table** by name",
+        "an upstream reference names the dataset and a resolution policy, never a run id",
+        field_path="ArtifactRef.dataset",
+    ),
+    MappingRow(
+        "P4/139",
+        "**Same-day upstream/downstream pair**",
+        "a draft reference pins that specific run; a policy reference to a draft is refused",
+        field_path="UpstreamPin.policy",
+    ),
+    MappingRow(
+        "P4/142",
+        "no visibility or grant check is possible",
+        "an upstream reference is authorized against visibility and grants, not merely named",
+        decision=(
+            "specified here and implemented Hub-side: this package cannot see visibility or grants, "
+            "so the model carries the reference and the resolution check fails loud when no grant "
+            "exists. cross-customer is permitted WHEN GRANTED, and the rule is the grant"
+        ),
+    ),
+    MappingRow(
+        "P5/142",
+        "**The fifth artifact** `{audience}_relationship_union_{date}`, 8 columns",
+        "the artifact enum needs a fifth member; it is the only place expansion rationale exists",
+        field_path="ArtifactKind",
+    ),
+    MappingRow(
+        "P6/G4",
+        "This is a fourth count for the D9b provenance-contract question",
+        "a fourth spelling of the provenance contract, in the prototype agent's own prompt",
+        field_path="ProvenanceColumn.name",
+    ),
 )
 
 
@@ -1782,3 +2046,447 @@ class TestMappingDocumentCrossCheck:
     def test_the_mapping_document_gate_still_holds(self) -> None:
         empty_third_column = re.compile(r"^\|[^|\n]*\|[^|\n]*\|[ \t]*\|", re.MULTILINE)
         assert empty_third_column.search(_MAPPING_TEXT) is None
+
+
+# ---------------------------------------------------------------------------
+# DSM-01D-20: coverage of the WHOLE mapping
+#
+# The table above is the CI-authoritative slice, hand-curated per shard. This
+# section is the acceptance bar, and it is deliberately built the other way
+# round: it enumerates every row of the mapping document MECHANICALLY and
+# requires each one to resolve. A hand-typed row table cannot discharge the
+# bar on its own, because a model can pass a table it also wrote -- which is
+# exactly the "pass by omission" failure D3 names.
+#
+# Every mapping row resolves into one of three things:
+#
+#   1. a MODEL SYMBOL the document names, which must exist on this package.
+#      484 of the 764 rows are this, and it is the anti-omission property:
+#      the document says `ProvenanceSpec.columns` and the test fails until
+#      that field exists.
+#   2. a recorded DECISION -- the document's own `DECISION NEEDED`.
+#   3. a recorded RESOLUTION CLASS -- a row resolving to something that is
+#      real but is not a field of this model: a namespace binding, an
+#      inspection surface, the run record, the dataset record, the compiler
+#      or emitter, a parity fixture, or a platform surface in another repo.
+#
+# Anything outside those three is UNMAPPED and fails. The two reconciliation
+# tables below are the only hand-written part, and both are asserted to carry
+# no stale entry, so a spelling that stops appearing in the document cannot
+# sit here forever pretending to cover something.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SymbolReconciliation:
+    """one document spelling that does not resolve on this package as written.
+
+    :ivar symbol: the spelling the mapping document uses
+    :ivar resolves_to: dotted path it resolves to here, or ``None`` when the
+        symbol names something outside this package entirely
+    :ivar rationale: why the two differ, in one sentence
+    """
+
+    symbol: str
+    resolves_to: str | None
+    rationale: str
+
+
+SYMBOL_RECONCILIATIONS: tuple[SymbolReconciliation, ...] = (
+    SymbolReconciliation(
+        "UpstreamSource",
+        "ArtifactRef",
+        "design section 7 names the upstream source kind separately; the model carries ONE "
+        "reference type and distinguishes it by ArtifactScope.DATASET, because an upstream "
+        "artifact and this definition's own differ only in scope and resolve the same way",
+    ),
+    SymbolReconciliation(
+        "RankedCategory",
+        "SetExpr.category_order",
+        "the delivered category is a declaration ON the ranked_precedence operator rather than a "
+        "type beside it, because its arms are predicates and it is computed before or after the "
+        "dedup, which no standalone type could express without repeating SetExpr",
+    ),
+    SymbolReconciliation(
+        "SetExpr.union",
+        "SetOperator.UNION",
+        "the document spells operators as attributes; they are members of the operator enum",
+    ),
+    SymbolReconciliation(
+        "SetExpr.intersect",
+        "SetOperator.INTERSECT",
+        "the document spells operators as attributes; they are members of the operator enum",
+    ),
+    SymbolReconciliation(
+        "SetExpr.ranked_precedence",
+        "SetOperator.RANKED_PRECEDENCE",
+        "the document spells operators as attributes; they are members of the operator enum",
+    ),
+    SymbolReconciliation(
+        "ExclusionSpec.key",
+        "ExclusionSpec.key_columns",
+        "tests/enforcement/test_secrets_typed.py reserves a bare `key` as a credential name that "
+        "must be typed SecretStr, and the anti-join key is a list of column names, so the "
+        "enforcement rule and the short spelling cannot both stand",
+    ),
+    SymbolReconciliation(
+        "Measure.having",
+        "Resolution.having",
+        "a having is authored on the stage that computes the aggregate, and the measure declares "
+        "where the filter lands through filter_position; putting a having on the measure would "
+        "make one measure's filter position mean two things",
+    ),
+    SymbolReconciliation(
+        "ConceptEntity.sql_fragment",
+        "Predicate.concept",
+        "the concept ENTITY lives in the knowledge layer, which this package does not depend on; "
+        "the definition side of it is the predicate form that names one",
+    ),
+    SymbolReconciliation(
+        "ToolResult",
+        None,
+        "the platform tool-return type, from the agent SDK; part 6 surveys the prototype AGENT "
+        "layer and this row is about a tool surface rather than about definition content",
+    ),
+    SymbolReconciliation(
+        "ToolResult.content",
+        None,
+        "the same platform tool-return type; the imperatives block lives there and is governed by "
+        "the Hub's honesty design, not by the definition model",
+    ),
+)
+
+_RECONCILED = {entry.symbol: entry for entry in SYMBOL_RECONCILIATIONS}
+
+NON_SYMBOL_TOKENS: frozenset[str] = frozenset({"None", "True", "False", "Literal", "Downloads", "Pydantic", "Redshift"})
+"""capitalised tokens inside a code span that are not model symbols.
+
+``None`` / ``True`` / ``False`` / ``Literal`` are typing spellings inside a
+quoted field declaration; ``Downloads`` is a filesystem path; ``Pydantic``
+and ``Redshift`` are proper nouns.
+"""
+
+
+@dataclass(frozen=True)
+class ProseResolution:
+    """one mapping row whose resolution is prose the classifier cannot read.
+
+    :ivar row_id: ``P<part>/<row>`` identifier
+    :ivar resolves_to: what the row resolves to, in one phrase
+    :ivar rationale: why it is not a model symbol
+    """
+
+    row_id: str
+    resolves_to: str
+    rationale: str
+
+
+PROSE_RESOLUTIONS: tuple[ProseResolution, ...] = (
+    ProseResolution(
+        "P2/J01",
+        "pydantic required and optional fields",
+        "StrictUndefined's BEHAVIOUR -- fail loud on a missing field -- is preserved by required "
+        "fields; the jinja mechanism itself is not carried forward",
+    ),
+    ProseResolution(
+        "P3/6.1",
+        "DatasetDefinition.composition, left None",
+        "the default composition is the union of every unit, which is what an omitted composition "
+        "means; SetExpr.is_default_union reports it",
+    ),
+    ProseResolution(
+        "P3/6.9",
+        "an absence row",
+        "recorded as not exercised in the Amazon slice; the evidence for it comes from the UHG and "
+        "universal audiences and is carried on their own rows",
+    ),
+    ProseResolution(
+        "P3/14.2",
+        "Predicate.concept",
+        "the row is evidence that a shared fragment drifts when it is not first-class, which is "
+        "the argument for a governed concept rather than a repeated literal",
+    ),
+    ProseResolution(
+        "P4/111",
+        "SetExpr.dedup_order beside SetExpr.category_order",
+        "the two orders are separate declarations, which is exactly the field split the model carries",
+    ),
+    ProseResolution(
+        "P4/139",
+        "UpstreamPolicy.DRAFT_RUN",
+        "a same-day pair means a draft reference has to be pinnable, and the pin is the run id "
+        "that is deliberately excluded from the content hash",
+    ),
+    ProseResolution(
+        "P4/140",
+        "the dataset record's retention",
+        "transitive retention closure is platform state on the dataset record (D1), not definition "
+        "content; the definition supplies the reference graph it is computed over",
+    ),
+    ProseResolution(
+        "P5/101",
+        "SetTerm.projection",
+        "the per-term literal is the term's identity made into data, which is what a term-level projection carries",
+    ),
+    ProseResolution(
+        "P5/142",
+        "ArtifactKind.RELATIONSHIP_UNION",
+        "the fifth artifact kind, added by this shard; the row records that the enum had four",
+    ),
+    ProseResolution(
+        "P6/F14",
+        "a concept's caveats in the knowledge layer",
+        "a three-valued-logic trap is a caveat the model must be told at the point of action, "
+        "which is the knowledge layer's job and not the definition's",
+    ),
+    ProseResolution(
+        "P6/F15",
+        "a concept's caveats in the knowledge layer",
+        "the same placement: semantics that must reach the model go in caveats, never in a definition field",
+    ),
+    ProseResolution(
+        "P6/F16",
+        "a concept's caveats in the knowledge layer",
+        "the same placement, recorded per caveat so the gate has no blank",
+    ),
+    ProseResolution(
+        "P6/G4",
+        "ProvenanceSpec.columns",
+        "a fourth spelling of the provenance contract, in the prototype agent's own prompt, which "
+        "is more evidence for pinning the contract once rather than restating it",
+    ),
+    ProseResolution(
+        "P6/G14",
+        "a knowledge-layer playbook entry",
+        "counting list_id counts source records rather than people, which is a denominator caveat "
+        "for the knowledge layer rather than a definition field",
+    ),
+)
+
+_PROSE_RESOLVED = {entry.row_id: entry for entry in PROSE_RESOLUTIONS}
+
+RESOLUTION_CLASS_PHRASES: dict[str, tuple[str, ...]] = {
+    "not_carried_forward": ("not carried forward", "no carry-forward"),
+    "inspection_surface": ("inspection surface", "inspect surface", "inspect tool", "inspect capability"),
+    "run_record": ("run record", "run-scoped", "run lifecycle", "run/stage", "run's"),
+    "dataset_record": ("dataset record",),
+    "compiler_or_emitter": (
+        "emitter",
+        "compiler",
+        "ast",
+        "topological order",
+        "derived identifier",
+        "logical→physical",
+        "positional",
+    ),
+    "fixture_or_attributability": (
+        "attributab",
+        "fixture",
+        "non-attributability",
+        "d10 input",
+        "not exercised",
+        "see §",
+    ),
+    "platform_surface": (
+        "new architecture",
+        "schema/",
+        "knowledge/",
+        "agent.yaml",
+        "datasources/",
+        "claude.md",
+        "design §",
+        "design section",
+    ),
+    "cross_reference": ("same as", "corroborat", "see row", "why row"),
+    "control_case": ("control case", "no decision"),
+    "publish_policy": ("publish policy", "delivery/publish"),
+}
+"""resolution classes for a row that names no model symbol.
+
+Each is a real destination rather than a shrug: the run record, the dataset
+record, the compiler, an inspection surface, a parity fixture, or a surface
+in another repo. A row matching none of them is UNMAPPED and fails.
+"""
+
+PROSE_SECTION_ROW_IDS: frozenset[str] = frozenset({"P2/A8-per-term"})
+"""curated ids pointing at a PROSE section of the mapping rather than a row.
+
+Part 1 and the parts' ``Part A`` sections answer questions in prose and
+carry no resolution column, so the parser sees no row. Their authority is
+the anchor, which :class:`TestMappingDocumentCrossCheck` verifies verbatim.
+"""
+
+_MAPPING_TABLE_HEADERS = frozenset({"Model field / decision", "Resolution"})
+_CELL_SPLIT = re.compile(r"(?<!\\)\|")
+_CODE_SPAN = re.compile(r"`([^`]+)`")
+_SYMBOL_TOKEN = re.compile(r"\b[A-Z][A-Za-z0-9]*(?:\.[a-z_][a-z_0-9]*)+|\b[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*\b")
+_NAMESPACE_SPAN = re.compile(r"`(source|bridge|entity|resolved|param|measure|rel)\.")
+
+
+@dataclass(frozen=True)
+class DocumentRow:
+    """one row parsed out of the mapping document.
+
+    :ivar row_id: ``P<part>/<row>`` identifier
+    :ivar section: heading the row sits under
+    :ivar resolution: the row's own resolution cell
+    :ivar line: line number in the document
+    """
+
+    row_id: str
+    section: str
+    resolution: str
+    line: int
+
+
+def _parse_mapping_rows(text: str) -> tuple[DocumentRow, ...]:
+    """enumerate every mapping row in the document.
+
+    A mapping table is one whose final header cell is ``Model field /
+    decision`` or ``Resolution``; the document's other tables are counts,
+    censuses, and column inventories and carry no resolution.
+
+    :param text: the mapping document
+    :ptype text: str
+    :returns: every mapping row, in document order
+    :rtype: tuple[DocumentRow, ...]
+    """
+    rows: list[DocumentRow] = []
+    part = ""
+    section = ""
+    header: list[str] = []
+    in_table = False
+    for number, line in enumerate(text.splitlines(), 1):
+        part_heading = re.match(r"^## Part (\d+)", line)
+        if part_heading:
+            part, section, header, in_table = part_heading.group(1), "", [], False
+            continue
+        section_heading = re.match(r"^#{3,5} (.+)", line)
+        if section_heading:
+            section, header, in_table = section_heading.group(1).strip(), [], False
+            continue
+        if not line.startswith("|"):
+            in_table = False
+            continue
+        cells = [cell.strip() for cell in _CELL_SPLIT.split(line.strip())[1:-1]]
+        if cells and set("".join(cells)) <= set("-: "):
+            in_table = True
+            continue
+        if not in_table:
+            header = cells
+            continue
+        if header and header[-1] in _MAPPING_TABLE_HEADERS:
+            rows.append(DocumentRow(f"P{part}/{cells[0]}", section, cells[-1], number))
+    return tuple(rows)
+
+
+def _named_symbols(resolution: str) -> tuple[str, ...]:
+    """model symbols a resolution cell names.
+
+    :param resolution: the row's resolution cell
+    :ptype resolution: str
+    :returns: symbols in appearance order
+    :rtype: tuple[str, ...]
+    """
+    found: list[str] = []
+    for span in _CODE_SPAN.findall(resolution):
+        found.extend(token for token in _SYMBOL_TOKEN.findall(span) if token not in NON_SYMBOL_TOKENS)
+    return tuple(found)
+
+
+def _classify(row: DocumentRow) -> str:
+    """the class a mapping row resolves into.
+
+    :param row: parsed mapping row
+    :ptype row: DocumentRow
+    :returns: class name, or ``"unmapped"``
+    :rtype: str
+    """
+    lowered = row.resolution.lower()
+    classified = "unmapped"
+    if "decision needed" in lowered:
+        classified = "decision"
+    elif _named_symbols(row.resolution):
+        classified = "model_symbol"
+    elif row.row_id in _PROSE_RESOLVED:
+        classified = "prose_resolution"
+    elif _NAMESPACE_SPAN.search(row.resolution):
+        classified = "namespace"
+    else:
+        matched = next(
+            (name for name, phrases in RESOLUTION_CLASS_PHRASES.items() if any(p in lowered for p in phrases)),
+            None,
+        )
+        if matched is not None:
+            classified = matched
+    return classified
+
+
+_DOCUMENT_ROWS = _parse_mapping_rows(_MAPPING_TEXT)
+
+
+@pytest.mark.skipif(_MAPPING_PATH is None, reason=pytestmark_reason)
+class TestWholeMappingCoverage:
+    """DSM-01D-20, checked against the mapping rather than against a fixture."""
+
+    def test_the_document_carries_the_expected_row_census(self) -> None:
+        by_part = collections.Counter(row.row_id.partition("/")[0] for row in _DOCUMENT_ROWS)
+        assert len(_DOCUMENT_ROWS) == 764
+        assert dict(by_part) == {"P2": 179, "P3": 147, "P4": 150, "P5": 175, "P6": 113}
+
+    def test_no_mapping_row_is_unmapped(self) -> None:
+        unmapped = [(row.row_id, row.line, row.resolution) for row in _DOCUMENT_ROWS if _classify(row) == "unmapped"]
+        assert unmapped == []
+
+    @pytest.mark.parametrize(
+        "row",
+        [row for row in _DOCUMENT_ROWS if _classify(row) == "model_symbol"],
+        ids=lambda row: row.row_id,
+    )
+    def test_every_named_model_symbol_exists(self, row: DocumentRow) -> None:
+        for symbol in _named_symbols(row.resolution):
+            entry = _RECONCILED.get(symbol)
+            if entry is None:
+                _resolve(symbol)
+            elif entry.resolves_to is not None:
+                _resolve(entry.resolves_to)
+
+    def test_every_row_id_is_unique_in_the_document(self) -> None:
+        row_ids = [row.row_id for row in _DOCUMENT_ROWS]
+        repeated = sorted({row_id for row_id in row_ids if row_ids.count(row_id) > 1})
+        assert repeated == []
+
+    def test_no_reconciliation_entry_is_stale(self) -> None:
+        named = {symbol for row in _DOCUMENT_ROWS for symbol in _named_symbols(row.resolution)}
+        unused = sorted(entry.symbol for entry in SYMBOL_RECONCILIATIONS if entry.symbol not in named)
+        assert unused == []
+
+    def test_no_prose_resolution_is_stale(self) -> None:
+        present = {row.row_id for row in _DOCUMENT_ROWS}
+        unused = sorted(entry.row_id for entry in PROSE_RESOLUTIONS if entry.row_id not in present)
+        assert unused == []
+
+    def test_every_reconciliation_carries_a_substantive_rationale(self) -> None:
+        thin = [entry.symbol for entry in SYMBOL_RECONCILIATIONS if len(entry.rationale.split()) < 12]
+        thin += [entry.row_id for entry in PROSE_RESOLUTIONS if len(entry.rationale.split()) < 12]
+        assert thin == []
+
+    def test_the_checked_in_table_names_only_rows_the_document_carries(self) -> None:
+        # the curated table uses a finer id (``P2/B4/T57``) than the parser's
+        # ``P2/T57``; both must name a row that exists. ids pointing at a
+        # PROSE section rather than a table row are listed explicitly, since
+        # their authority is the anchor and the parser sees no row for them.
+        present = {row.row_id for row in _DOCUMENT_ROWS} | PROSE_SECTION_ROW_IDS
+        collapsed = {
+            f"{row_id.partition('/')[0]}/{row_id.rpartition('/')[2]}"
+            for row_id in (row.row_id for row in IN_SCOPE_ROWS)
+        }
+        missing = sorted(row_id for row_id in collapsed if row_id not in present and not row_id.startswith("P1/"))
+        assert missing == []
+
+    def test_the_model_symbol_class_is_the_bulk_of_the_mapping(self) -> None:
+        # if this collapses, the classifier has started resolving rows by
+        # phrase that used to resolve by field, which is a weakened gate.
+        counts = collections.Counter(_classify(row) for row in _DOCUMENT_ROWS)
+        assert counts["model_symbol"] >= 480
+        assert counts["decision"] == 99

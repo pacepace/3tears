@@ -23,8 +23,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from threetears.datasources.definition.exclusion import (
-    ArtifactHandle,
+from threetears.datasources.definition import (
+    ArtifactKind,
+    ArtifactRef,
+    ArtifactScope,
     ArtifactStage,
     ExclusionLevel,
     ExclusionSpec,
@@ -41,42 +43,52 @@ _RESIDUAL = {
 }
 
 
-class TestArtifactHandle:
-    """the seam naming one set of rows an exclusion subtracts."""
+class TestSubtrahendReference:
+    """what an exclusion subtracts, named by ``ArtifactRef``.
+
+    ``dsm-task-01d`` replaced ``dsm-task-01b``'s narrow ``ArtifactHandle``
+    with the one reference type, so a subtrahend, a membership target, and
+    a relation body are the same kind of thing. The cases below are the
+    three the corpus's exclusion rows exercise; the reference's own scope
+    rules are in ``test_source.py``.
+    """
 
     def test_a_unit_of_this_definition_carries_its_stage(self) -> None:
-        handle = ArtifactHandle.model_validate({"unit": "knowwho_all", "stage": "resolved"})
+        handle = ArtifactRef.model_validate({"scope": "this_definition", "unit": "knowwho_all", "stage": "resolved"})
         assert handle.unit == "knowwho_all"
         assert handle.stage is ArtifactStage.RESOLVED
 
     def test_an_upstream_dataset_is_nameable(self) -> None:
-        handle = ArtifactHandle.model_validate({"dataset": "universal_2026_core"})
+        handle = ArtifactRef.model_validate(
+            {"scope": "dataset", "dataset": "universal_2026_core", "artifact": "qualified"}
+        )
         assert handle.dataset == "universal_2026_core"
+        assert handle.artifact is ArtifactKind.QUALIFIED
         assert handle.unit is None
 
     def test_an_external_table_is_nameable(self) -> None:
-        assert ArtifactHandle.model_validate({"table": "ehowells.amz_universe_2024"}).table
+        assert ArtifactRef.model_validate({"scope": "external", "table": "ehowells.amz_universe_2024"}).table
 
     def test_rejects_naming_nothing(self) -> None:
         with pytest.raises(ValidationError):
-            ArtifactHandle.model_validate({})
+            ArtifactRef.model_validate({"scope": "this_definition"})
 
-    def test_rejects_naming_two_kinds_at_once(self) -> None:
+    def test_rejects_naming_two_scopes_at_once(self) -> None:
         with pytest.raises(ValidationError):
-            ArtifactHandle.model_validate({"unit": "a", "dataset": "b"})
+            ArtifactRef.model_validate({"scope": "this_definition", "unit": "a", "stage": "resolved", "dataset": "b"})
 
     def test_a_unit_handle_requires_a_stage(self) -> None:
         with pytest.raises(ValidationError) as excinfo:
-            ArtifactHandle.model_validate({"unit": "a"})
+            ArtifactRef.model_validate({"scope": "this_definition", "unit": "a"})
         assert "stage" in str(excinfo.value)
 
     def test_a_dataset_handle_carries_no_stage(self) -> None:
         with pytest.raises(ValidationError):
-            ArtifactHandle.model_validate({"dataset": "a", "stage": "resolved"})
+            ArtifactRef.model_validate({"scope": "dataset", "dataset": "a", "artifact": "wide", "stage": "resolved"})
 
     def test_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
-            ArtifactHandle.model_validate({"unit": "a", "stage": "resolved", "scope": "this_definition"})
+            ArtifactRef.model_validate({"scope": "this_definition", "unit": "a", "stage": "resolved", "kind": "unit"})
 
 
 class TestTheResidualTripleHasNoDefaults:
@@ -154,7 +166,7 @@ class TestExclusionSpecShape:
         assert "subtracts nothing" in str(excinfo.value)
 
     def test_rejects_a_repeated_subtrahend(self) -> None:
-        edge = {"unit": "a", "stage": "resolved"}
+        edge = {"scope": "this_definition", "unit": "a", "stage": "resolved"}
         with pytest.raises(ValidationError):
             ExclusionSpec.model_validate(
                 {
@@ -171,13 +183,15 @@ class TestExclusionSpecShape:
 
     def test_round_trips(self) -> None:
         payload = {
-            "subtrahends": [{"unit": "a", "stage": "resolved", "dataset": None, "table": None}],
+            "subtrahends": [{"scope": "this_definition", "unit": "a", "stage": "resolved"}],
             "all_prior": False,
             "key_columns": ["voterbase_id"],
             "level": "pre_aggregate",
             "stage": "resolved",
         }
-        assert ExclusionSpec.model_validate(payload).model_dump(mode="json") == payload
+        spec = ExclusionSpec.model_validate(payload)
+        assert ExclusionSpec.model_validate(spec.model_dump(mode="json")) == spec
+        assert spec.subtrahends[0].scope is ArtifactScope.THIS_DEFINITION
 
 
 class TestUpstreamAndCohortSubtrahends:
@@ -186,7 +200,10 @@ class TestUpstreamAndCohortSubtrahends:
     def test_two_upstream_datasets_union_into_one_exclusion_set(self) -> None:
         spec = ExclusionSpec.model_validate(
             {
-                "subtrahends": [{"dataset": "uhg_opinion_elites"}, {"dataset": "uhg_policymakers"}],
+                "subtrahends": [
+                    {"scope": "dataset", "dataset": "uhg_opinion_elites", "artifact": "qualified"},
+                    {"scope": "dataset", "dataset": "uhg_policymakers", "artifact": "qualified"},
+                ],
                 "stage": "qualified",
                 "key_columns": ["voterbase_id"],
                 "level": "post_aggregate",
@@ -197,7 +214,7 @@ class TestUpstreamAndCohortSubtrahends:
     def test_a_post_composition_cohort_is_subtractable(self) -> None:
         spec = ExclusionSpec.model_validate(
             {
-                "subtrahends": [{"table": "eteitsworth.uhg_staff_20250618"}],
+                "subtrahends": [{"scope": "external", "table": "eteitsworth.uhg_staff_20250618"}],
                 "stage": "qualified",
                 "key_columns": ["voterbase_id"],
                 "level": "post_aggregate",
@@ -230,20 +247,24 @@ class TestAllPriorExpansion:
 
     def test_expansion_preserves_authored_subtrahends_first(self) -> None:
         spec = ExclusionSpec.model_validate(
-            {**_RESIDUAL, "subtrahends": [{"dataset": "amz_universe_2024"}]}
+            {**_RESIDUAL, "subtrahends": [{"scope": "dataset", "dataset": "amz_universe_2024", "artifact": "wide"}]}
         ).expanded_against(["a"])
         assert spec.subtrahends[0].dataset == "amz_universe_2024"
         assert spec.subtrahends[1].unit == "a"
 
     def test_expansion_does_not_duplicate_an_authored_edge(self) -> None:
         spec = ExclusionSpec.model_validate(
-            {**_RESIDUAL, "subtrahends": [{"unit": "a", "stage": "resolved"}]}
+            {**_RESIDUAL, "subtrahends": [{"scope": "this_definition", "unit": "a", "stage": "resolved"}]}
         ).expanded_against(["a", "b"])
         assert [handle.unit for handle in spec.subtrahends] == ["a", "b"]
 
     def test_expansion_is_a_no_op_without_all_prior(self) -> None:
         spec = ExclusionSpec.model_validate(
-            {**_RESIDUAL, "all_prior": False, "subtrahends": [{"unit": "a", "stage": "resolved"}]}
+            {
+                **_RESIDUAL,
+                "all_prior": False,
+                "subtrahends": [{"scope": "this_definition", "unit": "a", "stage": "resolved"}],
+            }
         )
         assert spec.expanded_against(["b", "c"]).subtrahends == spec.subtrahends
 
@@ -309,7 +330,11 @@ class TestCompilerBoundaryGuard:
         reject_unexpanded_exclusions(
             {
                 "omnibus": ExclusionSpec.model_validate(
-                    {**_RESIDUAL, "all_prior": False, "subtrahends": [{"dataset": "prior_audience"}]}
+                    {
+                        **_RESIDUAL,
+                        "all_prior": False,
+                        "subtrahends": [{"scope": "dataset", "dataset": "prior_audience", "artifact": "wide"}],
+                    }
                 )
             }
         )

@@ -22,6 +22,7 @@ from threetears.datasources.definition import (
     ComparisonOperator,
     Expression,
     LiteralExpression,
+    LiteralType,
     Namespace,
     Predicate,
     Reference,
@@ -178,7 +179,7 @@ class TestRegexRoundtrip:
         assert comparison.model_dump() == {
             "left": {"ref": "source.employer"},
             "op": "~*",
-            "right": {"literal": CORPUS_EMPLOYER_REGEX},
+            "right": {"literal": CORPUS_EMPLOYER_REGEX, "literal_type": LiteralType.TEXT},
         }
 
     def test_regex_roundtrip_employer_json(self) -> None:
@@ -214,7 +215,10 @@ class TestRegexRoundtrip:
             "op": "~*",
             "right": {"literal": CORPUS_JOB_TITLE_REGEX},
         }
-        assert Comparison.model_validate(payload).model_dump()["right"] == {"literal": CORPUS_JOB_TITLE_REGEX}
+        assert Comparison.model_validate(payload).model_dump()["right"] == {
+            "literal": CORPUS_JOB_TITLE_REGEX,
+            "literal_type": LiteralType.TEXT,
+        }
 
     def test_regex_roundtrip_escaped_single_quote(self) -> None:
         payload = {
@@ -232,7 +236,10 @@ class TestRegexRoundtrip:
             "op": "ILIKE",
             "right": {"literal": "% actor"},
         }
-        assert Comparison.model_validate(payload).model_dump()["right"] == {"literal": "% actor"}
+        assert Comparison.model_validate(payload).model_dump()["right"] == {
+            "literal": "% actor",
+            "literal_type": LiteralType.TEXT,
+        }
 
 
 class TestPredicate:
@@ -324,4 +331,18 @@ class TestPredicate:
 
     def test_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
-            Predicate.model_validate({"raw": "1=1"})
+            Predicate.model_validate({"exists": "1=1"})
+
+    def test_the_string_forms_land_and_are_scanned_for_references(self) -> None:
+        # dsm-task-01d adds membership / concept / raw. a raw fragment is
+        # scanned for namespaced references, so the stage guard sees them.
+        raw = Predicate.model_validate({"raw": "resolved.record_year = 2024"})
+        assert raw.is_escape_hatch is True
+        assert [reference.ref for reference in raw.references] == ["resolved.record_year"]
+
+    def test_a_concept_is_not_an_escape_hatch(self) -> None:
+        assert Predicate.model_validate({"concept": "c_suite"}).is_escape_hatch is False
+
+    def test_a_blank_string_form_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            Predicate.model_validate({"raw": "   "})

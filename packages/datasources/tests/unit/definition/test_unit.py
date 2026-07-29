@@ -36,7 +36,10 @@ class TestResolutionSet:
 
     def test_duplicate_declarations_become_two_resolutions(self) -> None:
         unit = Unit.model_validate(
-            {"name": "journalists_health_policy", "resolutions": [{"source": "a"}, {"source": "b"}]}
+            {
+                "name": "journalists_health_policy",
+                "resolutions": [{"source": {"relation": "a"}}, {"source": {"relation": "b"}}],
+            }
         )
         assert len(unit.resolutions) == 2
 
@@ -392,7 +395,7 @@ class TestModelShape:
             "emits": None,
             "resolutions": [
                 {
-                    "source": "employment_facts",
+                    "source": {"relation": "employment_facts", "datasource": None, "schema_expr": None},
                     "bridge": bridge,
                     "relations": [
                         {
@@ -407,6 +410,7 @@ class TestModelShape:
                     "measures": [],
                     "predicate": None,
                     "having": None,
+                    "provenance": None,
                 },
                 {
                     "source": None,
@@ -415,9 +419,11 @@ class TestModelShape:
                     "measures": [],
                     "predicate": None,
                     "having": None,
+                    "provenance": None,
                 },
             ],
             "qualify": None,
             "exclude": None,
+            "provenance": None,
         }
         assert Unit.model_validate(payload).model_dump() == payload

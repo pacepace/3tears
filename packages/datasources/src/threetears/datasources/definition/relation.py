@@ -43,10 +43,18 @@ in the corpus, used by five of eight audiences.
 than a flag lets ``dsh-task-15``'s gate be structural instead of a
 runtime string check.
 
-Seams this shard leaves open, named so they are not mistaken for
-omissions: :attr:`RelationRef.relation` carries the authored relation
-NAME as a ``str`` where ``dsm-task-01d`` adds ``ArtifactRef``, so a
-relation can be re-pointed at another artifact. The relation LAYER's four
+``dsm-task-01d`` closed the seam ``dsm-task-01c`` left here:
+:attr:`RelationRef.relation` now admits an
+:class:`~threetears.datasources.definition.source.ArtifactRef`, so a
+relation can be re-pointed at another artifact of this definition, at
+another dataset's published output, or at an external governed relation
+carrying a per-run schema. The reference is a FORWARD one, because
+``source`` imports this module for :class:`Projection` and
+:class:`RelationRef`; ``source`` closes it, and importing the
+``definition`` package always imports ``source``. That is also why this
+module no longer calls ``model_rebuild()`` itself -- at the point it used
+to, ``ArtifactRef`` does not exist yet, and pydantic completes both
+models on first use anyway. The relation LAYER's four
 gaps -- a payload field for a quality measure, ``from_schema``, a
 per-edge predicate slot, and non-chain edges -- are ``dsh-task-24``'s
 work on ``JoinPath`` and ``datasource_relations``. This module is shaped
@@ -61,12 +69,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Annotated, Self, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Self, TypeAlias
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 from threetears.datasources.definition.expression import Expression, LiteralExpression, Predicate
 from threetears.datasources.definition.namespace import Namespace, Reference
+
+if TYPE_CHECKING:
+    from threetears.datasources.definition.source import ArtifactRef
 
 __all__ = [
     "DerivedTable",
@@ -319,12 +330,13 @@ class TypedDerivedTable(BaseModel):
 DerivedTable: TypeAlias = TypedDerivedTable | RawDerivedTable
 """derived-table body, typed or held as a SQL string."""
 
-RelationBody: TypeAlias = str | TypedDerivedTable | RawDerivedTable
+RelationBody: TypeAlias = "str | TypedDerivedTable | RawDerivedTable | ArtifactRef"
 """what a relation reference points at.
 
-A ``str`` is the authored name of a governed relation.
-``dsm-task-01d`` adds ``ArtifactRef`` here, so a relation can be pointed
-at another artifact of the same dataset.
+A ``str`` is the authored name of a governed relation; an
+:class:`~threetears.datasources.definition.source.ArtifactRef` re-points
+it at an artifact of this definition, another dataset's published output,
+or an external relation carrying a per-run schema.
 """
 
 
@@ -409,10 +421,6 @@ class RelationRef(BaseModel):
         condition = () if self.on is None else self.on.references
         gate = () if self.when is None else self.when.references
         return condition + gate
-
-
-TypedDerivedTable.model_rebuild()
-RelationRef.model_rebuild()
 
 
 def validate_relation_aliases(

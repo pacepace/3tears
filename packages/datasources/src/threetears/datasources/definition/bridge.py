@@ -35,10 +35,14 @@ side that supplied none. It does not coerce, rescale, or pick one, and it
 refuses two same-named measures whose semantics disagree rather than
 silently choosing.
 
-Seams named so they are not mistaken for omissions:
-:attr:`BridgeRef.relation` carries the authored relation NAME as a
-``str``, which ``dsm-task-01d`` extends with ``ArtifactRef``. The
-relation layer's own gaps -- a payload field for a quality measure, and
+``dsm-task-01d`` closed the seam ``dsm-task-01c`` left here:
+:attr:`BridgeRef.relation` now admits an
+:class:`~threetears.datasources.definition.source.ArtifactRef`, so a
+bridge can be re-pointed at a per-run schema or at another dataset's
+output. The reference is a FORWARD one, closed by
+:mod:`~threetears.datasources.definition.source`, which imports this
+module. The relation layer's own gaps -- a payload field for a quality
+measure, and
 ``from_schema`` so a bridge can be re-pointed at a per-run schema -- are
 ``dsh-task-24``'s work on ``JoinPath`` and ``datasource_relations``. The
 payload this module declares is what that layer must carry.
@@ -48,14 +52,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Self
+from typing import TYPE_CHECKING, Self, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.datasources.definition.expression import Predicate
 
+if TYPE_CHECKING:
+    from threetears.datasources.definition.source import ArtifactRef
+
 __all__ = [
     "BridgeRef",
+    "BridgeRelation",
     "ConflictingQualityMeasure",
     "QualityDirection",
     "QualityMeasure",
@@ -163,10 +171,19 @@ class QualityMeasure(BaseModel):
         return (self.direction, self.threshold_semantics, self.unmeasured_is_null)
 
 
+BridgeRelation: TypeAlias = "str | ArtifactRef"
+"""what a bridge reference points at.
+
+A ``str`` is the authored name of a governed bridge relation; an
+:class:`~threetears.datasources.definition.source.ArtifactRef` re-points
+it at a per-run schema or at another dataset's output.
+"""
+
+
 class BridgeRef(BaseModel):
     """bridge relation a resolution matches entities through.
 
-    :ivar relation: governed bridge relation name
+    :ivar relation: governed bridge relation name, or a reference
     :ivar alias: name predicates address the bridge by, or ``None`` to
         use the ``bridge.*`` namespace alone
     :ivar quality_measures: match-quality measures this bridge supplies;
@@ -178,7 +195,7 @@ class BridgeRef(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    relation: str = Field(min_length=1)
+    relation: BridgeRelation
     alias: str | None = Field(default=None, min_length=1)
     quality_measures: list[QualityMeasure] = Field(default_factory=list)
     on: Predicate | None = None
@@ -193,9 +210,11 @@ class BridgeRef(BaseModel):
 
         :returns: validated bridge
         :rtype: BridgeRef
-        :raises ValueError: alias is not an identifier, or a measure name
-            repeats
+        :raises ValueError: the relation name is blank, the alias is not
+            an identifier, or a measure name repeats
         """
+        if isinstance(self.relation, str) and not self.relation.strip():
+            raise ValueError("bridge relation carries no text")
         if self.alias is not None and not self.alias.isidentifier():
             raise ValueError(f"bridge alias {self.alias!r} is not an identifier")
         names = [measure.name for measure in self.quality_measures]

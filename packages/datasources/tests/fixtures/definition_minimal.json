@@ -1,0 +1,170 @@
+{
+  "name": "universal_2026_expansion",
+  "datasource": "influencers-build",
+  "additional_datasources": ["influencers-read"],
+  "grain": {"entity_column": "voterbase_id", "delivered_alias": "individual_id"},
+  "parameters": [
+    {"name": "release_schema", "parameter_type": "string", "required": true},
+    {
+      "name": "match_schema",
+      "parameter_type": "string",
+      "required": false,
+      "derivation": {"template": "{release_schema}_{vf_suffix}", "fallback": "{release_schema}"}
+    },
+    {"name": "vf_suffix", "parameter_type": "string", "required": false, "enum": ["l2", "ts"]},
+    {"name": "run_year", "parameter_type": "integer", "required": true}
+  ],
+  "units": [
+    {
+      "name": "academy_members",
+      "resolutions": [
+        {
+          "source": {
+            "raw_sql": "SELECT unit, voterbase_id, list_id, candidate_count, record_year FROM {{ match_schema }}.academy",
+            "projection": ["unit", "voterbase_id", "list_id", "candidate_count", "record_year"],
+            "parameters": ["match_schema"],
+            "provenance": {
+              "grain": ["voterbase_id", "list_id"],
+              "columns": [
+                {"name": "voterbase_id", "expression": "resolved.voterbase_id"},
+                {"name": "unit", "expression": {"literal": "academy_members"}}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "top_audience_companies",
+      "resolutions": [
+        {
+          "source": {
+            "scope": "dataset",
+            "dataset": "universal_2026_core",
+            "artifact": "provenance",
+            "run": {"policy": "latest_release"},
+            "projection": {
+              "columns": [{"expression": "resolved.employer", "alias": "employer"}],
+              "group_by": ["resolved.employer"],
+              "having": {"compare": {"left": {"arith": "COUNT(*)"}, "op": ">=", "right": {"literal": 25}}}
+            }
+          },
+          "bridge": {
+            "relation": "match_union",
+            "quality_measures": [
+              {
+                "name": "candidate_count",
+                "column": "candidate_count",
+                "direction": "lower_is_better",
+                "threshold_semantics": "at_most"
+              }
+            ]
+          },
+          "measures": [
+            {
+              "name": "contribution_sum",
+              "expression": "SUM(source.contribution_amt)",
+              "grain": ["voterbase_id", "list_id"],
+              "scope": "resolution"
+            }
+          ],
+          "having": {"compare": {"left": "measure.contribution_sum", "op": ">", "right": {"literal": 2000}}}
+        }
+      ],
+      "exclude": {
+        "all_prior": true,
+        "key_columns": ["voterbase_id"],
+        "level": "pre_aggregate",
+        "stage": "resolved"
+      }
+    }
+  ],
+  "qualification": [
+    {
+      "name": "working age",
+      "relations": [{"relation": "vb_voterfile", "alias": "vf", "join": "inner"}],
+      "predicate": {
+        "all_of": [
+          {"compare": {"left": "entity.vb_voterbase_age", "op": ">", "right": {"literal": 20}}},
+          {
+            "compare": {
+              "left": "entity.vb_voterbase_age",
+              "op": "<",
+              "right": {"arith": "70 + param.run_year - resolved.record_year"}
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "composition": {
+    "op": "union",
+    "terms": [
+      {"name": "core", "upstream": "universal_2026_core", "projection": [{"name": "audience", "value": {"literal": "core"}}]},
+      {"name": "expansion", "unit": "academy_members", "projection": [{"name": "audience", "value": {"literal": "expansion"}}]}
+    ]
+  },
+  "rollups": [
+    {
+      "name": "opinion_elites",
+      "members": ["academy_members"],
+      "emit": ["wide_flag", "long_label"],
+      "over": {"scope": "this_definition", "artifact": "provenance"}
+    }
+  ],
+  "expansions": [
+    {
+      "name": "householders",
+      "edge": {"relation": "household", "alias": "hh", "join": "inner"},
+      "applies_to": ["academy_members"],
+      "exclude_existing": true,
+      "provenance": {
+        "grain": ["voterbase_id"],
+        "columns": [
+          {"name": "voterbase_id", "expression": "resolved.voterbase_id"},
+          {"name": "fact", "expression": "rel.hh.influencer_voterbase_id"},
+          {"name": "fact_type", "expression": {"literal": "householders of"}}
+        ]
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact": "long",
+      "columns": ["unit", "voterbase_id", "list_id", "candidate_count", "record_year"],
+      "grain": ["unit", "list_id", "voterbase_id"]
+    },
+    {
+      "artifact": "qualified",
+      "columns": ["unit", "voterbase_id", "list_id", "candidate_count"],
+      "layout": {"diststyle": "key", "distkey": "voterbase_id", "sortkey": ["voterbase_id"]}
+    },
+    {
+      "artifact": "wide",
+      "columns": ["voterbase_id", "academy_members", "influencer"],
+      "delivered": true,
+      "layout": {"encodings": {"voterbase_id": "raw", "influencer": "az64"}}
+    },
+    {
+      "artifact": "relationship_union",
+      "columns": ["voterbase_id", "fact", "fact_type", "unit"]
+    },
+    {
+      "artifact": "provenance",
+      "columns": ["voterbase_id", "list_id", "unit", "source_name", "record_year"]
+    }
+  ],
+  "delivery": {
+    "columns": [
+      {"name": "influencer", "expression": {"literal": 1}},
+      {
+        "name": "audience",
+        "sql_type": "character varying(14)",
+        "expression": {"arith": "TRIM(BOTH ', ' FROM rollup_a || ', ' || rollup_b)"}
+      }
+    ],
+    "grants": [{"privilege": "select", "grantee_kind": "group", "grantee": "influencers"}],
+    "layout": {"sortkey": ["voterbase_id"]}
+  },
+  "version": 1
+}

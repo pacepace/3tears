@@ -52,12 +52,14 @@ this field cannot both keep the short spelling; the enforcement rule is
 the live guard and wins. ``dsm-task-01b``'s ``SetExpr.dedup_key`` is
 renamed for the same reason.
 
-:class:`ArtifactHandle` is a deliberately NARROW seam.
-``dsm-task-01d``'s ``ArtifactRef`` replaces it and adds ``scope``,
-``datasource``, ``run`` (:class:`UpstreamPin`), ``artifact``,
-``schema_expr``, and ``projection``. Only the three discriminating cases
-the corpus's exclusion and rollup rows need are carried here, so nothing
-in this shard pre-empts that model.
+``dsm-task-01d`` replaced ``dsm-task-01b``'s narrow ``ArtifactHandle``
+with :class:`~threetears.datasources.definition.source.ArtifactRef`,
+which carries the same three discriminating cases plus ``scope``,
+``datasource``, ``run``, ``artifact``, ``schema_expr``, and
+``projection``. There is no handle type left: two overlapping references
+to one concept is exactly the drift this package refuses elsewhere, and
+the subtrahend of an exclusion and the target of a membership test are
+the same kind of thing.
 """
 
 from __future__ import annotations
@@ -68,9 +70,9 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from threetears.datasources.definition.source import ArtifactRef, ArtifactScope, ArtifactStage
+
 __all__ = [
-    "ArtifactHandle",
-    "ArtifactStage",
     "ExclusionLevel",
     "ExclusionSpec",
     "UnexpandedExclusion",
@@ -89,17 +91,6 @@ class UnexpandedExclusion(ValueError):
     """
 
 
-class ArtifactStage(StrEnum):
-    """stage of a set of rows an exclusion or a reference names.
-
-    :cvar RESOLVED: materialized long rows, before qualification
-    :cvar QUALIFIED: rows surviving the qualification stage
-    """
-
-    RESOLVED = "resolved"
-    QUALIFIED = "qualified"
-
-
 class ExclusionLevel(StrEnum):
     """where the anti-join sits relative to the group-by.
 
@@ -110,53 +101,6 @@ class ExclusionLevel(StrEnum):
 
     PRE_AGGREGATE = "pre_aggregate"
     POST_AGGREGATE = "post_aggregate"
-
-
-class ArtifactHandle(BaseModel):
-    """narrow reference to one set of rows, by exactly one of three kinds.
-
-    Replaced by ``dsm-task-01d``'s ``ArtifactRef``, which adds ``scope``,
-    ``datasource``, ``run``, ``artifact``, ``schema_expr``, and
-    ``projection``. The three kinds here are the ones the corpus's
-    exclusion and rollup rows exercise: a unit of THIS definition at a
-    named stage, another definition's published output, and an external
-    governed relation.
-
-    :ivar unit: unit of this definition
-    :ivar stage: which stage of that unit; required with :attr:`unit` and
-        forbidden without it, because the resolved and qualified sets of
-        one unit are different sets
-    :ivar dataset: another definition, by name
-    :ivar table: external relation, by its authored name
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    unit: str | None = Field(default=None, min_length=1)
-    stage: ArtifactStage | None = None
-    dataset: str | None = Field(default=None, min_length=1)
-    table: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def _names_exactly_one_kind(self) -> Self:
-        """require exactly one kind, and a stage for a unit alone.
-
-        :returns: validated handle
-        :rtype: ArtifactHandle
-        :raises ValueError: no kind or more than one kind is named, a
-            unit carries no stage, or a non-unit carries one
-        """
-        named = [name for name in ("unit", "dataset", "table") if getattr(self, name) is not None]
-        if len(named) != 1:
-            raise ValueError(f"an artifact handle names exactly one of unit / dataset / table; got {named or 'none'}")
-        if self.unit is not None and self.stage is None:
-            raise ValueError(
-                f"unit {self.unit!r} carries no stage; the resolved and qualified sets of one unit "
-                "are different sets, and subtracting the wrong one changes the audience silently"
-            )
-        if self.unit is None and self.stage is not None:
-            raise ValueError(f"stage {self.stage.value!r} applies to a unit of this definition only")
-        return self
 
 
 _REQUIRED_TRIPLE: dict[str, str] = {
@@ -197,7 +141,7 @@ class ExclusionSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    subtrahends: list[ArtifactHandle] = Field(default_factory=list)
+    subtrahends: list[ArtifactRef] = Field(default_factory=list)
     all_prior: bool = False
     key_columns: list[str] = Field(min_length=1)
     level: ExclusionLevel
@@ -242,7 +186,8 @@ class ExclusionSpec(BaseModel):
             raise ValueError("key_columns carries a blank column name")
         if len(self.key_columns) != len(set(self.key_columns)):
             raise ValueError(f"key_columns names a column twice: {self.key_columns!r}")
-        if len(self.subtrahends) != len(set(self.subtrahends)):
+        subtracted = [handle.model_dump_json() for handle in self.subtrahends]
+        if len(subtracted) != len(set(subtracted)):
             raise ValueError("subtrahends names the same set twice")
         return self
 
@@ -273,7 +218,11 @@ class ExclusionSpec(BaseModel):
         expanded = self
         if self.all_prior:
             already = {handle.unit for handle in self.subtrahends if handle.unit is not None}
-            edges = [ArtifactHandle(unit=name, stage=self.stage) for name in prior if name not in already]
+            edges = [
+                ArtifactRef(scope=ArtifactScope.THIS_DEFINITION, unit=name, stage=self.stage)
+                for name in prior
+                if name not in already
+            ]
             expanded = self.model_copy(update={"subtrahends": [*self.subtrahends, *edges]})
         return expanded
 

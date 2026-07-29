@@ -39,12 +39,14 @@ refused in a resolution predicate because they name rows that do not
 exist yet. Both mis-binds are otherwise silent and both change the
 audience.
 
-Seams still open, named so they are not mistaken for omissions:
-``Resolution.source`` carries the authored NAME of its fact source until
-``dsm-task-01d`` replaces it with ``SourceRef``, and ``Unit.provenance``
-/ ``Resolution.provenance`` (``ProvenanceSpec``) land there too. Until
-then that field carries a name and ``extra="forbid"`` refuses anything
-else loudly.
+``dsm-task-01d`` closed the seams ``dsm-task-01a`` left here.
+:attr:`Resolution.source` is a
+:data:`~threetears.datasources.definition.source.SourceRef` rather than a
+name, so a resolution can read a fact table, a raw body, a literal id
+set, or another artifact; and :attr:`Unit.provenance` /
+:attr:`Resolution.provenance` carry the per-person rationale, which is
+authored per RESOLUTION because the corpus's nine hand-written bodies are
+not recoverable from the unit query they belong to.
 """
 
 from __future__ import annotations
@@ -63,7 +65,9 @@ from threetears.datasources.definition.measure import (
     validate_unique_measure_names,
 )
 from threetears.datasources.definition.namespace import BindingStage, reject_unbindable
+from threetears.datasources.definition.provenance import ProvenanceSpec
 from threetears.datasources.definition.relation import RelationRef, validate_relation_aliases
+from threetears.datasources.definition.source import SourceRef
 
 __all__ = [
     "DuplicateUnitName",
@@ -100,8 +104,10 @@ class UnqualifiedUnits(ValueError):
 class Resolution(BaseModel):
     """one way a unit resolves entities, out of the set that unit carries.
 
-    :ivar source: fact source name, or ``None`` for a bridge-only
-        resolution; ``dsm-task-01d`` replaces the type with ``SourceRef``
+    :ivar source: where this resolution's rows come from, or ``None`` for
+        a bridge-only resolution -- which is legal and shipped, since a
+        unit declared with no ``facts_table`` and no filters resolves
+        through the bridge alone
     :ivar bridge: bridge this resolution matches through, or ``None`` for
         a literal source
     :ivar relations: per-resolution FROM extensions, by authored alias
@@ -110,16 +116,20 @@ class Resolution(BaseModel):
         / ``rel.<alias>.*`` / ``param.*``
     :ivar having: post-aggregate filter, the only place ``measure.<name>``
         binds
+    :ivar provenance: per-person rationale this resolution emits;
+        authored here rather than on the unit because the corpus's bodies
+        are per-resolution and not recoverable from the unit query
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    source: str | None = None
+    source: SourceRef | None = None
     bridge: BridgeRef | None = None
     relations: list[RelationRef] = Field(default_factory=list)
     measures: list[Measure] = Field(default_factory=list)
     predicate: Predicate | None = None
     having: Predicate | None = None
+    provenance: ProvenanceSpec | None = None
 
     @model_validator(mode="after")
     def _predicates_bind_legal_namespaces(self) -> Self:
@@ -205,6 +215,9 @@ class Unit(BaseModel):
         entity-keyed and record-keyed exclusion give different audiences,
         and pre- and post-aggregate exclusion differ because the anti-join
         sits before the group-by that computes the quality measure
+    :ivar provenance: unit-level rationale, where every resolution shares
+        one body; a resolution declaring its own overrides nothing and is
+        emitted beside this
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -214,6 +227,7 @@ class Unit(BaseModel):
     resolutions: list[Resolution] = Field(min_length=1)
     exclude: ExclusionSpec | None = None
     qualify: Qualification | None = None
+    provenance: ProvenanceSpec | None = None
 
     @model_validator(mode="after")
     def _labels_are_distinct(self) -> Self:

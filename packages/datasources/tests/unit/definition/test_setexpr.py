@@ -278,7 +278,7 @@ class TestIntersectInTwoPositions:
         node = ResolutionIntersect.model_validate(
             {
                 "alias": "linkedin_job_titles",
-                "against": {"unit": "linkedin_job_titles", "stage": "resolved"},
+                "against": {"scope": "this_definition", "unit": "linkedin_job_titles", "stage": "resolved"},
                 "key_columns": ["voterbase_id"],
                 "payload": [{"name": "linkedin_list_ids", "column": "list_ids"}],
             }

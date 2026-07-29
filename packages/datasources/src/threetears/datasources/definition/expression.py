@@ -32,23 +32,45 @@ re-emission would actually corrupt -- the corpus carries single AND
 doubled backslash classes inside one regex literal, and a doubled single
 quote inside a string literal.
 
-``Predicate`` here carries ``all_of`` / ``any_of`` / ``negate`` /
-``compare``. ``membership``, ``concept``, and ``raw`` need
-``ArtifactRef`` and the concept layer and land in ``dsm-task-01d``;
-``extra="forbid"`` means an early attempt to author one fails loudly
-instead of being dropped.
+``Predicate`` carries ``all_of`` / ``any_of`` / ``negate`` / ``compare``
+and, from ``dsm-task-01d``, ``membership`` / ``concept`` / ``raw``.
+:class:`~threetears.datasources.definition.source.Membership` is defined
+in :mod:`~threetears.datasources.definition.source` because it points at
+a ``SourceRef``, and that module closes the forward reference. Importing
+the ``definition`` package always imports it, so the model is complete by
+the time anything can use it.
+
+**THE LITERAL CARRIES ITS TYPE, AND THAT IS A CORRECTNESS PROPERTY.**
+Before ``dsm-task-01d`` a literal stored the scalar alone, and JSON
+erases the difference between a text ``'5'`` and a decimal ``5``::
+
+    LiteralExpression(literal=Decimal('5'))  ->  {"literal": "5"}  ->  '5'
+
+Precision was never at risk -- ``float`` is excluded from
+:data:`ScalarValue` and coerced to ``Decimal``, so a fraction never
+passes through a binary float. What was lost is the TYPE, and losing it
+costs two things the content hash cannot afford: a definition carrying a
+decimal literal comes back structurally different after a store-and-load
+cycle, and a text ``'1.0'`` compared against a numeric column -- which a
+real committed definition does -- hashes identically to the numeric
+``1.0``, so the edit between them mints no version. So
+:attr:`LiteralExpression.literal_type` is a stored field, inferred from
+the authored scalar when it is not written, and it round-trips.
 """
 
 from __future__ import annotations
 
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Annotated, Self, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Self, TypeAlias
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
 
 from threetears.datasources.definition.namespace import Namespace, Reference
+
+if TYPE_CHECKING:
+    from threetears.datasources.definition.source import Membership
 
 __all__ = [
     "ArithmeticExpression",
@@ -56,8 +78,10 @@ __all__ = [
     "ComparisonOperator",
     "Expression",
     "LiteralExpression",
+    "LiteralType",
     "Predicate",
     "ScalarValue",
+    "scan_references",
 ]
 
 ScalarValue: TypeAlias = bool | int | Decimal | str | None
@@ -66,6 +90,13 @@ ScalarValue: TypeAlias = bool | int | Decimal | str | None
 ``Decimal`` rather than ``float`` throughout, so a threshold authored as
 ``1.5`` survives serialization without binary-float rounding. ``bool``
 precedes ``int`` so ``True`` stays a boolean.
+
+Every OTHER field carrying a ``ScalarValue`` -- a parameter default, an
+enumeration member, a sentinel value, a swept value -- is declared beside
+a :class:`~threetears.datasources.definition.parameters.ParameterType`,
+so the type is already stated there and no second tag is needed. The
+literal operand is the one place a scalar stands alone, which is why it
+carries :class:`LiteralType`.
 """
 
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -125,6 +156,29 @@ class ComparisonOperator(StrEnum):
 _UNARY_OPERATORS = frozenset({ComparisonOperator.IS_NULL, ComparisonOperator.IS_NOT_NULL})
 
 
+def scan_references(text: str) -> tuple[Reference, ...]:
+    """namespaced references scanned out of an authored SQL-ish string.
+
+    Used by arithmetic operands and by ``raw:`` fragments, so a fragment
+    binding ``source.*`` at the qualification stage is refused exactly as
+    a typed operand is. The scan over-detects rather than under-detects --
+    a namespaced-looking token inside a quoted substring is treated as a
+    reference -- because over-detection fails loudly and under-detection
+    produces a wrong audience silently.
+
+    :param text: authored text
+    :ptype text: str
+    :returns: references in first-appearance order, de-duplicated
+    :rtype: tuple[Reference, ...]
+    """
+    seen: dict[str, Reference] = {}
+    for match in _REFERENCE_SCANNER.finditer(text):
+        found = match.group(0)
+        if found not in seen:
+            seen[found] = Reference(ref=found)
+    return tuple(seen.values())
+
+
 def _canonicalise_operator(value: object) -> object:
     """upper-case and whitespace-collapse a word operator before validation.
 
@@ -145,18 +199,138 @@ def _canonicalise_operator(value: object) -> object:
     return canonical
 
 
+class LiteralType(StrEnum):
+    """declared type of an authored literal operand.
+
+    Stored rather than inferred at read time, because JSON has no way to
+    tell a text ``"5"` from a decimal ``5`` once both are written as the
+    same scalar, and the two are different SQL.
+
+    :cvar NULL: SQL ``NULL``
+    :cvar BOOLEAN: ``true`` / ``false``
+    :cvar INTEGER: whole number
+    :cvar DECIMAL: exact decimal; never a binary float
+    :cvar TEXT: string literal
+    """
+
+    NULL = "null"
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    DECIMAL = "decimal"
+    TEXT = "text"
+
+
+def _infer_literal_type(value: object) -> LiteralType:
+    """derive the type tag from an authored Python scalar.
+
+    :param value: authored scalar
+    :ptype value: object
+    :returns: inferred type tag
+    :rtype: LiteralType
+    :raises ValueError: value is not a scalar a literal may hold
+    """
+    inferred: LiteralType
+    if value is None:
+        inferred = LiteralType.NULL
+    elif isinstance(value, bool):
+        inferred = LiteralType.BOOLEAN
+    elif isinstance(value, int):
+        inferred = LiteralType.INTEGER
+    elif isinstance(value, Decimal | float):
+        inferred = LiteralType.DECIMAL
+    elif isinstance(value, str):
+        inferred = LiteralType.TEXT
+    else:
+        raise ValueError(f"literal {value!r} is not a scalar; a literal holds null, boolean, integer, decimal, or text")
+    return inferred
+
+
+def _coerce_to_literal_type(value: object, literal_type: LiteralType) -> ScalarValue:
+    """coerce an authored scalar onto its declared type tag.
+
+    Reading a stored literal back is the case that matters: JSON hands
+    over ``"5"`` for a decimal and for text alike, and only the tag says
+    which was meant.
+
+    :param value: authored scalar, possibly the JSON spelling of another type
+    :ptype value: object
+    :param literal_type: declared type tag
+    :ptype literal_type: LiteralType
+    :returns: scalar of the declared type
+    :rtype: ScalarValue
+    :raises ValueError: value cannot carry the declared type
+    """
+    coerced: ScalarValue
+    if literal_type is LiteralType.NULL:
+        if value is not None:
+            raise ValueError(f"literal_type 'null' carries no value; got {value!r}")
+        coerced = None
+    elif literal_type is LiteralType.BOOLEAN:
+        if not isinstance(value, bool):
+            raise ValueError(f"literal_type 'boolean' requires true or false; got {value!r}")
+        coerced = value
+    elif literal_type is LiteralType.INTEGER:
+        if isinstance(value, bool) or not isinstance(value, int | str):
+            raise ValueError(f"literal_type 'integer' requires a whole number; got {value!r}")
+        coerced = int(value)
+    elif literal_type is LiteralType.DECIMAL:
+        if isinstance(value, bool) or not isinstance(value, int | float | str | Decimal):
+            raise ValueError(f"literal_type 'decimal' requires a number; got {value!r}")
+        try:
+            coerced = Decimal(str(value))
+        except InvalidOperation as error:
+            raise ValueError(f"literal_type 'decimal' cannot carry {value!r}") from error
+    else:
+        if not isinstance(value, str):
+            raise ValueError(f"literal_type 'text' requires a string; got {value!r}")
+        coerced = value
+    return coerced
+
+
 class LiteralExpression(BaseModel):
-    """authored constant operand.
+    """authored constant operand, carrying its own type.
 
     Written explicitly so a bare string is never ambiguous between a
-    column reference and a data value.
+    column reference and a data value, and typed explicitly so a stored
+    literal is never ambiguous between text and a number.
 
     :ivar literal: constant value; ``None`` is SQL ``NULL``
+    :ivar literal_type: declared type; inferred from :attr:`literal` when
+        the authored form omits it, and always written when serialized
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     literal: ScalarValue
+    literal_type: LiteralType
+
+    @model_validator(mode="before")
+    @classmethod
+    def _literal_carries_its_type(cls, value: object) -> object:
+        """infer the type tag, or coerce the scalar onto the declared one.
+
+        :param value: raw authored payload
+        :ptype value: object
+        :returns: payload carrying a scalar and a matching type tag
+        :rtype: object
+        :raises ValueError: the scalar and the declared type disagree
+        """
+        payload: object = value
+        if isinstance(value, dict) and "literal" in value:
+            scalar = value["literal"]
+            declared = value.get("literal_type")
+            if declared is None:
+                payload = {**value, "literal_type": _infer_literal_type(scalar)}
+                if isinstance(scalar, float):
+                    payload = {**payload, "literal": Decimal(str(scalar))}
+            else:
+                literal_type = LiteralType(declared)
+                payload = {
+                    **value,
+                    "literal": _coerce_to_literal_type(scalar, literal_type),
+                    "literal_type": literal_type,
+                }
+        return payload
 
     @property
     def references(self) -> tuple[Reference, ...]:
@@ -206,12 +380,7 @@ class ArithmeticExpression(BaseModel):
         :returns: references in first-appearance order, de-duplicated
         :rtype: tuple[Reference, ...]
         """
-        seen: dict[str, Reference] = {}
-        for match in _REFERENCE_SCANNER.finditer(self.arith):
-            text = match.group(0)
-            if text not in seen:
-                seen[text] = Reference(ref=text)
-        return tuple(seen.values())
+        return scan_references(self.arith)
 
 
 def _coerce_expression(value: object) -> object:
@@ -295,6 +464,9 @@ class Comparison(BaseModel):
         return _expression_references(self.left) + right
 
 
+_PREDICATE_FORMS: tuple[str, ...] = ("all_of", "any_of", "negate", "compare", "membership", "concept", "raw")
+
+
 class Predicate(BaseModel):
     """recursive boolean expression; exactly one field is set.
 
@@ -302,14 +474,21 @@ class Predicate(BaseModel):
     because the corpus's emitted SQL preserves it byte-for-byte and parity
     diffs against that.
 
-    ``membership``, ``concept``, and ``raw`` are named by design section 7
-    and land in ``dsm-task-01d`` with ``ArtifactRef`` and the concept
-    layer. Until then ``extra="forbid"`` refuses them loudly.
+    :attr:`concept` and :attr:`raw` are the two STRING inputs, and both
+    are parsed into an AST and re-emitted rather than pasted. They are
+    scanned for namespaced references here so the stage guard sees them --
+    a ``raw:`` fragment naming ``source.*`` inside a qualification
+    predicate is refused exactly as a typed one is.
 
     :ivar all_of: conjunction, in authored order
     :ivar any_of: disjunction, in authored order
     :ivar negate: negation of one predicate
     :ivar compare: one comparison
+    :ivar membership: ``IN`` / ``NOT IN`` a value list or a source
+    :ivar concept: governed concept name, resolving a ``sql_fragment``;
+        an audience-local YAML anchor is this made first-class
+    :ivar raw: boolean SQL fragment, an escape hatch ``parity-task-03``
+        scores
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -318,26 +497,49 @@ class Predicate(BaseModel):
     any_of: list[Predicate] | None = None
     negate: Predicate | None = None
     compare: Comparison | None = None
+    membership: Membership | None = None
+    concept: str | None = None
+    raw: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one_form(self) -> Self:
-        """require exactly one form, and reject an empty branch list.
+        """require exactly one form, and reject an empty branch or fragment.
 
         :returns: validated predicate
         :rtype: Predicate
-        :raises ValueError: no form or more than one form is set, or a
-            branch list is empty
+        :raises ValueError: no form or more than one form is set, a branch
+            list is empty, or a string form carries no text
         """
-        set_fields = [name for name in ("all_of", "any_of", "negate", "compare") if getattr(self, name) is not None]
+        set_fields = [name for name in _PREDICATE_FORMS if getattr(self, name) is not None]
         if len(set_fields) != 1:
             raise ValueError(
-                f"predicate carries exactly one of all_of / any_of / negate / compare; got {set_fields or 'none'}"
+                f"predicate carries exactly one of {' / '.join(_PREDICATE_FORMS)}; got {set_fields or 'none'}"
             )
         for name in ("all_of", "any_of"):
             branches = getattr(self, name)
             if branches is not None and not branches:
                 raise ValueError(f"{name} carries no branches")
+        for name in ("concept", "raw"):
+            text = getattr(self, name)
+            if text is not None and not text.strip():
+                raise ValueError(f"{name} carries no text")
         return self
+
+    @property
+    def is_escape_hatch(self) -> bool:
+        """whether a ``raw:`` fragment is reachable from this tree.
+
+        ``concept`` is NOT an escape hatch: a governed concept resolves a
+        reviewed fragment through the knowledge layer, where a ``raw:``
+        string is authored inline and reviewed by nobody.
+
+        :returns: True when any branch carries ``raw``
+        :rtype: bool
+        """
+        nested = [*(self.all_of or ()), *(self.any_of or ())]
+        if self.negate is not None:
+            nested.append(self.negate)
+        return self.raw is not None or any(branch.is_escape_hatch for branch in nested)
 
     @property
     def references(self) -> tuple[Reference, ...]:
@@ -354,4 +556,8 @@ class Predicate(BaseModel):
             collected = collected + self.negate.references
         if self.compare is not None:
             collected = collected + self.compare.references
+        if self.membership is not None:
+            collected = collected + self.membership.references
+        if self.raw is not None:
+            collected = collected + scan_references(self.raw)
         return collected
