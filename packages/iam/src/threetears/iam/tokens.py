@@ -8,10 +8,25 @@ group, or a scope.
 That is a security property, not a style preference. Authorization evaluated
 live at request time means a revoked grant takes effect immediately; a grant
 baked into a token takes effect whenever that token happens to expire, which
-for a long-lived session is exactly when you least want it. The claim set is
-therefore pinned -- on mint AND on verify -- and a token carrying an
-unrecognized claim is rejected rather than trusted. A smuggled ``role`` claim
-must be a verification failure, not a field nobody reads yet.
+for a long-lived session is exactly when you least want it.
+
+**How that is enforced differs between mint and verify, deliberately.** On mint
+the claim set is pinned EXACTLY: this package builds the payload, so anything
+outside :data:`KNOWN_CLAIMS` is a bug in this package and fails loudly. On
+verify the payload came from a peer that may be running a different version of
+this package, so an exact pin makes every claim addition a flag day -- the
+moment one service mints a new identity claim, every service on the older
+version rejects every token it issues, and the outage is total. Verification
+therefore rejects the claims that would actually be dangerous
+(:data:`FORBIDDEN_CLAIMS` -- authorization-shaped names) and ignores merely
+unrecognized ones, which no code here reads.
+
+The distinction matters because the threat is specific. A smuggled ``role``
+claim must be a verification failure, not a field nobody reads yet, and the
+signature check cannot catch it: the danger is not a forged token but a SECOND
+legitimate signer inside the platform drifting away from identity-only. A new
+``locale`` claim is not that, and treating the two identically bought an outage
+to prevent a typo.
 
 **Two signing schemes, one claim vocabulary.** A service that publishes a JWKS
 and wants its tokens verifiable by other services signs EdDSA
@@ -45,6 +60,7 @@ __all__ = [
     "BASE_CLAIMS",
     "DEFAULT_ACCESS_TTL",
     "DEFAULT_REFRESH_TTL",
+    "FORBIDDEN_CLAIMS",
     "KNOWN_CLAIMS",
     "OPTIONAL_CLAIMS",
     "Ed25519JwksVerifier",
@@ -94,11 +110,50 @@ BASE_CLAIMS: Final[frozenset[str]] = frozenset(
 )
 
 #: Claims a token MAY carry, each corresponding to an optional field on
-#: :class:`SessionClaims`. Anything outside ``BASE_CLAIMS | OPTIONAL_CLAIMS`` is a
-#: verification failure -- that is what stops a role claim from riding along unnoticed.
+#: :class:`SessionClaims`. Anything outside ``BASE_CLAIMS | OPTIONAL_CLAIMS`` is refused at
+#: MINT -- this package assembles that payload, so an unexpected claim there is its own bug.
 OPTIONAL_CLAIMS: Final[frozenset[str]] = frozenset({"customer_id", "cnf", "act", "act_reason", "act_restriction"})
 
 KNOWN_CLAIMS: Final[frozenset[str]] = BASE_CLAIMS | OPTIONAL_CLAIMS
+
+#: Claims that are a verification failure wherever they appear -- the authorization-shaped
+#: names, which this token type must never carry (see the module docstring).
+#:
+#: A DENYLIST rather than the inverse of ``KNOWN_CLAIMS`` on purpose. Verification sees
+#: payloads minted by peers that may run a different version of this package, so refusing
+#: everything unrecognized makes adding an identity claim a fleet-wide flag day; refusing
+#: these makes smuggling a grant impossible. The asymmetry is the point: an unrecognized
+#: claim is ignored because nothing reads it, while these are refused precisely because
+#: something might later be tempted to.
+#:
+#: Spelling variants are listed explicitly rather than matched by prefix. A prefix rule
+#: would be both leakier (it cannot know the next vocabulary) and stricter in the wrong
+#: places (``scoped_to`` is not a scope), and a name that has to be added here later is a
+#: one-line change with a test, not a redesign.
+FORBIDDEN_CLAIMS: Final[frozenset[str]] = frozenset(
+    {
+        "admin",
+        "authorities",
+        "authorization",
+        "entitlement",
+        "entitlements",
+        "grant",
+        "grants",
+        "group",
+        "groups",
+        "is_admin",
+        "perm",
+        "permission",
+        "permissions",
+        "privilege",
+        "privileges",
+        "role",
+        "roles",
+        "scope",
+        "scopes",
+        "scp",
+    }
+)
 
 
 class TokenType(StrEnum):
@@ -426,11 +481,14 @@ def verify_session_token(
     :raises TokenError: on any verification failure.
     """
     payload = verifier.verify(token)
-    unexpected = set(payload) - KNOWN_CLAIMS
-    if unexpected:
-        # The invariant that makes "identity only" enforceable rather than aspirational: a
-        # token carrying a claim this package does not know about is rejected, not ignored.
-        raise TokenError(f"token carries unexpected claims: {sorted(unexpected)}.")
+    forbidden = set(payload) & FORBIDDEN_CLAIMS
+    if forbidden:
+        # The invariant that makes "identity only" enforceable rather than aspirational.
+        # Scoped to the authorization-shaped names rather than to everything unrecognized:
+        # the danger is a second legitimate signer in the platform smuggling a grant, which
+        # the signature check cannot catch, and that danger does not extend to a claim whose
+        # only property is being newer than this version. See the module docstring.
+        raise TokenError(f"token carries forbidden claims: {sorted(forbidden)}.")
     claims = _payload_to_claims(payload)
     if expected_type is not None and claims.type is not expected_type:
         raise TokenError(f"expected a {expected_type.value} token.")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -13,6 +14,8 @@ from jwt.algorithms import ECAlgorithm
 from threetears.core.security.identity_token import build_jwks
 from threetears.iam.tokens import (
     BASE_CLAIMS,
+    FORBIDDEN_CLAIMS,
+    KNOWN_CLAIMS,
     Ed25519JwksVerifier,
     Ed25519Signer,
     HmacSigner,
@@ -214,7 +217,7 @@ def test_a_smuggled_role_claim_is_rejected(signing_key: Ed25519PrivateKey, ed_ve
     # The invariant that makes "identity only" enforceable rather than aspirational.
     payload = _wire_payload(_claims(), role="platform-admin")
     smuggled = jwt.encode(payload, key=signing_key, algorithm="EdDSA", headers={"kid": "key-1"})
-    with pytest.raises(TokenError, match="unexpected claims"):
+    with pytest.raises(TokenError, match="forbidden claims"):
         verify_session_token(smuggled, verifier=ed_verifier)
 
 
@@ -358,3 +361,68 @@ def test_sole_audience_refuses_a_multi_valued_audience(audience: tuple[str, ...]
     exists to enforce."""
     with pytest.raises(TokenError, match="exactly one audience"):
         sole_audience(_claims(aud=audience))
+
+
+class TestIdentityOnlyIsEnforcedAsymmetrically:
+    """Mint pins the claim set exactly; verify refuses only what is dangerous.
+
+    Verification sees payloads minted by peers that may run a different version of this
+    package. Refusing everything unrecognized there made adding one identity claim a
+    fleet-wide flag day -- the older side rejects every token the newer side issues, total
+    rather than partial. Refusing the authorization-shaped names keeps the property that
+    matters: a grant cannot be smuggled past a verifier, including by a second legitimate
+    signer inside the platform, which is the case the signature check cannot catch.
+    """
+
+    @pytest.mark.parametrize("claim", ["role", "roles", "scope", "scp", "groups", "permissions", "is_admin"])
+    def test_an_authorization_claim_is_refused(
+        self, claim: str, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier
+    ) -> None:
+        """The property the module docstring promises, held at the verification boundary."""
+        token = ed_signer.sign(_wire_payload(_claims(), **{claim: "anything"}))
+
+        with pytest.raises(TokenError, match="forbidden"):
+            verify_session_token(token, verifier=ed_verifier)
+
+    def test_every_forbidden_name_is_refused(self, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
+        """Membership implies proof: no name sits in the set untested."""
+        for claim in sorted(FORBIDDEN_CLAIMS):
+            token = ed_signer.sign(_wire_payload(_claims(), **{claim: "anything"}))
+            with pytest.raises(TokenError, match="forbidden"):
+                verify_session_token(token, verifier=ed_verifier)
+
+    def test_an_unrecognized_identity_claim_verifies(
+        self, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier
+    ) -> None:
+        """A newer peer's benign claim must not 401 every request an older peer sees."""
+        token = ed_signer.sign(_wire_payload(_claims(), locale="en-IE"))
+
+        claims = verify_session_token(token, verifier=ed_verifier)
+
+        assert claims.sub == "user-1"
+
+    def test_an_unrecognized_claim_reaches_no_field(
+        self, ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier
+    ) -> None:
+        """Ignored means ignored -- it is readable nowhere on the returned claims."""
+        token = ed_signer.sign(_wire_payload(_claims(), locale="en-IE"))
+
+        claims = verify_session_token(token, verifier=ed_verifier)
+
+        assert not hasattr(claims, "locale")
+
+    def test_every_claims_field_is_a_known_claim(self) -> None:
+        """What mint's exact-set guard exists to catch: a field added without a claim name.
+
+        The guard itself is unreachable through the public API by design -- mint assembles
+        the payload from :class:`SessionClaims`, so it can only fire if that class gains a
+        field this module was never taught to encode. Asserting the correspondence directly
+        is what actually protects against that, and it fails at the moment the field is
+        added rather than the first time someone mints.
+        """
+        fields = {f.name for f in dataclasses.fields(SessionClaims)}
+        assert fields <= KNOWN_CLAIMS
+
+    def test_forbidden_and_known_sets_do_not_overlap(self) -> None:
+        """A name in both would make a legitimate claim unverifiable -- and is a typo."""
+        assert not (FORBIDDEN_CLAIMS & KNOWN_CLAIMS)
