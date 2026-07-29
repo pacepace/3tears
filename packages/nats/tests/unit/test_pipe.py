@@ -28,6 +28,7 @@ from threetears.nats.pipe import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
     PipeEndpoint,
+    PipeIdleTimeout,
     PipeError,
     PipeProtocolError,
     PipeRemoteError,
@@ -700,3 +701,33 @@ async def test_a_window_that_is_not_a_multiple_of_the_chunk_never_overruns() -> 
         )
     finally:
         producer.cancel()
+
+
+async def test_a_peer_that_goes_silent_fails_the_stream_instead_of_hanging() -> None:
+    """A live stream must have a liveness bound, and forever-with-no-exception is not one.
+
+    Every other timeout in this module is spent BEFORE the first byte moves. Once a stream is
+    established, a peer that stops existing WITHOUT publishing -- killed, partitioned, evicted --
+    cannot send the error frame the design otherwise leans on. The far end then blocks forever
+    with no exception and no log, which a caller cannot distinguish from a peer being quiet.
+
+    The fault is deliberately its own type rather than a remote one: attributing silence to a
+    peer REPORT would name the single thing that provably did not happen.
+    """
+    bus = _Bus()
+    endpoint = _endpoint(max_chunk=64, credit=256)
+    owner = PipeStream(nats=_FakePipeTransport(bus), endpoint=endpoint, side="owner")
+    # Through the public constructor rather than by reaching into the instance: an inline
+    # SLF001 waiver here would bypass this repo's exemption ledger, and the bound is a
+    # parameter precisely so a caller can choose it.
+    caller = PipeStream(
+        nats=_FakePipeTransport(bus),
+        endpoint=endpoint,
+        side="caller",
+        idle_timeout=timedelta(milliseconds=50),
+    )
+    await owner.open()
+    await caller.open()
+
+    with pytest.raises(PipeIdleTimeout):
+        await caller.receive()

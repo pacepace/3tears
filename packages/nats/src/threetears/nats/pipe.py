@@ -110,7 +110,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol, TypeVar
 
 from threetears.observe import get_logger
 
@@ -126,10 +126,12 @@ __all__ = [
     "DEFAULT_ATTACH_TIMEOUT",
     "DEFAULT_CREDIT_WINDOW_BYTES",
     "DEFAULT_MAX_CHUNK_BYTES",
+    "DEFAULT_IDLE_TIMEOUT",
     "DEFAULT_READY_TIMEOUT",
     "PIPE_PROTOCOL_VERSION",
     "PipeEndpoint",
     "PipeError",
+    "PipeIdleTimeout",
     "PipeProtocolError",
     "PipeRemoteError",
     "PipeSequenceGapError",
@@ -141,6 +143,9 @@ __all__ = [
     "serve_pipe",
 ]
 
+
+#: what :meth:`PipeStream._wait_bounded` hands back, whatever it was given.
+_T = TypeVar("_T")
 
 log = get_logger(__name__)
 
@@ -200,6 +205,20 @@ DEFAULT_CREDIT_WINDOW_BYTES: Final[int] = 1024 * 1024
 #: :data:`threetears.nats.DEFAULT_FORWARD_TIMEOUT`'s reasoning -- a missing
 #: owner should surface fast so the caller can retry.
 DEFAULT_ATTACH_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
+
+#: how long either end waits on a live stream before deciding the peer is gone.
+#:
+#: Every other timeout here is spent BEFORE the first byte moves, which left an established
+#: stream with no liveness bound at all: a peer that stops existing without publishing an error
+#: frame -- killed, partitioned, its pod evicted -- left the far end blocked forever with no
+#: exception and no log. The error frame the design leans on needs a peer alive enough to send
+#: it, which is exactly the case this covers and that one does not.
+#:
+#: Generous rather than tight, because a legitimately idle stream is ORDINARY here: an operator
+#: reading a challenge produces no framebuffer updates and no keystrokes for long stretches, and
+#: tearing that down would be worse than the hang. This is a backstop for a peer that is gone,
+#: not a policy on how briskly one must talk.
+DEFAULT_IDLE_TIMEOUT: Final[timedelta] = timedelta(minutes=10)
 
 #: how long an owner waits for the caller's ready frame before abandoning the
 #: stream. longer than the attach timeout because the caller has to subscribe
@@ -275,6 +294,21 @@ class PipeSequenceGapError(PipeError):
     a teardown rather than something to skip. the message names the stream
     (its nonce and the subject it arrived on) because a deployment runs many
     at once and the operator needs to know which session died.
+    """
+
+
+class PipeIdleTimeout(PipeError):
+    """raised when a live stream heard nothing from its peer for too long.
+
+    deliberately NOT a :class:`PipeRemoteError`: that one means the peer REPORTED a failure,
+    and a consumer reading a traceback uses the distinction to tell which end broke. this is a
+    local conclusion drawn from silence, and the whole reason it exists is the case where the
+    peer could not report anything -- killed, partitioned, evicted -- so attributing it to a
+    peer report would name the one thing that provably did not happen.
+
+    it is also not a :class:`PipeSequenceGapError`. a gap is positive evidence that a frame was
+    lost; silence is the absence of evidence either way, and the two want different responses
+    from an operator.
     """
 
 
@@ -648,10 +682,18 @@ class PipeStream:
     :ptype side: PipeSide
     """
 
-    def __init__(self, *, nats: PipeTransport, endpoint: PipeEndpoint, side: PipeSide) -> None:
+    def __init__(
+        self,
+        *,
+        nats: PipeTransport,
+        endpoint: PipeEndpoint,
+        side: PipeSide,
+        idle_timeout: timedelta = DEFAULT_IDLE_TIMEOUT,
+    ) -> None:
         self._nats = nats
         self._endpoint = endpoint
         self._side = side
+        self._idle_timeout = idle_timeout
         self._outbound = endpoint.subject("down" if side == "owner" else "up")
         self._inbound = endpoint.subject("up" if side == "owner" else "down")
         self._sub: Subscription | None = None
@@ -899,7 +941,28 @@ class PipeStream:
             # just unset, and this call would wait for an ack already spent.
             if self._unacked_bytes + frame_size <= self._endpoint.credit:
                 return
-            await self._credit.wait()
+            await self._wait_bounded(self._credit.wait(), "credit from the peer")
+
+    async def _wait_bounded(self, awaitable: Awaitable[_T], waiting_for: str) -> _T:
+        """Await *awaitable*, failing the stream if the peer goes silent for too long.
+
+        A stream with no bound blocks forever when a peer stops existing without publishing,
+        and forever with no exception is the one outcome a caller cannot handle: it looks
+        identical to a peer that is merely being quiet. Naming what was being waited for is
+        what makes the two distinguishable afterwards.
+        """
+        try:
+            return await asyncio.wait_for(awaitable, timeout=self._idle_timeout.total_seconds())
+        except TimeoutError:
+            self._fail(
+                PipeIdleTimeout(
+                    f"pipe stream {self._endpoint.nonce} waited "
+                    f"{self._idle_timeout.total_seconds():g}s for {waiting_for} and heard nothing; "
+                    f"treating the peer as gone"
+                )
+            )
+            self._raise_if_faulted()
+            raise  # unreachable: _raise_if_faulted always raises once _fail has run
 
     async def _emit_sequenced(self, tag: int, body: bytes) -> None:
         """publish a frame that consumes a data sequence and owes an ack."""
@@ -931,7 +994,7 @@ class PipeStream:
         self._raise_if_faulted()
         if self._peer_closed:
             return None
-        seq, body = await self._inbox.get()
+        seq, body = await self._wait_bounded(self._inbox.get(), "bytes from the peer")
         self._raise_if_faulted()
         self._consumed_seq = seq
         if body is None:
