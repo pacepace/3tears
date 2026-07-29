@@ -51,6 +51,15 @@ relies on lease mutual exclusion while both versions are live.
 
 
 **`3tears-nats` gains a family-scoped owner-routed forward subject, and the grants it needs.**
+NOT a complete repair of the refusal described below, and the residue is stated here rather than
+left for a reader to discover: `threetears.scrape.operator_control` still calls the UNSCOPED
+builders, and the unscoped family is granted to nobody (pinned by a test that says so). The control
+plane starts working when its caller can name the tool it serves, which is a later change. What
+lands here is the mechanism and the grant shape.
+
+The release carrying this must be a MINOR bump: `Subjects` and `threetears.nats.forward` both gain
+public API, and `3tears-scrape` consumes the family-scoped builders.
+
 `Subjects.forward` renders `{ns}.forward.{sha256hex(key)}`, and no principal in
 `subject_permissions.py` granted it -- so `threetears.scrape.operator_control.serve_session` and
 every message it carries is refused by auth-callout on any deployment that enforces these grants.
@@ -77,8 +86,10 @@ pod's own grant.
 
 **Tool pods can also open the bucket their display claim uses.** `KVLease` returns a bucket-name
 SUFFIX and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it, so the granted bucket is
-`{ns}-leases`. Without that grant `claim_session` is handed `lease=None`, logs, and serves the
-display unclaimed -- two pods can drive one browser. Proven by applying the minted permission set as
+`{ns}-leases`. Without that grant the claim fails hard rather than downgrading: `KVLease.acquire`
+defers opening the bucket to first use, and that open raises `KvError` after a JetStream timeout.
+(`lease=None` is a different path -- a platform passing no lease at all -- and that one does serve
+a display unclaimed.) Proven by applying the minted permission set as
 a real nats-server's `authorization` and driving a real `KVLease` through it.
 
 (The suffix that composition starts from is itself corrected in the entry above; before that fix it

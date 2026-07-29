@@ -65,8 +65,10 @@ any deployment that enforces these grants.
 **The session claim is blocked the same way.** `KVLease` defaults its bucket suffix to `leases`,
 which the transport prefixes to `{ns}-leases`
 (`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s `kv_buckets` grant is
-`({ns}-proxy_assertion_nonces,)` alone. A platform that cannot open the bucket passes `lease=None`,
-and `claim_session` then logs its two-pods-can-serve-one-display warning and yields anyway.
+`({ns}-proxy_assertion_nonces,)` alone, so the bucket is ungranted. `KVLease.acquire` defers the
+open to first use and it then raises `KvError` after a JetStream timeout -- a hard failure on first
+claim, not a silent downgrade. (`lease=None`, which does make `claim_session` yield unclaimed with a
+warning, is the separate case of a platform passing no lease at all.)
 
 **NATS publish has no backpressure, and the client already measures the consequence.**
 `packages/nats/src/threetears/nats/client.py` sets an explicit bounded `pending_size`
@@ -189,7 +191,7 @@ listed thing, not a parallel one.
 | Ownership with compare-and-swap renewal | `threetears.core.coordination.KVLease` | `{ns}-leases` ungranted to tool pods |
 | Which pod owns a display | `threetears.scrape.operator_session.claim_session` | none |
 | Control messages to that pod | `threetears.scrape.operator_control` | none, once `forward` is granted |
-| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | `relay_stream` hardcodes a TCP transport |
+| Operator page, noVNC, WebSocket route | `threetears.scrape.operator.build_operator_router` | closed: `relay_stream` takes a `DisplayTransport`, defaulting to the TCP opener |
 | Hub-side subscribe-then-forward shape | `aibots.hub.router.stream_bridge` | its unbounded queue is wrong for bytes; reuse the shape, not the buffering |
 | Authenticated, metered, audited call into a tool pod | `aibots.hub.ingress.dispatch_core` -> `CallProxy` | none; the attach rides it |
 | WebSocket on the hub | `app.add_api_websocket_route` | none |
@@ -513,8 +515,8 @@ does not block anything here at `replicaCount: 1`.
 - `packages/nats/src/threetears/nats/subject_permissions.py` -- `_tool_pod` and `_hub` grants,
   plus the lease bucket for `_tool_pod`, which is `{ns}-leases`: `KVLease` returns the bare suffix
   and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it. Written out because the wrong
-  spelling fails SILENTLY -- a pod that cannot open the bucket is handed `lease=None` and serves the
-  display unclaimed. `test_forward_grants_live.py` proves the grant against a real broker, and
+  spelling fails at the FIRST CLAIM, where `KVLease.acquire`'s deferred bucket open raises `KvError`
+  after a JetStream timeout. `test_forward_grants_live.py` proves the grant against a real broker, and
   `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant and the lease's own default as a
   pair so they cannot drift.
 

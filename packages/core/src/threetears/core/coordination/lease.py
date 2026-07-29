@@ -268,7 +268,7 @@ class KVLease:
         ``{namespace}-`` over it. Passing a name that already carries the
         namespace therefore produces it twice. The default is the constant
         ``"leases"`` for exactly that reason. default ``pod_id`` is
-        ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and unique per factory
+        ``f"pod-{uuid7().hex[:12]}"`` -- time-ordered and unique per factory
         instance.
 
         :param nats_client: connected canonical

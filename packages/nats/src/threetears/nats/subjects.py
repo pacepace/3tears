@@ -1223,6 +1223,28 @@ class Subjects:
         return Subject(path=f"{_ns()}.forward.{_digest_token(family)}.*", kind="pattern")
 
     @classmethod
+    def forward_scoped_any_family(cls) -> Subject:
+        """grant pattern spanning EVERY family's owner-routed keys, and no unscoped key.
+
+        the shape a principal that fronts every family needs: a caller which cannot know at
+        connect time which families it will address, because one connection serves them all.
+        both segments are wildcards, which is as narrow as this case can be -- there is no
+        per-family list to mint exact literals from.
+
+        it deliberately does NOT reach the unscoped :meth:`forward` subject, which carries one
+        segment after ``forward`` where this carries two. that family stays granted to nobody, so
+        widening this pattern is not a route to it.
+
+        exists so the grant and the tests that assert it are rendered by the same builder as the
+        subjects they authorize; a hand-written literal drifts from the builder silently, and
+        drifts in the test at the same moment it drifts in the grant.
+
+        :return: subject pattern ``{ns}.forward.*.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.forward.*.*", kind="pattern")
+
+    @classmethod
     def hitl_forward_family(cls, tool_namespace_name: str) -> str:
         """derive the forward family for one tool's human-in-the-loop session control plane.
 

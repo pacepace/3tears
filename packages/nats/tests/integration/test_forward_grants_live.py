@@ -15,7 +15,8 @@ directions against a live broker, with the MINTED credential applied as config-m
   broker both present as a silent timeout, so an assertion on the absence of a reply would
   pass against a dead test harness;
 - the pod can open the KV bucket its display claim actually materialises. Without it
-  ``claim_session`` is handed ``lease=None``, logs, and serves the display UNCLAIMED.
+  ``KVLease.acquire`` defers opening the bucket to first use and that open raises ``KvError``
+  after a JetStream timeout, so the claim fails hard rather than downgrading silently.
 
 The permission set is applied directly as static ``authorization`` rather than by standing up
 the auth-callout responder: the grant STRINGS are what this scope changes, and this is the

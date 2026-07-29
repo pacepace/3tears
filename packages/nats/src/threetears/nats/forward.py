@@ -377,6 +377,10 @@ async def forward(
         # request fell inside the handoff window. both are NoOwnerError.
         cause = exc.__cause__
         if isinstance(cause, _NatsNoRespondersError | _NatsTimeoutError | TimeoutError):
-            raise NoOwnerError(f"no owner currently serves key {key!r}") from exc
+            raise NoOwnerError(
+                f"no owner currently serves key {key!r} on {subject.path} "
+                f"(family={family!r}) -- either nothing holds it, the owner named a "
+                f"different family, or its subscribe was refused by its grant"
+            ) from exc
         raise
     return _decode_reply(frame)

@@ -450,8 +450,10 @@ class TestHitlSessionControlGrants:
         ``KVLease`` returns a bucket-name SUFFIX and ``kv_bucket`` layers the
         connection's ``{ns}-`` over it, so the pair composes to ``{ns}-leases``.
         The failure this pins is not an error: a pod that cannot open the bucket
-        is handed ``lease=None``, which logs and then serves the display
-        UNCLAIMED, so two pods can drive one display.
+        cannot claim at all: ``KVLease.acquire`` defers the bucket open to
+        first use, and that open raises ``KvError`` after a JetStream timeout.
+        (``lease=None`` is a different path -- a platform passing no lease --
+        and it is what serves a display unclaimed.)
 
         ``tests/enforcement/test_kv_bucket_grant_naming.py`` holds the same
         property against the live default rather than a literal, so a change to

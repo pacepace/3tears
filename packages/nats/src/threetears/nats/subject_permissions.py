@@ -311,10 +311,17 @@ def _tool_pod(
         kv_buckets=(
             f"{ns}-proxy_assertion_nonces",
             # the display claim: a pod serving a human session holds a ``KVLease`` for as long as
-            # it serves, and a pod that cannot open the bucket is handed ``lease=None`` -- which
-            # does not fail, it logs and serves the display UNCLAIMED, so two pods can drive one
-            # display. every name here is the bucket that MATERIALISES: ``kv_bucket`` takes a
+            # it serves. every name here is the bucket that MATERIALISES: ``kv_bucket`` takes a
             # suffix and layers the connection's ``{ns}-`` over it.
+            #
+            # WHAT A MISSING GRANT ACTUALLY DOES, because two earlier versions of this comment got
+            # it wrong in the same way. It does NOT yield ``lease=None`` and serve the display
+            # unclaimed: that value is the dependency-injection path, set by a platform passing no
+            # lease at all. With a lease supplied and this grant absent, ``KVLease.acquire``
+            # defers opening the bucket to first use and that open raises ``KvError`` after a
+            # JetStream timeout, which nothing catches. The symptom is a hard failure on the first
+            # claim rather than a silent double-serve -- and because the open is deferred, a
+            # platform cannot learn at construction time that it should downgrade.
             f"{ns}-leases",
         ),
     )
@@ -403,7 +410,7 @@ def _hub(
         # segment is either one exact literal or ``*``; there is no prefix form. the two-token
         # pattern does not match the UNSCOPED ``{ns}.forward.{key}`` family, which stays granted to
         # nobody. publish only: the hub calls, the pod serves.
-        f"{ns}.forward.*.*",
+        str(Subjects.forward_scoped_any_family()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -454,12 +461,13 @@ def _hub(
             #
             # PROVEN for ``agent_config`` only: the hub's ``AgentConfigKV`` creates it that way
             # and its own docstring calls it platform-historical, and the agent router reads it
-            # back. The other three are kept on PRECAUTION, not on evidence -- no opener for them
-            # was found in either repository, but "not found" is not "absent", and the two
-            # failure directions are not symmetric: a grant naming a bucket nothing opens costs
-            # permission surface, while removing one something does open costs a silent
-            # JetStream timeout that looks exactly like an unreachable broker. Removing them on
-            # absence-of-evidence is the mistake that was already made here once.
+            # back. Every OTHER underscore-spelled entry below is kept on PRECAUTION rather than
+            # on evidence: no opener was found for it in either repository, but "not found" is not
+            # "absent", and the two failure directions are not symmetric. A grant naming a bucket
+            # nothing opens costs permission surface; removing one that something does open costs
+            # a JetStream operation that blocks to its deadline instead of raising, which reads as
+            # an unreachable broker. Removing them on absence-of-evidence is the mistake that was
+            # already made here once.
             #
             # Do not "normalise" any of these to ``{ns}-``: that renames a live bucket.
             f"{ns}_agent_config",
