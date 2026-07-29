@@ -316,6 +316,16 @@ identity, coordination and the operator's socket, and the AGPL nodriver sidecar 
 holds Xvfb, Chromium and `x11vnc` and nothing else. They share a network namespace, so your
 container reaches the display on `127.0.0.1` and nothing outside the pod can.
 
+**That last clause cuts both ways, so the relay takes a `transport`.** A pod carrying no Service
+and no Ingress dials out and is never dialled into, which is what keeps a live display off the
+network -- and it also means a process terminating the operator's WebSocket anywhere else has no
+address to connect to and no way to be given one. So `relay_stream`, the function that WebSocket
+runs, does not open the connection itself. Its `transport` does: it is handed the endpoint your
+`display` callable resolved, decides what reaching that endpoint means, and yields the reader
+and writer the bytes move between. Called with none -- which is how the router calls it -- it
+opens a plain TCP connection to that endpoint, which is the co-located pod above and is exactly
+what the relay has always done.
+
 Two more seams go with it, both optional and both there for the same reason -- one display lives
 in one pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods
 cannot both serve one session, and `serve_session()` answers that session's control messages

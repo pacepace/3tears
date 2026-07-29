@@ -84,6 +84,29 @@ a real nats-server's `authorization` and driving a real `KVLease` through it.
 (The suffix that composition starts from is itself corrected in the entry above; before that fix it
 carried the namespace, so the bucket materialised with the namespace twice.)
 
+
+**`3tears-scrape`'s display relay no longer opens its own connection.** `relay_stream` called
+`asyncio.open_connection(host, port)`, which is the single line that made a co-located display
+mandatory: a process terminating the operator's WebSocket had to share a network namespace with
+`x11vnc`. A deployed tool pod cannot offer that to anything outside it -- no Service, no Ingress,
+no inbound path at all -- so this is what stood between the operator surface and a cluster.
+
+New public API on `threetears.scrape.operator`, all additive: a `transport` keyword on
+`relay_stream`, and the `DisplayTransport`, `DisplayReader` and `DisplayWriter` protocols
+describing what one is. A transport is handed the endpoint `DisplayEndpoint` resolved, decides
+what reaching it means, and yields a reader-like and a writer-like pair; the relay interprets
+neither the endpoint nor a byte that crosses the pair.
+
+**No behaviour changes and nothing new is reachable through it here.** Omitting `transport` opens
+the same TCP connection to the same endpoint, which is what `build_operator_router` does. The
+whole value of the seam is that a transport reaching a display over a message bus can be supplied
+by a deployment that has one, without forking this module -- and its acceptance was that the
+existing relay tests pass unedited, which they do.
+
+The docstring this replaces framed a bus-backed relay as a costed alternative to be "settled on
+measurements". That trade had two sides only while a co-located display was reachable; where it is
+not, there is nothing to weigh it against.
+
 ## v0.21.0 -- 2026-07-28
 
 > **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,
