@@ -32,7 +32,9 @@ client by design.
 
 `relay_stream`'s own docstring anticipated this and named the alternative: relay the same bytes
 to the pod that holds the display, over NATS, keyed on the session id. That alternative is now
-the only door, so the trade it described ("settle it on measurements") no longer has two sides.
+the only door, so the trade it described no longer has two sides. (That passage has since been
+rewritten in the code to say so; it is quoted here as the state that motivated this design, not as
+text a reader will find at HEAD.)
 
 **The deliverable is not a VNC feature.** It is a general-purpose, payload-agnostic byte pipe
 between any caller and whichever pod owns a key, riding the same owner-routing that
@@ -43,6 +45,12 @@ identical no-inbound-path problem.
 ---
 
 ## Verified, not assumed
+
+**This section records the state BEFORE the work in this document, and is deliberately not
+updated as chunks land.** It is the evidence the design rests on, and rewriting it as things get
+fixed would destroy the reasoning while leaving the conclusions. Where a claim has since been
+closed, that is marked inline with what closed it. Anything unmarked was still true at the last
+sweep.
 
 **The display path is loopback-only, and that is deliberate.**
 `packages/scrape/sidecar/hitl.py` binds `x11vnc` to `127.0.0.1` on `_RFB_PORT = 5900` and its
@@ -65,7 +73,9 @@ any deployment that enforces these grants.
 **The session claim is blocked the same way.** `KVLease` defaults its bucket suffix to `leases`,
 which the transport prefixes to `{ns}-leases`
 (`packages/core/src/threetears/core/coordination/lease.py`). `_tool_pod`'s `kv_buckets` grant is
-`({ns}-proxy_assertion_nonces,)` alone, so the bucket is ungranted. `KVLease.acquire` defers the
+`({ns}-proxy_assertion_nonces,)` alone, so the bucket is ungranted. **CLOSED:** `{ns}-leases` is
+now granted to `_tool_pod`, and `KVLease`'s default is the bare suffix rather than a
+namespace-bearing name. `KVLease.acquire` defers the
 open to first use and it then raises `KvError` after a JetStream timeout -- a hard failure on first
 claim, not a silent downgrade. (`lease=None`, which does make `claim_session` yield unclaimed with a
 warning, is the separate case of a platform passing no lease at all.)
@@ -183,8 +193,9 @@ built permission set as config-mode `authorization`. Both use
   megabytes per second | MED impact]** Reasoned from encoding, not measured: noVNC negotiates
   Tight/ZRLE, `x11vnc` serves them, and a person reading a challenge is a mostly-static screen
   with small dirty rectangles. The multi-MB bursts are the first frame and page loads.
-  `relay_stream`'s docstring asserts the pessimistic reading ("a full-screen update is megabytes,
-  continuous"). Mitigation: the credit window bounds the damage either way, and the first chunk's
+  `relay_stream`'s docstring asserted the pessimistic reading, that a full-screen update is
+  megabytes and continuous. (That wording has since been rewritten, so it is described here rather
+  than quoted -- the assumption it motivated is still open.) Mitigation: the credit window bounds the damage either way, and the first chunk's
   integration test drives a deliberately slow consumer so the behaviour under a bad assumption is
   the tested path rather than the surprise.
 

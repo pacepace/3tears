@@ -438,6 +438,36 @@ class TestHitlSessionControlGrants:
         peer = str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(self.BETA)))
         assert peer not in _all_subjects(perm)
 
+    def test_pod_may_publish_only_its_own_streams_downward(self) -> None:
+        """the stream grants name the pod's OWN tool digest and OWN pod id, not a wildcard.
+
+        Without this the whole grant could be deleted and every recorded run would still
+        pass: the pipe's own suites are the two ``pytest.mark.integration`` files, which
+        ``./scripts/test.sh -m "not integration"`` deselects, so a deselected file appearing
+        in the evidence is a path list rather than proof anything executed.
+        """
+        perm = self._pod(self.ALPHA)
+        down = [s for s in perm.publish if ".pipe." in s]
+        up = [s for s in perm.subscribe if ".pipe." in s]
+        assert down, f"a tool pod may not publish any stream; it holds {list(perm.publish)}"
+        assert up, f"a tool pod may not subscribe any stream; it holds {list(perm.subscribe)}"
+        for subject in (*down, *up):
+            segments = subject.split(".")
+            # {ns}.pipe.{tool_digest}.{pod_id}.{nonce}.{direction}: only the nonce may be a
+            # wildcard. a wildcard tool digest would let this pod serve another tool's
+            # streams, and a wildcard pod id would let it answer for a sibling replica.
+            assert segments[2] != "*", f"{subject} wildcards the tool digest"
+            assert segments[3] != "*", f"{subject} wildcards the pod id"
+
+    def test_pod_cannot_touch_another_tools_streams(self) -> None:
+        """the grant for one authorized tool does not render the digest of another."""
+        from threetears.nats.subjects import Subjects
+
+        other = Subjects.hitl_forward_family("tools.some-other-tool.1-0-0")
+        foreign_digest = str(Subjects.forward_scoped_wildcard(other)).split(".")[2]
+        perm = self._pod(self.ALPHA)
+        assert not [s for s in (*perm.publish, *perm.subscribe) if foreign_digest in s]
+
     def test_pod_serves_but_never_originates(self) -> None:
         """the owner answers on the requester's reply inbox under ``allow_responses``."""
         perm = self._pod(self.ALPHA)

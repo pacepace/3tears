@@ -65,9 +65,10 @@ def test_the_lease_bucket_a_tool_pod_is_granted_is_the_one_kvlease_opens() -> No
     unlike the grants whose openers are in a consumer, where no static check can
     reach.
 
-    A pod that cannot open this bucket is not handed an error: ``claim_session``
-    receives ``lease=None``, logs, and serves the display UNCLAIMED, so two pods can
-    drive one display.
+    A pod that cannot open this bucket fails hard on its first claim rather than
+    downgrading: ``KVLease.acquire`` defers the open to first use and that open raises
+    ``KvError`` after a JetStream timeout. (``lease=None`` is a different path -- a
+    platform passing no lease at all -- and that one does serve a display unclaimed.)
     """
     from threetears.core.coordination.lease import KVLease
 

@@ -416,6 +416,27 @@ class PipeEndpoint:
                 f"pipe max_chunk {self.max_chunk} exceeds the credit window {self.credit}, "
                 f"so the first frame would overrun what the receiver agreed to hold"
             )
+        # ``pod_id`` and ``nonce`` are the two values a PEER supplies that are rendered into
+        # subject SEGMENTS rather than hashed, and the caller subscribes what they render. That
+        # makes them the one place in this module where a remote string reaches a subject
+        # un-digested, so they are checked here rather than trusted.
+        #
+        # ``_sanitize`` is not enough on its own: it maps ``.`` to ``-`` and touches nothing
+        # else, so ``*`` and ``>`` survive it. An owner answering an attach with ``pod_id="*"``
+        # and ``nonce="*"`` would otherwise have the caller subscribe a WILDCARD across every
+        # pod and every stream of that tool -- which the caller's own grant permits, because a
+        # grant cannot tell a literal segment from a wildcard one. That is the same
+        # wildcard-injection this module hashes the family to prevent, arriving by the one door
+        # hashing does not cover.
+        for field_name, value in (("pod_id", self.pod_id), ("nonce", self.nonce)):
+            if not value:
+                raise PipeProtocolError(f"pipe {field_name} must be non-empty")
+            if any(c in value for c in "*> \t\r\n"):
+                raise PipeProtocolError(
+                    f"pipe {field_name} {value!r} carries a NATS wildcard or whitespace; it is "
+                    f"rendered into a subject segment the peer then subscribes, so a wildcard "
+                    f"here would widen that subscription beyond this one stream"
+                )
 
     def subject(self, direction: PipeDirection) -> Subject:
         """render one direction's subject for these coordinates.
@@ -638,6 +659,13 @@ class PipeStream:
         # outbound: the monotonic sequence, and the frames the peer has not
         # acknowledged yet (sequence -> body size), oldest first.
         self._send_seq = 0
+        # Serialises the OUTBOUND side. Two concurrent senders would otherwise interleave both
+        # their sequence assignments and their publishes, and the receiver treats out-of-order
+        # as unrecoverable -- so concurrent producers would manufacture a gap teardown that no
+        # lost frame caused. Sequencing alone would not be enough either: this carries a BYTE
+        # STREAM, so two senders' chunks arriving validly sequenced but interleaved is still a
+        # corrupted payload. The lock therefore spans a whole send rather than one frame.
+        self._send_lock = asyncio.Lock()
         self._unacked: deque[tuple[int, int]] = deque()
         self._unacked_bytes = 0
         self._credit = asyncio.Event()
@@ -787,6 +815,15 @@ class PipeStream:
         that block is the mechanism: it propagates to whatever loop is feeding
         this call, which stops reading the source.
 
+        **concurrent calls are serialised rather than rejected.** the outbound
+        half holds a lock for a whole send, so a second caller waits instead of
+        interleaving with the first. two unsynchronised senders would otherwise
+        corrupt the stream twice over: their sequence assignments and their
+        publishes can interleave independently, and a receiver treats
+        out-of-order as unrecoverable -- so they would manufacture a gap
+        teardown no lost frame caused, and even correctly-ordered interleaving
+        would still split one sender's bytes around another's.
+
         :param data: bytes to send; split into ``endpoint.max_chunk`` frames
         :ptype data: bytes
         :return: nothing
@@ -796,13 +833,14 @@ class PipeStream:
         :raises PipeRemoteError: if the peer reported a failure
         :raises PublishError: if the underlying publish fails
         """
-        self._raise_if_faulted()
-        if self._sent_close:
-            raise PipeError(f"pipe stream {self._endpoint.nonce} was half-closed; no further bytes can be sent")
-        view = memoryview(data)
-        for offset in range(0, len(view), self._endpoint.max_chunk):
-            await self._await_credit()
-            await self._emit_sequenced(_TAG_DATA, bytes(view[offset : offset + self._endpoint.max_chunk]))
+        async with self._send_lock:
+            self._raise_if_faulted()
+            if self._sent_close:
+                raise PipeError(f"pipe stream {self._endpoint.nonce} was half-closed; no further bytes can be sent")
+            view = memoryview(data)
+            for offset in range(0, len(view), self._endpoint.max_chunk):
+                await self._await_credit()
+                await self._emit_sequenced(_TAG_DATA, bytes(view[offset : offset + self._endpoint.max_chunk]))
 
     async def send_close(self) -> None:
         """half-close this end: the peer's :meth:`receive` will return ``None``.
