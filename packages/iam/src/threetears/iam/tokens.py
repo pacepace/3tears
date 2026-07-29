@@ -183,9 +183,12 @@ class SessionClaims:
         token descended from it.
     :ivar jti: this token's unique id -- the handle a denylist or a single-use check names.
     :ivar iss: the issuer.
-    :ivar aud: the audiences this token is valid for. Required and never defaulted: only the
-        caller knows which trust boundary it will accept a token from, and a defaulted
-        audience silently accepts tokens that have left the platform.
+    :ivar aud: the audience this token is valid for, as a one-element tuple. Required and
+        never defaulted: only the caller knows which trust boundary it will accept a token
+        from, and a defaulted audience silently accepts tokens that have left the platform.
+        A tuple rather than a string because RFC 7519 puts an array on the wire, but exactly
+        one entry is permitted -- minting and verification both refuse more, since a token
+        valid at two trust boundaries at once is what an audience exists to prevent.
     :ivar iat: issued-at, unix seconds.
     :ivar exp: expiry, unix seconds.
     :ivar type: access or refresh.
@@ -331,9 +334,12 @@ class Ed25519JwksVerifier:
         :ptype jwks: Mapping[str, Any]
         :param issuer: the only issuer this verifier accepts.
         :ptype issuer: str
-        :param audience: the audience, or audiences, this verifier accepts. A token matching
-            ANY of them passes, so a single value is the norm; pass several only where one
-            verifier genuinely serves several trust boundaries.
+        :param audience: the audience, or audiences, this VERIFIER accepts. A token matching
+            any of them passes, so a single value is the norm; pass several only where one
+            verifier genuinely serves several trust boundaries. Distinct from what a TOKEN may
+            claim -- a token names exactly one audience, enforced by
+            :func:`verify_session_token`, because one valid at two boundaries at once has no
+            meaning in this model.
         :ptype audience: str | Sequence[str]
         :param leeway_seconds: clock-skew tolerance on ``exp`` and ``iat``.
         :ptype leeway_seconds: int
@@ -429,6 +435,12 @@ def mint_session_token(claims: SessionClaims, *, signer: TokenSigner) -> str:
     # Checked here rather than only on the dataclass: an empty audience would encode as
     # `"aud": []`, which no verifier can match, so it is a token that is broken on arrival.
     _normalize_audience(claims.aud)
+    if len(claims.aud) != 1:
+        # Exactly one, to match what verification accepts. A token naming several audiences
+        # is valid at several trust boundaries at once and this model has no semantics for
+        # that; minting one anyway would produce a credential its own verifier refuses, which
+        # is a failure discovered by the holder rather than by whoever minted it.
+        raise TokenError(f"a token must name exactly one audience; got {len(claims.aud)}.")
     payload: dict[str, Any] = {
         "sub": claims.sub,
         "sid": claims.sid,
@@ -464,7 +476,7 @@ def verify_session_token(
     token: str,
     *,
     verifier: TokenVerifier,
-    expected_type: TokenType | None = None,
+    expected_type: TokenType,
 ) -> SessionClaims:
     """Verify ``token`` and return the trusted claims.
 
@@ -472,10 +484,12 @@ def verify_session_token(
     :ptype token: str
     :param verifier: the verification strategy.
     :ptype verifier: TokenVerifier
-    :param expected_type: reject the token unless its ``type`` matches. Pass this. A refresh
-        token accepted where an access token was expected is a privilege escalation: refresh
-        tokens live far longer and are handled far more casually.
-    :ptype expected_type: TokenType | None
+    :param expected_type: reject the token unless its ``type`` matches. REQUIRED, with no
+        default: a refresh token accepted where an access token was expected is a privilege
+        escalation -- refresh tokens live far longer and are handled far more casually -- and
+        an optional check is one a caller can forget. It was optional once, and the docstring
+        said "pass this", which is a convention rather than a control.
+    :ptype expected_type: TokenType
     :return: the verified claims.
     :rtype: SessionClaims
     :raises TokenError: on any verification failure.
@@ -490,7 +504,23 @@ def verify_session_token(
         # only property is being newer than this version. See the module docstring.
         raise TokenError(f"token carries forbidden claims: {sorted(forbidden)}.")
     claims = _payload_to_claims(payload)
-    if expected_type is not None and claims.type is not expected_type:
+    if len(claims.aud) != 1:
+        # A token naming SEVERAL audiences is valid at several trust boundaries at once, and
+        # this model has no semantics for that -- an audience exists precisely to say which
+        # side of a boundary a credential belongs to. PyJWT cannot refuse it: it matches on
+        # INTERSECTION, so `aud: [internal, external]` satisfies a verifier that accepts only
+        # `internal`, which is how a token that has left the platform comes back in.
+        #
+        # Enforced here rather than left to `sole_audience`, which every consumer would
+        # otherwise have to remember to call -- and which two of them independently
+        # reimplemented instead, each documenting the same reasoning. A security rule that
+        # depends on being remembered is a rule the next consumer will not have.
+        #
+        # A verifier may still ACCEPT several audiences (one verifier serving several
+        # boundaries); this is about what a single TOKEN may claim. If a genuine
+        # multi-audience token is ever needed, it needs semantics first, not a relaxation.
+        raise TokenError(f"expected a token with exactly one audience; found {len(claims.aud)}.")
+    if claims.type is not expected_type:
         raise TokenError(f"expected a {expected_type.value} token.")
     return claims
 
@@ -500,7 +530,7 @@ def mint_token_pair(
     subject: str,
     session_id: str,
     issuer: str,
-    audience: str | Sequence[str],
+    audience: str,
     signer: TokenSigner,
     auth_time: int | None = None,
     step_up_window: int = 0,
@@ -536,7 +566,7 @@ def mint_token_pair(
         sid=session_id,
         jti=str(uuid7()),
         iss=issuer,
-        aud=_normalize_audience(audience),
+        aud=(audience,),
         iat=issued_at,
         exp=int((issued + access_ttl).timestamp()),
         type=TokenType.ACCESS,
