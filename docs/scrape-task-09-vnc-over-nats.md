@@ -506,8 +506,8 @@ Nor is a customer-only namespace enough. `hitl.<customer_id_hex>` isolates tenan
 an operator entitled to customer X on the general internet could attach to customer X's zone-alpha
 display, which is a reach into the firewalled network they were never granted.
 
-So the session namespace derives from BOTH, in the shape the platform already uses for
-`memories.<agent_id_hex>.<customer_id_hex>`:
+So the session namespace derives from BOTH, following the identity-then-customer shape of
+`memories.<agent_id>.<customer_id>`:
 
 ```
 hitl.<tool-namespace-name minus its `tools.` prefix>.<customer_id_hex>
@@ -519,10 +519,19 @@ Spelled out rather than left as "the tool segment", because the version is part 
 earlier phrasing here left that ambiguous. The paragraph below on version granularity says why it
 has to be.
 
+**The customer is the FULL hex, which is where this departs from the shape it follows.**
+`memory_namespace_name` and `intention_namespace_name` truncate each id to eight characters, and
+both say why they can: those rows are resolved by their (owner agent, customer) pair and the name
+is a display handle. This row is resolved BY NAME, through `authorize()`'s
+`namespace_collection.get_by_name`, so a truncated hex is a real chance of two tenants landing on
+one row. That is the exposure the name exists to prevent, so it does not get to be a display
+handle.
+
 One `authorize()` call then carries both facts: you may attach to a zone-alpha display, and only
-for your own tenant. The rows carry `customer_id`, so `type_customer`-scoped role assignments do
-the tenant isolation the evaluator already performs everywhere else, with no bespoke check anywhere
-on the path.
+for your own tenant. The row carrying `customer_id` is what lets the evaluator's cross-customer
+wall engage at all: `_filter_memberships` and `_walk_assignments` each count a customer-scoped
+membership or group only against a namespace of that same customer. That is the isolation it
+already performs everywhere else, with no bespoke check anywhere on the path.
 
 **The subject token is DERIVED from the tool identity, and it is a digest.** This is the decision
 that makes everything above need no naming convention, so it is recorded rather than left implied.
@@ -572,6 +581,14 @@ telling the same story.
 **Operators are scoped the same way**, which falls out rather than needing design: an operator's
 group needs the `hitl.attach` role on the zone's session namespace, so a zone-beta operator simply
 has no assignment that reaches a zone-alpha display.
+
+That holds for a `namespace`-scoped assignment, which is the shape an operator grant takes. The
+other door is named here rather than left for someone to find: a `type_customer`-scoped assignment
+over the `hitl` type covers every namespace of that type for its customer, so it reaches that
+customer's displays in EVERY zone. `RoleAssignment.covers` says so plainly and it is the right
+answer to the question that grant asks. The name isolates zones; it does not stop an administrator
+from writing a grant that deliberately spans them, and an operator grant that should not span them
+must be namespace-scoped.
 
 **What is NOT verified, and should be known.** Nothing confirms that a pod registering
 `scrape.zone_alpha` is ACTUALLY placed on the zone-alpha network. `allowed_namespaces` proves it was

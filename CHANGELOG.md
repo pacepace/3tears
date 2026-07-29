@@ -210,6 +210,60 @@ the credit window, so the flow control ran against real traffic rather than a sy
 An operator at a browser is what remains, and it is queued as an operator verification rather than
 claimed here.
 
+
+**`3tears` gains the namespace vocabulary a human display session is authorized against, and
+nothing that evaluates it.** New public API on `threetears.core.namespaces`, all additive:
+
+- `PLURAL_PREFIX_HITL` and `HITL_NAMESPACE_TYPE`, taking their place in the existing
+  `PLURAL_PREFIX_BY_NAMESPACE_TYPE` taxonomy
+- `build_hitl_namespace_name(tool_namespace_name, customer_id)` -- the canonical name
+- `HitlSessionNamespace` -- the seam whatever terminates an operator's connection builds, stating
+  a namespace name and type and evaluating nothing
+
+The release carrying this must be a MINOR bump: it is new public API on a published distribution,
+and the family releases in lockstep, so a consumer reading it pins `3tears`, `3tears-nats` and
+`3tears-scrape` at one version together. Nothing in this repository imports it yet, and that is
+the design rather than an omission. The name takes two inputs: the serving tool's namespace name,
+which a pod already publishes on `PipeEndpoint.tool`, and the customer, which a pod never sees --
+`SessionClaim` carries a session id and a lost flag and nothing else. The first thing on the path
+holding both is the process terminating the operator's connection, and it lives above this
+repository.
+
+**The shape is the serving tool's namespace name with its plural prefix swapped and the customer
+appended**, so `tools.scrape-zone_alpha.1-0-0` and a customer give
+`hitl.scrape-zone_alpha.1-0-0.<32 hex chars>`. Both halves close a different leak, and the two
+shapes NOT chosen are worth stating because each looks correct on its own.
+
+*Not the tool's own namespace.* Platform tool rows materialize with `customer_id` NULL, which is
+why the shipped `ToolCaller` grant had to be namespace-scoped. Against a NULL-customer row the
+evaluator counts only a group and a membership that name no customer either, so a per-tenant
+entitlement is not expressible there at all, and the grant that does work is one tenant's only by
+convention. The display it would admit is a browser holding the target's authenticated session.
+
+*Not a customer-only `hitl.<customer_id_hex>`.* That isolates tenants and leaves every network
+zone reachable by anyone entitled to that tenant anywhere. A zone is a distinct registered tool
+rather than a pod attribute, so the tool half of the name is what carries it.
+
+The name keeps the tool's VERSION because entitlement does: `tools.<mcp>.<version>` is its own row
+with its own assignments, and a version bump would otherwise leave somebody able to call a tool and
+not to attach to the display it raised. It keeps the tool segment READABLE rather than the digest
+the pipe's subjects use, which is the same split `Subjects.room` makes: a namespace name is a
+database row value a human administers, and the wildcard-injection argument that put a digest in a
+subject does not reach it. And the customer is its FULL hex, unlike the eight-character forms in
+`memories.` and `intentions.` names: those rows are resolved by an (owner, customer) pair and their
+names are display handles, while this one is resolved BY NAME, so a truncated hex is a real chance
+of two tenants sharing one row.
+
+**Two things a reader of the above should not have to discover.** Zone isolation is a property of a
+`namespace`-scoped assignment; a `type_customer`-scoped one over the `hitl` type covers that
+customer's displays in every zone, which is what that grant asks for and is pinned by a test saying
+so. And the value `hitl` has to be admitted by the CHECK constraint on `namespace_type` in whatever
+platform persists these rows, the way `knowledge` was.
+
+Proven against the shipped evaluator rather than described: cross-tenant, cross-zone and
+cross-version refusals all come out of `evaluate_with_trail`, each paired with the allow that shows
+the same operator, group, role and action reaching its own row.
+
 ## v0.21.0 -- 2026-07-28
 
 > **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,
