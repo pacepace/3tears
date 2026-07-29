@@ -87,14 +87,17 @@ chosen version refuses before a byte moves. adding a tag is therefore a
 version bump, and an unknown tag is refused rather than skipped -- which is
 what keeps a newer peer's frame from being silently misparsed by an older one.
 
-**the error model has three layers, and they are deliberately distinct.** an
+**the error model separates the layers deliberately, so a traceback says which
+end failed without correlating two logs.** an
 attach that finds no owner raises :class:`threetears.nats.NoOwnerError` from
 the forward primitive underneath. a malformed frame, an unknown tag or a
 version that cannot be agreed raises :class:`PipeProtocolError`. once a stream
 is live, a fault detected locally (a gap) raises
-:class:`PipeSequenceGapError` and a fault the PEER reported raises
-:class:`PipeRemoteError`, so a consumer reading a traceback can tell which end
-failed without correlating two logs. every one of them is terminal for the
+:class:`PipeSequenceGapError`, a peer that has gone silent raises
+:class:`PipeIdleTimeout`, and a fault the PEER reported raises
+:class:`PipeRemoteError`. the last two are separate on purpose: silence is a
+local conclusion about a peer that could not speak, and calling it a peer report
+would name the one thing that provably did not happen. every one of them is terminal for the
 stream: there is no resynchronisation, because the payloads this carries have
 none either.
 """
@@ -128,6 +131,7 @@ __all__ = [
     "DEFAULT_MAX_CHUNK_BYTES",
     "DEFAULT_IDLE_TIMEOUT",
     "DEFAULT_READY_TIMEOUT",
+    "MIN_PIPE_PROTOCOL_VERSION",
     "PIPE_PROTOCOL_VERSION",
     "PipeEndpoint",
     "PipeError",
@@ -195,10 +199,16 @@ DEFAULT_MAX_CHUNK_BYTES: Final[int] = 64 * 1024
 #: orders of magnitude under that limit means this pipe's own traffic cannot be
 #: what trips it.
 #:
-#: what it has NOT been sized against is real traffic: a synthetic producer
-#: emitting fixed chunks is not a framebuffer, so treat this as a defensible
-#: starting value rather than a tuned one until a real workload has been
-#: measured through it.
+#: real framebuffer traffic HAS since been driven through it: a full-screen RFB
+#: update out of a live display, several times this window, with flow control
+#: engaging and no stall. that establishes the window is not too small for a
+#: burst, which was the open question when it was chosen.
+#:
+#: what remains unmeasured is STEADY STATE. a static screen produces no updates
+#: at all, so the sustained rate while somebody actually works a challenge needs
+#: a person driving one, and that is the number that would justify tuning this
+#: rather than leaving it. defensible, and now partly evidenced, but still not
+#: tuned.
 DEFAULT_CREDIT_WINDOW_BYTES: Final[int] = 1024 * 1024
 
 #: how long :func:`attach_pipe` waits for an owner to answer. matches
@@ -894,12 +904,21 @@ class PipeStream:
 
         :return: nothing
         :rtype: None
+        Takes the outbound lock, because the close CONSUMES a data sequence. Landing between
+        two frames of a concurrent :meth:`send` would put the close in the middle of that
+        sender's bytes, and a receiver reads a close as end of stream -- so the peer would treat
+        a truncation as a complete transfer, which is the exact outcome making the close
+        sequenced was meant to rule out. Reachable rather than theoretical: a relay's ``finally``
+        cancels its pumps without awaiting them, and the owner's stream runner closes right
+        after.
+
         :raises PublishError: if the underlying publish fails
         """
-        if self._sent_close:
-            return
-        self._sent_close = True
-        await self._emit_sequenced(_TAG_CLOSE, b"")
+        async with self._send_lock:
+            if self._sent_close:
+                return
+            self._sent_close = True
+            await self._emit_sequenced(_TAG_CLOSE, b"")
 
     async def send_error(self, exc: BaseException) -> None:
         """report a stream-level failure to the peer.
@@ -1152,7 +1171,25 @@ async def attach_pipe(
     """
     request = _encode_attach_request(version=PIPE_PROTOCOL_VERSION, credit=credit, max_chunk=max_chunk)
     reply = await forward(nats, key, request, timeout=timeout, family=family)
-    return _decode_attach_reply(reply)
+    endpoint = _decode_attach_reply(reply)
+    # The reply is the SAME envelope whose ``pod_id`` and ``nonce`` are already treated as
+    # untrusted, and its numbers were left out of that. They matter for the same reason: the
+    # caller's only defence against a peer that ignores flow control is
+    # ``_queued_bytes > endpoint.credit``, and ``endpoint.credit`` comes from the peer. An owner
+    # answering with a window far larger than the one offered simply switches that guard off,
+    # leaving the caller to buffer whatever it is sent.
+    #
+    # An owner may lower these -- that is the negotiation -- so only the upward direction is
+    # refused, and it is refused HERE rather than in ``PipeEndpoint`` because only the caller
+    # knows what it offered.
+    if endpoint.credit > credit or endpoint.max_chunk > max_chunk:
+        raise PipeProtocolError(
+            f"pipe attach reply raised limits the caller did not offer: got "
+            f"credit={endpoint.credit} max_chunk={endpoint.max_chunk} against an offer of "
+            f"credit={credit} max_chunk={max_chunk}; an owner may lower these and not raise them, "
+            f"and the caller's overrun guard is sized from its own offer"
+        )
+    return endpoint
 
 
 @asynccontextmanager

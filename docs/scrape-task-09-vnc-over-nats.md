@@ -346,7 +346,7 @@ version enforceable without one | user can veto in favour of a per-frame version
 costs throughput on the display path and buys the ability to change framing mid-stream, which
 nothing wants]**
 
-**The error model is three layers, deliberately distinct**, so a traceback says which end
+**The error model separates its layers deliberately** (a live stream can fault locally on a gap, locally on a silent peer, or on a fault the peer reported), so a traceback says which end
 failed without correlating two logs. An attach that finds no owner surfaces as the forward
 primitive's own `NoOwnerError`. A malformed frame, an unknown tag or an unagreeable version is
 `PipeProtocolError` -- the two ends do not speak the same protocol, which no reconnect repairs.

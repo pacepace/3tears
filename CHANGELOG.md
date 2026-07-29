@@ -132,7 +132,7 @@ it chose, never higher. An unknown tag is REFUSED rather than skipped, which is 
 negotiation enforceable: adding a tag is a version bump, and an older peer says so instead of
 misparsing a newer one's frame.
 
-*The error model is three layers, so a traceback names which end failed.* `PipeProtocolError` for
+*The error model separates its layers, so a traceback names which end failed.* `PipeProtocolError` for
 a malformed frame, an unknown tag or an unagreeable version -- the two ends do not speak the same
 protocol, which no reconnect repairs. `PipeSequenceGapError` for a fault detected locally, and
 `PipeRemoteError`, carrying the peer's exception type name and message, for one the peer reported.

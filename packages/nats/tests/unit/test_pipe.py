@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
@@ -28,6 +29,7 @@ from threetears.nats.pipe import (
     MIN_PIPE_PROTOCOL_VERSION,
     PIPE_PROTOCOL_VERSION,
     PipeEndpoint,
+    attach_pipe,
     PipeIdleTimeout,
     PipeError,
     PipeProtocolError,
@@ -731,3 +733,48 @@ async def test_a_peer_that_goes_silent_fails_the_stream_instead_of_hanging() -> 
 
     with pytest.raises(PipeIdleTimeout):
         await caller.receive()
+
+
+class TestAnOwnerCannotRaiseTheLimitsTheCallerOffered:
+    """The attach reply is a peer's word, and the caller's flood guard is sized from it.
+
+    ``PipeStream`` faults when queued bytes exceed ``endpoint.credit``. If the owner sets that
+    number, the guard is parameterised by the party it defends against: an owner naming a huge
+    window switches it off and the caller buffers whatever arrives. Lowering it is the
+    negotiation and stays allowed.
+    """
+
+    class _CannedOwner:
+        """Answers any forward with one prepared attach reply."""
+
+        def __init__(self, reply: dict[str, object]) -> None:
+            self._reply = reply
+
+        async def request_raw(self, **_kw: object) -> bytes:
+            return b"\x00" + json.dumps(self._reply).encode("utf-8")
+
+    async def _attach_with_reply(self, **reply_over: object) -> None:
+        offer: dict[str, int] = {"credit": 4096, "max_chunk": 512}
+        reply: dict[str, object] = {
+            "tool": "tools.t.1-0-0",
+            "pod_id": "pod-1",
+            "nonce": "n1",
+            "version": PIPE_PROTOCOL_VERSION,
+            **offer,
+            **reply_over,
+        }
+        await attach_pipe(self._CannedOwner(reply), "k", family="fam", **offer)  # type: ignore[arg-type]
+
+    async def test_an_honoured_offer_attaches(self) -> None:
+        await self._attach_with_reply()
+
+    async def test_a_lowered_limit_is_accepted(self) -> None:
+        await self._attach_with_reply(credit=2048, max_chunk=256)
+
+    # A raised max_chunk must stay UNDER the offered credit, or PipeEndpoint's
+    # own max_chunk-exceeds-the-window invariant refuses it first and this test would be
+    # asserting that guard rather than this one.
+    @pytest.mark.parametrize("raised", [{"credit": 1 << 30}, {"max_chunk": 2048}])
+    async def test_a_raised_limit_is_refused(self, raised: dict[str, int]) -> None:
+        with pytest.raises(PipeProtocolError, match="did not offer"):
+            await self._attach_with_reply(**raised)
