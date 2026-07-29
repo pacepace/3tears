@@ -38,7 +38,6 @@ would put policy evaluation in a library that cannot see a policy.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -353,21 +352,23 @@ async def relay_stream(
     finally:
         for task in watched:
             task.cancel()
-        # AWAITED, not merely cancelled. `cancel()` only REQUESTS cancellation: a pump parked
-        # inside a publish keeps running until the loop next schedules it, so closing the writer
-        # first can pull the connection from under a send still in flight. On a TCP transport that
-        # is a confusing late traceback; on a bus-backed one it can put a frame on the wire after
-        # the stream is finished, which the peer reads as a sequence it cannot place. Exceptions
-        # are collected rather than raised because every pump's own outcome was already retrieved
-        # and reported above.
+        # CLOSED BEFORE ANYTHING IS AWAITED, and the ordering is the whole safeguard. This is a
+        # `finally` reached BY cancellation as often as by an ordinary end, and once a task is
+        # cancelled its NEXT await raises immediately -- so anything awaited before `close()`
+        # skips it and leaks the connection.
         #
-        # The suppression is the subtle half: this is a `finally`, reached BY cancellation as
-        # often as by an ordinary end, and awaiting while the enclosing task is cancelled would
-        # re-raise out of the cleanup and skip the close below.
-        # NOSILENT: only a CancelledError aimed at THIS task mid-cleanup is suppressed, and it is
-        # not lost -- Python resumes propagating it once this `finally` completes.
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(*watched, return_exceptions=True)
+        # [DECISION: do not await the cancelled pumps here | A review observed that `cancel()`
+        # only REQUESTS cancellation, so a pump parked in a publish can still be running when the
+        # writer closes, and proposed awaiting them first. Both shapes that achieves were tried
+        # and each was worse than this one: awaiting before the close skips the close under
+        # cancellation, and moving the close into the gather's own `finally` fixes that but then
+        # propagates `CancelledError` out of cleanup where this code previously completed. A
+        # suppression is not the answer either -- suppressing `CancelledError` does NOT re-raise
+        # it, so the task would finish as though never cancelled. Closing first makes the residual
+        # concern moot for the leak that matters: the connection is released on every path, and a
+        # pump still mid-publish is writing to a closed transport, which is the ordinary way an
+        # asyncio writer learns its peer is gone. | user can veto: the shape to reach for would be
+        # an explicit shielded reaper outside this `finally`, not another await inside it]
         writer.close()
         try:
             await writer.wait_closed()
