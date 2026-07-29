@@ -467,6 +467,13 @@ def _hub(
             f"{ns}_revoked_tokens",
             f"{ns}_login_lockouts",
             f"{ns}_rate_limits",
+            # ADDED rather than corrected, and the distinction matters. The hub's own router rate
+            # limiter creates ``f"{namespace}_ratelimit"`` -- singular, no trailing ``s`` -- with a
+            # direct ``js.create_key_value``, and no grant named it, so the limiter's first
+            # operation blocked to its deadline instead of raising. ``{ns}_rate_limits`` above is
+            # NOT removed in the same breath: nothing proves it dead, and this file has already
+            # been burned once by treating "no opener found" as "no opener".
+            f"{ns}_ratelimit",
             f"{ns}-collections",
         ),
         streams=(f"{ns}_channels_deliver",),
