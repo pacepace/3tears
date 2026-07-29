@@ -78,6 +78,25 @@ consecutive outbound overflows on `overflow_events`, and folds a sustained run o
 per-subscription pending limit: `NatsClient.subscribe` takes `subject`, `cb`, `queue`,
 `max_in_flight` and `deadletter_on_failure`, and nothing else.
 
+**And what nats-py offers underneath does not close that gap, which was read rather than
+recalled.** In the pinned 2.15.0, `nats/aio/subscription.py` takes `pending_msgs_limit` and
+`pending_bytes_limit` (defaulting to 512 Ki messages and 128 MiB) and exposes `pending_msgs`,
+`pending_bytes` and `delivered` read-only. The slow-consumer signal itself is in
+`nats/aio/client.py`'s `_process_msg`: once a subscription's pending bytes reach its limit the
+client **drops the message** and invokes the connection-wide `error_cb` with a
+`SlowConsumerError`. It raises nothing at the subscriber, and the wrapper's `error_cb` logs it
+and counts only auth violations, so the loss is not observable where it happens.
+
+That decides the design rather than merely informing it. **The pipe works ABOVE the wrapper and
+does not widen `NatsClient.subscribe`,** for three reasons that are properties of the code
+above: the signal arrives AFTER the drop, so plumbing it through could not prevent loss; the
+limits change only WHEN a drop happens, not whether, whereas a credit window is end-to-end and
+bounds what is in flight at all; and the loss the limits would report is already covered, because
+a dropped frame is a sequence gap and a gap is a teardown. Widening a shipped surface every other
+caller uses, to expose a knob that is strictly weaker than the mechanism this needs anyway, is
+the trade that was declined. What the limits DO constrain is the credit window's upper bound,
+recorded with the default.
+
 **A stream subject leads with its authenticated segment.** `Subjects.gateway_stream` and
 `Subjects.hub_stream` both put the authenticated principal id first, and both docstrings state
 why: a bare `stream.*` grant would let one principal sniff or inject onto a peer's in-flight
@@ -214,10 +233,16 @@ is. It carries bytes; it interprets none of them.
 subject. Whichever pod holds the key answers with the concrete stream coordinates:
 
 ```
-attach  -> {"op": "attach", "credit": <bytes>, "max_chunk": <bytes>}
+attach  -> {"op": "attach", "version": <int>, "credit": <bytes>, "max_chunk": <bytes>}
 reply   <- {"tool": "tools.scrape-zone_alpha.1-0-0", "pod_id": "...", "nonce": "...",
-            "max_chunk": <bytes>, "credit": <bytes>}
+            "max_chunk": <bytes>, "credit": <bytes>, "version": <int>}
 ```
+
+Both limits are what the sending side asks for and the OWNER reconciles: it lowers each to its
+own maximum, and lowers `max_chunk` to the agreed window as well. A window smaller than one
+frame is not a slow pipe but a stopped one, because the first frame already overruns what the
+receiver agreed to hold, so that pair is an invariant on the coordinates themselves and is
+checked on both sides rather than only where they are minted.
 
 **The owner states which tool it is serving, and cannot usefully lie about it.** The caller derives
 `{tool_digest}` by hashing this value, so it needs the readable form and the owner is the
@@ -265,13 +290,65 @@ and the mitigation is the same -- the readable tool identity rides in the attach
 log line, never in the subject.
 
 **Framing is a fixed-width header and a body.** A monotonic per-direction sequence, and a small
-tag distinguishing data from a credit acknowledgement, so an ack needs no second subject:
+tag distinguishing data from control, so an acknowledgement needs no subject of its own:
 
 ```
-byte 0      tag: 0x00 data, 0x01 credit-ack
-bytes 1..4  uint32 big-endian sequence (data) or acked-through sequence (credit-ack)
-bytes 5..    body (data only)
+byte 0      tag
+bytes 1..4  uint32 big-endian sequence
+bytes 5..   body
 ```
+
+The tag set was chosen by enumerating what a receiver has to answer and what a plausible next
+consumer needs, rather than by adding the minimum that made RFB work:
+
+| tag | meaning | sequence field | why it exists |
+|---|---|---|---|
+| `0x00` | data | the data sequence | is this in order |
+| `0x01` | credit | highest sequence the peer has CONSUMED | how much may I still send |
+| `0x02` | close | the next data sequence | graceful half-close, and see below |
+| `0x03` | error | unused | a stream-level failure, rather than silence |
+| `0x04` | ready | unused | the caller has subscribed |
+
+A byte leaves the rest of the space unused, so a later consumer that wants something else is a
+tag addition rather than a header change.
+
+Three of those are decisions rather than bookkeeping. **Close consumes the next data sequence**,
+so a final data frame lost in flight makes the close arrive with the wrong sequence and tear the
+stream down, instead of presenting a truncated stream as a complete one. **Credit is cumulative
+and acknowledges CONSUMPTION, not arrival**: cumulative so a lost acknowledgement is repaired by
+the next one rather than stranding the window, and on consumption because backpressure that
+stops at the receiving socket does not reach the human who is slow. **Ready exists because core
+NATS delivers nothing to a subject with no current subscriber**: an owner that started producing
+on the heels of its reply would lose its opening bytes, which for RFB is the whole first frame.
+
+**Versioning is negotiated at attach, and carried on no frame.** The version cannot change
+mid-stream, so a byte on every frame of a continuous multi-megabyte stream buys nothing. The
+caller names the highest version it speaks, the owner replies with the version it chose (never
+higher), and either side that cannot speak the result refuses before a byte moves. Adding a tag
+is therefore a version bump, and an unknown tag is REFUSED rather than skipped -- which is what
+stops a newer peer's frame from being silently misparsed by an older one.
+
+**[DECISION: negotiate the framing version once in the attach exchange rather than carrying a
+version field per frame | the version is constant for a stream's life, and the fat direction
+pays the per-frame cost continuously; refusing an unknown tag is what makes the negotiated
+version enforceable without one | user can veto in favour of a per-frame version byte, which
+costs throughput on the display path and buys the ability to change framing mid-stream, which
+nothing wants]**
+
+**The error model is three layers, deliberately distinct**, so a traceback says which end
+failed without correlating two logs. An attach that finds no owner surfaces as the forward
+primitive's own `NoOwnerError`. A malformed frame, an unknown tag or an unagreeable version is
+`PipeProtocolError` -- the two ends do not speak the same protocol, which no reconnect repairs.
+Once a stream is live, a fault detected LOCALLY is `PipeSequenceGapError` and a fault the PEER
+reported is `PipeRemoteError`, carrying the peer's exception type name and message the way
+`ForwardedHandlerError` already does. Every one of them is terminal: there is no
+resynchronisation here, because the payloads have none either.
+
+**[DECISION: model a stream-level failure as a frame the peer sends, rather than letting a dead
+producer present as silence | a display process that exits is the expected failure and an
+operator staring at a frozen screen cannot tell it from a slow link; the error frame turns it
+into a named exception at the far end | user can veto and rely on a heartbeat plus timeout,
+which detects the same thing later and without the cause]**
 
 **A gap is a teardown, never a delivery.** RFB has no resynchronisation, so a receiver that sees
 `seq != last + 1` raises rather than skipping. This is the whole reason core NATS is safe here:
@@ -285,8 +362,18 @@ refusal).
 existing equivalent and the part most likely to be wrong if it is skipped. Reading from a socket
 and publishing is unbounded: a slow operator does not slow the producer, it fills the producer's
 pending buffer until the connection wedges. So the consumer publishes a credit-ack every half
-window, and the producer stops reading its source once unacked bytes exceed the window. The fat
-direction (`down`, the display) needs it; `up` carries keystrokes and pointer events and does not.
+window, and the producer stops reading its source once unacked bytes exceed the window.
+
+**Credit runs in both directions even though only one of them is fat.** `down` is what needs it;
+`up` carries keystrokes and pointer events. Running it symmetrically is nonetheless LESS code
+than the asymmetric form, because the two ends are then the same object, and the thin direction
+simply never fills its window. Written down because "only `down` needs it" reads like an
+instruction to build it only there, and the implementation deliberately does not.
+
+**As built, the acknowledgement rides the peer's own outbound subject** -- the acknowledgement
+for `down` goes out on `up`, tagged as control -- so the pair of subjects the stream already has
+is all it needs. A control frame consumes no data sequence, which is what keeps the data
+sequence contiguous and the gap check meaningful.
 
 **Core NATS, not JetStream, and the reasons are specific.** JetStream would persist the pixels of
 a human's authenticated session to disk; at-least-once delivery produces duplicates that corrupt
@@ -626,8 +713,22 @@ does not block anything here at `replicaCount: 1`.
    inherits the whole authorization and metering stack; sending it on `forward` directly is
    simpler and inherits none of it. The recommendation is `dispatch_core`, and the cost is that
    the tool-mesh call shape has to carry a stream handle in its reply.
-3. **Credit window default.** Wants a number chosen against a measurement rather than taste. The
-   first chunk's slow-consumer test is where that measurement comes from.
+3. **RESOLVED, and the derivation is the durable part rather than the number.** The credit window
+   default is sized against the bandwidth-delay product, which is the window below which a sender
+   stalls waiting for credit it has already earned: sustained throughput multiplied by the
+   round-trip latency of one credit acknowledgement. Both are measured, by
+   `test_credit_window_sizing_measurements` in `packages/nats/tests/integration/`, and that test
+   asserts only that they are sane. Both move by a factor of several between runs on the SAME
+   machine, so the durable record is the method and the margin rather than a range: measured over
+   a testcontainer broker on a developer machine, throughput came out in the tens of MB/s against
+   acknowledgement round trips of a few milliseconds, and the worst PAIRING observed gave a
+   product near 190 KB; the 1 MiB default clears that several times over. Pinning either number
+   would fail on the next run, let alone the next machine. It is bounded from above by a value read out of nats-py rather than
+   assumed: a subscription's pending bytes reaching `DEFAULT_SUB_PENDING_BYTES_LIMIT` (128 MiB)
+   is what makes that client drop a message and report a slow consumer, and `NatsClient.subscribe`
+   does not override it, so a window two orders of magnitude under it cannot be what trips it.
+   What has NOT been measured is real framebuffer traffic, which is why this is a defensible
+   starting value rather than a tuned one.
 4. **RESOLVED 2026-07-28, kept here because the reasoning outlives the question.** Whether the
    subject's zone token is derived or configured: DERIVED, as a digest of the tool's namespace name
    (section 5 carries the decision). The concern that deriving forces a naming convention is what

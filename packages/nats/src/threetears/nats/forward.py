@@ -377,9 +377,22 @@ async def forward(
         # request fell inside the handoff window. both are NoOwnerError.
         cause = exc.__cause__
         if isinstance(cause, _NatsNoRespondersError | _NatsTimeoutError | TimeoutError):
+            # The two causes are one exception TYPE on purpose -- a caller's recourse is the
+            # same either way -- but they are NOT the same event, and a message that conflates
+            # them makes an intermittent failure undiagnosable after the fact. No-responders is
+            # immediate and definite: the server knew of no subscriber at all. A timeout means
+            # somebody may well have been there and did not answer in time. Naming which one
+            # arrived is the difference between "the owner never started" and "the owner was
+            # slow", which are different bugs with different fixes.
+            immediate = isinstance(cause, _NatsNoRespondersError)
+            observed = (
+                "the server reported NO SUBSCRIBER on that subject"
+                if immediate
+                else f"the request TIMED OUT after {timeout.total_seconds()}s with a subscriber possibly present"
+            )
             raise NoOwnerError(
                 f"no owner currently serves key {key!r} on {subject.path} "
-                f"(family={family!r}) -- either nothing holds it, the owner named a "
+                f"(family={family!r}): {observed} -- either nothing holds it, the owner named a "
                 f"different family, or its subscribe was refused by its grant"
             ) from exc
         raise

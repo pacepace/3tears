@@ -271,6 +271,25 @@ def _tool_pod(
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
     ns = _ns()
+    # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
+    # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
+    # to it. one EXACT family literal per authorized tool, minted by hashing the SAME
+    # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
+    # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
+    # segment is a digest of an arbitrary application string there is nothing else in the subject
+    # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
+    # under ``allow_responses`` and never originates a forward.
+    hitl_sessions = tuple(
+        str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(name))) for name in (tool_namespaces or ())
+    )
+    # the byte pipe itself: once an attach has been answered on the control plane above, the pod
+    # streams bytes on subjects that name its OWN tool digest and its OWN pod id as exact literals.
+    # only the per-attach nonce is wildcarded, and it cannot be anything else -- the pod mints it
+    # per stream, long after these grants were issued. the direction segment is part of each pattern
+    # rather than a ``>`` tail so PUBLISH reaches only the pod's own half (``down``) and SUBSCRIBE
+    # only the caller's (``up``); one ``>`` grant would let the owner publish onto both.
+    pipe_down = tuple(str(Subjects.pipe_pod_wildcard(name, p, "down")) for name in (tool_namespaces or ()))
+    pipe_up = tuple(str(Subjects.pipe_pod_wildcard(name, p, "up")) for name in (tool_namespaces or ()))
     publish = (
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat(p)),  # own pod only
@@ -285,23 +304,14 @@ def _tool_pod(
         # its call's engagement_id -> the authorized target set (same forwarded
         # identity-token auth; the hub verifies + tenant-scopes). read-only.
         str(Subjects.hub_engagement_scope()),
-    )
-    # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
-    # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
-    # to it. one EXACT family literal per authorized tool, minted by hashing the SAME
-    # ``allowed_namespaces`` entries that filter the pod's registration. a coarse ``{ns}.forward.>``
-    # would instead let any tool pod serve any owner-routed key in the namespace, and since the key
-    # segment is a digest of an arbitrary application string there is nothing else in the subject
-    # left to discriminate on. SUBSCRIBE only: the owner answers on the requester's reply inbox
-    # under ``allow_responses`` and never originates a forward.
-    hitl_sessions = tuple(
-        str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(name))) for name in (tool_namespaces or ())
+        *pipe_down,  # own authorized tools' streams, own pod id, own half only
     )
     subscribe = (
         f"{inbox}.>",
         str(Subjects.tools_internal(p)),  # own pod's proxied calls only
         str(Subjects.tools_probe(p)),  # own pod's liveness probes only
         *hitl_sessions,  # own authorized tools' session control plane only
+        *pipe_up,  # own authorized tools' streams, own pod id, caller's half only
     )
     return PrincipalPermissions(
         publish=publish,
@@ -411,10 +421,16 @@ def _hub(
         # pattern does not match the UNSCOPED ``{ns}.forward.{key}`` family, which stays granted to
         # nobody. publish only: the hub calls, the pod serves.
         str(Subjects.forward_scoped_any_family()),
+        # the byte pipe's caller half. the same reasoning as the forward family directly above: one
+        # hub connection fronts EVERY tool and every pod, so there is no per-connection list to mint
+        # exact literals from. what stays exact is the DIRECTION -- the hub publishes only on ``up``,
+        # so no wildcard here reaches an owner's own half of any stream.
+        str(Subjects.pipe_any_pod_wildcard("up")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
         f"{inbox}.>",
+        str(Subjects.pipe_any_pod_wildcard("down")),  # every pod's stream to it, never a pod's own half
         str(Subjects.hub_handshake()),  # mints identity tokens
         str(Subjects.hub_jwks()),  # serves the JWKS
         str(Subjects.hub_secrets_request()),

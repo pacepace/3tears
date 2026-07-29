@@ -159,12 +159,22 @@ async def _connect_wrapped(uri: str, *, user: str, password: str, permissions: P
 
 
 @contextlib.asynccontextmanager
-async def _connect_raw(uri: str, *, user: str, password: str, errors: list[str]) -> AsyncIterator[nats.NATS]:
+async def _connect_raw(
+    uri: str,
+    *,
+    user: str,
+    password: str,
+    errors: list[str],
+    permissions: PrincipalPermissions | None = None,
+) -> AsyncIterator[nats.NATS]:
     """connect a raw nats-py client, routing async permission violations into ``errors``.
 
     raw rather than wrapped because the refusal this test turns on is an asynchronous
     ``-ERR`` frame, and an error callback is the only place the server's Permissions
     Violation surfaces at all -- a denied subscribe raises nothing locally.
+
+    ``permissions`` supplies the inbox prefix the connection must use; it defaults to the
+    tool pod's, which is the principal most of these cases exercise.
     """
 
     async def _err_cb(exc: Exception) -> None:
@@ -174,7 +184,7 @@ async def _connect_raw(uri: str, *, user: str, password: str, errors: list[str])
         uri,
         user=user,
         password=password,
-        inbox_prefix=_pod_permissions().inbox_prefix.encode(),
+        inbox_prefix=(permissions or _pod_permissions()).inbox_prefix.encode(),
         error_cb=_err_cb,
         max_reconnect_attempts=0,
     )
@@ -272,3 +282,110 @@ async def test_tool_pod_can_open_the_bucket_its_display_claim_uses(
             assert handle.holder == _POD_ID
             await handle.refresh()
             await handle.release()
+
+
+async def _violations_from(
+    uri: str,
+    *,
+    user: str,
+    password: str,
+    permissions: PrincipalPermissions,
+    allowed_subscribes: tuple[str, ...],
+    allowed_publishes: tuple[str, ...],
+    refused_subscribes: tuple[str, ...],
+    refused_publishes: tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    """exercise one principal's stream subjects and return ``(allowed, refused)`` violations.
+
+    the allowed set is run first and on its own, so the refusals that follow are provably the
+    server discriminating rather than a credential that never worked at all.
+    """
+    seen: list[str] = []
+
+    async def _noop(_msg: object) -> None:
+        return None
+
+    async with _connect_raw(uri, user=user, password=password, errors=seen, permissions=permissions) as raw:
+        for subject in allowed_subscribes:
+            await raw.subscribe(subject, cb=_noop)
+        for subject in allowed_publishes:
+            await raw.publish(subject, b"frame")
+        await raw.flush()
+        await asyncio.sleep(0.3)  # let any async -ERR frame land in the error callback
+        on_allowed = [e for e in seen if "permissions violation" in e.lower()]
+
+        mark = len(seen)
+        for subject in refused_subscribes:
+            await raw.subscribe(subject, cb=_noop)
+        for subject in refused_publishes:
+            await raw.publish(subject, b"frame")
+        await raw.flush()
+        await asyncio.sleep(0.3)
+        on_refused = [e for e in seen[mark:] if "permissions violation" in e.lower()]
+    return on_allowed, on_refused
+
+
+async def test_pipe_stream_grants_admit_a_pods_own_half_and_refuse_every_other(tmp_path: Path) -> None:
+    """the stream subjects a pod actually uses are admitted; a peer's and the caller's are not."""
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    set_default_namespace(_NS)
+    nonce = "3f2b1c"
+    own_down = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "down")
+    own_up = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "up")
+    peer_down = Subjects.pipe(_GRANTED_TOOL, "pod-beta", nonce, "down")
+    foreign_down = Subjects.pipe(_FOREIGN_TOOL, _POD_ID, nonce, "down")
+
+    with _nats_with_auth(tmp_path) as uri:
+        allowed, refused = await _violations_from(
+            uri,
+            user="pod",
+            password=_POD_PW,
+            permissions=_pod_permissions(),
+            # what a serving pod does: subscribe the caller's half, publish its own.
+            allowed_subscribes=(own_up.path,),
+            allowed_publishes=(own_down.path,),
+            # a peer pod's stream, a zone this pod was never placed in, and the caller's
+            # half of its OWN stream. the last one is what the direction segment buys: a
+            # `>` tail over the nonce would have admitted it.
+            refused_subscribes=(peer_down.path, foreign_down.path),
+            refused_publishes=(own_up.path, peer_down.path),
+        )
+
+    assert not allowed, f"the pod's own stream subjects were refused: {allowed}"
+    assert refused, "a peer's stream subjects were admitted"
+    joined = " ".join(refused)
+    for subject in (peer_down, foreign_down, own_up):
+        assert subject.path in joined, f"{subject.path} was not refused: {refused}"
+
+
+async def test_pipe_stream_grants_let_the_hub_front_every_pod_on_the_callers_half(tmp_path: Path) -> None:
+    """the hub reaches every pod's stream, and still only from the caller's side."""
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    set_default_namespace(_NS)
+    nonce = "9a7e40"
+    pod_down = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "down")
+    pod_up = Subjects.pipe(_GRANTED_TOOL, _POD_ID, nonce, "up")
+    other_pod_down = Subjects.pipe(_FOREIGN_TOOL, "pod-beta", nonce, "down")
+
+    with _nats_with_auth(tmp_path) as uri:
+        allowed, refused = await _violations_from(
+            uri,
+            user="hub",
+            password=_HUB_PW,
+            permissions=_hub_permissions(),
+            # one hub connection fronts every tool and every pod, so its grant cannot be an
+            # exact literal -- but it subscribes only the owner's half and publishes only the
+            # caller's, which is the property the wildcards must not have widened away.
+            allowed_subscribes=(pod_down.path, other_pod_down.path),
+            allowed_publishes=(pod_up.path,),
+            refused_subscribes=(),
+            refused_publishes=(pod_down.path,),
+        )
+
+    assert not allowed, f"the hub was refused a stream it fronts: {allowed}"
+    assert refused, "the hub was allowed to publish onto an owner's own half"
+    assert pod_down.path in " ".join(refused), refused

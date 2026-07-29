@@ -47,12 +47,23 @@ from uuid import UUID
 from threetears.nats.errors import NamespaceNotConfiguredError
 
 __all__ = [
+    "PipeDirection",
     "Subject",
     "SubjectKind",
     "Subjects",
     "get_default_namespace",
     "set_default_namespace",
 ]
+
+
+PipeDirection = Literal["up", "down"]
+"""which half of a byte-pipe stream a subject addresses.
+
+``down`` is the direction the pod that owns the key publishes and the caller
+subscribes; ``up`` is the reverse. the two are separate subjects rather than
+one bidirectional subject so each side's publish grant reaches only its own
+half -- see :meth:`Subjects.pipe_pod_wildcard`.
+"""
 
 
 SubjectKind = Literal["point", "pattern", "reply"]
@@ -1276,6 +1287,122 @@ class Subjects:
         if not tool_namespace_name:
             raise ValueError("tool_namespace_name must be non-empty")
         return f"hitl-{tool_namespace_name}"
+
+    # ------------------------------------------------------------------
+    # byte pipe (a stream between a caller and the pod that owns a key)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def pipe(
+        cls,
+        tool_namespace_name: str,
+        pod_id: str | UUID,
+        nonce: str,
+        direction: PipeDirection,
+    ) -> Subject:
+        """one direction of one byte-pipe stream.
+
+        the stream :mod:`threetears.nats.pipe` moves bytes over, once a caller
+        and the pod that owns a key have met on a forward subject and agreed
+        the coordinates. ``down`` is what the owner publishes and the caller
+        subscribes; ``up`` is the reverse.
+
+        ``pod_id`` leads the variable segments as the AUTHENTICATED one, for
+        the reason :meth:`gateway_stream` and :meth:`hub_stream` already state:
+        an owner's publish grant names its own pod id exactly, so no pod can
+        paint bytes onto a peer's live stream. keying on the application's own
+        key instead would force the caller side to hold a wildcard publish
+        grant, which is exactly that hazard.
+
+        the ``nonce`` is minted by the owner per attach rather than being the
+        application key. that keeps a stale reconnect from landing on a live
+        stream, and keeps an application key (a session id, a tenant-bearing
+        string) off a subject a wildcard subscriber could enumerate.
+
+        ``tool_namespace_name`` is hashed for the reason :meth:`forward_scoped`
+        hashes its family: a registered tool name is unvalidated, so a name
+        carrying a space, a ``*`` or a ``>`` would otherwise reach the subject.
+        ``pod_id`` takes :func:`_sanitize` rather than :func:`_routing_token`
+        because ``direction`` sits AFTER it: a composite pod-id would spend two
+        tokens and shift every following segment, so this family requires the
+        pod id to be exactly one token.
+
+        :param tool_namespace_name: the serving tool's registered namespace name
+        :ptype tool_namespace_name: str
+        :param pod_id: the owning pod's identifier (a single token)
+        :ptype pod_id: str | UUID
+        :param nonce: per-attach nonce minted by the owner
+        :ptype nonce: str
+        :param direction: ``down`` (owner publishes) or ``up`` (caller publishes)
+        :ptype direction: PipeDirection
+        :return: subject ``{ns}.pipe.{sha256hex(tool)}.{pod_id}.{nonce}.{direction}``
+        :rtype: Subject
+        :raises ValueError: if tool_namespace_name or nonce is empty
+        """
+        if not tool_namespace_name:
+            raise ValueError("tool_namespace_name must be non-empty")
+        if not nonce:
+            raise ValueError("nonce must be non-empty")
+        return Subject(
+            path=(
+                f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{_sanitize(pod_id)}.{_sanitize(nonce)}.{direction}"
+            ),
+            kind="point",
+        )
+
+    @classmethod
+    def pipe_pod_wildcard(
+        cls,
+        tool_namespace_name: str,
+        pod_id: str | UUID,
+        direction: PipeDirection,
+    ) -> Subject:
+        """grant pattern for ONE pod's streams of ONE tool, in one direction.
+
+        the shape :mod:`threetears.nats.subject_permissions` mints for a tool
+        pod: both the tool digest and the pod id are exact literals, and only
+        the nonce is wildcarded -- it cannot be anything else, because the
+        owner mints it per attach and the grant is issued at connect time.
+
+        the direction segment is part of the pattern rather than a ``>`` tail
+        so a pod's PUBLISH grant reaches only ``down`` and its SUBSCRIBE grant
+        only ``up``. a ``>`` tail would collapse the two into one grant that
+        also lets the owner publish onto the caller's half.
+
+        :param tool_namespace_name: the serving tool's registered namespace name
+        :ptype tool_namespace_name: str
+        :param pod_id: the owning pod's identifier (a single token)
+        :ptype pod_id: str | UUID
+        :param direction: ``down`` (owner publishes) or ``up`` (owner subscribes)
+        :ptype direction: PipeDirection
+        :return: subject ``{ns}.pipe.{sha256hex(tool)}.{pod_id}.*.{direction}``
+        :rtype: Subject
+        :raises ValueError: if tool_namespace_name is empty
+        """
+        if not tool_namespace_name:
+            raise ValueError("tool_namespace_name must be non-empty")
+        return Subject(
+            path=f"{_ns()}.pipe.{_digest_token(tool_namespace_name)}.{_sanitize(pod_id)}.*.{direction}",
+            kind="pattern",
+        )
+
+    @classmethod
+    def pipe_any_pod_wildcard(cls, direction: PipeDirection) -> Subject:
+        """grant pattern spanning EVERY pod's streams, in one direction.
+
+        the shape a principal that fronts every tool needs, for the reason
+        :meth:`forward_scoped_any_family` records: one connection serves them
+        all, so there is no per-connection list to mint exact literals from and
+        a NATS wildcard matches a whole token. the direction segment stays
+        exact, which is what keeps the caller side unable to publish onto the
+        owner's half of any stream.
+
+        :param direction: ``up`` (caller publishes) or ``down`` (caller subscribes)
+        :ptype direction: PipeDirection
+        :return: subject ``{ns}.pipe.*.*.*.{direction}``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.pipe.*.*.*.{direction}", kind="pattern")
 
     # knowledge (correction-harvest drafts)
     # ------------------------------------------------------------------

@@ -96,6 +96,64 @@ a real nats-server's `authorization` and driving a real `KVLease` through it.
 carried the namespace, so the bucket materialised with the namespace twice.)
 
 
+**`3tears-nats` gains a payload-agnostic byte pipe to whichever pod owns a key.** New public API
+on `threetears.nats`, all additive, and the release carrying it must be a MINOR bump for the same
+reason as the entry above: `3tears-scrape` consumes it.
+
+A tool pod has no Service, no Ingress and no inbound path of any kind, so a byte stream INTO one
+had no door. `threetears.nats.pipe` opens it, carrying bytes and interpreting none of them in
+exactly the way `threetears.nats.forward` is payload-agnostic. A display is its first consumer; an
+interactive shell into a pod has the identical problem.
+
+- `attach_pipe(nats, key, ...)` -- rides the existing `forward` verbatim, so "no owner right now"
+  stays that primitive's own `NoOwnerError` rather than becoming a second vocabulary
+- `serve_pipe(nats, key, tool=..., pod_id=..., handler=...)` -- the owner side, riding `serve_owner`
+- `open_pipe(nats, endpoint)` / `PipeStream` -- the two ends; `send` blocks on the credit window and
+  `receive` returns `None` at end of stream
+- `Subjects.pipe`, `Subjects.pipe_pod_wildcard`, `Subjects.pipe_any_pod_wildcard`, `PipeDirection`
+- `PipeEndpoint`, `PipeTransport`, `PipeStreamHandler`, and the `PipeError` family
+- `_tool_pod` and `_hub` grants for the stream subjects
+
+The attach reply carries the READABLE tool name and the caller hashes it to derive the subject
+token. That split is deliberate and matches `Subjects.room`: a digest is what makes an unvalidated
+tool name safe in a subject, and the readable form is what keeps a log line correlatable to a
+subject nobody can read. An owner naming a tool it does not serve gains nothing, because its
+publish grant names the digest of its own tool and its own pod id as exact literals.
+
+**The wire framing is the lock-in, so both of its evolution decisions are recorded here as well as
+in `docs/scrape-task-09-vnc-over-nats.md`.** A frame is a tag byte, a big-endian uint32 sequence
+and a body. Tags cover data, credit, close, error and ready; the rest of the byte is unallocated,
+so a later consumer is a tag addition rather than a header change.
+
+*Versioning is negotiated once, in the attach exchange, and carried on no frame.* The version
+cannot change mid-stream, and a per-frame byte is a continuous cost on the fat direction for a
+constant value. The caller names the highest version it speaks and the owner replies with the one
+it chose, never higher. An unknown tag is REFUSED rather than skipped, which is what makes that
+negotiation enforceable: adding a tag is a version bump, and an older peer says so instead of
+misparsing a newer one's frame.
+
+*The error model is three layers, so a traceback names which end failed.* `PipeProtocolError` for
+a malformed frame, an unknown tag or an unagreeable version -- the two ends do not speak the same
+protocol, which no reconnect repairs. `PipeSequenceGapError` for a fault detected locally, and
+`PipeRemoteError`, carrying the peer's exception type name and message, for one the peer reported.
+All are terminal: a receiver that saw a gap RAISES rather than skipping, because the payloads this
+carries do not resynchronise and a tolerated gap turns a detectable fault into a frozen screen.
+
+**Backpressure is a credit window, and it is the part with no existing equivalent.** Publishing
+what a socket yields is unbounded: a slow consumer does not slow the producer, it fills the
+producer's outbound buffer until the connection wedges. The receiver acknowledges the bytes it has
+CONSUMED (not merely received), every half window and cumulatively; a sender whose unacknowledged
+bytes reach the window blocks, which stops its caller's read loop at the source. The default window
+is sized against a measured bandwidth-delay product rather than chosen as a round number, and
+bounded above by nats-py's own per-subscription pending limit; both numbers, and what has NOT been
+measured, are recorded with the constant.
+
+The integration suite asserts that backpressure on the PRODUCER'S OWN READS, and deliberately not
+on `NatsClient.overflow_events` -- that counter increments only at the publish boundary while the
+client is disconnected or reconnecting with a full pending buffer, so on a healthy connected test
+it reads zero whether or not any credit accounting exists at all.
+
+
 **`3tears-scrape`'s display relay no longer opens its own connection.** `relay_stream` called
 `asyncio.open_connection(host, port)`, which is the single line that made a co-located display
 mandatory: a process terminating the operator's WebSocket had to share a network namespace with
