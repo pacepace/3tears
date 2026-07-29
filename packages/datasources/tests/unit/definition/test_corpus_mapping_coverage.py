@@ -824,6 +824,859 @@ IN_SCOPE_ROWS: tuple[MappingRow, ...] = (
         "the prompt's rule is narrower than production",
         field_path="Unit.name",
     ),
+    # ---- dsm-task-01b: exclusions -----------------------------------------
+    MappingRow(
+        "P1/A9-exclusion-stages",
+        "**`exclude_existing` lives here too, at a different stage from the residuals.**",
+        "the residual units anti-join the resolved long table while exclude_existing anti-joins the qualified set",
+        field_path="ExclusionSpec.stage",
+    ),
+    MappingRow(
+        "P3/4.1",
+        "**Self-referencing anti-join**",
+        "a unit LEFT-joins the table it is inserting into and keeps only the non-matches",
+        field_path="ExclusionSpec.all_prior",
+    ),
+    MappingRow(
+        "P3/4.2",
+        "**Six residual sites in this slice**",
+        "six units carry the same anti-join predicate against their own accumulator",
+        field_path="ExclusionSpec",
+    ),
+    MappingRow(
+        "P3/4.3",
+        "The anti-join key is the **entity alone**",
+        "entity-keyed while the long grain is (unit, list_id, voterbase_id)",
+        field_path="ExclusionSpec.key_columns",
+    ),
+    MappingRow(
+        "P3/4.4",
+        "The anti-join sits in `WHERE`, **before** the `GROUP BY`",
+        "pre-aggregate, before the group-by computing MIN(candidate_count)",
+        field_path="ExclusionLevel.PRE_AGGREGATE",
+    ),
+    MappingRow(
+        "P3/4.5",
+        "The subtracted set is the **resolved** rows",
+        "the residual runs during stage 1 and qualification is stage 2",
+        field_path="ArtifactStage.RESOLVED",
+    ),
+    MappingRow(
+        "P3/4.6",
+        "**The residual extent is order-dependent and the order is `os.listdir`**",
+        "each custom unit excludes whatever the earlier ones inserted, in filesystem order",
+        field_path="expand_all_prior",
+    ),
+    MappingRow(
+        "P3/4.7",
+        "**D7b instance**",
+        "two units anti-join the same accumulator with a byte-identical predicate",
+        decision=(
+            "D7b chose non_overlap first, and this model expresses it by authored unit order alone: "
+            "expand_all_prior reads that order, so the chosen direction lands in the definition and "
+            "in the content hash rather than in an enumeration accident"
+        ),
+    ),
+    MappingRow(
+        "P3/4.8",
+        "A second, weaker ordering dependency",
+        "the two coworkers units have disjoint filters so their mutual order does not change membership",
+        decision=(
+            "recorded, not modelled separately. the pair is expressed by the same authored order as "
+            "D7b, and parity must not score it as a second undecided direction because disjoint "
+            "job_level filters make their mutual order immaterial"
+        ),
+    ),
+    MappingRow(
+        "P3/4.9",
+        "The **long table is the accumulator**",
+        "every custom unit reads the partially-built long table mid-build",
+        field_path="ArtifactHandle.stage",
+    ),
+    MappingRow(
+        "P3/4.10",
+        "A residual expressed as a **positive INNER join**",
+        "an intersection and a difference in one unit",
+        decision=(
+            "two declarations composed, never one convenience: the INNER join is a resolution-stage "
+            "intersect (ResolutionIntersect) and the anti-join is the unit's own ExclusionSpec, so "
+            "the definition says which rows each removes"
+        ),
+    ),
+    MappingRow(
+        "P3/S16",
+        "**The residual mechanism, in full.**",
+        "all four dimensions confirmed present and all four must be authored",
+        field_path="ExclusionSpec",
+    ),
+    MappingRow(
+        "P4/113",
+        "**A post-composition exclusion against a computed cohort**",
+        "a staff cohort built from the composed audience, then anti-joined out",
+        field_path="ExclusionLevel.POST_AGGREGATE",
+    ),
+    MappingRow(
+        "P4/114",
+        "The staff cohort's own membership rule is 5 `LIKE` patterns",
+        "the subtrahend is a computed relation, not a unit of this definition",
+        field_path="ArtifactHandle.table",
+    ),
+    MappingRow(
+        "P4/135",
+        "**Upstream audience reference, ×2, unioned into a single exclusion set**",
+        "two upstream datasets subtracted as one exclusion",
+        field_path="ArtifactHandle.dataset",
+    ),
+    MappingRow(
+        "P5/57",
+        "Exclusion of upstream members",
+        "NOT IN over an upstream wide artifact, entity-keyed and pre-aggregate",
+        field_path="ExclusionSpec.subtrahends",
+    ),
+    MappingRow(
+        "P5/175",
+        "Chained residual exclusion",
+        "not present in the universal audiences; all three subtract an upstream, never a sibling unit",
+        decision=(
+            "a visible absence, recorded rather than dropped. chained exclusion is exercised by the "
+            "amazon audiences and the model carries it through expand_all_prior, whose expansion is "
+            "what forces a materialized intermediate at every level"
+        ),
+    ),
+    MappingRow(
+        "P2/T41",
+        "note the stage differs from `ExclusionSpec`",
+        "exclude_existing anti-joins the qualified set while the residuals anti-join the resolved one",
+        decision=(
+            "Expansion.exclude_existing stays dsm-task-01d's field; what lands here is the reason it "
+            "cannot share a default with the residuals, which is that the two committed stages differ "
+            "and ExclusionSpec.stage is therefore required"
+        ),
+    ),
+    # ---- dsm-task-01b: rollups --------------------------------------------
+    MappingRow(
+        "P3/2.1",
+        "a per-unit label naming the group the unit belongs to",
+        "the corpus authors membership on the member; the model authors it on the rollup",
+        field_path="Rollup.members",
+    ),
+    MappingRow(
+        "P3/2.2",
+        "The rollup label is **stamped per long row**",
+        "a rollup_unit column in the long DDL, not derived at delivery",
+        field_path="RollupEmit.LONG_LABEL",
+    ),
+    MappingRow(
+        "P3/2.3",
+        "A rollup may have exactly one member",
+        "single-member rollups are legal and a member may carry the rollup's own name",
+        field_path="Rollup.members",
+    ),
+    MappingRow(
+        "P3/2.5",
+        "client-requested aggregation the tool does not support",
+        "the rollup_unit column exists in the reference SQL and no committed template emits it",
+        field_path="Rollup",
+    ),
+    MappingRow(
+        "P3/2.6",
+        "No `otherwise` / ELSE bucket exists anywhere in the corpus slice",
+        "every amazon_tech_audience unit carries an explicit rollup_unit",
+        field_path="Rollup.otherwise",
+    ),
+    MappingRow(
+        "P2/T80",
+        "**zero template support**",
+        "20 authored rollup_unit occurrences over 7 distinct names and no template site",
+        field_path="Rollup.emit",
+    ),
+    MappingRow(
+        "P4/98",
+        "**`federal_level` rollup**",
+        "a named group of 14 units emitting a wide flag",
+        field_path="RollupEmit.WIDE_FLAG",
+    ),
+    MappingRow(
+        "P4/99",
+        "**`state_level` rollup**",
+        "a named group of 8 units emitting a wide flag",
+        field_path="Rollup.members",
+    ),
+    MappingRow(
+        "P4/100",
+        "Rollups are **not a partition**",
+        "14 + 8 of 23 units, and 83 entities are in both",
+        decision=(
+            "overlap ACROSS rollups is legal and is not validated away; only a member repeated WITHIN "
+            "one rollup is refused, because first match wins makes the second copy dead. the residual "
+            "unit is dsm-task-01a's validate_qualification_coverage, not Rollup.otherwise"
+        ),
+    ),
+    MappingRow(
+        "P4/101",
+        "an ordered first-match-wins categorisation over two rollup flags",
+        "government_level over federal_level and state_level, with an implicit NULL otherwise",
+        field_path="Rollup.members",
+    ),
+    MappingRow(
+        "P4/102",
+        "Rollup label carried through to the final delivered artifact",
+        "the label reaches the delivered projection, not only the wide flag",
+        field_path="RollupEmit.PROVENANCE_LABEL",
+    ),
+    MappingRow(
+        "P4/103",
+        "the rollups are hand-written SQL in `full_uhg_audience.sql`",
+        "the whole rollup layer sits outside the tool",
+        field_path="Rollup",
+    ),
+    MappingRow(
+        "P4/92",
+        "The same ladder re-expressed as an **ordinal string**",
+        "MAX() over ordinal-prefixed strings is a rollup encoded in string collation",
+        decision=(
+            "not carried forward as a Rollup: the ordinal prefix is an ordering smuggled into a label "
+            "and MAX over collation is an Expression, not a membership rule. Rollup.members is ordered "
+            "and first match wins, which states the same intent without the encoding"
+        ),
+    ),
+    MappingRow(
+        "P5/108",
+        "**Ranked precedence categories with ordinal-prefixed labels**",
+        "five categories over eight core units, stamped as a long label",
+        field_path="Rollup.emit",
+    ),
+    MappingRow(
+        "P5/109",
+        "The same, over expansion units: 2 categories over 3 units",
+        "a second rollup scoped to the other upstream",
+        field_path="Rollup.over",
+    ),
+    MappingRow(
+        "P5/110",
+        "Multi-unit rollup members",
+        "a rollup member list naming several units",
+        field_path="Rollup.members",
+    ),
+    MappingRow(
+        "P5/111",
+        "catch-alls — both **unreachable**",
+        "unmapped_core and unmapped_expansion cover 0 units and are still declared",
+        field_path="Rollup.otherwise",
+    ),
+    MappingRow(
+        "P5/113",
+        "The rollup is computed **over the provenance artifact**",
+        "not over long or wide",
+        field_path="Rollup.over",
+    ),
+    MappingRow(
+        "P5/157",
+        "`rollup_unit` (the YAML key)",
+        "absent from the universal audiences, which express a rollup in raw SQL instead",
+        decision=(
+            "a visible absence, recorded rather than dropped. Rollup is modelled on the amazon_tech "
+            "and UHG evidence, and the universal audiences' raw-SQL rollups are the same semantic "
+            "authored outside the tool rather than a different one"
+        ),
+    ),
+    # ---- dsm-task-01b: set algebra ----------------------------------------
+    MappingRow(
+        "P3/6.1",
+        "Composition is the **implicit union of every unit**",
+        "every unit INSERTs into one table and nothing filters that union",
+        field_path="SetExpr.is_default_union",
+    ),
+    MappingRow(
+        "P2/A8-per-term",
+        "So relations at the pivot are **per-composition-term**",
+        "each composition term carries its own relations as well as its own projection",
+        decision=(
+            "per-term RelationRef is dsm-task-01c's element type and lands on SetTerm when it exists. "
+            "what this shard settles is that the term is the unit of both, so a per-term relation has "
+            "a term to hang off rather than a single spec over the whole composition"
+        ),
+    ),
+    MappingRow(
+        "P2/T52",
+        "Wide pivot: one zero-filled column per relationship on the influencer branch",
+        "one branch zero-fills a column the other computes",
+        field_path="SetTerm.projection",
+    ),
+    MappingRow(
+        "P4/109",
+        "**Composition is a two-term union with per-term projection**",
+        "the policymaker branch projects three rollup flags and the opinion-elite branch NULL for all three",
+        field_path="SetTerm.projection",
+    ),
+    MappingRow(
+        "P4/106",
+        "is computed by two different mechanisms on the two union branches**",
+        "one delivered column derived two incompatible ways, one per branch",
+        field_path="TermColumn.value",
+    ),
+    MappingRow(
+        "P5/84",
+        "**Two composition terms, each with its own projection**",
+        "the influencer branch projects unit flags and 0 householders; the relationship branch the reverse",
+        field_path="SetTerm.projection",
+    ),
+    MappingRow(
+        "P5/100",
+        "Composition is `UNION ALL` of **two upstream wide artifacts**",
+        "terms are dataset terms, here two upstream datasets",
+        field_path="SetTerm.upstream",
+    ),
+    MappingRow(
+        "P5/101",
+        "The discriminator column is a **per-term literal**",
+        "the term's identity made into data, then read by the precedence",
+        field_path="TermColumn.value",
+    ),
+    MappingRow(
+        "P5/122",
+        "Composition of two upstream audiences by **`UNION` (not `UNION ALL`)**",
+        "a union applying no precedence at all, unlike the ranked composition",
+        field_path="SetOperator.UNION",
+    ),
+    MappingRow(
+        "P5/173",
+        "`intersect` composition",
+        "absent from the universal audiences; the instance is in uhg_healthcare_providers",
+        field_path="SetOperator.INTERSECT",
+    ),
+    MappingRow(
+        "P6/G17",
+        "`intersect` carries payload",
+        "the intersection delivers aggregated columns drawn from both sides",
+        field_path="IntersectColumn.term",
+    ),
+    MappingRow(
+        "P4/110",
+        "The union resolves overlap by **PM-wins precedence**",
+        "an anti-join on the losing term, keyed on voterbase_id",
+        field_path="SetExpr.dedup_order",
+    ),
+    MappingRow(
+        "P4/111",
+        "The **delivered category is not the dedup order**",
+        "the category is computed inside each term by a different rule",
+        field_path="SetExpr.category_order",
+    ),
+    MappingRow(
+        "P2/T81",
+        "Ranked precedence category over unit sets",
+        "a CASE WHEN unit in (...) category over a named unit set",
+        field_path="LabelArm.when",
+    ),
+    MappingRow(
+        "P5/96",
+        "**Dedup precedence order**",
+        "ROW_NUMBER partitioned by voterbase_id, ordered core before expansion",
+        field_path="SetExpr.dedup_key_columns",
+    ),
+    MappingRow(
+        "P5/97",
+        "**Delivered-label precedence order**",
+        "householders before core before expansion, a different order with a third arm",
+        field_path="SetExpr.category_order",
+    ),
+    MappingRow(
+        "P5/98",
+        "The label's **first arm tests a flag column, not a dataset term**",
+        "WHEN householders = 1, which no list of term names can express",
+        field_path="LabelArm.when",
+    ),
+    MappingRow(
+        "P5/99",
+        "The label is computed **before** the dedup filter",
+        "the evaluation order relative to the dedup must be declared",
+        field_path="SetExpr.category_position",
+    ),
+    MappingRow(
+        "P5/103",
+        "No tiebreak declared.",
+        "one voterbase_id can appear twice within one term and ROW_NUMBER ties arbitrarily",
+        field_path="SetExpr.tiebreak",
+    ),
+    MappingRow(
+        "P3/6.18",
+        "Ranked precedence / `RankedCategory` / ordered label concatenation",
+        "absent from the amazon audiences: no ROW_NUMBER, no ordered category, no two-audience union",
+        decision=(
+            "a visible absence, recorded rather than dropped. ranked_precedence is modelled on the "
+            "universal-2026 and UHG evidence, and this slice's silence is checked rather than "
+            "overlooked, which are not the same claim"
+        ),
+    ),
+    # ---- dsm-task-01c: relations, bridges, measures ----------------------
+    MappingRow(
+        "P1/1.5b",
+        "A join is INNER or LEFT depending on whether the unit happens to declare an",
+        "the join type flips on the presence of an unrelated field and nothing in the YAML says so",
+        field_path="RelationRef.join",
+    ),
+    MappingRow(
+        "P1/1.9",
+        "this artifact has **no quality measure**",
+        "expansion rows carry candidate_count NULL::int, so the wide MIN runs over an all-NULL column",
+        field_path="QualityMeasure.unmeasured_is_null",
+    ),
+    MappingRow(
+        "P2/B4/T06",
+        "Quality measure is `MIN(candidate_count)` at grain",
+        "the resolution aggregate is computed at an authored grain, not the surrounding group-by",
+        field_path="Measure.grain",
+    ),
+    MappingRow(
+        "P2/B4/T07",
+        "at a **different** grain",
+        "two grains for one named measure; the grain is never inherited",
+        field_path="Measure.grain",
+    ),
+    MappingRow(
+        "P2/B4/T09",
+        "Presence-dependent join type: `INNER` iff `industries` is present",
+        "adding an industry filter changes the audience twice, once by the predicate and once by the join",
+        field_path="RelationRef.join",
+    ),
+    MappingRow(
+        "P2/B4/T19",
+        "the **join type is authored data**",
+        "cat_join_type puts the join kind in the YAML while the target and condition stay fixed",
+        field_path="JoinKind",
+    ),
+    MappingRow(
+        "P2/B4/T20",
+        "a boolean gating an entity-table join",
+        "vf_join injects a join rather than substituting a scalar",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P2/B4/T21",
+        "Per-unit `joins` list with `how`/`table`/`alias`/`on`",
+        "four authored fields per join; the alias is what predicates reference",
+        field_path="RelationRef.alias",
+    ),
+    MappingRow(
+        "P2/B4/T22",
+        "may be a parenthesised **derived-table body**",
+        "the join target may be a whole query rather than a relation name",
+        field_path="TypedDerivedTable",
+    ),
+    MappingRow(
+        "P2/B4/T23",
+        "is the join **condition**, distinct from the body",
+        "on is authored separately from table and may reference an earlier alias",
+        field_path="RelationRef.on",
+    ),
+    MappingRow(
+        "P2/B4/T25",
+        "injects a projection into the inner aggregate",
+        "custom_aggregate_sql is a measure computed inside the resolution",
+        field_path="MeasureScope.RESOLUTION",
+    ),
+    MappingRow(
+        "P2/B4/T26",
+        "injects an outer `WHERE` over the aggregate",
+        "custom_aggregate_filters is not a HAVING and the two differ when the grains differ",
+        field_path="Measure.filter_position",
+    ),
+    MappingRow(
+        "P2/B4/T29",
+        "structural join at 7 sites / 4 stages / 4 produced tables",
+        "a parameter that gates structure, which no scalar substitution expresses",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P2/B4/T30",
+        "applied to the expansion branch of the pivot only, never the influencer branch",
+        "stage asymmetry: the gate is authored per relation per stage, never once per definition",
+        field_path="RelationRef.is_conditional",
+    ),
+    MappingRow(
+        "P2/B4/T36",
+        "evaluated in `WHERE`, before the re-aggregation",
+        "the threshold tests the pre-re-aggregate value",
+        field_path="FilterPosition.OUTER_WHERE",
+    ),
+    MappingRow(
+        "P2/B4/T37",
+        "Qualified stage re-aggregates `MIN(candidate_count)` at grain",
+        "a MIN of a MIN at a coarser grain than the one the threshold tested",
+        field_path="MeasureScope.DELIVERY",
+    ),
+    MappingRow(
+        "P2/B4/T43",
+        "Expansion rows carry **no** quality measure",
+        "candidate_count and source_name are both NULL, so an unmeasured band needs something to key on",
+        field_path="QualityMeasure.unmeasured_is_null",
+    ),
+    MappingRow(
+        "P2/B4/T55",
+        "over an all-NULL column for expansion rows",
+        "the wide artifact recomputes the measure at delivery scope",
+        field_path="Measure.scope",
+    ),
+    MappingRow(
+        "P2/B4/T79",
+        "a **second quality measure on a different scale**",
+        "source_match_tier and candidate_count cannot share one column",
+        field_path="BridgeRef.quality_measures",
+    ),
+    MappingRow(
+        "P2/B6/S11",
+        "a **null test on a LEFT-joined column**",
+        "the redundancy between the predicate and the join type must survive parity",
+        field_path="RelationRef.optional",
+    ),
+    MappingRow(
+        "P3/1.13",
+        "a left join immediately narrowed to an inner one by an equality in WHERE",
+        "the model must state whether unmatched rows are intended to survive",
+        field_path="RelationRef.optional",
+    ),
+    MappingRow(
+        "P3/1.15",
+        "a list of **per-unit** FROM extensions, each with `table`, `alias`, `how`, `on`",
+        "arbitrary per-unit FROM extension",
+        field_path="RelationRef",
+    ),
+    MappingRow(
+        "P3/1.16",
+        "a parenthesised SELECT with its own LEFT JOIN to an inner aggregate subquery",
+        "the body nests a join of its own, so it is a typed field rather than an escape hatch",
+        field_path="TypedDerivedTable.relations",
+    ),
+    MappingRow(
+        "P3/1.17",
+        "can reference an alias declared by a *previous* join in the same list",
+        "aliases scope left to right, as the emitted FROM clause does",
+        field_path="validate_relation_aliases",
+    ),
+    MappingRow(
+        "P3/1.18",
+        "the join type is authored per join",
+        "how: INNER is data, not an inference",
+        field_path="JoinKind.INNER",
+    ),
+    MappingRow(
+        "P3/1.19",
+        "the name predicates reference",
+        "the alias is a namespace key and cannot be optional",
+        field_path="RelationRef.alias",
+    ),
+    MappingRow(
+        "P3/1.20",
+        "Nothing in the YAML says so",
+        "LEFT versus INNER changes membership for rows with no job_title_fct match",
+        decision=(
+            "the presence-inference is not carried forward: RelationRef.join is authored per relation "
+            "and no field derives it from another field's presence. whether the migration preserves "
+            "the resulting row counts is a per-audience reconciliation record, not a model question"
+        ),
+    ),
+    MappingRow(
+        "P3/1.23",
+        "an authored aggregate expression injected into the resolution's SELECT list",
+        "the measure carries its own output alias",
+        field_path="Measure.name",
+    ),
+    MappingRow(
+        "P3/1.24",
+        "explicit casts and division by a bridge column",
+        "SUM(contribution::float * 1.0/mat.candidate_count::float) over source.* and bridge.*",
+        field_path="Measure.expression",
+    ),
+    MappingRow(
+        "P3/1.25",
+        "a list of predicates over the measure alias",
+        "having binds measure.<name> and nothing else",
+        field_path="validate_having_measures",
+    ),
+    MappingRow(
+        "P3/1.26",
+        "but they render into an **outer `WHERE`** wrapping the aggregate subquery",
+        "an outer where, not a having",
+        field_path="FilterPosition.OUTER_WHERE",
+    ),
+    MappingRow(
+        "P3/1.27",
+        "The measure alias drifts between units",
+        "contribution_sum and sum_of_contributions are one computation under two authored names",
+        field_path="Measure.name",
+    ),
+    MappingRow(
+        "P3/1.28",
+        "a measure computed and then discarded",
+        "bundlers declares an aggregate with no filter over it",
+        decision=(
+            "legal and unchanged: a Measure carries no filter of its own, so declaring one with no "
+            "having is expressible and parity must not read the absence as a diff"
+        ),
+    ),
+    MappingRow(
+        "P3/1.29",
+        "an aggregate the model must know is already aggregated downstream",
+        "MIN(candidate_count) is the bridge's quality measure",
+        field_path="QualityMeasure.column",
+    ),
+    MappingRow(
+        "P3/5.9",
+        "The qualification predicate re-aggregates",
+        "MIN over GROUP BY 1,2,3 at a grain the threshold never saw",
+        field_path="Measure.grain",
+    ),
+    MappingRow(
+        "P3/9.7",
+        "**`tsmart_comm` gates structure, not a scalar**",
+        "it injects an INNER JOIN at four stages and omits it entirely otherwise",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P4/29",
+        "Bridge is the match table, aliased `mat`",
+        "the bridge is a declared relation with its own alias",
+        field_path="BridgeRef.alias",
+    ),
+    MappingRow(
+        "P4/32",
+        "is `MIN`-aggregated at resolution",
+        "the quality measure is computed inside the resolution, not at delivery",
+        field_path="Measure.scope",
+    ),
+    MappingRow(
+        "P4/39",
+        "Per-unit `joins:` list, each with `table` / `alias` / `how`",
+        "the relation target is authored beside its alias and kind",
+        field_path="RelationRef.relation",
+    ),
+    MappingRow(
+        "P4/40",
+        "`how:` carries the join kind",
+        "INNER and LEFT are both authored in one file",
+        field_path="JoinKind",
+    ),
+    MappingRow(
+        "P4/41",
+        "**Join body as a derived table** (inline subquery in `table:`)",
+        "three distinct inline bodies across two audiences",
+        field_path="TypedDerivedTable",
+    ),
+    MappingRow(
+        "P4/42",
+        "**Join condition is authored separately from the body**",
+        "on: is its own key",
+        field_path="RelationRef.on",
+    ),
+    MappingRow(
+        "P4/43",
+        "Derived-table body carries its own `GROUP BY` **and `HAVING`**",
+        "an aggregate relation, not a filter",
+        field_path="TypedDerivedTable.having",
+    ),
+    MappingRow(
+        "P4/44",
+        "Join alias is the name predicates reference",
+        "alias: edu is used as edu.institution in a predicate",
+        field_path="RelationRef.alias",
+    ),
+    MappingRow(
+        "P4/45",
+        "may reference the **bridge** alias, not the fact source",
+        "a join condition over bridge.*",
+        field_path="BridgeRef.alias",
+    ),
+    MappingRow(
+        "P4/46",
+        "a per-unit key naming the category table's join kind",
+        "cat_join_type names the kind of a governed relation's join",
+        field_path="JoinKind",
+    ),
+    MappingRow(
+        "P4/47",
+        "declaring `cat_join_type` injects the `cat_union` join; omitting it omits the join entirely",
+        "presence of a key decides whether a join exists at all",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P4/48",
+        "a per-unit boolean injecting the entity attribute table",
+        "vf_join at seven sites, one per unit",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P4/51",
+        "Structural join at **four** stages for the same relation",
+        "one relation reusable at resolution, qualification, and delivery",
+        field_path="RelationRef",
+    ),
+    MappingRow(
+        "P4/52",
+        "Fact source joined to bridge on `list_id` in every case",
+        "the bridge declares its own join path, so on is None",
+        field_path="BridgeRef.on",
+    ),
+    MappingRow(
+        "P4/54",
+        "**The same LEFT join is used for both polarities**",
+        "IS NULL is an anti-join and IS NOT NULL a semi-join off one relation",
+        decision=(
+            "one RelationRef with join=left and optional=True carries both polarities; which side is "
+            "selected is the enclosing predicate's job, so the model does not force a second relation "
+            "for the anti-join"
+        ),
+    ),
+    MappingRow(
+        "P4/89",
+        "a *second*, differently-scaled quality measure on the same bridge",
+        "source_match_tier <= 12 beside candidate_count",
+        field_path="BridgeRef.quality_measures",
+    ),
+    MappingRow(
+        "P4/90",
+        "available only as a code comment",
+        "the tier-to-CBSA meaning exists only in a SQL comment",
+        decision=(
+            "QualityMeasure carries no free-text semantic field on purpose: a caveat that must reach "
+            "the model lands in a concept's caveats and then in the imperatives block of a tool "
+            "return, never as a description beside the measure"
+        ),
+    ),
+    MappingRow(
+        "P4/91",
+        "as a boolean relevance flag",
+        "MAX(CASE ... END) over a 55-arm LIKE ladder is an ordinary measure expression",
+        field_path="Measure.expression",
+    ),
+    MappingRow(
+        "P4/96",
+        "appear nowhere in this scope",
+        "custom_aggregate_sql and custom_aggregate_filters are absent from the UHG files",
+        decision=(
+            "a visible absence, recorded rather than dropped. Measure and its filter_position are "
+            "modelled on the Amazon evidence at P3/1.23 through P3/1.26 regardless"
+        ),
+    ),
+    MappingRow(
+        "P5/14",
+        "**Per-unit `joins`**, 4 units, each `{table, alias, how, on}`",
+        "relation, alias, join, and on, all authored",
+        field_path="RelationRef",
+    ),
+    MappingRow(
+        "P5/15",
+        "authored as a free string, separate from the join target",
+        "the condition is distinct from the relation",
+        field_path="RelationRef.on",
+    ),
+    MappingRow(
+        "P5/29",
+        "as the quality measure",
+        "min(mat.candidate_count) is match quality where lower is better",
+        field_path="QualityMeasure.direction",
+    ),
+    MappingRow(
+        "P5/30",
+        "The commercial-file join is **absent from the body** and injected by the wrapper",
+        "the join is not in the authored unit at all; a parameter puts it there",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P5/41",
+        "**`tsmart_comm` as a structural join**, unconditional in the rendered output",
+        "eight inserts carry the gated join in the rendered SQL",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P5/42",
+        "a semi-join written as an inner join, able to fan out",
+        "the joined alias is never referenced anywhere in the statement",
+        decision=(
+            "expressible today as an ordinary RelationRef whose alias no predicate references; "
+            "whether the emitter renders EXISTS or preserves the inner join's fan-out is a compiler "
+            "decision, not a model field"
+        ),
+    ),
+    MappingRow(
+        "P5/44",
+        "Two aggregations of different kinds in one resolution",
+        "one column per declared quality measure, never a single quality column",
+        field_path="BridgeRef.long_columns",
+    ),
+    MappingRow(
+        "P5/45",
+        "the long grain is `(unit, source record, entity)`",
+        "the grain is per source record, so one entity is summed once per record",
+        field_path="Measure.grain",
+    ),
+    MappingRow(
+        "P5/54",
+        "aggregated under a `HAVING`",
+        "one unit derives its allowlist from an upstream artifact under a having",
+        field_path="validate_having_measures",
+    ),
+    MappingRow(
+        "P5/58",
+        "Same exclusion written into a **JOIN `ON`** in one unit and into a **`WHERE`** in the others",
+        "for an inner join they are equivalent, for a left join they are not",
+        field_path="RelationRef.on",
+    ),
+    MappingRow(
+        "P5/59",
+        "**The entire predicate body attached to a join's `ON` clause, with no `WHERE` at all**",
+        "on carries a full predicate, not a key pair",
+        field_path="RelationRef.on",
+    ),
+    MappingRow(
+        "P5/64",
+        "referencing a **select-list alias** defined in the same SELECT",
+        "Redshift permits it, so a having naming no declared measure must fail at authoring",
+        field_path="UndeclaredMeasure",
+    ),
+    MappingRow(
+        "P5/85",
+        "The commercial-file join is applied to the **relationship branch only**",
+        "the gate is scoped per composition term",
+        field_path="RelationRef.is_conditional",
+    ),
+    MappingRow(
+        "P5/127",
+        "**Quality predicate placed in a join `ON`**",
+        "it binds the influencer's candidate_count while gating the householder's admission",
+        decision=(
+            "expressible as RelationRef.on over the influencer's quality column; whether gating an "
+            "expanded member by the source member's match quality is intended stays a recorded "
+            "decision, because the corpus authors it only by unqualified-name accident"
+        ),
+    ),
+    MappingRow(
+        "P5/128",
+        "Relation joined **without an alias** and referenced by bare table name",
+        "the alias is mandatory in the model",
+        field_path="RelationRef.alias",
+    ),
+    MappingRow(
+        "P5/162",
+        "zero matches in scope; template at `1_generate_audience_units_table.sql.jinja2:84-86`",
+        "cat_join_type is absent from this scope; the join kind is modelled anyway",
+        field_path="JoinKind",
+    ),
+    MappingRow(
+        "P5/163",
+        "zero matches in scope; template at `1_generate_audience_units_table.sql.jinja2:88-90`",
+        "vf_join is absent from this scope; the structural gate is modelled anyway",
+        field_path="RelationRef.when",
+    ),
+    MappingRow(
+        "P5/164",
+        "**Presence-dependent join type** (`'INNER' if \"industries\" in dict else 'LEFT'`)",
+        "no linkedin_audience_units.yaml in this scope, so the inference is unexercised here",
+        decision=(
+            "not expressible by design: a presence-derived join type is exactly what RelationRef.join "
+            "refuses to carry, so the migration authors the join kind each unit actually ran with"
+        ),
+    ),
 )
 
 
