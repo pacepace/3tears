@@ -43,6 +43,7 @@ from threetears.datasources.definition import (
     LiteralExpression,
     LiteralType,
     PhysicalLayout,
+    TypedDerivedTable,
     UpstreamPin,
     UpstreamPolicy,
     canonical_content,
@@ -287,6 +288,12 @@ class TestHashMovesOnASemanticEdit:
             "composition": None,
             "rollups": [],
             "expansions": [],
+            "sentinel_bindings": [
+                {
+                    "target": "resolved.record_year",
+                    "sentinels": [{"kind": "null", "meaning": "unit declares no facts_table", "effect": "drops_row"}],
+                }
+            ],
         }
         for field_name, value in edits.items():
             assert field_name in semantic
@@ -366,3 +373,92 @@ class TestDeliverySpecOnTheFixture:
     def test_the_delivery_spec_carries_both_derived_column_shapes(self, definition: DatasetDefinition) -> None:
         assert [column.name for column in definition.delivery.columns] == ["influencer", "audience"]
         assert isinstance(definition.delivery.columns[0].expression, LiteralExpression)
+
+
+class TestTheFourClosedModelGapsAreSemantic:
+    """the fields ``parity-task-03`` found missing all mint a version.
+
+    Each declares something that changes what the definition MEANS -- the
+    domain of a column, the type of an aggregate, the row multiplicity of
+    a union, the rows a resolution keeps -- so each moves the hash. None
+    of them is policy or tuning, so none is excluded.
+    """
+
+    def test_declaring_a_sentinel_binding_moves_the_hash(self, definition: DatasetDefinition) -> None:
+        edited = _edited(
+            sentinel_bindings=[
+                {
+                    "target": "resolved.record_year",
+                    "sentinels": [
+                        {"kind": "value", "value": -1, "meaning": "no source record year", "effect": "widens_predicate"}
+                    ],
+                }
+            ]
+        )
+        assert edited.content_hash != definition.content_hash
+
+    def test_changing_a_sentinel_s_effect_moves_the_hash(self) -> None:
+        widens = _edited(
+            sentinel_bindings=[
+                {
+                    "target": "resolved.record_year",
+                    "sentinels": [{"kind": "null", "meaning": "no facts_table", "effect": "widens_predicate"}],
+                }
+            ]
+        )
+        drops = _edited(
+            sentinel_bindings=[
+                {
+                    "target": "resolved.record_year",
+                    "sentinels": [{"kind": "null", "meaning": "no facts_table", "effect": "drops_row"}],
+                }
+            ]
+        )
+        # opposite failures on one column: one widens the age ceiling to a
+        # no-op, the other drops every row. they are not the same audience.
+        assert widens.content_hash != drops.content_hash
+
+    def test_declaring_a_measure_result_type_moves_the_hash(self, definition: DatasetDefinition) -> None:
+        payload = _payload()
+        units = payload["units"]
+        assert isinstance(units, list)
+        units[1]["resolutions"][0]["measures"][0]["result_type"] = "decimal"
+        assert DatasetDefinition.model_validate(payload).content_hash != definition.content_hash
+
+    def test_declaring_a_resolution_intersect_moves_the_hash(self, definition: DatasetDefinition) -> None:
+        payload = _payload()
+        units = payload["units"]
+        assert isinstance(units, list)
+        units[1]["resolutions"][0]["intersect"] = [
+            {
+                "alias": "prior",
+                "against": {"scope": "this_definition", "unit": "academy_members", "stage": "resolved"},
+                "key_columns": ["voterbase_id"],
+            }
+        ]
+        assert DatasetDefinition.model_validate(payload).content_hash != definition.content_hash
+
+    def test_a_union_arm_and_its_multiplicity_both_move_the_hash(self) -> None:
+        arm = {
+            "projections": [{"expression": "rel.emp.company_id", "alias": "company_id"}],
+            "source": "linkedin_employment",
+            "source_alias": "emp",
+        }
+        plain = TypedDerivedTable.model_validate(arm)
+        unioned = TypedDerivedTable.model_validate({**arm, "union": [arm], "union_all": True})
+        de_duplicated = TypedDerivedTable.model_validate({**arm, "union": [arm], "union_all": False})
+        assert content_hash(plain) != content_hash(unioned)
+        assert content_hash(unioned) != content_hash(de_duplicated)
+
+    def test_the_subquery_projection_split_is_a_property_and_never_hashed(self) -> None:
+        ref = ArtifactRef(
+            scope=ArtifactScope.DATASET,
+            dataset="universal_2026_core",
+            artifact=ArtifactKind.QUALIFIED,
+            run=UpstreamPin(policy=UpstreamPolicy.LATEST_RELEASE),
+            projection={"columns": [{"expression": "resolved.voterbase_id"}], "distinct": True},
+        )
+        canonical = canonical_content(ref)
+        assert isinstance(canonical, dict)
+        assert "projection_references" not in canonical
+        assert "references" not in canonical

@@ -81,6 +81,34 @@ tax every consumer of this wheel.
   :func:`~threetears.datasources.definition.file_model.dataset_drift`,
   which reports an absent definition and never deletes one
 
+``parity-task-03`` authored every corpus audience against the model above
+and closed four gaps that each blocked a faithful transcription, plus two
+types the same probe found declared and reachable from no field:
+
+- :attr:`~threetears.datasources.definition.dataset.DatasetDefinition.sentinel_bindings`
+  attaches
+  :class:`~threetears.datasources.definition.parameters.SentinelBinding`.
+  The corpus's flagship sentinel is a COLUMN and
+  :attr:`~threetears.datasources.definition.parameters.ParameterSpec.sentinels`
+  reaches parameters only
+- :attr:`~threetears.datasources.definition.source.ArtifactRef.projection_references`
+  splits a subquery's own naming scope out of
+  :attr:`~threetears.datasources.definition.source.ArtifactRef.references`,
+  so the resolution stage stops judging a subquery projection against the
+  ENCLOSING stage -- which the compiler never did
+- :attr:`~threetears.datasources.definition.measure.Measure.result_type`
+  declares the family an aggregate YIELDS, which is not the family its
+  operands share
+- :attr:`~threetears.datasources.definition.relation.TypedDerivedTable.union`
+  and its required
+  :attr:`~threetears.datasources.definition.relation.TypedDerivedTable.union_all`
+  stack row sources, which nothing else in the model could say
+- :attr:`~threetears.datasources.definition.unit.Resolution.intersect`
+  attaches
+  :class:`~threetears.datasources.definition.setexpr.ResolutionIntersect`
+  and, through it,
+  :class:`~threetears.datasources.definition.setexpr.ResolutionIntersectColumn`
+
 The model's recursion closes in
 :mod:`~threetears.datasources.definition.source`: a predicate may test
 membership against a source, and a source may carry a predicate. That

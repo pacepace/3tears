@@ -26,7 +26,11 @@ Four things this module gets right that a naive set algebra does not:
   before that resolution's own aggregation, via a reference to another
   unit's resolved rows. :class:`ResolutionIntersect` is a structurally
   distinct node rather than a flag on :class:`SetExpr`, because a flag
-  invites the compiler to guess.
+  invites the compiler to guess. It attaches at
+  :attr:`~threetears.datasources.definition.unit.Resolution.intersect`,
+  which is the position it was built for: a declared and documented type
+  reachable from no field invites the next author to assume a capability
+  the model does not have.
 - **``ranked_precedence`` carries TWO independent orders.** Its
   motivating audience deduplicates core-before-expansion while labelling
   householders-before-core-before-expansion, computes that label BEFORE

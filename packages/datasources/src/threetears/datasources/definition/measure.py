@@ -32,6 +32,29 @@ The grain is a list of plain column names rather than namespaced
 references because it is the emitted aggregate's GROUP BY key, expressed
 in the resolution's own output columns -- the names the long artifact
 carries -- not a reference resolved against a FROM clause.
+
+:attr:`Measure.result_type` is the third trap and the one
+``parity-task-03`` found. An aggregate's type is not the type its operands
+share: ``COUNT`` over anything is an integer, a ``1``/``0`` ``CASE``
+classifier over ``job_title`` is an integer, and a ``SUM`` over a cast is
+the cast's type. The corpus's healthcare classifier is
+``MAX(CASE WHEN job_title LIKE ... THEN 1 ELSE 0 END)`` filtered by
+``= 1``, and inferring varchar from its references rejects a correct
+definition outright.
+
+It is OPTIONAL, and that is a decision rather than a shortcut.
+:attr:`expression` is an
+:class:`~threetears.datasources.definition.expression.ArithmeticExpression`
+whose text this package deliberately does not parse, so the model cannot
+tell a family-changing aggregate from a family-preserving one and cannot
+require the field only where it matters. Requiring it everywhere would put
+a restated type on some two hundred committed measures whose operand types
+already give the right answer, and a copy-pasted declaration is WORSE than
+an inference, because a declaration overrides and nothing cross-checks it.
+Declared, it is authoritative; omitted, the consumer infers and reports
+the comparison as unchecked when it cannot. The five families come from
+:class:`~threetears.datasources.definition.parameters.ParameterType`
+rather than a second enum, so the type checker keeps one family map.
 """
 
 from __future__ import annotations
@@ -44,6 +67,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_valida
 
 from threetears.datasources.definition.expression import ArithmeticExpression, Predicate
 from threetears.datasources.definition.namespace import Namespace
+from threetears.datasources.definition.parameters import ParameterType
 
 __all__ = [
     "DuplicateMeasureName",
@@ -134,6 +158,10 @@ class Measure(BaseModel):
         order; required and NEVER inherited
     :ivar scope: stage the measure is computed at
     :ivar filter_position: where a filter over it is emitted
+    :ivar result_type: family this aggregate YIELDS, which is not the
+        family its operands share; ``None`` leaves the consumer to infer
+        one from the operands and report the comparison as unchecked when
+        it cannot
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -143,6 +171,7 @@ class Measure(BaseModel):
     grain: list[str] = Field(min_length=1)
     scope: MeasureScope
     filter_position: FilterPosition = FilterPosition.HAVING
+    result_type: ParameterType | None = None
 
     @model_validator(mode="after")
     def _declaration_is_coherent(self) -> Self:

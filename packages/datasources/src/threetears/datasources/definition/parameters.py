@@ -30,7 +30,10 @@ needs a new field. Four such traps, each verified against source:
   EVERY row of the unit. They are opposite failures, both silent, and a
   projection check that verifies columns catches neither. Both are
   declarable, and the declaration states the EFFECT, because "the model
-  must be able to say so" is the requirement.
+  must be able to say so" is the requirement. A parameter's own sentinels
+  ride on :attr:`ParameterSpec.sentinels`; ``record_year`` is a COLUMN, so
+  its sentinels ride on :class:`SentinelBinding`, declared at
+  :attr:`~threetears.datasources.definition.dataset.DatasetDefinition.sentinel_bindings`.
 
 One further shape has no prototype equivalent at all.
 ``pull_householder_counts.sql`` is a hand-unrolled sweep -- ten
@@ -182,10 +185,24 @@ class SentinelBinding(BaseModel):
 
     The corpus's flagship sentinel is ``resolved.record_year``, which is a
     COLUMN, not a parameter -- so declaring sentinels only on
-    :class:`ParameterSpec` would leave the real instance unsayable. Where
-    a binding attaches on the definition (beside the measure that
-    projects the column, or on the definition itself) is settled by
-    ``dsm-task-01c`` / ``-01d``; the declaration shape is settled here.
+    :class:`ParameterSpec` would leave the real instance unsayable.
+
+    It attaches at
+    :attr:`~threetears.datasources.definition.dataset.DatasetDefinition.sentinel_bindings`,
+    at DEFINITION grain, and the grain is the argument. The column is a
+    column of the definition's long artifact -- one column, whatever mix
+    of units writes into it -- so its domain is one declaration, and both
+    corpus sentinels land on it at once: ``-1`` widens the working-age
+    ceiling into a no-op, ``NULL`` drops the row, and
+    :attr:`sentinels` is a list precisely so opposite effects on one
+    column are sayable together. A per-resolution grain would need a merge
+    rule for two resolutions declaring the same target, and the merge rule
+    is where the effect would get decided by authored order.
+
+    A binding beside the MEASURE that projects the column was the
+    alternative and does not work: the corpus emits ``-1 AS record_year``
+    from units that declare no measure at all, so the real instance would
+    still be unsayable.
 
     :ivar target: namespaced column the sentinels apply to
     :ivar sentinels: declared sentinel domains, at least one

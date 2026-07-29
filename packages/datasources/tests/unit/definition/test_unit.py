@@ -397,6 +397,7 @@ class TestModelShape:
                 {
                     "source": {"relation": "employment_facts", "datasource": None, "schema_expr": None},
                     "bridge": bridge,
+                    "intersect": [],
                     "relations": [
                         {
                             "relation": "education_ext",
@@ -415,6 +416,7 @@ class TestModelShape:
                 {
                     "source": None,
                     "bridge": bridge,
+                    "intersect": [],
                     "relations": [],
                     "measures": [],
                     "predicate": None,
@@ -427,3 +429,115 @@ class TestModelShape:
             "provenance": None,
         }
         assert Unit.model_validate(payload).model_dump() == payload
+
+
+def _prior_unit_rows() -> dict[str, object]:
+    """authored reference to a sibling unit's already-materialized rows.
+
+    :returns: authored mapping for a ``this_definition`` artifact reference
+    :rtype: dict[str, object]
+    """
+    return {"scope": "this_definition", "unit": "omnibus_other_sources", "stage": "resolved"}
+
+
+class TestResolutionIntersect:
+    """the resolution-stage intersect, attached where it applies.
+
+    ``corpus-mapping.md`` P3/4.10: a residual expressed as a POSITIVE
+    ``INNER`` join -- one unit INNER-joins an upstream's rows while also
+    anti-joining the current audience, which is an intersection and a
+    difference in one unit. The two are separate declarations and never
+    one convenience: the INNER join is this node, the anti-join is the
+    unit's own ``ExclusionSpec``.
+    """
+
+    def test_a_resolution_declares_no_intersect_by_default(self) -> None:
+        assert Resolution().intersect == []
+
+    def test_the_positive_inner_join_is_authorable_on_the_resolution(self) -> None:
+        resolution = Resolution.model_validate(
+            {
+                "source": {"relation": "omnibus_facts"},
+                "intersect": [
+                    {
+                        "alias": "prior",
+                        "against": _prior_unit_rows(),
+                        "key_columns": ["voterbase_id"],
+                        "payload": [{"name": "prior_record_year", "column": "record_year"}],
+                    }
+                ],
+            }
+        )
+        assert resolution.intersect[0].alias == "prior"
+        assert resolution.intersect[0].payload[0].name == "prior_record_year"
+
+    def test_the_intersect_alias_is_addressable_by_a_later_join(self) -> None:
+        resolution = Resolution.model_validate(
+            {
+                "source": {"relation": "omnibus_facts"},
+                "intersect": [{"alias": "prior", "against": _prior_unit_rows(), "key_columns": ["voterbase_id"]}],
+                "relations": [
+                    {
+                        "relation": "linkedin_employment",
+                        "alias": "li",
+                        "join": "left",
+                        "optional": True,
+                        "on": {
+                            "compare": {
+                                "left": "rel.prior.voterbase_id",
+                                "op": "=",
+                                "right": "rel.li.voterbase_id",
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+        assert len(resolution.relations) == 1
+
+    def test_a_relation_claiming_an_intersect_alias_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            Resolution.model_validate(
+                {
+                    "intersect": [{"alias": "prior", "against": _prior_unit_rows(), "key_columns": ["voterbase_id"]}],
+                    "relations": [{"relation": "linkedin_employment", "alias": "prior", "join": "inner"}],
+                }
+            )
+        assert "declared twice" in str(excinfo.value)
+
+    def test_two_intersects_claiming_one_alias_are_refused(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            Resolution.model_validate(
+                {
+                    "intersect": [
+                        {"alias": "prior", "against": _prior_unit_rows(), "key_columns": ["voterbase_id"]},
+                        {"alias": "prior", "against": _prior_unit_rows(), "key_columns": ["list_id"]},
+                    ]
+                }
+            )
+        assert "declared twice" in str(excinfo.value)
+
+    def test_the_intersect_and_the_exclusion_stay_two_declarations(self) -> None:
+        # the whole point of P3/4.10: the definition says which rows each
+        # one removes, rather than one convenience that means both.
+        unit = Unit.model_validate(
+            {
+                "name": "omnibus_other_sources_non_overlap",
+                "resolutions": [
+                    {
+                        "source": {"relation": "omnibus_facts"},
+                        "intersect": [
+                            {"alias": "prior", "against": _prior_unit_rows(), "key_columns": ["voterbase_id"]}
+                        ],
+                    }
+                ],
+                "exclude": {
+                    "subtrahends": [_prior_unit_rows()],
+                    "key_columns": ["voterbase_id"],
+                    "level": "pre_aggregate",
+                    "stage": "resolved",
+                },
+            }
+        )
+        assert unit.resolutions[0].intersect[0].alias == "prior"
+        assert unit.exclude is not None

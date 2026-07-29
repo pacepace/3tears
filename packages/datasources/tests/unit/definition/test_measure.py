@@ -30,6 +30,7 @@ from threetears.datasources.definition.measure import (
     validate_having_measures,
     validate_unique_measure_names,
 )
+from threetears.datasources.definition.parameters import ParameterType
 
 _CONTRIBUTION_SUM = {
     "name": "contribution_sum",
@@ -203,3 +204,61 @@ class TestHavingOverDeclaredMeasures:
             Measure.model_validate({**_CONTRIBUTION_SUM, "name": "sum_of_contributions"}),
         ]
         assert validate_unique_measure_names(measures) == measures
+
+
+class TestDeclaredResultType:
+    """F-04: the family-changing aggregate the reference types cannot give.
+
+    ``uhg_healthcare_providers/ugh_healthcare_providers.sql:54-129``
+    computes ``MAX(CASE WHEN job_title LIKE ... THEN 1 ELSE 0 END)`` and
+    filters it with ``= 1``. Every reference in that classifier is
+    ``source.job_title`` (varchar); the aggregate yields an integer, so
+    the compiler's "the type its references share" inference is wrong by
+    a whole family. ``count(distinct list_id) > 30``
+    (``universal_2026_expansion/top_audience_companies.sql.jinja2:5``) is
+    the same shape.
+    """
+
+    def test_a_measure_declares_no_result_type_by_default(self) -> None:
+        assert Measure.model_validate(_CONTRIBUTION_SUM).result_type is None
+
+    def test_the_healthcare_classifier_declares_the_integer_it_yields(self) -> None:
+        measure = Measure.model_validate(
+            {
+                "name": "has_relevant_linkedin_job_title",
+                "expression": "MAX(CASE WHEN source.job_title LIKE '%nurse%' THEN 1 ELSE 0 END)",
+                "grain": ["voterbase_id"],
+                "scope": "resolution",
+                "result_type": "integer",
+            }
+        )
+        assert measure.result_type is ParameterType.INTEGER
+
+    def test_a_count_over_anything_declares_an_integer(self) -> None:
+        measure = Measure.model_validate(
+            {
+                "name": "list_count",
+                "expression": "COUNT(DISTINCT source.list_id)",
+                "grain": ["employer"],
+                "scope": "resolution",
+                "result_type": "integer",
+            }
+        )
+        assert measure.result_type is ParameterType.INTEGER
+
+    def test_the_declaration_is_one_of_the_five_declared_families(self) -> None:
+        with pytest.raises(ValidationError):
+            Measure.model_validate({**_CONTRIBUTION_SUM, "result_type": "varchar"})
+
+    def test_the_declared_type_survives_a_round_trip(self) -> None:
+        measure = Measure.model_validate({**_CONTRIBUTION_SUM, "result_type": "decimal"})
+        assert Measure.model_validate(measure.model_dump(mode="json")) == measure
+
+    def test_the_result_type_is_not_the_grain_and_not_the_filter_position(self) -> None:
+        # three separate declarations; conflating any two loses a semantic.
+        measure = Measure.model_validate(
+            {**_CONTRIBUTION_SUM, "result_type": "decimal", "filter_position": "outer_where"}
+        )
+        assert measure.result_type is ParameterType.DECIMAL
+        assert measure.filter_position is FilterPosition.OUTER_WHERE
+        assert measure.grain == ["voterbase_id", "list_id"]

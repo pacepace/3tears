@@ -43,6 +43,20 @@ in the corpus, used by five of eight audiences.
 than a flag lets ``dsh-task-15``'s gate be structural instead of a
 runtime string check.
 
+**A typed body stacks row sources** (:attr:`TypedDerivedTable.union`).
+``coworkers_of_linkedin_execs.sql.jinja2:1-40`` builds its company
+allowlist as ``SELECT DISTINCT company_id FROM (A UNION ALL B UNION ALL
+C)``, each arm a five-table join with its own filters. Without the field
+the only authoring is three ``LEFT JOIN``s plus ``any_of(IS NOT NULL)`` --
+set-equivalent, and a rewrite rather than a transcription, which
+``parity-task-01`` diffs. :attr:`TypedDerivedTable.union_all` is REQUIRED
+alongside it and defaults to nothing: ``UNION`` de-duplicates and ``UNION
+ALL`` does not, the difference changes every aggregate over the result,
+and this module already refuses to infer the join kind for the same
+reason. The stack is FLAT -- an arm declaring its own union is refused,
+because a mixed stack would make the emitted parenthesisation decide the
+row count.
+
 ``dsm-task-01d`` closed the seam ``dsm-task-01c`` left here:
 :attr:`RelationRef.relation` now admits an
 :class:`~threetears.datasources.definition.source.ArtifactRef`, so a
@@ -242,6 +256,11 @@ class TypedDerivedTable(BaseModel):
     :ivar group_by: group key; an integer literal is a positional ordinal
         into :attr:`projections`, which is how the corpus authors it
     :ivar having: post-aggregate filter over this body's own scope
+    :ivar union: further row sources stacked onto this one, each its own
+        naming scope; empty means this body is one ``SELECT``
+    :ivar union_all: whether the stack keeps duplicate rows; required
+        with a union and forbidden without one, because multiplicity
+        changes every aggregate downstream and is never inferred
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -254,6 +273,8 @@ class TypedDerivedTable(BaseModel):
     where: Predicate | None = None
     group_by: list[Expression] = Field(default_factory=list)
     having: Predicate | None = None
+    union: list[TypedDerivedTable] = Field(default_factory=list)
+    union_all: bool | None = None
 
     @model_validator(mode="after")
     def _body_is_coherent(self) -> Self:
@@ -265,8 +286,9 @@ class TypedDerivedTable(BaseModel):
 
         :returns: validated body
         :rtype: TypedDerivedTable
-        :raises ValueError: source alias is not an identifier, or a group
-            key is a literal that is not a positional ordinal in range
+        :raises ValueError: source alias is not an identifier, a group key
+            is a literal that is not a positional ordinal in range, or the
+            union declarations are incoherent
         """
         if not self.source_alias.isidentifier():
             raise ValueError(f"source_alias {self.source_alias!r} is not an identifier")
@@ -285,21 +307,59 @@ class TypedDerivedTable(BaseModel):
                     f"{len(self.projections)} columns"
                 )
         validate_relation_aliases(self.relations, bound_aliases=(self.source_alias,))
+        self._union_is_coherent()
         return self
+
+    def _union_is_coherent(self) -> None:
+        """check the stacked row sources against this body and each other.
+
+        :returns: None
+        :rtype: None
+        :raises ValueError: multiplicity is undeclared with a union or
+            declared without one, an arm projects a different number of
+            columns, or an arm declares a union of its own
+        """
+        if not self.union:
+            if self.union_all is not None:
+                raise ValueError(
+                    "union_all declares whether the stack keeps duplicate rows, and this body "
+                    "declares no union; drop union_all, or name the row sources it stacks"
+                )
+            return
+        if self.union_all is None:
+            raise ValueError(
+                "a union declares union_all: UNION de-duplicates and UNION ALL does not, and the "
+                "difference in row multiplicity changes every aggregate computed over the result. "
+                "the join kind is authored here for the same reason"
+            )
+        for index, arm in enumerate(self.union):
+            if len(arm.projections) != len(self.projections):
+                raise ValueError(
+                    f"union arm {index} projects {len(arm.projections)} column(s) against this "
+                    f"body's {len(self.projections)}; stacked row sources agree on arity, and the "
+                    "emitted column names come from the first arm"
+                )
+            if arm.union:
+                raise ValueError(
+                    f"union arm {index} declares a union of its own; a stack is FLAT, with one "
+                    "union_all governing every arm. a mixed UNION / UNION ALL stack would make the "
+                    "emitted parenthesisation decide the row count, so it is refused rather than guessed"
+                )
 
     @property
     def is_escape_hatch(self) -> bool:
         """whether any SQL string is reachable from this body.
 
         A typed body is a first-class field, but nesting a
-        :class:`RawDerivedTable` anywhere inside it reintroduces the
-        escape hatch, and ``parity-task-03`` scores the whole body by what
-        it actually contains.
+        :class:`RawDerivedTable` anywhere inside it -- including inside a
+        union arm -- reintroduces the escape hatch, and
+        ``parity-task-03`` scores the whole body by what it actually
+        contains.
 
         :returns: True when a raw body is reachable
         :rtype: bool
         """
-        nested = [self.source] + [relation.relation for relation in self.relations]
+        nested = [self.source] + [relation.relation for relation in self.relations] + list(self.union)
         return any(body.is_escape_hatch for body in nested if isinstance(body, RawDerivedTable | TypedDerivedTable))
 
     @property
@@ -309,7 +369,11 @@ class TypedDerivedTable(BaseModel):
         Deliberately NOT bubbled up to the enclosing
         :class:`RelationRef`: a derived body is its own naming scope, and
         folding its aliases into the outer one would make the outer
-        left-to-right alias check reject legal SQL.
+        left-to-right alias check reject legal SQL. A :attr:`union` arm is
+        a further scope of its own, one level down, and is excluded here
+        for the same reason -- an arm's aliases are not in this body's
+        ``FROM`` clause. Reach them through the arm's own
+        :attr:`references`.
 
         :returns: references in authored order
         :rtype: tuple[Reference, ...]

@@ -73,7 +73,8 @@ from threetears.datasources.definition.delivery import ArtifactSpec, DeliverySpe
 from threetears.datasources.definition.exclusion import ExclusionSpec, expand_all_prior
 from threetears.datasources.definition.expansion import Expansion
 from threetears.datasources.definition.grain import GrainSpec
-from threetears.datasources.definition.parameters import ParameterSpecList
+from threetears.datasources.definition.namespace import Namespace
+from threetears.datasources.definition.parameters import ParameterSpecList, SentinelBinding
 from threetears.datasources.definition.rollup import Rollup
 from threetears.datasources.definition.setexpr import SetExpr
 from threetears.datasources.definition.source import RawSelect
@@ -172,6 +173,8 @@ class DatasetDefinition(BaseModel):
         per-definition
     :ivar grain: entity column and its optional delivered alias
     :ivar parameters: declared run parameters
+    :ivar sentinel_bindings: sentinel domains declared against columns of
+        this definition's OWN long artifact, one binding per column
     :ivar units: declared units, at least one
     :ivar qualification: definition-level arms, scoped by ``applies_to``
     :ivar composition: set algebra over dataset terms; ``None`` is the
@@ -193,6 +196,7 @@ class DatasetDefinition(BaseModel):
     additional_datasources: list[str] = Field(default_factory=list)
     grain: GrainSpec
     parameters: ParameterSpecList = Field(default_factory=list)
+    sentinel_bindings: list[SentinelBinding] = Field(default_factory=list)
     units: list[Unit] = Field(min_length=1)
     qualification: list[Qualification] = Field(default_factory=list)
     composition: SetExpr | None = None
@@ -212,6 +216,7 @@ class DatasetDefinition(BaseModel):
             expansion, or raw-select signature is inconsistent
         """
         self._datasources_are_distinct()
+        self._sentinel_bindings_name_this_definitions_own_columns()
         validate_unique_unit_names(self.units)
         validate_qualification_coverage([unit.name for unit in self.units], self.qualification)
         self._artifacts_are_distinct()
@@ -233,6 +238,45 @@ class DatasetDefinition(BaseModel):
             )
         if len(self.additional_datasources) != len(set(self.additional_datasources)):
             raise ValueError("additional_datasources names a datasource twice")
+
+    def _sentinel_bindings_name_this_definitions_own_columns(self) -> None:
+        """reject a sentinel bound to a column this definition does not write.
+
+        A binding declares a value the definition MANUFACTURES into its
+        own long artifact, which is why ``resolved.*`` is the one
+        namespace it takes. A warehouse column's sentinel is a fact about
+        the warehouse and belongs to the governed schema layer, where one
+        declaration serves every definition that reads the column; a
+        parameter's belongs to that parameter. Restating either here would
+        be a second source of truth that drifts.
+
+        :returns: None
+        :rtype: None
+        :raises ValueError: two bindings claim one column, or a target
+            binds a namespace other than ``resolved``
+        """
+        targets = [binding.target.ref for binding in self.sentinel_bindings]
+        repeated = sorted({target for target in targets if targets.count(target) > 1})
+        if repeated:
+            raise ValueError(
+                f"sentinel_bindings declares {repeated} twice; one column carries ONE declared "
+                "domain, and a second declaration would make the effect depend on authored order"
+            )
+        for binding in self.sentinel_bindings:
+            namespace = binding.target.namespace
+            if namespace is Namespace.RESOLVED:
+                continue
+            hint = (
+                "declare it on that parameter, as ParameterSpec.sentinels"
+                if namespace is Namespace.PARAM
+                else "a warehouse column's domain is a schema fact and belongs to the governed "
+                "schema layer, where one declaration serves every definition that reads it"
+            )
+            raise ValueError(
+                f"sentinel binding targets {binding.target.ref!r}, and a definition declares "
+                f"sentinels for resolved.* only -- the columns it writes into its own long "
+                f"artifact. {hint}"
+            )
 
     def _artifacts_are_distinct(self) -> None:
         """reject a repeated artifact and more than one delivered one.

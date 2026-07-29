@@ -425,3 +425,136 @@ class TestRelationScoping:
             "bridge.voterbase_id",
             "param.tsmart_comm",
         ]
+
+
+def _coworker_arm(archetype: str) -> dict[str, Any]:
+    """one arm of the Amazon coworker allowlist's ``UNION ALL``.
+
+    ``amazon_audience_l2_2025/custom_audience_units/coworkers_of_linkedin_execs.sql.jinja2:1-40``
+    builds ``SELECT DISTINCT company_id FROM (A UNION ALL B UNION ALL C)``,
+    where each arm is a five-table join with its own filters. Reduced
+    arity here; the shape is the semantic.
+
+    :param archetype: source archetype this arm restricts to
+    :ptype archetype: str
+    :returns: authored mapping for one union arm
+    :rtype: dict[str, typing.Any]
+    """
+    return {
+        "projections": [{"expression": "rel.emp.company_id", "alias": "company_id"}],
+        "source": "linkedin_employment",
+        "source_alias": "emp",
+        "where": {"compare": {"left": "rel.emp.source_archetype", "op": "=", "right": {"literal": archetype}}},
+    }
+
+
+class TestUnionOfRowSources:
+    """F-12: a union used as a join target or a membership set.
+
+    Expressible today only by rewriting to three ``LEFT JOIN``s plus
+    ``any_of(IS NOT NULL)`` -- set-equivalent, and a rewrite rather than a
+    transcription, which ``parity-task-01`` would diff.
+    """
+
+    def test_the_coworker_allowlist_is_a_union_of_three_arms(self) -> None:
+        body = TypedDerivedTable.model_validate(
+            {
+                **_coworker_arm("linkedin"),
+                "distinct": True,
+                "union": [_coworker_arm("apollo"), _coworker_arm("rocketreach")],
+                "union_all": True,
+            }
+        )
+        assert len(body.union) == 2
+        assert body.union_all is True
+        assert body.distinct is True
+
+    def test_whether_the_union_de_duplicates_is_authored_never_defaulted(self) -> None:
+        # UNION and UNION ALL differ in row multiplicity, which changes
+        # every aggregate downstream. RelationRef.join is authored for the
+        # same reason.
+        with pytest.raises(ValidationError) as excinfo:
+            TypedDerivedTable.model_validate({**_coworker_arm("linkedin"), "union": [_coworker_arm("apollo")]})
+        assert "union_all" in str(excinfo.value)
+
+    def test_union_all_without_a_union_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            TypedDerivedTable.model_validate({**_coworker_arm("linkedin"), "union_all": False})
+        assert "union" in str(excinfo.value)
+
+    def test_a_body_declaring_no_union_carries_none(self) -> None:
+        body = TypedDerivedTable.model_validate(_coworker_arm("linkedin"))
+        assert body.union == []
+        assert body.union_all is None
+
+    def test_an_arm_projecting_a_different_arity_is_refused(self) -> None:
+        wide = {
+            **_coworker_arm("apollo"),
+            "projections": [
+                {"expression": "rel.emp.company_id", "alias": "company_id"},
+                {"expression": "rel.emp.title", "alias": "title"},
+            ],
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            TypedDerivedTable.model_validate({**_coworker_arm("linkedin"), "union": [wide], "union_all": True})
+        assert "column" in str(excinfo.value)
+
+    def test_an_arm_declaring_its_own_union_is_refused(self) -> None:
+        nested = {**_coworker_arm("apollo"), "union": [_coworker_arm("rocketreach")], "union_all": True}
+        with pytest.raises(ValidationError) as excinfo:
+            TypedDerivedTable.model_validate({**_coworker_arm("linkedin"), "union": [nested], "union_all": True})
+        assert "FLAT" in str(excinfo.value)
+
+    def test_an_arm_is_its_own_naming_scope(self) -> None:
+        # the same split TypedDerivedTable already makes against the
+        # enclosing RelationRef: an arm's aliases are its own.
+        body = TypedDerivedTable.model_validate(
+            {**_coworker_arm("linkedin"), "union": [_coworker_arm("apollo")], "union_all": True}
+        )
+        assert [reference.ref for reference in body.references] == [
+            "rel.emp.company_id",
+            "rel.emp.source_archetype",
+        ]
+        assert [reference.ref for reference in body.union[0].references] == [
+            "rel.emp.company_id",
+            "rel.emp.source_archetype",
+        ]
+
+    def test_a_raw_arm_makes_the_whole_body_an_escape_hatch(self) -> None:
+        body = TypedDerivedTable.model_validate(
+            {
+                **_coworker_arm("linkedin"),
+                "union": [
+                    {
+                        "projections": [{"expression": "rel.raw_src.company_id"}],
+                        "source": {"raw_sql": "SELECT company_id FROM legacy"},
+                        "source_alias": "raw_src",
+                    }
+                ],
+                "union_all": True,
+            }
+        )
+        assert body.is_escape_hatch is True
+
+    def test_a_wholly_typed_union_is_not_an_escape_hatch(self) -> None:
+        body = TypedDerivedTable.model_validate(
+            {**_coworker_arm("linkedin"), "union": [_coworker_arm("apollo")], "union_all": True}
+        )
+        assert body.is_escape_hatch is False
+
+    def test_a_union_body_is_usable_as_a_relation_target(self) -> None:
+        relation = RelationRef.model_validate(
+            {
+                "relation": {
+                    **_coworker_arm("linkedin"),
+                    "distinct": True,
+                    "union": [_coworker_arm("apollo")],
+                    "union_all": True,
+                },
+                "alias": "allowed",
+                "join": "inner",
+                "on": {"compare": {"left": "source.company_id", "op": "=", "right": "rel.allowed.company_id"}},
+            }
+        )
+        assert isinstance(relation.relation, TypedDerivedTable)
+        assert relation.relation.union_all is True

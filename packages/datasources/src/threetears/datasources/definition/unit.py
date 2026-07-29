@@ -47,6 +47,17 @@ set, or another artifact; and :attr:`Unit.provenance` /
 :attr:`Resolution.provenance` carry the per-person rationale, which is
 authored per RESOLUTION because the corpus's nine hand-written bodies are
 not recoverable from the unit query they belong to.
+
+:attr:`Resolution.intersect` is where the resolution-stage
+:class:`~threetears.datasources.definition.setexpr.ResolutionIntersect`
+attaches. ``corpus-mapping.md`` P3/4.10 is a residual expressed as a
+POSITIVE ``INNER`` join: one unit intersects an already-materialized set
+while ALSO anti-joining it, an intersection and a difference in one unit.
+The two stay two declarations -- the intersect here, the anti-join in
+:attr:`Unit.exclude` -- so the definition says which rows each removes.
+It is a list because it takes an alias and joins the ``rel.<alias>.*`` key
+space, and one alias per node is what makes several sayable without
+ambiguity.
 """
 
 from __future__ import annotations
@@ -66,7 +77,12 @@ from threetears.datasources.definition.measure import (
 )
 from threetears.datasources.definition.namespace import BindingStage, reject_unbindable
 from threetears.datasources.definition.provenance import ProvenanceSpec
-from threetears.datasources.definition.relation import RelationRef, validate_relation_aliases
+from threetears.datasources.definition.relation import (
+    DuplicateRelationAlias,
+    RelationRef,
+    validate_relation_aliases,
+)
+from threetears.datasources.definition.setexpr import ResolutionIntersect
 from threetears.datasources.definition.source import SourceRef
 
 __all__ = [
@@ -110,6 +126,10 @@ class Resolution(BaseModel):
         through the bridge alone
     :ivar bridge: bridge this resolution matches through, or ``None`` for
         a literal source
+    :ivar intersect: sets this resolution's rows are narrowed to BEFORE
+        its own aggregation, each addressable by its declared alias; the
+        composition-stage ``intersect`` operator is a different plan and a
+        different node
     :ivar relations: per-resolution FROM extensions, by authored alias
     :ivar measures: aggregates computed inside this resolution
     :ivar predicate: filter over ``source.*`` / ``bridge.*`` / ``entity.*``
@@ -125,6 +145,7 @@ class Resolution(BaseModel):
 
     source: SourceRef | None = None
     bridge: BridgeRef | None = None
+    intersect: list[ResolutionIntersect] = Field(default_factory=list)
     relations: list[RelationRef] = Field(default_factory=list)
     measures: list[Measure] = Field(default_factory=list)
     predicate: Predicate | None = None
@@ -141,6 +162,12 @@ class Resolution(BaseModel):
         the warehouse would otherwise report as an unresolved identifier
         at build time, after the schema is already half built.
 
+        an intersect's alias shares the ``rel.<alias>.*`` key space with
+        the relations, and is bound BEFORE them because the intersect
+        narrows the rows the joins then extend. so a relation claiming an
+        intersect's alias is the same ambiguity a repeated relation alias
+        is, and raises the same error.
+
         :returns: validated resolution
         :rtype: Resolution
         :raises ValueError: a predicate binds a namespace the stage does
@@ -151,7 +178,14 @@ class Resolution(BaseModel):
             reject_unbindable(self.predicate.references, BindingStage.RESOLUTION, "Resolution.predicate")
         if self.having is not None:
             reject_unbindable(self.having.references, BindingStage.HAVING, "Resolution.having")
-        validate_relation_aliases(self.relations)
+        intersected = [node.alias for node in self.intersect]
+        repeated = sorted({alias for alias in intersected if intersected.count(alias) > 1})
+        if repeated:
+            raise DuplicateRelationAlias(
+                f"intersect alias {repeated!r} is declared twice; rel.<alias>.* is a namespace key, "
+                "so a repeated alias makes every predicate that names it ambiguous"
+            )
+        validate_relation_aliases(self.relations, bound_aliases=tuple(intersected))
         validate_unique_measure_names(self.measures)
         validate_having_measures(self.having, self.measures)
         return self

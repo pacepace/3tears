@@ -42,6 +42,7 @@ from threetears.datasources.definition import (
     ProvenanceSpec,
     RawSelect,
     RelationRef,
+    Resolution,
     UpstreamPin,
     UpstreamPolicy,
     reject_policy_reference_to_draft,
@@ -429,3 +430,79 @@ class TestSourceRefUsability:
             source=LiteralEntities(entity_ids=[" NY-18677111"]),
         )
         assert isinstance(membership.source, LiteralEntities)
+
+
+class TestSubqueryProjectionIsItsOwnScope:
+    """F-03: a subquery projection binds in the SUBQUERY, not the enclosing stage.
+
+    ``universal_2026_expansion/entertainment_job_titles.sql.jinja2`` writes
+    ``mat.voterbase_id not in (select distinct voterbase_id FROM
+    audiences.universal_2026_core_final_20251211)``. The inner
+    ``voterbase_id`` names the UPSTREAM artifact's column, and the
+    compiler resolves it in a nested scope with ``resolved.*`` bound to
+    that artifact. Folding it into the enclosing stage's reference set
+    made the resolution stage reject legal SQL.
+    """
+
+    def _upstream_subquery(self) -> ArtifactRef:
+        """the corpus's ``select distinct voterbase_id FROM <upstream>``.
+
+        :returns: upstream reference carrying its own projection
+        :rtype: threetears.datasources.definition.ArtifactRef
+        """
+        return ArtifactRef(
+            scope=ArtifactScope.DATASET,
+            dataset="universal_2026_core",
+            artifact=ArtifactKind.QUALIFIED,
+            run=UpstreamPin(policy=UpstreamPolicy.LATEST_RELEASE),
+            projection=ArtifactProjection(
+                columns=[{"expression": "resolved.voterbase_id"}],
+                distinct=True,
+            ),
+        )
+
+    def test_references_are_the_enclosing_scope_only(self) -> None:
+        ref = ArtifactRef(
+            scope=ArtifactScope.EXTERNAL,
+            table="universal_2026_core_final",
+            schema_expr="param.release_schema",
+            projection=ArtifactProjection(columns=[{"expression": "resolved.voterbase_id"}], distinct=True),
+        )
+        assert [reference.ref for reference in ref.references] == ["param.release_schema"]
+
+    def test_projection_references_are_the_subquery_s_own_scope(self) -> None:
+        ref = self._upstream_subquery()
+        assert [reference.ref for reference in ref.projection_references] == ["resolved.voterbase_id"]
+
+    def test_a_reference_with_no_projection_binds_no_projection_references(self) -> None:
+        ref = ArtifactRef(scope=ArtifactScope.EXTERNAL, table="source_archetypes")
+        assert ref.projection_references == ()
+
+    def test_a_membership_does_not_leak_the_subquery_projection(self) -> None:
+        membership = Membership(
+            expression="source.voterbase_id",
+            negate=True,
+            source=self._upstream_subquery(),
+        )
+        assert [reference.ref for reference in membership.references] == ["source.voterbase_id"]
+
+    def test_the_anti_join_is_authorable_at_the_resolution_stage(self) -> None:
+        # authored as the corpus writes it, this raised
+        # "namespace 'resolved' is not bindable at the resolution stage".
+        resolution = Resolution(
+            source=FactSource(relation="linkedin_facts"),
+            predicate=Predicate(
+                membership=Membership(
+                    expression="source.voterbase_id",
+                    negate=True,
+                    source=self._upstream_subquery(),
+                )
+            ),
+        )
+        assert resolution.predicate is not None
+
+    def test_the_split_matches_the_derived_body_s_own_split(self) -> None:
+        # TypedDerivedTable already documents this: a derived body is its
+        # own naming scope. ArtifactRef now says the same thing the same way.
+        ref = self._upstream_subquery()
+        assert set(ref.references).isdisjoint(ref.projection_references)

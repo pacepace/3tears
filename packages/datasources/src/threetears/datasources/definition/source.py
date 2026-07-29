@@ -52,6 +52,19 @@ target's visibility and grants and is implemented Hub-side, because this
 package cannot see either; cross-customer is permitted WHEN GRANTED, and
 the rule is the grant rather than the customer boundary.
 
+**A subquery's projection is its OWN naming scope.**
+:attr:`ArtifactRef.references` carries the per-run schema expression and
+nothing else; the projection is reached through
+:attr:`ArtifactRef.projection_references`. Three committed units test
+entities against another audience's output with an explicit sub-SELECT,
+and bubbling the inner ``resolved.voterbase_id`` into the enclosing
+reference set had the resolution stage refuse them -- while the compiler
+resolved the same projection in a nested scope with ``resolved.*`` bound
+to the referenced artifact. The model and the compiler now agree, and the
+split is the one
+:attr:`~threetears.datasources.definition.relation.TypedDerivedTable.references`
+already makes rather than a second convention.
+
 **A definition may span datasources** (D20), so every source carries an
 optional ``datasource`` qualifier defaulting to the definition's primary.
 Reachability is deliberately NOT validated here: the model has no
@@ -471,16 +484,42 @@ class ArtifactRef(BaseModel):
 
     @property
     def references(self) -> tuple[Reference, ...]:
-        """references reachable from this reference's own fields.
+        """references this reference binds in the ENCLOSING scope.
 
-        :returns: references in schema-then-projection order
+        The per-run schema expression only. A projection is a SUBQUERY
+        over the referenced artifact and names that artifact's columns, so
+        it is deliberately NOT bubbled up -- the same split
+        :attr:`~threetears.datasources.definition.relation.TypedDerivedTable.references`
+        makes against its enclosing
+        :class:`~threetears.datasources.definition.relation.RelationRef`,
+        and for the same reason. Folding a subquery's ``resolved.*``
+        projection into the enclosing set made a resolution-stage
+        predicate reject ``voterbase_id not in (select distinct
+        voterbase_id from <upstream>)``, which is legal SQL the compiler
+        already resolves in a nested scope.
+
+        :returns: references in schema-expression order
         :rtype: tuple[Reference, ...]
         """
         schema: tuple[Reference, ...] = ()
         if self.schema_expr is not None:
             schema = (self.schema_expr,) if isinstance(self.schema_expr, Reference) else self.schema_expr.references
-        projection = () if self.projection is None else self.projection.references
-        return schema + projection
+        return schema
+
+    @property
+    def projection_references(self) -> tuple[Reference, ...]:
+        """references the projection binds in its OWN scope.
+
+        Consumed by whatever resolves the subquery -- the compiler binds
+        ``resolved.*`` to the REFERENCED artifact and resolves these
+        there. Never mixed with :attr:`references`, because the two name
+        columns of two different relations.
+
+        :returns: references in authored order, empty when no projection
+            is declared
+        :rtype: tuple[Reference, ...]
+        """
+        return () if self.projection is None else self.projection.references
 
 
 class FactSource(BaseModel):
@@ -791,7 +830,15 @@ class Membership(BaseModel):
 
     @property
     def references(self) -> tuple[Reference, ...]:
-        """references reachable from the tested expression and the set.
+        """references this membership binds in the ENCLOSING scope.
+
+        The tested expression, the inline value list, and the source's
+        per-run schema expression. A source's PROJECTION is a subquery
+        naming the referenced artifact's own columns and is reached
+        through :attr:`ArtifactRef.projection_references` instead, because
+        the enclosing stage judges the references it is handed and would
+        otherwise refuse ``resolved.*`` inside a resolution-stage
+        subquery.
 
         :returns: references in expression-then-set order
         :rtype: tuple[Reference, ...]

@@ -259,3 +259,85 @@ class TestDatasetDefinition:
     def test_the_version_is_authored_but_not_hashed(self, definition: DatasetDefinition) -> None:
         assert definition.version == 1
         assert "version" in DatasetDefinition.hash_excluded_fields
+
+
+_RECORD_YEAR_SENTINELS: dict[str, object] = {
+    "target": "resolved.record_year",
+    "sentinels": [
+        {
+            "kind": "value",
+            "value": -1,
+            "meaning": "no source record year; the custom unit projects the constant",
+            "effect": "widens_predicate",
+        },
+        {
+            "kind": "null",
+            "meaning": "unit declares no facts_table, so the template emits NULL::int",
+            "effect": "drops_row",
+        },
+    ],
+}
+
+
+class TestSentinelBindings:
+    """F-02: the corpus's flagship sentinel is a COLUMN, not a parameter.
+
+    ``record_year = -1`` makes the working-age ceiling a no-op -- at
+    ``run_year = 2025`` the bound becomes ``age < 2096``
+    (``sql_templates/2_filtered_universe.sql.jinja2:22``, seven Amazon
+    sites). ``record_year = NULL::int`` makes the same comparison ``NULL``
+    and drops EVERY row of the unit
+    (``1_generate_audience_units_table.sql.jinja2:67-68``). Opposite
+    failures, both silent, and ``ParameterSpec.sentinels`` reaches
+    neither because ``record_year`` is not a parameter.
+    """
+
+    def test_a_definition_declares_no_sentinel_binding_by_default(self, definition: DatasetDefinition) -> None:
+        assert definition.sentinel_bindings == []
+
+    def test_both_record_year_sentinels_are_declarable_on_one_column(self) -> None:
+        payload = _payload()
+        payload["sentinel_bindings"] = [_RECORD_YEAR_SENTINELS]
+        loaded = DatasetDefinition.model_validate(payload)
+        assert loaded.sentinel_bindings[0].target.ref == "resolved.record_year"
+        assert [sentinel.effect.value for sentinel in loaded.sentinel_bindings[0].sentinels] == [
+            "widens_predicate",
+            "drops_row",
+        ]
+
+    def test_one_column_carries_one_declared_domain(self) -> None:
+        payload = _payload()
+        payload["sentinel_bindings"] = [_RECORD_YEAR_SENTINELS, _RECORD_YEAR_SENTINELS]
+        with pytest.raises(ValidationError) as excinfo:
+            DatasetDefinition.model_validate(payload)
+        assert "resolved.record_year" in str(excinfo.value)
+
+    def test_a_parameter_sentinel_belongs_on_the_parameter(self) -> None:
+        payload = _payload()
+        payload["sentinel_bindings"] = [
+            {
+                "target": "param.vf_suffix",
+                "sentinels": [{"kind": "null", "meaning": "no suffix supplied", "effect": "unknown"}],
+            }
+        ]
+        with pytest.raises(ValidationError) as excinfo:
+            DatasetDefinition.model_validate(payload)
+        assert "ParameterSpec.sentinels" in str(excinfo.value)
+
+    def test_a_warehouse_column_sentinel_belongs_to_the_schema_layer(self) -> None:
+        payload = _payload()
+        payload["sentinel_bindings"] = [
+            {
+                "target": "source.record_year",
+                "sentinels": [{"kind": "value", "value": -1, "meaning": "unknown", "effect": "unknown"}],
+            }
+        ]
+        with pytest.raises(ValidationError) as excinfo:
+            DatasetDefinition.model_validate(payload)
+        assert "resolved.*" in str(excinfo.value)
+
+    def test_the_binding_survives_a_round_trip(self) -> None:
+        payload = _payload()
+        payload["sentinel_bindings"] = [_RECORD_YEAR_SENTINELS]
+        loaded = DatasetDefinition.model_validate(payload)
+        assert DatasetDefinition.model_validate(json.loads(loaded.model_dump_json())) == loaded
