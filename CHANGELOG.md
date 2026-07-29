@@ -4,6 +4,52 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.22.1 -- 2026-07-29
+
+> **A PATCH bump, because no surface is added and no caller changes.** `3tears-iam` gains one
+> exported constant (`FORBIDDEN_CLAIMS`) and every existing signature, argument and return type
+> is untouched. What changes is a verification RULE inside a function that already had one.
+
+**`3tears-iam` stops making an added identity claim a fleet-wide flag day, without loosening
+what "identity only" means.** BEHAVIOUR CHANGE on `verify_session_token`, and the reason it is
+worth reading is that the old rule was correct about the threat and wrong about the blast
+radius.
+
+A session token asserts identity and nothing else, and that has to be enforced at the
+verification boundary rather than trusted: a smuggled `role` claim must fail verification, not
+sit there as a field nobody reads yet. The signature check cannot do this job -- the danger is
+not a forged token but a second legitimate signer inside the platform drifting away from
+identity-only, and such a signer holds a key the verifier accepts.
+
+`verify_session_token` enforced that by rejecting any claim outside `KNOWN_CLAIMS`. That
+refuses a smuggled grant, and it also refuses `locale`. Verification necessarily runs against
+payloads minted by a peer that may be on a DIFFERENT version of this package -- two services,
+two repositories, two deploys -- so the exact pin meant the moment one side minted a new
+identity claim, every service still on the older version rejected every token that side issued.
+Not a degradation: a total authentication outage, arriving at the deploy rather than at the
+change, and looking like an infrastructure fault rather than a version skew.
+
+So the rule is now scoped to what is actually dangerous. `verify_session_token` rejects
+`FORBIDDEN_CLAIMS` -- the authorization-shaped names (`role`, `roles`, `scope`, `scp`, `groups`,
+`permissions`, `entitlements`, `is_admin`, and the rest of that vocabulary) -- and ignores merely
+unrecognized ones, which no code in this package reads. Everything else about verification is
+untouched: the signature, the EdDSA/HS256 pin, the issuer, `exp`/`iat`, every required base
+claim, and the audience.
+
+**Mint is unchanged and still pins the claim set exactly.** That asymmetry is the design, not an
+oversight. On mint this package assembles the payload, so a claim outside `KNOWN_CLAIMS` is its
+own bug and fails loudly; on verify the payload came from someone else's version. Enforcing the
+identity-only invariant where the payload is BUILT costs nothing, and enforcing it as an exact
+set where the payload ARRIVES cost an outage to prevent a typo.
+
+**What to check before upgrading.** If you relied on `verify_session_token` rejecting an
+unrecognized claim as an integrity signal -- as opposed to rejecting an authorization claim --
+that rejection is gone, and the signature plus `iss` check is the stronger version of it. A
+`TokenError` for this case now reads `token carries forbidden claims:` rather than
+`unexpected claims:`; nothing outside this repository matched on that text at the time of the
+change. A consumer that needs the new rule must floor at `>=0.22.1`, since the whole 0.22.x
+family satisfies an unpinned `>=0.22.0,<0.23.0` range.
+
 ## v0.22.0 -- 2026-07-29
 
 > **A MINOR bump, because three distributions gain new public API and one gains a new keyword on
