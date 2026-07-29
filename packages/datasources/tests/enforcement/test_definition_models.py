@@ -6,11 +6,16 @@ Two properties, both AST- or manifest-level and both under a second:
   ``extra="forbid"``. An ignored field in a definition is a silently
   dropped semantic, which is exactly the class of bug the corpus gate
   exists to prevent.
-- ``3tears-datasources`` gained no runtime dependency. The Hub-side
-  compiler split exists solely to protect this: ``sqlglot`` is a
-  dependency of no 3tears package, and every secondary backend already
-  sits behind an extras key, so a parser dependency here would tax every
-  consumer.
+- ``3tears-datasources`` takes on no SQL-parser or backend runtime
+  dependency. The Hub-side compiler split exists solely to protect this:
+  ``sqlglot`` is a dependency of no 3tears package, and every secondary
+  backend already sits behind an extras key, so a parser dependency here
+  would tax every consumer.
+
+The dependency set is pinned exactly rather than merely screened for
+``sqlglot``, so growing it is a deliberate act with a recorded reason
+rather than a line someone adds while chasing an import error. It has
+grown once, and the bar it was held to is written beside the constant.
 """
 
 from __future__ import annotations
@@ -24,12 +29,28 @@ import pytest
 _PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _DEFINITION_DIR = _PACKAGE_ROOT / "src" / "threetears" / "datasources" / "definition"
 
-# the runtime dependency list ``dsm-task-01a`` inherited and must not grow.
+# the runtime dependency list ``dsm-task-01a`` inherited, plus the one
+# addition ``dsm-task-02`` made. adding to this set is a deliberate act,
+# and the bar an addition must clear is:
+#
+#   1. no way to deliver the capability without it. dataset-as-code reads
+#      ``datasets/*.dataset.yaml``, and a YAML file model cannot parse YAML
+#      without a YAML parser. contrast ``sqlglot``, which IS avoidable here
+#      -- the compiler lives Hub-side precisely so it stays avoidable.
+#   2. pure python, no build step, no transitive weight.
+#   3. already carried by the family at the same pin, so it introduces no
+#      new resolution surface. ``pyyaml>=6.0`` is what ``3tears-scrape``
+#      declares.
+#
+# a SQL parser clears none of the three, which is why
+# ``test_sqlglot_is_not_a_dependency`` stands separately below and is not
+# a special case of this set.
 _EXPECTED_RUNTIME_DEPENDENCIES = {
     "3tears",
     "3tears-observe",
     "pydantic",
     "asyncpg",
+    "pyyaml",
 }
 
 

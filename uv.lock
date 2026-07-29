@@ -555,6 +555,7 @@ dependencies = [
     { name = "3tears-observe" },
     { name = "asyncpg" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -584,6 +585,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "redshift-connector", marker = "extra == 'redshift'", specifier = ">=2.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.18" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },

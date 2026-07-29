@@ -73,6 +73,14 @@ tax every consumer of this wheel.
   :class:`~threetears.datasources.definition.dataset.DatasetDefinition`
   and the content hash
 
+``dsm-task-02`` adds the file-first path:
+
+- :mod:`~threetears.datasources.definition.file_model` --
+  :class:`~threetears.datasources.definition.file_model.DatasetFile`, the
+  name-keyed ``datasets/*.dataset.yaml`` envelope, its OFFLINE parser, and
+  :func:`~threetears.datasources.definition.file_model.dataset_drift`,
+  which reports an absent definition and never deletes one
+
 The model's recursion closes in
 :mod:`~threetears.datasources.definition.source`: a predicate may test
 membership against a source, and a source may carry a predicate. That
@@ -126,6 +134,20 @@ from threetears.datasources.definition.expression import (
     Predicate,
     ScalarValue,
     scan_references,
+)
+from threetears.datasources.definition.file_model import (
+    DATASET_FILE_SUFFIX,
+    DATASETS_DIR_NAME,
+    DatasetDriftReport,
+    DatasetFile,
+    DatasetFileError,
+    dataset_drift,
+    discover_dataset_files,
+    load_dataset_file,
+    load_dataset_files,
+    render_dataset_file,
+    unloaded_dataset_files,
+    warn_unloaded_dataset_files,
 )
 from threetears.datasources.definition.grain import GrainSpec
 from threetears.datasources.definition.measure import (
@@ -227,6 +249,8 @@ from threetears.datasources.definition.unit import (
 
 __all__ = [
     "COMPOSITION_FILTERED_ARTIFACTS",
+    "DATASETS_DIR_NAME",
+    "DATASET_FILE_SUFFIX",
     "ArithmeticExpression",
     "ArtifactKind",
     "ArtifactProjection",
@@ -244,6 +268,9 @@ __all__ = [
     "CompositionPlacement",
     "ConflictingQualityMeasure",
     "DatasetDefinition",
+    "DatasetDriftReport",
+    "DatasetFile",
+    "DatasetFileError",
     "DeliverySpec",
     "DerivedColumn",
     "DerivedTable",
@@ -329,14 +356,20 @@ __all__ = [
     "bindable_namespaces",
     "canonical_content",
     "content_hash",
+    "dataset_drift",
+    "discover_dataset_files",
     "expand_all_prior",
+    "load_dataset_file",
+    "load_dataset_files",
     "raw_selects_in",
     "reject_policy_reference_to_draft",
     "reject_unbindable",
     "reject_unexpanded_exclusions",
+    "render_dataset_file",
     "scan_references",
     "union_quality_measures",
     "units_without_qualification",
+    "unloaded_dataset_files",
     "validate_having_measures",
     "validate_parameter_specs",
     "validate_parameter_values",
@@ -344,4 +377,5 @@ __all__ = [
     "validate_relation_aliases",
     "validate_unique_measure_names",
     "validate_unique_unit_names",
+    "warn_unloaded_dataset_files",
 ]

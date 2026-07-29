@@ -36,6 +36,11 @@ dependencies = [
     # imports asyncpg at module top.) the other backend libs
     # (redshift / snowflake / bigquery) stay behind extras keys.
     "asyncpg>=0.29",
+    # dataset-as-code (dsm-task-02) reads name-keyed
+    # ``datasets/*.dataset.yaml`` files. non-optional because the parser
+    # is imported from the definition package's public surface, and the
+    # family already carries this exact pin in 3tears-scrape.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
