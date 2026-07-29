@@ -176,6 +176,40 @@ The docstring this replaces framed a bus-backed relay as a costed alternative to
 measurements". That trade had two sides only while a co-located display was reachable; where it is
 not, there is nothing to weigh it against.
 
+
+**`3tears-scrape` gains the pod side of that arrangement: a display served over the pipe.** New
+public API on the new module `threetears.scrape.operator_pipe`: `serve_display(nats, claim, tool=,
+pod_id=, display=)`, an async context manager a tool pod holds open for as long as it holds a
+session's claim.
+
+**The claim is what entitles it, exactly as it entitles the control subject.** `serve_display`
+refuses to start on a claim already lost, refuses an attach that arrives after one is lost -- the
+subscription is dropped promptly but not instantaneously, and serving in that window would put a
+second live view on a display the new owner is driving -- and ends a live stream when the claim
+goes. That last one is not a check written here: the relay already takes a stop signal for exactly
+this, so a lost claim ends a display stream by the same mechanism that ends the co-located one,
+and the operator's client sees end of stream and reconnects onto whichever pod now holds the
+session.
+
+**Two routes to one display now exist, and they belong to different deployments rather than being
+alternatives within one.** Where the operator's WebSocket is terminated in the container beside
+the display, `relay_stream` connects to `x11vnc` on the pod's loopback and nothing in the new
+module runs -- the compose file in this repository is that deployment. Where it is terminated
+somewhere with no route into the pod, which is what a hub holding the only Ingress is, the pod
+runs `serve_display` and the process holding the socket supplies a pipe-backed transport. The
+loopback hop to `x11vnc` exists either way; what changes is which process makes it.
+
+The attach rides the tool's own scoped forward family, derived from the `tool` argument rather
+than taken as a parameter of its own, so a pod cannot serve under a family naming a tool other
+than the one it tells its caller it is.
+
+**Proven against the container this repository builds**, running its own `x11vnc` in front of its
+own Xvfb, over a real broker: a complete RFB handshake in both directions and then one full
+1920x1080 framebuffer, 8.29 MB, reassembled to the size the geometry predicts. That is eight times
+the credit window, so the flow control ran against real traffic rather than a synthetic producer.
+An operator at a browser is what remains, and it is queued as an operator verification rather than
+claimed here.
+
 ## v0.21.0 -- 2026-07-28
 
 > **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,

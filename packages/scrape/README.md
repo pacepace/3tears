@@ -326,13 +326,22 @@ and writer the bytes move between. Called with none -- which is how the router c
 opens a plain TCP connection to that endpoint, which is the co-located pod above and is exactly
 what the relay has always done.
 
-Two more seams go with it, both optional and both there for the same reason -- one display lives
-in one pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods
-cannot both serve one session, and `serve_session()` answers that session's control messages
-(open a tab, complete a tab, close the session, read its state) on a subject keyed to the session
-id, so a caller addresses the session and never a pod. A completed tab's reply carries the
-human's solve **sealed**, because a raw cookie jar is a live credential and a bus is not the place
-for one.
+**The pod's own end of that is `serve_display()`,** in `threetears.scrape.operator_pipe`. A pod
+holding a session's claim serves its display onto a NATS byte pipe, bridging the `x11vnc` beside
+it to a stream a caller anywhere can attach to. Which of the two routes a deployment uses is not a
+choice made per request: with the socket and the display in one pod, `relay_stream` connects to
+loopback and `serve_display()` never runs; with the socket terminated where nothing can reach the
+pod, the pod runs `serve_display()` and the process holding the socket supplies the transport. The
+loopback hop happens either way, in one process or the other.
+
+The remaining seams are optional and all there for the same reason -- one display lives in one
+pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods cannot
+both serve one session, and `serve_session()` answers that session's control messages (open a tab,
+complete a tab, close the session, read its state) on a subject keyed to the session id, so a
+caller addresses the session and never a pod. The same claim is what entitles `serve_display()`,
+so a handover ends the operator's stream instead of leaving two live views on one session. A
+completed tab's reply carries the human's solve **sealed**, because a raw cookie jar is a live
+credential and a bus is not the place for one.
 
 **6. They clear it, and you keep the work.** `POST .../tab/{id}/complete` returns the
 context's cookies and storage. Seal it with `seal_session_state` and store it with

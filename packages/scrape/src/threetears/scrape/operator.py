@@ -20,7 +20,9 @@ Chromium and x11vnc and nothing else. Where the two share a Kubernetes pod, the 
 the display over loopback by connecting to it, and that is what :func:`relay_stream` does with no
 transport supplied. Where they do not -- a hub terminating an operator's socket is in neither
 container and has no route into that pod at all -- the same function takes a transport that
-reaches the display some other way, and moves the same bytes over it.
+reaches the display some other way, and moves the same bytes over it. The pod's own end of that
+second arrangement is :mod:`threetears.scrape.operator_pipe`, which serves the display onto a
+stream for as long as the pod holds the session's claim.
 
 **Every URL emitted here is relative.** A platform mounts this under a prefix of its choosing,
 at a depth this module can never learn, so a leading slash would resolve against the origin
