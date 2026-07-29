@@ -352,23 +352,24 @@ async def relay_stream(
     finally:
         for task in watched:
             task.cancel()
-        # CLOSED BEFORE ANYTHING IS AWAITED, and the ordering is the whole safeguard. This is a
-        # `finally` reached BY cancellation as often as by an ordinary end, and once a task is
-        # cancelled its NEXT await raises immediately -- so anything awaited before `close()`
-        # skips it and leaks the connection.
+        # The close comes first, and the honest reason is conservatism rather than a mechanism
+        # this code can demonstrate. Two attempts to await the cancelled pumps before it were made
+        # and each broke something specific: moving the close after a `gather` propagated
+        # `CancelledError` out of cleanup and failed the router test that drives the real
+        # WebSocket path, and suppressing that is not available because suppressing
+        # `CancelledError` does NOT re-raise it -- the task would finish as though never
+        # cancelled.
         #
-        # [DECISION: do not await the cancelled pumps here | A review observed that `cancel()`
-        # only REQUESTS cancellation, so a pump parked in a publish can still be running when the
-        # writer closes, and proposed awaiting them first. Both shapes that achieves were tried
-        # and each was worse than this one: awaiting before the close skips the close under
-        # cancellation, and moving the close into the gather's own `finally` fixes that but then
-        # propagates `CancelledError` out of cleanup where this code previously completed. A
-        # suppression is not the answer either -- suppressing `CancelledError` does NOT re-raise
-        # it, so the task would finish as though never cancelled. Closing first makes the residual
-        # concern moot for the leak that matters: the connection is released on every path, and a
-        # pump still mid-publish is writing to a closed transport, which is the ordinary way an
-        # asyncio writer learns its peer is gone. | user can veto: the shape to reach for would be
-        # an explicit shielded reaper outside this `finally`, not another await inside it]
+        # [DECISION: keep the close first and do not await the cancelled pumps | A review noted
+        # that `cancel()` only REQUESTS cancellation, so a pump may still be running here. That is
+        # true. It is also bounded without an await: `_to_display` is the only pump touching
+        # *writer*, and closing the socket is what stops it; `_to_client` sends to the OPERATOR
+        # and never touches *writer*, so its lifetime is the transport's contract rather than this
+        # function's. What is NOT claimed is that awaiting first would skip the close -- an earlier
+        # version of this note asserted that as a rule about cancellation and a sabotage test
+        # disproved it, since a cancellation is delivered once rather than at every subsequent
+        # await. The ordering is therefore the cautious choice, not a proven necessity. | user can
+        # veto: a shielded reaper outside this `finally` is the shape to reach for]
         writer.close()
         try:
             await writer.wait_closed()

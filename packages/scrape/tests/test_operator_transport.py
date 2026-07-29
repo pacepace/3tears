@@ -14,6 +14,7 @@ show that.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Sequence
 
 import pytest
@@ -304,3 +305,33 @@ async def test_a_router_built_with_a_transport_reaches_the_display_through_it() 
     assert opened == [("not-an-address", 0)], (
         "the router did not use the transport it was given; it resolved the endpoint itself"
     )
+
+
+async def test_the_display_connection_is_closed_even_when_the_relay_is_cancelled() -> None:
+    """Cancellation is a path to the `finally`, and the close must survive it.
+
+    The neighbouring release test reaches that block through the STOP SIGNAL, which is an
+    ordinary end. This one cancels the relay outright, which is what happens when an operator's
+    WebSocket handler is torn down.
+
+    It pins that the connection IS released on that path. It deliberately does not claim to pin
+    the close's ORDERING within the block: inserting an await ahead of the close still passes
+    here, because a cancellation is delivered once rather than at every subsequent await. That
+    was worth establishing rather than assuming, and the decision recorded at the call site says
+    so instead of implying this test covers more than it does.
+    """
+    writer = _FakeDisplayWriter()
+    reader = _FakeDisplayReader([])  # parks: nothing to read, so the relay stays open
+
+    async def _transport(host: str, port: int):
+        return reader, writer
+
+    parked: asyncio.Queue[bytes] = asyncio.Queue()  # never filled: the operator sends nothing
+    relay = asyncio.create_task(
+        relay_stream(lambda _d: asyncio.sleep(0), parked.get, *_NOT_AN_ADDRESS, transport=_transport)
+    )
+    await asyncio.sleep(0)
+    relay.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await relay
+    assert writer.closed, "the display connection was not released on the cancellation path"
