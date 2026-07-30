@@ -116,6 +116,26 @@ _VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build", "publish
 # ---------------------------------------------------------------------------
 
 
+#: model config every per-driver connection config carries.
+#:
+#: ``extra="forbid"`` for the same reason :class:`DatasourceConfig` carries
+#: it one level up, and the rule has to hold at BOTH levels or it holds at
+#: neither: the parent refused ``acccess_mode`` while the nested member
+#: happily dropped ``query_timeout_secondz``, so the whole pool-sizing and
+#: timeout surface -- the fields an operator derives from a warehouse
+#: CONNECTION LIMIT and a replica count -- was silently revertible to a
+#: library default by one transposed character. a build row declaring
+#: ``query_timeout_seconds: 14400`` became a 300-second statement timeout
+#: with the file on disk still reading 14400.
+#:
+#: refusal (rather than the tolerate-and-report policy the relations wire
+#: uses) is right here because this config is read by the process that OWNS
+#: it: the driver is constructed from the same checkout that declares these
+#: fields, so there is no older reader to be tolerant for. an unrecognised
+#: key is an authoring slip, always.
+_CONNECTION_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
+
+
 class PostgresConnectionConfig(BaseModel):
     """postgres backend connection config.
 
@@ -142,7 +162,7 @@ class PostgresConnectionConfig(BaseModel):
         runaway query holds a connection for the duration
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.POSTGRES]
     host: str
@@ -210,7 +230,7 @@ class YugabyteConnectionConfig(BaseModel):
     YugabyteDB's pgwire-compatible 5433.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.YUGABYTE]
     host: str
@@ -312,7 +332,7 @@ class RedshiftConnectionConfig(BaseModel):
         below it. trade-off: same as ``command_timeout_seconds`` above
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.REDSHIFT]
     host: str
@@ -460,7 +480,7 @@ class SnowflakeConnectionConfig(BaseModel):
     :param query_timeout_seconds: per-query timeout (Snowflake-side)
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.SNOWFLAKE]
     account: str
@@ -514,7 +534,7 @@ class BigQueryConnectionConfig(BaseModel):
         ceiling (driver converts seconds -> ms)
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.BIGQUERY]
     project_id: str
@@ -556,7 +576,7 @@ class AgentInternalConnectionConfig(BaseModel):
         constraint
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.AGENT_INTERNAL]
     schema_name: str = Field(
