@@ -637,7 +637,8 @@ class DatasourceConfig(BaseModel):
     :param name: human-readable name for this data source
     :ptype name: str
     :param access_mode: tool registration mode (read / write / readwrite /
-        build). normalized to lowercase with surrounding whitespace stripped
+        build / publish). normalized to lowercase with surrounding whitespace
+        stripped
     :ptype access_mode: str
     :param schemas: database schemas exposed to agents (whitelist;
         empty means "all schemas the warehouse account can see").
@@ -678,16 +679,24 @@ class DatasourceConfig(BaseModel):
         raises, and ``tool_count=0`` is the only trace. the model carries
         ``extra="forbid"``, which makes this field the sole entry point.
 
+        the admissible set is RENDERED FROM :data:`_VALID_ACCESS_MODES` rather
+        than spelled again in the message. It was spelled again, and it went
+        stale: the set gained ``publish`` and the message did not, so a
+        misspelled publisher row was rejected with an error listing four modes
+        and omitting the one the operator was reaching for. A hand-written
+        message is a third copy of the authority and drifts exactly like the
+        second one did.
+
         :param value: access mode string to normalize and validate
         :ptype value: str
         :return: normalized access mode string
         :rtype: str
-        :raises ValueError: if access mode is not one of read / write /
-            readwrite / build
+        :raises ValueError: if access mode is not in :data:`_VALID_ACCESS_MODES`
         """
         normalized = value.lower().strip()
         if normalized not in _VALID_ACCESS_MODES:
-            raise ValueError(f"invalid access_mode {value!r}: must be one of read, write, readwrite, build")
+            admissible = ", ".join(sorted(_VALID_ACCESS_MODES))
+            raise ValueError(f"invalid access_mode {value!r}: must be one of {admissible}")
         return normalized
 
     @property
