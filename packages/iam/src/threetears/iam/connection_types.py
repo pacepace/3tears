@@ -74,6 +74,7 @@ cross-tenant check as an unknown string.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -133,6 +134,7 @@ class ConnectionFieldKind(StrEnum):
     LIST = "list"
     BOOL = "bool"
     INT = "int"
+    ENUM = "enum"
 
 
 class ConnectionFieldDescriptor(BaseModel):
@@ -166,6 +168,14 @@ class ConnectionFieldDescriptor(BaseModel):
     descriptor is not itself sensitive and is safe to serve to anyone permitted
     to configure the connection.
 
+    **The constraint fields describe the value; they do not police it.**
+    ``options``, ``minimum``, ``maximum`` and ``pattern`` exist so a configuration
+    surface can offer the right control and reject an obviously-wrong value before
+    an operator submits it. They are NOT the authority on what the serving service
+    accepts: that service validates on write regardless, because a descriptor
+    travels to consumers that may be older, newer, or simply not bothering. Read
+    them as "what this field means", never as "what has already been checked".
+
     :param name: the configuration key this field's value is stored under
     :ptype name: str
     :param label: operator-facing field name
@@ -179,6 +189,16 @@ class ConnectionFieldDescriptor(BaseModel):
     :ptype write_only: bool
     :param help: short operator-facing explanation, including any default
     :ptype help: str
+    :param options: the permitted values, for an ``enum`` kind. Empty for every
+        other kind.
+    :ptype options: tuple[str, ...]
+    :param minimum: smallest accepted value, for an ``int`` kind
+    :ptype minimum: int | None
+    :param maximum: largest accepted value, for an ``int`` kind
+    :ptype maximum: int | None
+    :param pattern: regular expression the value must match, for a ``string`` or
+        ``url`` kind
+    :ptype pattern: str | None
     """
 
     model_config = ConfigDict(frozen=True)
@@ -189,6 +209,10 @@ class ConnectionFieldDescriptor(BaseModel):
     required: bool
     write_only: bool = False
     help: str
+    options: tuple[str, ...] = ()
+    minimum: int | None = None
+    maximum: int | None = None
+    pattern: str | None = None
 
     @model_validator(mode="after")
     def _secret_fields_are_write_only(self) -> ConnectionFieldDescriptor:
@@ -204,6 +228,68 @@ class ConnectionFieldDescriptor(BaseModel):
             raise ValueError(
                 f"field {self.name!r} is kind=secret but not write_only: a secret that can be read back is not a secret"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _an_enum_offers_something_to_choose(self) -> ConnectionFieldDescriptor:
+        """An ``enum`` with no options is a dropdown nobody can fill in.
+
+        Unlike the checks below, this one is about the field being usable at all
+        rather than about a producer's tidiness, so it binds regardless of where the
+        descriptor came from."""
+        if self.kind == ConnectionFieldKind.ENUM and not self.options:
+            raise ValueError(f"field {self.name!r} is kind=enum but declares no options: nothing could be selected")
+        return self
+
+    @model_validator(mode="after")
+    def _constraints_match_the_kind_they_constrain(self) -> ConnectionFieldDescriptor:
+        """A constraint on a kind it cannot apply to means the producer meant something
+        else -- ``minimum`` on a string, ``options`` on a URL -- and a consumer would
+        silently ignore it, so the field would quietly not be constrained at all.
+
+        **Checked only against KINDS THIS RELEASE KNOWS.** An unrecognised kind carries
+        its constraints through untouched, on the same reasoning `ConnectionFieldKind`
+        gives for tolerating the kind itself: a future kind that legitimately uses
+        ``options`` must not be rejected by every consumer released before it, which
+        would be exactly the flag-day this module is built to avoid. Refuse what is
+        wrong; tolerate what is merely unfamiliar.
+        """
+        known = {member.value for member in ConnectionFieldKind}
+        if self.kind not in known:
+            return self
+        if self.options and self.kind != ConnectionFieldKind.ENUM:
+            raise ValueError(f"field {self.name!r} is kind={self.kind} but declares options: only an enum has options")
+        if (self.minimum is not None or self.maximum is not None) and self.kind != ConnectionFieldKind.INT:
+            raise ValueError(
+                f"field {self.name!r} is kind={self.kind} but declares minimum/maximum: only an int has a range"
+            )
+        if self.pattern is not None and self.kind not in {ConnectionFieldKind.STRING, ConnectionFieldKind.URL}:
+            raise ValueError(
+                f"field {self.name!r} is kind={self.kind} but declares a pattern: only a string or url has one"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _the_range_contains_something(self) -> ConnectionFieldDescriptor:
+        """A minimum above its maximum accepts no value at all, so a field carrying one
+        is unfillable -- and would present to an operator as a box that rejects
+        everything they type with no way to discover why."""
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError(
+                f"field {self.name!r} has minimum {self.minimum} above maximum {self.maximum}: no value satisfies it"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _the_pattern_compiles(self) -> ConnectionFieldDescriptor:
+        """A pattern that does not compile is not a constraint, it is an exception in
+        whichever consumer tries to apply it first -- and that consumer is a UI, so the
+        failure lands on an operator rather than on whoever wrote the descriptor."""
+        if self.pattern is not None:
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                raise ValueError(f"field {self.name!r} declares a pattern that does not compile: {exc}") from exc
         return self
 
 

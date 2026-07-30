@@ -57,7 +57,7 @@ def test_the_two_scopes_are_the_wire_strings_consumers_render() -> None:
 def test_the_known_field_kinds_are_the_wire_strings_consumers_render() -> None:
     # The vocabulary a producer builds from and every consumer is expected to render.
     # Not a parse-time gate -- see the tolerance tests below.
-    assert {kind.value for kind in ConnectionFieldKind} == {"string", "secret", "url", "list", "bool", "int"}
+    assert {kind.value for kind in ConnectionFieldKind} == {"string", "secret", "url", "list", "bool", "int", "enum"}
 
 
 # --- secret implies write_only ----------------------------------------------
@@ -281,3 +281,154 @@ def test_scopes_and_fields_serialize_as_json_arrays() -> None:
     dumped = _descriptor(fields=(_field(name="issuer"),)).model_dump(mode="json")
     assert dumped["scopes"] == ["platform", "customer"]
     assert dumped["fields"][0]["kind"] == "url"
+
+
+# --- the constraint fields --------------------------------------------------
+#
+# These describe a value so a surface can offer the right control and reject an
+# obviously-wrong entry before submission. They are NOT a substitute for the serving
+# service validating on write, and the tests below are written to keep that distinction
+# visible: what is refused here is a descriptor that is INTERNALLY incoherent, never a
+# value someone typed.
+
+
+def test_an_enum_declares_the_values_a_surface_offers() -> None:
+    field = ConnectionFieldDescriptor(
+        name="mode",
+        label="Mode",
+        kind=ConnectionFieldKind.ENUM,
+        required=True,
+        help="mtls or webauthn -- different trust models, not two spellings of one",
+        options=("mtls", "webauthn"),
+    )
+    assert field.options == ("mtls", "webauthn")
+
+
+def test_an_enum_with_no_options_cannot_be_constructed() -> None:
+    """A dropdown with nothing in it cannot be filled in at all, so the field would be
+    unconfigurable while looking configurable."""
+    with pytest.raises(ValidationError, match="declares no options"):
+        ConnectionFieldDescriptor(name="mode", label="Mode", kind=ConnectionFieldKind.ENUM, required=True, help="...")
+
+
+def test_options_on_a_known_non_enum_kind_cannot_be_constructed() -> None:
+    """A consumer would silently ignore them, so the field would quietly not be
+    constrained -- the producer meant something else."""
+    with pytest.raises(ValidationError, match="only an enum has options"):
+        ConnectionFieldDescriptor(
+            name="issuer",
+            label="Issuer",
+            kind=ConnectionFieldKind.URL,
+            required=True,
+            help="...",
+            options=("a", "b"),
+        )
+
+
+def test_options_on_an_unknown_kind_are_carried_through() -> None:
+    """The flag-day rule, applied to constraints as well as to kinds: a future kind that
+    legitimately uses options must not be rejected by every consumer released before it."""
+    field = ConnectionFieldDescriptor(
+        name="palette",
+        label="Palette",
+        kind="multiselect",
+        required=False,
+        help="...",
+        options=("red", "green"),
+    )
+    assert field.options == ("red", "green")
+
+
+def test_an_int_may_declare_a_range() -> None:
+    field = ConnectionFieldDescriptor(
+        name="clock_skew_seconds",
+        label="Clock skew",
+        kind=ConnectionFieldKind.INT,
+        required=False,
+        help="defaults to 60",
+        minimum=0,
+        maximum=300,
+    )
+    assert (field.minimum, field.maximum) == (0, 300)
+
+
+def test_a_range_on_a_known_non_int_kind_cannot_be_constructed() -> None:
+    with pytest.raises(ValidationError, match="only an int has a range"):
+        ConnectionFieldDescriptor(
+            name="issuer", label="Issuer", kind=ConnectionFieldKind.URL, required=True, help="...", minimum=1
+        )
+
+
+def test_a_minimum_above_its_maximum_cannot_be_constructed() -> None:
+    """No value satisfies it, so an operator gets a box that rejects everything they type
+    with no way to discover why."""
+    with pytest.raises(ValidationError, match="no value satisfies it"):
+        ConnectionFieldDescriptor(
+            name="min_length",
+            label="Minimum length",
+            kind=ConnectionFieldKind.INT,
+            required=False,
+            help="...",
+            minimum=40,
+            maximum=10,
+        )
+
+
+def test_a_minimum_equal_to_its_maximum_is_a_legitimate_single_value() -> None:
+    field = ConnectionFieldDescriptor(
+        name="port", label="Port", kind=ConnectionFieldKind.INT, required=True, help="...", minimum=443, maximum=443
+    )
+    assert field.minimum == field.maximum == 443
+
+
+def test_a_string_may_declare_a_pattern() -> None:
+    field = ConnectionFieldDescriptor(
+        name="sp_entity_id",
+        label="SP entity ID",
+        kind=ConnectionFieldKind.STRING,
+        required=True,
+        help="...",
+        pattern=r"^urn:.+$",
+    )
+    assert field.pattern == r"^urn:.+$"
+
+
+def test_a_pattern_on_a_known_kind_that_has_none_cannot_be_constructed() -> None:
+    with pytest.raises(ValidationError, match="only a string or url has one"):
+        ConnectionFieldDescriptor(
+            name="enabled", label="Enabled", kind=ConnectionFieldKind.BOOL, required=False, help="...", pattern="^x$"
+        )
+
+
+def test_a_pattern_that_does_not_compile_cannot_be_constructed() -> None:
+    """An uncompilable pattern is not a constraint, it is an exception in whichever
+    consumer applies it first -- and that consumer is a UI, so the failure would land on
+    an operator rather than on whoever wrote the descriptor."""
+    with pytest.raises(ValidationError, match="does not compile"):
+        ConnectionFieldDescriptor(
+            name="issuer", label="Issuer", kind=ConnectionFieldKind.URL, required=True, help="...", pattern="([unclosed"
+        )
+
+
+def test_a_field_declaring_no_constraints_is_unchanged() -> None:
+    """The whole set is optional: every descriptor written before this release parses
+    exactly as it did, with empty options and no bounds."""
+    field = _field()
+    assert field.options == ()
+    assert (field.minimum, field.maximum, field.pattern) == (None, None, None)
+
+
+def test_the_constraints_survive_a_json_round_trip() -> None:
+    """They cross the wire to the surface that renders them, so this is the shape a
+    consumer actually receives."""
+    field = ConnectionFieldDescriptor(
+        name="mode",
+        label="Mode",
+        kind=ConnectionFieldKind.ENUM,
+        required=True,
+        help="...",
+        options=("mtls", "webauthn"),
+    )
+    restored = ConnectionFieldDescriptor.model_validate_json(field.model_dump_json())
+    assert restored == field
+    assert restored.options == ("mtls", "webauthn")
