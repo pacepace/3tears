@@ -38,16 +38,32 @@ during an incident.
 - **Anti-automation** -- attempt limiting, lockout, and trusted-proxy client-IP
   resolution, because a per-IP limiter keyed on an ingress pod locks out
   everyone at once.
+- **Auth-method descriptors** -- the shapes that say what configuring one
+  authentication method requires, so an admin surface renders a form per method
+  from data instead of carrying one per method. The two security rules travel as
+  validators: a `secret` field is write-only, and domain-to-tenant routing needs
+  platform scope.
 
 ## Design philosophy
 
 **The package owns protocol, crypto, and policy. It owns nobody's database
-schema and nobody's wire DTOs.** The services this was factored out of disagree
+schema and nobody's transport envelopes.** The services this was factored out of disagree
 about persistence in every way that matters -- one is NATS-RPC-native over a
 multi-tenant Postgres schema, the other a FastAPI app with its own control
 plane -- and unifying that would have produced an abstraction neither could
 use. State therefore sits behind narrow Protocols, with a NATS-KV
 implementation supplied for the common case and an in-memory one for tests.
+
+**The one shared serialisable surface is where "fails closed" is false.**
+Cross-repo RPC payloads are normally declared independently on each side, since
+a mismatched subject has no responders and the call fails outright. The
+auth-method descriptors in `connection_types` break that assumption: a service
+does answer, so a shape divergence is not a refusal but a field quietly missing
+from the form an operator fills in. Those shapes therefore live here, where a
+mismatch is a type error at install time -- and the security rules attached to
+them are validators, so a violating descriptor cannot be constructed on either
+side of the wire. The request/reply envelopes and subjects carrying them stay
+with the services, where failing closed is true.
 
 **Algorithms are pinned from literals, never read from the input.** A DPoP
 proof does not choose which algorithm verifies it; an `id_token` does not get
