@@ -26,8 +26,16 @@ plus the discriminator + lifecycle enums:
 - :class:`DataSourceType` -- ``redshift`` / ``snowflake`` / ``bigquery``
   / ``postgres`` / ``yugabyte`` / ``agent_internal`` (the datasource
   DRIVER axis; applies only to ``kind='datasource'`` rows)
-- :class:`DataSourceAccessMode` -- ``read`` / ``write`` / ``readwrite``
+- :class:`DataSourceAccessMode` -- ``read`` / ``write`` /
+  ``readwrite`` / ``build`` / ``publish``; the query-tool registration
+  axis. the last two are separate values rather than compositions of
+  the first three, for the least-privilege reasons in the class
+  docstring
 - :class:`DataSourceStatus` -- ``active`` / ``disabled``
+
+``tests/enforcement/test_enum_docstring_parity.py`` holds the bullets
+above to the enum bodies below: a member added without a matching
+bullet entry fails the suite.
 """
 
 from __future__ import annotations

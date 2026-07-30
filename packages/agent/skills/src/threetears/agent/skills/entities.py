@@ -455,9 +455,10 @@ class AgentSkillInvocationEntity(BaseEntity):
     def outcome(self) -> str | None:
         """Return the outcome (``'success'`` | ``'failure'`` | ``None``).
 
-        ``None`` means no ``[SUCCESS]``/``[FAILED]`` marker was present
-        in the assistant's response. Populated synchronously by the
-        consumer's post-LLM hook (PLACEMENT §1.10); no background
+        ``None`` means nothing has attributed an outcome to this
+        invocation yet. Populated synchronously, by the agent calling
+        ``skill_report_outcome`` (which replaced the retired
+        ``[SUCCESS]``/``[FAILED]`` post-LLM marker hook); no background
         classifier tick.
         """
         value: str | None = self._get_raw("outcome")
@@ -470,7 +471,12 @@ class AgentSkillInvocationEntity(BaseEntity):
 
     @property
     def outcome_source(self) -> str | None:
-        """Return the outcome provenance (``'agent_marker'`` | ``'user_feedback'`` | ``None``)."""
+        """Return the outcome provenance, or ``None`` if unattributed.
+
+        The value set is :data:`~threetears.agent.skills.types.OutcomeSource`
+        -- do not re-spell it here. ``'agent_tool'`` is the only value
+        anything currently writes.
+        """
         value: str | None = self._get_raw("outcome_source")
         return value
 

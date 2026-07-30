@@ -34,7 +34,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol, get_args
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, tool
@@ -46,7 +46,7 @@ from threetears.agent.skills.collections import (
     AgentSkillInvocationCollection,
 )
 from threetears.agent.skills.entities import AgentSkillEntity
-from threetears.agent.skills.types import SkillOutcome
+from threetears.agent.skills.types import PromptMode, SkillKindFilter, SkillOutcome
 from threetears.observe import get_logger
 
 __all__ = [
@@ -98,7 +98,9 @@ DEFAULT_MAX_PROSE_SKILLS_PER_USER = 200
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9 _\-]+$")
 
-_VALID_PROMPT_MODES: frozenset[str] = frozenset({"additive", "replace"})
+# derived from the canonical alias, never re-spelled: a value added to
+# ``PromptMode`` must reach this runtime check without a second edit.
+_VALID_PROMPT_MODES: frozenset[str] = frozenset(get_args(PromptMode))
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +263,7 @@ class SkillCreateInput(BaseModel):
         default=None,
         description="Markdown procedure (optional). Max 32KB.",
     )
-    prompt_mode: Literal["additive", "replace"] = Field(
+    prompt_mode: PromptMode = Field(
         default="additive",
         description="'additive' appends body to system prompt; 'replace' substitutes it.",
     )
@@ -291,7 +293,7 @@ class SkillListInput(BaseModel):
         default=None,
         description="Optional substring/keyword filter.",
     )
-    kind_filter: Literal["all", "prose", "tool"] = Field(
+    kind_filter: SkillKindFilter = Field(
         default="all",
         description="Restrict to prose-skill rows, tool-skills, or both.",
     )
@@ -327,7 +329,7 @@ class SkillUpdateInput(BaseModel):
     name: str | None = None
     summary: str | None = None
     body: str | None = None
-    prompt_mode: Literal["additive", "replace"] | None = None
+    prompt_mode: PromptMode | None = None
     tool_additions: list[str] | None = None
     tool_restrictions: list[str] | None = None
     trigger_keywords: str | None = None
@@ -354,7 +356,7 @@ class SkillInvokeInput(BaseModel):
 class SkillReportOutcomeInput(BaseModel):
     """Input schema for the ``skill_report_outcome`` tool."""
 
-    outcome: Literal["success", "failure"] = Field(
+    outcome: SkillOutcome = Field(
         description="Whether the active skill's task succeeded or failed.",
     )
     notes: str | None = Field(
@@ -772,7 +774,7 @@ def load_skill_create_tool(
         name: str,
         summary: str,
         body: str | None = None,
-        prompt_mode: Literal["additive", "replace"] = "additive",
+        prompt_mode: PromptMode = "additive",
         tool_additions: list[str] | None = None,
         tool_restrictions: list[str] | None = None,
         trigger_keywords: str = "",
@@ -948,7 +950,7 @@ def load_skill_list_tool(
     @tool("skill_list", args_schema=SkillListInput)
     async def skill_list(
         query: str | None = None,
-        kind_filter: Literal["all", "prose", "tool"] = "all",
+        kind_filter: SkillKindFilter = "all",
         tag_filter: str | None = None,
         enabled_only: bool = True,
         limit: int = 20,
@@ -1136,7 +1138,7 @@ def load_skill_update_tool(
         name: str | None = None,
         summary: str | None = None,
         body: str | None = None,
-        prompt_mode: Literal["additive", "replace"] | None = None,
+        prompt_mode: PromptMode | None = None,
         tool_additions: list[str] | None = None,
         tool_restrictions: list[str] | None = None,
         trigger_keywords: str | None = None,
