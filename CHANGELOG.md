@@ -4,6 +4,100 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.22.2 -- 2026-07-29
+
+> **A PATCH bump, and purely additive: `3tears-iam` gains four exported types and nothing
+> existing changes.** No signature, default, validation rule, or behaviour anywhere in the
+> family is altered by this release. Every module that existed at 0.22.1 behaves identically at
+> 0.22.2, so upgrading within 0.22.x cannot break a caller.
+>
+> Recorded as a PATCH because the owner designated it one. Worth being plain about what that
+> means rather than arguing the number: new public API is ordinarily MINOR under the versioning
+> discipline this file documents, and this is new public API. What a MINOR would cost is real --
+> the 0.22.x consumers pin `>=0.22.0,<0.23.0`, so 0.23.0 sits outside every ceiling and forces a
+> lockstep pass across five repositories to deliver types that break nothing. The tradeoff is
+> that a `<0.23.0` range no longer implies these types are present. **Any consumer importing
+> `threetears.iam.connection_types` must therefore floor at `>=0.22.2`** -- a bound of
+> `>=0.22.0,<0.23.0` will resolve to a release without the module and fail at import.
+
+**`3tears-iam` gains `threetears.iam.connection_types`: the vocabulary for describing an
+authentication method to whoever has to configure it.** Four new types --
+`ConnectionTypeDescriptor`, `ConnectionFieldDescriptor`, `ConnectionFieldKind`,
+`ConnectionScope`. Nothing else in the family moves.
+
+A descriptor states in data what a method needs: *this one is called "OpenID Connect", it can be
+configured platform-wide or per tenant, and it needs an issuer URL, a client id, and a client
+secret that is written and never read back.* An admin surface reads descriptors and renders a
+form per method, so a newly supported method reaches operators by adding a descriptor rather
+than by editing a UI.
+
+**Why these shapes are shared rather than mirrored per service, which is the platform's usual
+answer for a cross-repo RPC payload.** That convention rests on a mismatch failing closed: a
+subject nobody answers has no responders, so a divergence is a refusal, not a bug. This contract
+is answered. A service replies, a relay passes the payload on, and a field-name or shape
+divergence is therefore not a refusal -- it is a field silently dropped between the service that
+knows what OIDC requires and the operator filling in the form, discovered when the connection
+they saved turns out not to work. The two independent declarations that preceded this module
+agreed exactly, and agreeing was luck: they had each picked the same envelope key. Sharing the
+classes converts that luck into a type error at install time, which is the same reasoning that
+put token verification in `threetears.iam.tokens` instead of leaving a hand-written mirror
+downstream.
+
+They live in `3tears-iam` specifically because the methods being described -- OIDC, SAML,
+password, TOTP, passkey -- are the ones this package implements, and every service needing the
+descriptors already depends on this distribution to verify a session token.
+
+**Two security rules travel with the types as model validators, which is the substance of the
+move rather than a detail of it.** A descriptor that breaks either cannot be constructed --
+not by this package, not by a service adding a method years from now, and not by a consumer
+parsing a payload off a wire, since parsing runs the same validators:
+
+- **A `secret` field must be `write_only`.** A credential the configuration API will hand back
+  on read is a credential available to every reader of that configuration. `write_only` defaults
+  to `False`, so omitting it on a `secret` field is a refusal rather than a silent opt-in.
+- **`routes_by_domain` requires `platform` to be an allowed scope.** Domain-to-tenant allocation
+  decides which tenant an otherwise unrecognised sign-in belongs to. A customer-scoped
+  connection is configured by that customer, who can assert a domain they do not own -- so
+  letting one consult the domain table is a cross-tenant path: claim `example.com`, receive
+  sign-ins belonging to whoever actually owns it.
+
+Two structural rules ride along for the same reason: a type creatable in no scope at all could
+never be configured, and two fields sharing one configuration key means one is silently ignored,
+with which one depending on iteration order at the consumer.
+
+**`type` and `kind` are plain `str` on the wire; only `ConnectionScope` is a closed set.** This
+will look like an oversight in a module otherwise built out of enums, so the rule is written
+down: *refuse what is dangerous, tolerate what is merely unrecognised* -- the same rule that
+moved `verify_session_token` off an exact claim allowlist onto `FORBIDDEN_CLAIMS` in v0.22.1.
+
+The set of method names belongs to the service serving them. That service is what grows a ninth
+method, and a ninth method has to reach an admin UI the moment it is served -- not one release of
+this package later, and without a relay in the middle rejecting an entire registry over one
+member it has never heard of.
+
+A field `kind` is the same case. Validation runs on parse, so a closed `kind` would mean a
+consumer pinned to an older release of this package refusing an ENTIRE payload over one value it
+cannot place: the operator gets a blank page instead of seven usable methods and one field
+rendered as a plain input, and the failure lands on whichever of two deploys happens to be
+second -- not a property anyone can reason about at review time. What a tolerated unknown kind
+actually costs is a text input where a checkbox belonged, which is how a consumer should degrade
+and how the admin website already does. `ConnectionFieldKind` therefore ships as the KNOWN
+vocabulary, for producers to build descriptors from rather than as a parse-time gate: the
+vocabulary is real, it is simply not worth an outage. This does not soften the write-only rule
+for wire traffic -- the secret check compares the string value, so naming a field's kind
+`"secret"` binds it whether or not the enum was used.
+
+`ConnectionScope` stays closed, and the asymmetry is deliberate. Its vocabulary is exhaustive by
+construction -- there is no third answer to "whose connection is this" -- and a scope value this
+package cannot recognise IS dangerous, because scope is what decides whether `routes_by_domain`
+is permitted at all. An unreadable scope must not slip past the cross-tenant check as an unknown
+string.
+
+**What deliberately did not move: the transport.** The request/reply envelopes carrying
+descriptors between services, and the subject they travel over, stay with the services. Those
+genuinely do fail closed on a mismatch, and they are one service's API rather than platform
+vocabulary.
+
 ## v0.22.1 -- 2026-07-29
 
 > **A PATCH bump, released as one deliberately -- and it is not a no-op for callers.** Three
