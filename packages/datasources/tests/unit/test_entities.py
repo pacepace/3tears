@@ -54,20 +54,36 @@ class TestDataSourceTypeEnum:
 
 
 class TestDataSourceAccessModeEnum:
-    """four access-mode values; BUILD appended last, never inserted."""
+    """five access-mode values; BUILD then PUBLISH appended, never inserted."""
 
     def test_members(self) -> None:
-        assert {m.value for m in DataSourceAccessMode} == {"read", "write", "readwrite", "build"}
+        assert {m.value for m in DataSourceAccessMode} == {
+            "read",
+            "write",
+            "readwrite",
+            "build",
+            "publish",
+        }
 
-    def test_declaration_order_build_last(self) -> None:
-        """BUILD is appended, so an inserted member fails here.
+    def test_declaration_order_appends_only(self) -> None:
+        """new members are appended, so an inserted one fails here.
 
         two admin-console sites index the access-mode list POSITIONALLY to
         seed a default. inserting a value ahead of ``readwrite`` silently
         changes the default access mode for every new capability source, so
         the order is part of the contract and not incidental.
+
+        the assertion is the FULL ordered list rather than a check that some
+        named member is last, so appending a sixth mode fails here too and
+        has to be looked at rather than absorbed.
         """
-        assert [m.value for m in DataSourceAccessMode] == ["read", "write", "readwrite", "build"]
+        assert [m.value for m in DataSourceAccessMode] == [
+            "read",
+            "write",
+            "readwrite",
+            "build",
+            "publish",
+        ]
 
     def test_build_is_not_composed(self) -> None:
         """``build`` is a fourth value, never a composition.
@@ -105,6 +121,20 @@ class TestDatasourceConfigAccessMode:
     def test_build_mode_loads(self) -> None:
         cfg = DatasourceConfig.model_validate({"name": "influencers-build", "access_mode": "build"})
         assert cfg.access_mode == "build"
+
+    def test_publish_mode_loads(self) -> None:
+        """the publisher row must be creatable, and it was not.
+
+        the Hub's promote path pinned its own ``access_mode`` literal to
+        ``"publish"`` and rejected every row not carrying it, while this
+        closed value set had no such member. so the one row the promote would
+        accept was the one row the platform refused to store, and the
+        publisher identity could not exist at all.
+        """
+        cfg = DatasourceConfig.model_validate(
+            {"name": "influencers-publish", "access_mode": "publish"},
+        )
+        assert cfg.access_mode == "publish"
 
     @pytest.mark.parametrize("raw", ["Build", "BUILD", "  build  ", " Build\t"])
     def test_normalizes_case_and_whitespace(self, raw: str) -> None:

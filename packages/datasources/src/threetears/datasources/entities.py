@@ -127,18 +127,29 @@ class DataSourceAccessMode(StrEnum):
     structural least-privilege the separate mode exists to buy. a caller
     needing both surfaces gets two data source rows.
 
+    ``PUBLISH`` is a fifth for the same reason and one more. release schemas
+    are OWNED by the publisher, and ownership is never transferred -- an
+    ``ALTER TABLE ... OWNER TO`` needs superuser or membership in the target
+    role, either of which voids the containment. so the publisher creates the
+    release itself and the build user holds no ``CREATE`` there, which makes
+    the two identities un-composable rather than merely separable.
+
     :cvar READ: read-only (SELECT queries via DataSourceReadTool)
     :cvar WRITE: write-only (INSERT/UPDATE/DELETE via DataSourceWriteTool)
     :cvar READWRITE: full access (all query tools registered)
     :cvar BUILD: dataset build access; the warehouse user holds ``CREATE``
         and the platform compiles the SQL from a typed definition, so no
         untrusted query string crosses the boundary
+    :cvar PUBLISH: release-promotion access; the warehouse user OWNS the
+        release schema and creates the release tables, and holds ``SELECT``
+        on the draft schema by default privilege rather than per table
     """
 
     READ = "read"
     WRITE = "write"
     READWRITE = "readwrite"
     BUILD = "build"
+    PUBLISH = "publish"
 
 
 class DataSourceStatus(StrEnum):
