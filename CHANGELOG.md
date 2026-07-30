@@ -4,6 +4,46 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.22.3 -- 2026-07-30
+
+> **A PATCH bump, additive only: `ConnectionFieldDescriptor` gains four optional fields and
+> `ConnectionFieldKind` gains one member.** Every descriptor written against 0.22.2 parses
+> and behaves identically at 0.22.3 -- the new fields all default to "not declared", so
+> nothing existing is constrained by them.
+
+### `3tears-iam`
+
+**`ConnectionFieldKind.ENUM`.** A field with a fixed set of permitted values. The case that
+forced it is a PIV connection's `mode`: `mtls` and `webauthn` are two genuinely different
+trust models, not two spellings of one, and until now an operator had to type the word
+correctly with nothing offering the choice.
+
+**Four optional constraint fields on `ConnectionFieldDescriptor`:**
+
+| Field | Applies to | For |
+|---|---|---|
+| `options: tuple[str, ...]` | `enum` | the values a surface offers |
+| `minimum` / `maximum: int \| None` | `int` | the accepted range |
+| `pattern: str \| None` | `string`, `url` | a regular expression the value must match |
+
+**They describe a value; they do not police it.** A configuration surface uses them to offer
+the right control and to reject an obviously-wrong entry before submitting. The serving
+service still validates on write regardless -- a descriptor travels to consumers that may be
+older, newer, or simply not applying it, so a constraint is never evidence that a value was
+already checked.
+
+**Five new validators, and one deliberate hole in them.** A descriptor that is internally
+incoherent cannot be constructed: an `enum` with no options (a dropdown nobody can fill in),
+`options` on a non-enum, a range on a non-int, a `pattern` on a kind that has none, a
+`minimum` above its `maximum`, or a `pattern` that does not compile.
+
+The hole is that **the kind-matching checks apply only to kinds THIS release knows.** A
+descriptor whose `kind` is unrecognised carries its constraints through untouched. That is
+the same rule the module already applies to `kind` itself: refuse what is dangerous, tolerate
+what is merely unfamiliar. A future kind that legitimately uses `options` must not be
+rejected by every consumer released before it -- which would be precisely the flag-day this
+module exists to avoid, arriving on whichever of two deploys happened to be second.
+
 ## v0.22.2 -- 2026-07-29
 
 > **A PATCH bump, and purely additive: `3tears-iam` gains four exported types and nothing
