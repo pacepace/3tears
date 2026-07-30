@@ -4,9 +4,15 @@ Protocol, crypto, and policy for authenticating callers -- passwords, OAuth2/
 OIDC, SAML, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation
 controls that guard them.
 
-This package owns no database schema and no wire DTOs. State lives behind the
-Protocols in :mod:`threetears.iam.stores`, with a NATS-KV implementation
-supplied for the common case.
+This package owns no database schema and no transport envelopes. State lives
+behind the Protocols in :mod:`threetears.iam.stores`, with a NATS-KV
+implementation supplied for the common case.
+
+The one serialisable surface is :mod:`threetears.iam.connection_types` -- the
+vocabulary two services must agree on field-for-field to describe an
+authentication method to whoever configures it. The request/reply envelopes and
+subjects that carry those descriptors stay with the services; only the shared
+shapes, and the security rules they refuse to break, live here.
 """
 
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
