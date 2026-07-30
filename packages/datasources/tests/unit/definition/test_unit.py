@@ -541,3 +541,72 @@ class TestResolutionIntersect:
         )
         assert unit.resolutions[0].intersect[0].alias == "prior"
         assert unit.exclude is not None
+
+
+#: the ONE corpus file that renders into two units, by projecting
+#: ``'{{ context.job_level }}_coworkers_of_linkedin_execs' as unit``
+#: (``amazon_audience_l2_2025/custom_audience_units/
+#: coworkers_of_linkedin_execs.sql.jinja2``).
+_TEMPLATED_CORPUS_NAME = "{{ context.job_level }}_coworkers_of_linkedin_execs"
+
+#: what the corpus renders it INTO, and what the definition authors instead.
+_RENDERED_CORPUS_NAMES = (
+    "executive_coworkers_of_linkedin_execs",
+    "manager_coworkers_of_linkedin_execs",
+)
+
+
+class TestUnitNamesAreNotTemplated:
+    """F-11: one file rendering into two units, and why the model refuses it.
+
+    D8a derives the physical identifier from the logical name by a pure
+    function and records the mapping on the run. A templated name would
+    make that identifier a function of RUN PARAMETERS, so two runs of one
+    definition would deliver different wide columns and a diff against the
+    prior release would read as membership churn. The decision is
+    deliberate; these tests hold the two halves of it.
+    """
+
+    def test_a_templated_name_is_carried_as_one_literal_name(self) -> None:
+        """the model expands nothing: the braces are just characters.
+
+        This is the property that makes the decision safe to state. Were
+        a name ever expanded, one authored unit would silently become N
+        and every count in the report would be wrong by a factor.
+
+        :returns: none
+        :rtype: None
+        """
+        unit = Unit(name=_TEMPLATED_CORPUS_NAME, resolutions=[Resolution()])
+        assert unit.name == _TEMPLATED_CORPUS_NAME
+        assert unit.emitted_labels == (_TEMPLATED_CORPUS_NAME,)
+
+    def test_the_two_corpus_units_are_authored_separately_and_stay_distinct(self) -> None:
+        """the coping strategy, and it is a real authoring rather than a loss.
+
+        :returns: none
+        :rtype: None
+        """
+        units = [Unit(name=name, resolutions=[Resolution()]) for name in _RENDERED_CORPUS_NAMES]
+        assert validate_unique_unit_names(units) == units
+        assert tuple(label for unit in units for label in unit.emitted_labels) == _RENDERED_CORPUS_NAMES
+
+    def test_no_unit_field_takes_a_parameter_or_a_template(self) -> None:
+        """a sweep sweeps a VALUE; "one definition, N units" is not a shape.
+
+        Asserted through what a unit ACCEPTS rather than by listing its
+        annotations: an authored field carrying a parameter reference or a
+        sweep would be admitted here and is not.
+
+        :returns: none
+        :rtype: None
+        """
+        for field_name in ("name_template", "names", "sweep", "parameter", "for_each"):
+            with pytest.raises(ValidationError):
+                Unit.model_validate(
+                    {
+                        "name": "coworkers_of_linkedin_execs",
+                        "resolutions": [{}],
+                        field_name: ["executive", "manager"],
+                    }
+                )

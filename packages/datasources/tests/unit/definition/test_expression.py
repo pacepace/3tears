@@ -20,12 +20,16 @@ from threetears.datasources.definition import (
     ArithmeticExpression,
     Comparison,
     ComparisonOperator,
+    DerivedColumn,
     Expression,
     LiteralExpression,
     LiteralType,
+    Measure,
     Namespace,
     Predicate,
+    ProvenanceColumn,
     Reference,
+    TermColumn,
 )
 
 # ``uhg_opinion_elites/standard_audience_units.yaml:41`` -- a single POSIX
@@ -346,3 +350,137 @@ class TestPredicate:
     def test_a_blank_string_form_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             Predicate.model_validate({"raw": "   "})
+
+
+#: the five real deliverables ``delivery.py``'s "do not tighten it" note
+#: rests on, abbreviated only in ARITY. each is a distinct SHAPE, and a
+#: closed union of aggregate / flag / ranked-category kinds expresses
+#: none of the last three.
+CORPUS_OPEN_EXPRESSIONS: tuple[tuple[str, str], ...] = (
+    (
+        "healthcare classifier",
+        "MAX(CASE WHEN source.job_title LIKE '%nurse%' THEN 1 WHEN source.job_title LIKE '%md%' THEN 1 ELSE 0 END)",
+    ),
+    (
+        "government_level",
+        "CASE WHEN resolved.federal_level = 1 THEN 'federal' WHEN resolved.state_level = 1 THEN 'state' END",
+    ),
+    (
+        "is_unique_match",
+        "MAX(CASE WHEN resolved.quality_candidate_count = 1 THEN 1 ELSE 0 END)",
+    ),
+    (
+        "units",
+        "LISTAGG(DISTINCT resolved.unit, '|') WITHIN GROUP (ORDER BY resolved.unit)",
+    ),
+    (
+        "opinion elite branch",
+        "substring(resolved.units_temp, 1, len(resolved.units_temp) - 1)",
+    ),
+)
+
+
+class TestArithmeticExpressionIsOpenByDesign:
+    """F-05: the largest untyped surface, and the decision to leave it open.
+
+    ``delivery.py`` records the reasoning and it holds: a closed union of
+    kinds cannot express "concatenate two labels, trim the result, then
+    classify on the exact value of that concatenation", which is one real
+    shipped deliverable. This class pins the two properties that make the
+    decision safe rather than lazy -- an open expression is NOT an escape
+    hatch, and the honesty layer still sees every reference inside one --
+    so tightening the field, or quietly reclassifying it as a hatch, fails
+    here rather than moving a headline number with nothing re-authored.
+    """
+
+    @pytest.mark.parametrize(("deliverable", "text"), CORPUS_OPEN_EXPRESSIONS)
+    def test_every_open_deliverable_is_carried_verbatim(self, deliverable: str, text: str) -> None:
+        """the shipped shapes survive authoring byte for byte.
+
+        :param deliverable: corpus deliverable the expression computes
+        :ptype deliverable: str
+        :param text: the aggregate as the corpus writes it
+        :ptype text: str
+        :returns: none
+        :rtype: None
+        """
+        assert ArithmeticExpression(arith=text).arith == text, deliverable
+
+    @pytest.mark.parametrize(("deliverable", "text"), CORPUS_OPEN_EXPRESSIONS)
+    def test_no_open_deliverable_counts_as_an_escape_hatch(self, deliverable: str, text: str) -> None:
+        """the audit is a TYPE check, and this type is not one of the three.
+
+        ``parity-task-03``'s zero is over ``Predicate.raw``,
+        ``RawSelect``, and ``RawDerivedTable``. Were an arithmetic
+        expression to start reporting as a hatch, the headline would move
+        from zero to five with nothing re-authored.
+
+        :param deliverable: corpus deliverable the expression computes
+        :ptype deliverable: str
+        :param text: the aggregate as the corpus writes it
+        :ptype text: str
+        :returns: none
+        :rtype: None
+        """
+        predicate = Predicate(
+            compare=Comparison(
+                left=ArithmeticExpression(arith=text),
+                op=ComparisonOperator.EQUAL,
+                right={"literal": 1},
+            )
+        )
+        assert predicate.is_escape_hatch is False, deliverable
+
+    def test_the_references_inside_an_open_expression_are_still_bound(self) -> None:
+        """``scan_references`` over-detects rather than under-detects.
+
+        The aggregate's own semantics are opaque -- that is F-04 -- but a
+        reference inside one is surfaced, so the stage guard judges it and
+        the compiler resolves and types it.
+
+        :returns: none
+        :rtype: None
+        """
+        classifier = ArithmeticExpression(arith=CORPUS_OPEN_EXPRESSIONS[0][1])
+        listagg = ArithmeticExpression(arith=CORPUS_OPEN_EXPRESSIONS[3][1])
+        assert {reference.ref for reference in classifier.references} == {"source.job_title"}
+        assert {reference.ref for reference in listagg.references} == {"resolved.unit"}
+
+    def test_a_reference_inside_a_nested_call_is_not_missed(self) -> None:
+        """the substring case: the reference is a function ARGUMENT.
+
+        :returns: none
+        :rtype: None
+        """
+        substring = ArithmeticExpression(arith=CORPUS_OPEN_EXPRESSIONS[4][1])
+        assert {reference.ref for reference in substring.references} == {"resolved.units_temp"}
+
+    def test_an_open_expression_is_admitted_on_every_surface_that_needs_one(self) -> None:
+        """four fields admit it, and each has a corpus deliverable behind it.
+
+        Asserted through the surfaces rather than by reading annotations:
+        a surface that stopped accepting the shape fails here, at the
+        deliverable it drops.
+
+        :returns: none
+        :rtype: None
+        """
+        classifier = CORPUS_OPEN_EXPRESSIONS[0][1]
+        listagg = CORPUS_OPEN_EXPRESSIONS[3][1]
+        measure = Measure.model_validate(
+            {
+                "name": "has_relevant_linkedin_job_title",
+                "expression": classifier,
+                "grain": ["voterbase_id"],
+                "scope": "resolution",
+            }
+        )
+        derived = DerivedColumn.model_validate(
+            {"name": "units", "sql_type": "character varying", "expression": {"arith": listagg}}
+        )
+        provenance = ProvenanceColumn.model_validate({"name": "units", "expression": {"arith": listagg}})
+        term = TermColumn.model_validate({"name": "units", "value": {"arith": listagg}})
+        assert measure.expression.arith == classifier
+        assert isinstance(derived.expression, ArithmeticExpression)
+        assert isinstance(provenance.expression, ArithmeticExpression)
+        assert isinstance(term.value, ArithmeticExpression)

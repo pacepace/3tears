@@ -341,3 +341,147 @@ class TestSentinelBindings:
         payload["sentinel_bindings"] = [_RECORD_YEAR_SENTINELS]
         loaded = DatasetDefinition.model_validate(payload)
         assert DatasetDefinition.model_validate(json.loads(loaded.model_dump_json())) == loaded
+
+
+#: the name of the corpus's subtrahend-only set
+#: (``uhg_policymakers/sql/full_uhg_audience.sql:85-96``, removed at
+#: ``:98-108``). It exists to be taken away and is delivered to nobody.
+_HELPER_UNIT = "uhg_staff"
+
+
+def _payload_with_a_subtrahend_only_unit() -> dict[str, object]:
+    """author the corpus's helper set exactly as the definition copes.
+
+    Declared as a unit, because the model's only subtraction operators
+    are ``Unit.exclude`` and a ``SetExpr`` ``difference`` over dataset
+    TERMS, and a term is a unit, a rollup, an upstream, or a nested
+    expression. Then kept out of both rollups and out of the wide
+    artifact's column set BY HAND, and named in a qualification arm with
+    no predicate so it survives the stage it exists to feed.
+
+    :returns: raw definition payload carrying the helper unit
+    :rtype: dict[str, object]
+    """
+    payload = _payload()
+    units: list[dict[str, object]] = list(payload["units"])  # type: ignore[arg-type]
+    delivered = [unit["name"] for unit in units]
+    units.append(
+        {
+            "name": _HELPER_UNIT,
+            "resolutions": [
+                {
+                    "source": {"relation": "employment"},
+                    "predicate": {
+                        "any_of": [
+                            {"compare": {"left": "source.employer", "op": "LIKE", "right": {"literal": "%uhg%"}}},
+                            {"compare": {"left": "source.employer", "op": "LIKE", "right": {"literal": "%optum%"}}},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    payload["units"] = units
+    payload["qualification"] = [
+        {
+            "name": "candidate_count = 1",
+            "applies_to": delivered,
+            "predicate": {"compare": {"left": "resolved.candidate_count", "op": "=", "right": {"literal": 1}}},
+        },
+        {"name": "the staff subtrahend, unfiltered", "applies_to": [_HELPER_UNIT]},
+    ]
+    payload["composition"] = {
+        "op": "difference",
+        "terms": [
+            {"name": "policymakers", "rollup": "opinion_elites"},
+            {"name": "staff", "unit": _HELPER_UNIT},
+        ],
+    }
+    return payload
+
+
+class TestASubtrahendOnlySetHasToBeDeclaredAsAUnit:
+    """F-09: expressible, at a cost three unenforced hand edits carry.
+
+    ``full_uhg_audience.sql:85-96`` builds ``audiences.uhg_staff_20250618``
+    -- people whose employer matches ``%uhg%``, ``%optum%``, ... -- and
+    ``:98-108`` removes them from the delivered table. A "remove these
+    people at the end" set is not a unit, a rollup, an upstream, or a
+    nested expression until it is DECLARED as a unit, at which point it
+    emits long rows and is indistinguishable from a delivered one.
+
+    The recorded verdict is expressible, extension optional. These tests
+    hold the coping strategy working, and hold the cost visible: no field
+    marks a unit as not-delivered, so a ``Unit.delivered`` or a
+    ``SetTerm.kind: helper`` landing later fails the last test here and
+    forces the record to be re-decided rather than quietly outgrown.
+    """
+
+    def test_the_helper_unit_is_authorable_and_the_definition_validates(self) -> None:
+        """the whole coping strategy, end to end.
+
+        :returns: none
+        :rtype: None
+        """
+        definition = DatasetDefinition.model_validate(_payload_with_a_subtrahend_only_unit())
+        assert _HELPER_UNIT in [unit.name for unit in definition.units]
+        assert definition.composition is not None
+        assert [term.unit or term.rollup for term in definition.composition.terms] == [
+            "opinion_elites",
+            _HELPER_UNIT,
+        ]
+
+    def test_a_qualification_arm_with_no_predicate_carries_it_through(self) -> None:
+        """it must survive qualification, or it subtracts nothing.
+
+        An unqualified unit is a validation error (F-01), so the helper
+        needs an arm -- and the arm has to carry no predicate, since any
+        predicate would shrink the set being removed.
+
+        :returns: none
+        :rtype: None
+        """
+        definition = DatasetDefinition.model_validate(_payload_with_a_subtrahend_only_unit())
+        arms = [arm for arm in definition.qualification if arm.applies_to == [_HELPER_UNIT]]
+        assert len(arms) == 1
+        assert arms[0].predicate is None
+
+    def test_dropping_the_arm_is_caught_rather_than_silently_emptying_it(self) -> None:
+        """the one hand edit the model DOES enforce.
+
+        :returns: none
+        :rtype: None
+        """
+        payload = _payload_with_a_subtrahend_only_unit()
+        payload["qualification"] = [arm for arm in payload["qualification"] if arm["applies_to"] != [_HELPER_UNIT]]  # type: ignore[union-attr,index]
+        with pytest.raises((ValidationError, UnqualifiedUnits)) as excinfo:
+            DatasetDefinition.model_validate(payload)
+        assert _HELPER_UNIT in str(excinfo.value)
+
+    def test_keeping_it_out_of_the_rollups_and_the_wide_columns_is_unenforced(self) -> None:
+        """the two hand edits nothing checks, stated rather than assumed.
+
+        Naming the helper in a rollup and in the delivered column set is
+        accepted today, which is exactly how a future definition loses its
+        subtrahend into the deliverable. When ``Unit.delivered`` or a
+        helper term kind lands, this fails, and F-09's record moves from
+        "extension optional" to closed.
+
+        :returns: none
+        :rtype: None
+        """
+        payload = _payload_with_a_subtrahend_only_unit()
+        rollups: list[dict[str, object]] = list(payload["rollups"])  # type: ignore[arg-type]
+        rollups[0] = {**rollups[0], "members": [*rollups[0]["members"], _HELPER_UNIT]}  # type: ignore[misc]
+        payload["rollups"] = rollups
+        artifacts: list[dict[str, object]] = list(payload["artifacts"])  # type: ignore[arg-type]
+        payload["artifacts"] = [
+            {**artifact, "columns": [*artifact["columns"], _HELPER_UNIT]}  # type: ignore[misc]
+            if artifact["artifact"] == "wide"
+            else artifact
+            for artifact in artifacts
+        ]
+        leaked = DatasetDefinition.model_validate(payload)
+        wide = next(artifact for artifact in leaked.artifacts if artifact.artifact is ArtifactKind.WIDE)
+        assert _HELPER_UNIT in wide.columns
+        assert _HELPER_UNIT in leaked.rollups[0].members

@@ -506,3 +506,84 @@ class TestSubqueryProjectionIsItsOwnScope:
         # own naming scope. ArtifactRef now says the same thing the same way.
         ref = self._upstream_subquery()
         assert set(ref.references).isdisjoint(ref.projection_references)
+
+
+class TestTheEmptyMembershipListIsRefused:
+    """F-13: ``NOT IN ('')`` is a filter, and the model refuses to author it.
+
+    ``amazon_tech_audience/linkedin_audience_units.yaml:304`` authors
+    ``industries: {how: NOT IN, industry_list: [ ]}``, which the prototype
+    renders as ``industries NOT IN ('')``
+    (``sql/amazon_tech_audience_20250204.sql:378``). That is TRUE for any
+    non-empty value, FALSE for ``''``, and NULL for NULL -- so it drops
+    every NULL-industry row by three-valued logic. Its mere presence ALSO
+    flips the last two joins from ``LEFT`` to ``INNER``
+    (``1_generate_audience_units_table.sql.jinja2:37``), so one empty list
+    changes membership twice.
+
+    The recorded decision is that the model is right and the corpus is
+    defective. Both halves are pinned here, because both are what make the
+    divergence in ``datasets/amazon_tech_audience.dataset.yaml``
+    decision-backed rather than a transcription slip.
+    """
+
+    def test_an_empty_value_list_is_refused(self) -> None:
+        """the authored form the corpus carries does not validate.
+
+        :returns: none
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            Membership(expression="rel.li.industries", negate=True, values=[])
+
+    def test_the_refusal_names_the_consequence_rather_than_the_field(self) -> None:
+        """an author who reads "values is empty" learns nothing.
+
+        The message has to say what the empty list DOES, because the
+        author's intent was a no-op and the render is a filter.
+
+        :returns: none
+        :rtype: None
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            Membership(expression="rel.li.industries", negate=True, values=[])
+        message = str(excinfo.value)
+        assert "NOT IN ('')" in message
+        assert "three-valued logic" in message
+        assert "omit the predicate instead" in message
+
+    def test_the_transcribed_effect_is_authorable_as_two_typed_comparisons(self) -> None:
+        """what the definition says instead, and it is the same row set.
+
+        :returns: none
+        :rtype: None
+        """
+        predicate = Predicate.model_validate(
+            {
+                "all_of": [
+                    {"compare": {"left": "rel.li.industries", "op": "IS NOT NULL"}},
+                    {"compare": {"left": "rel.li.industries", "op": "!=", "right": {"literal": ""}}},
+                ]
+            }
+        )
+        assert predicate.all_of is not None
+        assert [arm.compare.op.value for arm in predicate.all_of if arm.compare is not None] == [
+            "IS NOT NULL",
+            "!=",
+        ]
+
+    def test_the_join_kind_is_authored_and_never_inferred(self) -> None:
+        """the other half of the same corpus defect.
+
+        The prototype flips two joins from ``LEFT`` to ``INNER`` as a side
+        effect of a filter being present. A ``RelationRef`` declaring no
+        join does not validate, so no emitted join kind is ever a
+        consequence of some other authored field.
+
+        :returns: none
+        :rtype: None
+        """
+        with pytest.raises(ValidationError):
+            RelationRef.model_validate({"relation": "linkedin_industries", "alias": "li"})
+        declared = RelationRef.model_validate({"relation": "linkedin_industries", "alias": "li", "join": "inner"})
+        assert declared.join.value == "inner"
