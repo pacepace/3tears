@@ -102,6 +102,13 @@ class Rollup(BaseModel):
         ``amazon_tech_audience`` does
     :ivar otherwise: label for an entity in none of :attr:`members`, or
         ``None`` for an implicit NULL bucket
+    :ivar label_column: column a stamped LABEL arrives in, required
+        wherever a label kind is emitted. Several rollups may name ONE
+        column, which is what "first match wins" means and what the
+        corpus does: the committed long DDL carries a single
+        ``rollup_unit varchar`` and seven rollups stamp into it. A column
+        per rollup is a different artifact and stages no contest at all,
+        so nothing would ever be won
     :ivar over: artifact this rollup is computed against; one real rollup
         is computed over the PROVENANCE artifact rather than long or wide
     :ivar emit: projections this rollup lands in, at least one
@@ -112,6 +119,7 @@ class Rollup(BaseModel):
     name: str = Field(min_length=1)
     members: list[str] = Field(min_length=1)
     otherwise: str | None = Field(default=None, min_length=1)
+    label_column: str | None = Field(default=None, min_length=1)
     over: ArtifactRef | None = None
     emit: list[RollupEmit] = Field(min_length=1)
 
@@ -126,10 +134,19 @@ class Rollup(BaseModel):
         :returns: validated rollup
         :rtype: Rollup
         :raises ValueError: a member or emit kind repeats, a member is
-            blank, or ``otherwise`` equals the rollup name
+            blank, ``otherwise`` equals the rollup name, or a label kind
+            is emitted with no column to stamp into
         """
         if any(not member.strip() for member in self.members):
             raise ValueError(f"{self.name}: members carries a blank name")
+        if self.emits_label and self.label_column is None:
+            raise ValueError(
+                f"{self.name}: emits a label and declares no label_column. a stamped label lands in a "
+                "named column of the artifact, and several rollups may share one -- which is what "
+                "makes their declaration order a first-match-wins contest rather than a formality"
+            )
+        if not self.emits_label and self.label_column is not None:
+            raise ValueError(f"{self.name}: declares a label_column and emits no label")
         if len(self.members) != len(set(self.members)):
             raise ValueError(
                 f"{self.name}: members names the same member twice, and first match wins, so the "

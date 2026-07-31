@@ -61,7 +61,7 @@ class TestRollupShape:
             {
                 "name": "tech decision makers at all companies",
                 "members": ["tech decision makers at all companies"],
-                "emit": ["long_label"],
+                "emit": ["long_label"], "label_column": "rollup_unit",
             }
         )
         assert rollup.members == [rollup.name]
@@ -76,7 +76,7 @@ class TestRollupShape:
                 "name": "01_academy_members",
                 "members": ["academy_members"],
                 "otherwise": "unmapped_core",
-                "emit": ["long_label"],
+                "emit": ["long_label"], "label_column": "rollup_unit",
             }
         )
         assert rollup.otherwise == "unmapped_core"
@@ -87,7 +87,7 @@ class TestRollupShape:
                 "name": "tagz_segment",
                 "members": ["academy_members"],
                 "over": {"scope": "dataset", "dataset": "universal_2026_core", "artifact": "provenance"},
-                "emit": ["long_label"],
+                "emit": ["long_label"], "label_column": "rollup_unit",
             }
         )
         assert isinstance(rollup.over, ArtifactRef)
@@ -123,7 +123,7 @@ class TestRollupShape:
             "members": ["governors", "state_cabinet"],
             "otherwise": None,
             "over": None,
-            "emit": ["wide_flag", "long_label"],
+            "emit": ["wide_flag", "long_label"], "label_column": "rollup_unit",
         }
         assert Rollup.model_validate(payload).model_dump(mode="json") == payload
 
@@ -133,15 +133,44 @@ class TestEmitAdmitsAllThreeProjections:
 
     @pytest.mark.parametrize("kind", ["wide_flag", "long_label", "provenance_label"])
     def test_every_emit_kind_is_admitted(self, kind: str) -> None:
-        rollup = Rollup.model_validate({"name": "r", "members": ["a"], "emit": [kind]})
+        payload = {"name": "r", "members": ["a"], "emit": [kind]}
+        if kind != "wide_flag":
+            payload["label_column"] = "rollup_unit"
+        rollup = Rollup.model_validate(payload)
         assert rollup.emit == [RollupEmit(kind)]
+
+    @pytest.mark.parametrize("kind", ["long_label", "provenance_label"])
+    def test_a_label_kind_with_no_column_to_stamp_into_is_refused(self, kind: str) -> None:
+        with pytest.raises(ValidationError, match="label_column"):
+            Rollup.model_validate({"name": "r", "members": ["a"], "emit": [kind]})
+
+    def test_a_wide_flag_may_not_declare_a_label_column(self) -> None:
+        with pytest.raises(ValidationError, match="label_column"):
+            Rollup.model_validate(
+                {"name": "r", "members": ["a"], "emit": ["wide_flag"], "label_column": "rollup_unit"}
+            )
+
+    def test_two_rollups_may_stamp_into_one_column(self) -> None:
+        """which is what makes their declaration order a contest.
+
+        The committed long DDL carries a single ``rollup_unit varchar``
+        that seven rollups stamp into; a column per rollup would stage no
+        contest at all and nothing would ever be won.
+        """
+        shared = [
+            Rollup.model_validate(
+                {"name": name, "members": ["a"], "emit": ["long_label"], "label_column": "rollup_unit"}
+            )
+            for name in ("first", "second")
+        ]
+        assert {rollup.label_column for rollup in shared} == {"rollup_unit"}
 
     def test_the_emit_vocabulary_is_exactly_three_kinds(self) -> None:
         assert {member.value for member in RollupEmit} == {"wide_flag", "long_label", "provenance_label"}
 
     def test_a_rollup_may_emit_all_three(self) -> None:
         rollup = Rollup.model_validate(
-            {"name": "r", "members": ["a"], "emit": ["wide_flag", "long_label", "provenance_label"]}
+            {"name": "r", "members": ["a"], "emit": ["wide_flag", "long_label", "provenance_label"], "label_column": "rollup_unit"}
         )
         assert rollup.emits_wide_flag is True
         assert rollup.emits_label is True
@@ -150,7 +179,7 @@ class TestEmitAdmitsAllThreeProjections:
         assert Rollup.model_validate({"name": "r", "members": ["a"], "emit": ["wide_flag"]}).emits_label is False
 
     def test_a_long_label_rollup_emits_no_wide_flag(self) -> None:
-        rollup = Rollup.model_validate({"name": "r", "members": ["a"], "emit": ["long_label"]})
+        rollup = Rollup.model_validate({"name": "r", "members": ["a"], "emit": ["long_label"], "label_column": "rollup_unit"})
         assert rollup.emits_wide_flag is False
         assert rollup.emits_label is True
 

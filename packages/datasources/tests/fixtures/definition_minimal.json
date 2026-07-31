@@ -109,6 +109,7 @@
       "name": "opinion_elites",
       "members": ["academy_members"],
       "emit": ["wide_flag", "long_label"],
+      "label_column": "rollup_unit",
       "over": {"scope": "this_definition", "artifact": "provenance"}
     }
   ],
