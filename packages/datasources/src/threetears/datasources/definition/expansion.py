@@ -14,6 +14,13 @@ Four properties, each from committed evidence:
   branch from a NON-GRAIN key. One committed edge joins on ``list_id``
   rather than on the entity, which is legal and changes what the walk
   produces.
+- :attr:`Expansion.member_column` names which side of the edge carries
+  the ADDED member. The join pins the other side -- ``household`` is
+  joined on ``influencer_voterbase_id`` -- and the walked relation
+  carries no column of the entity's own name at all, so an emitter that
+  reads the entity column off the edge alias emits a column the relation
+  does not have. It is declared rather than inferred from the rationale
+  body, because an expansion may legitimately emit no rationale.
 - :attr:`Expansion.applies_to` scopes the walk to a unit SET. The dead
   generation's own committed SQL does exactly that, selecting the
   eligible entities with ``WHERE unit IN (...)``.
@@ -40,7 +47,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.datasources.definition.expression import Predicate
-from threetears.datasources.definition.namespace import Reference
+from threetears.datasources.definition.namespace import Namespace, Reference
 from threetears.datasources.definition.provenance import ProvenanceSpec
 from threetears.datasources.definition.relation import RelationRef
 
@@ -53,6 +60,9 @@ class Expansion(BaseModel):
     :ivar name: relationship name; stamped as a literal on every expansion
         row and read back as the delivered relationship column
     :ivar edge: the join walked, which may branch from a non-grain key
+    :ivar member_column: column of the walked relation carrying the
+        entity this walk ADDS, which is never the column the edge joins
+        on and is not the entity's own name on any committed edge
     :ivar applies_to: unit names this walk starts from; empty means every
         unit
     :ivar predicate: per-edge filter
@@ -65,6 +75,7 @@ class Expansion(BaseModel):
 
     name: str = Field(min_length=1)
     edge: RelationRef
+    member_column: str = Field(min_length=1)
     applies_to: list[str] = Field(default_factory=list)
     predicate: Predicate | None = None
     exclude_existing: bool = True
@@ -76,10 +87,24 @@ class Expansion(BaseModel):
 
         :returns: validated expansion
         :rtype: Expansion
-        :raises ValueError: the name is blank or applies_to repeats a unit
+        :raises ValueError: the name is blank, the member column is blank
+            or is the column the edge joins on, or applies_to repeats a
+            unit
         """
         if not self.name.strip():
             raise ValueError("expansion name carries no text")
+        if not self.member_column.strip():
+            raise ValueError(f"{self.name}: member_column carries no text")
+        joined = {
+            reference.name
+            for reference in self.edge.references
+            if reference.alias == self.edge.alias and reference.namespace is Namespace.REL
+        }
+        if self.member_column in joined:
+            raise ValueError(
+                f"{self.name}: member_column {self.member_column!r} is the column the edge joins on, "
+                "so the walk would add back the member it started from"
+            )
         if len(self.applies_to) != len(set(self.applies_to)):
             raise ValueError(f"{self.name}: applies_to names a unit twice")
         if any(not unit.strip() for unit in self.applies_to):

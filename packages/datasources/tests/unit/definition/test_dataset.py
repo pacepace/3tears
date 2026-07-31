@@ -66,12 +66,17 @@ class TestExpansion:
         expansion = Expansion(
             name="householders",
             edge=RelationRef(relation="household", alias="hh", join="inner"),
+            member_column="householder_voterbase_id",
             applies_to=["knowwho_all", "executive_coworkers_of_linkedin_execs"],
         )
         assert expansion.exclude_existing is True
 
     def test_an_empty_applies_to_covers_every_unit(self) -> None:
-        expansion = Expansion(name="spouses", edge=RelationRef(relation="household", alias="hh", join="inner"))
+        expansion = Expansion(
+            name="spouses",
+            edge=RelationRef(relation="household", alias="hh", join="inner"),
+            member_column="householder_voterbase_id",
+        )
         assert expansion.applies_to == []
         assert expansion.covers("any_unit") is True
 
@@ -79,6 +84,7 @@ class TestExpansion:
         expansion = Expansion(
             name="householders",
             edge=RelationRef(relation="household", alias="hh", join="inner"),
+            member_column="householder_voterbase_id",
             applies_to=["knowwho_all"],
         )
         assert expansion.covers("knowwho_all") is True
@@ -88,6 +94,7 @@ class TestExpansion:
         expansion = Expansion(
             name="householders",
             edge=RelationRef(relation="household", alias="hh", join="inner"),
+            member_column="householder_voterbase_id",
             provenance=ProvenanceSpec(
                 grain=["voterbase_id"],
                 columns=[
@@ -104,12 +111,30 @@ class TestExpansion:
             Expansion(
                 name="householders",
                 edge=RelationRef(relation="household", alias="hh", join="inner"),
+                member_column="householder_voterbase_id",
                 applies_to=["knowwho_all", "knowwho_all"],
             )
 
     def test_rejects_a_blank_name(self) -> None:
         with pytest.raises(ValidationError):
-            Expansion(name="  ", edge=RelationRef(relation="household", alias="hh", join="inner"))
+            Expansion(
+                name="  ",
+                edge=RelationRef(relation="household", alias="hh", join="inner"),
+                member_column="householder_voterbase_id",
+            )
+
+    def test_rejects_a_member_column_the_edge_joins_on(self) -> None:
+        with pytest.raises(ValidationError, match="member_column"):
+            Expansion(
+                name="householders",
+                edge=RelationRef(
+                    relation="household",
+                    alias="hh",
+                    join="inner",
+                    on={"compare": {"left": "rel.hh.influencer_voterbase_id", "op": "=", "right": "resolved.voterbase_id"}},
+                ),
+                member_column="influencer_voterbase_id",
+            )
 
     def test_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):

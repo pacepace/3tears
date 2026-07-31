@@ -71,6 +71,7 @@ _RANKED = {
             "projection": [{"name": "type", "value": {"literal": "expansion"}}],
         },
     ],
+    "category_column": "audience_level",
     "dedup_key_columns": ["voterbase_id"],
     "dedup_order": ["core", "expansion"],
     "tiebreak": ["list_id"],
@@ -368,6 +369,22 @@ class TestDifference:
 
 class TestRankedPrecedence:
     """two independent orders, and a tiebreak."""
+
+    def test_the_delivered_category_carries_a_per_definition_name(self) -> None:
+        assert SetExpr.model_validate(_RANKED).category_column == "audience_level"
+
+    def test_ranked_precedence_without_a_category_column_is_refused(self) -> None:
+        without = {key: value for key, value in _RANKED.items() if key != "category_column"}
+        with pytest.raises(ValidationError, match="category_column"):
+            SetExpr.model_validate(without)
+
+    def test_a_category_column_that_is_not_an_identifier_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="category_column"):
+            SetExpr.model_validate({**_RANKED, "category_column": "audience level"})
+
+    def test_another_operator_may_not_carry_a_category_column(self) -> None:
+        with pytest.raises(ValidationError, match="category_column"):
+            SetExpr.model_validate({"op": "union", "terms": [_PM_TERM, _OE_TERM], "category_column": "audience_level"})
 
     def test_dedup_order_and_category_order_are_separate_declarations(self) -> None:
         expression = SetExpr.model_validate(_RANKED)

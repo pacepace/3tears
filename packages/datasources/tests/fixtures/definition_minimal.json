@@ -116,6 +116,7 @@
     {
       "name": "householders",
       "edge": {"relation": "household", "alias": "hh", "join": "inner"},
+      "member_column": "householder_voterbase_id",
       "applies_to": ["academy_members"],
       "exclude_existing": true,
       "provenance": {

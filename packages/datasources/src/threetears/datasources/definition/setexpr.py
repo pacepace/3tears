@@ -309,6 +309,7 @@ class SetTerm(BaseModel):
 
 
 _RANKED_FIELDS: tuple[str, ...] = (
+    "category_column",
     "dedup_key_columns",
     "dedup_order",
     "tiebreak",
@@ -331,6 +332,13 @@ class SetExpr(BaseModel):
         default composition, the union of every unit
     :ivar payload: for ``intersect`` only -- per output column, which
         term supplies it
+    :ivar category_column: for ``ranked_precedence`` only -- the column
+        the delivered category arrives under. Required and undefaulted:
+        two shipped audiences deliver the same construct under
+        ``category`` and under ``audience_level``, so a pinned name
+        delivers a contract neither client asked for, and the knowledge
+        layer binds caveats BY COLUMN NAME, so a column called one thing
+        in the warehouse and another in the contract cannot carry one
     :ivar dedup_key_columns: for ``ranked_precedence`` only -- columns
         one surviving row is chosen per; the design spells this
         ``dedup_key`` and
@@ -356,6 +364,7 @@ class SetExpr(BaseModel):
     op: SetOperator = SetOperator.UNION
     terms: list[SetTerm] = Field(default_factory=list)
     payload: list[IntersectColumn] = Field(default_factory=list)
+    category_column: str | None = Field(default=None, min_length=1)
     dedup_key_columns: list[str] | None = None
     dedup_order: list[str] | None = None
     tiebreak: list[str] | None = None
@@ -468,11 +477,17 @@ class SetExpr(BaseModel):
 
         :returns: None
         :rtype: None
-        :raises ValueError: a key or tiebreak column repeats,
-            ``dedup_order`` does not cover the terms exactly once, a
-            category label repeats, or a category arm binds a
-            pre-aggregate namespace
+        :raises ValueError: the category column is not an identifier, a
+            key or tiebreak column repeats, ``dedup_order`` does not
+            cover the terms exactly once, a category label repeats, or a
+            category arm binds a pre-aggregate namespace
         """
+        column: str = self.category_column or ""
+        if not column.isidentifier():
+            raise ValueError(
+                f"category_column {column!r} is not an identifier; it names a delivered column and "
+                "the knowledge layer binds caveats to it by name"
+            )
         for field_name in ("dedup_key_columns", "tiebreak"):
             columns: list[str] = getattr(self, field_name)
             if len(columns) != len(set(columns)):
