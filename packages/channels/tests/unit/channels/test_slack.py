@@ -1201,3 +1201,346 @@ class TestSlackPostMessage:
         assert kwargs["channel"] == "C123"
         assert "thread_ts" not in kwargs
         assert kwargs["text"] == "plain answer"
+
+
+# ---------------------------------------------------------------------------
+# sender identity: name + address off the one users.info lookup
+# ---------------------------------------------------------------------------
+
+
+# comfortably past ``_USER_PROFILE_TTL_SECONDS`` (300s), so a clock moved by
+# this much expires any cache entry regardless of later tuning of the TTL.
+_TTL_OVERSHOOT_SECONDS = 3600.0
+
+
+def _users_info_response(
+    *,
+    profile: dict[str, Any] | None = None,
+    tz: str | None = "America/Los_Angeles",
+    locale: str | None = "en-US",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """build a ``users.info`` reply shaped like slack's documented user object.
+
+    :param profile: the nested ``user.profile`` object
+    :ptype profile: dict[str, Any] | None
+    :param tz: ``user.tz``
+    :ptype tz: str | None
+    :param locale: ``user.locale``
+    :ptype locale: str | None
+    :param extra: additional top-level ``user`` keys
+    :ptype extra: dict[str, Any] | None
+    :return: a full ``users.info`` response payload
+    :rtype: dict[str, Any]
+    """
+    user: dict[str, Any] = {"id": "U12345", "tz": tz, "locale": locale}
+    user["profile"] = profile if profile is not None else {}
+    if extra:
+        user.update(extra)
+    return {"ok": True, "user": user}
+
+
+def _message_event(*, user: str = "U12345", text: str = "hello") -> dict[str, Any]:
+    """build a minimal inbound slack ``message`` event.
+
+    :param user: slack sender id
+    :ptype user: str
+    :param text: message body
+    :ptype text: str
+    :return: a slack message event payload
+    :rtype: dict[str, Any]
+    """
+    return {
+        "type": "message",
+        "user": user,
+        "text": text,
+        "channel": "C98765",
+        "team": "T00001",
+        "ts": "1234567890.123456",
+    }
+
+
+class TestSlackSenderIdentity:
+    """tests for sender name / address carried onto ChannelMessage.
+
+    driven through ``handle_message_event`` rather than the private resolver:
+    a host reconciling a chat participant with a known identity reads these
+    off the routed ``ChannelMessage``, so that is the surface worth pinning.
+    """
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_name_and_address_reach_the_routed_message(self, mock_app_cls: MagicMock) -> None:
+        """users.info name/email/tz/locale all land on the ChannelMessage."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(
+                profile={"display_name": "alice", "real_name": "Alice Doe", "email": "alice@acme.example"},
+            ),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.sender_name == "alice"
+        assert msg.sender_email == "alice@acme.example"
+        assert msg.sender_email_verified is True
+        assert msg.user_timezone == "America/Los_Angeles"
+        assert msg.user_locale == "en-US"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_one_lookup_serves_every_field(self, mock_app_cls: MagicMock) -> None:
+        """a single message issues exactly ONE users.info call.
+
+        the address must not cost a second Tier-4 call: the response that
+        already carries tz and locale carries the profile too.
+        """
+        from threetears.channels.slack import SlackAdapter
+
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=_MockRouter())
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        assert mock_app.client.users_info.await_count == 1
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_second_message_from_same_user_is_served_from_cache(self, mock_app_cls: MagicMock) -> None:
+        """repeat messages from one sender do not re-hit users.info."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(text="one"), say=AsyncMock())
+        await adapter.handle_message_event(event=_message_event(text="two"), say=AsyncMock())
+
+        assert mock_app.client.users_info.await_count == 1
+        # the cached profile is still applied to the second message, not dropped.
+        msg = router.last_message
+        assert msg is not None
+        assert msg.content == "two"
+        assert msg.sender_email == "alice@acme.example"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_missing_email_scope_yields_no_address_and_no_assertion(self, mock_app_cls: MagicMock) -> None:
+        """without ``users:read.email`` slack omits the field SILENTLY.
+
+        the response is otherwise a complete success, so the only correct
+        reading is "no address", never a partial or guessed one -- and the
+        assertion flag must stay False so a host does not record something
+        it never received.
+        """
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"display_name": "alice", "real_name": "Alice Doe"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.sender_email is None
+        assert msg.sender_email_verified is False
+        # the name still arrives -- the missing scope costs only the address.
+        assert msg.sender_name == "alice"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_undocumented_is_email_confirmed_is_not_consulted(self, mock_app_cls: MagicMock) -> None:
+        """``is_email_confirmed`` is absent from slack's documented user object.
+
+        some responses carry it; identity trust is not gated on an
+        undocumented field, so a False value must NOT suppress an address
+        slack actually returned.
+        """
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(
+                profile={"display_name": "alice", "email": "alice@acme.example"},
+                extra={"is_email_confirmed": False},
+            ),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.sender_email == "alice@acme.example"
+        assert msg.sender_email_verified is True
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_display_name_falls_back_through_real_name_to_handle(self, mock_app_cls: MagicMock) -> None:
+        """a workspace with no display names still yields a name."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"real_name": "Alice Doe"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.sender_name == "Alice Doe"
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_empty_strings_normalize_to_none(self, mock_app_cls: MagicMock) -> None:
+        """slack renders absent data as "" as well as null; both mean absent."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(
+                profile={"display_name": "", "real_name": "", "email": ""},
+                tz="",
+                locale="",
+            ),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.sender_name is None
+        assert msg.sender_email is None
+        assert msg.sender_email_verified is False
+        assert msg.user_timezone is None
+        assert msg.user_locale is None
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_lookup_failure_still_routes_the_message(self, mock_app_cls: MagicMock) -> None:
+        """a users.info outage must not swallow the user's message."""
+        from threetears.channels.slack import SlackAdapter
+
+        router = _MockRouter()
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(side_effect=RuntimeError("slack is down"))
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=router)
+        await adapter.handle_message_event(event=_message_event(text="still routed"), say=AsyncMock())
+
+        msg = router.last_message
+        assert msg is not None
+        assert msg.content == "still routed"
+        assert msg.sender_name is None
+        assert msg.sender_email is None
+        assert msg.sender_email_verified is False
+
+
+class TestSlackProfileCacheBound:
+    """tests for the per-user profile cache staying bounded."""
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_cache_evicts_least_recently_used_past_the_cap(self, mock_app_cls: MagicMock) -> None:
+        """the cache drops its LRU entry once full, and keeps the recent ones.
+
+        asserted through the observable consequence -- an evicted user costs
+        another ``users.info`` call, a retained one does not -- rather than by
+        reaching into the map, so the test pins the behaviour and not the
+        choice of container.
+
+        entries are keyed by slack user id and were previously only ever
+        overwritten, so an adapter in a busy workspace grew one entry per
+        person who ever spoke and released none of them.
+        """
+        from threetears.channels import slack as slack_mod
+        from threetears.channels.slack import SlackAdapter
+
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"display_name": "someone"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=_MockRouter())
+        lookups = mock_app.client.users_info
+
+        with patch.object(slack_mod, "_USER_PROFILE_CACHE_MAX_ENTRIES", 2):
+            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+            await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
+            assert lookups.await_count == 2
+
+            # a cache HIT, which also makes U2 the least recently used.
+            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+            assert lookups.await_count == 2
+
+            # U3 overflows the cap of 2, so something must go.
+            await adapter.handle_message_event(event=_message_event(user="U3"), say=AsyncMock())
+            assert lookups.await_count == 3
+
+            # U1 survived, because USING it moved it off the LRU end. this is
+            # the assertion that separates an LRU from a plain drop-the-oldest-
+            # insert cache: under the latter U1 would have been the one evicted
+            # above, and this line would cost a fourth lookup.
+            await adapter.handle_message_event(event=_message_event(user="U1"), say=AsyncMock())
+            assert lookups.await_count == 3
+
+            # ...so U2 is the one that went, and it costs a re-fetch.
+            await adapter.handle_message_event(event=_message_event(user="U2"), say=AsyncMock())
+            assert lookups.await_count == 4
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_expired_entry_is_refetched(self, mock_app_cls: MagicMock) -> None:
+        """past the TTL the profile is looked up again rather than served stale."""
+        from threetears.channels.slack import SlackAdapter
+
+        mock_app = MagicMock()
+        mock_app.client = AsyncMock()
+        mock_app.client.users_info = AsyncMock(
+            return_value=_users_info_response(profile={"display_name": "alice", "email": "alice@acme.example"}),
+        )
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(bot_token="xoxb-t", app_token="xapp-t", router=_MockRouter())
+        await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+        assert mock_app.client.users_info.await_count == 1
+
+        # jump the clock past the TTL rather than sleeping through it. the
+        # adapter reads ``time.monotonic`` for this cache and nothing else, so
+        # moving it cannot disturb the rest of the message path.
+        far_future = time.monotonic() + _TTL_OVERSHOOT_SECONDS
+        with patch("threetears.channels.slack.time.monotonic", return_value=far_future):
+            await adapter.handle_message_event(event=_message_event(), say=AsyncMock())
+
+        assert mock_app.client.users_info.await_count == 2

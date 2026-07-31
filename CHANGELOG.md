@@ -4,6 +4,51 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.22.4 -- 2026-07-30
+
+> **A PATCH bump, additive only: `ChannelMessage` gains two optional fields.** Every
+> message constructed against 0.22.3 parses and behaves identically -- both new fields
+> default to "no address, not asserted", which is the untrusting default a host inherits
+> from an adapter that says nothing.
+
+### `3tears-channels`
+
+**`ChannelMessage.sender_email` and `.sender_email_verified`.** The protocol carried
+`sender_name` and no address at all, so a host reconciling a chat participant with an
+identity it already knows had nothing to reconcile ON. Both are populated from the
+platform's own report about its member, never from anything the message itself asserts.
+
+**`sender_email_verified` means something deliberately WEAKER than an IdP's
+`email_verified`:** the channel platform asserts the address, not that anyone proved
+mailbox control. A workspace is administered by the same organisation whose members it
+describes, so it is that organisation speaking about itself -- a host must apply its own
+condition before recording such an address as verified. Said in the docstring, where a
+consumer will read it.
+
+**The Slack adapter was never setting `sender_name`.** Only the Discord one did. The
+field has been on the protocol throughout, and nothing made it visible that one of the
+two adapters silently populated none of it.
+
+**Both come off the `users.info` call the Slack adapter was already making**, which
+fetched tz and locale per user on a 5-minute TTL. The same response carries the profile,
+so a name and an address cost two dict reads rather than another Tier-4 request.
+
+> **Operational note, and it fails silently.** `profile.email` requires the
+> `users:read.email` scope IN ADDITION to `users:read`, and Slack reports its absence by
+> omitting the field from an otherwise-200 response -- no error, no warning. An adapter
+> without it presents as a feature that quietly never fires, so a miss now logs once per
+> user per TTL naming the scope. An already-installed app must be RE-INSTALLED after
+> adding it.
+
+**Not read: `is_email_confirmed`.** Some `users.info` responses carry it; it is absent
+from Slack's documented user object, and an undocumented field is not a thing to gate
+identity on. A `False` there does not suppress an address Slack actually returned.
+
+**The per-user profile cache is now bounded.** Keyed by Slack user id, entries were only
+ever overwritten and never evicted, so a long-lived adapter in a large workspace
+accumulated one entry per person who had ever spoken and released none of them. The TTL
+bounded staleness and never bounded size. Now an LRU capped at 2048.
+
 ## v0.22.3 -- 2026-07-30
 
 > **A PATCH bump, additive only: `ConnectionFieldDescriptor` gains four optional fields and
