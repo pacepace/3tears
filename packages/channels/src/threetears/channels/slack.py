@@ -8,6 +8,8 @@ without requiring public HTTP endpoints.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -32,12 +34,22 @@ __all__ = [
 
 log = get_logger(__name__)
 
-# cache TTL for per-user locale info (timezone + BCP 47 locale tag).
-# Slack ``users.info`` is Tier 4 (~100 req/min); a 5-minute TTL keeps
-# fetches rare without serving stale tz to a user who just travelled
-# (Slack updates ``user.tz`` from the user's profile, which a user can
-# change mid-session).
-_USER_LOCALE_TTL_SECONDS = 300.0
+# cache TTL for the per-user Slack profile (timezone, BCP 47 locale tag,
+# display name, email). Slack ``users.info`` is Tier 4 (~100 req/min); a
+# 5-minute TTL keeps fetches rare without serving stale tz to a user who
+# just travelled (Slack updates ``user.tz`` from the user's profile, which
+# a user can change mid-session).
+_USER_PROFILE_TTL_SECONDS = 300.0
+
+
+# hard bound on the per-user profile cache. entries are keyed by Slack user
+# id and were previously only overwritten, never evicted -- so a long-lived
+# adapter in a large workspace accumulated one entry per person who had ever
+# spoken and never released any of them. an expired entry is not dropped by
+# the TTL check either (that check only decides whether to SERVE it), so the
+# TTL bounds staleness and this bounds size. LRU: on overflow the least
+# recently used entry goes and is simply re-fetched if that user speaks again.
+_USER_PROFILE_CACHE_MAX_ENTRIES = 2048
 
 
 # message subtypes that are not fresh user content: bot echoes and the
@@ -58,6 +70,79 @@ _IGNORED_MESSAGE_SUBTYPES = frozenset(
 # the message ``ts`` relative to process start is the available signal. the
 # grace absorbs clock skew and messages genuinely in flight at startup.
 _STARTUP_REPLAY_GRACE_SECONDS = 30.0
+
+
+@dataclass(frozen=True, slots=True)
+class _SlackUserProfile:
+    """the subset of a Slack ``users.info`` user object this adapter carries.
+
+    every field is optional because Slack documents that "data that has not
+    been supplied may not be present at all, may be null or may contain the
+    empty string" -- so each is normalized to None rather than ``""``.
+
+    :param timezone: IANA timezone name from ``user.tz``
+    :ptype timezone: str | None
+    :param locale: BCP 47 locale tag from ``user.locale``
+    :ptype locale: str | None
+    :param display_name: the member's chosen display name, falling back to
+        their real name
+    :ptype display_name: str | None
+    :param email: ``user.profile.email``. requires the ``users:read.email``
+        scope IN ADDITION to ``users:read``; without it Slack omits the field
+        silently rather than erroring, so None here means "no scope, no
+        address on file, or a lookup failure" and the three are
+        indistinguishable from the response alone.
+    :ptype email: str | None
+    """
+
+    timezone: str | None = None
+    locale: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+
+
+def _non_empty_str(value: Any) -> str | None:
+    """``value`` when it is a non-empty string, else None.
+
+    Slack renders absent profile data as a missing key, ``null`` OR the empty
+    string, and consumers want one representation of "absent" rather than
+    three.
+
+    :param value: raw value read off a Slack API response
+    :ptype value: Any
+    :return: the string, or None when absent/blank/not a string
+    :rtype: str | None
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _profile_from_user_object(user_obj: dict[str, Any]) -> _SlackUserProfile:
+    """map a Slack ``users.info`` ``user`` object onto :class:`_SlackUserProfile`.
+
+    display name prefers ``profile.display_name`` (what the member chose to be
+    called) over ``profile.real_name``, then the top-level ``real_name`` /
+    ``name`` -- a workspace that never set display names would otherwise yield
+    no name at all.
+
+    :param user_obj: the ``user`` object from a ``users.info`` response
+    :ptype user_obj: dict[str, Any]
+    :return: the normalized profile subset
+    :rtype: _SlackUserProfile
+    """
+    raw_profile = user_obj.get("profile")
+    profile_obj: dict[str, Any] = raw_profile if isinstance(raw_profile, dict) else {}
+    display_name = (
+        _non_empty_str(profile_obj.get("display_name"))
+        or _non_empty_str(profile_obj.get("real_name"))
+        or _non_empty_str(user_obj.get("real_name"))
+        or _non_empty_str(user_obj.get("name"))
+    )
+    return _SlackUserProfile(
+        timezone=_non_empty_str(user_obj.get("tz")),
+        locale=_non_empty_str(user_obj.get("locale")),
+        display_name=display_name,
+        email=_non_empty_str(profile_obj.get("email")),
+    )
 
 
 class SlackAdapter:
@@ -106,60 +191,81 @@ class SlackAdapter:
         # disables the guard (so unit tests that never call ``start`` route
         # normally).
         self._started_at: float | None = None
-        # per-user locale cache: maps slack user_id -> (cached_at_monotonic, tz, locale)
-        # invalidated when ``cached_at_monotonic`` is older than
-        # :data:`_USER_LOCALE_TTL_SECONDS`. populated lazily on first
-        # message from each user via :meth:`_resolve_user_locale`.
-        self._user_locale_cache: dict[str, tuple[float, str | None, str | None]] = {}
+        # per-user profile cache: maps slack user_id -> (cached_at_monotonic, profile).
+        # an entry stops being served once ``cached_at_monotonic`` is older than
+        # :data:`_USER_PROFILE_TTL_SECONDS`; the OrderedDict is kept in
+        # least-recently-used order and capped at
+        # :data:`_USER_PROFILE_CACHE_MAX_ENTRIES` so the map cannot grow without
+        # bound. populated lazily on first message from each user via
+        # :meth:`_resolve_user_profile`.
+        self._user_profile_cache: OrderedDict[str, tuple[float, _SlackUserProfile]] = OrderedDict()
 
         self._app.event("message")(self.handle_message_event)
 
-    async def _resolve_user_locale(
+    async def _resolve_user_profile(
         self,
         user_id: str,
-    ) -> tuple[str | None, str | None]:
-        """resolve ``(tz, locale)`` for a slack user via ``users.info``.
+    ) -> _SlackUserProfile:
+        """resolve the cached :class:`_SlackUserProfile` for a slack user.
 
-        consults the per-instance TTL cache first; on miss, calls
+        consults the per-instance LRU/TTL cache first; on miss, calls
         ``users.info(user=user_id, include_locale=True)`` and caches
         the result. failures (network error, unknown user, missing
-        fields) are cached as ``(None, None)`` so a flapping user-info
+        fields) are cached as an all-None profile so a flapping user-info
         endpoint does not hammer slack with retries inside the cache
-        window. callers consume the result as ``ChannelMessage``
-        ``user_timezone`` / ``user_locale`` fields.
+        window. callers consume the result as the ``ChannelMessage``
+        ``user_timezone`` / ``user_locale`` / ``sender_name`` /
+        ``sender_email`` fields.
+
+        ONE lookup serves all four. it is deliberately not split per field:
+        ``users.info`` is Tier 4 (~100 req/min) and a second call for the
+        address would double the budget for a value the first response
+        already contains.
 
         :param user_id: slack platform user identifier (``U…`` form)
         :ptype user_id: str
-        :return: tuple of (IANA timezone name, BCP 47 locale tag);
-            either may be ``None`` when slack does not surface a value
-            for this user
-        :rtype: tuple[str | None, str | None]
+        :return: the profile subset; every field may be None when slack
+            does not surface a value for this user
+        :rtype: _SlackUserProfile
         """
-        cached = self._user_locale_cache.get(user_id)
+        cached = self._user_profile_cache.get(user_id)
         now = time.monotonic()
-        result: tuple[str | None, str | None]
-        if cached is not None and (now - cached[0]) < _USER_LOCALE_TTL_SECONDS:
-            result = (cached[1], cached[2])
+        result: _SlackUserProfile
+        if cached is not None and (now - cached[0]) < _USER_PROFILE_TTL_SECONDS:
+            self._user_profile_cache.move_to_end(user_id)
+            result = cached[1]
         else:
-            tz: str | None = None
-            locale: str | None = None
+            profile = _SlackUserProfile()
             try:
                 response = await self._app.client.users_info(
                     user=user_id,
                     include_locale=True,
                 )
                 user_obj: dict[str, Any] = response.get("user", {}) if response else {}
-                raw_tz = user_obj.get("tz")
-                raw_locale = user_obj.get("locale")
-                tz = raw_tz if isinstance(raw_tz, str) and raw_tz else None
-                locale = raw_locale if isinstance(raw_locale, str) and raw_locale else None
+                profile = _profile_from_user_object(user_obj)
+                if profile.email is None:
+                    # named explicitly because the usual cause is a MISSING SCOPE
+                    # and slack reports it by silently omitting the field -- no
+                    # error, no warning, just an address that never arrives. a
+                    # host relying on it (to reconcile a chat participant with a
+                    # known identity) would otherwise see a feature that quietly
+                    # never fires. once per user per TTL, not per message.
+                    log.info(
+                        "slack users.info returned no email for this user; "
+                        "the app needs the users:read.email scope alongside users:read "
+                        "(a re-install is required after adding it)",
+                        extra={"extra_data": {"user_id": user_id}},
+                    )
             except Exception as exc:
                 log.warning(
-                    "slack users.info lookup failed; caching empty locale to avoid hammering the API",
+                    "slack users.info lookup failed; caching an empty profile to avoid hammering the API",
                     extra={"extra_data": {"user_id": user_id, "error": str(exc)}},
                 )
-            self._user_locale_cache[user_id] = (now, tz, locale)
-            result = (tz, locale)
+            self._user_profile_cache[user_id] = (now, profile)
+            self._user_profile_cache.move_to_end(user_id)
+            while len(self._user_profile_cache) > _USER_PROFILE_CACHE_MAX_ENTRIES:
+                self._user_profile_cache.popitem(last=False)
+            result = profile
         return result
 
     async def start(self) -> None:
@@ -313,20 +419,32 @@ class SlackAdapter:
         }
         metadata: dict[str, Any] = {k: v for k, v in event.items() if k not in consumed_keys}
 
-        # per-user locale info from slack profile -- looked up via
+        # per-user profile from slack -- looked up via
         # ``users.info(include_locale=True)`` and cached for
-        # :data:`_USER_LOCALE_TTL_SECONDS`. populated even on cache
+        # :data:`_USER_PROFILE_TTL_SECONDS`. populated even on cache
         # miss so consumers (agent runtime stamping
-        # ``CallContext.user_timezone``) read uniformly.
+        # ``CallContext.user_timezone``) read uniformly. a message event
+        # carries only the sender's ID, so name and address both come from
+        # here -- there is nothing on the event to fall back to.
         sender_id = event.get("user", "")
-        user_tz: str | None = None
-        user_locale: str | None = None
+        profile = _SlackUserProfile()
         if sender_id:
-            user_tz, user_locale = await self._resolve_user_locale(sender_id)
+            profile = await self._resolve_user_profile(sender_id)
 
         channel_message = ChannelMessage(
             channel_type="slack",
             sender_id=sender_id,
+            sender_name=profile.display_name,
+            sender_email=profile.email,
+            # slack returning an address at all IS the workspace asserting it:
+            # ``profile.email`` is workspace/SSO-administered, not a value the
+            # sender puts on the wire. deliberately NOT read from the
+            # ``is_email_confirmed`` field some responses carry -- that field is
+            # absent from slack's documented user object, and an undocumented
+            # field is not a thing to gate identity on. the protocol defines this
+            # flag as the PLATFORM's assertion rather than proof of mailbox
+            # control, and the host applies its own condition on top.
+            sender_email_verified=profile.email is not None,
             content=event.get("text", ""),
             channel_id=event.get("channel", ""),
             conversation_id=thread_ts if thread_ts else event.get("ts"),
@@ -340,8 +458,8 @@ class SlackAdapter:
             reply_to_id=thread_ts,
             metadata=metadata,
             timestamp=datetime.now(UTC),
-            user_timezone=user_tz,
-            user_locale=user_locale,
+            user_timezone=profile.timezone,
+            user_locale=profile.locale,
         )
 
         response = await self.router.route_inbound(channel_message)
