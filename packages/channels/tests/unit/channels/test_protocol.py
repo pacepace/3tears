@@ -99,6 +99,12 @@ class TestChannelMessage:
             sender_id="user-1",
         )
         assert msg.sender_name is None
+        assert msg.sender_email is None
+        # the default must be the UNTRUSTING one: an adapter that says nothing
+        # about an address has not asserted one, and a host reading this field
+        # to decide whether to record an address as verified would otherwise
+        # inherit trust from silence.
+        assert msg.sender_email_verified is False
         assert msg.customer_id is None
         assert msg.conversation_id is None
         assert msg.channel_id is None
@@ -133,6 +139,8 @@ class TestChannelMessage:
             content="check this doc",
             sender_id="U99999",
             sender_name="Alice",
+            sender_email="alice@acme.example",
+            sender_email_verified=True,
             customer_id="cust-001",
             conversation_id="T-123-456",
             channel_id="C-789",
@@ -143,6 +151,8 @@ class TestChannelMessage:
             timestamp=ts,
         )
         assert msg.sender_name == "Alice"
+        assert msg.sender_email == "alice@acme.example"
+        assert msg.sender_email_verified is True
         assert msg.customer_id == "cust-001"
         assert msg.conversation_id == "T-123-456"
         assert msg.channel_id == "C-789"
