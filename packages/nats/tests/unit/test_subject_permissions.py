@@ -23,7 +23,7 @@ from threetears.nats.subject_permissions import (
     PrincipalPermissions,
     build_permissions,
 )
-from threetears.nats.subjects import set_default_namespace
+from threetears.nats.subjects import Subjects, set_default_namespace
 
 _NS = "3tears"
 
@@ -373,3 +373,150 @@ class TestHitlApprovalBrokerGrants:
         c = build_permissions(Principal.CHANNEL_ADAPTER, conn_id="chan-1")
         assert f"{_NS}.hub.approval.resolve" not in a.publish
         assert f"{_NS}.hub.approval.record" not in c.publish
+
+
+class TestHitlSessionControlGrants:
+    """the owner-routed session control plane a live display is driven over."""
+
+    ALPHA = "tools.scrape-zone_alpha.1-0-0"
+    BETA = "tools.scrape-zone_beta.1-0-0"
+
+    def _pod(self, *namespaces: str) -> PrincipalPermissions:
+        return build_permissions(Principal.TOOL_POD, pod_id="pod-X", tool_namespaces=namespaces)
+
+    def test_pod_subscribes_an_exact_family_literal_per_authorized_tool(self) -> None:
+        """each ``allowed_namespaces`` entry becomes one grant, and only the key is wildcarded."""
+        perm = self._pod(self.ALPHA, self.BETA)
+        for name in (self.ALPHA, self.BETA):
+            expected = str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(name)))
+            assert expected in perm.subscribe
+            family_token = expected.removeprefix(f"{_NS}.forward.").removesuffix(".*")
+            assert set(family_token) <= set("0123456789abcdef")
+
+    def test_pod_grant_admits_the_subject_that_tool_actually_serves(self) -> None:
+        """the grant and the subject the pod subscribes are built from one derivation.
+
+        pinned because the two are minted in different processes -- the hub mints
+        the grant from the tool-pods row, the pod builds the subject from the tool
+        it serves -- and a mismatch fails as a silent timeout, not an error.
+        """
+        perm = self._pod(self.ALPHA)
+        served = Subjects.forward_scoped(Subjects.hitl_forward_family(self.ALPHA), "session-42")
+        granted = str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(self.ALPHA)))
+        assert granted in perm.subscribe
+        assert served.path.rsplit(".", 1)[0] == granted.rsplit(".", 1)[0]
+
+    def test_pod_grant_is_hex_only_for_a_hostile_tool_name(self) -> None:
+        """an unvalidated tool name must not inject a wildcard INTO A GRANT.
+
+        ``ToolManifestEntry.name`` is a bare ``str`` and ``_validate_manifest``
+        checks only that ``pod_id`` and ``tools`` are non-empty, so the hostile
+        value reaches the mint. sanitization would not close this: both
+        sanitizers replace dots and nothing else, so a ``>`` here would widen
+        the pod's own grant to a subtree.
+        """
+        perm = self._pod("tools.evil name.* > .1-0-0")
+        granted = [s for s in perm.subscribe if s.startswith(f"{_NS}.forward.")]
+        assert granted, "the pod holds no session grant at all"
+        # Every family the pod is granted, not a fixed number of them: one session is
+        # owner-routed twice (its control plane and its display stream ride separate families
+        # so they cannot collide on one queue group), and a tally here would assert the count
+        # rather than the property, then rot the next time the shape changes.
+        for subject in granted:
+            family_token = subject.removeprefix(f"{_NS}.forward.").removesuffix(".*")
+            assert set(family_token) <= set("0123456789abcdef"), subject
+            assert len(family_token) == 64, subject
+            for illegal in (" ", "*", ">"):
+                assert illegal not in family_token
+
+    def test_pod_without_authorized_tools_gets_no_session_grant(self) -> None:
+        """fail closed: a pod serving no human session holds nothing on this family."""
+        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-X")
+        assert not [s for s in _all_subjects(perm) if s.startswith(f"{_NS}.forward.")]
+
+    def test_pod_holds_neither_the_coarse_subtree_nor_a_peer_family(self) -> None:
+        """the whole point of the family segment: one tool's grant is not another's."""
+        perm = self._pod(self.ALPHA)
+        assert f"{_NS}.forward.>" not in _all_subjects(perm)
+        assert f"{_NS}.forward.*.*" not in _all_subjects(perm)
+        assert f"{_NS}.forward.*" not in _all_subjects(perm)
+        peer = str(Subjects.forward_scoped_wildcard(Subjects.hitl_forward_family(self.BETA)))
+        assert peer not in _all_subjects(perm)
+
+    def test_pod_may_publish_only_its_own_streams_downward(self) -> None:
+        """the stream grants name the pod's OWN tool digest and OWN pod id, not a wildcard.
+
+        Without this the whole grant could be deleted and every recorded run would still
+        pass: the pipe's own suites are the two ``pytest.mark.integration`` files, which
+        ``./scripts/test.sh -m "not integration"`` deselects, so a deselected file appearing
+        in the evidence is a path list rather than proof anything executed.
+        """
+        perm = self._pod(self.ALPHA)
+        down = [s for s in perm.publish if ".pipe." in s]
+        up = [s for s in perm.subscribe if ".pipe." in s]
+        assert down, f"a tool pod may not publish any stream; it holds {list(perm.publish)}"
+        assert up, f"a tool pod may not subscribe any stream; it holds {list(perm.subscribe)}"
+        for subject in (*down, *up):
+            segments = subject.split(".")
+            # {ns}.pipe.{tool_digest}.{pod_id}.{nonce}.{direction}: only the nonce may be a
+            # wildcard. a wildcard tool digest would let this pod serve another tool's
+            # streams, and a wildcard pod id would let it answer for a sibling replica.
+            assert segments[2] != "*", f"{subject} wildcards the tool digest"
+            assert segments[3] != "*", f"{subject} wildcards the pod id"
+
+    def test_pod_cannot_touch_another_tools_streams(self) -> None:
+        """the grant for one authorized tool does not render the digest of another."""
+        from threetears.nats.subjects import Subjects
+
+        other = Subjects.hitl_forward_family("tools.some-other-tool.1-0-0")
+        foreign_digest = str(Subjects.forward_scoped_wildcard(other)).split(".")[2]
+        perm = self._pod(self.ALPHA)
+        assert not [s for s in (*perm.publish, *perm.subscribe) if foreign_digest in s]
+
+    def test_pod_serves_but_never_originates(self) -> None:
+        """the owner answers on the requester's reply inbox under ``allow_responses``."""
+        perm = self._pod(self.ALPHA)
+        assert not [s for s in perm.publish if s.startswith(f"{_NS}.forward.")]
+        assert perm.allow_responses is True
+
+    def test_pod_holds_the_bucket_the_display_claim_actually_materialises(self) -> None:
+        """the grant is the bucket that MATERIALISES, prefix applied exactly once.
+
+        ``KVLease`` returns a bucket-name SUFFIX and ``kv_bucket`` layers the
+        connection's ``{ns}-`` over it, so the pair composes to ``{ns}-leases``.
+        The failure this pins is not an error: a pod that cannot open the bucket
+        cannot claim at all: ``KVLease.acquire`` defers the bucket open to
+        first use, and that open raises ``KvError`` after a JetStream timeout.
+        (``lease=None`` is a different path -- a platform passing no lease --
+        and it is what serves a display unclaimed.)
+
+        ``tests/enforcement/test_kv_bucket_grant_naming.py`` holds the same
+        property against the live default rather than a literal, so a change to
+        either side alone fails there; this asserts the concrete string a
+        reviewer can read.
+        """
+        perm = self._pod(self.ALPHA)
+        assert f"{_NS}-leases" in perm.kv_buckets
+
+    def test_hub_may_call_every_family_and_serve_none(self) -> None:
+        """one hub connection fronts every tool, so its family segment is a wildcard.
+
+        it stays a two-token pattern: the unscoped one-token forward family is
+        granted to no principal at all, and this does not reach it.
+        """
+        hub = build_permissions(Principal.HUB, conn_id="hub-1")
+        assert f"{_NS}.forward.*.*" in hub.publish
+        assert f"{_NS}.forward.*" not in hub.publish
+        assert f"{_NS}.forward.>" not in _all_subjects(hub)
+        assert not [s for s in hub.subscribe if s.startswith(f"{_NS}.forward.")]
+
+    def test_unscoped_forward_family_is_granted_to_nobody(self) -> None:
+        """the shape with only a key digest in it has no grantable discriminator.
+
+        every principal is checked, not just the two this scope touches: the
+        chunk exists because that family shipped ungranted, and re-granting it
+        coarsely anywhere would undo the family segment entirely.
+        """
+        for principal in Principal:
+            for subject in _all_subjects(_build(principal)):
+                assert subject not in {f"{_NS}.forward.>", f"{_NS}.forward.*"}, principal

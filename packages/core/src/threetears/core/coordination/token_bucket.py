@@ -14,7 +14,7 @@ siblings) already use.
 usage::
 
     bucket = TokenBucket(
-        nats_client, bucket_name="prod14_llm_throughput", refill_rate=2.0, capacity=10.0
+        nats_client, bucket_name="llm_throughput", refill_rate=2.0, capacity=10.0
     )
     outcome = await bucket.claim("global")
     if not outcome.claimed:

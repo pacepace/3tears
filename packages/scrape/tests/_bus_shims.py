@@ -10,6 +10,11 @@ reply back, and knows nothing about sessions, tabs or ownership.
 
 Queue-group delivery is modelled as "exactly one subscriber", which is the property
 ``serve_owner`` relies on during the window where two pods briefly believe they own a key.
+
+It also carries plain publishes, because the byte pipe a display rides is built on the same two
+primitives plus a subject per direction. Same reasoning: the way that can go wrong is the two ends
+disagreeing about where a stream lives, and a stubbed transport would take exactly that out of the
+test's reach.
 """
 
 from __future__ import annotations
@@ -51,14 +56,19 @@ class FakeBus:
 
     async def subscribe(
         self,
+        subject: Any = None,
         *,
-        subject: Any,
         cb: Any,
         queue: str | None = None,
         deadletter_on_failure: bool = True,
         **_: Any,
     ) -> _Registration:
-        """Register a subscriber and hand back the token used to drop it."""
+        """Register a subscriber and hand back the token used to drop it.
+
+        *subject* is positional-or-keyword because the real client's is: ``serve_owner`` names it
+        and the byte pipe passes it positionally, and a keyword-only shim would fail the second
+        one with a ``TypeError`` that says nothing about the pipe.
+        """
         del deadletter_on_failure
         registration = _Registration(subject=subject.path, cb=cb, queue=queue)
         self.registrations.append(registration)
@@ -87,6 +97,22 @@ class FakeBus:
         pending = self._replies.get(reply_subject)
         if pending is not None and not pending.done():
             pending.set_result(payload)
+
+    async def publish_raw(self, *, subject: Any, payload: bytes) -> None:
+        """Hand a frame to every subscriber on *subject*, awaiting each in turn.
+
+        Delivery is DIRECT rather than queued, which is what lets a whole byte-pipe stream run
+        here with no sleeps and no broker. It is also strictly stronger on ordering than a real
+        dispatch loop, so it cannot manufacture the sequence gap the pipe tears a stream down on;
+        the round trip over an actual broker is proven in ``3tears-nats``'s own integration suite.
+
+        A frame published to a subject nobody has subscribed is discarded, which is what core NATS
+        does and what the pipe's ready frame exists to avoid.
+        """
+        self.sent.append(payload)
+        for registration in list(self.registrations):
+            if registration.subject == subject.path:
+                await registration.cb(IncomingMessage(data=payload, reply_subject=None, subject=subject.path))
 
     async def request_raw(self, *, subject: Any, payload: bytes, timeout: timedelta) -> bytes:
         """Deliver to exactly one subscriber on *subject* and wait for its reply.

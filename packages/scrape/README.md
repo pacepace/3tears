@@ -316,13 +316,35 @@ identity, coordination and the operator's socket, and the AGPL nodriver sidecar 
 holds Xvfb, Chromium and `x11vnc` and nothing else. They share a network namespace, so your
 container reaches the display on `127.0.0.1` and nothing outside the pod can.
 
-Two more seams go with it, both optional and both there for the same reason -- one display lives
-in one pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods
-cannot both serve one session, and `serve_session()` answers that session's control messages
-(open a tab, complete a tab, close the session, read its state) on a subject keyed to the session
-id, so a caller addresses the session and never a pod. A completed tab's reply carries the
-human's solve **sealed**, because a raw cookie jar is a live credential and a bus is not the place
-for one.
+**That last clause cuts both ways, so the relay takes a `transport`.** A pod carrying no Service
+and no Ingress dials out and is never dialled into, which is what keeps a live display off the
+network -- and it also means a process terminating the operator's WebSocket anywhere else has no
+address to connect to and no way to be given one. So `relay_stream`, the function that WebSocket
+runs, does not open the connection itself. Its `transport` does: it is handed the endpoint your
+`display` callable resolved, decides what reaching that endpoint means, and yields the reader
+and writer the bytes move between. Called with none it opens a plain TCP connection to that
+endpoint, which is the co-located pod above and is exactly what the relay has always done.
+
+`build_operator_router` takes one too and passes it straight through, so a deployment whose
+display sits in a pod with no inbound network path supplies a transport there and changes nothing
+else. Omit it and the router behaves exactly as it always has.
+
+**The pod's own end of that is `serve_display()`,** in `threetears.scrape.operator_pipe`. A pod
+holding a session's claim serves its display onto a NATS byte pipe, bridging the `x11vnc` beside
+it to a stream a caller anywhere can attach to. Which of the two routes a deployment uses is not a
+choice made per request: with the socket and the display in one pod, `relay_stream` connects to
+loopback and `serve_display()` never runs; with the socket terminated where nothing can reach the
+pod, the pod runs `serve_display()` and the process holding the socket supplies the transport. The
+loopback hop happens either way, in one process or the other.
+
+The remaining seams are optional and all there for the same reason -- one display lives in one
+pod, and a request can arrive at any of them. `claim_session()` takes a lease so two pods cannot
+both serve one session, and `serve_session()` answers that session's control messages (open a tab,
+complete a tab, close the session, read its state) on a subject keyed to the session id, so a
+caller addresses the session and never a pod. The same claim is what entitles `serve_display()`,
+so a handover ends the operator's stream instead of leaving two live views on one session. A
+completed tab's reply carries the human's solve **sealed**, because a raw cookie jar is a live
+credential and a bus is not the place for one.
 
 **6. They clear it, and you keep the work.** `POST .../tab/{id}/complete` returns the
 context's cookies and storage. Seal it with `seal_session_state` and store it with

@@ -4,6 +4,512 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.22.3 -- 2026-07-30
+
+> **A PATCH bump, additive only: `ConnectionFieldDescriptor` gains four optional fields and
+> `ConnectionFieldKind` gains one member.** Every descriptor written against 0.22.2 parses
+> and behaves identically at 0.22.3 -- the new fields all default to "not declared", so
+> nothing existing is constrained by them.
+
+### `3tears-iam`
+
+**`ConnectionFieldKind.ENUM`.** A field with a fixed set of permitted values. The case that
+forced it is a PIV connection's `mode`: `mtls` and `webauthn` are two genuinely different
+trust models, not two spellings of one, and until now an operator had to type the word
+correctly with nothing offering the choice.
+
+**Four optional constraint fields on `ConnectionFieldDescriptor`:**
+
+| Field | Applies to | For |
+|---|---|---|
+| `options: tuple[str, ...]` | `enum` | the values a surface offers |
+| `minimum` / `maximum: int \| None` | `int` | the accepted range |
+| `pattern: str \| None` | `string`, `url` | a regular expression the value must match |
+
+**They describe a value; they do not police it.** A configuration surface uses them to offer
+the right control and to reject an obviously-wrong entry before submitting. The serving
+service still validates on write regardless -- a descriptor travels to consumers that may be
+older, newer, or simply not applying it, so a constraint is never evidence that a value was
+already checked.
+
+**Five new validators, and one deliberate hole in them.** A descriptor that is internally
+incoherent cannot be constructed: an `enum` with no options (a dropdown nobody can fill in),
+`options` on a non-enum, a range on a non-int, a `pattern` on a kind that has none, a
+`minimum` above its `maximum`, or a `pattern` that does not compile.
+
+The hole is that **the kind-matching checks apply only to kinds THIS release knows.** A
+descriptor whose `kind` is unrecognised carries its constraints through untouched. That is
+the same rule the module already applies to `kind` itself: refuse what is dangerous, tolerate
+what is merely unfamiliar. A future kind that legitimately uses `options` must not be
+rejected by every consumer released before it -- which would be precisely the flag-day this
+module exists to avoid, arriving on whichever of two deploys happened to be second.
+
+## v0.22.2 -- 2026-07-29
+
+> **A PATCH bump, and purely additive: `3tears-iam` gains four exported types and nothing
+> existing changes.** No signature, default, validation rule, or behaviour anywhere in the
+> family is altered by this release. Every module that existed at 0.22.1 behaves identically at
+> 0.22.2, so upgrading within 0.22.x cannot break a caller.
+>
+> Recorded as a PATCH because the owner designated it one. Worth being plain about what that
+> means rather than arguing the number: new public API is ordinarily MINOR under the versioning
+> discipline this file documents, and this is new public API. What a MINOR would cost is real --
+> the 0.22.x consumers pin `>=0.22.0,<0.23.0`, so 0.23.0 sits outside every ceiling and forces a
+> lockstep pass across five repositories to deliver types that break nothing. The tradeoff is
+> that a `<0.23.0` range no longer implies these types are present. **Any consumer importing
+> `threetears.iam.connection_types` must therefore floor at `>=0.22.2`** -- a bound of
+> `>=0.22.0,<0.23.0` will resolve to a release without the module and fail at import.
+
+**`3tears-iam` gains `threetears.iam.connection_types`: the vocabulary for describing an
+authentication method to whoever has to configure it.** Four new types --
+`ConnectionTypeDescriptor`, `ConnectionFieldDescriptor`, `ConnectionFieldKind`,
+`ConnectionScope`. Nothing else in the family moves.
+
+A descriptor states in data what a method needs: *this one is called "OpenID Connect", it can be
+configured platform-wide or per tenant, and it needs an issuer URL, a client id, and a client
+secret that is written and never read back.* An admin surface reads descriptors and renders a
+form per method, so a newly supported method reaches operators by adding a descriptor rather
+than by editing a UI.
+
+**Why these shapes are shared rather than mirrored per service, which is the platform's usual
+answer for a cross-repo RPC payload.** That convention rests on a mismatch failing closed: a
+subject nobody answers has no responders, so a divergence is a refusal, not a bug. This contract
+is answered. A service replies, a relay passes the payload on, and a field-name or shape
+divergence is therefore not a refusal -- it is a field silently dropped between the service that
+knows what OIDC requires and the operator filling in the form, discovered when the connection
+they saved turns out not to work. The two independent declarations that preceded this module
+agreed exactly, and agreeing was luck: they had each picked the same envelope key. Sharing the
+classes converts that luck into a type error at install time, which is the same reasoning that
+put token verification in `threetears.iam.tokens` instead of leaving a hand-written mirror
+downstream.
+
+They live in `3tears-iam` specifically because the methods being described -- OIDC, SAML,
+password, TOTP, passkey -- are the ones this package implements, and every service needing the
+descriptors already depends on this distribution to verify a session token.
+
+**Two security rules travel with the types as model validators, which is the substance of the
+move rather than a detail of it.** A descriptor that breaks either cannot be constructed --
+not by this package, not by a service adding a method years from now, and not by a consumer
+parsing a payload off a wire, since parsing runs the same validators:
+
+- **A `secret` field must be `write_only`.** A credential the configuration API will hand back
+  on read is a credential available to every reader of that configuration. `write_only` defaults
+  to `False`, so omitting it on a `secret` field is a refusal rather than a silent opt-in.
+- **`routes_by_domain` requires `platform` to be an allowed scope.** Domain-to-tenant allocation
+  decides which tenant an otherwise unrecognised sign-in belongs to. A customer-scoped
+  connection is configured by that customer, who can assert a domain they do not own -- so
+  letting one consult the domain table is a cross-tenant path: claim `example.com`, receive
+  sign-ins belonging to whoever actually owns it.
+
+Two structural rules ride along for the same reason: a type creatable in no scope at all could
+never be configured, and two fields sharing one configuration key means one is silently ignored,
+with which one depending on iteration order at the consumer.
+
+**`type` and `kind` are plain `str` on the wire; only `ConnectionScope` is a closed set.** This
+will look like an oversight in a module otherwise built out of enums, so the rule is written
+down: *refuse what is dangerous, tolerate what is merely unrecognised* -- the same rule that
+moved `verify_session_token` off an exact claim allowlist onto `FORBIDDEN_CLAIMS` in v0.22.1.
+
+The set of method names belongs to the service serving them. That service is what grows a ninth
+method, and a ninth method has to reach an admin UI the moment it is served -- not one release of
+this package later, and without a relay in the middle rejecting an entire registry over one
+member it has never heard of.
+
+A field `kind` is the same case. Validation runs on parse, so a closed `kind` would mean a
+consumer pinned to an older release of this package refusing an ENTIRE payload over one value it
+cannot place: the operator gets a blank page instead of seven usable methods and one field
+rendered as a plain input, and the failure lands on whichever of two deploys happens to be
+second -- not a property anyone can reason about at review time. What a tolerated unknown kind
+actually costs is a text input where a checkbox belonged, which is how a consumer should degrade
+and how the admin website already does. `ConnectionFieldKind` therefore ships as the KNOWN
+vocabulary, for producers to build descriptors from rather than as a parse-time gate: the
+vocabulary is real, it is simply not worth an outage. This does not soften the write-only rule
+for wire traffic -- the secret check compares the string value, so naming a field's kind
+`"secret"` binds it whether or not the enum was used.
+
+`ConnectionScope` stays closed, and the asymmetry is deliberate. Its vocabulary is exhaustive by
+construction -- there is no third answer to "whose connection is this" -- and a scope value this
+package cannot recognise IS dangerous, because scope is what decides whether `routes_by_domain`
+is permitted at all. An unreadable scope must not slip past the cross-tenant check as an unknown
+string.
+
+**What deliberately did not move: the transport.** The request/reply envelopes carrying
+descriptors between services, and the subject they travel over, stay with the services. Those
+genuinely do fail closed on a mismatch, and they are one service's API rather than platform
+vocabulary.
+
+## v0.22.1 -- 2026-07-29
+
+> **A PATCH bump, released as one deliberately -- and it is not a no-op for callers.** Three
+> verification rules in `3tears-iam` change, one of them a required argument
+> (`verify_session_token`'s `expected_type`) and one a narrowed parameter type
+> (`mint_token_pair`'s `audience`). Every caller in this repository and in both consuming
+> products already satisfies both, so nothing that exists breaks; a caller outside them could.
+>
+> Recorded plainly rather than filed as a MINOR because the owner's call was that these are
+> corrections to existing verification behaviour rather than new capability, and because the
+> 0.22.x consumers pin `>=0.22.0,<0.23.0` -- a MINOR would sit outside every ceiling and force
+> a second lockstep pass across five repositories to deliver three fixes they all want. Any
+> consumer relying on the corrected rules should floor at `>=0.22.1`.
+
+**`3tears-iam` stops making an added identity claim a fleet-wide flag day, without loosening
+what "identity only" means.** BEHAVIOUR CHANGE on `verify_session_token`, and the reason it is
+worth reading is that the old rule was correct about the threat and wrong about the blast
+radius.
+
+A session token asserts identity and nothing else, and that has to be enforced at the
+verification boundary rather than trusted: a smuggled `role` claim must fail verification, not
+sit there as a field nobody reads yet. The signature check cannot do this job -- the danger is
+not a forged token but a second legitimate signer inside the platform drifting away from
+identity-only, and such a signer holds a key the verifier accepts.
+
+`verify_session_token` enforced that by rejecting any claim outside `KNOWN_CLAIMS`. That
+refuses a smuggled grant, and it also refuses `locale`. Verification necessarily runs against
+payloads minted by a peer that may be on a DIFFERENT version of this package -- two services,
+two repositories, two deploys -- so the exact pin meant the moment one side minted a new
+identity claim, every service still on the older version rejected every token that side issued.
+Not a degradation: a total authentication outage, arriving at the deploy rather than at the
+change, and looking like an infrastructure fault rather than a version skew.
+
+So the rule is now scoped to what is actually dangerous. `verify_session_token` rejects
+`FORBIDDEN_CLAIMS` -- the authorization-shaped names (`role`, `roles`, `scope`, `scp`, `groups`,
+`permissions`, `entitlements`, `is_admin`, and the rest of that vocabulary) -- and ignores merely
+unrecognized ones, which no code in this package reads. Everything else about verification is
+untouched: the signature, the EdDSA/HS256 pin, the issuer, `exp`/`iat`, every required base
+claim, and the audience.
+
+**Mint is unchanged and still pins the claim set exactly.** That asymmetry is the design, not an
+oversight. On mint this package assembles the payload, so a claim outside `KNOWN_CLAIMS` is its
+own bug and fails loudly; on verify the payload came from someone else's version. Enforcing the
+identity-only invariant where the payload is BUILT costs nothing, and enforcing it as an exact
+set where the payload ARRIVES cost an outage to prevent a typo.
+
+**`3tears-iam` also closes two holes found while adapting the Hub to this package, both of
+which let a token through that no consumer wanted.** Behaviour changes, and the second is a
+signature change.
+
+**A token may now name only ONE audience, refused at mint and at verify.** An audience says
+which side of a trust boundary a credential belongs to, so a token naming two is valid on both
+at once and this model has no meaning for it. PyJWT cannot refuse that: it matches on
+INTERSECTION, so `aud: [internal, external]` satisfies a verifier configured to accept only
+`internal` -- which is how a token that has left the platform comes back in. `sole_audience`
+existed as the checked way to read the claim back, but it was a courtesy the caller had to
+remember, and BOTH consumers of this package had independently reimplemented the refusal, each
+with its own comment explaining the same reasoning. A security rule that depends on being
+remembered is a rule the next consumer will not have, so it now lives in
+`verify_session_token`. `mint_session_token` refuses it too -- minting a token this package's
+own verifier rejects is a failure discovered by the holder rather than by whoever minted it --
+and `mint_token_pair`'s `audience` parameter is correspondingly `str` rather than
+`str | Sequence[str]`, since the wider annotation now describes something that always fails.
+
+A VERIFIER may still accept several audiences: one verifier legitimately serving several trust
+boundaries is a different thing from one token claiming several.
+
+**`verify_session_token`'s `expected_type` is now REQUIRED.** It defaulted to `None`, meaning
+no type check, and the docstring said "pass this" -- a convention where a control was needed.
+Omitting it accepted a refresh token wherever an access token was expected, which is a
+privilege escalation: refresh tokens live far longer and are handled far more casually. Every
+caller in this repository and in the two consuming products already passed it, so the required
+argument breaks nothing that exists and closes the door on the next call site.
+
+**What to check before upgrading.** `verify_session_token` calls must pass `expected_type`.
+Any code minting or accepting a multi-audience token needs a decision about which boundary it
+actually belongs to -- there is no flag to restore the old behaviour, because the old
+behaviour had no semantics. If you relied on `verify_session_token` rejecting an
+unrecognized claim as an integrity signal -- as opposed to rejecting an authorization claim --
+that rejection is gone, and the signature plus `iss` check is the stronger version of it. A
+`TokenError` for this case now reads `token carries forbidden claims:` rather than
+`unexpected claims:`; nothing outside this repository matched on that text at the time of the
+change. A consumer that needs the new rule must floor at `>=0.22.1`, since the whole 0.22.x
+family satisfies an unpinned `>=0.22.0,<0.23.0` range.
+
+## v0.22.0 -- 2026-07-29
+
+> **A MINOR bump, because three distributions gain new public API and one gains a new keyword on
+> five published functions.** `3tears-nats` gains `threetears.nats.pipe` (a payload-agnostic byte
+> pipe), the family-scoped forward builders and the HITL family derivations. `3tears` gains the
+> HITL namespace vocabulary. `3tears-scrape` consumes both, and its `operator_control` helpers gain
+> an optional `tool` keyword.
+>
+> **Pin the whole family to 0.22.0 exactly.** `threetears.scrape.operator_pipe` imports
+> `threetears.nats.pipe`, which exists on no earlier release, so a mixed family resolves and then
+> fails at import -- which is what the intra-family bounds exist to make impossible, and what
+> pinning makes true on your side of the install.
+
+**`3tears` fixes a `KVLease` default that named its bucket with the namespace twice, and
+`3tears-nats` corrects the two KV grants whose openers could be read.** BEHAVIOUR
+CHANGE on both, and worth reading before upgrading.
+
+`KVLease._default_bucket_name()` read `THREETEARS_NATS_SUBJECT_NAMESPACE` and returned
+`{ns}_leases`. That value is passed to `kv_bucket()`, which layers the connection's own `{ns}-`
+over whatever it is handed, so the bucket that materialised was `{ns}-{ns}_leases`. The default is
+now the constant suffix `leases`, and the transport owns the prefix -- which is the contract
+`kv_bucket` always had. Its own usage docstring had the bug baked in as an example.
+
+Nothing detected it because a KV grant naming a bucket no opener produces is not an error. The op
+publishes to a `$JS.API` subject the connection lacks, the server drops it, and the caller blocks
+to its deadline -- indistinguishable from an unreachable broker. Every unit test of `KVLease` also
+ran against a fake whose own docstring records that it "skips the namespace prefix the real wrapper
+layers on top", so the defect was structurally invisible to them.
+
+THREE bucket-naming conventions are in play, and all three are legitimate:
+
+- opened via `kv_bucket()`, which layers `{ns}-` over a suffix -- the grant is `{ns}-<suffix>`
+- opened by a direct `js.key_value(bucket=...)` with a bare constant, which receives no prefix --
+  the grant is that bare name, and `threetears.registry.server`'s catalog is the case
+- opened by a direct `js.create_key_value(bucket=...)` with a name the component builds itself as
+  `f"{namespace}_thing"` -- the grant is that name verbatim, underscore included. The hub's
+  `AgentConfigKV` does this and its own docstring calls the result platform-historical.
+
+So no rule can be written over the SHAPE of a grant string: `{ns}_agent_config` and a typo for
+`{ns}-agent_config` are indistinguishable by inspection and only one is wrong. Two grants are
+corrected here because both sides could be read: `{ns}_tool_catalog` to `tool_catalog` (the
+registry's own default, unprefixed) and `{ns}_pop_nonces` to `{ns}-pop_nonces` (constructed as
+`ReplayGuard(nc, bucket_name="pop_nonces")`, so the transport prefixes it). Every other grant is
+left exactly as it was.
+
+`tests/enforcement/test_kv_bucket_grant_naming.py` pins the two pairings whose halves BOTH live in
+this repository -- the lease grant against `KVLease`'s live default, and the catalog grant against
+`RegistryServer`'s own parameter default -- so neither can drift. It deliberately asserts no rule
+about grant shape, because the third convention makes any such rule wrong.
+
+**Upgrade note.** A deployment that ran without enforced permissions has live entries under the old
+`{ns}-{ns}_leases` bucket; after upgrading, holders open `{ns}-leases` and the old entries are
+orphaned. Leases are TTL'd coordination state, so the orphans expire on their own -- but during the
+rollout a lease held by an old pod is invisible to a new one, so do not roll a deployment that
+relies on lease mutual exclusion while both versions are live.
+
+
+**`3tears-nats` gains a family-scoped owner-routed forward subject, and the grants it needs.**
+NOT a complete repair of the refusal described below, and the residue is stated here rather than
+left for a reader to discover: `threetears.scrape.operator_control` still calls the UNSCOPED
+builders, and the unscoped family is granted to nobody (pinned by a test that says so). The control
+plane starts working when its caller can name the tool it serves, which is a later change. What
+lands here is the mechanism and the grant shape.
+
+The release carrying this must be a MINOR bump: `Subjects` and `threetears.nats.forward` both gain
+public API, and `3tears-scrape` consumes the family-scoped builders.
+
+`Subjects.forward` renders `{ns}.forward.{sha256hex(key)}`, and no principal in
+`subject_permissions.py` granted it -- so `threetears.scrape.operator_control.serve_session` and
+every message it carries is refused by auth-callout on any deployment that enforces these grants.
+It presents as a timeout, which is why it shipped that way.
+
+Granting the family coarsely would not have been a repair: the only variable segment is a digest of
+an arbitrary application string, so `{ns}.forward.>` lets any tool pod serve any owner-routed key in
+the namespace with nothing left in the subject to discriminate on. New public API on `Subjects`,
+additive, with the existing builder untouched and pinned byte-for-byte by a test:
+
+- `Subjects.forward_scoped(family, key)` -- `{ns}.forward.{sha256hex(family)}.{sha256hex(key)}`
+- `Subjects.forward_scoped_wildcard(family)` -- the grant, exact on the family, wildcard on the key
+- `Subjects.hitl_forward_family(tool_namespace_name)` -- the one derivation the hub and the pods
+  both read, so neither can name a family the other does not
+- `serve_owner(..., family=...)` / `forward(..., family=...)` -- optional; omitted, the subject is
+  exactly what it was
+- `build_permissions(..., tool_namespaces=...)` -- the pod's `allowed_namespaces` row, hashed into
+  one exact literal grant per authorized tool
+
+Both segments are hashed by the builder rather than accepted pre-computed. A tool's registered name
+is a bare `str` that nothing validates, and both sanitizers in the codebase replace dots and
+nothing else, so a name carrying a space, a `*` or a `>` would otherwise inject a wildcard into a
+pod's own grant.
+
+**Tool pods can also open the bucket their display claim uses.** `KVLease` returns a bucket-name
+SUFFIX and `NatsClient.kv_bucket` layers the connection's `{ns}-` over it, so the granted bucket is
+`{ns}-leases`. Without that grant the claim fails hard rather than downgrading: `KVLease.acquire`
+defers opening the bucket to first use, and that open raises `KvError` after a JetStream timeout.
+(`lease=None` is a different path -- a platform passing no lease at all -- and that one does serve
+a display unclaimed.) Proven by applying the minted permission set as
+a real nats-server's `authorization` and driving a real `KVLease` through it.
+
+(The suffix that composition starts from is itself corrected in the entry above; before that fix it
+carried the namespace, so the bucket materialised with the namespace twice.)
+
+
+**`3tears-nats` gains a payload-agnostic byte pipe to whichever pod owns a key.** New public API
+on `threetears.nats`, all additive, and the release carrying it must be a MINOR bump for the same
+reason as the entry above: `3tears-scrape` consumes it.
+
+A tool pod has no Service, no Ingress and no inbound path of any kind, so a byte stream INTO one
+had no door. `threetears.nats.pipe` opens it, carrying bytes and interpreting none of them in
+exactly the way `threetears.nats.forward` is payload-agnostic. A display is its first consumer; an
+interactive shell into a pod has the identical problem.
+
+- `attach_pipe(nats, key, ...)` -- rides the existing `forward` verbatim, so "no owner right now"
+  stays that primitive's own `NoOwnerError` rather than becoming a second vocabulary
+- `serve_pipe(nats, key, tool=..., pod_id=..., handler=...)` -- the owner side, riding `serve_owner`
+- `open_pipe(nats, endpoint)` / `PipeStream` -- the two ends; `send` blocks on the credit window and
+  `receive` returns `None` at end of stream
+- `Subjects.pipe`, `Subjects.pipe_pod_wildcard`, `Subjects.pipe_any_pod_wildcard`, `PipeDirection`
+- `PipeEndpoint`, `PipeTransport`, `PipeStreamHandler`, and the `PipeError` family
+- `_tool_pod` and `_hub` grants for the stream subjects
+
+The attach reply carries the READABLE tool name and the caller hashes it to derive the subject
+token. That split is deliberate and matches `Subjects.room`: a digest is what makes an unvalidated
+tool name safe in a subject, and the readable form is what keeps a log line correlatable to a
+subject nobody can read. An owner naming a tool it does not serve gains nothing, because its
+publish grant names the digest of its own tool and its own pod id as exact literals.
+
+**The wire framing is the lock-in, so both of its evolution decisions are recorded here as well as
+in `docs/scrape-task-09-vnc-over-nats.md`.** A frame is a tag byte, a big-endian uint32 sequence
+and a body. Tags cover data, credit, close, error and ready; the rest of the byte is unallocated,
+so a later consumer is a tag addition rather than a header change.
+
+*Versioning is negotiated once, in the attach exchange, and carried on no frame.* The version
+cannot change mid-stream, and a per-frame byte is a continuous cost on the fat direction for a
+constant value. The caller names the highest version it speaks and the owner replies with the one
+it chose, never higher. An unknown tag is REFUSED rather than skipped, which is what makes that
+negotiation enforceable: adding a tag is a version bump, and an older peer says so instead of
+misparsing a newer one's frame.
+
+*The error model separates its layers, so a traceback names which end failed.* `PipeProtocolError` for
+a malformed frame, an unknown tag or an unagreeable version -- the two ends do not speak the same
+protocol, which no reconnect repairs. `PipeSequenceGapError` for positive local evidence a frame was lost,
+`PipeIdleTimeout` for a local conclusion drawn from silence (a peer that could not report anything
+because it stopped existing), and `PipeRemoteError`, carrying the peer's exception type name and
+message, for one the peer actually reported. The middle one is separate from the last precisely
+because attributing silence to a peer report names the thing that provably did not happen.
+
+Also newly public on `3tears-nats`: `PipeIdleTimeout` and `DEFAULT_IDLE_TIMEOUT`. Every wait on a
+LIVE stream is now bounded -- before them, a peer that stopped existing without publishing left the
+far end blocked forever with no exception and no log, which a caller cannot tell from a peer merely
+being quiet. The bound is generous because an idle stream is ordinary here: an operator reading a
+challenge produces nothing for long stretches.
+
+All are terminal: a receiver that saw a gap RAISES rather than skipping, because the payloads this
+carries do not resynchronise and a tolerated gap turns a detectable fault into a frozen screen.
+
+**Backpressure is a credit window, and it is the part with no existing equivalent.** Publishing
+what a socket yields is unbounded: a slow consumer does not slow the producer, it fills the
+producer's outbound buffer until the connection wedges. The receiver acknowledges the bytes it has
+CONSUMED (not merely received), every half window and cumulatively; a sender whose unacknowledged
+bytes reach the window blocks, which stops its caller's read loop at the source. The default window
+is sized against a measured bandwidth-delay product rather than chosen as a round number, and
+bounded above by nats-py's own per-subscription pending limit; both numbers, and what has NOT been
+measured, are recorded with the constant.
+
+The integration suite asserts that backpressure on the PRODUCER'S OWN READS, and deliberately not
+on `NatsClient.overflow_events` -- that counter increments only at the publish boundary while the
+client is disconnected or reconnecting with a full pending buffer, so on a healthy connected test
+it reads zero whether or not any credit accounting exists at all.
+
+
+**`3tears-scrape`'s display relay no longer opens its own connection.** `relay_stream` called
+`asyncio.open_connection(host, port)`, which is the single line that made a co-located display
+mandatory: a process terminating the operator's WebSocket had to share a network namespace with
+`x11vnc`. A deployed tool pod cannot offer that to anything outside it -- no Service, no Ingress,
+no inbound path at all -- so this is what stood between the operator surface and a cluster.
+
+New public API on `threetears.scrape.operator`, all additive: a `transport` keyword on BOTH
+`relay_stream` and `build_operator_router`, and the `DisplayTransport`, `DisplayReader` and
+`DisplayWriter` protocols describing what one is. A transport is handed the endpoint `DisplayEndpoint` resolved, decides
+what reaching it means, and yields a reader-like and a writer-like pair; the relay interprets
+neither the endpoint nor a byte that crosses the pair.
+
+**No behaviour change for anyone not passing one.** Omitting `transport` opens the same TCP
+connection to the same endpoint, which is what both the relay and the router do by default. The
+router carries the parameter rather than only the relay because otherwise a consumer could not
+reach the seam without reimplementing the WebSocket route -- and a verification built on such a
+stand-in would be testing the stand-in. The
+whole value of the seam is that a transport reaching a display over a message bus can be supplied
+by a deployment that has one, without forking this module -- and its acceptance was that the
+existing relay tests pass unedited, which they do.
+
+The docstring this replaces framed a bus-backed relay as a costed alternative to be "settled on
+measurements". That trade had two sides only while a co-located display was reachable; where it is
+not, there is nothing to weigh it against.
+
+
+**`3tears-scrape` gains the pod side of that arrangement: a display served over the pipe.** New
+public API on the new module `threetears.scrape.operator_pipe`: `serve_display(nats, claim, tool=,
+pod_id=, display=)`, an async context manager a tool pod holds open for as long as it holds a
+session's claim.
+
+**The claim is what entitles it, exactly as it entitles the control subject.** `serve_display`
+refuses to start on a claim already lost, refuses an attach that arrives after one is lost -- the
+subscription is dropped promptly but not instantaneously, and serving in that window would put a
+second live view on a display the new owner is driving -- and ends a live stream when the claim
+goes. That last one is not a check written here: the relay already takes a stop signal for exactly
+this, so a lost claim ends a display stream by the same mechanism that ends the co-located one,
+and the operator's client sees end of stream and reconnects onto whichever pod now holds the
+session.
+
+**Two routes to one display now exist, and they belong to different deployments rather than being
+alternatives within one.** Where the operator's WebSocket is terminated in the container beside
+the display, `relay_stream` connects to `x11vnc` on the pod's loopback and nothing in the new
+module runs -- the compose file in this repository is that deployment. Where it is terminated
+somewhere with no route into the pod, which is what a hub holding the only Ingress is, the pod
+runs `serve_display` and the process holding the socket supplies a pipe-backed transport. The
+loopback hop to `x11vnc` exists either way; what changes is which process makes it.
+
+The attach rides the tool's own scoped forward family, derived from the `tool` argument rather
+than taken as a parameter of its own, so a pod cannot serve under a family naming a tool other
+than the one it tells its caller it is.
+
+**Proven against the container this repository builds**, running its own `x11vnc` in front of its
+own Xvfb, over a real broker: a complete RFB handshake in both directions and then one full
+1920x1080 framebuffer, 8.29 MB, reassembled to the size the geometry predicts. That is eight times
+the credit window, so the flow control ran against real traffic rather than a synthetic producer.
+An operator at a browser has since driven it: a real display through the pipe, mouse and keyboard
+reaching it, and a video played under sustained load. What that does NOT produce is a steady-state
+bandwidth figure, because the window manager moves an outline rather than window contents, so a
+drag is one repaint on drop rather than continuous load. The window is evidenced against the
+failure it guards, not tuned.
+
+
+**`3tears` gains the namespace vocabulary a human display session is authorized against, and
+nothing that evaluates it.** New public API on `threetears.core.namespaces`, all additive:
+
+- `PLURAL_PREFIX_HITL` and `HITL_NAMESPACE_TYPE`, taking their place in the existing
+  `PLURAL_PREFIX_BY_NAMESPACE_TYPE` taxonomy
+- `build_hitl_namespace_name(tool_namespace_name, customer_id)` -- the canonical name
+- `HitlSessionNamespace` -- the seam whatever terminates an operator's connection builds, stating
+  a namespace name and type and evaluating nothing
+
+The release carrying this must be a MINOR bump: it is new public API on a published distribution,
+and the family releases in lockstep, so a consumer reading it pins `3tears`, `3tears-nats` and
+`3tears-scrape` at one version together. Nothing in this repository imports it yet, and that is
+the design rather than an omission. The name takes two inputs: the serving tool's namespace name,
+which a pod already publishes on `PipeEndpoint.tool`, and the customer, which a pod never sees --
+`SessionClaim` carries a session id and a lost flag and nothing else. The first thing on the path
+holding both is the process terminating the operator's connection, and it lives above this
+repository.
+
+**The shape is the serving tool's namespace name with its plural prefix swapped and the customer
+appended**, so `tools.scrape-zone_alpha.1-0-0` and a customer give
+`hitl.scrape-zone_alpha.1-0-0.<32 hex chars>`. Both halves close a different leak, and the two
+shapes NOT chosen are worth stating because each looks correct on its own.
+
+*Not the tool's own namespace.* Platform tool rows materialize with `customer_id` NULL, which is
+why the shipped `ToolCaller` grant had to be namespace-scoped. Against a NULL-customer row the
+evaluator counts only a group and a membership that name no customer either, so a per-tenant
+entitlement is not expressible there at all, and the grant that does work is one tenant's only by
+convention. The display it would admit is a browser holding the target's authenticated session.
+
+*Not a customer-only `hitl.<customer_id_hex>`.* That isolates tenants and leaves every network
+zone reachable by anyone entitled to that tenant anywhere. A zone is a distinct registered tool
+rather than a pod attribute, so the tool half of the name is what carries it.
+
+The name keeps the tool's VERSION because entitlement does: `tools.<mcp>.<version>` is its own row
+with its own assignments, and a version bump would otherwise leave somebody able to call a tool and
+not to attach to the display it raised. It keeps the tool segment READABLE rather than the digest
+the pipe's subjects use, which is the same split `Subjects.room` makes: a namespace name is a
+database row value a human administers, and the wildcard-injection argument that put a digest in a
+subject does not reach it. And the customer is its FULL hex, unlike the eight-character forms in
+`memories.` and `intentions.` names: those rows are resolved by an (owner, customer) pair and their
+names are display handles, while this one is resolved BY NAME, so a truncated hex is a real chance
+of two tenants sharing one row.
+
+**Two things a reader of the above should not have to discover.** Zone isolation is a property of a
+`namespace`-scoped assignment; a `type_customer`-scoped one over the `hitl` type covers that
+customer's displays in every zone, which is what that grant asks for and is pinned by a test saying
+so. And the value `hitl` has to be admitted by the CHECK constraint on `namespace_type` in whatever
+platform persists these rows, the way `knowledge` was.
+
+Proven against the shipped evaluator rather than described: cross-tenant, cross-zone and
+cross-version refusals all come out of `evaluate_with_trail`, each paired with the allow that shows
+the same operator, group, role and action reaching its own row.
+
 ## v0.21.0 -- 2026-07-28
 
 > **A MINOR bump, because `3tears-scrape` gains new public API** (`EventTrigger`,

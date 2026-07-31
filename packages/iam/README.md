@@ -24,7 +24,18 @@ second one was missed during an incident.
 ## Model
 
 The package owns **protocol, crypto, and policy**. It owns nobody's database
-schema and nobody's wire DTOs.
+schema and nobody's transport envelopes.
+
+There is one deliberate exception on the wire side, and the reason for it is
+narrow. `threetears.iam.connection_types` holds the shapes that describe an
+authentication method to whoever configures it -- what "OIDC" needs, which
+fields are secrets, whether the method may be configured per tenant. Two
+services had declared those shapes independently, on the usual reasoning that a
+cross-repo payload mismatch fails closed. It does not here: something answers
+this call, so a divergence is a field silently dropped between the service that
+knows what OIDC needs and the operator filling in the form. The shapes are
+shared so a mismatch is a type error at install time; the RPC envelopes and
+subjects that carry them are still each service's own.
 
 That line is deliberate. The two services that seeded this package disagree on
 almost everything below the protocol layer -- one is NATS-RPC-native with a
@@ -85,6 +96,15 @@ from threetears.iam.stores.nats_kv import state_store, ticket_store
 - **Anti-automation** (`.stores`, `.clientip`) -- the `AttemptLimiter` Protocol and its
   `NatsKvAttemptLimiter` implementation over `threetears.core.coordination.WindowedCounter`,
   plus `resolve_client_ip` for trusted-proxy-aware rate-limit keying.
+- **Auth-method descriptors** (`.connection_types`) -- `ConnectionTypeDescriptor`,
+  `ConnectionFieldDescriptor`, `ConnectionFieldKind`, `ConnectionScope`: what configuring one
+  authentication method requires, stated in data so an admin surface renders a form per method
+  instead of carrying one. The two security rules ride along as validators -- a `secret` field
+  is write-only, and `routes_by_domain` needs `platform` scope -- so a violating descriptor
+  cannot be built or parsed. `type` and `kind` are plain `str` on the wire -- an unrecognised
+  method or input control is not dangerous, and refusing a payload over one would cost the
+  operator every other method on the form. `ConnectionScope` stays closed, because an unreadable
+  scope must not slip past the cross-tenant check as an unknown string.
 - **Storage seams** (`.stores`) -- `SingleUseTicketStore` and `StateStore` Protocols,
   `hash_ticket`/`new_ticket_secret`, the `threetears.iam.stores.nats_kv` implementations with
   their `state_store`/`ticket_store` factories, and in-memory doubles in
