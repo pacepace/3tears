@@ -53,6 +53,23 @@ class ChannelMessage:
     :ptype sender_id: str
     :param sender_name: display name of sender
     :ptype sender_name: str | None
+    :param sender_email: the address the channel platform holds for this sender,
+        as reported by the platform — never self-asserted by the message itself.
+        None when the platform exposes no address for its users (Discord bots
+        cannot read one at all) or when the app lacks the scope to read it
+        (Slack omits ``profile.email`` **silently** without ``users:read.email``).
+        Carried so a host can reconcile a chat participant with an identity it
+        already knows; a host MUST decide for itself whether to trust it.
+    :ptype sender_email: str | None
+    :param sender_email_verified: whether the CHANNEL PLATFORM asserts the
+        address about this member. Deliberately weaker than an IdP's
+        ``email_verified``: it means "the platform holds this on the member's
+        profile", not "this person was proven to control that mailbox". A
+        workspace is administered by the same organisation whose members it
+        describes, so a host must treat this as the organisation's word about
+        itself and apply its own condition before recording the address as
+        verified.
+    :ptype sender_email_verified: bool
     :param customer_id: platform customer scope for the sender, surfaced by
         the host from its server-authenticated session (e.g. the websocket
         access-token ``customer_id`` claim). carried so a host that already
@@ -107,6 +124,8 @@ class ChannelMessage:
     content: str
     sender_id: str
     sender_name: str | None = None
+    sender_email: str | None = None
+    sender_email_verified: bool = False
     customer_id: str | None = None
     conversation_id: str | None = None
     channel_id: str | None = None
