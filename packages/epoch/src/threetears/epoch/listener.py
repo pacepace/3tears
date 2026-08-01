@@ -136,8 +136,9 @@ class EpochListener:
         optional. validation failures inside the typed dispatcher
         deadletter via the standard typed-NATS path.
 
-        WILDCARD subscriptions are supported, and behave differently
-        in one respect worth knowing before using one. Dedupe keys on
+        WILDCARD subscriptions are supported, and differ from a
+        concrete one in THREE respects, all worth knowing before using
+        one. Dedupe keys on
         the path each MESSAGE names, so every matched subject keeps
         its own counter -- necessary, because each has an independent
         ``config_epochs`` row and their epochs are unrelated numbers.
@@ -152,6 +153,24 @@ class EpochListener:
         weigh it where a reload is expensive. A consumer that cannot
         afford it should subscribe per concrete subject and prime each,
         which is what a non-wildcard subscription already does.
+
+        SECOND: ``_last_seen`` gains an entry per matched subject and
+        never evicts one. The growth removed from the subscription
+        count reappears here as dict entries, bounded by how many
+        subjects actually broadcast rather than by how many exist. For
+        a per-customer epoch that is one entry per active customer,
+        which is the point -- but it is not free, and a wildcard over
+        an unbounded subject space is a leak rather than a
+        convenience.
+
+        THIRD, and the one that changes behaviour for an EXISTING
+        wildcard subscriber: a wildcard subscribe needs a wildcard
+        grant, and a grant cannot distinguish a literal segment from a
+        wildcard one. Every matched subject's bump and payload now
+        reaches the callback, where collapsing them onto a single
+        counter previously suppressed most of them. A consumer that
+        was relying on that suppression -- deliberately or not -- sees
+        more callbacks after this change, not fewer.
 
         :param subject: subject to subscribe to, concrete or wildcard.
             The dedupe key is the path the MESSAGE carries, so a

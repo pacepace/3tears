@@ -19,8 +19,15 @@ from threetears.nats.subjects import Subject
 
 
 def _subject(path: str = "app.capabilities.epoch") -> Subject:
-    """build a point Subject for tests."""
-    return Subject(path=path, kind="point")
+    """build a Subject for tests, kinded from the path.
+
+    A wildcard path is ``kind="pattern"`` -- the repo's own convention everywhere else
+    (see ``threetears.nats.subjects``). These are the only in-repo examples of a
+    wildcard EPOCH subject, so a "point" wildcard here is the shape the next consumer
+    would copy.
+    """
+    kind = "pattern" if "*" in path or path.endswith(">") else "point"
+    return Subject(path=path, kind=kind)
 
 
 def _pool_returning(epoch: int) -> Any:
