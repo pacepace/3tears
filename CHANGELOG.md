@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+> Merged to `develop` and deliberately NOT released. The consumer repos are mid-flight on
+> `feature/platform-managed-authentication`, and a release drags six of them through a
+> lockstep pin bump and a forced merge order. This lands in the next version that ships
+> for its own reasons.
+
+### `3tears-epoch`
+
+**`EpochListener` deduped against the subject it SUBSCRIBED to, which loses bumps on a
+wildcard.** For a concrete subscription the subscribed path and the path the message
+names are the same string, so nothing changed there. For a wildcard they are not, and
+every matched subject owns an independent `config_epochs` row — so their counters are
+unrelated numbers. A bump to 5 on one subject and a bump to 1 on another are both
+legitimate, but deduped against a single counter `1 <= 5` drops the second silently, and
+that consumer never learns its state is stale.
+
+Dedupe now keys on the path the MESSAGE names, so a wildcard tracks each matched subject
+separately, bounded by however many subjects actually broadcast.
+
+**Priming cannot follow, and the docstring says so** rather than leaving it to be
+discovered: `current()` needs a concrete row, and the concrete subjects are not known
+until their messages arrive. Each therefore starts at zero and its first bump always
+dispatches — one redundant callback per matched subject per process lifetime. Fine where
+a reload is cheap, and a reason to subscribe per subject where it is not.
+
+This is what a per-tenant epoch needs. Without it a consumer would have to subscribe once
+per tenant and discover tenants as they are created, growing its subscription count with
+the customer list.
+
 ## v0.22.4 -- 2026-07-30
 
 > **A PATCH bump, additive only: `ChannelMessage` gains two optional fields.** Every
