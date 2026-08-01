@@ -17,7 +17,6 @@ requires docker; gated by ``pytest.mark.integration``.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import tracemalloc
 from collections.abc import AsyncIterator
 from typing import Any
