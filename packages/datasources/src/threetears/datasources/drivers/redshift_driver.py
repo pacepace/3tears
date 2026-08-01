@@ -247,14 +247,30 @@ ORDER BY table_schema, table_name, ordinal_position
 
 
 #: per-table MD5 over the column shape (Tier-2 change-probe). same
-#: payload formula as the asyncpg driver: ``column_name || ':' ||
-#: data_type || ':' || COALESCE(is_nullable, '')``. byte-equivalent
-#: to the python-side ``_compute_column_hash`` helper from
-#: ``datasource-task-02`` ON THE SAME ROWS -- i.e. both sides MUST
-#: read from SVV_COLUMNS for the equivalence to hold.
+#: payload formula as the asyncpg driver. byte-equivalent to the
+#: python-side ``column_hash_payload`` helper ON THE SAME ROWS -- i.e.
+#: both sides MUST read from SVV_COLUMNS for the equivalence to hold.
+#:
+#: EACH COLUMN IS HASHED BEFORE THE LISTAGG, AND THAT IS LOAD-BEARING.
+#: Redshift refuses a LISTAGG result over 65535 bytes, and the previous
+#: formula aggregated the raw ``name:type:nullable`` strings, so the
+#: payload grew with name lengths. Introspecting ripple's nine source
+#: schemas failed outright -- ``influencers.test_targetsmart`` has 1462
+#: columns whose raw payload is 69,210 bytes, and ONE table over the
+#: limit failed the query for all 5,615 tables in scope, leaving the
+#: datasource with no catalog at all.
+#:
+#: Pre-hashing makes the payload 33 bytes per column regardless of name
+#: length: a ceiling of ~1985 columns against Redshift's own 1600-column
+#: table limit, so it can no longer overflow here.
+#:
+#: CHANGING THIS FORMULA CHANGES EVERY STORED HASH, and the python side
+#: in ``threetears.datasources.introspection.column_hash_payload`` must
+#: change identically in the same commit or the two stop agreeing and
+#: every sweep reports spurious changes forever.
 _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = """
 SELECT table_schema, table_name,
-       MD5(LISTAGG(column_name || ':' || data_type || ':' || COALESCE(is_nullable, ''), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
+       MD5(LISTAGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
 FROM SVV_COLUMNS
 WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name

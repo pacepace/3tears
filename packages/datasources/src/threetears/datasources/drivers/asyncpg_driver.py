@@ -218,9 +218,14 @@ ORDER BY table_schema, table_name, ordinal_position
 #: invariant). swapping the COALESCE for an alternative null handling
 #: silently breaks the Tier-2 probe -- DO NOT change without updating
 #: the python helper in lockstep.
+#: Per-column pre-hash before the aggregate. PostgreSQL's STRING_AGG has no
+#: 65535-byte ceiling, so this is not needed HERE -- it is needed for the
+#: formula to stay byte-identical to the Redshift driver and to
+#: ``column_hash_payload``, which had to change because Redshift's LISTAGG
+#: does. All three move together or none of them do.
 _POSTGRES_TABLE_HASHES_SQL = """
 SELECT table_schema, table_name,
-       MD5(STRING_AGG(column_name || ':' || data_type || ':' || COALESCE(is_nullable, ''), ',' ORDER BY ordinal_position)) AS column_hash
+       MD5(STRING_AGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',' ORDER BY ordinal_position)) AS column_hash
 FROM information_schema.columns
 WHERE table_schema = ANY($1)
 GROUP BY table_schema, table_name

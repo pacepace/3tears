@@ -25,6 +25,8 @@ from typing import Any
 import asyncpg
 import pytest
 
+from threetears.datasources.introspection import compute_column_hash
+
 from threetears.datasources.config import (
     AgentInternalConnectionConfig,
     PostgresConnectionConfig,
@@ -141,29 +143,25 @@ async def seeded_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
 
 
 def _python_column_hash(cols: list[dict[str, Any]]) -> str:
-    """python-side MD5 over the column shape; cross-language invariant.
+    """python-side hash, delegating to the CANONICAL library helper.
 
-    payload formula: ``column_name + ':' + data_type + ':' + (is_nullable or '')``
-    per column, joined by ``','`` in ascending ``ordinal_position``.
-    matches the SQL ``MD5(STRING_AGG(...))`` in
-    :data:`_POSTGRES_TABLE_HASHES_SQL` byte-for-byte.
+    This used to carry its own copy of the payload formula, with a TODO to
+    lift it into ``threetears.datasources.introspection``. The copy then did
+    exactly what a duplicated formula does: when Redshift's LISTAGG limit
+    forced the canonical payload to pre-hash each column, this one did not
+    follow, and the cross-language invariant test failed against correct code.
 
-    TODO(datasource-task-13): shard 13 lifts this helper into
-    ``threetears.datasources.introspection`` as the canonical
-    python-side hash (per DS-13-14). until then it lives in the test
-    module so the cross-check stays local to the assertion.
+    A test that re-implements the thing it verifies proves the two
+    implementations agree, which is not the claim. Delegating means the
+    assertion now compares the WAREHOUSE against the LIBRARY, which is.
 
-    :param cols: column rows (must have ``column_name``, ``data_type``,
-        ``is_nullable``, ``ordinal_position`` keys)
+    :param cols: column rows carrying ``column_name``, ``data_type``,
+        ``is_nullable``, ``ordinal_position``
     :ptype cols: list[dict[str, Any]]
     :return: hex MD5 digest
     :rtype: str
     """
-    payload = ",".join(
-        f"{c['column_name']}:{c['data_type']}:{(c['is_nullable'] or '')}"
-        for c in sorted(cols, key=lambda c: c["ordinal_position"])
-    )
-    return hashlib.md5(payload.encode()).hexdigest()  # noqa: S324
+    return compute_column_hash(cols)
 
 
 # ---------------------------------------------------------------------------
