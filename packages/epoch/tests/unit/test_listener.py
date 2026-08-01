@@ -340,3 +340,65 @@ class TestEpochListenerEcho:
 
         consumer_cb.assert_not_awaited()
         assert listener.last_seen(subject) == 5
+
+
+class TestEpochListenerWildcardSubscription:
+    """one subscription covering many subjects keeps a counter PER subject.
+
+    the failure this guards is silent and lossy, not merely stale. every
+    matched subject owns an independent ``config_epochs`` row, so their
+    epochs are unrelated numbers -- a bump to 5 on one and 1 on another
+    are both legitimate. deduping them against a single counter drops
+    the lower one and the consumer never learns it happened.
+    """
+
+    @pytest.mark.asyncio
+    async def test_each_matched_subject_keeps_its_own_counter(self) -> None:
+        """the case a shared counter loses: a high epoch then a low one."""
+        pool = _pool_returning(epoch=0)
+        nats, callbacks = _capture_subscribe_typed()
+        client = EpochClient(pool, nats)
+        listener = EpochListener(nats, client)
+        wildcard = _subject("app.tenant.*.epoch")
+        consumer_cb = AsyncMock()
+
+        await listener.subscribe(wildcard, consumer_cb)
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=5))
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.bbb.epoch", epoch=1))
+
+        assert consumer_cb.await_count == 2, "the second subject's bump was dropped against the first's counter"
+        assert listener.last_seen(_subject("app.tenant.aaa.epoch")) == 5
+        assert listener.last_seen(_subject("app.tenant.bbb.epoch")) == 1
+
+    @pytest.mark.asyncio
+    async def test_dedupe_still_holds_within_one_matched_subject(self) -> None:
+        """per-subject counters must not cost the redelivery protection."""
+        pool = _pool_returning(epoch=0)
+        nats, callbacks = _capture_subscribe_typed()
+        client = EpochClient(pool, nats)
+        listener = EpochListener(nats, client)
+        consumer_cb = AsyncMock()
+
+        await listener.subscribe(_subject("app.tenant.*.epoch"), consumer_cb)
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=4))
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=4))
+        await callbacks[0](EpochBumpMessage(subject_path="app.tenant.aaa.epoch", epoch=3))
+
+        assert consumer_cb.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_concrete_subscription_is_unchanged(self) -> None:
+        """the ordinary path must not shift: message path and subscribed path
+        are the same string, so priming from `current()` still governs."""
+        pool = _pool_returning(epoch=7)
+        nats, callbacks = _capture_subscribe_typed()
+        client = EpochClient(pool, nats)
+        listener = EpochListener(nats, client)
+        subject = _subject()
+        consumer_cb = AsyncMock()
+
+        await listener.subscribe(subject, consumer_cb)
+        await callbacks[0](EpochBumpMessage(subject_path=subject.path, epoch=7))
+
+        consumer_cb.assert_not_awaited()
+        assert listener.last_seen(subject) == 7

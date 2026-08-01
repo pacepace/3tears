@@ -136,8 +136,26 @@ class EpochListener:
         optional. validation failures inside the typed dispatcher
         deadletter via the standard typed-NATS path.
 
-        :param subject: subject to subscribe to; the subject's
-            ``path`` is the dedupe key
+        WILDCARD subscriptions are supported, and behave differently
+        in one respect worth knowing before using one. Dedupe keys on
+        the path each MESSAGE names, so every matched subject keeps
+        its own counter -- necessary, because each has an independent
+        ``config_epochs`` row and their epochs are unrelated numbers.
+        Priming, however, cannot work: ``current()`` needs a concrete
+        row, and the concrete subjects are not known until their
+        messages arrive. So each matched subject starts at ``0`` and
+        the FIRST bump seen for it always dispatches, even when the
+        consumer's state already reflected that epoch.
+
+        That is one redundant callback per matched subject per process
+        lifetime. Harmless where a reload is cheap or idempotent;
+        weigh it where a reload is expensive. A consumer that cannot
+        afford it should subscribe per concrete subject and prime each,
+        which is what a non-wildcard subscription already does.
+
+        :param subject: subject to subscribe to, concrete or wildcard.
+            The dedupe key is the path the MESSAGE carries, so a
+            wildcard tracks each matched subject separately
         :ptype subject: Subject
         :param on_bump: async callback invoked on each monotonic
             bump with ``(new_epoch, payload)``
@@ -168,24 +186,34 @@ class EpochListener:
         async def _on_bump(message: EpochBumpMessage) -> None:
             """typed dispatch for one incoming bump.
 
-            de-duplicates against last-seen on subject path; only
-            invokes the consumer callback for strictly-increasing
-            epochs.
+            de-duplicates against last-seen on the subject path the
+            MESSAGE names, not the one subscribed to. for a concrete
+            subscription the two are identical; for a wildcard they
+            are not, and using the subscribed path would collapse
+            every matched subject onto one counter.
+
+            that collapse loses writes rather than merely delaying
+            them: each subject owns an independent ``config_epochs``
+            row, so their counters are unrelated. a bump to 5 on one
+            subject followed by a bump to 1 on another would see
+            ``1 <= 5`` and drop the second silently.
             """
-            current_last_seen = self._last_seen.get(subject.path, 0)
+            dedupe_path = message.subject_path or subject.path
+            current_last_seen = self._last_seen.get(dedupe_path, 0)
             if message.epoch <= current_last_seen:
                 log.debug(
                     "epoch broadcast dropped (already seen)",
                     extra={
                         "extra_data": {
-                            "subject": subject.path,
+                            "subject": dedupe_path,
+                            "subscribed": subject.path,
                             "incoming_epoch": message.epoch,
                             "last_seen": current_last_seen,
                         },
                     },
                 )
                 return
-            self._last_seen[subject.path] = message.epoch
+            self._last_seen[dedupe_path] = message.epoch
             await on_bump(message.epoch, message.payload)
 
         try:
