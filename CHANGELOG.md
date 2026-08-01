@@ -4,12 +4,15 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.22.5 -- 2026-08-01
 
-> Merged to `develop` and deliberately NOT released. The consumer repos are mid-flight on
-> `feature/platform-managed-authentication`, and a release drags six of them through a
-> lockstep pin bump and a forced merge order. This lands in the next version that ships
-> for its own reasons.
+> **A PATCH bump, and safe for every current consumer.** For a CONCRETE epoch
+> subscription nothing changes at all. The behaviour change lands only on WILDCARD
+> subscriptions, and nothing in the family has one today -- the sole `EpochListener`
+> caller subscribes concretely -- which is what makes this a patch rather than a minor.
+> A wildcard subscriber written against 0.22.4 would see MORE callbacks after this, not
+> fewer; the listener's docstring now states that alongside the two other wildcard
+> consequences.
 
 ### `3tears-epoch`
 
