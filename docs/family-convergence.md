@@ -8,13 +8,19 @@
 ## 1. What this document proposes
 
 That 3tears becomes the **single shared home** for every cross-app capability in the
-family — evals, prompt management, LLM access, memory, identity, observability,
-config, MCP conventions, chat UI, and content acquisition — with each capability
+family — the state substrate, evals, prompt management, LLM access, memory,
+identity, observability, config, MCP conventions, chat UI, and content
+acquisition — with each capability
 **sourced from the app that already paid for it**, never built in 3tears from
 scratch. Apps keep only what makes them singular; everything else they import.
 
 Concretely:
 
+- The family's five answers to "where does long-lived state live" converge on
+  `threetears.core` collections under one **state doctrine** — Pydantic at the
+  boundaries, collections for operational state, git-backed files for curated
+  content (§4.1). Discodon's ad-hoc caches are the first migration; samsung
+  converges on the store *protocol* rather than the framework.
 - Discodon's eval system (the family's only complete one) is extracted into a
   four-package `3tears-eval-*` group that every sibling consumes.
 - Prompt versioning converges on content-addressed identity, and prompt changes
@@ -53,6 +59,21 @@ repos (2026-08-02) found:
   scriob's continuity harness, samsung's MCP-driver eval, hallucinote's
   hand-operated scenario briefs, and metallm's nothing — despite metallm being
   the most LLM-central app in the family.
+- **Five answers to "where does long-lived shared state live"** (state survey,
+  same date): metallm holds every persistent entity in core collections and
+  keeps Pydantic out of its data layer entirely; scriob splits collections
+  (control plane) from markdown-backed Pydantic (stories); samsung recorded a
+  reasoned rejection and hand-built a structural match of core's store
+  protocol; hallucinote lock-guards stdlib dicts, correctly; discodon holds a
+  ~dozen ad-hoc caches — eleven state dicts/sets aliased across ~8 delegate
+  classes with no lock, three separate threads reaching into event-loop dicts
+  (one of them behind a lock), and an auth-token cache where a token revoked
+  in one process stays valid in every other until restart.
+- **Hand-rolled cache coherence, three times**: discodon built a ZMQ
+  invalidation bus to keep one 60-second TTL dict coherent across processes;
+  metallm mutates an unlocked path cache from request tasks and a NATS
+  callback; scriob wholesale-clears a per-pod auth map from an epoch listener.
+  Each is a private rebuild of the L2 invalidation the core library ships.
 - **MCP conventions copied as prose**: samsung's API contract cites hallucinote's
   design by name over a dozen times, re-deriving in documentation what exists as
   tested code.
@@ -95,14 +116,106 @@ four more times, then maintained forever.
    minimal deps, extras for optional weight, import-cost tests, lockstep family
    versioning. Weight-sensitive consumers (a Raspberry Pi) must be able to take a
    slim slice.
+8. **State earns its store.** In-process state that outlives a request, is
+   shared across tasks or threads, or is mutated from more than one place
+   belongs in a collection, not a module-level dict. State that fails the test
+   — request-scoped values, build-once lookup tables — stays a plain object.
+   The discipline is for the state that bites, not a ceremony for all of it.
 
 ## 4. The solution
 
-Ordered by theme: the quality system (evals, prompts), the AI substrate (models,
-memory, conversation engines), platform services (identity, observability,
-config), agent and user surfaces (MCP, chat UI), and content acquisition.
+Ordered by theme: the state substrate beneath everything else, then the quality
+system (evals, prompts), the AI substrate (models, memory, conversation
+engines), platform services (identity, observability, config), agent and user
+surfaces (MCP, chat UI), and content acquisition.
 
-### 4.1 Evals — `3tears-eval-{contracts,run,gen,analysis}` (new; from discodon)
+### 4.1 State substrate — `threetears.core` collections (exists; metallm lineage)
+
+Everything below runs on long-lived process state — registries, session maps,
+caches, per-user accumulators. The state survey (§2) found the family holds
+that state five different ways, and that the differences are discipline, not
+need. This section converges the discipline, not just the library.
+
+#### The doctrine: three layers, already proven
+
+The family's two deepest consumers arrived at the same split independently,
+and it holds for everyone:
+
+- **Boundaries are Pydantic.** Config, wire DTOs, LLM tool schemas —
+  validated at construction, passed by value. metallm's data layer has zero
+  Pydantic imports and its API layer is nothing but; samsung's HTTP models
+  file is its only Pydantic file. Nothing here changes; every app already
+  does this.
+- **Operational state is collections.** Entities whose data lives in L1 with
+  change tracking, optimistic locking, and a write-through path — control
+  planes (scriob's tenants/users/tokens/usage), domain rows (metallm's 16
+  entities), and the caches-with-invalidation every serving app keeps
+  rebuilding by hand.
+- **Curated content is files, with collections as the cache over it.** The
+  content-repo pattern (§4.3): Pydantic models with lossless file round-trips
+  own the authored domain (scriob's `MarkdownModel`), and a collection with a
+  git L3 serves it fast.
+
+The collision people expect — "we're a Pydantic shop; 3tears entities keep
+their data in L1" — dissolves under the assignment. A Pydantic model is a
+validated snapshot; a collection entity is a live proxy. Both are correct,
+for different state, and discodon has already proved which one the entity
+layer wants: its `LivePersonaStateView` and persona-tool getter closures are
+a hand-rolled live proxy, built because snapshots went stale. What the
+doctrine forbids is the third thing every app grew instead: the module-level
+dict that is neither.
+
+#### Why single-pod apps still qualify
+
+Multi-pod is deliberately absent from principle 8's test. A single-process
+asyncio app hits the same failure class: any read-modify-write spanning an
+`await` can interleave, and "pure asyncio" apps never are — metallm has ~27
+`asyncio.to_thread` call sites, and discodon runs three separate threads
+that reach into its event-loop dicts (one of them behind a lock). The
+collection path doesn't prevent interleaving; it converts the silent lost
+update into a `ConcurrentModificationError` — a stack trace instead of a
+heisenbug. And core is built for the small case: all three tiers are
+optional on `CollectionRegistry.configure`, NATS is an extra, so an
+L1-only process adopts the discipline with no infrastructure. When the app
+later goes multi-pod, the code is already written.
+
+The reason to converge this now rather than per-incident: **AI writes the
+dicts.** Most family code is AI-authored, and the model's default for shared
+state is a module-level dict — no lock, no invalidation, no persistence
+contract. A narrow enforced pattern is what keeps generated code on rails
+(the EAD argument, applied to state), and an enforcement scanner that flags
+new module-level mutable dicts is cheap once the doctrine is stated (open
+question 17).
+
+#### What adoption looks like (metallm is the reference)
+
+metallm's shape is the one to copy, not core's README: entities subclass
+`BaseEntity` with **typed `@property` accessors** over `_get_raw`, so mypy
+still checks every field access — the static-typing loss of dynamic
+attribute access is real, and typed accessors are the family answer to it.
+Two conventions ride along: names distinguish live proxies from snapshots
+(an entity is not a DTO; don't let one impersonate the other), and Pydantic
+models sit inside `serialize`/`deserialize` where rows need validation on
+the way to storage.
+
+One honest gap: **no family production consumer uses the sync subscript
+bridge.** metallm and scriob both drive collections through the async API
+plus typed accessors; the `users[user_id]` pull-through path is unproven at
+family scale (open question 15).
+
+#### Where the framework doesn't fit, converge on the contract
+
+samsung evaluated core and recorded a rejection that stands: core's L1 is a
+named in-memory SQLite *cache*, and an app whose SQLite file must *be* the
+store — sync core, memory-capped Pi — needs a different shape. Its answer is
+the family pattern for this case (principle 6): `SqliteDurableStore`
+structurally matches core's `DurableStore` protocol without importing it, so
+later adoption is an adapter, not a rewrite. The protocol should be
+published and conformance-tested so the match can't silently drift (open
+question 16). hallucinote stays out entirely — the Live-side stdlib-only
+contract makes the question moot, and its lock discipline is already sound.
+
+### 4.2 Evals — `3tears-eval-{contracts,run,gen,analysis}` (new; from discodon)
 
 Discodon's eval system is the seed: its analysis core is nearly dependency-free,
 its internal boundaries are already enforced by import-boundary tests, and its
@@ -127,7 +240,15 @@ Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
 versioning makes multi-package consumption free within the family. Presentation
 (REST/MCP routes, React) stays app-side as adapters over the analysis
-projections.
+projections — with one boundary shift now in flight: discodon's chart-substrate
+decision (2026-08-02, accepted) compiles a typed finding payload to a
+**Vega-Lite spec** server-side in Python, rendered by `vega-embed` in the
+browser and `vl-convert` headlessly for MCP and REST. The spec compiler is
+portable Python over the projections and belongs in `eval-analysis` when it
+extracts; pixels and theming stay app-side (Vega-Lite config is where an app's
+palette lives). That is what lets an agent receive a chart over MCP without a
+headless browser, and it shrinks open question 9 — sharing charts no longer
+requires sharing React.
 
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
@@ -136,7 +257,7 @@ eval-run's judge primitives once they land; and the eval measure registry must
 disambiguate its naming from the unrelated BI measures in
 `datasources.definition`.
 
-### 4.2 Prompt management — identity from discodon; durable tier from scriob's pattern
+### 4.3 Prompt management — identity from discodon; durable tier from scriob's pattern
 
 Prompts cross-cut evals and administration. Three planes, three answers:
 **storage is shared, assembly stays app-local, measurement goes through
@@ -172,7 +293,7 @@ The content repo changes the mechanics:
   drift visible, never silent.
 
 The registry surface itself (types, sections, rendering, content-hash dedup) is
-promoted over the shared store contract (§4.8).
+promoted over the shared store contract (§4.9).
 
 #### Assembly: app-local, emitting shared provenance
 
@@ -220,7 +341,19 @@ the instance's identity lives in its content repo rather than in whichever
 path an env var points at, retiring the mistyped-path-bootstraps-an-empty-
 instance failure class samsung has on file.
 
-### 4.3 LLM substrate — `3tears-models` (exists; metallm lineage)
+hallucinote is the pattern's next test, and the payoff is a capability, not
+hygiene: its songs are per-branch SQLite binaries (`<slug>-<branch>.db`) —
+the workflow is already git-branch-shaped, but a binary file can't merge, so
+two users can't work the same song across machines. Demoting the DB to cache
+behind a canonical lossless text projection — the same demotion scriob and
+discodon make — turns collaboration into ordinary git: branch, edit, merge at
+file granularity, captures following the blob rule. Merge semantics inside a
+clip are genuinely hard (two people editing the same notes is a musical
+conflict, not a textual one), but a binary conflict offers only "pick one";
+text at least localizes the argument. No shared server enters hallucinote's
+architecture — git is the sync transport, as everywhere else in the pattern.
+
+### 4.4 LLM substrate — `3tears-models` (exists; metallm lineage)
 
 Already the family standard: LangChain-native construction, usage tracking with
 locked OTel span attributes, pricing, circuit breaking. The change is adoption
@@ -229,7 +362,7 @@ locked OTel span attributes, pricing, circuit breaking. The change is adoption
 another first-party client). LangSmith is explicitly **not** the family pattern —
 the standard is OTel via the usage tracker.
 
-### 4.4 Memory — `3tears-agent-memory` (exists; metallm lineage)
+### 4.5 Memory — `3tears-agent-memory` (exists; metallm lineage)
 
 The "Tom likes pizza" layer: fact extraction from conversation, hybrid vector
 search, reranking, consolidation; production-proven. Every app that learns
@@ -239,7 +372,7 @@ Tom are different data, a character feature. If the current keying (shaped to
 metallm's one-shared-agent grain) can't express an (agent, subject) pair, that
 generalization is discodon's upstream contribution.
 
-### 4.5 Conversation engines — organs shared, skeletons app-local
+### 4.6 Conversation engines — organs shared, skeletons app-local
 
 Discodon's persona/turn engine and metallm's personality graph stay put. Their
 generic organs converge: memory extraction/retrieval (via agent-memory), the PII
@@ -250,7 +383,7 @@ orchestrators without either being rewritten. Migrating onto `3tears-langgraph`
 remains an option an app can take when its turn loop comes up for rewrite anyway
 — it is not a convergence requirement.
 
-### 4.6 Identity — `3tears-iam` + `3tears-agent-acl` (exist; scriob is proof-of-life)
+### 4.7 Identity — `3tears-iam` + `3tears-agent-acl` (exist; scriob is proof-of-life)
 
 The only implementation of passwords, tokens, OAuth, and RBAC in the family.
 What changes:
@@ -268,7 +401,7 @@ What changes:
 
 Hallucinote (stdio + loopback by design) never adopts iam.
 
-### 4.7 Observability — `3tears-observe` (exists; metallm lineage)
+### 4.8 Observability — `3tears-observe` (exists; metallm lineage)
 
 One spine: consistent spans, cost/usage metrics, log correlation, one dashboard
 set. metallm's thin re-export shim is the adoption playbook. Discodon drops its
@@ -276,7 +409,7 @@ independently pinned OTel stack; samsung and hallucinote gain telemetry they
 currently lack (within samsung's recorded "no backends" stance — see open
 questions — and hallucinote's server-side half only).
 
-### 4.8 Config — promote the contract, not the system (from discodon)
+### 4.9 Config — promote the contract, not the system (from discodon)
 
 Three layers, three verdicts:
 
@@ -299,13 +432,13 @@ Config and prompt content share **one store contract** (precedence resolver,
 seed semantics, store Protocol, actor attribution, content-addressed versioning)
 with a **pluggable durable tier**: operational config defaults to the DB store
 (immediate-effect knobs, secrets-adjacent, nobody reviews a diff of a port
-number), curated content defaults to the git tier (§4.2), and an instance
+number), curated content defaults to the git tier (§4.3), and an instance
 wanting git-backed config — the GitOps shape — gets it behind the same API.
 
 Priority: second tier, behind evals/memory/chat — every app's config works today,
 so the cost avoided is future divergence, not present duplication.
 
-### 4.9 MCP conventions — into `3tears-mcp` (from hallucinote)
+### 4.10 MCP conventions — into `3tears-mcp` (from hallucinote)
 
 Hallucinote's stack is the family's most mature agent surface, and siblings
 already cite it as precedent — as prose. The harvest, as code:
@@ -325,7 +458,24 @@ contractually stdlib-only, so the shared layer must be consumable
 server-side-only or vendorable-by-copy. (Lineage: hallucinote credits cordyceps
 for the original pattern.)
 
-### 4.10 Chat UI — a headless TypeScript kit (protocol from 3tears; seeds from scriob and metallm)
+#### Composition: capabilities contribute actions; the app owns the surface
+
+Eval is the forcing case — it exposes MCP to create, run, and analyze evals,
+and it is about to become a shared package. The rule that composes: **one MCP
+surface per app, owned by the host's RBAC-gated `McpServer`; shared packages
+never run their own servers — they ship typed action groups the host mounts.**
+Discodon already runs this shape (one server aggregating eval, logs, entity,
+and prompt tools), samsung serves HTTP and MCP from one process and port, and
+hallucinote's action registry — populated by import side-effects of action
+modules — is the registration mechanism itself, generalized. Behind the
+server, `3tears-registry` routes calls across pods; registration and routing
+stay orthogonal. There is no family-central controller: an agent connects to
+an app, and the app decides exposure, naming, and RBAC. Eval's
+create/run/analyze actions therefore ship as an action module defined against
+eval-contracts and the storage Protocol; where that module lives is open
+question 18.
+
+### 4.11 Chat UI — a headless TypeScript kit (protocol from 3tears; seeds from scriob and metallm)
 
 Share behavior, never pixels. The expensive, invisible majority of a chat UI is
 identical across apps — streaming state machine, scroll anchoring, optimistic
@@ -346,7 +496,7 @@ design-token pipeline, with every app owning its own palette. Explicitly not
 shared: styled components, layouts, tokens. Four products that feel nothing
 alike, running the same chat engine.
 
-### 4.11 Tiled/zoomable images — a slim acquisition package (new; from samsung's design)
+### 4.12 Tiled/zoomable images — a slim acquisition package (new; from samsung's design)
 
 Tiled zoomable imagery (IIIF, Deep Zoom, Zoomify, slippy tiles) is a general
 web content type — maps, research figures, pathology, art — not a museum niche.
@@ -363,7 +513,7 @@ tiled images without knowing the art loader exists. The contract is
 binary-agnostic — a native IIIF/DZI fetcher can replace the external binary
 without an API break. Samsung's legacy glue is deleted, not lifted.
 
-### 4.12 Scraping — consolidate on `3tears-scrape` (exists; faidh lineage)
+### 4.13 Scraping — consolidate on `3tears-scrape` (exists; faidh lineage)
 
 Three stacks become one. Lowest urgency of the workstreams, but the end state is
 that metallm's fetch/extract path and discodon's research scraping are consumers,
@@ -377,7 +527,8 @@ not implementations.
   tiled-image acquisition (samsung's design), the headless chat kit + an npm
   publishing lane, the shared runtime store contract for config and prompts
   (discodon), scriob's credential cascade, samsung's OpenRouter findings, the
-  memory grain generalization.
+  memory grain generalization, the Vega-Lite spec compiler (discodon's chart
+  substrate), and samsung's L1-is-a-cache integration finding.
 - **Obligations:** harden the release path (it has had real incidents, including
   an untagged PyPI publish) before it carries five consumers' eval
   infrastructure.
@@ -385,7 +536,9 @@ not implementations.
   shows relaxing to 3.12 is a bounded change serving both discodon and the Pi);
   slim iam's dependency declaration toward its actual usage; define a
   supported-version window so consumer skew is bounded; stand up the JS/npm side
-  of the monorepo.
+  of the monorepo; publish `DurableStore` as a conformance-tested contract
+  (open question 16); grow `3tears-enforcement` a module-level-mutable-dict
+  scanner once principle 8 is ratified (open question 17).
 
 ### discodon
 
@@ -394,16 +547,25 @@ not implementations.
   to durable per-persona user facts), `iam` (dropping its OAuth client,
   break-glass hashing, and cookie mint/verify; keeping allowlist and transport),
   and — as first consumer of its own extraction — the `eval-*` packages, keeping
-  its host adapters and surfaces local.
+  its host adapters and surfaces local. Under principle 8 (gated on the Python
+  floor, open question 1): core collections for the caches whose coherence is
+  hand-rolled today — the budget TTL cache first, retiring the ZMQ invalidation
+  bus built solely to keep it coherent; the model registry, which today runs
+  unlocked while its two sibling registries carry locks; the allowlist and
+  MCP-token caches, which lack cross-process invalidation entirely — then the
+  entity-manager context dicts as open question 14 resolves.
 - **Contributes:** the eval system; the prompt-identity discipline and the
   registry seeding the shared store; the runtime-config precedence contract; the
   per-persona memory grain requirement; the import-boundary pattern and token
   pipeline for the chat kit.
 - **Keeps:** the persona/entity/turn engine, prompt graph, and all product
-  surface. Does not rebase onto `3tears-langgraph`; does not adopt LangSmith.
-- **Normalization:** finish the in-flight eval schema work, then execute the
-  pre-extraction unlock list its own eval docs specify; align on the resolved
-  Python floor.
+  surface — and its Pydantic boundary layer everywhere it stands. Does not
+  rebase onto `3tears-langgraph`; does not adopt LangSmith.
+- **Normalization:** finish the in-flight eval schema work and the
+  chart-substrate migration (Vega-Lite lands; `recharts` leaves the web bundle
+  only when telemetry's chart migrates too — tracked app-side), then execute
+  the pre-extraction unlock list its own eval docs specify; align on the
+  resolved Python floor.
 
 ### metallm
 
@@ -418,7 +580,9 @@ not implementations.
 - **Drops:** local auth, local backup, bespoke enforcement tests, raw stream
   filtering, and eventually its fetch path.
 - **Normalization:** close the version lag first — every other adoption assumes
-  a current pin.
+  a current pin. Then fold its self-rolled coherence into the platform it
+  ships: the active-path cache — an unlocked dict mutated by request tasks and
+  a NATS callback — becomes a collection with L2 invalidation.
 
 ### scriob
 
@@ -438,7 +602,8 @@ not implementations.
   its unwritten local plan), `eval-run` for its MCP-driver eval, and the shared
   MCP conventions it currently follows as prose.
 - **Contributes:** the acquisition contract design, the OpenRouter findings, the
-  Python-floor audit.
+  Python-floor audit, and the protocol-match adoption pattern — a local store
+  tracking `DurableStore` structurally, adoptable later by adapter.
 - **Drops:** the legacy acquisition glue (already scheduled for deletion) —
   deleted, not lifted.
 - **Normalization:** minimal and aligned with planned work; its Pi weight
@@ -446,9 +611,12 @@ not implementations.
 
 ### hallucinote
 
-- **Adopts:** exactly one thing — a programmatic eval runner over its existing
-  scenario briefs and canonical verdicts, replacing the human-operated ritual and
-  enabling CI gating. Optionally, server-side telemetry.
+- **Adopts:** a programmatic eval runner over its existing scenario briefs and
+  canonical verdicts, replacing the human-operated ritual and enabling CI
+  gating. Optionally, server-side telemetry. And — the one new capability on
+  offer — the content-repo demotion of its song DBs (§4.3): a lossless text
+  projection in git with the SQLite file rebuilt as cache, which is what lets
+  two users work the same song from different machines over plain git.
 - **Contributes:** the entire MCP conventions layer and its brief/rubric
   scenario schema.
 - **Drops:** nothing — its architecture (no LLM client, no auth, no web stack)
@@ -485,7 +653,9 @@ not implementations.
    decision.
 9. **Eval presentation sharing.** The React eval-kit stays discodon-local until
    a second app wants the UI, not just the projections. Does it then join the
-   chat kit's npm lane?
+   chat kit's npm lane? The chart layer has left this question: compiled
+   Vega-Lite specs ship from `eval-analysis` and any host renders them — only
+   the surrounding React surfaces remain app-local.
 10. **Config-store promotion vs the "no config framework" philosophy.** A
     runtime-config package amends a recorded 3tears position. Likely
     reconciliation: the philosophy governs *library* config; the store is an
@@ -495,7 +665,7 @@ not implementations.
     personality layer — the likeliest second consumer — pulls for it.
 12. **Content-repo mechanics.** The design is decided (one store contract,
     pluggable durable tier: git for curated content, DB for operational config
-    — §4.2, §4.8); the mechanics aren't: repo-per-instance vs
+    — §4.3, §4.9); the mechanics aren't: repo-per-instance vs
     directory-per-persona, hosting expectations (a local bare repo must
     suffice — no GitHub dependency for a deployment), and how draft variants
     map onto branches vs uncommitted overlay commits.
@@ -503,3 +673,31 @@ not implementations.
     governance must ratify what binds it. A lightweight cross-repo decision
     record — probably here in `3tears/docs/` — stops per-app sessions from
     re-deriving the direction.
+14. **EntityManagerContext migration shape.** Discodon's eleven aliased state
+    dicts are hot-path and single-writer-by-convention; do they become
+    collections, or a plain owner object with the aliasing removed? Principle
+    8 says "shared across threads → collection," but the EM loop's latency
+    budget is real and unmeasured here — this needs a measurement, not a
+    ruling.
+15. **The sync subscript bridge.** No family production consumer uses it —
+    metallm and scriob both drive the async API plus typed accessors.
+    Discodon's sync call sites would be its first real exercise. Prove it
+    there, or declare the async API the family pattern and the bridge a
+    laptop convenience?
+16. **`DurableStore` conformance.** samsung tracks the protocol structurally,
+    on purpose, without the import. Publish the protocol with a copyable
+    conformance test so the match breaks loudly instead of drifting?
+17. **Enforcing principle 8.** `3tears-enforcement` is the natural home for a
+    scanner that flags new module-level mutable dicts (with a waiver pragma
+    for the legitimate ones). Scanner first, or doctrine ratification first?
+18. **Where eval's MCP actions live.** §4.10's composition rule says shared
+    packages ship typed action groups and hosts mount them. Does eval's module
+    ship inside `eval-run`/`eval-analysis`, or as a separate `3tears-eval-mcp`
+    so consumers that want the engine without an agent surface skip the
+    server weight?
+19. **The song-DB text projection.** hallucinote's collaboration payoff (§4.3)
+    rests on a canonical lossless text format for ~27 tables of musical data,
+    and on merge granularity chosen so two users usually conflict on different
+    files. Format, per-file grain, and the rebuild-DB-from-text path are all
+    undesigned — and clip-level merge semantics may deserve a "manual
+    resolution only" rule day one.
