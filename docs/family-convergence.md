@@ -624,9 +624,25 @@ composition — not a new engine:
 
 Stated plainly: SearXNG + extraction + rerank, self-hosted, is the same
 product Tavily sells — the contract makes that a per-instance deployment
-choice instead of an architecture fork. Third-party SearXNG MCP servers
-exist, but the family pattern stays §4.10's: in-process adapters behind each
-app's own MCP surface; bridging an external server remains an app option.
+choice instead of an architecture fork.
+
+Prior art to investigate before the contract is cut (2026-08 survey, claims
+are the authors' — verify by reading): independent builders converge on
+exactly this pipeline, and their stage designs are worth stealing on merit.
+
+- `TadMSTR/searxng-mcp` — cross-encoder reranking over a 3× candidate pool,
+  a four-tier fetch cascade (Firecrawl → Crawl4AI → raw → Wayback fallback),
+  per-domain learning, graceful degradation when optional stages are absent.
+- `Lombey/Local-Web-Search-MCP` — dedup + reciprocal-rank fusion across
+  engines, hybrid reranking (BM25 blended with a cross-encoder).
+- `oremus-labs/web-search-mcp` — the family's exact SearXNG + trafilatura
+  pairing, independently arrived at; confirmation of the stage split.
+
+None replaces the in-process contract: they return markdown shaped for LLMs,
+not typed results a corpus or a spend-tracked discovery run can bind to, and
+a cross-encoder drags torch — a second heavy service the Pi cannot carry.
+The family pattern stays §4.10's: in-process adapters behind each app's own
+MCP surface; bridging an external server remains an app option.
 
 ## 5. Implications per family member
 
