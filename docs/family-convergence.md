@@ -139,72 +139,86 @@ disambiguate its naming from the unrelated BI measures in
 ### 4.2 Prompt management — identity from discodon; durable tier from scriob's pattern
 
 Prompts cross-cut evals and administration. Three planes, three answers:
+**storage is shared, assembly stays app-local, measurement goes through
+eval-contracts.**
 
-- **Storage/authoring — shared, with a repo distinction that dissolves the
-  known seed-drift discomfort.** Prompts split into two kinds. *Product
-  prompts* (judge defaults, generators, starter templates) are part of the app:
-  they live in the app's repo and evolve with code review. *Instance content*
-  (discodon's personas — backstories, cognitive styles, per-persona
-  classifiers, tuned presets) are curated works living in an *instance* of the
-  app, and their home is a **content repo**, the pattern scriob (stories) and
-  hallucinote (songs) already run: plain diffable files in a git repo the app
-  operates on, with the instance DB demoted from master to serving cache.
-  Operator and machine edits become commits (scriob's `GitL3Backend` is the
-  write-through precedent; commit authorship gives actor attribution — who
-  changed this: operator or system — for free), environment promotion becomes
-  merge/cherry-pick, and in-app seeds become *starter content instantiated
-  into* a new instance's content repo rather than a competing source of truth.
-  Seed drift is not managed; it structurally disappears, because the app repo
-  is no longer a live tier. The rare reverse flow — a tuned persona good enough
-  to ship as starter content — is an explicit PR to the app repo, a
-  contribution rather than a sync. Secrets never enter the content repo:
-  credentials stay sealed in the DB store, referenced by name. The registry
-  surface itself (types, sections, rendering, content-hash dedup) is promoted
-  over the shared store contract (§4.8). Where a deployment can't carry a git
-  tier, the fallback is an append-only content-addressed store with lineage and
-  a mechanical diff-against-seed — drift always visible, never silent.
-- **Assembly (dynamic composition) — app-local.** Discodon's prompt-graph DAG,
-  metallm's personality node, and scriob's per-object prompts are product cores
-  with no second consumer pulling for a shared engine. What is shared: every
-  engine emits an **assembly-provenance record** — content hashes of each
-  component that entered the prompt plus a composition/variant hash — cheap for
-  static and dynamic engines alike, and what makes different engines comparable.
-- **Measurement / A/B — shared via eval-contracts.** Content-addressed identity
-  (SHA-256 as true identity, version numbers as human convenience) and the
-  apparatus/lever/label input classification move into contracts. Dynamic
-  prompts mean rendered text can never be the A/B unit; the lever is a *variant
-  identity*, with apparatus proof (component hashes, frozen case sets,
-  deterministic seeds) showing everything else held. Discodon already ships this
-  shape as run-scoped prompt overlays recorded in run identity.
+#### Storage: two kinds of prompts, two homes
 
-The planes close into one promoted workflow, the **variant lifecycle**: an edit
-creates a draft variant → an eval campaign runs it as a cell against control →
-the verdict attaches to the variant's content hash → promotion is gated on that
-evidence → the promoted version merges in the content repo. Prompts ship the
-way code ships — through gates. Note the decoupling: eval extraction does *not*
-wait on the shared store — the eval coupling is hashes, not imports, so any app
-participates by answering "what is the content hash of each prompt component this
-run used?"
+- **Product prompts** (judge defaults, generators, starter templates) are part
+  of the app. They live in the app's repo and evolve with code review.
+- **Instance content** (discodon's personas — backstories, cognitive styles,
+  per-persona classifiers, tuned presets) are curated works living in an
+  *instance* of the app. Their home is a **content repo**: plain diffable files
+  in a git repo the app operates on, with the instance DB demoted from master
+  to serving cache. Scriob (stories) and hallucinote (songs) already run this
+  pattern.
 
-The content-repo pattern generalizes: **app repo = the product; content repo =
-curated instance works; DB = cache plus end-user data.** Three apps already fit
-it (scriob/stories, hallucinote/songs, discodon/personas), which satisfies the
-second-consumer rule for promoting scriob's `GitL3Backend` into a shared
-package. The boundary test for what belongs in a content repo: *would a human
-review a diff of this?* Curator-authored, evidence-evolved artifacts qualify;
-end-user data does not — metallm's per-user prompts are user data in a
-multi-user app and stay DB rows.
+The content repo changes the mechanics:
 
-Samsung-frame-art-loader is the fourth fit, and it adds the binary rule. Its
-curated layer — theme briefs, work lists, review/acceptance decisions, mat
-choices — is exactly content-repo material. Its acquired images are not: **the
-content repo holds authored text plus manifests that reference blobs by content
-hash; the bytes live in a blob tier** (object store or disk, with backup —
-never git, and not git-LFS either). Scriob already runs this split (git for
-text, S3 for blobs), and samsung's content-hash discipline means the manifest
-side exists. A side benefit: the instance's identity lives in its content repo
-rather than in whichever path an env var points at, which retires the
-mistyped-path-bootstraps-an-empty-instance failure class samsung has on file.
+- Operator and machine edits become commits — scriob's `GitL3Backend` is the
+  write-through precedent, and commit authorship gives actor attribution for
+  free.
+- Environment promotion (dev instance → prod instance) becomes merge or
+  cherry-pick.
+- In-app seeds become starter content, instantiated into a new instance's repo
+  at first boot. Seed drift is not managed; it structurally disappears, because
+  the app repo is no longer a live tier. The rare reverse flow — a tuned
+  persona good enough to ship as starter content — is an explicit PR to the app
+  repo.
+- Secrets never enter the content repo. Credentials stay sealed in the DB
+  store, referenced by name.
+- Deployments that can't carry a git tier fall back to an append-only
+  content-addressed store with lineage and a mechanical diff-against-seed —
+  drift visible, never silent.
+
+The registry surface itself (types, sections, rendering, content-hash dedup) is
+promoted over the shared store contract (§4.8).
+
+#### Assembly: app-local, emitting shared provenance
+
+Discodon's prompt-graph DAG, metallm's personality node, and scriob's
+per-object prompts are product cores; no second consumer is pulling for a
+shared engine. What is shared: every engine emits an **assembly-provenance
+record** — content hashes of each component that entered the prompt, plus a
+composition/variant hash. Cheap for static and dynamic engines alike, and what
+makes different engines comparable.
+
+#### Measurement: A/B by variant identity
+
+Content-addressed identity (SHA-256 as true identity, version numbers as human
+convenience) and the apparatus/lever/label input classification move into
+eval-contracts. Rendered text can never be the A/B unit — it differs every
+turn. The lever is a *variant identity*; apparatus proof (component hashes,
+frozen case sets, deterministic seeds) shows everything else held. Discodon
+already ships this shape as run-scoped prompt overlays recorded in run
+identity.
+
+#### The variant lifecycle
+
+The planes close into one promoted workflow: an edit creates a draft variant →
+an eval campaign runs it as a cell against control → the verdict attaches to
+the variant's content hash → promotion is gated on that evidence → the promoted
+version merges in the content repo. Prompts ship the way code ships — through
+gates. One decoupling note: eval extraction does *not* wait on the shared
+store. The eval coupling is hashes, not imports.
+
+#### The pattern generalizes
+
+**App repo = the product; content repo = curated instance works; DB = cache
+plus end-user data.** Four apps fit: scriob (stories), hallucinote (songs),
+discodon (personas), samsung (theme briefs, work lists, review decisions) —
+which satisfies the second-consumer rule for promoting `GitL3Backend` into a
+shared package. The boundary test: *would a human review a diff of this?*
+metallm's per-user prompts fail it — user data in a multi-user app stays in DB
+rows.
+
+Samsung adds the binary rule: **the content repo holds authored text plus
+manifests that reference blobs by content hash; the bytes live in a blob tier**
+(disk or object store, with backup — never git, and not git-LFS either).
+Scriob already runs this split: git for text, S3 for blobs. A side benefit:
+the instance's identity lives in its content repo rather than in whichever
+path an env var points at, retiring the mistyped-path-bootstraps-an-empty-
+instance failure class samsung has on file.
 
 ### 4.3 LLM substrate — `3tears-models` (exists; metallm lineage)
 
@@ -239,14 +253,19 @@ remains an option an app can take when its turn loop comes up for rewrite anyway
 ### 4.6 Identity — `3tears-iam` + `3tears-agent-acl` (exist; scriob is proof-of-life)
 
 The only implementation of passwords, tokens, OAuth, and RBAC in the family.
-metallm retires its local auth and backup for the shared packages; scriob's
-credential-cascade/secret-sealing layer (which metallm has already hand-copied)
-is promoted before a third copy gets written. Discodon adopts iam along the exact
-seam scriob proved: iam's OAuth/state/passwords/tokens replace its Authlib
-client, break-glass hashing, and cookie mint/verify, while the allowlist,
-builtin owners, and cookie transport stay app-local. The "hardcoded owners + DB
-allowlist + break-glass password" trio — now independently duplicated in discodon
-and scriob — is a candidate for an optional small-deployment iam module.
+What changes:
+
+- **metallm** retires its local auth and backup for the shared packages.
+- **scriob's credential-cascade/secret-sealing layer** is promoted before a
+  third copy gets written — metallm has already hand-copied it once.
+- **discodon** adopts iam along the exact seam scriob proved: iam's
+  OAuth/state/passwords/tokens replace its Authlib client, break-glass hashing,
+  and cookie mint/verify; the allowlist, builtin owners, and cookie transport
+  stay app-local.
+- The "hardcoded owners + DB allowlist + break-glass password" trio —
+  independently duplicated in discodon and scriob — is a candidate for an
+  optional small-deployment iam module.
+
 Hallucinote (stdio + loopback by design) never adopts iam.
 
 ### 4.7 Observability — `3tears-observe` (exists; metallm lineage)
@@ -288,17 +307,23 @@ so the cost avoided is future divergence, not present duplication.
 
 ### 4.9 MCP conventions — into `3tears-mcp` (from hallucinote)
 
-Hallucinote's stack is the family's most mature agent surface and is already
-cited as precedent by siblings — as prose. The harvest, as code: the typed action
-registry with enforced structural invariants, teaching errors that carry their
-own fix, flat-schema synthesis over action unions, the long-poll job pattern with
-its coupled timeout ladder, the tri-state capability matrix (supported /
-not-implemented / upstream-can't — "a binary supported/not is a lie"),
-guides-as-resources, and the content-fingerprint version handshake for code
-vendored into host processes. Packaging constraint from the source: hallucinote's
-Live-side half is contractually stdlib-only, so the shared layer must be
-consumable server-side-only or vendorable-by-copy. (Lineage: hallucinote credits
-cordyceps for the original pattern.)
+Hallucinote's stack is the family's most mature agent surface, and siblings
+already cite it as precedent — as prose. The harvest, as code:
+
+- the typed action registry with enforced structural invariants
+- teaching errors that carry their own fix
+- flat-schema synthesis over action unions
+- the long-poll job pattern with its coupled timeout ladder
+- the tri-state capability matrix — supported / not-implemented /
+  upstream-can't, because "a binary supported/not is a lie"
+- guides-as-resources
+- the content-fingerprint version handshake for code vendored into host
+  processes
+
+Packaging constraint from the source: hallucinote's Live-side half is
+contractually stdlib-only, so the shared layer must be consumable
+server-side-only or vendorable-by-copy. (Lineage: hallucinote credits cordyceps
+for the original pattern.)
 
 ### 4.10 Chat UI — a headless TypeScript kit (protocol from 3tears; seeds from scriob and metallm)
 
@@ -323,18 +348,20 @@ alike, running the same chat engine.
 
 ### 4.11 Tiled/zoomable images — a slim acquisition package (new; from samsung's design)
 
-Tiled zoomable imagery (IIIF, Deep Zoom, Zoomify, slippy tiles) is a general web
-content type — maps, research figures, pathology, art — not a museum niche. The
-capability is built once, here, from samsung-frame-art-loader's already-designed
-(and deliberately unwritten) acquisition contract: acquisition method × source
-class × fetch status with partial-tiles as a first-class outcome, safe subprocess
-invocation of `dezoomify-rs`, URL allowlisting, integrity guards. Packaged as a
-**slim leaf**, not inside `3tears-scrape` — scrape is the family's heaviest slice
-and the first consumer is a memory-capped Pi. Scrape grows a thin driver adapting
-the leaf, so future consumers arriving via scrape get tiled images without
-knowing the art loader exists. The contract is binary-agnostic, so a native
-IIIF/DZI fetcher can replace the external binary without an API break. Samsung's
-legacy glue is deleted, not lifted.
+Tiled zoomable imagery (IIIF, Deep Zoom, Zoomify, slippy tiles) is a general
+web content type — maps, research figures, pathology, art — not a museum niche.
+The capability is built once, here, from samsung-frame-art-loader's
+already-designed (and deliberately unwritten) acquisition contract: acquisition
+method × source class × fetch status with partial-tiles as a first-class
+outcome, safe subprocess invocation of `dezoomify-rs`, URL allowlisting,
+integrity guards.
+
+Packaging: a **slim leaf**, not inside `3tears-scrape` — scrape is the family's
+heaviest slice and the first consumer is a memory-capped Pi. Scrape grows a
+thin driver adapting the leaf, so future consumers arriving via scrape get
+tiled images without knowing the art loader exists. The contract is
+binary-agnostic — a native IIIF/DZI fetcher can replace the external binary
+without an API break. Samsung's legacy glue is deleted, not lifted.
 
 ### 4.12 Scraping — consolidate on `3tears-scrape` (exists; faidh lineage)
 
