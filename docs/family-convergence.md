@@ -563,6 +563,14 @@ tiled images without knowing the art loader exists. The contract is
 binary-agnostic — a native IIIF/DZI fetcher can replace the external binary
 without an API break. Samsung's legacy glue is deleted, not lifted.
 
+Relation to `3tears-geo`: none, on purpose. geo *produces* vector tiles
+(`ST_AsMVT`'s job in Python, since YugabyteDB has no PostGIS); this package
+*consumes* remote raster tiles, and `dezoomify-rs` owns the tile math — a
+dependency edge would drag shapely onto the Pi for nothing. If a native
+fetcher ever replaces the binary, extract geo's dependency-free tile geometry
+(`TileId`, `tile_bounds`) into a shared home then — second-consumer rule, not
+before.
+
 ### 4.13 Scraping — consolidate on `3tears-scrape` (exists; faidh lineage)
 
 Three stacks become one. Lowest urgency of the workstreams, but the end state is
