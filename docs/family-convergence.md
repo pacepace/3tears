@@ -139,6 +139,15 @@ React) stays app-side as adapters over the analysis projections.
 Donated content: metallm's sycophancy-judge prompt becomes shared judge material;
 hallucinote's brief/rubric/verdict scenario schema informs the corpus format.
 
+Two clarifications from an investigation of 3tears itself (2026-08-02): the
+library's only in-house eval machinery is `scrape`'s recipe judge loop — a
+*runtime self-healing* cycle (LLM judges pick and persist winning extraction
+recipes), not an offline eval system; once `3tears-eval-run` lands, its
+judge/verdict primitives should back that loop, making scrape an internal
+consumer like the apps. And a naming collision to manage at extraction time:
+`datasources.definition.measure` (BI semantic-model measures, in flight) is
+unrelated to the eval measure registry — the packages must disambiguate.
+
 ### 4.2 LLM substrate — `3tears-models` (exists; metallm lineage)
 
 Already the family standard: LangChain-native construction, usage tracking with
