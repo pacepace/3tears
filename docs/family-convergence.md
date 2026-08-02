@@ -628,6 +628,8 @@ choice instead of an architecture fork. Third-party SearXNG MCP servers
 exist, but the family pattern stays §4.10's: in-process adapters behind each
 app's own MCP surface; bridging an external server remains an app option.
 
+## 5. Implications per family member
+
 ### 3tears
 
 - **Gains:** the eval package group (discodon), MCP conventions (hallucinote),
