@@ -140,19 +140,29 @@ disambiguate its naming from the unrelated BI measures in
 
 Prompts cross-cut evals and administration. Three planes, three answers:
 
-- **Storage/authoring — shared.** The prompt registry is promoted as an instance
-  of the operator-editable store pattern (§4.8), with a prompt-specific layer:
-  types, sections, rendering, content-hash dedup. The second consumer already
-  exists — metallm stores system-owned judge prompts and *machine-rewritten* user
-  prompts — and machine writers make **actor attribution** load-bearing (who
-  changed this prompt: seed, operator, or system; hallucinote's event-sourced
-  actor model is the precedent). The durable tier is git, per scriob's
-  git-as-L3 pattern: operator and system edits become commits, so identity,
-  diff, review, rollback, and history come free, and "promote to defaults"
-  becomes a merge. This is the architectural fix for the known discomfort of
-  seed-from-code-then-DB-drifts. Where git-backing is too heavy, the fallback is
-  an append-only content-addressed store with lineage and a mechanical
-  diff-against-seed — drift always visible, never silent.
+- **Storage/authoring — shared, with a repo distinction that dissolves the
+  known seed-drift discomfort.** Prompts split into two kinds. *Product
+  prompts* (judge defaults, generators, starter templates) are part of the app:
+  they live in the app's repo and evolve with code review. *Instance content*
+  (discodon's personas — backstories, cognitive styles, per-persona
+  classifiers, tuned presets) are curated works living in an *instance* of the
+  app, and their home is a **content repo**, the pattern scriob (stories) and
+  hallucinote (songs) already run: plain diffable files in a git repo the app
+  operates on, with the instance DB demoted from master to serving cache.
+  Operator and machine edits become commits (scriob's `GitL3Backend` is the
+  write-through precedent; commit authorship gives actor attribution — who
+  changed this: operator or system — for free), environment promotion becomes
+  merge/cherry-pick, and in-app seeds become *starter content instantiated
+  into* a new instance's content repo rather than a competing source of truth.
+  Seed drift is not managed; it structurally disappears, because the app repo
+  is no longer a live tier. The rare reverse flow — a tuned persona good enough
+  to ship as starter content — is an explicit PR to the app repo, a
+  contribution rather than a sync. Secrets never enter the content repo:
+  credentials stay sealed in the DB store, referenced by name. The registry
+  surface itself (types, sections, rendering, content-hash dedup) is promoted
+  over the shared store contract (§4.8). Where a deployment can't carry a git
+  tier, the fallback is an append-only content-addressed store with lineage and
+  a mechanical diff-against-seed — drift always visible, never silent.
 - **Assembly (dynamic composition) — app-local.** Discodon's prompt-graph DAG,
   metallm's personality node, and scriob's per-object prompts are product cores
   with no second consumer pulling for a shared engine. What is shared: every
@@ -170,11 +180,31 @@ Prompts cross-cut evals and administration. Three planes, three answers:
 The planes close into one promoted workflow, the **variant lifecycle**: an edit
 creates a draft variant → an eval campaign runs it as a cell against control →
 the verdict attaches to the variant's content hash → promotion is gated on that
-evidence → the promoted default lands in the git-durable tier. Prompts ship the
+evidence → the promoted version merges in the content repo. Prompts ship the
 way code ships — through gates. Note the decoupling: eval extraction does *not*
 wait on the shared store — the eval coupling is hashes, not imports, so any app
 participates by answering "what is the content hash of each prompt component this
 run used?"
+
+The content-repo pattern generalizes: **app repo = the product; content repo =
+curated instance works; DB = cache plus end-user data.** Three apps already fit
+it (scriob/stories, hallucinote/songs, discodon/personas), which satisfies the
+second-consumer rule for promoting scriob's `GitL3Backend` into a shared
+package. The boundary test for what belongs in a content repo: *would a human
+review a diff of this?* Curator-authored, evidence-evolved artifacts qualify;
+end-user data does not — metallm's per-user prompts are user data in a
+multi-user app and stay DB rows.
+
+Samsung-frame-art-loader is the fourth fit, and it adds the binary rule. Its
+curated layer — theme briefs, work lists, review/acceptance decisions, mat
+choices — is exactly content-repo material. Its acquired images are not: **the
+content repo holds authored text plus manifests that reference blobs by content
+hash; the bytes live in a blob tier** (object store or disk, with backup —
+never git, and not git-LFS either). Scriob already runs this split (git for
+text, S3 for blobs), and samsung's content-hash discipline means the manifest
+side exists. A side benefit: the instance's identity lives in its content repo
+rather than in whichever path an env var points at, which retires the
+mistyped-path-bootstraps-an-empty-instance failure class samsung has on file.
 
 ### 4.3 LLM substrate — `3tears-models` (exists; metallm lineage)
 
@@ -245,6 +275,13 @@ Three layers, three verdicts:
   because "operator edits beat redeploys" is a need every serving app hits. What
   generalizes: the precedence resolver, seed semantics, and a store Protocol.
   What stays app-local: naming, scoping model, storage backend.
+
+Config and prompt content share **one store contract** (precedence resolver,
+seed semantics, store Protocol, actor attribution, content-addressed versioning)
+with a **pluggable durable tier**: operational config defaults to the DB store
+(immediate-effect knobs, secrets-adjacent, nobody reviews a diff of a port
+number), curated content defaults to the git tier (§4.2), and an instance
+wanting git-backed config — the GitOps shape — gets it behind the same API.
 
 Priority: second tier, behind evals/memory/chat — every app's config works today,
 so the cost avoided is future divergence, not present duplication.
@@ -429,10 +466,12 @@ not implementations.
 11. **Does the prompt-graph assembly engine ever promote?** Promote the
     assembly-provenance contract now; revisit the engine only if metallm's
     personality layer — the likeliest second consumer — pulls for it.
-12. **Git-backed vs append-only prompt store.** Git-as-L3 is the principled fix
-    for seed drift but adds a git tier some deployments may not want. Decide
-    whether the shared store offers both durable tiers behind one contract, and
-    whether config (§4.8) and prompts share the store or merely its contract.
+12. **Content-repo mechanics.** The design is decided (one store contract,
+    pluggable durable tier: git for curated content, DB for operational config
+    — §4.2, §4.8); the mechanics aren't: repo-per-instance vs
+    directory-per-persona, hosting expectations (a local bare repo must
+    suffice — no GitHub dependency for a deployment), and how draft variants
+    map onto branches vs uncommitted overlay commits.
 13. **Where convergence decisions live.** This document proposes; each repo's
     governance must ratify what binds it. A lightweight cross-repo decision
     record — probably here in `3tears/docs/` — stops per-app sessions from
