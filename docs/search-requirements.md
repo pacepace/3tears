@@ -1,62 +1,170 @@
-# Search: Requirements
+# Search: What the Family Needs
 
 **Status:** Draft for ratification — 2026-08-02
-**Scope:** the family's search capability, ahead of any contract or package
 **Companions:** `family-convergence.md` §4.14 records the *direction*;
-`shared_search.md` sketches a *mechanism*. This document states the
-*requirements* neither has — what consumers need, and what must stay
-decomposable — so the sketch can be judged against something.
+`shared_search.md` sketches a *mechanism*. This document states the *need* —
+what the family is trying to achieve, the principles that shape any answer, and
+what that cashes out to in requirements.
 **Relates to:** §4.13 (scraping), §4.2 (evals), open questions 13 and 21
+
+**Part I** is the whole picture: goals, non-goals, how we would know it worked,
+the principles, who the consumers are, and where value sits. A reader who needs
+the direction can stop at the end of Part I.
+**Part II** is the derivation — requirements traced to evidence in the six repos,
+the decisions they surface, and a review of the existing sketch against them.
 
 ---
 
-## 1. Why this document exists
+# Part I — What we need
 
-`family-convergence.md` §4.14 proposes a result shape — url, title, snippet,
-score, cost — and a stage pipeline. `shared_search.md` refines that into layers,
-typed contracts, provider extras and a packaging recommendation. Both may be
-right. Neither is checkable, because no document states what the consumers
-actually need. §9 uses these requirements to check the sketch; five of its
-choices come out contradicted.
+## 1. What we are trying to achieve
 
-Two things drive the shape:
+The family does not need a search API wrapper. It needs to reliably **find the
+right thing on the outside world**, from six products, on someone's actual money,
+without each product solving it again.
 
-- **The consumer set is wider than the current call sites.** Apps and models both
-  call search; queries originate from code, from a tool an LLM invoked, and from
-  a person typing. The things searched for are web pages, images, PDFs and
-  documents. Criteria run from "top 5" to "≥3840×2160, rights-clear, from an
-  institutional source." Requirements derived only from today's text callers
-  would bake text-and-shallow into the family's floor.
-- **Layer coupling is the failure mode to design against.** The stated anti-goal:
-  *you must never have to accept a higher layer's opinions to get a lower layer's
-  benefit.* If asking for consumer-supplied rerank criteria means you can no
-  longer say "PDFs only," the layers are welded and the capability serves whoever
-  the author imagined and nobody else. §4 makes this testable rules rather than
-  an aspiration — `shared_search.md` asserts the principle in one line ("Each
-  layer is consumable without the ones above it") and then, in three places,
-  breaks it.
+**G1. One capability the family can rely on.** Every 3tears module and every
+consuming app gets search from one place, so an improvement lands everywhere and
+a fix happens once. Today there are seven call sites and four implementations,
+two of them side-steps written *because* the shared one did not fit.
 
-**Non-goals.** Rerank algorithm selection; heavy scraping (§4.13 owns it);
-model-native search *implementation* (SR-B5 covers the boundary only); which repo
-migrates when.
+**G2. Humans, programs, and agents are equally first-class.** A person typing a
+query, a program acquiring data, and an LLM invoking a tool are three real
+callers. None is the "real" one with the others adapted onto it. Every
+implementation today is shaped for the agent case — which is precisely why both
+programmatic consumers hand-rolled their own.
 
-## 2. How to read this
+**G3. Result quality is the outcome; provider calls are the means.** What the
+family is buying is the right page, the highest-resolution rights-clear image,
+the source that actually says it. Extraction, fusion and reranking exist to serve
+that and are justified by it — stating the goal this way is what tells us when a
+stage is worth adding and when it is machinery for its own sake.
 
-Each item is **REQUIRED** (a consumer regresses or breaks without it, evidence
-cited), **DECISION** (consumers disagree or nobody has ruled — a recommendation
-is given, the owner picks), or **ASSUMPTION** (inferred from code, not stated by
-an owner; vetoable — if wrong, the requirement above it probably changes).
+**G4. One capability across the media the family searches.** Web pages today;
+images and documents are already required — samsung's image search is designed,
+its records and run lifecycle built, and only the search itself missing. One
+capability, not a web capability plus forks.
 
-Evidence is cited as `repo/path:line`, read 2026-08-02. Where implementations of
-the same thing disagree, the disagreement *is* the finding: the requirement was
-never stated and each site guessed.
+**G5. Providers are pluggable, and self-hosting is first-class.** SearXNG on our
+own hardware and a paid API are the same capability with different economics, not
+a good path and a degraded one. Two consequences worth naming: no product's
+decisions get made by a search vendor, and no product is stranded when one
+changes its terms or prices.
 
-## 3. The consumer space
+**G6. Value at every layer; integrate at any of them.** A consumer takes one
+provider call, or the whole pipeline, or anything in between — and gets full
+fidelity at whatever depth it stopped. Adoption is incremental: nobody rewrites
+to benefit, and nobody carries weight they do not use.
 
-### 3.1 Four independent axes
+**G7. Cost, evals and telemetry are integrated by construction, not bolted on.**
+The family's existing disciplines reach search because it was built into the
+seam. Concretely: a run's cost cap includes what it spent searching; an eval can
+attribute a score change to a search-config change; a slow turn is explainable.
+
+**G8. Claims made from search results are checkable.** Several products state
+things they learned from the web. A result must be attributable to its source,
+groundable against what was actually retrieved, and replayable later — or the
+products are confident and unfalsifiable, and their evals measure the web's drift
+instead of their own changes.
+
+**G9. Safe to depend on.** Seven consumers across four repos will bind to this.
+It must never become the thing that stops an app shipping: bounded weight (the
+Pi is the honest constraint), a stated versioning promise, and explicit
+degradation when an optional piece is absent.
+
+**G10. Operable by a person.** Someone can see what it costs, why it is slow,
+what it is doing and what broke, without reading the source.
+
+## 2. What we are not trying to achieve
+
+Naming these is what keeps a shared capability from becoming a platform.
+
+- **Not a search engine.** We do not crawl or index the web.
+- **Not a RAG framework.** Retrieval over the family's *own* content is
+  `agent-memory`'s job; this is about the outside world.
+- **Not an agent.** It does not decide what to search for. Deciding is the
+  consumer's — `scrape`'s `page_finder` is an agent that *uses* search, and it
+  sits above this, not inside it.
+- **Not a scraper.** Hostile-target and heavy fetch belong to `3tears-scrape`
+  (§4.13); this reaches for that capability rather than growing one.
+- **Not a home for app-specific ranking policy.** Criteria come from consumers.
+- **Not a UI.**
+
+## 3. How we would know it worked
+
+Checkable outcomes, not sentiments:
+
+1. metallm's two side-steps are **deleted**, not wrapped.
+2. samsung's image search is built on it **without forking** — the real test,
+   because it is the consumer least like the ones that shaped today's code.
+3. discodon's eval cost cap includes search spend, and a research eval can be
+   **replayed** rather than re-issued against a changed web.
+4. `scrape`'s `page_finder` gets structured results **without its callers
+   changing**.
+5. A Pi deployment installs it **without torch**.
+6. A new provider is added **without touching a consumer**.
+7. A new media type ships **without a coordinated release** across consumers.
+
+## 4. Principles
+
+These are about the direction things flow. They are the part most likely to be
+violated by accident, because every violation is locally reasonable.
+
+### Flow direction
+
+**P1 — No upward vocabulary.** A layer never requires a type defined above it.
+The search call must not know what a corpus is; the provider adapter must not
+know what a rerank criterion is.
+
+**P2 — No lossy upward projection.** A fact knowable only lower down is preserved
+upward *in usable form*, even where that layer has no use for it. Samsung records
+the general case: `acquisition_method` rides the image record "because it is
+knowable only where the instance was found… nothing downstream can recover which"
+(`discovery_records.py:258-263`). This is P1's mirror and it is the harder one to
+catch — nothing fails at the seam; it fails three layers up, later. An untyped
+`raw` passthrough disclaimed as "never load-bearing" does not satisfy it.
+
+### Independence
+
+**P3 — Downward independence.** Every layer is usable without any layer above it,
+at full fidelity. This is G6 stated as a constraint.
+
+**P4 — Feature orthogonality.** No capability is conditioned on an unrelated
+capability. The acceptance test: *a consumer supplying its own rerank criteria
+must still be able to constrain media type.* A pairing that cannot compose is a
+defect needing written justification, not a limitation. Fused "pipeline" helpers
+are where this usually breaks — bundling dedup, rerank and fetch means wanting
+one means taking three.
+
+**P5 — Cross-cutting concerns attach at their source.** Cost, telemetry, budget
+and replay attach where the fact arises, not at a chosen layer. Spend arises at
+the provider call and must be observable by a consumer that goes no further.
+
+### Honesty
+
+**P6 — Open vocabularies.** No layer closes the set of criteria a consumer can
+express. Each understands the subset it can act on and passes the rest through
+intact. A closed enum makes every future consumer's novel criterion a library
+change — samsung's `rights_status` would have been exactly that a year ago.
+
+**P7 — No collapsed scores.** Where several ranking dimensions exist they stay
+separate and the consumer combines them. Derived independently twice in the
+family; samsung states why: `confidence` and `quality_score` are separate because
+"a museum's own page is maximum confidence and may be lower resolution than a
+gigapixel scan elsewhere. Collapsing them into one number makes the trade
+invisible and the choice unexplainable" (`discovery_records.py:240-244`).
+
+**P8 — Explicit degradation.** When an optional layer is absent or a criterion
+cannot be honored, the caller is told. Unranked results are *known* to be
+unranked; an unsatisfiable criterion is named. Silence turns a missing stage into
+a wrong answer.
+
+## 5. Who consumes this
+
+### 5.1 Four independent axes
 
 Consumers do not divide by provider. They divide along four axes that vary
-independently — the first reason the capability must decompose rather than take a
+independently — which is why the capability must decompose rather than take a
 shape fitted to a representative caller.
 
 | Axis | Values seen or anticipated |
@@ -66,16 +174,16 @@ shape fitted to a representative caller.
 | **Criteria depth** | none ("top 5") · shallow (recency, domain) · deep (resolution, rights, provenance class, publication type) |
 | **Binding** | text for a model · typed domain object · a persisted corpus |
 
-Every cell is reachable. A person typing a query in a web UI wanting rights-clear
-4K images bound to domain objects is one cell; an LLM issuing an unscoped web
-query and reading prose is another.
+Every cell is reachable. A person wanting rights-clear 4K images bound to domain
+objects is one cell; an LLM issuing an unscoped query and reading prose is
+another.
 
-### 3.2 Today's call sites, plotted
+### 5.2 The seven call sites
 
 | # | Consumer | Caller | Media | Criteria | Binding |
 |---|----------|--------|-------|----------|---------|
 | C1 | discodon persona `web_search` | LLM | web | none | text |
-| C2 | discodon research sub-tool | LLM | web | shallow (recency, domains) | text **and** corpus |
+| C2 | discodon research sub-tool | LLM | web | shallow | text **and** corpus |
 | C3 | metallm agent builtin | LLM | web | none | text |
 | C4 | metallm admin price lookup | program | web | none | typed |
 | C5 | samsung discovery phase 1 | program (model-mediated) | web | shallow | typed |
@@ -89,51 +197,43 @@ Evidence: C1 `discodon/tools/web_search_tool.py`; C2
 `samsung/curation/src/curation/discovery/phase_one.py`; C7
 `3tears/packages/scrape/src/threetears/scrape/page_finder.py:32,237-241`.
 
-C7 matters disproportionately: it is a *shared package* consuming another shared
-package's builtin, so whatever the builtin's output forecloses, scrape inherits —
-today, flattened text.
-
-C6 is the one **not yet built**, and is the most informative row for that reason.
-Its run lifecycle exists — approve-before-phase-2 gating, an `unresolved` bucket,
-a finish path (`services/discovery.py:62,168-219`) — and its result record is
-fully designed (`persistence/discovery_records.py:236-282`). Only the search
-behind it is missing. Phase 1 states the split: it asks for works "and never for
-images, which is phase 2's job and a different search entirely"
-(`phase_one.py:3-5`). A capability shaped around today's text callers forecloses
-the one consumer standing at the door with its requirements already written down.
+Two rows carry more weight than their size suggests. **C7** is a shared package
+consuming another shared package's builtin, so whatever that builtin forecloses,
+scrape inherits — today, flattened text. **C6** is not yet built, and is the most
+informative row for exactly that reason: its lifecycle exists
+(`services/discovery.py:62,168-219`), its result record is fully designed
+(`persistence/discovery_records.py:236-282`), and phase 1 states the split — it
+asks for works "and never for images, which is phase 2's job and a different
+search entirely" (`phase_one.py:3-5`). A capability shaped around today's text
+callers forecloses the consumer standing at the door with its requirements
+already written down.
 
 **ASSUMPTION A1.** C6 is the same capability rather than a permanently separate
-path. §4.12 places tiled-image *acquisition* in its own package; this assumes
-*finding* an image is search and *fetching* it is acquisition. If the owner
-disagrees, §5.C can be dropped — but then this is web-text search and should be
-named that.
+path — that *finding* an image is search and *fetching* it is acquisition (§4.12).
+If the owner disagrees, media polymorphism drops out and this is web-text search,
+which is then what it should be called.
 
 **ASSUMPTION A2.** Person-typed queries are in scope. No current call site is
-one; inferred from the family having web UIs. Cheap to honor now (mostly "queries
-are untrusted user content" — SR-K2), expensive to retrofit.
+one; inferred from the family having web UIs. Cheap now (mostly "queries are
+untrusted user content"), expensive to retrofit.
 
-### 3.3 What the plot already shows
+### 5.3 What the plot already shows
 
 C2 wants text *and* structure at once: prose to its inner agent, plus a typed
 per-URL corpus accumulated on the side (`research/web_search.py:301-321`) that
-the grounding gate and relevance cull later read (`:346-356`). C6 wants deep
-criteria from three unrelated families at once — technical (resolution), legal
-(rights), provenance (source class) — and samsung has recorded that these
-**conflict and must not be collapsed**: `confidence` and `quality_score` are
-separate fields because "a museum's own page is maximum confidence and may be
-lower resolution than a gigapixel scan elsewhere. Collapsing them into one number
-makes the trade invisible and the choice unexplainable"
-(`discovery_records.py:240-244`).
+its grounding gate and relevance cull later read. C6 wants deep criteria from
+three unrelated families at once — technical (resolution), legal (rights),
+provenance (source class) — which samsung has already recorded as conflicting and
+un-collapsible (P7).
 
-No single opinionated result shape serves C1 and C6. That is the requirement.
+No single opinionated result shape serves C1 and C6. That is the requirement that
+generates most of Part II.
 
-## 4. Layers, and the rules against coupling them
+## 6. Where value sits — the layers
 
-### 4.1 The layers
-
-Named, not numbered, because `shared_search.md` already uses L0–L3 for a
-different cut and two numberings in one docs directory is a coherence trap. The
-mapping is given so the documents can be read together.
+Named, not numbered, because `shared_search.md` uses L0–L3 for a different cut
+and two numbering schemes in one directory is its own trap. Mapping given so the
+documents read together. Per G6 and P3, a consumer may stop at any row.
 
 | Layer | Turns | Owns | `shared_search.md` |
 |-------|-------|------|--------------------|
@@ -144,185 +244,151 @@ mapping is given so the documents can be read together.
 | **Select** | candidates + criteria → an ordered/filtered subset | filtering, reranking, scoring, cull | L2 pipeline (rerank slot) |
 | **Bind** | candidates → what the caller consumes | typed domain objects, or prose for a model | L3 presentation |
 
-Cross-cutting, attaching where the fact arises rather than at a chosen layer:
-**spend**, **budget**, **telemetry**, **concurrency and rate control**,
-**record/replay**.
+Cross-cutting, attaching where the fact arises (P5): **spend**, **budget**,
+**telemetry**, **concurrency and rate control**, **record/replay**.
 
-Consumers use different subsets. C4 uses Adapter–Aggregate and binds itself. C2
-uses everything and both bindings. C1 uses Adapter–Call–Bind. C6 needs all six
-with the deepest Select. C7 reaches them through an agent loop. A design that
+Consumers use different subsets: C4 uses Adapter–Aggregate and binds itself; C2
+uses everything and both bindings; C1 uses Adapter–Call–Bind; C6 needs all six
+with the deepest Select; C7 reaches them through an agent loop. A design that
 only works end-to-end serves one of them.
 
-### 4.2 The non-coupling rules
+## 7. The one mechanism Part I depends on
 
-Requirements, stated so they can be tested rather than admired.
+Everything above leaves one question that cannot be deferred to design, because
+the answer decides whether P4 holds: **does search own deep criteria, or does the
+consumer?**
 
-**NC1 — Downward independence (REQUIRED).** Every layer is usable without any
-layer above it, at full fidelity. A consumer wanting one provider call and its own
-everything-else must be able to have exactly that.
+Neither, exclusively. Criteria are stated **once**, by the consumer, in one open
+vocabulary (P6) — regardless of which layer ends up satisfying them. Each is then
+satisfied by **pushdown** (the provider filters), **local application** (a layer
+filters or ranks), or **not at all** — and the caller is told which, per criterion
+(P8).
 
-**NC2 — No upward vocabulary (REQUIRED).** A layer never requires a type defined
-above it. Call must not know what a corpus is; Adapter must not know what a rerank
-criterion is.
+That makes pushdown an optimization — cheaper, fewer discarded results, sometimes
+better recall — rather than a precondition for expressing the criterion. It is
+what stops "you may filter by document type only if you skip reranking," and it
+is why a consumer never has to know that `time_range` is a provider parameter
+while `min_resolution` is a local filter. Those are implementation facts that
+change per provider and per year.
 
-**NC3 — Feature orthogonality (REQUIRED).** No capability is conditioned on an
-unrelated capability. The acceptance test, from the stated anti-goal: *a consumer
-supplying its own rerank criteria (Select) must still be able to constrain media
-type (Call).* Any pairing that cannot compose is a defect needing written
-justification, not a limitation. This is also the rule a fused "pipeline" helper
-tends to break: bundling dedup + rerank + fetch means a consumer wanting dedup
-without rerank takes all three.
+---
 
-**NC4 — Open criteria vocabularies (REQUIRED).** No layer closes the set of
-criteria a consumer can express. Each understands the subset it can act on and
-passes the rest through intact. A closed enum in the criteria path makes every
-future consumer's novel criterion a library change — C6's `rights_status` would
-have been exactly that a year ago.
+# Part II — What that cashes out to
 
-**NC5 — No lossy upward projection (REQUIRED).** A fact knowable only at a lower
-layer is preserved upward *in usable form*, even where that layer has no use for
-it. Samsung records the general case: `acquisition_method` rides the image record
-"because it is knowable only where the instance was found: the search reached it
-through a provider that either offers tiles, a direct file, or an API, and nothing
-downstream can recover which. Without it, promoting an instance into a source
-would have to guess" (`discovery_records.py:258-263`). This is NC2's mirror, and
-harder to notice: nothing fails at the seam, it fails three layers up, later. An
-untyped `raw` passthrough declared "never load-bearing" does not satisfy this.
+Requirements traced to evidence, read 2026-08-02 and cited as `repo/path:line`.
+Each is **REQUIRED** (a consumer regresses or breaks without it), **DECISION**
+(consumers disagree or nobody has ruled — recommendation given, owner picks), or
+**ASSUMPTION** (inferred, vetoable). Where implementations disagree, the
+disagreement *is* the finding: the requirement was never stated and each site
+guessed.
 
-**NC6 — No collapsed scores (REQUIRED).** Where several ranking dimensions exist
-they stay separate and the consumer combines them. Derived independently twice:
-samsung for images (`discovery_records.py:240-244`), and the same holds for web
-results where provider relevance, a reranker's score and a recency preference are
-three different judgments.
-
-**NC7 — Cross-cutting concerns attach at their source (REQUIRED).** Taking cost
-tracking, telemetry, budget or replay must not require taking a particular layer.
-Spend arises at Adapter and must be observable by a consumer that stops at Call.
-
-**NC8 — Degradation is explicit (REQUIRED).** When an optional layer is absent or
-a criterion cannot be honored, the caller is told: unranked results are *known* to
-be unranked; an unsatisfiable criterion is named. Silence turns a missing stage
-into a wrong answer.
-
-## 5. Requirements
+## 8. Requirements
 
 ### A. Results
 
-**SR-A1 (REQUIRED, Call/Bind).** Structured results are the primitive; rendering
-for a model is one binding. C4 exists as a hand-rolled side-step precisely because
-the shared builtin returns only formatted text (`builtin/web_search.py:27-44`,
-`admin/models.py:948`), and C7 inherits the same flattening.
+**SR-A1 (REQUIRED, Call/Bind — G2).** Structured results are the primitive;
+rendering for a model is one binding. C4 exists as a hand-rolled side-step
+precisely because the shared builtin returns only formatted text
+(`builtin/web_search.py:27-44`), and C7 inherits the same flattening.
 
-**SR-A2 (REQUIRED, Call↔Enrich).** A result must be able to carry retrieved
+**SR-A2 (REQUIRED, Call↔Enrich — G3).** A result must be able to carry retrieved
 content, recording whether it came from the search response or a later fetch.
 Tavily returns page text *in the search response* at no extra credit versus
 `advanced` (`research/web_search.py:206`). A shape that puts content only in a
 fetch result forces a Tavily consumer to re-fetch what it already paid for.
-Enrich must therefore be a **no-op when the provider already supplied content**,
-not a mandatory second call.
+Enrich must be a **no-op when the provider already supplied content**.
 
-**SR-A3 (REQUIRED, NC5).** Results carry provenance: query, provider, the
-provider's own identifiers, and retrieval time. C2's grounding gate answers a
+**SR-A3 (REQUIRED, P2 — G8).** Results carry provenance: query, provider, the
+provider's own identifiers, retrieval time. C2's grounding gate answers a
 per-result question — "does this claim appear on the page it was cited from"
 (`research/web_search.py:105-110`) — that no aggregate can answer.
 
-**SR-A4 (DECISION, Call/Select, NC6).** How many score dimensions, and whose?
+**SR-A4 (DECISION, P7 — G3).** How many score dimensions, and whose?
 Tavily returns relevance ∈ [0,1] and C2's cull ranks on it
 (`research/web_search.py:27-44`); SearXNG returns an engine-fusion weight on
-another scale (*unverified — general knowledge; confirm against a live instance*);
-C6 needs at least three orthogonal judgments.
-*Recommendation:* a set of named, provenanced scores — never one `score` field.
-Provider scores marked non-comparable across providers; a comparable relevance
-exists only if Select produced it.
+another scale (*unverified — confirm against a live instance*); C6 needs three
+orthogonal judgments.
+*Recommendation:* a set of named, provenanced scores. Provider scores marked
+non-comparable across providers; a comparable relevance exists only if Select
+produced it.
 
 **SR-A5 (DECISION, Aggregate).** Result set or corpus?
 C2 and C4 independently built the same accumulation — C2 keyed by URL,
 concatenating across searches, keeping the best score seen
 (`research/web_search.py:104-111`, `:314-321`); C4 dedups URLs across concurrent
 queries preserving order (`admin/models.py:967-975`).
-*Recommendation:* Call returns a result set; the corpus is Aggregate's named type
-with a stated dedup key and merge rule. Two consumers is the family's own
-threshold.
+*Recommendation:* Call returns a set; the corpus is Aggregate's named type with a
+stated dedup key and merge rule.
 
 ### B. Requests and criteria
 
-This answers "must search own deep criteria, or does the consumer?" Neither
-exclusively — and the mechanism is what keeps NC3 true.
+**SR-B1 (REQUIRED — §7).** Criteria stated once, in one open vocabulary,
+regardless of which layer satisfies them.
 
-**SR-B1 (REQUIRED).** Criteria are stated **once**, by the consumer, in one open
-vocabulary (NC4), regardless of which layer satisfies them. A consumer must not
-have to know that `time_range` is a provider parameter while `min_resolution` is
-a local filter — an implementation fact that changes per provider and per year.
-
-**SR-B2 (REQUIRED).** Each criterion is satisfied by **pushdown** (provider
-filters), **local application** (a layer filters or ranks), or **not at all** —
-and the caller is told which, per criterion (NC8). Pushdown is an optimization:
-cheaper, fewer discarded results, sometimes better recall. Never a precondition
-for expressing the criterion.
+**SR-B2 (REQUIRED — §7, P8).** Each criterion is satisfied by pushdown, local
+application, or not at all, and the caller is told which, per criterion.
 
 **SR-B3 (REQUIRED).** An unsatisfiable criterion is reported, never silently
 dropped. Precedent: RES-T4M9, a Tavily 400 from sending `time_range` with
 absolute dates, fixed by stating absolute-wins precedence rather than silently
-suppressing either (`research/web_search.py:218-234`). Discodon's project rules
-forbid silent-default shims outright.
+suppressing either (`research/web_search.py:218-234`).
 
 **SR-B4 (REQUIRED, Adapter/Call).** Provider capability differences are
 declarable and queryable, so a consumer branches before sending rather than after
 failing — the pattern `3tears-models` already uses
 (`packages/models/.../capabilities.py`). SearXNG has no `search_depth` and no
 domain allow-list; it has `categories`, `engines`, `language`, `safesearch`,
-`pageno`. Tavily has depth, domains, topic, dates (`research/web_search.py:54-103`,
-`:196-234`).
+`pageno`. Tavily has depth, domains, topic, dates
+(`research/web_search.py:54-103`, `:196-234`).
 
 **SR-B5 (DECISION — open question 21).** Is model-mediated search inside this?
 C5 has no per-result API scores, no provider result list, and folds cost into
 token spend it already tracks (`discovery/engine.py:74-88`).
 *Recommendation:* out of Adapter/Call; a `3tears-models` capability flag. It
 enters at **Aggregate** as a candidate producer — where its output already lands —
-so a consumer can fuse model-mediated and API results without either pretending to
-be the other.
+so a consumer can fuse model-mediated and API results without either pretending
+to be the other.
 
-### C. Media polymorphism
+### C. Media polymorphism (G4)
 
-**SR-C1 (REQUIRED, NC4).** The result core is media-agnostic — identity,
-provenance, scores, content availability. Media facets are **additive and open**,
-not a closed union of "web | image | pdf".
+**SR-C1 (REQUIRED, P6).** The result core is media-agnostic — identity,
+provenance, scores, content availability. Media facets are additive and open, not
+a closed union of "web | image | pdf".
 
 **SR-C2 (REQUIRED).** A consumer that does not recognize a facet ignores it
-rather than failing. This is what lets a new media type ship without a
-coordinated release across every consumer.
+rather than failing. This is success criterion 7.
 
 **SR-C3 (REQUIRED).** Known facet needs, from real records — image: dimensions,
 rights status, direct-file versus containing-page URL, and how the bytes are
 fetchable (`discovery_records.py:274-281`, `acquisition_method` load-bearing per
-NC5). Document/PDF: at minimum extraction status, since "content" for a PDF is a
+P2). Document/PDF: at minimum extraction status, since "content" for a PDF is a
 different operation from HTML extraction.
 
-**SR-C4 (REQUIRED, Enrich).** Enrichment is media-dispatched, and a consumer must
-be able to take search without any enrichment (NC1) — the Pi case and C4's case
+**SR-C4 (REQUIRED, Enrich, P3).** Enrichment is media-dispatched, and a consumer
+must be able to take search without any enrichment — the Pi case and C4's case
 are the same case.
 
-### D. Budget controls
+### D. Budget controls (G7)
 
 **SR-D1 (REQUIRED).** Budgets are expressible in **calls**, not only money.
 Samsung states why: "A monthly credit limit cannot bound a single run that has
 decided to search forever, and an estimate a run may freely exceed is not an
-estimate" (`discovery/engine.py:42-49`). C1, C2 and C5 all bound in calls.
+estimate" (`discovery/engine.py:42-49`).
 
 **SR-D2 (REQUIRED).** Budget scopes are plural and not interchangeable:
 per-persona-per-day (`web_search_tool.py:148-152`), per-invocation
 (`research/web_search.py:186-192`), per-run (`engine.py:52`).
 
 **SR-D3 (REQUIRED).** Provider quota exhaustion is distinguishable from a local
-cap and short-circuits. C2 trips a per-invocation breaker on HTTP 432/433 and logs
-at ERROR because "a dead search backend is an outage, not a per-query warning"
-(`research/web_search.py:249-265`).
+cap and short-circuits. C2 trips a per-invocation breaker on HTTP 432/433 and
+logs at ERROR because "a dead search backend is an outage, not a per-query
+warning" (`research/web_search.py:249-265`).
 
 **SR-D4 (DECISION — currently contradictory).** Does a failed search consume
-budget? One repo answers both ways: C2 increments before the request, so timeouts
-consume budget (`research/web_search.py:192`); C1 increments only after
-`raise_for_status()` (`web_search_tool.py:271-272`). Neither records a decision.
-*Recommendation:* budget follows the bill. But C2's fail-closed behavior is what
+budget? One repo answers both ways: C2 increments before the request
+(`research/web_search.py:192`); C1 only after `raise_for_status()`
+(`web_search_tool.py:271-272`). Neither records a decision.
+*Recommendation:* budget follows the bill — but C2's fail-closed behavior is what
 currently bounds retries against a degraded provider, so that bound must move
 somewhere explicit (SR-G4) in the same change.
 
@@ -334,18 +400,19 @@ opposite. Two reasoned positions in conflict, not an oversight.
 *Recommendation:* both, distinct roles — local caps bound a run's *shape*
 (overrun is a defect); the provider's refusal bounds *money*. Needs a ruling.
 
-**SR-D6 (REQUIRED).** A zero-cost provider still needs bounding. SearXNG's failure
-mode is upstream rate-limiting or a ban, not spend; a mechanism keyed only on cost
-never fires for it (SR-H4).
+**SR-D6 (REQUIRED — G5).** A zero-cost provider still needs bounding. SearXNG's
+failure mode is upstream rate-limiting or a ban, not spend; a mechanism keyed only
+on cost never fires for it (SR-H4). Self-hosting is first-class only if it is
+protected too.
 
-### E. Cost tracking
+### E. Cost tracking (G7)
 
-**SR-E1 (REQUIRED, NC7).** Spend is attributable per call, in money, observable
+**SR-E1 (REQUIRED, P5).** Spend is attributable per call, in money, observable
 from any layer. Discodon counts and explicitly declines to price: "Paid non-LLM
 calls this run made (web search). Counted, never priced"
 (`research_tool.py:2503`), with its eval surface warning that "max_cost_usd does
-not bound external search quota" (`web/mcp/eval/runs.py:190`). Closing this is the
-concrete payoff — an eval cost cap that finally includes search.
+not bound external search quota" (`web/mcp/eval/runs.py:190`). Closing this is
+success criterion 3.
 
 **SR-E2 (REQUIRED).** The count a cap enforces and the count a bill prices are one
 number. Samsung derives `searches_used` from the priced records because "a
@@ -376,12 +443,12 @@ A deployment that lowers the result count therefore saves nothing and sees less"
 carrying the real constraint. A synthetic per-query infrastructure cost corrupts
 cross-provider comparison in the other direction.
 
-### F. Evals and reproducibility
+### F. Evals and reproducibility (G7, G8)
 
 **SR-F1 (REQUIRED).** Search parameters participate in eval identity so a score
 delta is attributable to a config change — already true and load-bearing
-(`eval/identity.py:221`, via `canonical_digest`). This requires that whatever
-parameter object exists be **canonically serializable**.
+(`eval/identity.py:221`, via `canonical_digest`). This requires the parameter
+object be canonically serializable.
 
 **SR-F2 (REQUIRED).** Eval runs against a quota separable from production's, with
 sharing explicit rather than a fallback. Discodon designed exactly this (EVL-TQ7K,
@@ -389,54 +456,50 @@ sharing explicit rather than a fallback. Discodon designed exactly this (EVL-TQ7
 search burst can never exhaust the quota or trip the breaker protecting live
 personas' research," with unset meaning a *documented shared* quota.
 
-**SR-F3 (DECISION — the largest gap found).** Must a search be replayable?
+**SR-F3 (DECISION — the largest gap found; G8).** Must a search be replayable?
 Discodon's cassette layer records and replays at `Tool.act()`
 (`eval/cassette_proxy.py:16-18,185-207`). C1 is a `Tool` and is replayable. C2's
 sub-tool deliberately is not — "no Tool ABC overhead"
-(`research/web_search.py:5`) — so it sits *below* the replay seam and its searches
-cannot be replayed. Every research eval re-issues live searches against a changing
-web.
+(`research/web_search.py:5`) — so it sits below the replay seam and its searches
+cannot be replayed. Every research eval re-issues live searches against a
+changing web.
 *Recommendation:* promote to REQUIRED, and place record/replay as a cross-cutting
-concern at Adapter/Call (NC7) rather than at whatever layer happens to be a
-`Tool`. That placement is the lesson of the current gap: replay was attached to a
-class hierarchy, so a component that opted out of the hierarchy silently opted out
-of reproducibility. Without it, research eval trend lines confound model changes
-with web drift — undermining §4.2, the family's highest-value workstream.
+concern at Adapter/Call (P5) rather than at whatever layer happens to be a `Tool`.
+That placement is the lesson of the current gap: replay was attached to a class
+hierarchy, so a component that opted out of the hierarchy silently opted out of
+reproducibility.
 
 **SR-F4 (REQUIRED).** What is recorded must rebuild the corpus, not merely the
-rendered text — else a replayed run cannot re-run its grounding gate (SR-A2,
-SR-A3).
+rendered text — else a replayed run cannot re-run its grounding gate.
 
-### G. Performance
+### G. Performance (G10)
 
 **SR-G1 (REQUIRED).** Timeouts are configurable, not constants. Four
 implementations, three values, none operator-tunable: 30s class attribute
 (`web_search_tool.py:39`); 15s constructor default never wired to config
-(`research/web_search.py:59`, with the construction at
-`research_tool.py:1412-1414` passing depth and caps but no timeout); 15s hardcoded
+(`research/web_search.py:59`, with construction at `research_tool.py:1412-1414`
+passing depth and caps but no timeout); 15s hardcoded
 (`builtin/web_search.py:53`); 15s hardcoded (`admin/models.py:951`).
 
 **SR-G2 (REQUIRED).** A search timeout is derivable from the caller's remaining
 deadline, not fixed independently of it. C2's caller runs under a per-call LLM
 bound and a run-level conclusion deadline explicitly floored at the per-call
-timeout (`research_tool.py:647-707`, `:762`) — so a 30s search inside a shorter
-remaining budget is expressible today.
+timeout (`research_tool.py:647-707`, `:762`).
 
 **SR-G3 (REQUIRED).** No blocking IO on an async path. The builtin's `execute()`
 is `async` but calls a synchronous `httpx.Client` (`builtin/web_search.py:50-56`,
-called at `:122`), blocking the event loop for up to 15s; `web_fetch.py` has the
-same defect plus a `time.sleep` in its retry loop (`shared_search.md:38-40`).
+called at `:122`); `web_fetch.py` has the same defect plus a `time.sleep` in its
+retry loop (`shared_search.md:38-40`).
 
 **SR-G4 (DECISION).** Retries: capability or consumer?
 None retry today; C2 tells the model to retry in prose
 (`research/web_search.py:280`), spending an LLM round to redo an HTTP call.
 *Recommendation:* bounded transport retry at Adapter. Interacts with SR-D4.
 
-**SR-G5 (REQUIRED).** Resource bounds are part of the contract: byte caps,
-content-type gates and streamed downloads, not unbounded `resp.text`. An
-unbounded read is a memory incident on a `MemoryMax`-capped host
-(`shared_search.md:41-42`) and applies with more force to image and PDF media
-(§5.C) than to the HTML the current code assumed.
+**SR-G5 (REQUIRED).** Resource bounds are contract: byte caps, content-type
+gates, streamed downloads — not unbounded `resp.text`, which is a memory incident
+on a `MemoryMax`-capped host (`shared_search.md:41-42`) and applies with more
+force to image and PDF media than to the HTML the current code assumed.
 
 ### H. Concurrency and rate control
 
@@ -446,42 +509,42 @@ update lands (`research_tool.py:83-90`, `:768-771`); C4 fans out with an unbound
 `asyncio.gather` (`admin/models.py:967`).
 
 **SR-H2 (REQUIRED).** Two bound scopes, both real: within one batch, and across
-simultaneous runs (research caps at 3 concurrent, `research_tool.py:328,376`).
+simultaneous runs (`research_tool.py:328,376`).
 
 **SR-H3 (REQUIRED).** One call's failure must not poison its siblings in a
 concurrent batch — handled and reasoned in C2 (`research_tool.py:106-114`).
 
-**SR-H4 (DECISION).** Rate limiting: pace, or react to 429s?
-All react; none pace. An unbounded fan-out at a shared self-hosted SearXNG (C4) is
-the case most likely to get the family's own instance blocked upstream. The
+**SR-H4 (DECISION — G5).** Rate limiting: pace, or react to 429s?
+All react; none pace. An unbounded fan-out at a shared self-hosted SearXNG (C4)
+is the case most likely to get the family's own instance blocked upstream. The
 primitive exists — `threetears.core.coordination.token_bucket.TokenBucket`.
 *Recommendation:* client-side pacing per provider *instance*, at Adapter — the
-shared instance is what is at risk, and no single consumer sees the aggregate load.
+shared instance is what is at risk, and no single consumer sees the aggregate
+load.
 
-### I. Telemetry
+### I. Telemetry (G10)
 
 **SR-I1 (REQUIRED).** Every call is individually recorded: query, scoping
-parameters, result count, duration, error. Discodon states why — so "the facet
-that failed is visible per trace, not just in Loki" (`ResearchSearchRecord`,
+parameters, result count, duration, error — so "the facet that failed is visible
+per trace, not just in Loki" (`ResearchSearchRecord`,
 `discodon/logging/models.py:232-247`).
 
 **SR-I2 (REQUIRED).** Search wall-clock is separable from model wall-clock in any
 run that mixes them (`ResearchRoundRecord`, `logging/models.py:250-275`).
 
 **SR-I3 (REQUIRED).** Calls returning nothing because a budget was already spent
-are counted separately from calls that did work — `exhausted_calls`, "pure latency
-waste with zero coverage gain, the over-search tail this profile exists to
-measure" (`logging/models.py:258-261`).
+are counted separately from calls that did work — `exhausted_calls`, "pure
+latency waste with zero coverage gain" (`logging/models.py:258-261`).
 
-**SR-I4 (DECISION, NC7).** Emit telemetry, or return records?
+**SR-I4 (DECISION, P5).** Emit telemetry, or return records?
 C2 persists a trace document with a TTL to its own store
 (`research_tool.py:351,794-806`); C5 returns spend records and holds no sink
 (`engine.py:90-104`).
 *Recommendation:* return records, emit nothing. A capability owning a sink forces
-every consumer onto it; both existing consumers already have their own, and
-`observe` integration then belongs to the host per the zero-dep-core pattern.
+every consumer onto it; both existing consumers have their own, and `observe`
+integration then belongs to the host per the zero-dep-core pattern.
 
-### J. Failure semantics
+### J. Failure semantics (G9)
 
 **SR-J1 (REQUIRED).** Failure classes are distinguishable, not merged:
 rate-limited, quota-exhausted, auth-failed, timeout, transport error, malformed
@@ -489,35 +552,33 @@ response, zero results. C2 distinguishes all seven and gives each a different
 instruction (`research/web_search.py:246-292`), including the deliberate split
 between "retry" for timeouts and "give up" for transport failures. Errors carry
 remediation where the cause is known and fixable — `shared_search.md:104-107`
-makes exactly this point for SearXNG's 403-when-`json`-missing, the #1 setup
-failure.
+makes this point for SearXNG's 403-when-`json`-missing, the #1 setup failure.
 
-**SR-J2 (REQUIRED).** Zero results is a success. All implementations agree; pin it
-so no future one disagrees.
+**SR-J2 (REQUIRED).** Zero results is a success. All implementations agree; pin it.
 
-**SR-J3 (DECISION, NC2).** Errors as values or exceptions?
-C2 returns instructional prose to a model (`research/web_search.py:246-292`); C1
-returns `ActionResult(success=False)` (`web_search_tool.py:243-259`); C5 raises,
-carrying spend (`engine.py:118-127`); the builtin sniffs a string prefix
+**SR-J3 (DECISION, P1).** Errors as values or exceptions?
+C2 returns instructional prose to a model; C1 returns
+`ActionResult(success=False)` (`web_search_tool.py:243-259`); C5 raises, carrying
+spend (`engine.py:118-127`); the builtin sniffs a string prefix
 (`builtin/web_search.py:123`).
 *Recommendation:* typed exceptions carrying spend (SR-E3), with prose at Bind. The
 prose is prompt engineering — tuned per persona and per inner agent — and a lower
-layer emitting it has taken an opinion from above (NC2).
+layer emitting it has taken an opinion from above.
 
 ### K. Security, privacy, and conduct
 
 **SR-K1 (REQUIRED).** Credentials resolve through the consumer's secret handling;
-the capability must not read environment variables itself. Discodon passes the key
-in explicitly and holds it as `SecretStr` (`web_search_tool.py:186-192`).
+the capability must not read environment variables itself
+(`web_search_tool.py:186-192`).
 
-**SR-K2 (DECISION).** Are queries sensitive?
+**SR-K2 (DECISION — A2).** Are queries sensitive?
 A query can carry user-supplied conversational content and is recorded verbatim
-today (`logging/models.py:243`); under A2 it is directly user input. metallm ships
-a PII sanitization wrapper it is contributing.
+today (`logging/models.py:243`). metallm ships a PII sanitization wrapper it is
+contributing.
 *Recommendation:* treat queries as user content — retention governed by the
 consumer's policy, the capability required only to make the query available for
-redaction rather than to redact on its own (NC2: redaction policy is the
-consumer's opinion).
+redaction rather than to redact on its own (P1: redaction policy is an opinion
+from above).
 
 **SR-K3 (REQUIRED).** A self-hosted base URL is an internal endpoint. SSRF-shaped
 risks — consumer-supplied base URLs, redirect following during enrichment — must
@@ -525,26 +586,24 @@ be ruled on before the capability accepts a URL from anywhere but deployment
 config.
 
 **SR-K4 (DECISION).** robots.txt and provider terms — a family stance, or
-adapter-side? Currently unaddressed everywhere
-(`shared_search.md:176-177`), and the exposure differs by media: image search
-touches rights-bearing works, which C6 already models as `rights_status`.
-*Recommendation:* a stated family stance with per-adapter enforcement, because a
-per-app answer means the first app to get the shared SearXNG banned decides for
-everyone.
+adapter-side? Currently unaddressed everywhere (`shared_search.md:176-177`), and
+the exposure differs by media: image search touches rights-bearing works, which
+C6 already models as `rights_status`.
+*Recommendation:* a stated family stance with per-adapter enforcement. A per-app
+answer means the first app to get the shared SearXNG banned decides for everyone.
 
-### L. Packaging and weight
+### L. Packaging and weight (G9)
 
-**SR-L1 (REQUIRED, NC1).** A consumer must take Adapter+Call without a
-cross-encoder, torch, or a fetch stack. The Pi is the binding constraint; §5's
-"offer everything, require a bare minimum" is the stance.
+**SR-L1 (REQUIRED, P3).** A consumer must take Adapter+Call without a
+cross-encoder, torch, or a fetch stack — success criterion 5.
 
-**SR-L2 (REQUIRED, NC8).** Absent optional layers degrade explicitly: a consumer
+**SR-L2 (REQUIRED, P8).** Absent optional layers degrade explicitly: a consumer
 without rerank gets provider order and *knows* it.
 
-**SR-L3 (REQUIRED, NC2).** Types crossing package boundaries ship as a
+**SR-L3 (REQUIRED, P1).** Types crossing package boundaries ship as a
 dependency-free leaf, per the ratified contracts-leaf pattern.
 
-### M. Lifecycle
+### M. Lifecycle (G9)
 
 **SR-M1 (DECISION).** How do the types version, and what is the compatibility
 promise across lockstep releases? Seven consumers in four repos will bind;
@@ -554,16 +613,16 @@ versioning scheme. *Recommendation:* rule before the first consumer binds.
 **SR-M2 (DECISION).** Response caching — where, and is it in scope?
 `shared_search.md:173-175` raises it and notes core collections have no TTL
 semantics. It interacts with SR-F3: a cache and a replay store are different
-things solving adjacent problems, and building one without deciding about the
-other tends to produce a cache that is *almost* a replay store.
-*Recommendation:* decide replay first (SR-F3); caching after, in its light.
+things solving adjacent problems, and building one without deciding the other
+tends to produce a cache that is *almost* a replay store.
+*Recommendation:* decide replay first; caching after, in its light.
 
 **SR-M3 (DECISION — open question 13).** Ratification home.
 *Recommendation:* this file is the cross-repo record; discodon, metallm and
 samsung each record acceptance of what binds them. Otherwise the next session in
 any of those repos re-derives all of it.
 
-## 6. Decisions needing an owner
+## 9. Decisions needing an owner
 
 | ID | Decision | Recommendation |
 |----|----------|----------------|
@@ -586,7 +645,7 @@ any of those repos re-derives all of it.
 | A1 | Is image search the same capability | Assumed yes; if no, this is web-text search and should be named so |
 | A2 | Are person-typed queries in scope | Assumed yes; cheap now, expensive to retrofit |
 
-## 7. Defects found while gathering this
+## 10. Defects found while gathering this
 
 True today, independent of whether any convergence happens. Items 6–8 are
 `shared_search.md`'s findings, kept here so one list is complete.
@@ -605,43 +664,42 @@ True today, independent of whether any convergence happens. Items 6–8 are
 8. **Errors detected by string prefix** — `not content.startswith("[TOOL ERROR]")`
    — SR-J3.
 
-## 8. What this document deliberately does not do
-
-It does not propose a contract, choose fields, name packages, pick providers, or
-sequence a migration.
-
-## 9. Reading `shared_search.md` against these requirements
+## 11. Reading `shared_search.md` against this
 
 The sketch is right about layering, provider extras, capability metadata,
 conformance tests per provider, `ToolResult.metadata` as the non-breaking
-migration path, and packaging option A. Five choices in it are contradicted by the
-requirements above, all in the same direction — they assume a text-web caller:
+migration path, and packaging option A. Five of its choices are contradicted, all
+in the same direction — they assume a text-web caller:
 
 1. **`category: str | None = None  # searxng categories; tavily ignores`**
    (`:59`). A silent per-provider drop, written into the contract sketch itself —
-   SR-B2/SR-B3/NC8. This is the seed of exactly the coupling the anti-goal names.
-2. **A single `score: float | None`** (`:68`). Keeping the provider's score
-   instead of discarding it is an improvement over today; collapsing every ranking
-   judgment into one number is NC6/SR-A4, and forecloses C6, whose conflicting
+   SR-B2/SR-B3/P8, and the seed of exactly the coupling §7 exists to prevent.
+2. **A single `score: float | None`** (`:68`). Keeping the provider's score rather
+   than discarding it improves on today; collapsing every ranking judgment into
+   one number is P7/SR-A4, and forecloses C6, whose conflicting
    `confidence`/`quality_score` split is already designed.
 3. **Content lives in `FetchResult`, not `SearchResult`** (`:64-88`). Tavily
    returns page text with the search response; this shape cannot express that, so
    a Tavily consumer re-fetches what it already bought — SR-A2, and a capability
    regression under convergence principle 4.
 4. **`SearchResult` is web-shaped** — url/title/snippet/published_at, no media
-   facets (`:64-71`). C6 cannot bind to it — SR-C1/SR-C3.
+   facets (`:64-71`). C6 cannot bind to it — G4, SR-C1/SR-C3.
 5. **`raw: dict[str, Any]  # provider passthrough, never load-bearing`** (`:71`).
    Untyped and disclaimed is not preservation: it is where `acquisition_method`
-   would land and then be unusable — NC5.
+   would land and then be unusable — P2.
 
 Two structural notes:
 
 6. **The L2 "pipeline" fuses aggregate, select and enrich** — "search → dedupe →
    optional rerank → bounded-concurrency fetch of top-k" (`:130-131`). A consumer
-   wanting dedup without rerank, or rerank without fetch, takes all three — NC3.
+   wanting dedup without rerank, or rerank without fetch, takes all three — P4.
    Composable stages, not one helper.
-7. **Record/replay appears nowhere** — SR-F3, and the one that most affects §4.2.
+7. **Record/replay appears nowhere** — SR-F3, the one that most affects G8.
 
 None of this argues against the sketch's direction. It argues that the contract
-should be cut after §6 has answers, not before — and that the answers change five
-fields.
+should be cut after §9 has answers — and that the answers change five fields.
+
+## 12. What this document does not do
+
+It does not propose a contract, choose fields, name packages, pick providers, or
+sequence a migration.
