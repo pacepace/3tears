@@ -5,6 +5,28 @@
 
 ---
 
+## Contents
+
+- [1. What this document proposes](#1-what-this-document-proposes)
+- [2. Problem statement](#2-problem-statement)
+- [3. Principles for the solution](#3-principles-for-the-solution)
+- [4. The solution](#4-the-solution)
+  - [4.1 State substrate](#41-state-substrate--threetearscore-collections-exists-metallm-lineage)
+  - [4.2 Evals](#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)
+  - [4.3 Prompt management](#43-prompt-management--identity-from-discodon-durable-tier-from-scriobs-pattern)
+  - [4.4 LLM substrate](#44-llm-substrate--3tears-models-exists-metallm-lineage)
+  - [4.5 Memory](#45-memory--3tears-agent-memory-exists-metallm-lineage)
+  - [4.6 Conversation engines](#46-conversation-engines--organs-shared-skeletons-app-local)
+  - [4.7 Identity](#47-identity--3tears-iam--3tears-agent-acl-exist-scriob-is-proof-of-life)
+  - [4.8 Observability](#48-observability--3tears-observe-exists-metallm-lineage)
+  - [4.9 Config](#49-config--promote-the-contract-not-the-system-from-discodon)
+  - [4.10 MCP conventions](#410-mcp-conventions--into-3tears-mcp-from-hallucinote)
+  - [4.11 Chat UI](#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)
+  - [4.12 Tiled/zoomable images](#412-tiledzoomable-images--a-slim-acquisition-package-new-from-samsungs-design)
+  - [4.13 Scraping](#413-scraping--consolidate-on-3tears-scrape-exists-faidh-lineage)
+- [5. Implications per family member](#5-implications-per-family-member)
+- [6. Open questions](#6-open-questions)
+
 ## 1. What this document proposes
 
 That 3tears becomes the **single shared home** for every cross-app capability in the
@@ -60,15 +82,18 @@ repos (2026-08-02) found:
   hand-operated scenario briefs, and metallm's nothing — despite metallm being
   the most LLM-central app in the family.
 - **Five answers to "where does long-lived shared state live"** (state survey,
-  same date): metallm holds every persistent entity in core collections and
-  keeps Pydantic out of its data layer entirely; scriob splits collections
-  (control plane) from markdown-backed Pydantic (stories); samsung recorded a
-  reasoned rejection and hand-built a structural match of core's store
-  protocol; hallucinote lock-guards stdlib dicts, correctly; discodon holds a
-  ~dozen ad-hoc caches — eleven state dicts/sets aliased across ~8 delegate
-  classes with no lock, three separate threads reaching into event-loop dicts
-  (one of them behind a lock), and an auth-token cache where a token revoked
-  in one process stays valid in every other until restart.
+  same date):
+  - metallm holds every persistent entity in core collections and keeps
+    Pydantic out of its data layer entirely.
+  - scriob splits collections (control plane) from markdown-backed Pydantic
+    (stories).
+  - samsung recorded a reasoned rejection and hand-built a structural match
+    of core's store protocol.
+  - hallucinote lock-guards stdlib dicts, correctly.
+  - discodon holds a ~dozen ad-hoc caches: eleven state dicts/sets aliased
+    across ~8 delegate classes with no lock, three separate threads reaching
+    into event-loop dicts (one behind a lock), and an auth-token cache where
+    a token revoked in one process stays valid in every other until restart.
 - **Hand-rolled cache coherence, three times**: discodon built a ZMQ
   invalidation bus to keep one 60-second TTL dict coherent across processes;
   metallm mutates an unlocked path cache from request tasks and a NATS
@@ -167,17 +192,21 @@ dict that is neither.
 
 #### Why single-pod apps still qualify
 
-Multi-pod is deliberately absent from principle 8's test. A single-process
-asyncio app hits the same failure class: any read-modify-write spanning an
-`await` can interleave, and "pure asyncio" apps never are — metallm has ~27
-`asyncio.to_thread` call sites, and discodon runs three separate threads
-that reach into its event-loop dicts (one of them behind a lock). The
-collection path doesn't prevent interleaving; it converts the silent lost
-update into a `ConcurrentModificationError` — a stack trace instead of a
-heisenbug. And core is built for the small case: all three tiers are
-optional on `CollectionRegistry.configure`, NATS is an extra, so an
-L1-only process adopts the discipline with no infrastructure. When the app
-later goes multi-pod, the code is already written.
+Multi-pod is deliberately absent from principle 8's test, because a
+single-process asyncio app hits the same failure class:
+
+- Any read-modify-write spanning an `await` can interleave.
+- "Pure asyncio" apps never are — metallm has ~27 `asyncio.to_thread` call
+  sites; discodon runs three separate threads that reach into its event-loop
+  dicts, one of them behind a lock.
+- Collections don't prevent the interleaving; they convert the silent lost
+  update into a `ConcurrentModificationError`. A stack trace instead of a
+  heisenbug.
+
+And the small case costs no infrastructure: all three tiers are optional on
+`CollectionRegistry.configure` and NATS is an extra, so an L1-only process
+adopts the discipline as a library. When the app later goes multi-pod, the
+code is already written.
 
 The reason to converge this now rather than per-incident: **AI writes the
 dicts.** Most family code is AI-authored, and the model's default for shared
@@ -189,14 +218,15 @@ question 17).
 
 #### What adoption looks like (metallm is the reference)
 
-metallm's shape is the one to copy, not core's README: entities subclass
-`BaseEntity` with **typed `@property` accessors** over `_get_raw`, so mypy
-still checks every field access — the static-typing loss of dynamic
-attribute access is real, and typed accessors are the family answer to it.
-Two conventions ride along: names distinguish live proxies from snapshots
-(an entity is not a DTO; don't let one impersonate the other), and Pydantic
-models sit inside `serialize`/`deserialize` where rows need validation on
-the way to storage.
+metallm's shape is the one to copy, not core's README:
+
+- Entities subclass `BaseEntity` with **typed `@property` accessors** over
+  `_get_raw`, so mypy still checks every field access. The static-typing loss
+  of dynamic attribute access is real; typed accessors are the family answer.
+- Names distinguish live proxies from snapshots — an entity is not a DTO;
+  don't let one impersonate the other.
+- Pydantic models sit inside `serialize`/`deserialize` where rows need
+  validation on the way to storage.
 
 One honest gap: **no family production consumer uses the sync subscript
 bridge.** metallm and scriob both drive collections through the async API
@@ -207,13 +237,16 @@ family scale (open question 15).
 
 samsung evaluated core and recorded a rejection that stands: core's L1 is a
 named in-memory SQLite *cache*, and an app whose SQLite file must *be* the
-store — sync core, memory-capped Pi — needs a different shape. Its answer is
-the family pattern for this case (principle 6): `SqliteDurableStore`
-structurally matches core's `DurableStore` protocol without importing it, so
-later adoption is an adapter, not a rewrite. The protocol should be
-published and conformance-tested so the match can't silently drift (open
-question 16). hallucinote stays out entirely — the Live-side stdlib-only
-contract makes the question moot, and its lock discipline is already sound.
+store — sync core, memory-capped Pi — needs a different shape.
+
+Its answer is the family pattern for this case (principle 6):
+`SqliteDurableStore` structurally matches core's `DurableStore` protocol
+without importing it, so later adoption is an adapter, not a rewrite. Publish
+the protocol and conformance-test it so the match can't silently drift (open
+question 16).
+
+hallucinote stays out entirely — the Live-side stdlib-only contract makes the
+question moot, and its lock discipline is already sound.
 
 ### 4.2 Evals — `3tears-eval-{contracts,run,gen,analysis}` (new; from discodon)
 
@@ -238,17 +271,23 @@ the package split follows seams that already exist:
 
 Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
-versioning makes multi-package consumption free within the family. Presentation
-(REST/MCP routes, React) stays app-side as adapters over the analysis
-projections — with one boundary shift now in flight: discodon's chart-substrate
-decision (2026-08-02, accepted) compiles a typed finding payload to a
-**Vega-Lite spec** server-side in Python, rendered by `vega-embed` in the
-browser and `vl-convert` headlessly for MCP and REST. The spec compiler is
-portable Python over the projections and belongs in `eval-analysis` when it
-extracts; pixels and theming stay app-side (Vega-Lite config is where an app's
-palette lives). That is what lets an agent receive a chart over MCP without a
-headless browser, and it shrinks open question 9 — sharing charts no longer
-requires sharing React.
+versioning makes multi-package consumption free within the family.
+
+Presentation stays app-side — REST/MCP routes and React are adapters over the
+analysis projections. One boundary shift is in flight: discodon's
+chart-substrate decision (2026-08-02, accepted) replaces bespoke chart
+components with compiled **Vega-Lite specs**.
+
+- Python compiles a typed finding payload to a Vega-Lite spec, server-side.
+- The browser renders the spec with `vega-embed`; MCP and REST render it
+  headlessly with `vl-convert` — no headless browser, so agents get charts.
+- The spec compiler is portable Python over the projections; it belongs in
+  `eval-analysis` when it extracts.
+- Pixels and theming stay app-side — Vega-Lite config is where an app's
+  palette lives.
+
+Net effect on open question 9: sharing charts no longer requires sharing
+React.
 
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
@@ -342,16 +381,22 @@ path an env var points at, retiring the mistyped-path-bootstraps-an-empty-
 instance failure class samsung has on file.
 
 hallucinote is the pattern's next test, and the payoff is a capability, not
-hygiene: its songs are per-branch SQLite binaries (`<slug>-<branch>.db`) —
+hygiene. Its songs are per-branch SQLite binaries (`<slug>-<branch>.db`) —
 the workflow is already git-branch-shaped, but a binary file can't merge, so
-two users can't work the same song across machines. Demoting the DB to cache
-behind a canonical lossless text projection — the same demotion scriob and
-discodon make — turns collaboration into ordinary git: branch, edit, merge at
-file granularity, captures following the blob rule. Merge semantics inside a
-clip are genuinely hard (two people editing the same notes is a musical
-conflict, not a textual one), but a binary conflict offers only "pick one";
-text at least localizes the argument. No shared server enters hallucinote's
-architecture — git is the sync transport, as everywhere else in the pattern.
+two users can't work the same song across machines. The fix is the same
+demotion scriob and discodon make:
+
+- A canonical lossless text projection lives in git as master; the SQLite
+  file is rebuilt as a cache.
+- Collaboration becomes ordinary git — branch, edit, merge at file
+  granularity. Captures follow the blob rule.
+- No shared server enters hallucinote's architecture; git is the sync
+  transport, as everywhere else in the pattern.
+
+The honest caveat: merge semantics inside a clip are hard — two people
+editing the same notes is a musical conflict, not a textual one. But a binary
+conflict offers only "pick one"; text at least localizes the argument (open
+question 19).
 
 ### 4.4 LLM substrate — `3tears-models` (exists; metallm lineage)
 
@@ -462,18 +507,23 @@ for the original pattern.)
 
 Eval is the forcing case — it exposes MCP to create, run, and analyze evals,
 and it is about to become a shared package. The rule that composes: **one MCP
-surface per app, owned by the host's RBAC-gated `McpServer`; shared packages
-never run their own servers — they ship typed action groups the host mounts.**
-Discodon already runs this shape (one server aggregating eval, logs, entity,
-and prompt tools), samsung serves HTTP and MCP from one process and port, and
-hallucinote's action registry — populated by import side-effects of action
-modules — is the registration mechanism itself, generalized. Behind the
-server, `3tears-registry` routes calls across pods; registration and routing
-stay orthogonal. There is no family-central controller: an agent connects to
-an app, and the app decides exposure, naming, and RBAC. Eval's
-create/run/analyze actions therefore ship as an action module defined against
-eval-contracts and the storage Protocol; where that module lives is open
-question 18.
+surface per app; shared packages ship typed action groups, never their own
+servers.**
+
+- The host's RBAC-gated `McpServer` owns the surface. The app decides
+  exposure, naming, and RBAC — there is no family-central controller; an
+  agent connects to an app.
+- The precedents already run: discodon aggregates eval, logs, entity, and
+  prompt tools behind one server; samsung serves HTTP and MCP from one
+  process and port; hallucinote's action registry — populated by import
+  side-effects of action modules — is the registration mechanism itself,
+  generalized.
+- Behind the server, `3tears-registry` routes calls across pods.
+  Registration and routing stay orthogonal.
+
+Eval's create/run/analyze actions therefore ship as an action module defined
+against eval-contracts and the storage Protocol; where that module lives is
+open question 18.
 
 ### 4.11 Chat UI — a headless TypeScript kit (protocol from 3tears; seeds from scriob and metallm)
 
@@ -547,13 +597,15 @@ not implementations.
   to durable per-persona user facts), `iam` (dropping its OAuth client,
   break-glass hashing, and cookie mint/verify; keeping allowlist and transport),
   and — as first consumer of its own extraction — the `eval-*` packages, keeping
-  its host adapters and surfaces local. Under principle 8 (gated on the Python
-  floor, open question 1): core collections for the caches whose coherence is
-  hand-rolled today — the budget TTL cache first, retiring the ZMQ invalidation
-  bus built solely to keep it coherent; the model registry, which today runs
-  unlocked while its two sibling registries carry locks; the allowlist and
-  MCP-token caches, which lack cross-process invalidation entirely — then the
-  entity-manager context dicts as open question 14 resolves.
+  its host adapters and surfaces local.
+- **Adopts under principle 8** (gated on the Python floor, open question 1),
+  in order:
+  - the budget TTL cache — retires the ZMQ invalidation bus built solely to
+    keep it coherent;
+  - the model registry — today unlocked while its two sibling registries
+    carry locks;
+  - the allowlist and MCP-token caches — no cross-process invalidation today;
+  - the entity-manager context dicts, as open question 14 resolves.
 - **Contributes:** the eval system; the prompt-identity discipline and the
   registry seeding the shared store; the runtime-config precedence contract; the
   per-persona memory grain requirement; the import-boundary pattern and token
