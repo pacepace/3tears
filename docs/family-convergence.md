@@ -306,6 +306,36 @@ so the cost being avoided is future divergence rather than present duplication
 
 ### 4.12 Prompt management and versioning (identity from discodon; durable tier from scriob's pattern)
 
+Prompts are a cross-cutting concern spanning three planes, each with its own
+convergence answer:
+
+- **Storage/authoring** (presets, seeds, operator and machine edits) — shared;
+  the store described below.
+- **Assembly** (dynamic composition at runtime) — **app-local**: discodon's
+  prompt-graph DAG (delta-based inheritance base→scenario→entity→variant,
+  content-addressed variants, `create_variant`/`promote_variant` lifecycle),
+  metallm's personality node, scriob's per-object prompts are product cores
+  with no second consumer pulling for a shared engine. What *is* shared: every
+  engine emits an **assembly-provenance record** — content hashes of each
+  component that entered the prompt plus a composition/variant hash — cheap
+  for static and dynamic engines alike, and the thing that makes different
+  engines comparable.
+- **Measurement / A/B** — shared via eval-contracts. Dynamic prompts mean
+  rendered text can never be the A/B unit (it differs every turn); the lever
+  is a *variant identity*, with apparatus proof (context-component hashes,
+  frozen case sets, deterministic seeds, cassettes) showing everything else
+  held. Discodon already ships this shape: run-scoped prompt overlays recorded
+  as provenance, hashed into run identity, projected into reports — the
+  designed mechanism for "did this prompt change make Bob worse?".
+
+These planes close into one **variant lifecycle**, the workflow the family
+promotes: an edit creates a draft variant → an eval campaign runs it as a cell
+against control → the verdict attaches to the variant's content hash →
+promotion is gated on that evidence → the promoted default lands in the
+git-durable tier. Prompts ship the way code ships — through gates — which is
+what finally dissolves the seed-drift discomfort below: the live store and the
+code share a versioning substrate, and promotion carries evidence.
+
 Prompts couple to both evals and administration, and the two couplings resolve
 differently:
 
@@ -486,13 +516,19 @@ differently:
     instruments; the host configures"). The reconciliation is probably "the
     philosophy governs *library* config; the new package is an *application*
     capability like iam" — but that's a ruling to make explicitly, not drift into.
-11. **Git-backed vs append-only prompt store.** The git-as-L3 design (§4.12) is
+11. **Does the prompt-graph assembly engine ever promote?** DAG assembly with
+    inheritance deltas is arguably general, but today it has one consumer
+    (discodon) and compiles to discodon's template system. The second-consumer
+    rule says: promote the assembly-provenance contract now, revisit the
+    engine only if metallm's personality layer (the likeliest second consumer)
+    pulls for it.
+12. **Git-backed vs append-only prompt store.** The git-as-L3 design (§4.12) is
     the principled fix for seed drift, but it makes the prompt store's write
     path depend on a git tier some deployments may not want. Decide whether the
     shared store offers both durable tiers behind one contract (the
     `DurableStore` seam suggests it can), and whether config (§4.11) and
     prompts share that store or merely its contract.
-12. **Where convergence decisions live going forward.** This document proposes; each
+13. **Where convergence decisions live going forward.** This document proposes; each
     repo's governance must ratify the parts that bind it (floors, consumption
     patterns, what it drops). A lightweight cross-repo decision record — probably
     here in `3tears/docs/` — is needed so per-app sessions stop re-deriving the
