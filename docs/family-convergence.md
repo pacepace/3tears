@@ -176,10 +176,12 @@ and it holds for everyone:
   planes (scriob's tenants/users/tokens/usage), domain rows (metallm's 16
   entities), and the caches-with-invalidation every serving app keeps
   rebuilding by hand.
-- **Curated content is files, with collections as the cache over it.** The
-  content-repo pattern (§4.3): Pydantic models with lossless file round-trips
-  own the authored domain (scriob's `MarkdownModel`), and a collection with a
-  git L3 serves it fast.
+- **Curated content is authored files, served through the same collections.**
+  The content-repo pattern (§4.3): Pydantic models with lossless file
+  round-trips own the authored domain (scriob's `MarkdownModel`), and a
+  collection serves it fast. L3 is a slot, not a place — scriob plugs git in
+  for stories, and most collections keep YugabyteDB/Postgres there.
+  Git-as-L3 is the exception for human-reviewed content, never the default.
 
 The collision people expect — "we're a Pydantic shop; 3tears entities keep
 their data in L1" — dissolves under the assignment. A Pydantic model is a
@@ -604,6 +606,10 @@ not implementations.
   hand-rolled provider plumbing), `agent-memory` (upgrading capped working notes
   to durable per-persona user facts), `iam` (dropping its OAuth client,
   break-glass hashing, and cookie mint/verify; keeping allowlist and transport),
+  `channels` (the unified message protocol and WS adapter — its web and
+  activity sockets need the family stream protocol for the chat kit anyway;
+  migrating the Discord bot path onto the Discord adapter is an option when
+  that layer comes up for rewrite, same stance as `3tears-langgraph`),
   and — as first consumer of its own extraction — the `eval-*` packages, keeping
   its host adapters and surfaces local.
 - **Adopts under principle 8** (gated on the Python floor, open question 1),
