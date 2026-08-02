@@ -295,6 +295,42 @@ Priority: second tier, behind evals/memory/chat — every app's config works tod
 so the cost being avoided is future divergence rather than present duplication
 (except secrets, where consolidation is already underway).
 
+### 4.12 Prompt management and versioning (identity from discodon; durable tier from scriob's pattern)
+
+Prompts couple to both evals and administration, and the two couplings resolve
+differently:
+
+- **Eval coupling resolves through identity, not the store.** Discodon's eval
+  system never imports its prompt registry — it records **content-addressed
+  identity** (SHA-256 content hashes as true identity, version numbers as human
+  convenience) and classifies every score-determining input as *apparatus* /
+  *lever* / *label* so comparisons can badge exactly which condition moved. That
+  discipline moves into `3tears-eval-contracts`; each app's host adapter answers
+  one question — "what is the content hash of each prompt component this run
+  used?" — regardless of whether its prompts live in a DB (discodon, metallm),
+  static code (scriob), or files. Eval promotion therefore does **not** gate on
+  prompt-registry promotion.
+- **The registry is promoted as the third instance of the operator-editable
+  store pattern** (§4.11's config store and the model catalogues are the first
+  two): seed from code, store as master, operator edit surfaces, environment
+  scoping — plus a prompt-specific layer (types, sections, rendering,
+  content-hash dedup). The second consumer already exists: metallm stores
+  system-owned judge prompts and *machine-rewritten* user prompts. Machine
+  writers make **actor attribution** load-bearing (who changed this prompt:
+  seed, operator, or system) — hallucinote's event-sourced actor model is the
+  family precedent.
+- **The seed-drift discomfort gets an architectural fix, not a workflow.**
+  Seed-from-code-then-DB-master is two stores on different versioning substrates
+  with a one-way door; discodon's export→review→promote flow is a hand-built
+  return path. The principled design, already proven in-family by scriob's
+  git-as-L3: the durable tier of the prompt store is git — operator and system
+  edits become commits, so identity, diff, review, rollback, and history come
+  free, and "promote to defaults" becomes a merge instead of a bespoke tool.
+  Where git-backing is too heavy, the fallback is an append-only
+  content-addressed store with lineage (parent hash, actor, source:
+  seed|operator|system) and a mechanical diff-against-seed — drift always
+  visible, never silent.
+
 ## 5. Implications per family member
 
 ### 3tears
@@ -327,7 +363,9 @@ so the cost being avoided is future divergence rather than present duplication
 - **Contributes:** the entire eval system; the per-persona memory grain requirement;
   the eval-kit import-boundary pattern and DTCG token pipeline to the chat-UI
   workstream; the runtime-config precedence contract and seed semantics (while
-  migrating its own secrets encryption onto `core.security`).
+  migrating its own secrets encryption onto `core.security`); the
+  content-addressed prompt-identity discipline and versioned-input vocabulary
+  (into eval-contracts) and the prompt registry as seed for the shared store.
 - **Keeps:** the persona/entity/turn engine, prompt graph, and all Discord/Mastodon
   product surface. Explicitly does **not** rebase onto `3tears-langgraph` or adopt
   LangSmith.
@@ -439,7 +477,13 @@ so the cost being avoided is future divergence rather than present duplication
     instruments; the host configures"). The reconciliation is probably "the
     philosophy governs *library* config; the new package is an *application*
     capability like iam" — but that's a ruling to make explicitly, not drift into.
-11. **Where convergence decisions live going forward.** This document proposes; each
+11. **Git-backed vs append-only prompt store.** The git-as-L3 design (§4.12) is
+    the principled fix for seed drift, but it makes the prompt store's write
+    path depend on a git tier some deployments may not want. Decide whether the
+    shared store offers both durable tiers behind one contract (the
+    `DurableStore` seam suggests it can), and whether config (§4.11) and
+    prompts share that store or merely its contract.
+12. **Where convergence decisions live going forward.** This document proposes; each
     repo's governance must ratify the parts that bind it (floors, consumption
     patterns, what it drops). A lightweight cross-repo decision record — probably
     here in `3tears/docs/` — is needed so per-app sessions stop re-deriving the
