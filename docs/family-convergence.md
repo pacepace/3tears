@@ -24,6 +24,7 @@
   - [4.11 Chat UI](#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)
   - [4.12 Tiled/zoomable images](#412-tiledzoomable-images--a-slim-acquisition-package-new-from-samsungs-design)
   - [4.13 Scraping](#413-scraping--consolidate-on-3tears-scrape-exists-faidh-lineage)
+  - [4.14 Web search](#414-web-search--one-contract-staged-pipeline-searxng-from-metallm-budgets-from-discodon)
 - [5. Implications per family member](#5-implications-per-family-member)
 - [6. Open questions](#6-open-questions)
 
@@ -582,7 +583,50 @@ Three stacks become one. Lowest urgency of the workstreams, but the end state is
 that metallm's fetch/extract path and discodon's research scraping are consumers,
 not implementations.
 
-## 5. Implications per family member
+### 4.14 Web search — one contract, staged pipeline (SearXNG from metallm; budgets from discodon)
+
+The family runs web search two ways today and is about to run it a third:
+
+- **metallm / 3tears**: self-hosted SearXNG (json format enabled, limiter off
+  — the ops knobs are already right) behind the agent-tools `WebSearchTool`
+  builtin, with trafilatura light extraction behind the `[fetch]` extra —
+  correctly packaged. scrape's `page_finder` composes on top.
+- **discodon**: Tavily, built twice internally, owning the SaaS discipline —
+  daily and per-invocation budgets, credit-aware `search_depth`, relevance
+  scores, domain scoping.
+- **samsung**: model-mediated search inside discovery, with re-search as a
+  first-class run type and spend semantics — a structured search slot fits
+  machinery it already has.
+
+The tells that the current shape hurts: the builtin returns *formatted text*,
+so metallm side-steps both of its own builtins for structured access (a raw
+SearXNG helper in `admin/models.py`, an app-side trafilatura wrapper); and
+discodon duplicated its own wrapper. Same signal auth gave before iam.
+
+The convergence is a **contract leaf** (§5, "Offer everything") plus stage
+composition — not a new engine:
+
+- **The search contract**: query in; ranked structured results out — url,
+  title, snippet, score — plus **cost**, so SearXNG's zero and Tavily's
+  credits are the same field. Discodon's budget hooks generalize with it.
+- **Providers behind extras**: `[searxng]` (httpx-only, self-hosted,
+  zero-cost) and `[tavily]` (from discodon's wrapper). The builtin
+  `WebSearchTool` becomes a consumer that renders results for LLMs —
+  formatting is presentation, and it stops destroying structure.
+- **The stages compose through contracts, and apps stop fusing them**:
+  search → light extraction (trafilatura, already right) → rerank → heavy
+  fetch only for hostile targets (`3tears-scrape`, §4.13).
+- **Rerank is a stage with existing homes, not part of search**:
+  `agent-memory` ships MMR; `3tears-models` already carries rerank
+  capability metadata and pricing. A local cross-encoder arrives as a models
+  provider when a consumer pulls for it — search results, memory passages,
+  and any candidate list share the seam.
+
+Stated plainly: SearXNG + extraction + rerank, self-hosted, is the same
+product Tavily sells — the contract makes that a per-instance deployment
+choice instead of an architecture fork. Third-party SearXNG MCP servers
+exist, but the family pattern stays §4.10's: in-process adapters behind each
+app's own MCP surface; bridging an external server remains an app option.
 
 ### 3tears
 
@@ -591,7 +635,8 @@ not implementations.
   publishing lane, the shared runtime store contract for config and prompts
   (discodon), scriob's credential cascade, samsung's OpenRouter findings, the
   memory grain generalization, the Vega-Lite spec compiler (discodon's chart
-  substrate), and samsung's L1-is-a-cache integration finding.
+  substrate), samsung's L1-is-a-cache integration finding, and the web-search
+  contract with discodon's budget semantics (§4.14).
 - **Obligations:** harden the release path (it has had real incidents, including
   an untagged PyPI publish) before it carries five consumers' eval
   infrastructure.
@@ -686,7 +731,8 @@ rather than drift.
 - **Contributes:** the eval system; the prompt-identity discipline and the
   registry seeding the shared store; the runtime-config precedence contract; the
   per-persona memory grain requirement; the import-boundary pattern and token
-  pipeline for the chat kit.
+  pipeline for the chat kit; the Tavily budget discipline seeding the
+  web-search contract (§4.14).
 - **Keeps:** the persona/entity/turn engine, prompt graph, and all product
   surface — and its Pydantic boundary layer everywhere it stands. Does not
   rebase onto `3tears-langgraph`; does not adopt LangSmith.
@@ -707,7 +753,8 @@ rather than drift.
   as the store's second consumer, and its frontend as the chat-kit feature
   reference.
 - **Drops:** local auth, local backup, bespoke enforcement tests, raw stream
-  filtering, and eventually its fetch path.
+  filtering, its direct SearXNG and trafilatura side-steps once the search
+  contract lands (§4.14), and eventually its fetch path.
 - **Normalization:** close the version lag first — every other adoption assumes
   a current pin. Then fold its self-rolled coherence into the platform it
   ships: the active-path cache — an unlocked dict mutated by request tasks and
@@ -731,9 +778,11 @@ rather than drift.
   its unwritten local plan), `eval-run` for its MCP-driver eval, the shared
   MCP conventions it currently follows as prose, and — for its planned chat
   surface — the headless chat kit (§4.11) over the stream-protocol contracts
-  leaf (§5, "Offer everything"). The chat also re-opens its recorded
-  models-as-eval-extra decision: an LLM client at runtime is a weight trade
-  to re-price explicitly, not silently reverse.
+  leaf (§5, "Offer everything"), and the search contract's first two stages
+  (search + light extraction) for discovery (§4.14, open question 21). The
+  chat also re-opens its recorded models-as-eval-extra decision: an LLM
+  client at runtime is a weight trade to re-price explicitly, not silently
+  reverse.
 - **Contributes:** the acquisition contract design, the OpenRouter findings, the
   Python-floor audit, and the protocol-match adoption pattern — a local store
   tracking `DurableStore` structurally, adoptable later by adapter.
@@ -836,6 +885,13 @@ rather than drift.
     constraint either way: the extras demotions are breaking for current
     consumers (scriob and metallm each add `[nats]` one-liners), so they
     belong to a planned minor, not a drip.
+21. **Model-mediated search in the contract.** samsung searches through the
+    model today; OpenRouter online models and Anthropic's native web-search
+    tool are the same mode. Does the search contract (§4.14) represent those
+    results — different provenance, no per-result scores, cost folded into
+    tokens — or does it scope to API search, with model-native search a
+    `3tears-models` capability flag? Pretending the two shapes are one would
+    be a lie in the contract; pick where the seam goes.
 19. **The song-DB text projection.** hallucinote's collaboration payoff (§4.3)
     rests on a canonical lossless text format for ~27 tables of musical data,
     and on merge granularity chosen so two users usually conflict on different
