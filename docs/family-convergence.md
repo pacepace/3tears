@@ -44,10 +44,10 @@ repos (2026-08-02) found:
   scraping, `3tears-scrape` itself).
 - **Two OTel bootstraps and two dashboard sets** (metallm on `3tears-observe`;
   discodon on its own pinned `opentelemetry-*` stack).
-- **Two production auth implementations of the same design** (metallm's local
-  bcrypt/JWT `auth.py` vs `3tears-iam`, which scriob already consumes — iam's own
-  docs note the password code was "authored here first and independently again"
-  before consolidation).
+- **Three parallel auth implementations** (`3tears-iam`, which scriob consumes;
+  metallm's local bcrypt/JWT `auth.py`; discodon's Authlib GitHub OAuth +
+  hand-rolled signed-cookie sessions) — GitHub OAuth specifically now exists
+  twice, and the owners/allowlist/break-glass bootstrap pattern twice.
 - **Three hand-rolled chat frontends** (metallm ~25k LOC, scriob ~1,100-line
   `Chat.tsx`, discodon's web chat), with a fourth (samsung) on the way.
 - **Five different answers to "how do we eval"**: discodon's ~43k-line system,
@@ -217,9 +217,21 @@ consumers, not implementations.
 The only implementation of passwords, tokens, OAuth, and RBAC in the family. The
 change is metallm retiring its local `auth.py` and backup for the shared packages,
 and promoting scriob's credential-cascade/secret-sealing layer (which metallm has
-already hand-copied — the third copy should be prevented, not written). Discodon
-adopts iam only if/when it becomes meaningfully multi-user; hallucinote (stdio +
-loopback by design) never does.
+already hand-copied — the third copy should be prevented, not written).
+
+Discodon adopts iam too: it already runs GitHub OAuth (via Authlib), a DB-backed
+username allowlist with hardcoded permanent owners, a break-glass admin password,
+and hand-rolled HMAC-signed session cookies — the family's third parallel auth
+implementation. The seam scriob proved maps 1:1: iam's github/oauth-state/
+passwords/tokens replace discodon's Authlib client, break-glass hashing, and
+cookie mint/verify (discodon's documented no-server-side-revocation tradeoff
+carries over; both are self-contained signed credentials), while the allowlist,
+builtin owners, and cookie transport stay app-local. Bonus: the "hardcoded
+owners + DB allowlist + break-glass password" trio is now independently
+duplicated in discodon and scriob — a candidate to promote into iam as an
+optional small-deployment module under the second-consumer rule.
+
+Hallucinote (stdio + loopback by design) never adopts iam.
 
 ### 4.9 Observability — `3tears-observe` (exists; metallm lineage)
 
@@ -307,7 +319,9 @@ so the cost being avoided is future divergence rather than present duplication
 - **Adopts:** `3tears-observe` (drops its pinned OTel stack; metallm's shim is the
   playbook), `3tears-models` (drops hand-rolled OpenRouter/LangChain plumbing),
   `3tears-agent-memory` (upgrades capped FIFO working notes to durable per-persona
-  user facts), and — as **first consumer of its own extraction** — the
+  user facts), `3tears-iam` (drops its Authlib OAuth client, break-glass password
+  hashing, and cookie mint/verify; keeps allowlist/owners/transport local, per the
+  scriob seam), and — as **first consumer of its own extraction** — the
   `3tears-eval-*` packages, keeping its host adapters (persona factory, service
   facade, REST/MCP/React surfaces) local.
 - **Contributes:** the entire eval system; the per-persona memory grain requirement;
