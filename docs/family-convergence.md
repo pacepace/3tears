@@ -140,7 +140,10 @@ four more times, then maintained forever.
 7. **Leaf-package discipline, enforced.** New packages follow the house rules:
    minimal deps, extras for optional weight, import-cost tests, lockstep family
    versioning. Weight-sensitive consumers (a Raspberry Pi) must be able to take a
-   slim slice.
+   slim slice. The stance, stated once: **offer everything, require a bare
+   minimum.** A hard dependency is justified only by a package's core path —
+   peripheral weight goes behind extras, and wire formats cross package
+   boundaries as dependency-free contracts leaves (§5, "Offer everything").
 8. **State earns its store.** In-process state that outlives a request, is
    shared across tasks or threads, or is mutated from more than one place
    belongs in a collection, not a module-level dict. State that fails the test
@@ -600,6 +603,66 @@ not implementations.
   (open question 16); grow `3tears-enforcement` a module-level-mutable-dict
   scanner once principle 8 is ratified (open question 17).
 
+#### Offer everything, require a bare minimum
+
+The family's promise is mix and match: every capability on offer, almost
+nothing required — and the Pi is the consumer that keeps this honest. A
+dependency audit (2026-08-02) found the promise real at the bottom of the
+stack and eroding toward the top.
+
+Done right — the house patterns already exist:
+
+- `observe`: zero hard deps; OTel itself is the `[otel]` extra. The
+  "zero-dep no-op core" is real.
+- `media-contracts`: dependency-free by design — the contracts-leaf
+  precedent.
+- `core`: never imports nats-py; `3tears[nats]` is "the single switch," and
+  its pyproject explains why — nkeys ships no wheels, so the extra is the
+  difference between a wheel install and a source build.
+- Extras where they belong: agent-tools' format handlers, datasources'
+  warehouse drivers, iam's `[saml]`/`[webauthn]`, models' periphery.
+
+Eroded — each of these hard edges serves one or two modules:
+
+- `channels` hard-requires `3tears-nats[client]` for one import
+  (`presence/fanout.py`); `frames`/`protocol` — the wire contract — are
+  pydantic-only.
+- `models` hard-wires all three provider adapters (`anthropic`,
+  `langchain-anthropic`, `-openai`, `-openrouter`) while its own periphery
+  is already extras. This exact weight is why samsung exiled the package to
+  an eval-only dependency group.
+- `conversations` drags the full langchain/langgraph stack through one
+  module (`events.py`).
+- `agent-tools` hard-requires `agent-memory` for one module (`context.py`),
+  and NATS for `ToolServer` — which a `TearsTool`-only consumer never runs.
+- `mcp` hard-requires `starlette` + `uvicorn` for `http_server.py` alone —
+  stdio servers need no web stack, and §4.10's harvest explicitly demands a
+  light-consumable layer — plus NATS transitively via `epoch`.
+- `registry` declares `nats-py` directly alongside `3tears-nats[client]`,
+  bypassing the single-switch discipline, and hard-requires `agent-tools` —
+  so a routing catalog transitively installs langchain.
+
+The chains are the tell: `registry → tools → memory → langgraph →
+langchain`; `mcp → epoch → nats`. No consumer chose those; the graph did.
+
+The remedy, three moves, adopted wholesale:
+
+1. **Extras for optional weight** — core's `[nats]` switch is the house
+   pattern; channels, models (per-provider extras), agent-tools, and mcp
+   adopt it.
+2. **Contracts as a leaf** — ratified as the family pattern, not a special
+   case: any wire format or protocol that crosses a package boundary ships
+   as a dependency-free leaf. Precedents: `media-contracts`, and
+   `eval-contracts` is designed that way (§4.2). First candidates: the
+   channel `Frame`/stream protocol (samsung's planned chat is the waiting
+   second consumer), the audit envelope, `DurableStore` (open question 16).
+3. **Lazy imports at the seam**, so the extra is the only switch a consumer
+   flips.
+
+Enforcement closes it: the suite already gates import cost; extend it to
+pin each package's hard-dep list, so a new hard edge is a reviewed decision
+rather than drift.
+
 ### discodon
 
 - **Adopts:** `observe` (dropping its pinned OTel stack), `models` (dropping
@@ -665,8 +728,12 @@ not implementations.
 ### samsung-frame-art-loader
 
 - **Adopts:** the tiled-image acquisition package (as first consumer, replacing
-  its unwritten local plan), `eval-run` for its MCP-driver eval, and the shared
-  MCP conventions it currently follows as prose.
+  its unwritten local plan), `eval-run` for its MCP-driver eval, the shared
+  MCP conventions it currently follows as prose, and — for its planned chat
+  surface — the headless chat kit (§4.11) over the stream-protocol contracts
+  leaf (§5, "Offer everything"). The chat also re-opens its recorded
+  models-as-eval-extra decision: an LLM client at runtime is a weight trade
+  to re-price explicitly, not silently reverse.
 - **Contributes:** the acquisition contract design, the OpenRouter findings, the
   Python-floor audit, and the protocol-match adoption pattern — a local store
   tracking `DurableStore` structurally, adoptable later by adapter.
@@ -761,6 +828,14 @@ not implementations.
     ship inside `eval-run`/`eval-analysis`, or as a separate `3tears-eval-mcp`
     so consumers that want the engine without an agent surface skip the
     server weight?
+20. **Contracts-leaf cut order.** Ratifying the pattern (§5, "Offer
+    everything") doesn't sequence it. The channel frames leaf has a waiting
+    consumer (samsung's chat), the audit envelope is small, and
+    `DurableStore` rides open question 16. Cut them alongside the extras
+    demotions in one minor version, or per-package as consumers arrive? One
+    constraint either way: the extras demotions are breaking for current
+    consumers (scriob and metallm each add `[nats]` one-liners), so they
+    belong to a planned minor, not a drip.
 19. **The song-DB text projection.** hallucinote's collaboration payoff (§4.3)
     rests on a canonical lossless text format for ~27 tables of musical data,
     and on merge granularity chosen so two users usually conflict on different
