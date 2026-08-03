@@ -91,14 +91,15 @@ check 3.*
 `threetears.core` holds most of the primitives this capability wants — traced
 transport, egress selection, the token bucket, secret resolution — and also
 hard-requires sqlalchemy, asyncpg, cryptography and pyjwt. Samsung has refused it
-on the record, on weight, and that refusal is settled. The Python floor points
+on the record — on **shape**, because core's L1 is an in-memory SQLite cache
+while samsung's SQLite file must *be* the store — and that refusal is settled.
+Its separate weight rejection was of `3tears-models`, not of core; conflating the
+two overstates what samsung actually recorded. The Python floor points
 the same way today (core declares `>=3.14`, discodon is on 3.12) but is *not*
 settled: open question 1 is live between moving discodon to 3.14 and making the
 minimum a per-module statement with a relaxed subset, with no recommendation
-recorded, and either outcome is compatible with what follows. The
-design does not rest on it — it rests on the weight, and on the general rule that
-a leaf four repos bind to cannot inherit the dependency closure of the heaviest
-package in the family. So there is **no path from the contract leaf or the
+recorded, and either outcome is compatible with what follows. So there is
+**no path from the contract leaf or the
 Adapter into `threetears.core`**: everything core provides arrives as a shape the
 leaf declares
 and the host injects — the move 3tears already makes with itself twice, in
@@ -110,6 +111,31 @@ broker, callable from a one-shot `asyncio.run()`, and pod-resident as a
 `TearsTool` over NATS. Where the wire hop falls in the stack is undecided, so
 every layer boundary is wire-serialisable and any of them could be it — paid in
 design freedom, not at runtime.
+
+*Core's weight was checked rather than assumed, and the check moves this
+argument.* Read 2026-08-03: `import threetears.core` pulls none of sqlalchemy,
+asyncpg, aiosqlite, httpx, cryptography, pyjwt or pydantic, and `http_client`,
+`egress` and `coordination.token_bucket` — the three primitives this capability
+wants most — each import clean. So core's cost is an **install** cost, not a
+runtime one, and the `MemoryMax` framing does not apply to importing it. Reading
+the hard-dependency list against actual use gives a ruling per entry:
+
+| Dependency | Ruling |
+|---|---|
+| `aiosqlite` | **Unused — remove.** Zero references anywhere in the monorepo outside the line declaring it. L1 uses stdlib `sqlite3`, synchronously. Added 2026-03-13 in a commit about unrelated packages. |
+| `sqlalchemy` | **Optional — make it an extra.** Four of its seven users already lazy-import it inside function bodies. Of the three module-level sites, `testing/sqla_parity.py` sits under `core.testing`, which the pyproject already treats as extras territory; the other two — `models.py` (self-described optional ORM mixins) and `collections/flush.py` — are imported by nothing but their own tests. It is a SQL builder and type mapper here, not an ORM on any live path. |
+| `asyncpg` | **Optional — make it an extra.** Imported exactly once, in that same unreachable `flush.py`. L3 arrives as an injected `L3Backend` / `DurableStore` protocol, so core generates SQL and the host supplies the pool. |
+| `httpx`, `pydantic`, `uuid-utils` | **Required**, and light. |
+| `cryptography`, `pyjwt[crypto]` | **Required by `core.security`** — a real subsystem, not dead weight, though it would take an extra cleanly. |
+
+Two consequences. For 3tears, that is one dead dependency and two extras — a
+`packaging` change with a real payoff for every constrained consumer, and it
+belongs in that repo's backlog rather than in this document. For search,
+**SR-L7 survives but on narrower grounds than it was written on**: the layering
+rule and the unresolved Python floor, not runtime weight. Worth knowing before
+somebody argues the seam is unnecessary — it is a layering decision and should
+be defended as one, not as a weight workaround that a `pyproject` cleanup would
+dissolve.
 *Driven by: G10, G12, G13, P9 · SR-L3 through SR-L7 · checks 5, 9, 10.*
 
 **6. One injected transport seam, and the exit is part of the contract.** Adapter

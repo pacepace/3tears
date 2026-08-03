@@ -440,13 +440,34 @@ this capability wants actually live — the traced HTTP transport, the egress
 selector, the token bucket, the cache primitive, the secret resolver — and it
 hard-requires `sqlalchemy`, `asyncpg`, `aiosqlite`, `cryptography`,
 `pyjwt[crypto]` and `httpx`, at `requires-python = ">=3.14"`
-(`packages/core/pyproject.toml`). Samsung's refusal on weight is settled and on
-the record. The version floor points the same way today — discodon is on 3.12 —
+(`packages/core/pyproject.toml`). Samsung's refusal of core is settled and on the
+record, and it is a refusal on **shape** — core's L1 is an in-memory cache while
+samsung's SQLite file must *be* the store. The weight argument about core is this
+document's own inference, not something samsung recorded; its recorded weight
+rejection was of `3tears-models`. Keeping the two apart matters, because the
+weight half is the half that turns out to be softer than it reads (below).
+The version floor points the same way today — discodon is on 3.12 —
 but is *not* settled: open question 1 is live, between moving discodon to 3.14
 and making the minimum a per-module statement with a relaxed subset. Either
-outcome leaves the design here unchanged, because it rests on the weight and on
-the rule that a leaf four repos bind to cannot inherit the heaviest package's
-dependency closure. P9 is the answer; SR-L7 is the requirement.
+outcome leaves the design here unchanged, because it rests on the rule that a
+leaf four repos bind to cannot inherit the heaviest package's dependency
+closure. P9 is the answer; SR-L7 is the requirement.
+
+*Core's weight was checked on 2026-08-03, and it is an install cost rather than a
+runtime one.* `import threetears.core` pulls none of sqlalchemy, asyncpg,
+aiosqlite, httpx, cryptography, pyjwt or pydantic, and `http_client`, `egress`
+and `coordination.token_bucket` each import clean — so the `MemoryMax` framing
+does not apply to importing core, only to installing it. And the install list is
+softer than it reads: `aiosqlite` is unused anywhere in the monorepo (L1 uses
+stdlib `sqlite3`); `asyncpg` is imported exactly once, in `collections/flush.py`,
+which nothing but its own test imports, because L3 arrives as an injected
+`L3Backend`/`DurableStore` protocol and the host supplies the pool; and
+`sqlalchemy`'s four remaining users all import it lazily inside function bodies.
+`search-architecture.md` piece 5 carries the
+per-dependency ruling. SR-L7 survives this, on the layering rule and the
+unresolved Python floor rather than on runtime weight — which is the ground it
+should be defended on, since a `pyproject` cleanup in 3tears would dissolve the
+weight argument and leave the layering one untouched.
 
 Three consequences worth stating rather than discovering:
 
