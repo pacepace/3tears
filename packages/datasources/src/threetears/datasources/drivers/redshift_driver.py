@@ -85,6 +85,46 @@ close concurrency (DS-09-12 / DS-11-10):
   asyncio event loop) via the bridge.
 - :meth:`AsyncSyncBridge.close` uses ``shutdown(wait=False)``;
   ``wait=True`` would deadlock the event loop.
+
+transactions, per-statement timeouts, and the read path (dsd-task-01):
+
+the three changes below share one root cause and therefore one code
+path -- ``redshift_connector`` runs without autocommit and its
+``Cursor.execute`` issues ``begin transaction`` whenever the session is
+idle (``redshift_connector/cursor.py`` lines 251-254, verified against
+v2.1.7). every statement therefore runs inside a real transaction
+block, which is what makes all three of these true at once:
+
+- **a transaction is expressible, and needs no explicit BEGIN.**
+  :meth:`RedshiftDriver.begin` pins the CONNECTION -- not merely the
+  result -- for the unit of work's whole life; the block opens with the
+  first statement. an explicit ``BEGIN`` would nest and warn.
+  ``CREATE TABLE AS`` / ``DROP`` / ``ALTER`` / ``GRANT`` are all
+  transactional on Redshift, so a correct promote is expressible once
+  the statements share a session.
+- **the per-statement timeout override is ``SET LOCAL``.** Redshift
+  documents ``SET [ SESSION | LOCAL ] parameter { TO | = } value``, and
+  ``SET LOCAL`` scopes to the transaction block already open, unwinding
+  on the commit or rollback that ends it. that makes the leak
+  structurally impossible rather than merely unlikely. because the
+  ``SET LOCAL`` semantics cannot be proven from a unit test, the
+  release path ALSO re-asserts the datasource ceiling whenever a
+  checkout lowered it (see :meth:`RedshiftDriver._reset_session_sync`)
+  -- belt and braces, and the requirement admits either.
+  ``query_timeout_seconds`` is the connection-level CEILING; the
+  per-statement value is the caller's.
+- **the read path closes its transaction on release.** a completed
+  ``SELECT`` used to return a connection to the cache holding an open
+  snapshot and its locks, which is what made a ``DROP`` or an ownership
+  change block behind a *finished* query. every acquire site now
+  routes its release through :meth:`RedshiftDriver._finish_checkout`,
+  from a ``finally``.
+
+one consequence worth knowing: the ``SET`` statements issued at
+connection open (``statement_timeout``, ``search_path``) are COMMITTED
+there, because a session-level ``SET`` made inside a block that later
+rolls back is discarded with it -- and the release path now rolls back
+on every checkout.
 """
 
 from __future__ import annotations
@@ -92,6 +132,8 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import dataclasses
+import functools
 import socket
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
@@ -121,12 +163,16 @@ from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
 from threetears.datasources.drivers._util import (
     _translate_placeholders,
+    build_set_local_statement_timeout_sql,
     build_set_search_path_sql,
+    build_set_statement_timeout_sql,
 )
 from threetears.datasources.drivers.base import (
+    CallbackTransaction,
     ColumnRow,
     Driver,
     TableRow,
+    Transaction,
     _check_otel_metrics,
     _instrument_cache,
     _observed,
@@ -201,14 +247,30 @@ ORDER BY table_schema, table_name, ordinal_position
 
 
 #: per-table MD5 over the column shape (Tier-2 change-probe). same
-#: payload formula as the asyncpg driver: ``column_name || ':' ||
-#: data_type || ':' || COALESCE(is_nullable, '')``. byte-equivalent
-#: to the python-side ``_compute_column_hash`` helper from
-#: ``datasource-task-02`` ON THE SAME ROWS -- i.e. both sides MUST
-#: read from SVV_COLUMNS for the equivalence to hold.
+#: payload formula as the asyncpg driver. byte-equivalent to the
+#: python-side ``column_hash_payload`` helper ON THE SAME ROWS -- i.e.
+#: both sides MUST read from SVV_COLUMNS for the equivalence to hold.
+#:
+#: EACH COLUMN IS HASHED BEFORE THE LISTAGG, AND THAT IS LOAD-BEARING.
+#: Redshift refuses a LISTAGG result over 65535 bytes, and the previous
+#: formula aggregated the raw ``name:type:nullable`` strings, so the
+#: payload grew with name lengths. Introspecting ripple's nine source
+#: schemas failed outright -- ``influencers.test_targetsmart`` has 1462
+#: columns whose raw payload is 69,210 bytes, and ONE table over the
+#: limit failed the query for all 5,615 tables in scope, leaving the
+#: datasource with no catalog at all.
+#:
+#: Pre-hashing makes the payload 33 bytes per column regardless of name
+#: length: a ceiling of ~1985 columns against Redshift's own 1600-column
+#: table limit, so it can no longer overflow here.
+#:
+#: CHANGING THIS FORMULA CHANGES EVERY STORED HASH, and the python side
+#: in ``threetears.datasources.introspection.column_hash_payload`` must
+#: change identically in the same commit or the two stop agreeing and
+#: every sweep reports spurious changes forever.
 _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE = """
 SELECT table_schema, table_name,
-       MD5(LISTAGG(column_name || ':' || data_type || ':' || COALESCE(is_nullable, ''), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
+       MD5(LISTAGG(MD5(column_name || ':' || data_type || ':' || COALESCE(is_nullable, '')), ',') WITHIN GROUP (ORDER BY ordinal_position)) AS column_hash
 FROM SVV_COLUMNS
 WHERE table_schema IN ({placeholders})
 GROUP BY table_schema, table_name
@@ -237,20 +299,33 @@ def _build_in_clause(n: int) -> str:
 _PING_SQL = "SELECT 1"
 
 
-#: ``SET statement_timeout`` template -- Redshift accepts milliseconds.
-#: driver issues this once per acquired connection so the server-side
-#: cancel fires cleanly when a long-running query exceeds the configured
-#: ``query_timeout_seconds``.
-#:
-#: NOTE: Redshift does NOT accept bind parameters in ``SET`` statements
-#: (verified empirically against the production cluster -- ``SET x = %s``
-#: with params raises ``syntax error at or near "$1"``). the value is
-#: cast to ``int`` before string-formatting, so this is a safe inline --
-#: the timeout originates from
-#: :attr:`RedshiftConnectionConfig.query_timeout_seconds` which pydantic
-#: validates as ``int`` at config-build time, never from user-controlled
-#: SQL. format-string interpolation here is NOT a SQL-injection vector.
-_SET_STATEMENT_TIMEOUT_SQL_TEMPLATE = "SET statement_timeout TO {ms:d}"
+@dataclasses.dataclass
+class _Checkout:
+    """one connection checked out of the cache, and what release owes it.
+
+    the driver hands a connection out in three places (single-statement
+    query, streaming ``fetch_iter``, and a pinned transaction) and every
+    one of them owes the same two things on release: close the open
+    transaction, and restore the datasource timeout ceiling if a
+    per-statement override was applied. carrying that state on one
+    object is what keeps the release path from drifting into three
+    partial copies -- the two fixes share a code path deliberately.
+
+    :param conn: the checked-out redshift connection
+    :ptype conn: RedshiftConnection
+    :param timeout_overridden: True once a ``SET LOCAL
+        statement_timeout`` has run on this checkout, so the release
+        path re-asserts the ceiling
+    :ptype timeout_overridden: bool
+    :param poisoned: True when the connection must NOT go back in the
+        cache (cancelled mid-statement, or its release-path reset
+        failed)
+    :ptype poisoned: bool
+    """
+
+    conn: "RedshiftConnection"
+    timeout_overridden: bool = False
+    poisoned: bool = False
 
 
 def _apply_socket_keepalive(conn: RedshiftConnection, cfg: RedshiftConnectionConfig) -> None:
@@ -721,9 +796,18 @@ class RedshiftDriver(Driver):
         try:
             cursor = conn.cursor()
             try:
-                cursor.execute(_SET_STATEMENT_TIMEOUT_SQL_TEMPLATE.format(ms=cfg.query_timeout_seconds * 1000))
+                cursor.execute(build_set_statement_timeout_sql(cfg.query_timeout_seconds))
             finally:
                 cursor.close()
+            # commit so the SET survives the release path's ROLLBACK.
+            # redshift_connector opens a transaction block for us --
+            # ``Cursor.execute`` issues ``begin transaction`` whenever
+            # the session is idle and autocommit is off (cursor.py
+            # 251-254) -- and a session-level ``SET`` made inside a
+            # block that later ROLLBACKs is DISCARDED. without this
+            # commit the ceiling would silently vanish the first time a
+            # completed SELECT closed its transaction on release.
+            conn.commit()
         except Exception:
             # failure to apply timeout is non-fatal for connect but
             # we still wrap with from None so the original error
@@ -822,6 +906,11 @@ class RedshiftDriver(Driver):
                 cursor.execute(search_path_sql)
             finally:
                 cursor.close()
+            # same reason as the timeout SET at open: the statement ran
+            # inside the transaction block redshift_connector opened for
+            # it, and the release path's ROLLBACK would otherwise
+            # discard the search_path along with the read snapshot.
+            conn.commit()
 
     @staticmethod
     @contextlib.contextmanager
@@ -905,6 +994,129 @@ class RedshiftDriver(Driver):
             cancel_cb=lambda: None,
         )
         return new_conn
+
+    def _reset_session_sync(self, conn: RedshiftConnection, restore_timeout: bool) -> None:
+        """close the open transaction and restore the timeout ceiling (sync).
+
+        the ONE release-path reset both fixes share. two things happen,
+        in this order and only this order:
+
+        1. ``rollback`` -- ``redshift_connector`` runs without
+           autocommit and ``Cursor.execute`` opens a transaction block
+           for every statement (cursor.py 251-254), so a completed
+           ``SELECT`` returns a connection holding an open snapshot and
+           its locks. that is what makes a ``DROP`` or an ownership
+           change block behind a *finished* query, and it is a
+           prerequisite for reaping and stats sharing a warehouse, not
+           a tidy-up. the lib no-ops the call when the session is
+           already idle, so the hot path pays nothing.
+        2. re-assert the datasource ceiling, but ONLY when this
+           checkout lowered it. per-statement overrides use ``SET
+           LOCAL``, which unwinds with the transaction and therefore
+           cannot leak -- this second pass is defence for the case
+           where the engine degrades ``SET LOCAL`` to session scope,
+           which a unit test cannot rule out. the commit that follows
+           makes the restored ceiling durable against the NEXT
+           release-path rollback.
+
+        the ordering matters: rollback first, because a session-level
+        ``SET`` issued inside a transaction that later rolls back is
+        discarded with it.
+
+        :param conn: connection being released
+        :ptype conn: RedshiftConnection
+        :param restore_timeout: True when a per-statement override ran
+            on this checkout
+        :ptype restore_timeout: bool
+        :return: nothing
+        :rtype: None
+        :raises Exception: any redshift_connector failure propagates to
+            the async caller, which evicts the connection
+        """
+        conn.rollback()
+        if restore_timeout:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(build_set_statement_timeout_sql(self._config.query_timeout_seconds))
+            finally:
+                cursor.close()
+            conn.commit()
+
+    async def _finish_checkout(self, checkout: _Checkout) -> None:
+        """reset the session, then return the connection to the cache.
+
+        ALWAYS called from a ``finally``. a reset skipped on the error
+        path IS the leak, and a connection returned to the cache with
+        an open snapshot IS the blocked ``DROP``, so both live here and
+        every acquire site routes through this one method.
+
+        a reset that itself fails poisons the connection: a session
+        whose transaction state we could not establish must never be
+        handed to the next caller.
+
+        :param checkout: the checkout being finished
+        :ptype checkout: _Checkout
+        :return: nothing
+        :rtype: None
+        """
+        if not checkout.poisoned:
+            try:
+                await self._bridge.to_thread_with_cancel(
+                    functools.partial(self._reset_session_sync, checkout.conn, checkout.timeout_overridden),
+                    cancel_cb=lambda: None,
+                )
+            except Exception as exc:  # noqa: BLE001 -- release path must not raise over the caller's result
+                log.warning(
+                    "redshift release-path rollback / timeout reset failed: %s; evicting connection",
+                    exc,
+                )
+                checkout.poisoned = True
+        if checkout.poisoned:
+            await self._evict_connection(checkout.conn)
+        else:
+            await self._release_connection(checkout.conn)
+
+    async def _cancel_checkout(self, checkout: _Checkout) -> None:
+        """abort the in-flight statement and poison the checkout.
+
+        the cancel path for every acquire site. terminates the
+        SERVER-SIDE backend first -- closing the client socket does NOT
+        kill a running Redshift query (one leaked a pool slot for 7.4h
+        in production) -- then closes the client socket. both are
+        best-effort and neither raises; the failure is counted so it is
+        observable rather than silent.
+
+        killing the session is also what rolls back an in-flight
+        transaction: Redshift discards the block when the backend dies,
+        so a cancellation mid-transaction cannot leave a half-applied
+        promote behind.
+
+        :param checkout: the checkout whose statement is being cancelled
+        :ptype checkout: _Checkout
+        :return: nothing
+        :rtype: None
+        """
+        checkout.poisoned = True
+        cancel_fired = _get_cancellation_fired_counter()
+        cancel_failed = _get_cancellation_failed_counter()
+        pid = self._backend_pids.get(checkout.conn)
+        if pid is not None:
+            await self._terminate_backend(pid)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(checkout.conn.close),
+                timeout=_CANCEL_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+            log.warning(
+                "redshift cancel (conn.close) failed: %s; evicting connection",
+                exc,
+            )
+            if cancel_failed is not None:
+                cancel_failed.add(1, attributes={"driver_type": "redshift"})
+        else:
+            if cancel_fired is not None:
+                cancel_fired.add(1, attributes={"driver_type": "redshift"})
 
     async def _release_connection(self, conn: RedshiftConnection) -> None:
         """return a connection to the cache; close it if cache is full.
@@ -1043,6 +1255,8 @@ class RedshiftDriver(Driver):
     async def _acquire_and_run(
         self,
         op: Callable[["RedshiftConnection"], Awaitable[Any]],
+        *,
+        timeout_overridden: bool = False,
     ) -> Any:
         """acquire the open-connection semaphore, then run ``op`` holding one connection.
 
@@ -1057,6 +1271,10 @@ class RedshiftDriver(Driver):
 
         :param op: callable taking the acquired connection, returning the awaitable
         :ptype op: Callable[["RedshiftConnection"], Awaitable[Any]]
+        :param timeout_overridden: True when ``op`` issues a per-statement
+            ``SET LOCAL statement_timeout``, so the release path re-asserts
+            the datasource ceiling
+        :ptype timeout_overridden: bool
         :return: whatever ``op(conn)`` resolved to
         :rtype: Any
         :raises RuntimeError: if the driver was previously closed
@@ -1064,21 +1282,32 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
         async with self._connection_semaphore:
-            result = await self._run_with_connection(op)
+            result = await self._run_with_connection(op, timeout_overridden=timeout_overridden)
         return result
 
     async def _run_with_connection(
         self,
         op: Callable[["RedshiftConnection"], Awaitable[Any]],
+        *,
+        timeout_overridden: bool = False,
     ) -> Any:
         """acquire a connection + route through :meth:`_with_cancellation`.
 
-        canonical wrapper every query-emitting method uses. wires the
-        bridge-backed close as the cancel callback so an outer
-        ``asyncio.CancelledError`` (a) closes the connection from a
-        thread (b) evicts it from the cache (c) bumps the
-        ``cancellation.fired`` (or ``.failed``) counter so the
-        observability is honest.
+        canonical wrapper every single-statement method uses. wires
+        :meth:`_cancel_checkout` as the cancel callback so an outer
+        ``asyncio.CancelledError`` terminates the server-side backend,
+        closes the socket, and bumps the ``cancellation.fired`` (or
+        ``.failed``) counter so the observability is honest.
+
+        the ``finally`` routes through :meth:`_finish_checkout`, which
+        closes the session's transaction and restores the timeout
+        ceiling before the connection goes anywhere near the cache.
+        that placement is load-bearing on both counts: a reset skipped
+        on the error path is the timeout leak, and a connection cached
+        mid-snapshot is the ``DROP`` that blocks behind a finished
+        ``SELECT``. this method used to roll back only on the error
+        path, which is exactly the read-path hole -- the success path
+        now closes its transaction too.
 
         also emits one ``datasource.driver.executor.saturation``
         sample per invocation so the bridge-executor pressure is
@@ -1090,9 +1319,12 @@ class RedshiftDriver(Driver):
             :class:`redshift_connector.Connection` and returns the
             awaitable to run (typically a wrapper that runs the sync
             cursor methods through the bridge)
-        :ptype op: Callable[["RedshiftConnection"], Awaitable[T]]
+        :ptype op: Callable[["RedshiftConnection"], Awaitable[Any]]
+        :param timeout_overridden: True when ``op`` issues a
+            per-statement ``SET LOCAL statement_timeout``
+        :ptype timeout_overridden: bool
         :return: whatever ``op(conn)`` resolved to
-        :rtype: T
+        :rtype: Any
         :raises asyncio.CancelledError: propagated after best-effort
             backend cancellation via :meth:`Connection.close`
         :raises RuntimeError: if the driver was previously closed
@@ -1100,201 +1332,367 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
         conn = await self._acquire_connection()
+        checkout = _Checkout(conn=conn, timeout_overridden=timeout_overridden)
         # saturate-gauge +1: the next worker is now busy from the
         # asyncio side. -1 happens in the finally below.
         saturation = _get_executor_saturation_gauge()
         if saturation is not None:
             saturation.add(1, attributes={"datasource_name": self._datasource_name})
-        cancel_fired = _get_cancellation_fired_counter()
-        cancel_failed = _get_cancellation_failed_counter()
-        # the connection becomes poisoned on cancel (we close it to
-        # abort the query); ``connection_poisoned`` flag short-
-        # circuits the release path.
-        connection_poisoned = False
-
-        async def _on_cancel() -> None:
-            nonlocal connection_poisoned
-            connection_poisoned = True
-            # FIRST: terminate the SERVER-SIDE backend via a fresh
-            # connection. closing the client socket below does NOT kill
-            # the running Redshift query (it leaked a pool slot for 7.4h
-            # in production); ``pg_terminate_backend(<pid>)`` from a
-            # fresh connection does. best-effort -- never raises; the
-            # close + evict path below always runs regardless.
-            pid = self._backend_pids.get(conn)
-            if pid is not None:
-                await self._terminate_backend(pid)
-            # close in a worker thread so the asyncio loop stays
-            # responsive; wrap in wait_for so a hung close does NOT
-            # pin the cancellation path. on timeout / failure: still
-            # evict the connection (it's poisoned regardless) and
-            # bump the ``.failed`` counter so the failure is
-            # observable.
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(conn.close),
-                    timeout=_CANCEL_TIMEOUT_SECONDS,
-                )
-            except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
-                log.warning(
-                    "redshift cancel (conn.close) failed: %s; evicting connection",
-                    exc,
-                )
-                if cancel_failed is not None:
-                    cancel_failed.add(1, attributes={"driver_type": "redshift"})
-            else:
-                if cancel_fired is not None:
-                    cancel_fired.add(1, attributes={"driver_type": "redshift"})
-            # eviction is a no-op if the connection isn't in the
-            # cache (it isn't, in this path -- it was popped on
-            # acquire) but we call it anyway for symmetry with the
-            # shard 11 contract.
-            await self._evict_connection(conn)
-
         try:
             result = await self._with_cancellation(
                 lambda: op(conn),
-                cancel_callback=_on_cancel,
+                cancel_callback=lambda: self._cancel_checkout(checkout),
             )
-        except Exception:  # noqa: BLE001
-            # query raised. Redshift uses redshift_connector with the
-            # DB-API default of autocommit=False, which means every
-            # statement implicitly opens a transaction. when a
-            # statement raises, the transaction is left in
-            # ``aborted`` state -- the server then rejects every
-            # subsequent statement on this connection with
-            # ``25P02: current transaction is aborted, commands
-            # ignored until end of transaction block`` until an
-            # explicit ROLLBACK runs. without this rollback, the next
-            # caller to acquire this connection from the cache would
-            # inherit a poisoned session and every retry would fail.
-            #
-            # ``except Exception`` (not ``BaseException``) matches the
-            # surrounding convention in this file:
-            # :class:`asyncio.CancelledError` is rooted at
-            # ``BaseException`` and propagates unchanged so the
-            # dedicated cancel path (``_on_cancel`` closed the
-            # socket + evicted the connection above) is not
-            # double-handled here.
-            if not connection_poisoned:
-                try:
-                    await self._bridge.to_thread_with_cancel(
-                        conn.rollback,
-                        cancel_cb=lambda: None,
-                    )
-                except Exception as rb_exc:  # noqa: BLE001
-                    # rollback itself failed -- the connection is
-                    # doubly poisoned. log + evict + skip the release
-                    # in the finally below so we never put a broken
-                    # connection back in the cache for the next
-                    # caller to trip over. the ORIGINAL query
-                    # exception (not the rollback's) is what we
-                    # re-raise below so callers see the real failure
-                    # they need to act on.
-                    log.warning(
-                        "redshift rollback after query error failed: %s; evicting connection",
-                        rb_exc,
-                    )
-                    connection_poisoned = True
-                    with self._suppress_close():
-                        await self._evict_connection(conn)
-            raise
         finally:
             if saturation is not None:
                 saturation.add(-1, attributes={"datasource_name": self._datasource_name})
-            if not connection_poisoned:
-                await self._release_connection(conn)
+            await self._finish_checkout(checkout)
         return result
 
     # -------------------------------------------------------------------
     # Driver ABC: query surface
     # -------------------------------------------------------------------
 
+    def _apply_statement_timeout_sync(
+        self,
+        cursor: RedshiftCursor,
+        timeout_seconds: int | None,
+    ) -> None:
+        """issue the transaction-local per-statement timeout, when one was asked for.
+
+        ``SET LOCAL`` scopes the value to the transaction block
+        ``redshift_connector`` opened for this statement (its
+        ``Cursor.execute`` issues ``begin transaction`` whenever the
+        session is idle and autocommit is off), so it unwinds on the
+        commit or rollback that ends the block. that is what makes the
+        leak structurally impossible instead of merely unlikely: a
+        bare ``SET`` would persist on the cached connection and hand a
+        bounded aggregate's 120s to whatever build borrowed it next.
+
+        :param cursor: live cursor the caller's statement will run on
+        :ptype cursor: RedshiftCursor
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: if the override is not a positive int
+        """
+        if timeout_seconds is not None:
+            cursor.execute(build_set_local_statement_timeout_sql(timeout_seconds))
+
+    def _fetch_sync(
+        self,
+        conn: RedshiftConnection,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> list[dict[str, Any]]:
+        """run one SELECT on ``conn`` and materialize its rows (sync).
+
+        shared by :meth:`fetch` and the transaction handle so both
+        apply the per-statement timeout the same way.
+
+        :param conn: connection to run on
+        :ptype conn: RedshiftConnection
+        :param sql: already-translated SQL text
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: list of column-name -> value dicts in row order
+        :rtype: list[dict[str, Any]]
+        """
+        cursor = conn.cursor()
+        try:
+            self._apply_statement_timeout_sync(cursor, timeout_seconds)
+            # redshift_connector accepts a tuple OR None for the
+            # parameters argument; pass None when there are no
+            # params so the lib's "no params" path runs.
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            rows = cursor.fetchall()
+            cols = [c[0] for c in cursor.description]
+            result = [dict(zip(cols, row)) for row in rows]
+        finally:
+            cursor.close()
+        return result
+
+    def _execute_sync(
+        self,
+        conn: RedshiftConnection,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+        *,
+        commit: bool,
+    ) -> None:
+        """run one DML / DDL statement on ``conn`` (sync).
+
+        shared by :meth:`execute` and the transaction handle. the
+        transaction handle passes ``commit=False`` -- committing per
+        statement is precisely what makes a multi-statement promote
+        inexpressible.
+
+        :param conn: connection to run on
+        :ptype conn: RedshiftConnection
+        :param sql: already-translated SQL text
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :param commit: whether to commit after the statement
+        :ptype commit: bool
+        :return: nothing
+        :rtype: None
+        """
+        cursor = conn.cursor()
+        try:
+            self._apply_statement_timeout_sync(cursor, timeout_seconds)
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            if commit:
+                # DDL/DML doesn't always autocommit in DB-API; commit
+                # explicitly so callers see the change.
+                conn.commit()
+        finally:
+            cursor.close()
+
     @traced
     @_observed(driver_type="redshift")
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement; materialize all rows in memory.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds, applied as ``SET LOCAL statement_timeout`` so it
+            cannot leak to the next borrower of this cached connection.
+            None leaves ``query_timeout_seconds`` -- the connection
+            CEILING -- in force
+        :ptype timeout_seconds: int | None
         :return: list of column-name -> value dicts in row order
         :rtype: list[dict[str, Any]]
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         :raises DriverConnectError: if connection acquisition fails
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
+        # validate BEFORE a connection is taken out of the cache: a bad
+        # override is a caller bug, not a reason to burn a checkout.
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
         translated = _translate_placeholders(sql, "pyformat")
-
-        def _do_fetch_sync(
-            conn: RedshiftConnection,
-        ) -> list[dict[str, Any]]:
-            """run the sync DB-API fetch; return list of dicts."""
-            cursor = conn.cursor()
-            try:
-                # redshift_connector accepts a tuple OR None for the
-                # parameters argument; pass None when there are no
-                # params so the lib's "no params" path runs.
-                if params:
-                    cursor.execute(translated, params)
-                else:
-                    cursor.execute(translated)
-                rows = cursor.fetchall()
-                cols = [c[0] for c in cursor.description]
-                return [dict(zip(cols, row)) for row in rows]
-            finally:
-                cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
-                lambda: _do_fetch_sync(conn),
+                functools.partial(self._fetch_sync, conn, translated, params, timeout_seconds),
                 cancel_cb=conn.close,
             )
 
-        result: list[dict[str, Any]] = await self._acquire_and_run(_op)
+        result: list[dict[str, Any]] = await self._acquire_and_run(
+            _op,
+            timeout_overridden=timeout_seconds is not None,
+        )
         return result
 
     @traced
     @_observed(driver_type="redshift")
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement; discard any returned rows.
 
         :param sql: SQL text with ``$1``-style placeholders
         :ptype sql: str
         :param params: positional placeholder values
         :ptype params: Any
+        :param timeout_seconds: per-statement timeout override in
+            seconds; see :meth:`fetch`
+        :ptype timeout_seconds: int | None
         :return: nothing
         :rtype: None
         :raises asyncio.CancelledError: propagated after backend cancel
         :raises RuntimeError: if the driver was previously closed
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
         """
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
         translated = _translate_placeholders(sql, "pyformat")
-
-        def _do_execute_sync(conn: RedshiftConnection) -> None:
-            cursor = conn.cursor()
-            try:
-                if params:
-                    cursor.execute(translated, params)
-                else:
-                    cursor.execute(translated)
-                # DDL/DML doesn't always autocommit in DB-API; commit
-                # explicitly so callers see the change.
-                conn.commit()
-            finally:
-                cursor.close()
 
         async def _op(conn: RedshiftConnection) -> Any:
             return await self._bridge.to_thread_with_cancel(
-                lambda: _do_execute_sync(conn),
+                functools.partial(self._execute_sync, conn, translated, params, timeout_seconds, commit=True),
                 cancel_cb=conn.close,
             )
 
-        await self._acquire_and_run(_op)
+        await self._acquire_and_run(_op, timeout_overridden=timeout_seconds is not None)
+
+    # -------------------------------------------------------------------
+    # Driver ABC: transaction surface (DSD-01-01 / DSD-01-02)
+    # -------------------------------------------------------------------
+
+    @traced
+    async def begin(self) -> Transaction:
+        """open a transaction pinned to one Redshift session.
+
+        the connection leaves the cache here and does not return until
+        commit or rollback, so a transaction reduces effective pool
+        capacity for its duration -- which is why the executor caps
+        build concurrency at enqueue rather than letting arbitrarily
+        many transactions contend for the cache. the two must not be
+        tuned independently.
+
+        NO explicit ``BEGIN`` is issued. ``redshift_connector`` runs
+        without autocommit and its ``Cursor.execute`` sends ``begin
+        transaction`` itself whenever the session is idle (cursor.py
+        251-254), so the block opens with the transaction's first
+        statement; an explicit ``BEGIN`` here would nest and warn.
+        pinning the CONNECTION -- not merely the result -- is what
+        makes the block one unit of work.
+
+        :return: a live transaction handle over the pinned session
+        :rtype: Transaction
+        :raises RuntimeError: if the driver was previously closed
+        :raises DriverConnectError: if connection acquisition fails
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        await self._connection_semaphore.acquire()
+        try:
+            conn = await self._acquire_connection()
+        except BaseException:
+            self._connection_semaphore.release()
+            raise
+        checkout = _Checkout(conn=conn)
+        return CallbackTransaction(
+            on_fetch=functools.partial(self._transaction_fetch, checkout),
+            on_execute=functools.partial(self._transaction_execute, checkout),
+            on_finish=functools.partial(self._transaction_finish, checkout),
+        )
+
+    async def _transaction_fetch(
+        self,
+        checkout: _Checkout,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> list[dict[str, Any]]:
+        """run a SELECT on the transaction's pinned session.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: list of column-name -> value dicts in row order
+        :rtype: list[dict[str, Any]]
+        :raises asyncio.CancelledError: propagated after backend cancel
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
+        """
+        translated = _translate_placeholders(sql, "pyformat")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+            checkout.timeout_overridden = True
+        result: list[dict[str, Any]] = await self._with_cancellation(
+            lambda: self._bridge.to_thread_with_cancel(
+                functools.partial(self._fetch_sync, checkout.conn, translated, params, timeout_seconds),
+                cancel_cb=checkout.conn.close,
+            ),
+            cancel_callback=lambda: self._cancel_checkout(checkout),
+        )
+        return result
+
+    async def _transaction_execute(
+        self,
+        checkout: _Checkout,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> None:
+        """run a DML / DDL statement on the transaction's pinned session.
+
+        does NOT commit -- the whole point of the transaction API is
+        that the unit of work ends where the caller says it does.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param sql: SQL text with ``$1``-style placeholders
+        :ptype sql: str
+        :param params: positional bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement override, or None
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        :raises asyncio.CancelledError: propagated after backend cancel
+        :raises ValueError: if ``timeout_seconds`` is not a positive int
+        """
+        translated = _translate_placeholders(sql, "pyformat")
+        if timeout_seconds is not None:
+            build_set_local_statement_timeout_sql(timeout_seconds)
+            checkout.timeout_overridden = True
+        await self._with_cancellation(
+            lambda: self._bridge.to_thread_with_cancel(
+                functools.partial(
+                    self._execute_sync,
+                    checkout.conn,
+                    translated,
+                    params,
+                    timeout_seconds,
+                    commit=False,
+                ),
+                cancel_cb=checkout.conn.close,
+            ),
+            cancel_callback=lambda: self._cancel_checkout(checkout),
+        )
+
+    async def _transaction_finish(self, checkout: _Checkout, commit: bool) -> None:
+        """end the transaction and return its pinned connection.
+
+        runs the caller's disposition first, then the same
+        :meth:`_finish_checkout` every other acquire site uses, then
+        releases the open-connection permit. the permit release is in
+        the outermost ``finally`` so a failed commit cannot strand a
+        slot and starve every subsequent caller.
+
+        :param checkout: the pinned checkout
+        :ptype checkout: _Checkout
+        :param commit: True to commit, False to roll back
+        :ptype commit: bool
+        :return: nothing
+        :rtype: None
+        :raises Exception: a failing commit propagates; the connection
+            is still released
+        """
+        try:
+            if not checkout.poisoned:
+                await self._bridge.to_thread_with_cancel(
+                    checkout.conn.commit if commit else checkout.conn.rollback,
+                    cancel_cb=lambda: None,
+                )
+        except Exception:
+            # a commit that failed leaves the session in an unknown
+            # transaction state; never hand that to the next caller.
+            checkout.poisoned = True
+            raise
+        finally:
+            try:
+                await self._finish_checkout(checkout)
+            finally:
+                self._connection_semaphore.release()
 
     @traced
     async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:
@@ -1338,7 +1736,7 @@ class RedshiftDriver(Driver):
         except BaseException:
             self._connection_semaphore.release()
             raise
-        poisoned = False
+        checkout = _Checkout(conn=conn)
         cursor: "RedshiftCursor | None" = None
 
         def _open_cursor() -> tuple["RedshiftCursor", list[str]]:
@@ -1383,10 +1781,10 @@ class RedshiftDriver(Driver):
         except asyncio.CancelledError:
             # cancel-cb in to_thread_with_cancel already closed the
             # connection; flag for cleanup.
-            poisoned = True
+            checkout.poisoned = True
             raise
         except Exception:
-            poisoned = True
+            checkout.poisoned = True
             raise
         finally:
             if cursor is not None:
@@ -1395,13 +1793,11 @@ class RedshiftDriver(Driver):
                         cursor.close,
                         cancel_cb=lambda: None,
                     )
-            if poisoned:
-                # connection state ambiguous after error/cancel;
-                # evict + close in a thread.
-                await self._evict_connection(conn)
-            else:
-                # clean run -- release back to the cache.
-                await self._release_connection(conn)
+            # same release path as every other acquire site: close the
+            # streaming transaction before the connection can be cached,
+            # then release (clean) or evict (poisoned). a streamed
+            # SELECT holds a snapshot exactly like a materialized one.
+            await self._finish_checkout(checkout)
             # release the open-connection permit AFTER the connection is back in
             # the cache (clean) or closed (poisoned), so a waiting caller that
             # wakes finds the cached connection to reuse rather than opening anew.

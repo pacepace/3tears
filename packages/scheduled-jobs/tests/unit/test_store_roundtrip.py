@@ -225,7 +225,7 @@ class TestFireStoreWrites:
         pool = _RecordingPool(fetch_rows=[{"partition_key": uuid4(), "fire_id": uuid4()} for _ in range(2)])
         coll = _make_fire_collection(pool)
         now = _now()
-        reaped = await coll.reap_stale_dispatching(now, older_than=timedelta(seconds=900))
+        reaped = await coll.reap_stale_dispatching(now, older_than=timedelta(seconds=900), kinds=("safety_commit",))
         assert reaped == 2
         sql, args = pool.calls[-1]
         assert "UPDATE job_fires SET status = 'failed'" in sql
@@ -238,7 +238,11 @@ class TestFireStoreWrites:
     async def test_reap_stale_dispatching_none_returns_zero(self) -> None:
         pool = _RecordingPool(fetch_rows=[])
         coll = _make_fire_collection(pool)
-        reaped = await coll.reap_stale_dispatching(_now(), older_than=timedelta(seconds=900))
+        reaped = await coll.reap_stale_dispatching(
+            _now(),
+            older_than=timedelta(seconds=900),
+            kinds=("safety_commit",),
+        )
         assert reaped == 0
 
 
@@ -249,7 +253,7 @@ class TestListDueForTick:
         row = _job_row()
         pool = _RecordingPool(fetch_rows=[row])
         coll = _make_schedule_collection(pool)
-        due = await coll.list_due_for_tick(now=_now())
+        due = await coll.list_due_for_tick(now=_now(), kinds=("safety_commit",))
         assert len(due) == 1
         sched = due[0]
         assert isinstance(sched, DueSchedule)

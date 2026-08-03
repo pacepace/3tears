@@ -104,8 +104,11 @@ class FakeDataStore:
         if "CURRENT_SCHEMA()" in normalized:
             result = [{"schema_name": self._schema}]
             return result
-        if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
+        if "SELECT VERSION, PACKAGE, DESCRIPTION FROM _SCHEMA_MIGRATIONS" in normalized:
+            result = [
+                {"version": row["version"], "package": row["package"], "description": row.get("description")}
+                for row in self.migrations_rows
+            ]
             return result
         if "SELECT VERSION, PACKAGE, DESCRIPTION, DATE_APPLIED FROM _SCHEMA_MIGRATIONS" in normalized:
             result = [

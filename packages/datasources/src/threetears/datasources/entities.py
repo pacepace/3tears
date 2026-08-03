@@ -26,8 +26,16 @@ plus the discriminator + lifecycle enums:
 - :class:`DataSourceType` -- ``redshift`` / ``snowflake`` / ``bigquery``
   / ``postgres`` / ``yugabyte`` / ``agent_internal`` (the datasource
   DRIVER axis; applies only to ``kind='datasource'`` rows)
-- :class:`DataSourceAccessMode` -- ``read`` / ``write`` / ``readwrite``
+- :class:`DataSourceAccessMode` -- ``read`` / ``write`` /
+  ``readwrite`` / ``build`` / ``publish``; the query-tool registration
+  axis. the last two are separate values rather than compositions of
+  the first three, for the least-privilege reasons in the class
+  docstring
 - :class:`DataSourceStatus` -- ``active`` / ``disabled``
+
+``tests/enforcement/test_enum_docstring_parity.py`` holds the bullets
+above to the enum bodies below: a member added without a matching
+bullet entry fails the suite.
 """
 
 from __future__ import annotations
@@ -117,14 +125,39 @@ class DataSourceType(StrEnum):
 class DataSourceAccessMode(StrEnum):
     """data source access mode controlling which query tools are registered.
 
+    the set is closed and members are APPENDED, never inserted: consumers
+    index the ordered mode list positionally to seed a default, so a value
+    added ahead of ``READWRITE`` silently changes that default.
+
+    ``BUILD`` is a fourth value rather than a composition, and there is no
+    ``readwritebuild``. a build data source's warehouse user holds
+    ``CREATE``; composing that grant into the read surface would defeat the
+    structural least-privilege the separate mode exists to buy. a caller
+    needing both surfaces gets two data source rows.
+
+    ``PUBLISH`` is a fifth for the same reason and one more. release schemas
+    are OWNED by the publisher, and ownership is never transferred -- an
+    ``ALTER TABLE ... OWNER TO`` needs superuser or membership in the target
+    role, either of which voids the containment. so the publisher creates the
+    release itself and the build user holds no ``CREATE`` there, which makes
+    the two identities un-composable rather than merely separable.
+
     :cvar READ: read-only (SELECT queries via DataSourceReadTool)
     :cvar WRITE: write-only (INSERT/UPDATE/DELETE via DataSourceWriteTool)
     :cvar READWRITE: full access (all query tools registered)
+    :cvar BUILD: dataset build access; the warehouse user holds ``CREATE``
+        and the platform compiles the SQL from a typed definition, so no
+        untrusted query string crosses the boundary
+    :cvar PUBLISH: release-promotion access; the warehouse user OWNS the
+        release schema and creates the release tables, and holds ``SELECT``
+        on the draft schema by default privilege rather than per table
     """
 
     READ = "read"
     WRITE = "write"
     READWRITE = "readwrite"
+    BUILD = "build"
+    PUBLISH = "publish"
 
 
 class DataSourceStatus(StrEnum):

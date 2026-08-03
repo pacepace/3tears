@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-channels"
-version = "0.22.5"
+version = "0.23.0"
 description = "Unified message protocol for channel adapters in the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,12 +12,12 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears>=0.22.0,<0.23.0",
-    "3tears-agent-acl>=0.22.0,<0.23.0",
+    "3tears>=0.23.0,<0.24.0",
+    "3tears-agent-acl>=0.23.0,<0.24.0",
     # [client]: this package uses the NATS client at runtime, and nats-py is an
     # extra of 3tears-nats so an L1-SQLite-only consumer is not forced to build it.
-    "3tears-nats[client]>=0.22.0,<0.23.0",
-    "3tears-observe>=0.22.0,<0.23.0",
+    "3tears-nats[client]>=0.23.0,<0.24.0",
+    "3tears-observe>=0.23.0,<0.24.0",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +32,7 @@ websocket = ["starlette>=0.36"]
 #     one-direction edge: channels -> agent-wake -> conversations +
 #     agent-skills. agent-wake does NOT depend on channels (the wake
 #     adapter is a function the channels-side HTTP shim calls into).
-webhook = ["fastapi>=0.110", "3tears-agent-wake>=0.22.0,<0.23.0"]
+webhook = ["fastapi>=0.110", "3tears-agent-wake>=0.23.0,<0.24.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"

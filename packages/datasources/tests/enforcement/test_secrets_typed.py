@@ -47,9 +47,20 @@ import pytest
 # words are unambiguously credential-related (no domain-overload).
 # ``key`` only matches when it stands alone or appears as a trailing
 # ``_key`` -- ``api_key``, ``private_key``, ``secret_key`` are
-# credentials; ``primary_key_field`` / ``natural_key_column`` /
-# ``partition_key`` are database-modelling names where ``key`` means
-# DB index, not credential.
+# credentials. ``primary_key_field`` and ``natural_key_column`` do not
+# end in ``key`` and so never reach this pattern.
+#
+# a database-modelling name that DOES end in ``_key`` -- ``partition_key``,
+# ``sort_key``, ``dist_key`` -- IS flagged, and that is deliberate rather
+# than an oversight. the pattern cannot tell a DB index from a credential
+# by name alone, and the two errors are not symmetric: a false positive
+# costs a rename, a false negative leaks a credential through a traceback.
+# so the exemption is spelled at the field, by naming it ``*_key_columns``
+# / ``*_key_field`` / ``*_key_column``, which states the DB meaning in the
+# name instead of asking a reader to trust a pattern.
+#
+# ``ExclusionSpec.key_columns`` and ``SetExpr.dedup_key_columns`` in the
+# definition model are named that way for exactly this reason.
 #
 # the `(?i)` inline flag makes both alternations case-insensitive.
 _CREDENTIAL_NAME_RE = re.compile(

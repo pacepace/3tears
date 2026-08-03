@@ -15,8 +15,14 @@ domain that needs the same locking and timing logic.
 ## What it does
 
 - A cross-pod-locked tick engine: one pod fires a given due job, not all of
-  them.
+  them. Each pump takes its own lock key, so two pumps in one process do not
+  serialise against each other.
 - Reschedule math for recurring jobs.
+- Per-`kind` dispatch routing: a pump declares `kind -> handler`, that table
+  scopes the due-row scan and the stale-fire sweep, and a row whose kind has
+  no handler is refused rather than delivered to somebody else's.
+- Per-`kind` stale-dispatch reap thresholds, so a kind whose work legitimately
+  runs for hours is not reaped on the default 15-minute age.
 - Store protocols a consumer implements for its own job/payload shape.
 - A default kind+payload store for the common case.
 
@@ -24,7 +30,8 @@ domain that needs the same locking and timing logic.
 
 Every agent- or skill-specific concept is deliberately stripped out, leaving
 only the pure scheduling machinery: locking, reschedule math, and
-protocols. Any domain plugs in its own store and dispatch callback. It is
+protocols. Any domain plugs in its own store and a per-`kind` dispatch
+routing table (an unrouted kind is refused, never rerouted). It is
 pure-async and fires one tick per call by design -- it does not own the
 cadence or the scheduler loop itself; the host decides how often to call it.
 

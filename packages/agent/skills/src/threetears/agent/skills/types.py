@@ -18,6 +18,8 @@ __all__ = [
     "InvocationSource",
     "OutcomeSource",
     "PromptMode",
+    "SkillKind",
+    "SkillKindFilter",
     "SkillOutcome",
     "SkillSource",
 ]
@@ -47,11 +49,29 @@ SkillSource = Literal["manual"]
 InvocationSource = Literal["wake", "invoke"]
 
 
-# ``outcome`` column on ``agent_skill_invocations``. NULL when no
-# ``[SUCCESS]``/``[FAILED]`` marker was present in the assistant's
-# response; the consumer's post-LLM hook calls ``set_outcome`` only
-# when a marker matches. CHECK-pinned in the L3 schema.
+# ``outcome`` column on ``agent_skill_invocations``. NULL until
+# something attributes an outcome to the invocation; today the only
+# writer is the ``skill_report_outcome`` tool (see ``tools.py``), which
+# replaced the retired ``[SUCCESS]``/``[FAILED]`` text-marker hook.
+# CHECK-pinned in the L3 schema.
 SkillOutcome = Literal["success", "failure"]
+
+
+# ``kind`` discriminator on the skills REST surface. ``'prose'`` is an
+# ``agent_skills`` row; ``'tool'`` is synthesized by the router from the
+# tool registry and is never table-backed. Not a database column -- the
+# table holds prose skills only -- so this is a wire-shape vocabulary,
+# not a CHECK mirror.
+SkillKind = Literal["prose", "tool"]
+
+
+# ``kind_filter`` on the catalog-listing tool: :data:`SkillKind` widened
+# with the no-filter sentinel. Kept as its own alias rather than an
+# inline union so the sentinel is named once; a value added to
+# :data:`SkillKind` must be added here too, which the enforcement gate
+# in ``tests/enforcement/test_vocabulary_single_source.py`` does not
+# catch and a reviewer must.
+SkillKindFilter = Literal["all", "prose", "tool"]
 
 
 # ``outcome_source`` column on ``agent_skill_invocations``. Records the

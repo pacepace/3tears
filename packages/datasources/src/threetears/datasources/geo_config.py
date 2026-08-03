@@ -68,8 +68,15 @@ class CacheClassConfig(StrEnum):
     #: take the datasource's own classification. the default and the
     #: overwhelmingly common case.
     INHERIT = "inherit"
+    #: shared across customers. cacheable at a shared edge with no check
+    #: on the way in, so the widest reach of the three.
     PUBLIC = "public"
+    #: cacheable at a shared edge, but the edge verifies a tile token
+    #: first. the cache directives match ``public``; the difference is
+    #: the check, not the headers.
     AUTHENTICATED = "authenticated"
+    #: never reaches a shared cache at all. the narrowest reach, and what
+    #: an unrecognised datasource visibility falls back to.
     PRIVATE = "private"
 
 

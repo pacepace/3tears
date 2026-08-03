@@ -23,11 +23,112 @@ from typing import Literal
 
 __all__ = [
     "PlaceholderStyle",
+    "build_reset_statement_timeout_sql",
     "build_search_path_value",
+    "build_set_local_statement_timeout_sql",
     "build_set_search_path_sql",
+    "build_set_statement_timeout_sql",
 ]
 
 PlaceholderStyle = Literal["asyncpg", "pyformat", "numeric", "named-at"]
+
+
+#: SESSION-scoped ``statement_timeout``. Postgres / Redshift take
+#: milliseconds. TWO call sites are legitimate, both in the driver:
+#: connection open (establish the datasource ceiling) and the
+#: release path (restore that ceiling). ANY other use is the leak the
+#: whole per-statement override exists to prevent -- a session-scoped
+#: SET persists on a cached connection and hands the previous
+#: borrower's bound to whoever draws it next.
+_SET_STATEMENT_TIMEOUT_SQL_TEMPLATE = "SET statement_timeout TO {ms:d}"
+
+
+#: TRANSACTION-scoped ``statement_timeout``: the per-statement override.
+#: ``SET LOCAL`` unwinds when the transaction ends, whether it commits
+#: or rolls back, which makes the leak structurally impossible rather
+#: than merely unlikely. both Postgres and Redshift document ``SET
+#: [ SESSION | LOCAL ] parameter TO value``; ``SET LOCAL`` outside a
+#: transaction block is a no-op with a warning, so callers MUST have a
+#: block open (both drivers do -- see their override paths).
+_SET_LOCAL_STATEMENT_TIMEOUT_SQL_TEMPLATE = "SET LOCAL statement_timeout TO {ms:d}"
+
+
+#: restore ``statement_timeout`` to the connection's session default.
+#: used by the asyncpg release path, where the "default" is whatever
+#: the server / startup packet established rather than a driver-held
+#: number.
+_RESET_STATEMENT_TIMEOUT_SQL = "RESET statement_timeout"
+
+
+def _validate_timeout_seconds(timeout_seconds: int) -> int:
+    """validate a timeout override and convert it to milliseconds.
+
+    the value is formatted INLINE into the SQL because neither Postgres
+    nor Redshift accepts a bind parameter in a ``SET`` statement (the
+    parser rejects ``SET x = $1`` with a syntax error). validating here
+    -- a positive ``int``, never a string -- is what keeps that inline
+    format off the injection surface.
+
+    :param timeout_seconds: per-statement timeout in seconds
+    :ptype timeout_seconds: int
+    :return: the timeout in milliseconds
+    :rtype: int
+    :raises ValueError: when the value is not a positive integer
+    """
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
+        raise ValueError(f"statement timeout must be a positive int, got {type(timeout_seconds).__name__}")
+    if timeout_seconds <= 0:
+        raise ValueError(f"statement timeout must be a positive number of seconds, got {timeout_seconds}")
+    return timeout_seconds * 1000
+
+
+def build_set_local_statement_timeout_sql(timeout_seconds: int) -> str:
+    """build the TRANSACTION-scoped ``statement_timeout`` override.
+
+    the single place the millisecond conversion and the ``LOCAL``
+    scoping live, so the two drivers cannot drift into one of them
+    emitting a session-scoped ``SET``. callers MUST be inside a
+    transaction block -- ``SET LOCAL`` outside one is a no-op with a
+    warning, which would silently leave the statement on the
+    connection's ceiling.
+
+    :param timeout_seconds: per-statement timeout in seconds
+    :ptype timeout_seconds: int
+    :return: the ``SET LOCAL statement_timeout`` statement
+    :rtype: str
+    :raises ValueError: when the value is not a positive integer
+    """
+    return _SET_LOCAL_STATEMENT_TIMEOUT_SQL_TEMPLATE.format(ms=_validate_timeout_seconds(timeout_seconds))
+
+
+def build_set_statement_timeout_sql(timeout_seconds: int) -> str:
+    """build the SESSION-scoped ``statement_timeout`` for the datasource ceiling.
+
+    legitimate at exactly two driver call sites: connection open, and
+    the release path that restores the ceiling after a per-statement
+    override. never use this for a per-statement bound -- see
+    :func:`build_set_local_statement_timeout_sql`.
+
+    :param timeout_seconds: connection-level ceiling in seconds
+    :ptype timeout_seconds: int
+    :return: the ``SET statement_timeout`` statement
+    :rtype: str
+    :raises ValueError: when the value is not a positive integer
+    """
+    return _SET_STATEMENT_TIMEOUT_SQL_TEMPLATE.format(ms=_validate_timeout_seconds(timeout_seconds))
+
+
+def build_reset_statement_timeout_sql() -> str:
+    """build the ``RESET statement_timeout`` release-path statement.
+
+    used where the session default is server-established rather than
+    driver-held (asyncpg sends its session settings in the STARTUP
+    packet, so ``RESET`` restores exactly that value).
+
+    :return: the ``RESET statement_timeout`` statement
+    :rtype: str
+    """
+    return _RESET_STATEMENT_TIMEOUT_SQL
 
 
 def _quote_pg_identifier(name: str) -> str:

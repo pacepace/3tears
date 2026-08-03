@@ -83,8 +83,15 @@ class _FakeDataStore:
         """
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
-        if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
+        # Matched on the STABLE part of the statement, not its column list. This
+        # asserted "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" verbatim,
+        # so when the runner's query grew a `description` column the match
+        # silently stopped firing -- the fake answered "no migrations applied",
+        # and the idempotence test saw all five re-run on a second apply. A
+        # double that fails CLOSED like that reports a product bug that does not
+        # exist, which is worse than one that raises.
+        if "FROM _SCHEMA_MIGRATIONS" in normalized and normalized.startswith("SELECT") and "MAX(" not in normalized:
+            result = [dict(row) for row in self.migrations_rows]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
             max_version = max((row["version"] for row in self.migrations_rows), default=0)

@@ -21,6 +21,7 @@ Cases:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -33,7 +34,22 @@ from threetears.nats.errors import KvError
 from threetears.scheduled_jobs import tick as tick_mod
 from threetears.scheduled_jobs.config import DEFAULT_DISPATCH_REAP_AFTER_SECONDS
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
+from threetears.scheduled_jobs.tick import DispatchCallback
 from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
+
+
+# Every ``kind`` this module's fixtures mint. The engine scopes its
+# due-scan to the routed kinds, so a kind missing from the routing table
+# is never enumerated -- these cases exercise the tick's OTHER behaviours
+# (lock control flow, CAS, isolation, reaping, drift), so all of them are
+# routed to the one callback under test. Routing itself is pinned in
+# ``test_kind_routing.py``.
+_TEST_KINDS: tuple[str, ...] = ("demo", "bad", "good")
+
+
+def _routes(callback: DispatchCallback) -> dict[str, DispatchCallback]:
+    """Route every fixture kind to ``callback``."""
+    return dict.fromkeys(_TEST_KINDS, callback)
 
 
 def _now() -> datetime:
@@ -127,9 +143,17 @@ class _FakeScheduleStore(ScheduleStore):
         self._due = due
         self._claim_outcomes = claim_outcomes or {}
         self.claims: list[dict[str, Any]] = []
+        self.scan_kinds: list[tuple[str, ...]] = []
 
-    async def list_due_for_tick(self, now: datetime, *, limit: int = 200) -> list[DueSchedule]:
-        return list(self._due)
+    async def list_due_for_tick(
+        self,
+        now: datetime,
+        *,
+        kinds: Sequence[str],
+        limit: int = 200,
+    ) -> list[DueSchedule]:
+        self.scan_kinds.append(tuple(kinds))
+        return [row for row in self._due if row.kind in set(kinds)]
 
     async def claim_and_reschedule(
         self,
@@ -203,8 +227,9 @@ class _FakeFireStore(FireStore):
         now: datetime,
         *,
         older_than: timedelta,
+        kinds: Sequence[str],
     ) -> int:
-        self.reap_calls.append({"now": now, "older_than": older_than})
+        self.reap_calls.append({"now": now, "older_than": older_than, "kinds": tuple(kinds)})
         return self._reap_count
 
 
@@ -253,7 +278,7 @@ class TestLockControlFlow:
         _patch_lock(monkeypatch, _CtxRaisingOnEnter(LockHeld("held: scheduled_jobs_tick")))
         store = _FakeScheduleStore([_FakeDueSchedule()])
         fires = _FakeFireStore()
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         # LockHeld skips the WHOLE body -- no claim, no fire.
         assert store.claims == []
         assert fires.created == []
@@ -264,7 +289,7 @@ class TestLockControlFlow:
         store = _FakeScheduleStore([sched])
         fires = _FakeFireStore()
         # Must NOT raise -- KvError is degraded to a warning + run.
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert len(store.claims) == 1
         assert len(fires.created) == 1
         assert len(fires.succeeded) == 1
@@ -285,7 +310,7 @@ class TestHappyPath:
             seen.append(trigger)
             return JobFireResult(status="succeeded", output={"done": 1}, latency_ms=7)
 
-        await tick_mod.scheduled_tick_job(store, fires, _cb, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
 
         # one claim, one fire created + finalized success
         assert len(store.claims) == 1
@@ -320,7 +345,7 @@ class TestHappyPath:
             # a consumer-specific terminal status the generic vocabulary does not enumerate
             return JobFireResult(status="skipped_busy", output={"deferred": True})
 
-        await tick_mod.scheduled_tick_job(store, fires, _cb, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
 
         # finalized as the consumer's status (success path, not failed), persisted verbatim
         assert len(fires.succeeded) == 1
@@ -336,7 +361,7 @@ class TestHappyPath:
         )
         store = _FakeScheduleStore([sched])
         fires = _FakeFireStore()
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert store.claims[0]["new_status"] == "expired"
         assert store.claims[0]["computed_next_fire"] is None
 
@@ -357,7 +382,7 @@ class TestCasMissSkips:
             called = True
             return JobFireResult()
 
-        await tick_mod.scheduled_tick_job(store, fires, _cb, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
 
         assert len(store.claims) == 1  # the claim WAS attempted
         assert fires.created == []  # but no fire row was written
@@ -380,7 +405,7 @@ class TestPerRowFailureIsolation:
             return JobFireResult(status="succeeded")
 
         # Must NOT raise -- the bad row is isolated.
-        await tick_mod.scheduled_tick_job(store, fires, _cb, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
 
         # both rows were claimed + got an in-flight fire
         assert len(store.claims) == 2
@@ -399,7 +424,7 @@ class TestPerRowFailureIsolation:
         async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
             return JobFireResult(status="failed", error="downstream rejected")
 
-        await tick_mod.scheduled_tick_job(store, fires, _cb, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
         assert len(fires.failed) == 1
         assert fires.failed[0]["error"] == "downstream rejected"
         assert fires.succeeded == []
@@ -412,7 +437,7 @@ class TestReapStaleDispatching:
         _patch_lock(monkeypatch, _CtxHealthy())
         store = _FakeScheduleStore([])
         fires = _FakeFireStore(reap_count=0)
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         # the reaper ran once with the default age threshold
         assert len(fires.reap_calls) == 1
         assert fires.reap_calls[0]["older_than"] == timedelta(seconds=DEFAULT_DISPATCH_REAP_AFTER_SECONDS)
@@ -431,7 +456,7 @@ class TestReapStaleDispatching:
         monkeypatch.setattr(tick_mod, "get_scheduled_jobs_emitter", lambda *a, **k: _RecordingEmitter())
         store = _FakeScheduleStore([])
         fires = _FakeFireStore(reap_count=3)
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         # three zombies reaped -> three failure increments tagged 'reaped'
         assert failures == ["reaped", "reaped", "reaped"]
 
@@ -440,14 +465,20 @@ class TestReapStaleDispatching:
         _patch_lock(monkeypatch, _CtxHealthy())
 
         class _BoomOnReap(_FakeFireStore):
-            async def reap_stale_dispatching(self, now: datetime, *, older_than: timedelta) -> int:
+            async def reap_stale_dispatching(
+                self,
+                now: datetime,
+                *,
+                older_than: timedelta,
+                kinds: Sequence[str],
+            ) -> int:
                 raise RuntimeError("reaper db hiccup")
 
         sched = _FakeDueSchedule()
         store = _FakeScheduleStore([sched])
         fires = _BoomOnReap()
         # must NOT raise; the due row still fires + finalizes
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert len(fires.created) == 1
         assert len(fires.succeeded) == 1
 
@@ -473,7 +504,7 @@ class TestDriftRecorded:
         sched = _FakeDueSchedule(next_fire_at=_now() - timedelta(seconds=90))
         store = _FakeScheduleStore([sched])
         fires = _FakeFireStore()
-        await tick_mod.scheduled_tick_job(store, fires, _record_success, nats_client=object())
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
 
         assert len(observed) == 1
         assert observed[0] >= 89.0  # the tick's ``now`` is slightly after _now(); drift is at least ~90s
