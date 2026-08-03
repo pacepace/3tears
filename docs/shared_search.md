@@ -1,6 +1,13 @@
 # Shared Web Search and Fetch — Design Exploration
 
 **Status:** Exploration — 2026-08-02. Not a proposal; nothing here is ratified.
+**Superseded in part:** `search-requirements.md` §11 reads this sketch against
+the requirements and contradicts five of its field choices plus two structural
+ones. **Read that section before building anything here.** In particular, do not
+take "httpx-only" (`:103`, `:150`) at face value: a stored `httpx.AsyncClient`
+fails `tests/enforcement/test_no_bespoke_reuse.py`, whose sanctioned target is
+`threetears.core.http_client`. The requirements doc's §N reconciles that with the
+Pi's refusal of `core`, and adds the egress seam this sketch does not mention.
 **Companion to:** `family-convergence.md` §4.14, which records the *direction*
 (one contract, staged pipeline). This document sketches the *mechanism* for
 evolving the common tools, so the thinking survives until someone cuts a real

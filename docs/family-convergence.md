@@ -585,6 +585,16 @@ not implementations.
 
 ### 4.14 Web search — one contract, staged pipeline (SearXNG from metallm; budgets from discodon)
 
+> **Derivation:** `search-requirements.md` states the need behind this section
+> and traces it to code in six repos. It is where the detail now lives, and it
+> proposes amending two things ruled here: that the contract's result carries a
+> single `score` (P7/SR-A4 argue for named, provenanced scores), and that
+> "url, title, snippet" is the result shape (SR-C1 makes the core
+> carrier-neutral, since images and datasets are now in scope). Those are
+> recorded there as decisions for an owner — this section stands until one is
+> taken. The rerank ruling below is *not* in question: the requirements doc
+> aligns to it.
+
 The family runs web search two ways today and is about to run it a third:
 
 - **metallm / 3tears**: self-hosted SearXNG (json format enabled, limiter off
