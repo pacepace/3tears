@@ -46,10 +46,17 @@ rights-clear image, the paper rather than the press release about the paper.
 Providers, extraction, fusion and reranking are means. Saying it this way is what
 tells us when a stage earns its place and when it is machinery for its own sake.
 
-**G3. Any carrier.** Web pages today; images and documents are already required.
-Samsung's image search is designed, its records and lifecycle built, and only the
-search itself missing. Pages, images and PDFs are three carriers of information,
-not three products.
+**G3. Any carrier.** Pages, images, PDFs, video, datasets — carriers of
+information, not separate products. **Ruled 2026-08-02:** images and arbitrary
+data types are in scope, so the result core has to be carrier-neutral and the
+carrier facets open (SR-C1). Samsung's image search is the near-term proof —
+designed, records and lifecycle built, only the search itself missing.
+
+The fidelity ladder is carrier-dependent. A page runs locator → snippet →
+extracted text; a dataset runs locator → schema → sample → full download; video
+probably runs locator → metadata → transcript. The rungs differ, the principle
+does not — the consumer says how far to go, and Extract does whatever that
+carrier's version of "get the information out" is.
 
 **G4. Every piece of information carries a source you can re-check.**
 Attributable to where it came from, groundable against what was actually
@@ -189,7 +196,7 @@ representative caller.
 | Axis | Values seen or anticipated |
 |------|---------------------------|
 | **Caller** | program · LLM via a tool call · person typing a query |
-| **Carrier** | web page · image · PDF / document · (video, dataset — anticipated) |
+| **Carrier** | web page · image · PDF / document · video · dataset — open by ruling, not a fixed list |
 | **Criteria depth** | none ("top 5") · shallow (recency, domain) · deep (resolution, rights, provenance class, publication type) |
 | **Fidelity** | locator · snippet · extracted content · structured record |
 
@@ -231,10 +238,9 @@ search entirely" (`phase_one.py:3-5`). A capability shaped around today's text
 callers forecloses the consumer standing at the door with its requirements
 already written down.
 
-**Assumption A1** *(vetoable)*: C6 is the same capability rather than a
-permanently separate path — that *finding* an image is search and *fetching* it
-is acquisition (§4.12). If not, carrier polymorphism drops out and this is
-web-text search, which is then what it should be called.
+**Ruled 2026-08-02** *(was assumption A1)*: C6 is this capability. *Finding* an
+image is search; *fetching* it is acquisition (§4.12). Arbitrary carriers —
+video, datasets — are in scope on the same basis.
 
 **Assumption A2** *(vetoable)*: person-typed queries are in scope. No current
 call site is one; inferred from the family having web UIs. Cheap now (mostly
@@ -303,15 +309,19 @@ extraction it will not read.
 The decisions that most change the answer. Full list with recommendations in
 §13.
 
-- **Is per-search replay required?** Today research evals re-issue live searches
-  against a changing web (SR-F3). I think this is the largest gap in the current
-  stack.
+- **Who stores a replay recording?** Replay itself is ruled in (SR-F3); where the
+  bytes live and who expires them is not. Recommended: a store port the consumer
+  supplies, with the hand-back bundle as one implementation of it rather than the
+  primitive (SR-F5).
 - **Local caps or provider refusal?** Samsung and discodon hold reasoned,
   recorded, opposite positions (SR-D5). This needs a ruling, not a merge.
-- **Is image search this capability?** Assumption A1 gates carrier polymorphism
-  and about a third of Part II.
 - **How many score dimensions?** One `score` field forecloses C6 (SR-A4).
 - **Model-mediated search — in or out?** Open question 21 (SR-B5).
+- **Long-term retention of retrieved content.** Recording turns transit into
+  storage, and the posture differs by carrier (SR-K4).
+
+Ruled 2026-08-02: carriers are open, including images, video and datasets (G3);
+searches must be replayable (SR-F3).
 
 ---
 
@@ -404,10 +414,13 @@ partial answer.
 
 **SR-C1 (REQUIRED, P6 — G3).** The result core is carrier-agnostic — identity,
 provenance, scores, what fidelity is available. Carrier facets are additive and
-open, not a closed union of "web | image | pdf".
+open. A closed union of "web | image | pdf" is prohibited: the 2026-08-02 ruling
+puts video and datasets in scope, and the list is explicitly not finite.
 
 **SR-C2 (REQUIRED).** A consumer that does not recognise a facet ignores it
-rather than failing. This is success check 7.
+rather than failing, and adding a carrier requires no change at Adapter or Call
+for consumers that do not use it. This is success check 7, and it is the check
+that a closed union would fail.
 
 **SR-C3 (REQUIRED).** Known facet needs, from real records — image: dimensions,
 rights status, direct-file versus containing-page URL, and how the bytes are
@@ -507,21 +520,75 @@ sharing explicit rather than a fallback. Discodon designed exactly this (EVL-TQ7
 search burst can never exhaust the quota or trip the breaker protecting live
 personas' research," with unset meaning a *documented shared* quota.
 
-**SR-F3 (DECISION — the largest gap found; G4).** Must a search be replayable?
-Discodon's cassette layer records and replays at `Tool.act()`
-(`eval/cassette_proxy.py:16-18,185-207`). C1 is a `Tool` and is replayable. C2's
-sub-tool deliberately is not — "no Tool ABC overhead"
-(`research/web_search.py:5`) — so it sits below the replay seam and its searches
-cannot be replayed. Every research eval re-issues live searches against a
-changing web.
-*Recommendation:* promote to REQUIRED, and attach record/replay as a
-cross-cutting concern at Adapter and Call (P5) rather than at whatever layer
-happens to be a `Tool`. That placement is the lesson of the current gap: replay
-was attached to a class hierarchy, so a component that opted out of the hierarchy
-silently opted out of reproducibility.
+**SR-F3 (REQUIRED — ruled 2026-08-02; G4).** A search must be replayable.
+Record/replay attaches as a cross-cutting concern at Adapter and Call (P5), not
+at whatever layer happens to be a `Tool`. That placement is the lesson of the
+current gap: discodon's cassette layer records and replays at `Tool.act()`
+(`eval/cassette_proxy.py:16-18,185-207`), C1 is a `Tool` and is replayable, and
+C2's sub-tool deliberately is not — "no Tool ABC overhead"
+(`research/web_search.py:5`). Replay was attached to a class hierarchy, so a
+component that left the hierarchy silently left reproducibility, and every
+research eval now re-issues live searches against a changing web.
 
 **SR-F4 (REQUIRED).** What is recorded must rebuild the corpus, not merely the
 rendered text — otherwise a replayed run cannot re-run its grounding gate.
+
+**SR-F5 (DECISION — who stores the recording).** Search knows *what* to record
+and *how to key it*; it does not know how long to keep it. That question belongs
+to whatever needed the recording: an eval run's recording should live exactly as
+long as the eval run, and search cannot see that lifecycle. The same argument
+runs for privacy — a recording holds user-supplied queries (SR-K2) and retrieved
+third-party content, so retention and redaction are the consumer's policy, and a
+capability that persists them inherits an obligation it cannot discharge (P1).
+
+Three shapes, and the difference matters:
+
+- **Search owns a store.** Rejected. It forces every consumer onto one backend,
+  contradicting SR-I4's decision on the same question for telemetry, and it puts
+  the TTL choice in the one place that cannot make it.
+- **An opaque bundle handed back and later handed in.** Right instinct, wrong
+  primitive. A research run makes ~20 searches across nested inner-agent rounds
+  (`research_tool.py:83-90`); a bundle has to be accumulated and returned through
+  layers that have no other reason to carry it, which is P5 inverted — the fact
+  arises at the provider call and would travel up through everything.
+- **A store port the consumer supplies.** *Recommended.* Search defines the
+  record type and the key, and writes through a port; the consumer wires its own
+  store. The recording is written where it happens, and lifecycle sits with the
+  owner. All three candidate consumers already have a durable store, so the
+  burden is a wiring line, and the family already has a `DurableStore` protocol
+  direction (open question 16) for the port to follow.
+
+The bundle is then one *implementation* of the port — an in-memory store the
+consumer serialises — which is what you want anyway for out-of-process or
+portable replay. Keeping it as an implementation rather than the primitive means
+the in-process family pattern does not pay for the portable case.
+
+One shape decision inside this: the envelope should be **typed and the payload
+versioned**. The consumer sees id, created-at, provider, key, size and schema
+version — enough to expire, purge, index and account for it — while the payload
+stays search's business. That gives lifecycle management without schema coupling,
+and makes schema evolution search's problem (SR-M1) rather than a shared one.
+
+*On the specific questions:* how long to keep it — as long as the thing that
+needed it, which usually means cascade-delete with the owning run rather than a
+clock. When to purge — same event; a TTL is a backstop for orphans, not the
+primary mechanism (discodon already runs one for research traces,
+`research_tool.py:351`).
+
+**SR-F6 (REQUIRED).** Recording is opt-in per call. A recording carries full
+retrieved content (SR-F4), most calls will never be replayed, and paying that
+cost on every call is waste that shows up as storage and bytes moved.
+
+**SR-F7 (REQUIRED).** A replay miss is an error, never a silent live call.
+Discodon has the precedent — a `CassetteMiss` raised on lookup failure
+(`eval/cassette_proxy.py:120`). Falling through to the network would let an eval
+go live without saying so, and its trend line would then be measuring the web.
+
+**SR-F8 (REQUIRED, P2).** The replay key is derived by search, because only
+search knows what varies — provider, query, resolved parameters, profile digest.
+Discodon already computes the analogous digest for eval variant identity
+(`eval/identity.py:221`). A consumer-derived key would go stale the first time a
+provider parameter was added.
 
 ### G. Performance
 
@@ -645,6 +712,12 @@ already models as `rights_status`.
 *Recommendation:* a stated family stance, enforced per adapter. A per-app answer
 means the first app to get our shared SearXNG banned decides for everyone.
 
+Replay widens this. A recording (SR-F3) turns transit into storage — we would be
+keeping third-party page text, images, and eventually video, for as long as an
+eval run lives. That is a different posture from fetching and discarding, it
+varies by carrier and by provider terms, and it is worth ruling on alongside the
+retention mechanism rather than after somebody notices.
+
 ### L. Packaging and weight
 
 **SR-L1 (REQUIRED, P3 — G10).** A consumer must take Adapter and Call without a
@@ -731,12 +804,16 @@ should be cut after §13 has answers, and that the answers change five fields.
 
 ## 12. Open assumptions
 
-- **A1** — image search is this capability, not a separate path. Gates §9.C.
 - **A2** — person-typed queries are in scope. Gates SR-K2.
 - **SR-A4** — SearXNG's score semantics are stated from general knowledge, not
   measured. Confirm against a live instance before ruling.
 - The layer cut in §6 is proposed here, not derived from any owner's recorded
   position. Every requirement is attributed to it, so re-cutting it ripples.
+- **SR-F5's storage burden is estimated, not measured.** The claim that all three
+  candidate consumers can satisfy a store port with a wiring line rests on each
+  already having a durable store, not on anyone having tried it.
+
+Closed: **A1** (carriers, ruled in) and the replay question (SR-F3, ruled in).
 
 ## 13. Decisions needing an owner
 
@@ -748,7 +825,7 @@ should be cut after §13 has answers, and that the answers change five fields.
 | SR-D4 | Does a failed search consume budget | Follow the bill; move the retry bound in the same change |
 | SR-D5 | Local vs provider refusal authority | Both, distinct roles — two recorded positions conflict |
 | SR-E6 | Self-hosted cost: zero or amortised | Zero, plus a separate rate/quota dimension |
-| SR-F3 | Is per-search replay required | **Yes — promote to REQUIRED**, attached at Adapter/Call |
+| SR-F5 | Who stores a replay recording | A store port the consumer supplies; the bundle is one implementation, not the primitive |
 | SR-G4 | Retries: capability or consumer | Bounded, at Adapter |
 | SR-H4 | Rate limiting: pace or react | Pace per provider instance, on core's `TokenBucket` |
 | SR-I4 | Emit telemetry or return records | Return records |
@@ -758,5 +835,7 @@ should be cut after §13 has answers, and that the answers change five fields.
 | SR-M1 | Versioning and compatibility promise | Rule before the first consumer binds |
 | SR-M2 | Response caching | Decide replay first, cache in its light |
 | SR-M3 | Ratification home (OQ13) | This file, per-repo acceptance |
-| A1 | Is image search the same capability | Assumed yes; if no, this is web-text search and should be named so |
 | A2 | Are person-typed queries in scope | Assumed yes; cheap now, expensive to retrofit |
+
+**Ruled 2026-08-02:** carriers are open, images and arbitrary data types in scope
+(G3, SR-C1); searches must be replayable, attached at Adapter and Call (SR-F3).
