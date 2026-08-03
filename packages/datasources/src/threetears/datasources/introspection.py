@@ -30,6 +30,7 @@ from typing import Any
 
 __all__ = [
     "IntrospectionDiff",
+    "column_hash_payload",
     "compute_column_hash",
     "compute_introspection_diff",
 ]
@@ -43,7 +44,10 @@ def compute_column_hash(cols: list[dict[str, Any]]) -> str:
 
     .. code-block:: text
 
-        column_name:data_type:is_nullable,column_name:data_type:is_nullable,...
+        MD5(column_name:data_type:is_nullable),MD5(...),...
+
+    i.e. each column's payload is hashed first and the 32-char digests are
+    joined -- see :func:`column_hash_payload` for why.
 
     where columns are sorted by ``ordinal_position`` ascending,
     ``is_nullable`` is the RAW warehouse string (``'YES'`` / ``'NO'``
@@ -60,11 +64,53 @@ def compute_column_hash(cols: list[dict[str, Any]]) -> str:
     :return: 32-char lowercase MD5 hex digest
     :rtype: str
     """
-    payload = ",".join(
-        f"{c['column_name']}:{c['data_type']}:{c.get('is_nullable') or ''}"
+    return hashlib.md5(column_hash_payload(cols).encode()).hexdigest()  # noqa: S324 -- change-detect signal, not a security boundary
+
+
+def column_hash_payload(cols: list[dict[str, Any]]) -> str:
+    """the string the column hash is taken over, on BOTH sides.
+
+    Each column is hashed FIRST and the digests are joined, so the payload is
+    a fixed 33 bytes per column no matter how long the column and type names
+    are. Named and exported because its SIZE is the property that matters and
+    a test cannot observe it through the digest, which is 32 characters
+    whatever went in.
+
+    WHY IT IS NOT THE RAW ``name:type:nullable`` JOIN ANY MORE. Redshift's
+    ``LISTAGG`` refuses a result over 65535 bytes, and the warehouse-side
+    formula is a ``LISTAGG`` over exactly this payload. Introspecting ripple's
+    nine source schemas failed outright:
+
+        Result size exceeds LISTAGG limit ... limit: 65535
+
+    ``influencers.test_targetsmart`` has 1462 columns whose raw payload is
+    69,210 bytes. ONE table over the limit failed the query for all 5,615
+    tables in scope, leaving the datasource with no catalog at all -- and the
+    old formula's size depended on name lengths, so it overflowed on one
+    warehouse and not on another with wider tables and shorter names.
+
+    At 33 bytes per column the ceiling is about 1985 columns, and Redshift
+    caps a table at 1600, so this can no longer overflow there.
+
+    CHANGING THIS CHANGES EVERY STORED HASH. The first introspection after an
+    upgrade reports every table as changed and re-saves it. That is a one-time
+    full re-scan, not a loss, but it is why the formula is not adjusted
+    casually: the warehouse-side SQL in each driver's ``TABLE_HASHES`` template
+    MUST be edited in the same commit or the two sides stop agreeing and every
+    sweep reports spurious changes forever.
+
+    :param cols: column-row dicts carrying ``column_name``, ``data_type``,
+        ``is_nullable`` and ``ordinal_position``; not mutated
+    :ptype cols: list[dict[str, Any]]
+    :return: the canonical payload, ordered by ordinal position
+    :rtype: str
+    """
+    return ",".join(
+        hashlib.md5(  # noqa: S324 -- change-detect signal, not a security boundary
+            f"{c['column_name']}:{c['data_type']}:{c.get('is_nullable') or ''}".encode()
+        ).hexdigest()
         for c in sorted(cols, key=lambda c: c["ordinal_position"])
     )
-    return hashlib.md5(payload.encode()).hexdigest()  # noqa: S324 -- change-detect signal, not a security boundary
 
 
 @dataclass(frozen=True)

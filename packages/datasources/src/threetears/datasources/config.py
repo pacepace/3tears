@@ -92,7 +92,17 @@ __all__ = [
 # :class:`threetears.datasources.entities.DataSourceAccessMode`. kept
 # as a literal set here so the config validator stays a pure pydantic
 # field check without pulling the enum module at validation time.
-_VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite"})
+#
+# the mirror is by hand, so the two authorities can drift.
+# ``tests/unit/test_entities.py::TestAccessModeAuthorityParity`` is what
+# stops a mode landing in one and not the other -- and it has now done that
+# job once, catching ``publish`` here when only the enum carried it.
+#
+# ``build`` is a FOURTH value and ``publish`` a FIFTH. neither is a
+# composition: there is no ``readwritebuild``, and the publisher OWNS the
+# release schema, which is not a privilege another identity can be granted.
+# see :class:`DataSourceAccessMode` for why.
+_VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite", "build", "publish"})
 
 # credential resolution lives in :mod:`threetears.datasources.secrets`.
 # config carries a ``scheme://locator`` reference (``password_ref`` /
@@ -104,6 +114,26 @@ _VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite"})
 # ---------------------------------------------------------------------------
 # Per-driver ConnectionConfig members
 # ---------------------------------------------------------------------------
+
+
+#: model config every per-driver connection config carries.
+#:
+#: ``extra="forbid"`` for the same reason :class:`DatasourceConfig` carries
+#: it one level up, and the rule has to hold at BOTH levels or it holds at
+#: neither: the parent refused ``acccess_mode`` while the nested member
+#: happily dropped ``query_timeout_secondz``, so the whole pool-sizing and
+#: timeout surface -- the fields an operator derives from a warehouse
+#: CONNECTION LIMIT and a replica count -- was silently revertible to a
+#: library default by one transposed character. a build row declaring
+#: ``query_timeout_seconds: 14400`` became a 300-second statement timeout
+#: with the file on disk still reading 14400.
+#:
+#: refusal (rather than the tolerate-and-report policy the relations wire
+#: uses) is right here because this config is read by the process that OWNS
+#: it: the driver is constructed from the same checkout that declares these
+#: fields, so there is no older reader to be tolerant for. an unrecognised
+#: key is an authoring slip, always.
+_CONNECTION_CONFIG = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class PostgresConnectionConfig(BaseModel):
@@ -132,7 +162,7 @@ class PostgresConnectionConfig(BaseModel):
         runaway query holds a connection for the duration
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.POSTGRES]
     host: str
@@ -200,7 +230,7 @@ class YugabyteConnectionConfig(BaseModel):
     YugabyteDB's pgwire-compatible 5433.
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.YUGABYTE]
     host: str
@@ -296,11 +326,13 @@ class RedshiftConnectionConfig(BaseModel):
         lower = cold-start TLS cost on most queries; higher = more
         idle Redshift sessions held
     :param query_timeout_seconds: Redshift-side ``statement_timeout``
-        (in ms server-side; driver converts). trade-off: same as
-        ``command_timeout_seconds`` above
+        (in ms server-side; driver converts), applied at connection open
+        as the connection-level ceiling. per-statement overrides are
+        passed to ``fetch`` / ``execute`` as ``timeout_seconds=`` and sit
+        below it. trade-off: same as ``command_timeout_seconds`` above
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.REDSHIFT]
     host: str
@@ -345,7 +377,14 @@ class RedshiftConnectionConfig(BaseModel):
     )
     query_timeout_seconds: int = Field(
         default=300,
-        description="redshift statement_timeout; caps individual queries",
+        description="redshift statement_timeout, applied once at connection open. this is the "
+        "connection-level CEILING, not the value every statement runs under: a caller passes "
+        "timeout_seconds= to fetch or execute for a per-statement override below it, applied as "
+        "SET LOCAL and reset on release so it cannot leak to the next borrower of a cached "
+        "connection. the default suits interactive reads, where the rule is that the warehouse "
+        "kills a query whose caller has gone away. a build datasource inverts that -- no caller "
+        "waits on it and the pod does not stop an abandoned call -- so it carries a ceiling "
+        "sized to the longest legitimate statement instead",
     )
     tcp_keepalive: bool = Field(
         default=True,
@@ -441,7 +480,7 @@ class SnowflakeConnectionConfig(BaseModel):
     :param query_timeout_seconds: per-query timeout (Snowflake-side)
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.SNOWFLAKE]
     account: str
@@ -495,7 +534,7 @@ class BigQueryConnectionConfig(BaseModel):
         ceiling (driver converts seconds -> ms)
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.BIGQUERY]
     project_id: str
@@ -537,7 +576,7 @@ class AgentInternalConnectionConfig(BaseModel):
         constraint
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = _CONNECTION_CONFIG
 
     datasource_type: Literal[DataSourceType.AGENT_INTERNAL]
     schema_name: str = Field(
@@ -617,7 +656,9 @@ class DatasourceConfig(BaseModel):
 
     :param name: human-readable name for this data source
     :ptype name: str
-    :param access_mode: tool registration mode (read / write / readwrite)
+    :param access_mode: tool registration mode (read / write / readwrite /
+        build / publish). normalized to lowercase with surrounding whitespace
+        stripped
     :ptype access_mode: str
     :param schemas: database schemas exposed to agents (whitelist;
         empty means "all schemas the warehouse account can see").
@@ -650,17 +691,33 @@ class DatasourceConfig(BaseModel):
     @field_validator("access_mode")
     @classmethod
     def access_mode_must_be_valid(cls, value: str) -> str:
-        """validates that ``access_mode`` is one of read / write / readwrite.
+        """normalizes ``access_mode`` then validates it against the closed set.
 
-        :param value: access mode string to validate
+        normalization is ``.lower().strip()`` and is load-bearing rather
+        than cosmetic. an unnormalized ``Build`` reaching the tool pod
+        matches no registration branch, so no tools register, nothing
+        raises, and ``tool_count=0`` is the only trace. the model carries
+        ``extra="forbid"``, which makes this field the sole entry point.
+
+        the admissible set is RENDERED FROM :data:`_VALID_ACCESS_MODES` rather
+        than spelled again in the message. It was spelled again, and it went
+        stale: the set gained ``publish`` and the message did not, so a
+        misspelled publisher row was rejected with an error listing four modes
+        and omitting the one the operator was reaching for. A hand-written
+        message is a third copy of the authority and drifts exactly like the
+        second one did.
+
+        :param value: access mode string to normalize and validate
         :ptype value: str
-        :return: validated access mode string
+        :return: normalized access mode string
         :rtype: str
-        :raises ValueError: if access mode is not valid
+        :raises ValueError: if access mode is not in :data:`_VALID_ACCESS_MODES`
         """
-        if value not in _VALID_ACCESS_MODES:
-            raise ValueError(f"invalid access_mode {value!r}: must be one of read, write, readwrite")
-        return value
+        normalized = value.lower().strip()
+        if normalized not in _VALID_ACCESS_MODES:
+            admissible = ", ".join(sorted(_VALID_ACCESS_MODES))
+            raise ValueError(f"invalid access_mode {value!r}: must be one of {admissible}")
+        return normalized
 
     @property
     def is_reference(self) -> bool:

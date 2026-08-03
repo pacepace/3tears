@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from threetears.datasources.config import (
@@ -46,8 +47,14 @@ def _build_mock_pool(
     """build a MagicMock that behaves like an ``asyncpg.Pool``.
 
     pool.acquire() returns an async context manager yielding a
-    Connection mock with fetch/execute/fetchval/cancel/cursor/transaction
-    coroutines wired up.
+    Connection mock with fetch / execute / fetchval coroutines wired up.
+
+    the connection is spec'd against the REAL :class:`asyncpg.Connection`
+    (dsd-task-02), so an attribute the class does not carry raises
+    :class:`AttributeError` here as it does in production. this builder
+    used to assign ``conn.cancel`` -- a method asyncpg has never had --
+    and that assignment is what concealed a driver cancellation path
+    which cancelled nothing.
 
     :param fetch_records: rows ``conn.fetch`` should resolve to
     :ptype fetch_records: list[dict[str, Any]] | None
@@ -61,12 +68,10 @@ def _build_mock_pool(
     pool = MagicMock(name="MockPool")
 
     # connection mock: every method we route through is async
-    conn = MagicMock(name="MockConn")
+    conn = MagicMock(spec=asyncpg.Connection, name="MockConn")
     conn.fetch = AsyncMock(return_value=records)
     conn.execute = AsyncMock(return_value=None)
     conn.fetchval = AsyncMock(return_value=fetchval_value)
-    conn.cancel = MagicMock(return_value=None)
-    conn.terminate = MagicMock(return_value=None)
 
     # async-context-manager shape for ``pool.acquire()``
     @asynccontextmanager

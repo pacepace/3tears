@@ -170,7 +170,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.datasources.config import BigQueryConnectionConfig
-from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow, Transaction
 from threetears.observe import get_logger
 
 __all__ = ["BigQueryDriver"]
@@ -228,19 +228,40 @@ class BigQueryDriver(Driver):
         self._config = config
         self._datasource_name = datasource_name
 
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement -- NOT YET IMPLEMENTED.
+
+        the per-statement timeout maps to
+        ``QueryJobConfig.job_timeout_ms`` rather than a ``SET LOCAL``:
+        BigQuery has no session to leak into, so the whole
+        transaction-local mechanism the pgwire drivers need does not
+        apply here.
 
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"BigQueryDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"BigQueryDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
+
+    async def begin(self) -> Transaction:
+        """open a session-pinned transaction -- NOT IMPLEMENTABLE AS SPECIFIED.
+
+        BigQuery is stateless HTTPS with no session and no
+        client-visible transaction handle; multi-statement atomicity
+        would have to go through a scripting ``BEGIN TRANSACTION`` in a
+        single submitted job, which is a different shape from the
+        statement-at-a-time handle this ABC exposes. document the
+        chosen mapping here before implementing -- do not fake a
+        session.
+
+        :raises NotImplementedError: stub method; see module docstring
+        """
+        raise NotImplementedError(f"BigQueryDriver.begin is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema (dataset) allow-list -- NOT YET IMPLEMENTED.

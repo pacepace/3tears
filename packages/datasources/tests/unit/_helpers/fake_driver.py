@@ -28,7 +28,13 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.drivers.base import (
+    CallbackTransaction,
+    ColumnRow,
+    Driver,
+    TableRow,
+    Transaction,
+)
 
 __all__ = ["FakeDriver"]
 
@@ -60,6 +66,8 @@ class FakeDriver(Driver):
         self._raise_on_test_connection = raise_on_test_connection
         self._closed = False
         self.cancel_called = 0
+        self.timeouts_seen: list[int | None] = []
+        self.transaction_finishes: list[bool] = []
 
     async def _simulate_query(self) -> None:
         """sleep ``slow_seconds`` so cancellation tests can race the operation.
@@ -81,16 +89,84 @@ class FakeDriver(Driver):
                     self._cancel_hook()
                 raise
 
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         if self._closed:
             raise RuntimeError("FakeDriver is closed")
+        self.timeouts_seen.append(timeout_seconds)
         await self._simulate_query()
         return list(self._fetch_rows)
 
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         if self._closed:
             raise RuntimeError("FakeDriver is closed")
+        self.timeouts_seen.append(timeout_seconds)
         await self._simulate_query()
+
+    async def begin(self) -> Transaction:
+        """return a transaction routing statements back through this fake.
+
+        no session to pin -- the fake has no backend -- so the handle
+        exists to satisfy the ABC and to let ABC-level tests exercise
+        :class:`threetears.datasources.drivers.base.TransactionContext`.
+
+        :return: transaction handle over this fake driver
+        :rtype: Transaction
+        """
+        if self._closed:
+            raise RuntimeError("FakeDriver is closed")
+        return CallbackTransaction(
+            on_fetch=self._transaction_fetch,
+            on_execute=self._transaction_execute,
+            on_finish=self._transaction_finish,
+        )
+
+    async def _transaction_fetch(
+        self,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> list[dict[str, Any]]:
+        """forward a transactional SELECT to :meth:`fetch`.
+
+        :param sql: statement text
+        :ptype sql: str
+        :param params: bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement timeout override
+        :ptype timeout_seconds: int | None
+        :return: the seeded fetch rows
+        :rtype: list[dict[str, Any]]
+        """
+        return await self.fetch(sql, *params, timeout_seconds=timeout_seconds)
+
+    async def _transaction_execute(
+        self,
+        sql: str,
+        params: tuple[Any, ...],
+        timeout_seconds: int | None,
+    ) -> None:
+        """forward a transactional statement to :meth:`execute`.
+
+        :param sql: statement text
+        :ptype sql: str
+        :param params: bind values
+        :ptype params: tuple[Any, ...]
+        :param timeout_seconds: per-statement timeout override
+        :ptype timeout_seconds: int | None
+        :return: nothing
+        :rtype: None
+        """
+        await self.execute(sql, *params, timeout_seconds=timeout_seconds)
+
+    async def _transaction_finish(self, commit: bool) -> None:
+        """record how the transaction finished.
+
+        :param commit: True on commit, False on rollback
+        :ptype commit: bool
+        :return: nothing
+        :rtype: None
+        """
+        self.transaction_finishes.append(commit)
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         if self._closed:

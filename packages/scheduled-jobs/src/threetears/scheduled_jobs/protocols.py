@@ -111,9 +111,10 @@ class ScheduleStore(Protocol):
         self,
         now: datetime,
         *,
+        kinds: Sequence[str],
         limit: int = 200,
     ) -> Sequence[DueSchedule]:
-        """Return active schedules whose ``next_fire_at <= now``.
+        """Return active schedules of ``kinds`` whose ``next_fire_at <= now``.
 
         ``Sequence``, not ``list``: ``list`` is invariant, so an implementation returning
         its own concrete ``list[SomeEntity]`` could never satisfy this Protocol even though
@@ -125,9 +126,19 @@ class ScheduleStore(Protocol):
         every partition). Ordered by ``next_fire_at`` ASC, capped at
         ``limit``.
 
+        ``kinds`` is the calling pump's registered routing table, and the
+        filter MUST be applied in the query, not by the caller after the
+        fact. A kind-blind scan that leaves the filtering to the
+        dispatcher hands rows to the wrong place the moment any code path
+        forgets it, and the resulting misdelivery is silent. An empty
+        ``kinds`` returns nothing -- it never widens to "every kind".
+
         :param now: tick instant; rows with ``next_fire_at <= now`` are
             returned
         :ptype now: datetime
+        :param kinds: the routed kinds to scan for; rows of any other
+            kind MUST NOT be returned
+        :ptype kinds: Sequence[str]
         :param limit: per-tick cap on rows returned
         :ptype limit: int
         :return: list of due schedule rows ordered by ``next_fire_at`` ASC
@@ -272,24 +283,36 @@ class FireStore(Protocol):
         now: datetime,
         *,
         older_than: timedelta,
+        kinds: Sequence[str],
     ) -> int:
-        """Finalize ``'dispatching'`` fire rows abandoned mid-dispatch.
+        """Finalize ``'dispatching'`` fire rows of ``kinds`` abandoned mid-dispatch.
 
         A pod that dies after :meth:`create_dispatching` but before a
         finalize leaves the fire row stuck in ``'dispatching'`` forever.
         The occurrence's schedule already advanced (the claim ran first),
         so it never re-fires -- without a sweep the row is a permanent
         zombie and the loss is silent. This cross-partition reaper stamps
-        every ``'dispatching'`` row whose ``actual_fired_at`` is older
-        than ``older_than`` before ``now`` to ``'failed'`` with a reaper
-        marker, so the loss surfaces in fire history + failure metrics.
-        Invoked once per tick under the tick's cross-pod lock.
+        every ``'dispatching'`` row of a kind in ``kinds`` whose
+        ``actual_fired_at`` is older than ``older_than`` before ``now`` to
+        ``'failed'`` with a reaper marker, so the loss surfaces in fire
+        history + failure metrics.
+
+        Invoked once per distinct reap threshold per tick, under the
+        tick's cross-pod lock: the engine groups its routed kinds by
+        resolved threshold (see
+        :func:`~threetears.scheduled_jobs.config.reap_after_seconds_for_kind`)
+        and sweeps each group with that group's age. Scoping the sweep to
+        the caller's own kinds is what stops one pump reaping another
+        pump's legitimately in-flight fires. An empty ``kinds`` sweeps
+        nothing -- it never widens to "every kind".
 
         :param now: sweep instant (TZ-aware); the age cutoff is
             ``now - older_than``
         :ptype now: datetime
         :param older_than: minimum in-flight age before a row is reaped
         :ptype older_than: timedelta
+        :param kinds: the kinds whose fire rows this sweep may reclaim
+        :ptype kinds: Sequence[str]
         :return: number of rows reaped
         :rtype: int
         """

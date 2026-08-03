@@ -132,7 +132,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.datasources.config import SnowflakeConnectionConfig
-from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow
+from threetears.datasources.drivers.base import ColumnRow, Driver, TableRow, Transaction
 from threetears.observe import get_logger
 
 __all__ = ["SnowflakeDriver"]
@@ -191,19 +191,33 @@ class SnowflakeDriver(Driver):
         self._config = config
         self._datasource_name = datasource_name
 
-    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+    async def fetch(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> list[dict[str, Any]]:
         """run a SELECT statement -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"SnowflakeDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def execute(self, sql: str, *params: Any) -> None:
+    async def execute(self, sql: str, *params: Any, timeout_seconds: int | None = None) -> None:
         """run a DML / DDL statement -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
         raise NotImplementedError(f"SnowflakeDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
+
+    async def begin(self) -> Transaction:
+        """open a session-pinned transaction -- NOT YET IMPLEMENTED.
+
+        when this lands, mirror the :class:`RedshiftDriver` shape: pin
+        one pooled ``SnowflakeConnection`` for the transaction's life
+        and drive a :class:`threetears.datasources.drivers.base.CallbackTransaction`
+        from three bound methods, so the finished-guard and the
+        released-exactly-once invariant stay in the shared class rather
+        than being reimplemented here.
+
+        :raises NotImplementedError: stub method; see module docstring
+        """
+        raise NotImplementedError(f"SnowflakeDriver.begin is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema allow-list -- NOT YET IMPLEMENTED.

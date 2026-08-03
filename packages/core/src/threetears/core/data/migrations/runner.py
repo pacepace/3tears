@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, AsyncIterator, Mapping
 
 from threetears.core.data.migrations.errors import (
+    LedgerMismatchError,
     MigrationError,
     MigrationFailedError,
     MissingDependencyError,
@@ -53,7 +54,10 @@ _CREATE_MIGRATIONS_TABLE_SQL = (
     ")"
 )
 
-_SELECT_APPLIED_VERSIONS_SQL = "SELECT version, package FROM _schema_migrations ORDER BY version"
+#: ``description`` rides along because the runner verifies it, not merely
+#: records it: it is the only evidence in the database of WHICH migration a
+#: version number was, and reading it back is what catches a renumbering.
+_SELECT_APPLIED_VERSIONS_SQL = "SELECT version, package, description FROM _schema_migrations ORDER BY version"
 
 _SELECT_APPLIED_HISTORY_SQL = (
     "SELECT version, package, description, date_applied FROM _schema_migrations ORDER BY date_applied, version, package"
@@ -543,6 +547,11 @@ class MigrationRunner:
         ordered = self._topological_sort(scope)
         await self._ensure_migrations_table(store)
         applied = await self._get_applied_versions(store)
+        # before any body runs: a ledger that disagrees with this build is not
+        # something to apply the pending tail on top of. doing so would write
+        # new rows into bookkeeping already known to be describing a different
+        # sequence of migrations than the one that actually ran.
+        self._verify_ledger_identity(ordered, applied)
         count = 0
         for package in ordered:
             applied_count = await self._apply_package_pending(store, package, applied, target)
@@ -553,7 +562,7 @@ class MigrationRunner:
         self,
         store: DataStore,
         package: PackageMigrations,
-        applied: set[tuple[int, str]],
+        applied: dict[tuple[int, str], str | None],
         target: int | None = None,
     ) -> int:
         """
@@ -563,8 +572,10 @@ class MigrationRunner:
         :ptype store: DataStore
         :param package: package whose pending migrations run
         :ptype package: PackageMigrations
-        :param applied: set of (version, package_name) tuples already recorded
-        :ptype applied: set[tuple[int, str]]
+        :param applied: mapping of already-recorded (version, package_name) to
+            description; verified against this build by
+            :meth:`_verify_ledger_identity` before this runs
+        :ptype applied: dict[tuple[int, str], str | None]
         :param target: optional cap (inclusive) on version within the package
         :ptype target: int | None
         :return: count of migrations this call applied
@@ -580,7 +591,7 @@ class MigrationRunner:
                 continue
             func = package.versions[version_num]
             count += await self._run_one(store, package.name, version_num, func)
-            applied.add(key)
+            applied[key] = func.__name__
         return count
 
     async def _run_one(
@@ -718,18 +729,77 @@ class MigrationRunner:
         """
         await store.execute(_CREATE_MIGRATIONS_TABLE_SQL)
 
-    async def _get_applied_versions(self, store: DataStore) -> set[tuple[int, str]]:
+    async def _get_applied_versions(self, store: DataStore) -> dict[tuple[int, str], str | None]:
         """
-        query ``_schema_migrations`` for (version, package) tuples.
+        query ``_schema_migrations`` for applied versions and their descriptions.
+
+        a mapping rather than a set because the description is what
+        :meth:`_verify_ledger_identity` compares; membership alone cannot
+        distinguish a version that ran from a version whose NUMBER ran
+        carrying somebody else's migration.
 
         :param store: DataStore bound to target schema
         :ptype store: DataStore
-        :return: set of applied (version, package_name) tuples
-        :rtype: set[tuple[int, str]]
+        :return: mapping of (version, package_name) to recorded description
+        :rtype: dict[tuple[int, str], str | None]
         """
         rows = await store.query(_SELECT_APPLIED_VERSIONS_SQL)
-        result = {(row["version"], row["package"]) for row in rows}
+        result = {(row["version"], row["package"]): row.get("description") for row in rows}
         return result
+
+    def _verify_ledger_identity(
+        self,
+        ordered: list[PackageMigrations],
+        applied: dict[tuple[int, str], str | None],
+    ) -> None:
+        """
+        refuse to apply when the ledger names a different migration than the code.
+
+        compares the ``description`` recorded at apply time
+        (``func.__name__``) against the name of the callable the code now
+        registers at that version. they diverge when migrations are
+        renumbered and the resulting build meets a database that applied
+        the old numbering: every shifted version reads as already applied,
+        so its body never runs, and the version vacated at the bottom of
+        the shift is skipped entirely.
+
+        only versions this build still defines are compared. a ledger row
+        AHEAD of the code is an older deployment meeting a database a
+        newer one has already migrated -- an ordinary staged rollout, and
+        failing it here would make one an outage.
+
+        a row with no recorded description is left alone: it predates the
+        runner recording one, and inventing a verdict from its absence
+        would fail every database old enough to have one.
+
+        :param ordered: packages in the scope being applied
+        :ptype ordered: list[PackageMigrations]
+        :param applied: mapping of (version, package_name) to recorded description
+        :ptype applied: dict[tuple[int, str], str | None]
+        :return: nothing when every comparable row agrees
+        :rtype: None
+        :raises LedgerMismatchError: naming the version and both migrations
+        """
+        mismatches: list[str] = []
+        for package in ordered:
+            for version_num, func in sorted(package.versions.items()):
+                recorded = applied.get((version_num, package.name))
+                if recorded is None:
+                    continue
+                if recorded != func.__name__:
+                    mismatches.append(
+                        f"{package.name}:{version_num} recorded as '{recorded}' but this build has '{func.__name__}'",
+                    )
+        if mismatches:
+            joined = "; ".join(mismatches)
+            msg = (
+                f"_schema_migrations disagrees with this build about {len(mismatches)} "
+                f"migration(s): {joined}. this database applied a different numbering, so "
+                f"every listed version reads as already applied and its body never ran. "
+                f"recreate the database, or apply the skipped migrations deliberately and "
+                f"stamp them -- do not edit the ledger to match"
+            )
+            raise LedgerMismatchError(msg)
 
     def _topological_sort(self, scope: MigrationScope) -> list[PackageMigrations]:
         """

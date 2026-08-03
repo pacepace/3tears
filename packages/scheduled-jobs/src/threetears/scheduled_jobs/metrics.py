@@ -244,7 +244,13 @@ class ScheduledJobsMetricsEmitter:
         """Increment :data:`SCHEDULED_JOBS_FAILURES_TOTAL` by reason.
 
         Reasons (bounded): ``handler_exception``, ``claim_lost``,
-        ``reaped``, ``other``.
+        ``reaped``, ``unrouted_kind``, ``other``. ``unrouted_kind`` is
+        the routing refusal -- a due row whose ``kind`` has no registered
+        handler on the pump that scanned it. It carries no ``kind``
+        label because ``kind`` is unbounded (see
+        :data:`FORBIDDEN_LABEL_NAMES`); the offending kind is on the
+        :data:`~threetears.scheduled_jobs.events.EVENT_FIRE_UNROUTED_KIND`
+        log event instead.
 
         :param reason: bounded failure reason string
         :ptype reason: str

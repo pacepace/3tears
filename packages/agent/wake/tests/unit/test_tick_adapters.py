@@ -357,7 +357,7 @@ class TestScheduleStoreTranslation:
         entities = [_make_schedule_entity(), _make_schedule_entity()]
         store = _WakeScheduleStore(_RecordingScheduleCollection(due=entities))
         now = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
-        rows = await store.list_due_for_tick(now, limit=50)
+        rows = await store.list_due_for_tick(now, kinds=("agent_wake",), limit=50)
         assert len(rows) == 2
         assert all(isinstance(r, _WakeDueSchedule) for r in rows)
         assert rows[0].job_id == entities[0].schedule_id
@@ -469,14 +469,14 @@ class TestWakeTickJobWiring:
         async def _fake_engine(
             schedule_store: Any,
             fire_store: Any,
-            dispatch_callback: Any,
+            dispatch_routes: Any,
             *,
             nats_client: Any = None,
             config: Any = None,
         ) -> None:
             captured["schedule_store"] = schedule_store
             captured["fire_store"] = fire_store
-            captured["dispatch_callback"] = dispatch_callback
+            captured["dispatch_routes"] = dispatch_routes
             captured["nats_client"] = nats_client
             captured["config"] = config
 
@@ -493,14 +493,17 @@ class TestWakeTickJobWiring:
         assert isinstance(captured["fire_store"], _WakeFireStore)
         assert captured["nats_client"] is nats
         assert captured["config"].tick_lock_key == _WAKE_TICK_LOCK_KEY == "agent_wake_tick"
+        # wake registers exactly one kind; a second entry would mean the pump
+        # had silently taken ownership of rows it does not understand.
+        assert list(captured["dispatch_routes"]) == ["agent_wake"]
 
     async def test_adapter_callback_bridges_trigger_and_packs_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, Any] = {}
 
         async def _fake_engine(
-            _ss: Any, _fs: Any, dispatch_callback: Any, *, nats_client: Any = None, config: Any = None
+            _ss: Any, _fs: Any, dispatch_routes: Any, *, nats_client: Any = None, config: Any = None
         ) -> None:
-            captured["cb"] = dispatch_callback
+            captured["cb"] = dispatch_routes["agent_wake"]
 
         monkeypatch.setattr(tick_mod, "scheduled_tick_job", _fake_engine)
 
@@ -546,9 +549,9 @@ class TestWakeTickJobWiring:
         captured: dict[str, Any] = {}
 
         async def _fake_engine(
-            _ss: Any, _fs: Any, dispatch_callback: Any, *, nats_client: Any = None, config: Any = None
+            _ss: Any, _fs: Any, dispatch_routes: Any, *, nats_client: Any = None, config: Any = None
         ) -> None:
-            captured["cb"] = dispatch_callback
+            captured["cb"] = dispatch_routes["agent_wake"]
 
         observed: list[float] = []
 
