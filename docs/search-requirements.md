@@ -3,7 +3,7 @@
 **Status:** Draft for ratification — 2026-08-02
 **Companions:** `family-convergence.md` §4.14 records the *direction*;
 `shared_search.md` sketches a *mechanism*. This states the *need*.
-**Relates to:** §4.13 (scraping), §4.2 (evals), open questions 13 and 21
+**Relates to:** §4.13 (scraping), §4.2 (evals), open questions 1, 13, 15, 16 and 21
 
 ## Summary
 
@@ -19,6 +19,18 @@ was asked for. That shifts extraction from an optional stage to part of the
 deliverable, makes provenance a requirement rather than a nicety, and gives
 model-mediated search an obvious home instead of an awkward one.
 
+**What changes, by package** — the whole picture in one table, so nobody has to
+reach §9 to learn whether their code moves:
+
+| Repo / package | What happens |
+|---|---|
+| `3tears` `agent-tools` | `WebSearchTool` keeps its `threetears.web_search` name, its `TearsTool` ABC and its `ToolResult` shape. `_format_results` stops being the primitive: it becomes a Bind over structured results and carries them on `metadata`. Two envelope gaps close with it (§10, items 9-10). |
+| `3tears` `scrape` | `page_finder` gets structured results with no change at its call sites — success check 4. |
+| `metallm` | Both side-steps deleted, not wrapped: the raw SearXNG helper and the app-side trafilatura wrapper — success check 1. |
+| `discodon` | Two internal implementations collapse to one; search spend enters the eval cost cap and research evals become replayable — success check 3. |
+| `samsung` | Phase 2 image search is built on this rather than forked — success check 2 — from a synchronous caller on a `MemoryMax`-capped Pi. |
+| a new leaf | The contract types: dependency-free and wire-serialisable — SR-L3, SR-L4. |
+
 This proposes no contract, fields, packages, or sequencing. Part I is the whole
 picture — a reader who needs the direction can stop at the end of it. Part II is
 the derivation, and it is where the arguments are checkable.
@@ -29,7 +41,7 @@ the derivation, and it is where the arguments are checkable.
 
 ## 1. What we are trying to achieve
 
-Eleven goals in three groups: what we deliver, who we serve, how we run it.
+Goals in three groups: what we deliver, who we serve, how we run it.
 
 ### What we deliver
 
@@ -100,6 +112,15 @@ optional piece is absent.
 **G11. Operable by a person.** Someone can see what it costs, why it is slow,
 what it is doing and what broke, without reading the source.
 
+**G12. Two deployment modes, neither privileged.** The same leaf runs
+**embedded** — one synchronous process on a `MemoryMax`-capped Pi, no broker,
+where the SQLite file *is* the store — and **pod-resident**, as a `TearsTool`
+served over NATS through the registry proxy. This is not a concession granted to
+the smallest consumer: the embedded mode is what discodon occupies for the whole
+of its NATS convergence, so the library path carries the family's largest
+consumer before it carries its most constrained one. §5.4 states the two modes
+and which requirements each conditions.
+
 ## 2. What we are not trying to achieve
 
 Naming these is what keeps a shared capability from turning into a platform.
@@ -119,7 +140,8 @@ Naming these is what keeps a shared capability from turning into a platform.
 
 ## 3. How we would know it worked
 
-Seven checks, not sentiments:
+Checks, not sentiments. They are numbered for reference and the numbers are
+stable — new checks append rather than insert:
 
 1. metallm's two side-steps are **deleted**, not wrapped.
 2. samsung's image search is built on it **without forking** — the real test,
@@ -131,6 +153,14 @@ Seven checks, not sentiments:
 5. A Pi deployment installs it **without torch**.
 6. A new provider is added **without touching a consumer**.
 7. A new carrier type ships **without a coordinated release** across consumers.
+8. The 3tears `WebSearchTool` builtin keeps its MCP name and its `ToolResult`
+   shape while its formatting stops being the primitive — **an existing caller
+   sees no break**, and structure arrives on `metadata`.
+9. samsung calls it **synchronously, from a one-shot `asyncio.run()`** — no
+   broker, no ambient event loop, no long-lived client.
+10. The same leaf serves discodon **before and after** its NATS convergence —
+    embedded first, pod-resident after — with no consumer-side rewrite at the
+    switch.
 
 ## 4. Principles
 
@@ -210,7 +240,7 @@ another.
 |---|----------|--------|---------|----------|-----------------|
 | C1 | discodon persona `web_search` | LLM | web | none | snippet |
 | C2 | discodon research sub-tool | LLM | web | shallow | extracted content + corpus |
-| C3 | metallm agent builtin | LLM | web | none | snippet |
+| C3 | **3tears `agent-tools` `WebSearchTool` builtin** (shared; metallm and C7 consume it) | LLM | web | none | snippet |
 | C4 | metallm admin price lookup | program | web | none | extracted content |
 | C5 | samsung discovery phase 1 | program (model-mediated) | web | shallow | structured record |
 | C6 | samsung discovery phase 2 | program | **image** | **deep** | structured record |
@@ -227,9 +257,17 @@ Read the fidelity column: only two of seven want what the shared builtin returns
 Four want extracted content or a structured record, and today they each get there
 alone.
 
-Two rows carry more weight than their size suggests. **C7** is a shared package
-consuming another shared package's builtin, so whatever that builtin forecloses,
-scrape inherits — today, flattened text. **C6** is not yet built, which is what
+Three rows carry more weight than their size suggests. **C3 is the 3tears
+builtin itself** — not metallm's, though metallm consumes it — so it is at once
+a consumer of this capability and the thing `family-convergence.md` §4.14 has
+already ruled must change: "the builtin `WebSearchTool` becomes a consumer that
+renders results for LLMs — formatting is presentation, and it stops destroying
+structure." It is listed as a consumer here because after that change it is
+precisely one: a Bind. What it keeps is its identity — `threetears.web_search`,
+the `TearsTool` ABC, the `ToolResult` shape — so this is a gutting, not a
+replacement (success check 8). **C7** is a shared package consuming that same
+builtin, so whatever it forecloses, scrape inherits — today, flattened text.
+**C6** is not yet built, which is what
 makes it informative: its lifecycle exists (`services/discovery.py:62,168-219`),
 its result record is fully designed
 (`persistence/discovery_records.py:236-282`), and phase 1 states the split — it
@@ -258,6 +296,60 @@ un-collapsible (P7).
 No single opinionated result shape serves C1 and C6. That is the requirement
 generating most of Part II.
 
+### 5.4 Where they run — two modes
+
+**Ruled 2026-08-02:** deployment shape is a requirements axis, not a design
+detail deferred to the contract. C6 is why. samsung is a Raspberry Pi running two
+systemd planes under a `MemoryMax` cap (`samsung/README.md:5`), and it has
+already recorded package rejections on exactly these grounds — `3tears-core`,
+because core's L1 is an in-memory SQLite *cache* while samsung's SQLite file must
+*be* the store (`family-convergence.md`, "Where the framework doesn't fit"); and
+`3tears-models`, because it "would pull 3tears-observe, 3tears-media-contracts,
+anthropic, langchain-anthropic/openai/openrouter and jsonschema into the DEFAULT
+install — the plane that runs on the Pi beside display under a MemoryMax"
+(`samsung/curation/pyproject.toml:60-70`). A capability that does not state its
+deployment constraints gets refused the same way, on the same evidence, after it
+is built.
+
+**Ruled 2026-08-02 (north star):** discodon converges off ZMQ onto NATS, and
+search becomes a `TearsTool` in a pod there as it already can be in 3tears;
+3tears and metallm run Yugabyte at scale. So the three topologies visible today
+are not three permanent modes. They are two, plus one the family is leaving —
+and requirements written against the one being left would age out with it.
+
+| | **Embedded** | **Pod-resident** |
+|---|---|---|
+| Consumers | samsung (permanent); discodon (until convergence) | 3tears, metallm; discodon (after) |
+| Topology | one process, systemd, `MemoryMax` | k8s, NATS, registry proxy, tool pods |
+| Concurrency | **synchronous caller** | async |
+| Broker | none | NATS |
+| Store | the SQLite file *is* the store | Yugabyte + object-store |
+| Reached as | direct in-process call | `TearsTool` dispatched over NATS |
+| Holds provider credentials | the consumer | the pod |
+
+Two consequences worth stating rather than discovering:
+
+**The wire boundary is real and unplaced.** The north star puts a NATS hop
+somewhere inside §6's layer stack. *Which* boundary is a design question this
+document does not answer — so the requirement is that any of them could be it
+(SR-L4). That costs nothing at runtime on the embedded path; it costs design
+freedom, which is the cheap thing to spend now and the expensive thing to
+retrofit.
+
+**Search stops being a stateless tool.** `agent-tools` classifies it as one
+today — the call envelope's identity scope is optional because "pure stateless
+tools (math, web search) do not require identity scope"
+(`packages/agent/tools/src/threetears/agent/tools/server.py:389-391`). Under
+SR-D2 (per-persona-per-day budget), SR-E1 (per-call spend), SR-F8 (replay key)
+and SR-I1 (per-call telemetry) it is not stateless, and the pod path has to carry
+scope for it. That is a stated assumption in 3tears this work invalidates, named
+here rather than discovered during implementation.
+
+Requirements this axis conditions, each flagged at its own entry: SR-E3 (spend on
+the failure path), SR-F5 (who stores a recording), SR-G2 (deadline propagation),
+SR-H1 (tuning without a restart), SR-H4 (rate pacing), SR-I4 (telemetry
+delivery), SR-K1 (credential resolution), SR-M1 (versioning).
+
 ## 6. Where value sits — the layers
 
 Named rather than numbered, because `shared_search.md` uses L0–L3 for a different
@@ -281,6 +373,34 @@ Consumers use different subsets. C4 uses Adapter–Extract and binds itself; C2
 uses everything and both bindings; C1 uses Adapter–Call–Bind; C6 needs all six
 with the deepest Select; C7 reaches them through an agent loop. A design that
 only works end-to-end serves one of them.
+
+**What each layer reuses.** The names above are new; almost none of the
+machinery under them is. Naming the existing homes is how this stays a contract
+plus composition rather than a second platform.
+
+| Layer or concern | Existing home | So we do not build |
+|---|---|---|
+| Adapter capability declaration | `3tears-models` `capabilities.py` | a second capability-metadata scheme (SR-B4) |
+| Rate pacing | `threetears.core.coordination.token_bucket.TokenBucket` | a limiter (SR-H4) |
+| Bind, pod-resident | `agent-tools` `TearsTool` / `ToolServer` / registry proxy | a dispatch or discovery mechanism |
+| Bind, tool-call audit | `agent-audit`'s shared envelope | a second tool-call history |
+| Contract types | the ratified contracts-leaf pattern | a shared-types package with dependencies (SR-L3) |
+| Replay store, embedded | samsung's `SqliteDurableStore`; the `DurableStore` direction (OQ16) | a store (SR-F5) |
+| Replay store, pod-resident | `3tears-object-store` — streaming, S3-compatible, built for large artifacts | a blob path (SR-F5, SR-G5) |
+| Telemetry | `3tears-observe`, wired by the host | a sink (SR-I4) |
+| Tuning without a restart, pod-resident | `3tears-epoch` | a config-broadcast mechanism (SR-H1) |
+| Heavy or hostile fetch | `3tears-scrape` | a scraper (§2) |
+| Retrieval over our own content | `agent-memory` | RAG (§2) |
+| Principle enforcement | `3tears-enforcement` scanners | P1-P8 living only in a reviewer's head |
+
+Two rows need analysis this document does not have.
+**`3tears-media-contracts`** is the obvious home for SR-C3's image facets, and
+samsung named it among the dependencies it refused — as a *transitive* of
+`3tears-models`, not on its own merits, so a direct dependency-free pin may be
+fine. Nobody has checked, and the family's only image consumer is the one that
+would carry it. **`3tears-epoch`** serves both pod-resident deployments after
+convergence and neither embedded one, so SR-H1 needs a second answer rather than
+a single mechanism.
 
 ## 7. What the consumer asks for, and what it is told
 
@@ -319,9 +439,16 @@ The decisions that most change the answer. Full list with recommendations in
 - **Model-mediated search — in or out?** Open question 21 (SR-B5).
 - **Long-term retention of retrieved content.** Recording turns transit into
   storage, and the posture differs by carrier (SR-K4).
+- **Where the wire boundary falls** in §6's layer stack, once search is
+  pod-resident. Not answered here; SR-L4 is what makes any answer survivable.
+- **One NATS bus or two?** Whether discodon and metallm converge onto one bus or
+  keep separate ones decides whether SR-H4's pacing recommendation can actually
+  close.
 
 Ruled 2026-08-02: carriers are open, including images, video and datasets (G3);
-searches must be replayable (SR-F3).
+searches must be replayable (SR-F3); deployment shape is a requirements axis
+with two permanent modes (G12, §5.4); discodon converges onto NATS with search
+pod-resident, and 3tears and metallm run Yugabyte at scale (§5.4).
 
 ---
 
@@ -342,6 +469,14 @@ guessed.
 rendering for a model is one binding. C4 exists as a hand-rolled side-step
 precisely because the shared builtin returns only formatted text
 (`builtin/web_search.py:27-44`), and C7 inherits the same flattening.
+
+The named deliverable this implies, since §4.14 already ruled it: the 3tears
+`WebSearchTool` becomes that binding. `_format_results` moves behind Bind,
+structure rides `ToolResult.metadata`, and the tool keeps its MCP name, ABC and
+result shape so no existing caller breaks (success check 8). The metadata channel
+is confirmed to survive the pod path end-to-end — `server.py:2053` passes
+`tool_result.metadata` into the `CallResponse` — so this migration works
+identically embedded and pod-resident.
 
 **SR-A2 (REQUIRED, Call↔Extract — G1).** A result must be able to carry the
 information itself, recording whether it arrived with the search response or came
@@ -489,6 +624,13 @@ still incurred whatever it incurred, and a failure path that dropped it would
 under-report the month by exactly the amount the failures cost"
 (`engine.py:118-127`).
 
+*Mode-conditioned (§5.4).* This does not hold pod-resident today. The tool
+server's exception branch builds `CallResponse(success=False, content="",
+error=...)` with **no metadata** (`server.py:2070-2074`), so whatever the adapter
+spent before the failure is discarded at the wire. Embedded, the consumer can
+still see it. This is an ask on `agent-tools`, not a search-side fix — §10, item
+9 — and it is cheap now and expensive once seven consumers bind.
+
 **SR-E4 (REQUIRED — live defect).** Weighted units must be accounted. Discodon's
 persona tool bills every search as one unit (`_check_budget` at its `cost=1`
 default, `web_search_tool.py:224`; `tools/base.py:1412`) while
@@ -569,6 +711,17 @@ version — enough to expire, purge, index and account for it — while the payl
 stays search's business. That gives lifecycle management without schema coupling,
 and makes schema evolution search's problem (SR-M1) rather than a shared one.
 
+*Mode-conditioned (§5.4).* A Python protocol object cannot cross a NATS hop, so
+"the consumer supplies a port" is literally true only embedded. Pod-resident, the
+consumer supplies a store *reference* — a bucket, a table, a URI — which the pod
+resolves to its own implementation of the same port. The abstraction survives the
+mode change; only the wiring differs. Embedded, samsung's `SqliteDurableStore` is
+the implementation; pod-resident, `3tears-object-store` is. That is the
+recommendation's strength rather than a hole in it: one decision, two
+implementations, no consumer rewrite at the switch (success check 10). What it
+does require is that the reference and the record type are wire-serialisable —
+SR-L4.
+
 *On the specific questions:* how long to keep it — as long as the thing that
 needed it, which usually means cascade-delete with the owning run rather than a
 clock. When to purge — same event; a TTL is a backstop for orphans, not the
@@ -604,6 +757,15 @@ deadline, not fixed independently of it. C2's caller runs under a per-call LLM
 bound and a run-level conclusion deadline explicitly floored at the per-call
 timeout (`research_tool.py:647-707`, `:762`).
 
+*Mode-conditioned (§5.4).* Unimplementable pod-resident as the envelope stands.
+`CallRequest` carries `tool_name`, `tool_version`, `arguments`, `context` and
+`proxy_assertion` and nothing else (`server.py:376-417`), and it is declared
+`extra="forbid"`, so a deadline cannot even be smuggled through `arguments`
+without lying about the tool's own input schema. `MCPToolDefinition.timeout_seconds`
+is the *tool's* declared ceiling, not the caller's remaining budget — a different
+quantity. Honouring SR-G2 pod-side means amending the shared envelope: an ask on
+`agent-tools`, stated here rather than assumed free (§10, item 10).
+
 **SR-G3 (REQUIRED).** No blocking IO on an async path. The builtin's `execute()`
 is `async` but calls a synchronous `httpx.Client` (`builtin/web_search.py:50-56`,
 called at `:122`); `web_fetch.py` has the same defect plus a `time.sleep` in its
@@ -627,6 +789,13 @@ restart. C2 dispatches under an `asyncio.Semaphore` rebuilt per run so a hot
 update lands (`research_tool.py:83-90`, `:768-771`); C4 fans out with an
 unbounded `asyncio.gather` (`admin/models.py:967`).
 
+*Mode-conditioned (§5.4).* `3tears-epoch` is the family's answer pod-resident,
+and serves both pod deployments after convergence. It serves neither embedded
+one, so this needs a second mechanism — a config reload on signal, or an explicit
+ruling that a restart is acceptable on a single-process deployment. A default
+matters as much as the tuning: whatever ships must be safe under a `MemoryMax`
+cap without anyone tuning it first (SR-L6).
+
 **SR-H2 (REQUIRED).** Two bound scopes, both real: within one batch, and across
 simultaneous runs (`research_tool.py:328,376`).
 
@@ -640,6 +809,17 @@ exists — `threetears.core.coordination.token_bucket.TokenBucket`.
 *Recommendation:* client-side pacing per provider *instance*, at Adapter. The
 shared instance is what is at risk, and no single consumer sees the aggregate
 load.
+
+*Mode-conditioned (§5.4), and this one does not fully close.* Client-side pacing
+assumes one process sees the aggregate. Deployments that share no state cannot
+pace collectively, and the shared SearXNG runs with its limiter **off** —
+recorded as an ops knob already correct (`family-convergence.md` §4.14). After
+convergence two of the three consumers are pod-resident and can share a bucket
+*if they share a bus*; the embedded Pi never can. So the honest answer is
+layered: pace where a bus makes it possible, and turn the shared instance's own
+limiter on, because that is the only bound that covers every consumer. Whether
+discodon and metallm land on one bus or two is open (§8) and decides how much of
+this the client side can carry.
 
 ### I. Telemetry
 
@@ -662,7 +842,17 @@ C2 persists a trace document with a TTL to its own store
 *Recommendation:* return records, emit nothing. A capability that owns a sink
 forces every consumer onto it; both existing consumers already have their own,
 and `observe` integration then belongs to the host, per the zero-dep-core
-pattern.
+pattern. samsung's rejection of `3tears-models` names `3tears-observe` among the
+transitive weight it refused (`samsung/curation/pyproject.toml:60-70`) — direct
+evidence that owning a sink would have cost this capability its most constrained
+consumer.
+
+*Mode-conditioned (§5.4).* Pod-resident, "return records" means they ride
+`ToolResult.metadata` — confirmed to survive the hop (`server.py:2053`) — and
+they must therefore be wire-serialisable (SR-L4). Note also that `agent-audit`
+already envelopes every tool call pod-side, so the returned records are a second
+account of the same event: the two need a stated relationship rather than both
+growing independently, which is SR-E2's argument applied to telemetry.
 
 ### J. Failure semantics
 
@@ -692,6 +882,15 @@ lower layer emitting it has taken an opinion from above.
 the capability must not read environment variables itself
 (`web_search_tool.py:186-192`).
 
+*Mode-conditioned (§5.4), and the two modes disagree.* Embedded, the rule stands
+as written: the library reads nothing and the consumer supplies. Pod-resident it
+inverts — holding the provider credential so that consumers never see it is a
+large part of what a tool pod is *for*, and a pod that demanded the credential
+from each caller would be pushing a secret across the bus on every request. The
+requirement is therefore about the **library never reading ambient
+configuration**, not about where the secret ultimately lives; the pod is a
+consumer that happens to supply it from its own deployment config.
+
 **SR-K2 (DECISION — A2).** Are queries sensitive?
 A query can carry user-supplied conversational content and is recorded verbatim
 today (`logging/models.py:243`). metallm ships a PII sanitisation wrapper it is
@@ -718,7 +917,7 @@ eval run lives. That is a different posture from fetching and discarding, it
 varies by carrier and by provider terms, and it is worth ruling on alongside the
 retention mechanism rather than after somebody notices.
 
-### L. Packaging and weight
+### L. Packaging, weight, and deployment shape
 
 **SR-L1 (REQUIRED, P3 — G10).** A consumer must take Adapter and Call without a
 cross-encoder, torch, or a fetch stack — success check 5.
@@ -729,12 +928,51 @@ without rerank gets provider order and *knows* it.
 **SR-L3 (REQUIRED, P1).** Types crossing package boundaries ship as a
 dependency-free leaf, per the ratified contracts-leaf pattern.
 
+**SR-L4 (REQUIRED, G12 — §5.4).** Types crossing a *layer* boundary are
+wire-serialisable, not merely dependency-free. SR-L3 is the packaging rule; this
+is its wire twin, and the two are not the same — a dataclass holding a callable,
+an open file, or a supplied port satisfies SR-L3 and fails this. The north star
+places a NATS hop somewhere in §6's stack and does not say where, so the
+survivable requirement is that any boundary could carry one. Two things already
+depend on it: SR-F5's store reference and SR-I4's returned records. The cost is
+paid in design freedom, not at runtime, so the embedded path carries none of it.
+
+**SR-L5 (REQUIRED, G12 — §5.4).** The leaf is usable from a **one-shot
+`asyncio.run()`**: no ambient event loop, no long-lived client, no background
+task required to make a single call. This is what lets a synchronous consumer
+call an async capability without adopting an event loop it has deliberately
+avoided — samsung's discovery plane is synchronous throughout, with async
+confined to its HTTP and MCP surfaces. It is deliberately narrower than a sync
+API: samsung searches one work at a time and needs none of the fan-out machinery,
+so the bridge is a call wrapper rather than a second surface. It also scopes
+open question 15 out of this capability's path — the family's sync-subscript
+bridge stays unproven, and search does not become the thing that proves it.
+
+**SR-L6 (REQUIRED, G10, G12).** Bounds that hold on the smallest target: a
+steady-state footprint that fits beside another plane under a `MemoryMax` cap
+(SR-G5's byte caps are the acute case; this is the resting one), concurrency
+**defaults** — not just limits — that are safe unturned there (SR-H1), `arm64`
+wheels for anything carrying a native extension, and a Python floor spanning the
+family's spread — samsung is 3.14, and open question 1 proposes relaxing core to
+≥3.12 precisely because it "serves discodon and the Pi", which is this
+requirement's two modes under another name. Success check 5 states
+the install-weight half of this; the runtime half was unstated until now, and it
+is the half a `MemoryMax` cap actually enforces.
+
 ### M. Lifecycle
 
 **SR-M1 (DECISION).** How do the types version, and what is the compatibility
 promise across lockstep releases? Seven consumers in four repos will bind, and
 discodon carries an open advisory that it exposes an API with no recorded
 versioning scheme. *Recommendation:* rule before the first consumer binds.
+
+*Escalated by §5.4.* Pod-resident this stops being a Python API promise and
+becomes a **wire contract** between independently deployed pods and consumers,
+where the two sides are not upgraded together and the family's lockstep-version
+rule does not reach across the bus. SR-C1's open carrier facets need a schema
+evolution rule to match — "additive and open" is a Python-typing statement, not a
+serialisation one. That moves this from "rule before the first consumer binds"
+toward gating the first pod-resident deployment.
 
 **SR-M2 (DECISION).** Response caching — where, and is it in scope?
 `shared_search.md:173-175` raises it and notes core collections have no TTL
@@ -751,7 +989,10 @@ any of those repos re-derives all of it.
 ## 10. Defects found while gathering this
 
 True today, whether or not any convergence happens. Items 6–8 are
-`shared_search.md`'s findings, kept here so one list is complete.
+`shared_search.md`'s findings, kept here so one list is complete. Items 9–10 are
+in `agent-tools`' call envelope rather than in any search implementation — they
+affect every pod-served tool, and surfaced only because §5.4 put the pod path in
+scope.
 
 1. **Discodon persona search under-bills by 2× on `advanced`** — SR-E4.
 2. **The builtin blocks the event loop** — SR-G3.
@@ -766,12 +1007,26 @@ True today, whether or not any convergence happens. Items 6–8 are
    SR-G5.
 8. **Errors detected by string prefix** — `not content.startswith("[TOOL ERROR]")`
    — SR-J3.
+9. **The tool-call envelope drops everything but the error on a failed call.**
+   `CallResponse(success=False, content="", error=...)` carries no metadata
+   (`server.py:2070-2074`), so any spend a tool incurred before failing is
+   discarded at the wire — SR-E3. True today for every pod-served tool, not only
+   search; search is what makes it cost money.
+10. **The envelope has no per-call deadline** (`server.py:376-417`, and
+    `extra="forbid"` closes the workaround), so no pod-served tool can derive its
+    timeout from the caller's remaining budget — SR-G2. A gap rather than a
+    defect: it was never asked to carry one. Items 9 and 10 are both asks on
+    `agent-tools` rather than search-side fixes.
 
 ## 11. Reading `shared_search.md` against this
 
 The sketch is right about layering, provider extras, capability metadata,
 per-provider conformance tests, `ToolResult.metadata` as the non-breaking
-migration path, and packaging option A. Five of its choices are contradicted, all
+migration path, and packaging option A. The `metadata` call is better than it
+looked when the sketch made it: verified end-to-end, that field survives the NATS
+hop into `CallResponse` (`server.py:2053`), so the same migration works embedded
+and pod-resident. It is the one choice the north star promotes from convenience
+to foundation. Five of its choices are contradicted, all
 in the same direction — they assume the deliverable is a web page:
 
 1. **`category: str | None = None  # searxng categories; tavily ignores`**
@@ -812,8 +1067,20 @@ should be cut after §13 has answers, and that the answers change five fields.
 - **SR-F5's storage burden is estimated, not measured.** The claim that all three
   candidate consumers can satisfy a store port with a wiring line rests on each
   already having a durable store, not on anyone having tried it.
+- **The NATS convergence has no date.** §5.4's north star is ruled but not
+  scheduled, and every requirement written for the pod path is weight the
+  embedded path carries meanwhile. SR-L4 is designed to make that weight
+  design-time rather than runtime; if convergence slips far enough, revisit
+  whether the rest of the pod-conditioned work should have waited.
+- **`3tears-media-contracts` has not been evaluated for a direct pin** (§6).
+  samsung refused it transitively, which is not the same as refusing it.
+- **SR-L6's Python floor** is asserted from the family's current spread, not from
+  a check of what the leaf's own dependencies actually support on 3.12.
 
-Closed: **A1** (carriers, ruled in) and the replay question (SR-F3, ruled in).
+Closed: **A1** (carriers, ruled in), the replay question (SR-F3, ruled in), the
+deployment axis and its two modes (G12/§5.4, ruled in), and the sync/async fork —
+resolved by SR-L5 rather than ruled, since a one-shot `asyncio.run()` contract
+serves the synchronous consumer without settling open question 15 for the family.
 
 ## 13. Decisions needing an owner
 
@@ -836,6 +1103,16 @@ Closed: **A1** (carriers, ruled in) and the replay question (SR-F3, ruled in).
 | SR-M2 | Response caching | Decide replay first, cache in its light |
 | SR-M3 | Ratification home (OQ13) | This file, per-repo acceptance |
 | A2 | Are person-typed queries in scope | Assumed yes; cheap now, expensive to retrofit |
+| §5.4 | Where the wire boundary falls in the layer stack | Not answered here; SR-L4 makes any answer survivable |
+| §5.4 | One NATS bus for discodon and metallm, or two | Gates how much of SR-H4's pacing the client side can carry |
+| §10.9 | Failure-path metadata on the tool-call envelope | An ask on `agent-tools`; blocks SR-E3 pod-resident |
+| §10.10 | A per-call deadline on the tool-call envelope | An ask on `agent-tools`; blocks SR-G2 pod-resident |
+| §6 | `3tears-media-contracts` as the home for image facets | Evaluate a direct dependency-free pin before inventing facets (SR-C3) |
 
 **Ruled 2026-08-02:** carriers are open, images and arbitrary data types in scope
-(G3, SR-C1); searches must be replayable, attached at Adapter and Call (SR-F3).
+(G3, SR-C1); searches must be replayable, attached at Adapter and Call (SR-F3);
+deployment shape is a requirements axis with two permanent modes, embedded and
+pod-resident, neither privileged (G12, §5.4); discodon converges off ZMQ onto
+NATS with search pod-resident there, while 3tears and metallm run Yugabyte at
+scale — so the ZMQ topology is transitional and requirements are written against
+the two modes that persist (§5.4).
