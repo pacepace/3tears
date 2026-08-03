@@ -131,7 +131,13 @@ class TestExpansion:
                     relation="household",
                     alias="hh",
                     join="inner",
-                    on={"compare": {"left": "rel.hh.influencer_voterbase_id", "op": "=", "right": "resolved.voterbase_id"}},
+                    on={
+                        "compare": {
+                            "left": "rel.hh.influencer_voterbase_id",
+                            "op": "=",
+                            "right": "resolved.voterbase_id",
+                        }
+                    },
                 ),
                 member_column="influencer_voterbase_id",
             )

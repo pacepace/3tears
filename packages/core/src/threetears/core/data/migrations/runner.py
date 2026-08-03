@@ -788,8 +788,7 @@ class MigrationRunner:
                     continue
                 if recorded != func.__name__:
                     mismatches.append(
-                        f"{package.name}:{version_num} "
-                        f"recorded as '{recorded}' but this build has '{func.__name__}'",
+                        f"{package.name}:{version_num} recorded as '{recorded}' but this build has '{func.__name__}'",
                     )
         if mismatches:
             joined = "; ".join(mismatches)
