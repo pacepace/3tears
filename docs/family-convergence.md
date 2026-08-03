@@ -586,14 +586,16 @@ not implementations.
 ### 4.14 Web search — one contract, staged pipeline (SearXNG from metallm; budgets from discodon)
 
 > **Derivation:** `search-requirements.md` states the need behind this section
-> and traces it to code in six repos. It is where the detail now lives, and it
-> proposes amending two things ruled here: that the contract's result carries a
+> and traces it to code in six repos, and `search-architecture.md` derives the
+> structural shape and what each consumer adopts. Between them they are where
+> the detail now lives. The requirements doc proposes amending two things ruled
+> here: that the contract's result carries a
 > single `score` (P7/SR-A4 argue for named, provenanced scores), and that
 > "url, title, snippet" is the result shape (SR-C1 makes the core
 > carrier-neutral, since images and datasets are now in scope). Those are
 > recorded there as decisions for an owner — this section stands until one is
-> taken. The rerank ruling below is *not* in question: the requirements doc
-> aligns to it.
+> taken. The rerank ruling below is *not* in question: both documents align to
+> it, and the architecture doc records a §6 correction made to keep it that way.
 
 The family runs web search two ways today and is about to run it a third:
 
@@ -668,8 +670,9 @@ MCP surface; bridging an external server remains an app option.
 - **Obligations:** harden the release path (it has had real incidents, including
   an untagged PyPI publish) before it carries five consumers' eval
   infrastructure.
-- **Normalization:** resolve the Python floor (core is ≥3.14; samsung's audit
-  shows relaxing to 3.12 is a bounded change serving both discodon and the Pi);
+- **Normalization:** resolve the Python floor (core is ≥3.14 today; the live
+  question is a per-module minimum with a relaxed subset versus moving discodon
+  to 3.14 — open question 1, no recommendation recorded);
   slim iam's dependency declaration toward its actual usage; define a
   supported-version window so consumer skew is bounded; stand up the JS/npm side
   of the monorepo; publish `DurableStore` as a conformance-tested contract
@@ -837,9 +840,14 @@ rather than drift.
 
 ## 6. Open questions
 
-1. **Python floor.** Relax 3tears core to ≥3.12 (recommended; serves discodon
-   and the Pi) or move discodon to 3.14? Relaxing constrains 3.14-only features
-   in core.
+1. **Python floor.** Two live shapes, no recommendation recorded: move discodon
+   to 3.14, or make the minimum version a **per-module** statement in 3tears and
+   find the subset that can hold a relaxed floor. A blanket relaxation of core to
+   ≥3.12 is no longer the proposal — it constrains 3.14-only features across
+   every module to serve the two consumers that need reach, where a per-module
+   floor pays that cost only in the modules that actually have to be reachable.
+   What is unknown is how large the relaxable subset is; nobody has checked what
+   each module's own dependencies support.
 2. **Eval extraction timing.** "After discodon's in-flight schema work lands"
    gates the family's highest-value workstream on that work's completion. Is
    partial extraction (contracts first) worth a two-step migration?

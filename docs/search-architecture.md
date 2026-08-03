@@ -1,9 +1,13 @@
 # Search: The Architecture
 
 **Status:** Draft — 2026-08-03
-**Companions:** `search-requirements.md` states the need and carries the
-evidence; `family-convergence.md` §4.14 records the direction; `shared_search.md`
-is the earlier mechanism sketch, superseded where the two disagree.
+**Companions:** read in the order direction → need → shape.
+`family-convergence.md` §4.14 records the *direction*; `search-requirements.md`
+states the *need*, carries the evidence, and is the cross-repo record (SR-M3);
+this derives the *shape*. `shared_search.md` is the earlier mechanism sketch,
+overtaken by this one. This is the newest of the four — where it and an older
+one disagree, this is current, and the disagreement should be propagated rather
+than left standing.
 **Scope:** structural shape and adoption. No fields, no signatures, no sequence.
 
 ## Summary
@@ -89,8 +93,9 @@ transport, egress selection, the token bucket, secret resolution — and also
 hard-requires sqlalchemy, asyncpg, cryptography and pyjwt. Samsung has refused it
 on the record, on weight, and that refusal is settled. The Python floor points
 the same way today (core declares `>=3.14`, discodon is on 3.12) but is *not*
-settled: the family is actively weighing whether to standardise on 3.14 or set
-minimums per module, and either outcome is compatible with what follows. The
+settled: open question 1 is live between moving discodon to 3.14 and making the
+minimum a per-module statement with a relaxed subset, with no recommendation
+recorded, and either outcome is compatible with what follows. The
 design does not rest on it — it rests on the weight, and on the general rule that
 a leaf four repos bind to cannot inherit the dependency closure of the heaviest
 package in the family. So there is **no path from the contract leaf or the

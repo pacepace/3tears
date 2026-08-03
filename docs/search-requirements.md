@@ -1,8 +1,11 @@
 # Search: What the Family Needs
 
-**Status:** Draft for ratification — 2026-08-02, second pass 2026-08-03
+**Status:** Draft for ratification — 2026-08-02, second pass 2026-08-03,
+coherence pass 2026-08-03
 **Companions:** `family-convergence.md` §4.14 records the *direction*;
-`shared_search.md` sketches a *mechanism*. This states the *need*.
+`search-architecture.md` derives the *shape* and what each consumer adopts;
+`shared_search.md` sketches an earlier *mechanism*, superseded where the two
+disagree. This states the *need*, and per SR-M3 it is the cross-repo record.
 **Relates to:** §4.13 (scraping), §4.2 (evals), open questions 1, 13, 15, 16 and 21
 
 The second pass read the 3tears source rather than the consuming apps, asking
@@ -11,6 +14,16 @@ added section N (transport and egress), principle P9 and goal G13, corrected two
 reuse claims that hold only pod-resident, closed the `media-contracts` question
 with evidence, and found one consumer and one deployment axis that were missing.
 Citations from that pass are `3tears/packages/...` and read 2026-08-03.
+
+The coherence pass propagated two corrections back from
+`search-architecture.md`, which is the newest of the four documents. **Spend is
+every resource a call consumed, not only money** — section E is renamed and
+SR-E1 widened, resolving a tension this document already carried between SR-E1's
+"in money" and SR-D1/SR-D6/SR-I3. And **the Python floor is live rather than
+decided**: §5.4, SR-L6 and §12 no longer assert it, because open question 1 has
+changed shape — a blanket relaxation of core to ≥3.12 is off the table, and the
+live options are moving discodon to 3.14 or a per-module minimum with a relaxed
+subset. Nothing in this document turns on which way it goes; SR-L7 is why.
 
 ## Summary
 
@@ -109,8 +122,10 @@ own hardware and a paid API are the same capability with different economics.
 Two consequences worth naming: no product's decisions get made by a search
 vendor, and no product is stranded when one changes its terms.
 
-**G9. Cost, evals and telemetry are built into the seam.** A run's cost cap
-includes what it spent searching. An eval can attribute a score change to a
+**G9. Spend, evals and telemetry are built into the seam.** A run's cost cap
+includes what it spent searching — and "spent" covers the unpriced resources
+too, since the constraints that bite on a self-hosted provider are quota and
+wall-clock rather than money (§E). An eval can attribute a score change to a
 search-config change. A slow turn is explainable.
 
 **G10. Safe to depend on.** Every call site in §5.2 — across four repos — binds
@@ -425,11 +440,13 @@ this capability wants actually live — the traced HTTP transport, the egress
 selector, the token bucket, the cache primitive, the secret resolver — and it
 hard-requires `sqlalchemy`, `asyncpg`, `aiosqlite`, `cryptography`,
 `pyjwt[crypto]` and `httpx`, at `requires-python = ">=3.14"`
-(`packages/core/pyproject.toml`). That floor excludes samsung by weight and
-discodon by Python version simultaneously, which is a stronger version of the
-constraint than "the Pi is the honest constraint" suggested — the two consumers
-it excludes are the largest and the smallest. P9 is the answer; SR-L7 is the
-requirement.
+(`packages/core/pyproject.toml`). Samsung's refusal on weight is settled and on
+the record. The version floor points the same way today — discodon is on 3.12 —
+but is *not* settled: open question 1 is live, between moving discodon to 3.14
+and making the minimum a per-module statement with a relaxed subset. Either
+outcome leaves the design here unchanged, because it rests on the weight and on
+the rule that a leaf four repos bind to cannot inherit the heaviest package's
+dependency closure. P9 is the answer; SR-L7 is the requirement.
 
 Three consequences worth stating rather than discovering:
 
@@ -831,10 +848,21 @@ failure mode is upstream rate-limiting or a ban, not spend, and a mechanism keye
 only on cost never fires for it (SR-H4). Self-hosting is first-class only if it
 is protected too.
 
-### E. Cost tracking
+### E. Spend accounting
 
-**SR-E1 (REQUIRED, P5 — G9).** Spend is attributable per call, in money,
-observable from any layer. Discodon counts and explicitly declines to price:
+*Spend is every resource a call consumed, not only money* — dollars, wall-clock,
+provider quota and call count, bytes moved. Modelling it as currency is the trap,
+because the two constraints that bite hardest here are unpriced: a self-hosted
+SearXNG costs nothing and fails by ban rather than by bill (SR-D6), and a call
+that returned nothing against an already-spent budget is pure latency with zero
+coverage gain (SR-I3). SR-E5 and SR-E6 are the money-specific entries; the rest
+of this section holds for any resource, and so does SR-D1's "budgets in calls,
+not only money".
+
+**SR-E1 (REQUIRED, P5 — G9).** Spend is attributable per call and observable
+from any layer — in money where the call is priced, and in wall-clock, provider
+quota and call count whether it is priced or not. Discodon counts and explicitly
+declines to price:
 "Paid non-LLM calls this run made (web search). Counted, never priced"
 (`research_tool.py:2503`), with its eval surface warning that "max_cost_usd does
 not bound external search quota" (`web/mcp/eval/runs.py:190`). Closing this is
@@ -1290,18 +1318,20 @@ steady-state footprint that fits beside another plane under a `MemoryMax` cap
 (SR-G5's byte caps are the acute case; this is the resting one), concurrency
 **defaults** — not just limits — that are safe unturned there (SR-H1), `arm64`
 wheels for anything carrying a native extension, and a Python floor spanning the
-family's spread — samsung is 3.14, and open question 1 proposes relaxing core to
-≥3.12 precisely because it "serves discodon and the Pi", which is this
-requirement's two modes under another name. Success check 5 states
+family's spread — samsung is 3.14, discodon is 3.12, and open question 1 is what
+decides how that gap closes. Success check 5 states
 the install-weight half of this; the runtime half was unstated until now, and it
 is the half a `MemoryMax` cap actually enforces.
 
-*The Python floor is a live exclusion, not a future one.* `3tears` core declares
-`requires-python = ">=3.14"` today. A leaf that depends on core therefore
-excludes discodon at 3.12 as well as samsung on weight — open question 1's
-relaxation is a prerequisite for *any* core dependency here, not just a
-courtesy to the Pi. SR-L7 is what makes this survivable either way: if the leaf
-takes no core dependency, the floor question stops gating it.
+*The Python floor is live, and this requirement does not wait on it.* `3tears`
+core declares `requires-python = ">=3.14"` today, so a leaf depending on core
+would exclude discodon at 3.12 as well as samsung on weight. Open question 1 is
+open between two shapes — move discodon to 3.14, or make the minimum a
+per-module statement and find the subset that can hold a relaxed floor — with no
+recommendation recorded and nobody having checked how large that subset is.
+SR-L7 is what makes this survivable under either: if the leaf takes no core
+dependency, the floor question stops gating it and starts gating only the hosts
+that inject core-backed implementations.
 
 **SR-L7 (REQUIRED, P9, G13 — §5.4).** **No path from the contract leaf or the
 Adapter into `threetears.core`.** Core is where most of the primitives this
@@ -1622,10 +1652,11 @@ plus a transport seam the sketch does not have.
   design-time rather than runtime; if convergence slips far enough, revisit
   whether the rest of the pod-conditioned work should have waited.
 - **SR-L6's Python floor** is asserted from the family's current spread, not from
-  a check of what the leaf's own dependencies actually support on 3.12. Sharper
-  now: core is `>=3.14` today, so under SR-L7 the floor question stops gating
-  the leaf and starts gating only the hosts that inject core-backed
-  implementations.
+  a check of what the leaf's own dependencies actually support on 3.12 — the same
+  unchecked quantity open question 1 now turns on, since a per-module floor is
+  only as good as the subset that can actually hold it. Under SR-L7 the floor
+  stops gating the leaf either way, and gates only the hosts that inject
+  core-backed implementations.
 - **SR-N1's norm amendment is proposed, not agreed.** Widening
   `test_no_bespoke_reuse`'s sanctioned set to include a declared transport
   protocol is a change to a 3tears enforcement rule, and 3tears has not been
