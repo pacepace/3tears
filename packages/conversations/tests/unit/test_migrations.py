@@ -96,8 +96,13 @@ class _FakeDataStore:
         """
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
-        if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
+        # Matched on the STABLE part of the statement, not its column list. The
+        # verbatim form stopped firing when MigrationRunner's query grew a
+        # `description` column: the fake then answered "no migrations applied"
+        # and every idempotence assertion saw a second apply re-run everything.
+        # A double that fails CLOSED reports a product bug that does not exist.
+        if "FROM _SCHEMA_MIGRATIONS" in normalized and normalized.startswith("SELECT") and "MAX(" not in normalized:
+            result = [dict(row) for row in self.migrations_rows]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
             max_version = max((row["version"] for row in self.migrations_rows), default=0)
