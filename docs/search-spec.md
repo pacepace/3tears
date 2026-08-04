@@ -448,6 +448,10 @@ for any face (check 14); let an exception cross the wire (D10).
 
 ## 7. Sequencing
 
+The cross-repo layer above this section — who starts what, when, across all
+five repos plus the eval extraction — is `convergence-sequencing.md`; this
+section remains the detailed in-repo sequence it links into.
+
 Build in this repo first, release, then migrate consumers. Phases are
 PR-sized groupings, not calendar units; each lands green through
 `./scripts/check-all.sh`. Git discipline throughout is the house rule set:
