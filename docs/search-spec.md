@@ -12,9 +12,9 @@ document is the durable record** of what was decided and why.
 
 | Document | Carries |
 |---|---|
-| `family-convergence.md` §4.14 | the **direction** |
-| `search-requirements.md` | the **need** — evidence, requirement IDs (`G*`, `P*`, `SR-*`), success checks |
-| `search-architecture.md` | the **shape** — six layers, the seams, what each consumer does |
+| [`family-convergence.md` §4.14](family-convergence.md#414-web-search--one-contract-staged-pipeline-searxng-from-metallm-budgets-from-discodon) | the **direction** |
+| [`search-requirements.md`](search-requirements.md) | the **need** — evidence, requirement IDs (`G*`, `P*`, `SR-*`), success checks |
+| [`search-architecture.md`](search-architecture.md) | the **shape** — six layers, the seams, what each consumer does |
 | **this document** | the **spec** — the buildable statement |
 
 This is the newest of the five search documents and the authority for anything
@@ -449,8 +449,9 @@ for any face (check 14); let an exception cross the wire (D10).
 ## 7. Sequencing
 
 The cross-repo layer above this section — who starts what, when, across all
-five repos plus the eval extraction — is `convergence-sequencing.md`; this
-section remains the detailed in-repo sequence it links into.
+five repos plus the eval extraction — is
+[`convergence-sequencing.md`](convergence-sequencing.md); this section remains
+the detailed in-repo sequence it links into.
 
 Build in this repo first, release, then migrate consumers. Phases are
 PR-sized groupings, not calendar units; each lands green through
