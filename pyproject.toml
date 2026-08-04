@@ -8,6 +8,10 @@ members = ["packages/*", "packages/agent/*"]
 exclude = ["packages/agent"]
 
 [tool.uv]
+# Supply-chain cooldown: refuse any PyPI release younger than 14 days, so a version
+# published by a registry account takeover leaves the index before we can resolve to it.
+# Only registry indexes are filtered; path and git sources are unaffected.
+exclude-newer = "14 days"
 # Pin the purely-transitive lxml (via trafilatura / python-docx /
 # redshift-connector) to the 6.x line, which ships cp314 wheels. Without this,
 # `uv lock` drifts lxml DOWN to 5.4.0 -- a version with NO Python 3.14 wheel --
