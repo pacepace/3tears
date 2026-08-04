@@ -18,6 +18,7 @@ from __future__ import annotations
 from uuid import uuid7
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.knowledge import (
     MAX_SHADOW_CHAIN_DEPTH,
@@ -375,6 +376,71 @@ class TestEntryEnforcementPassThrough:
         assert isinstance(dumped, dict)
         rebuilt = EntryEnforcement.model_validate(dumped)
         assert rebuilt == rule
+
+
+class TestEntryEnforcementRefusesUnknownKeys:
+    """an unrecognised key inside ``enforcement`` is REFUSED, never dropped.
+
+    the five valid fields are ``table`` / ``required_predicates`` /
+    ``forbidden_bare_aggregate`` / ``canonical_sql`` / ``note``. under
+    pydantic's ``extra="ignore"`` default a SIXTH key alongside all five
+    valid ones was discarded in silence: the block validated, the offline
+    ``aibots knowledge validate`` gate printed a clean pass, and the
+    persisted constraint enforced only what the typo did not name. an
+    enforcement block that looks configured and enforces nothing is the
+    caveat failure one level in -- worse, because constraining is its
+    whole job.
+    """
+
+    @staticmethod
+    def _valid() -> dict[str, object]:
+        """build the five valid fields, fully populated.
+
+        :return: mapping that validates on its own
+        :rtype: dict[str, object]
+        """
+        return {
+            "table": "early_vote_current",
+            "required_predicates": ["county_code"],
+            "forbidden_bare_aggregate": True,
+            "canonical_sql": None,
+            "note": "always filter by county",
+        }
+
+    def test_valid_block_still_validates(self) -> None:
+        rule = EntryEnforcement.model_validate(self._valid())
+        assert rule.table == "early_vote_current"
+
+    def test_extra_key_alongside_all_five_valid_is_refused(self) -> None:
+        payload = self._valid()
+        payload["required_predicate"] = ["precinct_id"]
+        with pytest.raises(ValidationError) as exc_info:
+            EntryEnforcement.model_validate(payload)
+        assert "required_predicate" in str(exc_info.value)
+
+    def test_extra_key_refused_by_constructor(self) -> None:
+        with pytest.raises(ValidationError):
+            EntryEnforcement(
+                table="t",
+                required_predicates=["c"],
+                forbidden_bare_aggregate=False,
+                note="n",
+                forbid_bare_aggregate=True,  # type: ignore[call-arg]
+            )
+
+    def test_every_offending_key_is_named_in_one_error(self) -> None:
+        payload = self._valid()
+        payload["requred_predicates"] = ["a"]
+        payload["cannonical_sql"] = "SELECT 1"
+        with pytest.raises(ValidationError) as exc_info:
+            EntryEnforcement.model_validate(payload)
+        message = str(exc_info.value)
+        assert "requred_predicates" in message
+        assert "cannonical_sql" in message
+
+    def test_persisted_round_trip_is_unaffected(self) -> None:
+        rule = EntryEnforcement.model_validate(self._valid())
+        assert EntryEnforcement.model_validate(rule.model_dump()) == rule
 
 
 class TestMergeDeterminism:

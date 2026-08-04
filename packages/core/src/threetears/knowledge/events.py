@@ -32,6 +32,19 @@ the SAME definition — the drift hazard the cross-repo schema-parity law
 exists to prevent. they live in ``threetears.knowledge`` because both
 the hub emitter and the SDK harvester already depend on this submodule
 for the scope vocabulary; the merge in this submodule is NOT touched.
+
+all three models keep pydantic's ``extra="ignore"`` default DELIBERATELY,
+unlike the sibling :class:`threetears.knowledge.merge.EntryEnforcement`
+which refuses. the selection rule is "is there a reader older than the
+payload?", and here the answer is YES: an agent pod and the hub-side
+emitter deploy independently, so a message minted by a newer publisher is
+routinely read by an older subscriber mid-rollout. refusing would drop
+the whole draft over one unrecognised member. the failure the refusal
+policy exists to stop does not reach here either -- nothing on this
+subject is operator-authored, so there is no committed file, no offline
+validate gate to make honest, and no caveat that an ignored key could
+silently delete. do NOT "fix" this to ``extra="forbid"`` by symmetry with
+``EntryEnforcement``; the two sit on opposite sides of the same rule.
 """
 
 from __future__ import annotations

@@ -371,6 +371,162 @@ class TestAgentInternalConnectionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Unknown-key policy
+# ---------------------------------------------------------------------------
+
+
+#: one minimal, VALID body per union member, plus the unknown key that member
+#: is probed with. the unknown keys are near-misses of real fields rather than
+#: invented words: a transposed character is the slip that actually happens,
+#: and it is the one that silently reverts a derived pool size or timeout to a
+#: library default.
+_UNKNOWN_KEY_PROBES: list[tuple[str, dict[str, object], str]] = [
+    (
+        "postgres",
+        {"datasource_type": "postgres", "host": "h", "database": "d", "username": "u"},
+        "pool_max_sizes",
+    ),
+    (
+        "yugabyte",
+        {"datasource_type": "yugabyte", "host": "h", "database": "d", "username": "u"},
+        "command_timeout_second",
+    ),
+    (
+        "redshift",
+        {"datasource_type": "redshift", "host": "h", "database": "d", "username": "u"},
+        "query_timeout_secondz",
+    ),
+    (
+        "snowflake",
+        {
+            "datasource_type": "snowflake",
+            "account": "a",
+            "warehouse": "w",
+            "user": "u",
+            "password_ref": "env://PW",
+        },
+        "pool_sizes",
+    ),
+    (
+        "bigquery",
+        {
+            "datasource_type": "bigquery",
+            "project_id": "p",
+            "credentials_json_ref": "env://SA",
+        },
+        "executor_max_worker",
+    ),
+    (
+        "agent_internal",
+        {"datasource_type": "agent_internal", "schema_name": "agent_abc"},
+        "schema_names",
+    ),
+]
+
+
+class TestConnectionConfigRefusesUnknownKeys:
+    """a misspelled connection-config key is an error, never a default.
+
+    ``DatasourceConfig`` has forbidden extras since ``datasource-task-05``
+    and says why in its own comment: a typo in the reference shape must
+    surface at load time instead of silently shipping the default. the
+    nested per-driver members carried only ``populate_by_name=True``, so
+    the rule stopped at the outer model and every pool-sizing and timeout
+    value underneath it was silently droppable.
+
+    the config is read by the process that OWNS it -- the driver
+    constructed from the same checkout that declares these fields -- so
+    there is no version boundary to be tolerant across. refusal is the
+    right policy here, unlike the relations wire that crosses Hub and SDK
+    releases.
+    """
+
+    @pytest.mark.parametrize(("label", "body", "unknown_key"), _UNKNOWN_KEY_PROBES)
+    def test_member_refuses_an_unknown_key(
+        self,
+        label: str,
+        body: dict[str, object],
+        unknown_key: str,
+    ) -> None:
+        """each union member rejects a near-miss key rather than defaulting it.
+
+        :param label: union member under test, for the failure message
+        :ptype label: str
+        :param body: minimal valid body for that member
+        :ptype body: dict[str, object]
+        :param unknown_key: near-miss key the member must refuse
+        :ptype unknown_key: str
+        :return: none
+        :rtype: None
+        """
+        assert _validate(dict(body)) is not None, f"{label} probe body is not itself valid"
+        with pytest.raises(ValidationError, match="(?i)extra|unexpected|not permitted"):
+            _validate({**body, unknown_key: 1})
+
+    def test_a_transposed_timeout_does_not_silently_become_the_default(self) -> None:
+        """the sharpest case, asserted on the VALUE rather than on the raise.
+
+        the build datasource declares ``query_timeout_seconds: 14400``. one
+        transposed character used to leave the model reading 300 -- the
+        interactive default -- so a multi-hour qualification CTAS was killed
+        at five minutes, hours into a build, with the file on disk still
+        reading 14400. asserting the refusal here rather than the resulting
+        value is what keeps the fix from being a comment.
+
+        :return: none
+        :rtype: None
+        """
+        good = RedshiftConnectionConfig.model_validate(
+            {
+                "datasource_type": "redshift",
+                "host": "h",
+                "database": "d",
+                "username": "u",
+                "query_timeout_seconds": 14400,
+            }
+        )
+        assert good.query_timeout_seconds == 14400
+
+        with pytest.raises(ValidationError, match="(?i)extra|unexpected|not permitted"):
+            RedshiftConnectionConfig.model_validate(
+                {
+                    "datasource_type": "redshift",
+                    "host": "h",
+                    "database": "d",
+                    "username": "u",
+                    "query_timeout_secondz": 14400,
+                }
+            )
+
+    def test_the_nested_refusal_survives_the_outer_model(self) -> None:
+        """the refusal fires through ``DatasourceConfig``, not just standalone.
+
+        the union is reached by discriminator dispatch from the parent, and a
+        policy that only holds when the member is validated directly would
+        never fire on the path an authored ``datasources/*.yaml`` actually
+        takes.
+
+        :return: none
+        :rtype: None
+        """
+        with pytest.raises(ValidationError, match="(?i)extra|unexpected|not permitted"):
+            DatasourceConfig.model_validate(
+                {
+                    "name": "seam-probe",
+                    "access_mode": "build",
+                    "connection_config": {
+                        "datasource_type": "redshift",
+                        "host": "example.invalid",
+                        "database": "analytics",
+                        "username": "probe",
+                        "query_timeout_secondz": 14400,
+                        "connection_cache_sizes": 5,
+                    },
+                }
+            )
+
+
+# ---------------------------------------------------------------------------
 # Discriminator routing
 # ---------------------------------------------------------------------------
 

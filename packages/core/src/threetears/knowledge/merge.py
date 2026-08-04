@@ -110,6 +110,29 @@ class EntryEnforcement(BaseModel):
     hashes the snapshot (``required_predicates`` is a list, so a snapshot
     carrying enforcement is unhashable regardless).
 
+    ``extra="forbid"`` is the same policy the SDK's ``AuthoredFileModel``
+    applies to every operator-authored file, applied here because this
+    block IS operator-authored: it is the ``enforcement:`` mapping of a
+    committed ``knowledge/*.knowledge.yaml`` entry, and the SDK validates
+    it with THIS class. under pydantic's ``extra="ignore"`` default a
+    sixth key alongside the five valid ones was discarded in silence --
+    ``aibots knowledge validate`` printed a clean pass and the persisted
+    constraint enforced only what the typo did not name. an enforcement
+    block that looks configured and enforces nothing is the ``caveat``
+    singular failure one level in, and worse, because constraining is its
+    whole job. the selection rule (is there a reader older than the
+    file?) answers NO: the file is authored in the agent project and read
+    by the SDK that project pins.
+
+    the class is ALSO the FastAPI request field, the JSONB reconstruction
+    target, and the SDK codegen type -- all three sharing one class by
+    import, never a mirrored copy. refusing there is deliberate too:
+    dropping one member of a machine-checkable constraint leaves the guard
+    enforcing a PARTIAL rule with no signal, while refusing surfaces as a
+    422 naming the key. for a guard, loud beats partial. the ``3tears*``
+    lockstep pin keeps hub and SDK on one exact version, so the skew this
+    trades away is already disallowed.
+
     :ivar table: table within the entry's datasource this rule governs
     :ivar required_predicates: column names that MUST appear in a filter
         on any aggregate over ``table`` (matched case-insensitively by
@@ -122,7 +145,7 @@ class EntryEnforcement(BaseModel):
     :ivar note: short human reason, surfaced in the rejection message
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     table: str
     required_predicates: list[str]

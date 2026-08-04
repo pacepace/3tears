@@ -28,15 +28,27 @@ field definitions (defaults, ``Literal`` value sets, descriptions) stay
 single-sourced: a future field addition to ``SkillCreateInput`` flows
 through here automatically, and ``extra='forbid'`` is the only thing
 this layer adds.
+
+Every enumerated field is annotated with the alias from
+:mod:`threetears.agent.skills.types` rather than an inline ``Literal``.
+Re-spelling one here is how ``outcome_source`` came to omit
+``'agent_tool'`` -- the only value anything actually writes -- which
+would have made this response model raise ``ValidationError`` on any
+real invocation row.
 """
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict
 
 from threetears.agent.skills.tools import SkillCreateInput
+from threetears.agent.skills.types import (
+    InvocationSource,
+    OutcomeSource,
+    PromptMode,
+    SkillKind,
+    SkillOutcome,
+)
 
 __all__ = [
     "CreateSkillRequest",
@@ -69,11 +81,11 @@ class SkillResponse(BaseModel):
     skill_id: str
     agent_id: str
     user_id: str
-    kind: Literal["prose", "tool"]
+    kind: SkillKind
     name: str
     summary: str
     body: str | None
-    prompt_mode: Literal["additive", "replace"]
+    prompt_mode: PromptMode
     tool_additions: list[str]
     tool_restrictions: list[str]
     trigger_keywords: str
@@ -99,10 +111,10 @@ class SkillSummary(BaseModel):
     """
 
     skill_id: str
-    kind: Literal["prose", "tool"]
+    kind: SkillKind
     name: str
     summary: str
-    prompt_mode: Literal["additive", "replace"]
+    prompt_mode: PromptMode
     tags: list[str]
     enabled: bool
     use_count: int
@@ -126,17 +138,18 @@ class SkillInvocationResponse(BaseModel):
     :class:`~threetears.agent.skills.entities.AgentSkillInvocationEntity`.
     ``message_id`` is ``None`` until the consumer's post-LLM hook attaches
     the assistant response; ``outcome`` / ``outcome_source`` are ``None``
-    until a ``[SUCCESS]`` / ``[FAILED]`` marker is parsed.
+    until something attributes an outcome, which today means the agent
+    calling ``skill_report_outcome``.
     """
 
     invocation_id: str
     skill_id: str
     conversation_id: str
     message_id: str | None
-    invocation_source: Literal["wake", "invoke"]
+    invocation_source: InvocationSource
     invoked_at: str
-    outcome: Literal["success", "failure"] | None
-    outcome_source: Literal["agent_marker", "user_feedback"] | None
+    outcome: SkillOutcome | None
+    outcome_source: OutcomeSource | None
     notes: str | None
 
 
@@ -187,7 +200,7 @@ class UpdateSkillRequest(BaseModel):
     name: str | None = None
     summary: str | None = None
     body: str | None = None
-    prompt_mode: Literal["additive", "replace"] | None = None
+    prompt_mode: PromptMode | None = None
     tool_additions: list[str] | None = None
     tool_restrictions: list[str] | None = None
     trigger_keywords: str | None = None

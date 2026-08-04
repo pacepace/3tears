@@ -39,6 +39,7 @@ class TestDriverAbstractness:
         expected = {
             "fetch",
             "execute",
+            "begin",
             "list_tables",
             "list_columns",
             "table_hashes",

@@ -5,8 +5,9 @@ machinery with every agent/skill/webhook/conversation-specific concept
 stripped out. The public surface:
 
 - :func:`scheduled_tick_job` -- the cross-pod-locked tick pump. Takes the
-  injected store(s) + dispatch callback + NATS client; no domain
-  knowledge.
+  injected store(s) + a per-``kind`` :data:`DispatchRoutes` table + NATS
+  client; no domain knowledge. An unrouted kind is refused, never
+  rerouted.
 - :func:`compute_next_fire_at` -- the pure reschedule math for every
   schedule type + both missed-fire policies.
 - :class:`ScheduleStore` / :class:`FireStore` / :class:`DueSchedule` --
@@ -39,10 +40,12 @@ from threetears.scheduled_jobs.collections import (
 )
 from threetears.scheduled_jobs.config import (
     DEFAULT_DISPATCH_REAP_AFTER_SECONDS,
+    DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND,
     DEFAULT_JOB_CONFIG,
     DEFAULT_TICK_DUE_LIMIT,
     DEFAULT_TICK_LOCK_KEY,
     JobConfig,
+    reap_after_seconds_for_kind,
 )
 from threetears.scheduled_jobs.entities import (
     JobFireEntity,
@@ -52,7 +55,9 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
+    EVENT_FIRE_REAPED,
     EVENT_FIRE_SKIPPED_BUSY,
+    EVENT_FIRE_UNROUTED_KIND,
     EVENT_TICK_COMPLETED,
     EVENT_TICK_STARTED,
 )
@@ -80,7 +85,9 @@ from threetears.scheduled_jobs.tables import (
     scheduled_jobs_table,
 )
 from threetears.scheduled_jobs.tick import (
+    UNROUTED_KIND_REASON,
     DispatchCallback,
+    DispatchRoutes,
     scheduled_tick_job,
 )
 from threetears.scheduled_jobs.types import (
@@ -93,13 +100,16 @@ from threetears.scheduled_jobs.types import (
 
 __all__ = [
     "DEFAULT_DISPATCH_REAP_AFTER_SECONDS",
+    "DEFAULT_DISPATCH_REAP_AFTER_SECONDS_BY_KIND",
     "DEFAULT_JOB_CONFIG",
     "DEFAULT_TICK_DUE_LIMIT",
     "DEFAULT_TICK_LOCK_KEY",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
+    "EVENT_FIRE_REAPED",
     "EVENT_FIRE_SKIPPED_BUSY",
+    "EVENT_FIRE_UNROUTED_KIND",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
     "FORBIDDEN_LABEL_NAMES",
@@ -109,7 +119,9 @@ __all__ = [
     "SCHEDULED_JOBS_LABEL_SETS",
     "SCHEDULED_JOBS_PROMETHEUS_NAMES",
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
+    "UNROUTED_KIND_REASON",
     "DispatchCallback",
+    "DispatchRoutes",
     "DueSchedule",
     "FireStore",
     "JobConfig",
@@ -127,6 +139,7 @@ __all__ = [
     "compute_next_fire_at",
     "get_scheduled_jobs_emitter",
     "job_fires_table",
+    "reap_after_seconds_for_kind",
     "register",
     "reset_scheduled_jobs_emitter_for_testing",
     "scheduled_jobs_table",

@@ -37,16 +37,16 @@ SKILL_LOAD_TOTAL = "agent_skill_load_total"
 SKILL_CREATE_TOTAL = "agent_skill_create_total"
 
 
-# Counts post-LLM outcome attributions for an active skill. Two labels:
-# ``outcome`` (``'success'`` | ``'failure'``) and ``source``
-# (``'agent_marker'`` -- parsed from the assistant's ``[SUCCESS]`` /
-# ``[FAILED]`` response marker by the synchronous post-LLM hook;
-# ``'user_feedback'`` -- attributed to user-driven feedback, reserved
-# for a future enhancement). Distinct from ``SKILL_LOAD_TOTAL``'s
-# ``outcome`` label: load-time outcome carries ``'unknown'`` for "no
-# marker yet" whereas this instrument only ever records a resolved
-# ``'success'`` / ``'failure'`` (an outcome is recorded only when a
-# marker / feedback resolves it).
+# Counts outcome attributions for an active skill. Two labels:
+# ``outcome``, carrying the ``SkillOutcome`` value set, and ``source``,
+# carrying the ``OutcomeSource`` value set -- both defined in
+# ``types.py`` and deliberately not re-spelled here. In practice
+# ``source`` is ``'agent_tool'`` today: it is the only value anything
+# writes, ``'agent_marker'`` is a retired path kept for historical
+# rows, and ``'user_feedback'`` is reserved. Distinct from
+# ``SKILL_LOAD_TOTAL``'s ``outcome`` label: load-time outcome carries
+# ``'unknown'`` for "not attributed yet" whereas this instrument only
+# ever records a resolved outcome.
 SKILL_OUTCOME_RECORDED_TOTAL = "agent_skill_outcome_recorded_total"
 
 

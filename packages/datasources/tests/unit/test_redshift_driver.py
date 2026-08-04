@@ -1176,6 +1176,11 @@ class TestRollbackOnError:
         post-fix the cached connection is rolled back so the next
         ``fetch`` runs cleanly and ``redshift_connector.connect`` is
         called only once across both queries.
+
+        NB since dsd-task-01 the release path rolls back on the SUCCESS
+        path too (DSD-01-05: a completed ``SELECT`` must not return a
+        connection to the cache holding an open snapshot), so the
+        rollback count here is one per checkout, not one per failure.
         """
         conn = _build_mock_connection(
             fetchall_rows=[(1,)],
@@ -1215,7 +1220,8 @@ class TestRollbackOnError:
             # exactly one connect: cache hit on the second fetch
             # proves the same connection was reused without eviction
             connect_mock.assert_called_once()
-            # rollback fired once (on the first error) and not on
-            # the successful second fetch
-            conn.rollback.assert_called_once()
+            # one rollback per checkout: the failed fetch's release and
+            # the successful fetch's release. the success-path rollback
+            # is the read-path fix, not an accident.
+            assert conn.rollback.call_count == 2
             await driver.close()

@@ -247,22 +247,59 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             built = await self.build_tools(spec)
             self._register_built(built)
         await self.on_started()
-        if server.tools_count > 0:
-            self._serve_task = spawn_background(
-                server.serve(),
-                name=_SERVE_TASK_NAME,
-                logger=log,
-            )
+        if self._ensure_serving():
             log.info(
                 "dynamic tool pod started: pod_id=%s tools_count=%d",
                 self._pod_id,
                 server.tools_count,
             )
         else:
+            # Not an error, and NOT permanent: the pod begins serving as soon
+            # as its first spec arrives. Worded explicitly because the previous
+            # message ("started with no tools") read as benign while describing
+            # a pod that was, at the time, unreachable for the rest of the
+            # process's life.
             log.info(
-                "dynamic tool pod started with no tools: pod_id=%s",
+                "dynamic tool pod started with no tools yet: pod_id=%s; "
+                "it will begin serving when its first spec registers",
                 self._pod_id,
             )
+
+    def _ensure_serving(self) -> bool:
+        """spawn the serve loop if there is something to serve and none is running.
+
+        ``serve()`` is what subscribes to the pod's call AND probe subjects, so
+        a pod that never spawns it is unreachable: the registry accepts its
+        registration, fails the reachability probe with "no responders", and
+        leaves every one of its tools PENDING -- while the pod's own log says
+        it registered successfully.
+
+        This used to be decided once, in :meth:`start`, against the tool count
+        at that instant. A pod whose specs arrive LATER -- the Hub's dataset
+        pod, which has no tools until an ``access_mode='build'`` datasource
+        exists -- therefore stayed silent for the rest of the process's life.
+        Adding a datasource to a running cluster is the ordinary steady-state
+        operation, so the decision is re-taken whenever the pod gains tools.
+
+        Idempotent by design: two serve loops on one subject would be a
+        duplicate-delivery bug, so a live task is never replaced.
+
+        :return: ``True`` when a serve loop is running after this call
+        :rtype: bool
+        """
+        server = self._tool_server
+        result = False
+        if server is not None:
+            if self._serve_task is not None and not self._serve_task.done():
+                result = True
+            elif server.tools_count > 0:
+                self._serve_task = spawn_background(
+                    server.serve(),
+                    name=_SERVE_TASK_NAME,
+                    logger=log,
+                )
+                result = True
+        return result
 
     @traced
     async def stop(self) -> None:
@@ -318,13 +355,32 @@ class DynamicToolPod(ABC, Generic[SpecT]):
             return
         built = await self.build_tools(spec)
         self._register_built(built)
+        # BEFORE publishing, not after. The registry probes the pod's own
+        # subject the moment it receives a manifest, so publishing first races
+        # a probe against a subscription that does not exist yet -- and a lost
+        # race is not retried: the tools stay PENDING for good.
+        serving = self._ensure_serving()
         if built.key in self._tool_names and server.is_connected:
             await server.publish_registration()
             log.info(
-                "dynamic tool pod spec registered: key=%s pod_id=%s",
+                "dynamic tool pod spec registered: key=%s pod_id=%s serving=%s",
                 built.key,
                 self._pod_id,
+                serving,
             )
+            if not serving:
+                # The manifest is published and the pod cannot answer. Said
+                # here because the only other evidence is a probe WARNING in
+                # the registry's log, minutes later, in a different container --
+                # which is how this went unnoticed: this message claimed
+                # success while the tools were unreachable.
+                log.warning(
+                    "dynamic tool pod published a manifest it cannot serve: key=%s pod_id=%s; "
+                    "the registry's reachability probe will find no responders and leave these "
+                    "tools pending",
+                    built.key,
+                    self._pod_id,
+                )
 
     @traced
     async def deregister_spec(self, key: str) -> bool:

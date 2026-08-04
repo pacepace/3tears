@@ -21,6 +21,7 @@ __all__ = [
     "EVENT_FIRE_FAILED",
     "EVENT_FIRE_REAPED",
     "EVENT_FIRE_SKIPPED_BUSY",
+    "EVENT_FIRE_UNROUTED_KIND",
     "EVENT_TICK_COMPLETED",
     "EVENT_TICK_STARTED",
 ]
@@ -45,3 +46,13 @@ EVENT_FIRE_DRIFT: str = "3tears.scheduled_jobs.fire.drift"
 # Reaper -- emitted (with a count) when the tick sweep reclaims fire rows
 # stuck in ``'dispatching'`` (a pod died mid-dispatch) to ``'failed'``.
 EVENT_FIRE_REAPED: str = "3tears.scheduled_jobs.fire.reaped"
+
+# Routing -- emitted at ERROR when a due row's ``kind`` has no registered
+# handler on the pump that scanned it. This is a wiring defect, never a
+# routine condition: the due-row scan already filters on the pump's
+# routed kinds, so reaching this event means a store returned a row it
+# was told not to. The row is refused rather than misdelivered, and
+# deliberately NOT claimed, so the occurrence survives to fire once the
+# handler is registered -- which also means this event repeats every
+# tick until someone fixes the wiring. That is the intended loudness.
+EVENT_FIRE_UNROUTED_KIND: str = "3tears.scheduled_jobs.fire.unrouted_kind"
