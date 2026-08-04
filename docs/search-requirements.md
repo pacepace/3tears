@@ -339,14 +339,18 @@ Evidence: C1 `discodon/tools/web_search_tool.py`; C2
 boundary.** `_DEFAULT_SAVEABLE_TOOLS = frozenset({"web_search", "web_fetch"})`
 — a post-response graph node scans `ToolMessage`s from those two tools and
 persists their content to the conversation context store, chunked, truncated at
-4000 characters. *Verified 2026-08-04, and the finding sharpened: the node is
-shipped but inert.* It matches `ToolMessage.name` by exact equality against
-those **bare** names, while the adapter binds tools under their namespaced
-names (`langchain_adapter.py:131` sets `name=tool.mcp_name()`, which returns
-`threetears.web_search`), so the default set never matches — and nothing in
-production wires `create_context_save_node` at all; its only callers are its
-own tests, which pass bare names and therefore cannot see the mismatch. Three
-consequences at requirements altitude:
+4000 characters. Verified 2026-08-04, and the finding sharpened: **the node
+is shipped but inert**, twice over —
+
+- it matches `ToolMessage.name` by exact equality against those **bare**
+  names, while the adapter binds tools under their namespaced names
+  (`langchain_adapter.py:131` sets `name=tool.mcp_name()`, which returns
+  `threetears.web_search`) — so the default set never matches;
+- nothing in production wires `create_context_save_node` at all. Its only
+  callers are its own tests, which pass bare names and therefore cannot see
+  the mismatch.
+
+Three consequences at requirements altitude:
 
 - It binds on the **tool name as a string**, not on the result type — and the
   failure class this predicts has already fired, in the silent-off direction:
@@ -471,17 +475,21 @@ closure. P9 is the answer; SR-L7 is the requirement.
 `import threetears.core` pulls none of sqlalchemy, asyncpg, aiosqlite, httpx,
 cryptography, pyjwt or pydantic (a PEP 562 lazy surface); `egress` and
 `coordination.token_bucket` import clean, and `http_client` eagerly imports
-only `httpx`, its own subject — so the `MemoryMax` framing does not apply to
-importing core, only to installing it. And the install list is *partly* softer
-than it reads — corrected 2026-08-04: `aiosqlite` is unused anywhere in the
-monorepo (L1 uses stdlib `sqlite3`) and can simply go; but
-`collections/flush.py` — the sole importer of `asyncpg` and one of three
-module-level `sqlalchemy` sites — is **not** test-only as the first check
-claimed: `collections/__init__.py` and `collections/base.py` import it and six
-downstream packages reach it through them, so both libraries sit on the live
-`BaseCollection` path, and demoting them to extras requires refactoring those
-imports first. `search-architecture.md` piece 5 carries the corrected
-per-dependency ruling. SR-L7 survives this, on the layering rule and the
+only `httpx`, its own subject. So the `MemoryMax` framing does not apply to
+importing core, only to installing it.
+
+And the install list is *partly* softer than it reads — corrected 2026-08-04:
+
+- `aiosqlite` is unused anywhere in the monorepo (L1 uses stdlib `sqlite3`)
+  and can simply go;
+- `collections/flush.py` — the sole importer of `asyncpg` and one of three
+  module-level `sqlalchemy` sites — is **not** test-only as the first check
+  claimed. `collections/__init__.py` and `collections/base.py` import it,
+  and six downstream packages reach it through them. Both libraries sit on
+  the live `BaseCollection` path, so demoting them to extras requires
+  refactoring those imports first.
+
+`search-architecture.md` piece 5 carries the corrected per-dependency ruling. SR-L7 survives this, on the layering rule and the
 unresolved Python floor rather than on runtime weight — which is the ground it
 should be defended on, since a `pyproject` cleanup in 3tears would dissolve the
 weight argument and leave the layering one untouched.
@@ -901,15 +909,19 @@ not only money".
 from any layer — in money where the call is priced, and in wall-clock, provider
 quota and call count whether it is priced or not. Discodon's ledger has moved
 since the first pass (verified 2026-08-04) and now proves the requirement
-rather than motivating it: search calls are counted always and priced when the
-operator declares a rate — `ExternalCallPricing`, per-depth credit weights,
-configured `usd_per_credit` (`eval/usage_capture.py:61-127`), fed by the count
-at `research_tool.py:2869-2871` — while its eval surface still warns that
-"max_cost_usd does not bound external search quota"
-(`web/mcp/eval/runs.py:184`). Closing that residual gap is success check 3.
-Replay adds a second spend fact and the two must never share a field —
-`search-spec.md` D27 rules the dual accounting (execution spend binds budgets;
-recorded spend feeds cost models).
+rather than motivating it:
+
+- search calls are counted always, and priced when the operator declares a
+  rate — `ExternalCallPricing`, per-depth credit weights, configured
+  `usd_per_credit` (`eval/usage_capture.py:61-127`), fed by the count at
+  `research_tool.py:2869-2871`;
+- its eval surface still warns that "max_cost_usd does not bound external
+  search quota" (`web/mcp/eval/runs.py:184`) — closing that residual gap is
+  success check 3.
+
+Replay adds a second spend fact, and the two must never share a field:
+execution spend binds budgets, recorded spend feeds cost models
+(`search-spec.md` D27).
 
 **SR-E2 (REQUIRED).** The count a cap enforces and the count a bill prices are
 one number. Samsung derives `searches_used` from the priced records because "a
@@ -934,11 +946,11 @@ persona tool bills every search as one unit (`_check_budget` at its `cost=1`
 default, `web_search_tool.py:224`; `tools/base.py:1390`) while
 `search_depth="advanced"` spends two Tavily credits — and its docstring says the
 budget exists "to manage shared API credits" (`web_search_tool.py:7,57`). The
-weighted primitive exists and `youtube_tool.py:216` uses it. (Bite scope,
-verified 2026-08-04: the tool's own default depth is `basic`, so the 2× only
-fires where an operator sets `advanced` per-entity — and the eval-side ledger
-now weights correctly via `SEARCH_CREDITS_BY_DEPTH`, so the daily budget and
-the ledger disagree exactly there.)
+weighted primitive exists and `youtube_tool.py:216` uses it. Bite scope,
+verified 2026-08-04: the tool's own default depth is `basic`, so the 2× fires
+only where an operator sets `advanced` per-entity. And the eval-side ledger
+now weights correctly (`SEARCH_CREDITS_BY_DEPTH`), so the daily budget and
+the ledger disagree exactly there.
 
 **SR-E5 (REQUIRED).** Cost granularity is per-request for some providers, and the
 model must not imply per-result pricing. Samsung: "The fee is charged per search
@@ -975,16 +987,22 @@ gap as first found: discodon's cassette layer records and replays at
 `:313-360`), C1 is a `Tool` and is replayable, and C2's sub-tool deliberately
 is not — "no Tool ABC overhead" (`research/web_search.py:3-5`). Replay was
 attached to a class hierarchy, so a component that left the hierarchy silently
-left reproducibility. *Updated 2026-08-04:* discodon has since closed the
-character-eval half of that hole from above — a **delivery seam** freezes what
-research handed to the character world (wired the same day this update was
-written), and its design record explicitly rejects freezing the sub-tool's
-individual queries for that use. The lesson stands unchanged, and it scopes
-this requirement honestly: search-internal replay serves what the coarse seams
-cannot — re-running the research *pipeline* (grounding gate, cull) against a
-frozen web, provenance re-checks, re-search diffs, and programmatic
-determinism — not character-eval freezing, which is better served above.
-`search-spec.md` D28 records how the seams compose.
+left reproducibility.
+
+*Updated 2026-08-04.* Discodon has since closed the character-eval half of
+that hole from above: a **delivery seam** freezes what research handed to the
+character world (wired the same day this update was written), and its design
+record explicitly rejects freezing the sub-tool's individual queries for that
+use. The lesson stands unchanged — and it scopes this requirement honestly.
+Search-internal replay serves what the coarse seams cannot:
+
+- re-running the research *pipeline* (grounding gate, cull) against a frozen
+  web;
+- provenance re-checks and re-search diffs;
+- programmatic determinism for consumers that re-issue the same requests.
+
+Character-eval freezing is better served above. `search-spec.md` D28 records
+how the seams compose.
 
 **SR-F4 (REQUIRED).** What is recorded must rebuild the corpus, not merely the
 rendered text — otherwise a replayed run cannot re-run its grounding gate.
@@ -1406,18 +1424,23 @@ extra. Anything heavier is a host concern, wired in.
 
 This is the requirement most likely to be argued away one import at a time, so
 the acceptance test must be mechanical rather than cultural — and *(checked
-2026-08-04)* the test this pass first cited does not yet do that job.
-`tests/enforcement/test_dependency_alignment.py` verifies imports match
-declarations in both directions — an undeclared `threetears.*` import fails,
-and a declared-but-unimported workspace dep fails — which catches *"the drift
-class where the uv workspace masks undeclared cross-package dependencies until
-a standalone `pip install` of one package ImportErrors in a consumer"* — but it
-pins no package's dependency *list*: a new hard dep that is genuinely imported
-self-satisfies with no reviewed change. The pin that actually exists is its
-sibling `test_contracts_packages_stay_dependency_free`, which holds
-`media-contracts` to stdlib-only by walker. The leaf therefore needs its own
-floor pin — the same mechanism, allowing exactly the floor above — and that pin
-is a deliverable of the build, not something the suite already provides.
+2026-08-04)* the test this pass first cited does not yet do that job:
+
+- `tests/enforcement/test_dependency_alignment.py` verifies imports match
+  declarations in both directions — an undeclared `threetears.*` import
+  fails, and a declared-but-unimported workspace dep fails. That catches
+  *"the drift class where the uv workspace masks undeclared cross-package
+  dependencies until a standalone `pip install` of one package ImportErrors
+  in a consumer."*
+- It pins no package's dependency *list*: a new hard dep that is genuinely
+  imported self-satisfies with no reviewed change.
+- The pin that actually exists is its sibling
+  `test_contracts_packages_stay_dependency_free`, which holds
+  `media-contracts` to stdlib-only by walker.
+
+The leaf therefore needs its own floor pin — the same mechanism, allowing
+exactly the floor above — and that pin is a deliverable of the build, not
+something the suite already provides.
 
 ### M. Lifecycle
 
@@ -1504,16 +1527,15 @@ as a sanctioned target, so the rule reads "no bespoke client" rather than "no
 client outside core". That widens the norm's reach — it would then bind
 lightweight leaves that today escape it entirely by not being able to comply.
 
-*Mechanism, checked 2026-08-04, and it prices the ask:* the sanction is a path
-allowlist — `_SANCTIONED_HTTPX_SITES`, a frozenset of file paths the walker
-skips (core's and mcp's `http_client.py` today) — and the walker only flags a
-raw `httpx.AsyncClient`/`Client` stored on `self`, so an Adapter holding a
+*Mechanism, checked 2026-08-04 — and it prices the ask.* The sanction is a
+path allowlist: `_SANCTIONED_HTTPX_SITES`, a frozenset of file paths the
+walker skips (core's and mcp's `http_client.py` today). The walker only flags
+a raw `httpx.AsyncClient`/`Client` stored on `self` — an Adapter holding a
 *protocol-typed* transport field never trips it at all. What would trip it is
-the leaf's shipped bare-httpx default transport implementation. The widening
-therefore lands as: add that one module's path to the sanctioned set and
-restate the norm's prose as "no bespoke client outside a sanctioned transport
-implementation" — a one-line frozenset edit plus prose, reviewed, no exemption
-filed.
+the leaf's shipped bare-httpx default transport. So the widening is a one-line
+frozenset edit plus prose: add that module's path to the sanctioned set, and
+restate the norm as "no bespoke client outside a sanctioned transport
+implementation". Reviewed, no exemption filed.
 
 **SR-N2 (REQUIRED, P2, P5 — G8, G11).** **Which exit a call leaves by is an
 input at Adapter and provenance on the result.**

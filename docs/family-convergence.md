@@ -280,34 +280,33 @@ Verified against discodon 2026-08-04 — three corrections that shape the
 extraction:
 
 - **The storage Protocol does not exist yet.** `EvalStorage` is a 65-method
-  concrete Postgres class; the narrow port (`upsert/get/query/delete` keyed
-  by `(scope, doc_type, id)`) is designed in prose with two unstarted
-  prerequisites (an eval-owned namespace; `universe` generalized to `scope`).
-  The only Protocol actually shipped is the 4-method `CassetteStore`.
-  **Pre-extraction remediation in discodon is the recommendation:** carve the
+  concrete Postgres class. The narrow port — `upsert/get/query/delete` keyed
+  by `(scope, doc_type, id)` — is designed in prose, with two unstarted
+  prerequisites (an eval-owned namespace; `universe` generalized to
+  `scope`). The only Protocol actually shipped is the 4-method
+  `CassetteStore`. **Remediate in discodon before extraction:** carve the
   port and make `EvalStorage` implement it while discodon is still sole
-  owner — and shape it against the family's store contracts (document-shaped
-  → the `DurableStore` direction, blob-shaped → `ObjectStore`) so
+  owner, shaped against the family store contracts (open question 22) — so
   eval-contracts lifts a proven port instead of minting the family's fourth
-  store shape (open question 22).
-- **The analysis *core* is dependency-free; the analysis *generator* is not.**
-  `analysis/bundle.py` and its models are stdlib + pydantic as claimed, but
-  `analysis/generator.py` imports the host's OpenRouter client and prompt
-  registry. The extraction answer stays inside patterns already ruled here:
-  the generator's prompts are *product prompts* (§4.3) — they ship as package
-  content with a plain override hook, never as a registry dependency — and
-  the LLM boundary is the same narrow completion protocol eval-run already
-  commits to for its runner and judge, satisfied by `3tears-models` through a
-  thin adapter. If the coupling still proves sticky, gen extracts last; it
-  gates nothing (open question 3 already contemplates folding it).
+  store shape.
+- **The analysis *core* is dependency-free; the analysis *generator* is
+  not.** `analysis/bundle.py` and its models are stdlib + pydantic as
+  claimed. `analysis/generator.py` imports the host's OpenRouter client and
+  prompt registry. The fix stays inside patterns already ruled here:
+  - its prompts are *product prompts* (§4.3) — they ship as package content
+    with a plain override hook, never as a registry dependency;
+  - its LLM boundary is the same narrow completion protocol eval-run already
+    commits to for its runner and judge, satisfied by `3tears-models`
+    through a thin adapter;
+  - if the coupling still fights, gen extracts last — it gates nothing, and
+    open question 3 already contemplates folding it.
 - **Budget machinery is port-shaped already, refusal contract aside.**
   `EvalRunCostCap` carries a literal `record()`/`exceeded` pair; the daily
-  budget mixin returns a host `ActionResult` on refusal. Reshaping that
+  budget mixin returns a host `ActionResult` on refusal. Reshape that
   refusal to the `check(estimate)`/`record(spend)` port the search contract
-  defines is recommended **now, while discodon is sole owner of its evals**
-  (`search-spec.md` Phase 5) — it turns the later
-  eval-cap-implements-BudgetPort wiring into the one-line change the plan
-  promises.
+  defines (`search-spec.md` Phase 5) — **now, while discodon is sole owner
+  of its evals** — and the later eval-cap-implements-BudgetPort wiring
+  becomes the one-line change the plan promises.
 
 Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
@@ -391,13 +390,15 @@ eval-contracts. Rendered text can never be the A/B unit — it differs every
 turn. The lever is a *variant identity*; apparatus proof (component hashes,
 frozen case sets, deterministic seeds) shows everything else held. Discodon
 already ships this shape as run-scoped prompt overlays recorded in run
-identity — with one unification left for the extraction (verified
-2026-08-04): identity hashes overlays *as given*, not by `content_hash`, so
-content-addressed prompt identity and eval identity are two mechanisms today,
-joined by extraction work rather than lifted. And apparatus proof cuts across
-capabilities: "everything else held" includes the *web*, so variant evals
-that search lean on the freezing seams — the cassette layer today, search
-replay for pipeline-level work (§4.14; `search-spec.md` D28).
+identity. Two notes from the 2026-08-04 verification:
+
+- One unification is extraction work, not a lift: identity hashes overlays
+  *as given*, not by `content_hash` — content-addressed prompt identity and
+  eval identity are two mechanisms today.
+- Apparatus proof cuts across capabilities: "everything else held" includes
+  the *web*. Variant evals that search lean on the freezing seams — the
+  cassette layer today, search replay for pipeline-level work (§4.14;
+  `search-spec.md` D28).
 
 #### The variant lifecycle
 
@@ -710,24 +711,30 @@ MCP surface; bridging an external server remains an app option.
   memory grain generalization, the Vega-Lite spec compiler (discodon's chart
   substrate), samsung's L1-is-a-cache integration finding, and the web-search
   contract with discodon's budget semantics (§4.14).
-- **Obligations:** harden the release path (it has had real incidents, including
-  an untagged PyPI publish) before it carries five consumers' eval
-  infrastructure. And close the **structured-results last mile** (audited
-  2026-08-04): `ToolResult.metadata` reaches LangGraph in-process as
-  `ToolMessage.artifact` and survives the pod envelope, but dies at
-  `ToolExecutor` (stringifies results), at MCP serialization (everything
-  flattens to `TextContent`; no `structuredContent`; the MCP client's
-  `McpToolResult` has no metadata field), at the SDK-side remote wrapper
-  (documented lossy), and never enters the stream protocol (tool events carry
-  name + timing only; `Frame.payload` is a string; the one dict-to-browser
-  conduit is turn-level `ChannelResponse.metadata`, which nothing populates
-  from tools). Every fix is additive except widening `Frame.payload`. This
-  gates §4.11 and metallm's frontend adoption: a stream protocol that carries
-  less structure than metallm's raw-event filtering currently extracts would
-  be a capability regression under principle 4 — so the tool-structure
-  channel must be designed into the chat-kit workstream before that
-  migration, while the in-repo fixes (executor, MCP faces) ride the search
-  work (`search-spec.md` §4).
+- **Obligations:**
+  - **Harden the release path** before it carries five consumers' eval
+    infrastructure — it has had real incidents, including an untagged PyPI
+    publish.
+  - **Close the structured-results last mile** (audited 2026-08-04).
+    `ToolResult.metadata` reaches LangGraph in-process as
+    `ToolMessage.artifact` and survives the pod envelope, then dies at four
+    hops:
+    - `ToolExecutor` — stringifies results;
+    - MCP serialization — everything flattens to `TextContent`, no
+      `structuredContent`, and the MCP client's `McpToolResult` has no
+      metadata field;
+    - the SDK-side remote wrapper — documented lossy;
+    - the stream protocol — tool events carry name + timing only,
+      `Frame.payload` is a string, and the one dict-to-browser conduit
+      (turn-level `ChannelResponse.metadata`) is populated by nothing.
+
+    Every fix is additive except widening `Frame.payload`. Why it gates
+    §4.11 and metallm's frontend adoption: a stream protocol that carries
+    less structure than metallm's raw-event filtering currently extracts
+    would be a capability regression under principle 4. So the
+    tool-structure channel gets designed in the chat-kit workstream before
+    that migration; the in-repo fixes (executor, MCP faces) ride the search
+    work (`search-spec.md` §4).
 - **Normalization:** resolve the Python floor (core is ≥3.14 today; the live
   question is a per-module minimum with a relaxed subset versus moving discodon
   to 3.14 — open question 1, no recommendation recorded);

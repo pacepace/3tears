@@ -64,8 +64,8 @@ here.
 | D24 (leaf floor) | Hard deps: `pydantic`, `3tears-media-contracts`, `3tears-observe`. Extras: `[standalone]` = httpx (the bare transport impl), `[extract]` = trafilatura | Matches SR-L7's permitted floor exactly. Provider adapters ship in the base package — they are pure logic over the injected transport and weigh nothing; extras carry *weight*, and the only weights are httpx (only for hosts that don't inject their own transport) and trafilatura. |
 | D25 (Python floor) | The leaf declares `requires-python = ">=3.14"` today, avoids gratuitous 3.14-only surface | The workspace is 3.14. **OQ1 ruled in principle 2026-08-04: discodon adopts 3.14** — its declared floor is already `>=3.12`, so this is an interpreter switch plus verification, owned by discodon. The avoid-3.14-only-surface intent stays as cheap insurance until that lands; the per-module-floor fallback is retired unless adoption hits a wall. |
 | D26 (replay durability, 2026-08-04) | Recordings outlive the stack that made them: replay records the **typed result** and keys on the **canonical caller request** | Three rules, detailed in §3.10: the key hashes explicitly-set caller parameters (never resolved defaults) plus a key-derivation version; replay short-circuits at the Call boundary and never touches an adapter, so removing a provider strands no recordings; payload readability is promised within a family major, refused loudly across, matching the cascade-delete lifetime recordings actually have (SR-F5). |
-| D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets and provider quotas bind on **execution** spend — a replay debits no credits, though wall-clock bounds still bind — while cost-model analyses read the **recorded** spend, so a replayed baseline never looks free. This is P7 applied to spend: collapsing the two facts into one number makes the trade invisible. Provenance already marks a result as replayed, so no analysis mixes them unknowingly. Detail in §3.10. |
-| D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Verified against discodon's live cassette work (an action seam wrapping tools by name; a delivery seam freezing research payloads, landed 2026-08-04; and its design record rejecting per-query freezing for character evals). Under outer replay, inner code never runs, so inner recorders are inert by construction; on capture, seams are independent and opt-in; run identity names the active seams (discodon already hashes cassette mode/version — the search-replay flag joins identically). Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser, correctly. **No replay engine enters the `TearsTool` base class** — wrap-by-name at existing choke points is the uniform mechanism, and hierarchy-attached replay is the documented failure this plan exists not to repeat. The one tool-level convention evals do need is already ruled: structure on `metadata` (SR-A1), which makes an action-seam recording semantically complete. |
+| D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets bind on execution spend; cost-model analyses read recorded spend, so a replayed baseline never looks free. P7 applied to spend. Detail in §3.10. |
+| D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser (discodon's action- and delivery-seam cassettes), correctly. **No replay engine enters the `TearsTool` base class.** Detail in §3.10. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1–4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -341,6 +341,23 @@ replay debits no provider quota; wall-clock bounds still bind); cost-model
 analyses read the recorded spend. Provenance MUST mark the result replayed so
 the two readings can never be mixed silently.
 
+**Recorder composition (D28).** Verified against discodon's live cassette
+work: an action seam wraps tools by name, and a delivery seam (landed
+2026-08-04) freezes research payloads — its design record rejects per-query
+freezing for character evals. The rules:
+
+- **Outermost active recorder wins.** Under outer replay, inner code never
+  runs, so inner recorders are inert by construction. On capture, seams are
+  independent and opt-in.
+- **Run identity names the active seams.** Discodon already hashes cassette
+  mode/version into eval identity; the search-replay flag joins identically.
+- **No replay engine in the `TearsTool` base class.** Wrap-by-name at
+  existing choke points is the uniform mechanism; hierarchy-attached replay
+  is the documented failure this plan exists not to repeat. The one
+  tool-level convention evals do need is already ruled: structure on
+  `metadata` (SR-A1), which makes an action-seam recording semantically
+  complete.
+
 ### 3.11 `testing/`
 
 The provider-conformance suite (SR-O5): one parametrized suite every adapter
@@ -394,13 +411,14 @@ load-bearing for a success check.
    everything to `TextContent`; emit spec-sanctioned `structuredContent`
    alongside, and add the missing `metadata` field to the MCP client's
    `McpToolResult`. Both additive. Two adjacent gaps are *named asks
-   elsewhere*, not in-repo work: the SDK-side remote wrapper that rebuilds
-   `ToolMessage`s from `CallResponse` drops metadata (re-attaching it as the
-   artifact rides each consumer's migration), and the stream protocol carries
-   no tool structure (`ToolCallEndEvent` is name + timing; `Frame.payload` is
-   a string) — that channel is designed in the chat-kit workstream
-   (`family-convergence.md` §5, 3tears obligations), before metallm's
-   frontend converges.
+   elsewhere*, not in-repo work:
+   - the SDK-side remote wrapper that rebuilds `ToolMessage`s from
+     `CallResponse` drops metadata — re-attaching it as the artifact rides
+     each consumer's migration;
+   - the stream protocol carries no tool structure (`ToolCallEndEvent` is
+     name + timing; `Frame.payload` is a string) — that channel is designed
+     in the chat-kit workstream (`family-convergence.md` §5, 3tears
+     obligations), before metallm's frontend converges.
 9. **`scrape`**: `page_finder` reads structure off `metadata`; its callers
    unchanged (check 4, together with item 7). Later, scrape implements
    `HeavyFetcher`.
@@ -541,18 +559,19 @@ switch later costs no consumer rewrite).
    research-*pipeline* evals (grounding gate and cull re-run against a
    frozen web), through a `RecordingStore` over its existing store.
    Character-eval freezing stays on its action- and delivery-seam cassettes
-   (D28), already wired discodon-side. Eval cost caps include search spend
-   via the `BudgetPort` (check 3, under D27's execution-spend rule).
-   Recommended pre-work, doable any time while discodon is still sole owner
-   of its evals: reshape `EvalRunCostCap` and the daily-budget mixin's
-   refusal contract to the port's `check(estimate)`/`record(spend)` shape,
-   copied from `threetears.search.contracts` rather than invented — the
-   protocol is structural, so this gates on nothing shipping.
-6. Existing web_search cassettes are keyed on the current wrapper's
+   (D28), already wired discodon-side.
+6. Eval cost caps include search spend via the `BudgetPort` (check 3, under
+   D27's execution-spend rule). Recommended pre-work, doable any time while
+   discodon is still sole owner of its evals: reshape `EvalRunCostCap` and
+   the daily-budget mixin's refusal contract to the port's
+   `check(estimate)`/`record(spend)` shape, copied from
+   `threetears.search.contracts` rather than invented — the protocol is
+   structural, so this gates on nothing shipping.
+7. Existing web_search cassettes are keyed on the current wrapper's
    parameter hash; the rebuilt tool reshapes parameters, so this migration
    includes cassette re-capture (or a recorded key mapping) — never silent
    reuse.
-7. PR, merge; record acceptance of what binds it (D15).
+8. PR, merge; record acceptance of what binds it (D15).
 
 **samsung** — rides its planned phase-2 image-search work, not a
 migration-for-migration's-sake.
