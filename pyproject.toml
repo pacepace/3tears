@@ -105,6 +105,53 @@ dev-dependencies = [
     "defusedxml>=0.7",
 ]
 
+# The 3tears family is exempt from the cooldown above. That window exists to
+# outlast the detection lag on a registry account takeover of a THIRD-PARTY
+# package; for a first-party package we publish ourselves it buys no safety, and
+# it costs a fortnight of lag on every platform release this repo is built to
+# consume. 3tears releases in lockstep and more often than 14 days, so the
+# cooldown does not slow an attacker here -- it just stops us resolving our own
+# current version (observed: `3tears==0.23.0 was published after the exclude
+# newer time`, which fails `uv run`, `uv lock` and every Docker build).
+#
+# "PT0S" is a zero-length SPAN, not a fixed date: uv records it as a span and
+# rolls it forward on every re-lock, so it can never decay into a ceiling that
+# silently freezes these packages at whatever version was current the day it was
+# written. Matches the precedent in metallm/api/pyproject.toml.
+#
+# Every package in the family is listed, not only the ones this repo depends on
+# today, so adding a 3tears dependency later cannot reintroduce the failure.
+[tool.uv.exclude-newer-package]
+"3tears" = "PT0S"
+"3tears-agent-acl" = "PT0S"
+"3tears-agent-audit" = "PT0S"
+"3tears-agent-identity" = "PT0S"
+"3tears-agent-intention" = "PT0S"
+"3tears-agent-knowledge" = "PT0S"
+"3tears-agent-memory" = "PT0S"
+"3tears-agent-skills" = "PT0S"
+"3tears-agent-tools" = "PT0S"
+"3tears-agent-wake" = "PT0S"
+"3tears-agent-workspace" = "PT0S"
+"3tears-backup" = "PT0S"
+"3tears-channels" = "PT0S"
+"3tears-conversations" = "PT0S"
+"3tears-datasources" = "PT0S"
+"3tears-enforcement" = "PT0S"
+"3tears-epoch" = "PT0S"
+"3tears-geo" = "PT0S"
+"3tears-iam" = "PT0S"
+"3tears-langgraph" = "PT0S"
+"3tears-mcp" = "PT0S"
+"3tears-media-contracts" = "PT0S"
+"3tears-models" = "PT0S"
+"3tears-nats" = "PT0S"
+"3tears-object-store" = "PT0S"
+"3tears-observe" = "PT0S"
+"3tears-registry" = "PT0S"
+"3tears-scheduled-jobs" = "PT0S"
+"3tears-scrape" = "PT0S"
+
 [tool.ruff]
 line-length = 120
 target-version = "py314"

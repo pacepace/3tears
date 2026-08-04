@@ -6,6 +6,41 @@ resolution-markers = [
     "python_full_version < '3.15'",
 ]
 
+[options]
+exclude-newer = "2026-07-21T22:03:00.44768Z"
+exclude-newer-span = "P14D"
+
+[options.exclude-newer-package]
+3tears-agent-identity = { timestamp = "2026-08-04T22:03:00.447703Z", span = "PT0S" }
+3tears-agent-workspace = { timestamp = "2026-08-04T22:03:00.447705Z", span = "PT0S" }
+3tears-nats = { timestamp = "2026-08-04T22:03:00.44771Z", span = "PT0S" }
+3tears-models = { timestamp = "2026-08-04T22:03:00.447709Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "2026-08-04T22:03:00.447705Z", span = "PT0S" }
+3tears-object-store = { timestamp = "2026-08-04T22:03:00.44771Z", span = "PT0S" }
+3tears-conversations = { timestamp = "2026-08-04T22:03:00.447706Z", span = "PT0S" }
+3tears-registry = { timestamp = "2026-08-04T22:03:00.447711Z", span = "PT0S" }
+3tears-mcp = { timestamp = "2026-08-04T22:03:00.447709Z", span = "PT0S" }
+3tears = { timestamp = "2026-08-04T22:03:00.447694Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "2026-08-04T22:03:00.447705Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "2026-08-04T22:03:00.447704Z", span = "PT0S" }
+3tears-channels = { timestamp = "2026-08-04T22:03:00.447706Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "2026-08-04T22:03:00.447707Z", span = "PT0S" }
+3tears-epoch = { timestamp = "2026-08-04T22:03:00.447708Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "2026-08-04T22:03:00.447702Z", span = "PT0S" }
+3tears-geo = { timestamp = "2026-08-04T22:03:00.447708Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "2026-08-04T22:03:00.447703Z", span = "PT0S" }
+3tears-iam = { timestamp = "2026-08-04T22:03:00.447708Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "2026-08-04T22:03:00.447711Z", span = "PT0S" }
+3tears-observe = { timestamp = "2026-08-04T22:03:00.44771Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "2026-08-04T22:03:00.447708Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "2026-08-04T22:03:00.447704Z", span = "PT0S" }
+3tears-backup = { timestamp = "2026-08-04T22:03:00.447706Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "2026-08-04T22:03:00.447709Z", span = "PT0S" }
+3tears-scrape = { timestamp = "2026-08-04T22:03:00.447712Z", span = "PT0S" }
+3tears-datasources = { timestamp = "2026-08-04T22:03:00.447707Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "2026-08-04T22:03:00.447703Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "2026-08-04T22:03:00.447704Z", span = "PT0S" }
+
 [manifest]
 members = [
     "3tears",
