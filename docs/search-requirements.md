@@ -4,8 +4,10 @@
 coherence pass 2026-08-03
 **Companions:** `family-convergence.md` §4.14 records the *direction*;
 `search-architecture.md` derives the *shape* and what each consumer adopts;
-`shared_search.md` sketches an earlier *mechanism*, superseded where the two
-disagree. This states the *need*, and per SR-M3 it is the cross-repo record.
+`search-spec.md` (2026-08-04) is the *spec* — it takes the §13 decisions as
+vetoable rulings and is the buildable statement; `shared_search.md` sketches an
+earlier *mechanism*, superseded where the two disagree. This states the *need*,
+and per SR-M3 it is the cross-repo record.
 **Relates to:** §4.13 (scraping), §4.2 (evals), open questions 1, 13, 15, 16 and 21
 
 The second pass read the 3tears source rather than the consuming apps, asking
@@ -337,17 +339,28 @@ Evidence: C1 `discodon/tools/web_search_tool.py`; C2
 boundary.** `_DEFAULT_SAVEABLE_TOOLS = frozenset({"web_search", "web_fetch"})`
 — a post-response graph node scans `ToolMessage`s from those two tools and
 persists their content to the conversation context store, chunked, truncated at
-4000 characters. Three consequences at requirements altitude:
+4000 characters. *Verified 2026-08-04, and the finding sharpened: the node is
+shipped but inert.* It matches `ToolMessage.name` by exact equality against
+those **bare** names, while the adapter binds tools under their namespaced
+names (`langchain_adapter.py:131` sets `name=tool.mcp_name()`, which returns
+`threetears.web_search`), so the default set never matches — and nothing in
+production wires `create_context_save_node` at all; its only callers are its
+own tests, which pass bare names and therefore cannot see the mismatch. Three
+consequences at requirements altitude:
 
-- It binds on the **tool name as a string**, not on the result type. Anything
-  that changes what search is called, or splits it per carrier, silently changes
-  what gets remembered. A rename is a data-retention change.
+- It binds on the **tool name as a string**, not on the result type — and the
+  failure class this predicts has already fired, in the silent-off direction:
+  written against bare names, bound namespaced, retention quietly does nothing.
+  Anything that changes what search is called, or splits it per carrier,
+  changes what gets remembered — invisibly, in either direction. A rename is a
+  data-retention change.
 - It is the seam where retrieved third-party content becomes *our own*
   content — which §2 assigns to `agent-memory` and declares out of scope. The
   boundary is real and the doc should keep it, but it is crossed by an existing
   in-family node, so "not RAG" is a statement about what search *owns*, not a
-  claim that no path exists. It also widens SR-K4: web text is already being
-  retained, before replay adds any.
+  claim that no path exists. It also widens SR-K4: the moment this
+  node is wired correctly, web text is retained — the posture should be stated
+  before that wiring, not after it.
 - It reads `content` — the flattened string — so it inherits exactly the
   destruction SR-A1 exists to stop, and truncates at 4000 chars with no
   provenance. Under SR-A1 it becomes the second consumer that should read
@@ -356,8 +369,8 @@ persists their content to the conversation context store, chunked, truncated at
 
 Read the fidelity column: only two of the eight want what the shared builtin
 returns. Five want extracted content or a structured record — and today four of
-those five get there alone, while the fifth (C8) does not get there at all and
-persists the flattened text anyway.
+those five get there alone, while the fifth (C8) does not get there at all, and
+its retention path turns out to be inert besides (above).
 
 Three rows carry more weight than their size suggests. **C3 is the 3tears
 builtin itself** — not metallm's, though metallm consumes it — so it is at once
@@ -453,17 +466,21 @@ outcome leaves the design here unchanged, because it rests on the rule that a
 leaf four repos bind to cannot inherit the heaviest package's dependency
 closure. P9 is the answer; SR-L7 is the requirement.
 
-*Core's weight was checked on 2026-08-03, and it is an install cost rather than a
-runtime one.* `import threetears.core` pulls none of sqlalchemy, asyncpg,
-aiosqlite, httpx, cryptography, pyjwt or pydantic, and `http_client`, `egress`
-and `coordination.token_bucket` each import clean — so the `MemoryMax` framing
-does not apply to importing core, only to installing it. And the install list is
-softer than it reads: `aiosqlite` is unused anywhere in the monorepo (L1 uses
-stdlib `sqlite3`); `asyncpg` is imported exactly once, in `collections/flush.py`,
-which nothing but its own test imports, because L3 arrives as an injected
-`L3Backend`/`DurableStore` protocol and the host supplies the pool; and
-`sqlalchemy`'s four remaining users all import it lazily inside function bodies.
-`search-architecture.md` piece 5 carries the
+*Core's weight was checked on 2026-08-03 and re-checked by running on
+2026-08-04, and it is an install cost rather than a runtime one.*
+`import threetears.core` pulls none of sqlalchemy, asyncpg, aiosqlite, httpx,
+cryptography, pyjwt or pydantic (a PEP 562 lazy surface); `egress` and
+`coordination.token_bucket` import clean, and `http_client` eagerly imports
+only `httpx`, its own subject — so the `MemoryMax` framing does not apply to
+importing core, only to installing it. And the install list is *partly* softer
+than it reads — corrected 2026-08-04: `aiosqlite` is unused anywhere in the
+monorepo (L1 uses stdlib `sqlite3`) and can simply go; but
+`collections/flush.py` — the sole importer of `asyncpg` and one of three
+module-level `sqlalchemy` sites — is **not** test-only as the first check
+claimed: `collections/__init__.py` and `collections/base.py` import it and six
+downstream packages reach it through them, so both libraries sit on the live
+`BaseCollection` path, and demoting them to extras requires refactoring those
+imports first. `search-architecture.md` piece 5 carries the corrected
 per-dependency ruling. SR-L7 survives this, on the layering rule and the
 unresolved Python floor rather than on runtime weight — which is the ground it
 should be defended on, since a `pyproject` cleanup in 3tears would dissolve the
@@ -902,7 +919,7 @@ under-report the month by exactly the amount the failures cost"
 
 *Mode-conditioned (§5.4).* This does not hold pod-resident today. The tool
 server's exception branch builds `CallResponse(success=False, content="",
-error=...)` with **no metadata** (`server.py:2070-2074`), so whatever the adapter
+error=...)` with **no metadata** (`server.py:2071-2076`), so whatever the adapter
 spent before the failure is discarded at the wire. Embedded, the consumer can
 still see it. This is an ask on `agent-tools`, not a search-side fix — §10, item
 9 — and it is cheap now and expensive once every §5.2 consumer has bound.
@@ -1216,7 +1233,7 @@ destroys SR-E3.* §10's item 9 is narrower than stated: the tool server carries
 `tool_result.metadata` into `CallResponse` on the **handled**-failure branch —
 a `ToolResult(success=False, metadata=…)` arrives intact
 (`server.py:2050-2056`) — and drops it only when an exception escapes
-`tool.run()` (`server.py:2070-2074`). So an exception that reaches the pod
+`tool.run()` (`server.py:2071-2076`). So an exception that reaches the pod
 boundary is precisely what discards the spend. **Bind must catch every typed
 exception and render it as a failed `ToolResult` carrying the spend on
 `metadata`; an exception must never cross the wire.** With that clause, SR-E3
@@ -1265,8 +1282,9 @@ in scope, inferred from the family having web UIs). §5.5 removes the gate:
 `TearsTool.face_api` makes an externally-reachable HTTP surface a class
 attribute rather than a hypothesis, so this is a live posture question about a
 reach the family already ships, not insurance against a future one. C8 sharpens
-it further — search output is *already* being persisted into conversation
-context stores today (`graph_nodes.py:126`), before replay adds anything.
+it differently than first written: the persistence path is shipped but inert
+today (§5.2 — the bare-name/namespaced-name mismatch), so the posture can
+still be stated *before* the first byte is retained rather than after.
 *Recommendation:* treat queries as user content — retention governed by the
 consumer's policy, the capability required only to make the query available for
 redaction rather than to redact on its own (P1: redaction policy is an opinion
@@ -1366,13 +1384,19 @@ needs from core is therefore taken as a *shape*: the transport (SR-N1), the exit
 extra. Anything heavier is a host concern, wired in.
 
 This is the requirement most likely to be argued away one import at a time, so
-the acceptance test is mechanical rather than cultural: the leaf's declared
-dependencies are pinned by
-`tests/enforcement/test_dependency_alignment.py`, which exists to catch exactly
-*"the drift class where the uv workspace masks undeclared cross-package
-dependencies until a standalone `pip install` of one package ImportErrors in a
-consumer"* — the failure samsung would otherwise hit, in production, months
-after ratification.
+the acceptance test must be mechanical rather than cultural — and *(checked
+2026-08-04)* the test this pass first cited does not yet do that job.
+`tests/enforcement/test_dependency_alignment.py` verifies imports match
+declarations in both directions — an undeclared `threetears.*` import fails,
+and a declared-but-unimported workspace dep fails — which catches *"the drift
+class where the uv workspace masks undeclared cross-package dependencies until
+a standalone `pip install` of one package ImportErrors in a consumer"* — but it
+pins no package's dependency *list*: a new hard dep that is genuinely imported
+self-satisfies with no reviewed change. The pin that actually exists is its
+sibling `test_contracts_packages_stay_dependency_free`, which holds
+`media-contracts` to stdlib-only by walker. The leaf therefore needs its own
+floor pin — the same mechanism, allowing exactly the floor above — and that pin
+is a deliverable of the build, not something the suite already provides.
 
 ### M. Lifecycle
 
@@ -1459,6 +1483,17 @@ as a sanctioned target, so the rule reads "no bespoke client" rather than "no
 client outside core". That widens the norm's reach — it would then bind
 lightweight leaves that today escape it entirely by not being able to comply.
 
+*Mechanism, checked 2026-08-04, and it prices the ask:* the sanction is a path
+allowlist — `_SANCTIONED_HTTPX_SITES`, a frozenset of file paths the walker
+skips (core's and mcp's `http_client.py` today) — and the walker only flags a
+raw `httpx.AsyncClient`/`Client` stored on `self`, so an Adapter holding a
+*protocol-typed* transport field never trips it at all. What would trip it is
+the leaf's shipped bare-httpx default transport implementation. The widening
+therefore lands as: add that one module's path to the sanctioned set and
+restate the norm's prose as "no bespoke client outside a sanctioned transport
+implementation" — a one-line frozenset edit plus prose, reviewed, no exemption
+filed.
+
 **SR-N2 (REQUIRED, P2, P5 — G8, G11).** **Which exit a call leaves by is an
 input at Adapter and provenance on the result.**
 
@@ -1504,8 +1539,13 @@ before egress was in scope.
 
 ### O. Conformance to the family's enforced norms
 
-3tears enforces several house rules mechanically, workspace-wide, over every
-`packages/*/src/` tree. A new leaf is inside that scope on the day it lands, so
+3tears enforces several house rules mechanically over `packages/*/src/` trees —
+some workspace-wide (`test_no_silent_swallow`, `test_uuidv7_enforcement`), some
+over an explicit root list a new package must be *added to*
+(`test_dict_state_detection` scans five named roots today), and some
+per-package (the import-cost / lazy-init gates, which a new package must bring
+its own copy of). A new leaf is inside the workspace-wide scope on the day it
+lands and joins the listed and per-package scopes as build deliverables, so
 these are requirements on the deliverable rather than review preferences. Listed
 because each one *already answers* a question Part II asks, and because
 discovering them during implementation is how exemption files grow.
@@ -1527,7 +1567,10 @@ Aggregate's accumulated corpus, a response cache, and a local rate limiter — a
 the third is the one SR-H4 now says must exist embedded. The rule has an
 ALLOWLIST for state that genuinely cannot live in a backend; a per-process
 limiter on a broker-less Pi is a plausible entry, and it is an entry to be
-argued at design time, not assumed.
+argued at design time, not assumed. (Scope note, checked 2026-08-04: this
+scanner runs over an explicit five-root list — core, registry, agent/memory,
+agent/tools, langgraph — so adding the search package to that list is itself
+part of the deliverable.)
 
 **SR-O3 (REQUIRED — conditions SR-M2).** A cache is a `BaseCollection`.
 `test_cache_primitive_usage.py` and `test_no_bespoke_reuse.py` check (c) both
@@ -1578,7 +1621,7 @@ scope.
    — SR-J3.
 9. **The tool-call envelope drops metadata when an exception escapes the tool.**
    `CallResponse(success=False, content="", error=...)` carries no metadata
-   (`server.py:2070-2074`), so any spend a tool incurred before raising is
+   (`server.py:2071-2076`), so any spend a tool incurred before raising is
    discarded at the wire — SR-E3. True today for every pod-served tool, not only
    search; search is what makes it cost money. *Scope corrected 2026-08-03:* the
    **handled**-failure branch does carry it — a `ToolResult(success=False,
@@ -1591,10 +1634,15 @@ scope.
     timeout from the caller's remaining budget — SR-G2. A gap rather than a
     defect: it was never asked to carry one. Items 9 and 10 are both asks on
     `agent-tools` rather than search-side fixes.
-11. **The LangGraph context-save node binds search on a bare tool-name string**
-    and persists its flattened, 4000-char-truncated `content` with no provenance
-    (`graph_nodes.py:126,129-168`) — C8. A rename is a silent retention change,
-    and the saved text carries nothing SR-A3 would let a reader re-check.
+11. **The LangGraph context-save node is silently inert** — it matches
+    `ToolMessage.name` against bare `web_search`/`web_fetch` by exact equality
+    while the adapter binds the namespaced `threetears.*` names
+    (`graph_nodes.py:126,156-168`; `langchain_adapter.py:131`), so the default
+    set never matches; no production code wires the node, and its tests pass
+    bare names, so the suite cannot see it — C8. When wired, it persists
+    flattened, 4000-char-truncated `content` with no provenance: a rename is a
+    silent retention change in either direction, and the saved text carries
+    nothing SR-A3 would let a reader re-check.
 12. **`ToolResult.metadata` is an unkeyed shared namespace** —
     `dict[str, Any] | None` with no schema (`base_tool.py:26-41`). The family
     already handles this for one payload by convention
@@ -1696,6 +1744,10 @@ assumed, §5.5), and **`3tears-media-contracts` as a direct pin** (evaluated
 carries most of SR-C3's facets — §6).
 
 ## 13. Decisions needing an owner
+
+**2026-08-04:** `search-spec.md` §1 takes each build-gating decision below as a
+vetoable ruling, adopting this table's recommendation unless noted there. This
+table remains the evidence record; a veto lands there and propagates here.
 
 | ID | Decision | Recommendation |
 |----|----------|----------------|

@@ -13,12 +13,14 @@ Pi's refusal of `core`, and adds the egress seam this sketch does not mention.
 evolving the common tools, so the thinking survives until someone cuts a real
 proposal. Open questions 20–21 there still govern sequencing and the
 model-mediated-search seam.
-**Overtaken by:** `search-architecture.md`, the newest of the four and the one
-that states the structural shape this sketch was reaching for — six layers, a
-carrier-neutral core, one injected transport seam, and no path from the leaf
-into `threetears.core`. Where this document and that one disagree, that one is
-current. Read the four in the order direction → need → shape, and treat this as
-the exploration that got there first.
+**Overtaken by:** `search-architecture.md`, which states the structural shape
+this sketch was reaching for — six layers, a carrier-neutral core, one injected
+transport seam, and no path from the leaf into `threetears.core`. Where this
+document and that one disagree, that one is current.
+**Fully superseded 2026-08-04:** `search-spec.md` is now the buildable
+statement — decisions taken, modules, sequencing. Nothing here should be built
+from directly. Read the five in the order direction → need → shape → spec, and
+treat this as the exploration that got there first.
 
 ---
 

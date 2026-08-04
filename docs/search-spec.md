@@ -1,0 +1,522 @@
+# Search: The Specification
+
+**Status:** Draft for build planning — 2026-08-04
+**Scope:** the next level down from `search-architecture.md`: decisions taken,
+package and module breakdown, MUST/SHOULD/MAY/MUST NOT requirements, and
+broad-stroke sequencing for the build and for migrating consuming apps. Not a
+build plan — the build plan derives from this, under prawduct, and lives in the
+planning session's local `.prawduct/` (gitignored here by design), so **this
+document is the durable record** of what was decided and why.
+
+**Companions** — read in the order *direction → need → shape → spec*:
+
+| Document | Carries |
+|---|---|
+| `family-convergence.md` §4.14 | the **direction** |
+| `search-requirements.md` | the **need** — evidence, requirement IDs (`G*`, `P*`, `SR-*`), success checks |
+| `search-architecture.md` | the **shape** — six layers, the seams, what each consumer does |
+| **this document** | the **spec** — the buildable statement |
+
+This is the newest of the five search documents and the authority for anything
+build-facing. Requirement IDs cited here (`SR-*`, `G*`, `P*`, "check N") are
+defined in `search-requirements.md` and are not restated; the builder reads
+that document once, then works from this one.
+
+Everything below was written against code verified on 2026-08-04 (post-merge
+from develop at 0.23.0), including a correction pass on the three older
+documents made the same day.
+
+---
+
+## 1. Decisions taken
+
+Each entry adopts the recommendation recorded in `search-requirements.md` §13
+unless noted, as a **vetoable ruling**: `[DECISION: … | why | user can veto]`.
+A veto is recorded in the requirements doc and propagated here. Rationale
+lives with the requirement; only the ruling and its build consequence appear
+here.
+
+| # | Ruling | Build consequence |
+|---|---|---|
+| D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries — name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. |
+| D2 (SR-A5) | Call returns a candidate set; the corpus is Aggregate's named type | Two types, two dedup/merge stories; Call never accumulates. |
+| D3 (SR-B5, OQ21) | Model-mediated search is out of Adapter and Call, in at **Aggregate** as a candidate producer | Provenance carries a `producer` distinction from day one; the producer seam is designed in Phase 3, implemented when samsung pulls. |
+| D4 (SR-D4) | Budget follows the bill | The budget increment and the transport retry sit on the same side of the seam: a retried attempt that never billed never counts. C2's fail-closed retry bound moves into the transport's bounded-retry config in the same change. |
+| D5 (SR-D5) | Both refusal authorities, distinct roles | Local caps bound a run's *shape* (overrun is a defect); provider refusal bounds *money*. Neither substitutes for the other. |
+| D6 (SR-E6) | Self-hosted cost is zero | The rate/quota spend dimensions carry the real constraint (SR-D6); no synthetic infrastructure pricing. |
+| D7 (SR-F5) | Replay recordings go through a **consumer-supplied store port** | Embedded: the consumer passes a port object. Pod-resident: the consumer passes a store *reference* the pod resolves to its own implementation. The port follows `media-contracts`' `ObjectStore` shape. |
+| D8 (SR-H4, SR-N4) | Pace, don't just react; keyed on `(provider instance, egress)` | Two mechanisms: an in-process limiter shipped in the leaf, and a distributed-limiter port `core`'s `TokenBucket` satisfies where a bus exists. |
+| D9 (SR-I4) | Return records, emit nothing | The capability owns no sink; hosts wire `observe` where they have it. |
+| D10 (SR-J3) | Typed exceptions carrying spend; prose at Bind; **Bind converts before the wire** | Nothing raises across the NATS hop — a failed call arrives as a failed `ToolResult` with spend on `metadata`. This is what makes SR-E3 hold pod-resident today despite §10.9. |
+| D11 (SR-K2) | Queries are user content | The capability makes the query available for redaction; redaction policy stays with the consumer. |
+| D12 (SR-K4) | Family stance, enforced per adapter *(needs cross-repo ratification — flagged, not silently ruled)* | Proposed stance: provider API calls are governed by provider terms, documented per adapter; Extract's direct fetches honor robots.txt by default, with a per-deployment override that is *recorded config, never code*; retention of recorded content follows the consumer's policy (D7 puts the bytes in the consumer's store, which is what makes that dischargeable). |
+| D13 (SR-M1) | In-family versioning is lockstep (already ruled); the **wire payload carries a schema version** | The metadata payload and replay record embed `schema_version`; changes are additive within a family minor. Formal wire-compatibility promise is a **gate before the first pod-resident deployment**, not before first release. |
+| D14 (SR-M2) | No response caching in v1 | MUST NOT, beyond whatever a provider does upstream. Revisit after replay ships, in its light — a cache here has two different legal shapes (SR-O3). |
+| D15 (SR-M3, OQ13) | Ratification home is `search-requirements.md` | discodon, metallm, samsung each record acceptance of what binds them, in their own repos, pointing at it. |
+| D16 (§5.4) | The v1 wire hop is the existing `TearsTool` envelope, at Bind | No new wire protocol. Every contract type still JSON-round-trips (SR-L4) so a future intra-stack hop stays open — paid in design discipline, not in v1 machinery. |
+| D17 (§5.5) | One tool, one contract, all faces; search stays in the `web` alias; `skill_eligible = False` initially | Image/carrier scoping is a *criteria* parameter of the one tool, not a second tool — so an agent granted `web` gets exactly what it got before. Samsung's image search is embedded and never enters the tool surface. |
+| D18 (§10.9, §10.10) | Both envelope asks are accepted as in-repo work | (a) exception-path metadata carry; (b) an optional per-call deadline field. Sequenced in Phase 2 with an explicit rollout order — the server must accept the field a release before any client sends it, because `extra="forbid"` on an old server rejects unknown fields. |
+| D19 (SR-N1) | The no-bespoke-client norm **widens**; no exemption is filed | Verified mechanism: `_SANCTIONED_HTTPX_SITES` is a path frozenset, and the walker only flags raw httpx clients stored on `self` — a protocol-typed transport field never trips it. The widening = add the leaf's standalone-transport module path to the sanctioned set + restate the norm prose. Lands in the same PR as that module (check 11). |
+| D20 (SR-N2) | Egress is per-upstream input at Adapter and provenance on every result; `direct` is a named value | Rate/ban budgets key on it (D8); replay comparability depends on it. |
+| D21 (SR-K3, SR-N3) | The SSRF ruling binds at the transport seam | Provider base URLs come from deployment config only — MUST NOT accept a caller-supplied base URL. Redirect policy and private-address guards live in the transport implementations, not per call site. |
+| D22 (§10.12) | Structured results ride `ToolResult.metadata` under a named key | `SEARCH_RESULTS_METADATA_KEY = "search_results"`, following the `OBJECT_HANDLE_METADATA_KEY` precedent, defined in the leaf's contracts. |
+| D23 (packaging) | **One package, `3tears-search`**, import root `threetears.search`; contracts as an import-clean module, not a separate package | See §2. The alternative (a separate `3tears-search-contracts`, the eval precedent) is not taken because the whole package already sits at the contracts-leaf floor; import paths are chosen so a later split is a non-breaking move (the OQ3 discipline). Split trigger: a consumer that needs the types but must refuse even `observe` + `media-contracts` + pydantic — none exists or is foreseen. |
+| D24 (leaf floor) | Hard deps: `pydantic`, `3tears-media-contracts`, `3tears-observe`. Extras: `[standalone]` = httpx (the bare transport impl), `[extract]` = trafilatura | Matches SR-L7's permitted floor exactly. Provider adapters ship in the base package — they are pure logic over the injected transport and weigh nothing; extras carry *weight*, and the only weights are httpx (only for hosts that don't inject their own transport) and trafilatura. |
+| D25 (Python floor) | The leaf declares `requires-python = ">=3.14"` today, avoids gratuitous 3.14-only surface | The workspace is 3.14; OQ1 (discodon at 3.12) is live and unresolved. If OQ1 resolves per-package, relaxing the leaf should be a pyproject-plus-CI change, not a rewrite — that intent is stated, not enforced. Flagged as this spec's largest external dependency. |
+
+Two §13 rows are *not* ruled here because nothing in Phases 1–4 needs them:
+**one NATS bus or two** (gates only how much distributed pacing the client side
+can carry, after convergence), and the final **wire-boundary placement** beyond
+D16 (kept survivable by SR-L4).
+
+---
+
+## 2. The package
+
+**PyPI `3tears-search` · import `threetears.search` · `packages/search/`** in
+this monorepo, standard shape (hatchling, `src/threetears/search/`, `tests/`,
+`py.typed`, no `__init__.py` above the leaf). It joins the lockstep family:
+version = family version, intra-family deps carry the enforced
+`>=<major>.<minor>.0,<major>.<minor+1>.0` bound.
+
+```
+threetears/search/
+  contracts/        # the leaf within the leaf — types, protocols, errors, keys
+  adapters/
+    searxng.py      # Adapter: SearXNG
+    tavily.py       # Adapter: Tavily (ported from discodon — extract, don't invent)
+  call.py           # Call
+  aggregate.py      # Aggregate  (Phase 3)
+  extract.py        # Extract    (web path Phase 2; carrier dispatch Phase 3)
+  select.py         # Select     (Phase 3)
+  bind.py           # Bind helpers: prose render + metadata projection
+  standalone.py     # bare-httpx transport impl   [standalone] — the sanctioned path (D19)
+  limiter.py        # in-process pacing + distributed-limiter port (D8)
+  replay.py         # record/replay over the store port (Phase 3)
+  testing/          # provider-conformance suite + parity-declared fakes (SR-O5)
+```
+
+Layer names (Adapter, Call, Aggregate, Extract, Select, Bind) are **module
+vocabulary, not type names** — the requirements doc's own warning (§12): the
+fewer of them that appear in the contract as types, the cheaper a re-cut stays.
+Contract types are named for what they are (`SearchRequest`, `Candidate`,
+`Corpus`, `Spend`…), never for the layer that makes them.
+
+**Package-level requirements**
+
+- MUST keep `contracts/` import-clean: importing it pulls nothing beyond
+  stdlib, pydantic, and `media-contracts` types. Enforced by the package's
+  import-cost test (§6).
+- MUST NOT import `threetears.core` from anywhere in the package (SR-L7), nor
+  `threetears.agent.*`, `langchain*`, or NATS from anywhere. The package
+  depends downward only.
+- MUST have every contract type wire-serialisable — JSON round-trip with no
+  callables, open files, or port objects in any result/record type (SR-L4).
+  Port objects are *parameters*, never *payload*.
+- MUST be usable from a one-shot `asyncio.run()` — no ambient loop, no
+  long-lived client, no background task required for a single call (SR-L5,
+  check 9).
+- MUST ship safe-unturned concurrency defaults (SR-L6): defaults that hold
+  under a `MemoryMax` cap with nothing tuned.
+- MUST NOT read environment variables or ambient config anywhere (SR-K1): the
+  host passes base URLs, secret references (`scheme://locator`) or resolved
+  values, and transport.
+
+---
+
+## 3. Modules
+
+For each module: what it turns (from the architecture doc), then its binding
+requirements. "Caller is told" always means: in the typed response, not in a
+log.
+
+### 3.1 `contracts/`
+
+The lingua franca. Types (name-level; fields only where a requirement forces
+them):
+
+- **`SearchRequest`** — query text, criteria, requested fidelity, opt-in
+  record flag, budget scope tags. MUST treat query as user content (D11).
+- **Criteria** — one open vocabulary (P6, SR-B1): well-known criteria ship as
+  typed constructors (time range, domains include/exclude, language, carrier,
+  min resolution, rights class, …), unknown criteria as namespaced keys. MUST
+  NOT be a closed enum. The response MUST carry a per-criterion disposition —
+  `pushdown | local | unsatisfied | ignored-unknown` (SR-B2, SR-B3, P8); an
+  unsatisfiable criterion is named, never dropped.
+- **`Candidate`** — the carrier-neutral result core (SR-C1): identity,
+  locator(s), provenance, scores, fidelity available/achieved, an optional
+  content slot recording whether content arrived with the response or from a
+  later fetch (SR-A2), and **facets** — additive, keyed by the
+  `media-contracts` vocabulary, ignorable by consumers that don't recognise
+  them (SR-C2, SR-C3). MUST NOT define a closed carrier union.
+- **Provenance** (on every candidate and every spend/replay record, P2,
+  SR-A3): query, provider instance, provider-native identifiers, retrieval
+  time, **egress name with `direct` as a value** (D20), and producer class
+  (API provider now; model-mediated later, D3).
+- **Scores** — per D1. MUST mark provider-native scores non-comparable across
+  providers.
+- **`Corpus`** — Aggregate's accumulation type with a stated dedup key and
+  merge rule (D2, SR-A5).
+- **`Spend`** — every resource a call consumed (SR-E1): money (Decimal),
+  wall-clock, call count, weighted provider units (SR-E4), bytes. MUST survive
+  the failure path (SR-E3); the count a cap enforces and the count a bill
+  prices MUST be the same number (SR-E2); per-request (not per-result) pricing
+  must be representable (SR-E5).
+- **Typed errors** — the seven distinguishable failure classes of SR-J1, each
+  carrying `Spend`; remediation text where the cause is known (the SearXNG
+  403-json-formats teaching error). Zero results is a success value, not an
+  error (SR-J2).
+- **Protocols** (structural, injected — P9): `SearchTransport` (shaped so
+  `core.http_client.TracedHttpClient` satisfies it via a thin host-side
+  adapter: configurable timeout, bounded retry, circuit-breaking, per-call
+  span, egress selection — SR-N1, SR-G1, SR-G4, SR-D3), `BudgetPort`
+  (`check(estimate)` / `record(spend)` with plural scopes — SR-D1, SR-D2),
+  `RateLimiterPort` (D8), `RecordingStore` (D7, `ObjectStore`-shaped,
+  streaming), `HeavyFetcher` (implemented by `3tears-scrape`, never imported).
+- **Replay record** — typed envelope (id — UUIDv7-compatible, created-at,
+  provider, key, size, `schema_version`) over a payload that can rebuild the
+  corpus (SR-F4); the key is derived by search (SR-F8).
+- **`SEARCH_RESULTS_METADATA_KEY`** and the metadata projection schema, with
+  `schema_version` (D13, D22).
+
+MUST version additively within a family minor (D13). SHOULD keep every type
+constructible with defaults-off — no hidden globals.
+
+### 3.2 `adapters/` — SearXNG, Tavily
+
+One provider's API each, through the injected transport only. Each adapter:
+
+- MUST declare capabilities queryably (SR-B4), following the
+  `3tears-models` capability-metadata pattern — SearXNG: categories, engines,
+  language, safesearch, paging, time range; Tavily: depth, domains, topic,
+  dates.
+- MUST keep everything the provider returns that P2 protects — scores, engine
+  attribution, published dates — in typed form, not a disclaimed `raw` blob.
+- MUST attach `Spend` to every call including failures; Tavily MUST weight
+  units correctly (`advanced` = 2 credits — the SR-E4 live defect must be
+  impossible to reproduce here).
+- MUST map provider failures onto the typed error taxonomy (SR-J1, SR-D3 —
+  quota exhaustion short-circuits distinctly from a local cap).
+- MUST take base URL and credentials from the host (D21, SR-K1); MUST NOT
+  default them from env.
+- SHOULD implement pushdown for every criterion the provider can express and
+  report `local`/`unsatisfied` for the rest (§7 of the requirements doc).
+- Tavily MUST be ported from discodon's wrapper (principle: extract, don't
+  invent), preserving its hard-won semantics — depth/credit coupling, domain
+  scoping, score coercion, absolute-dates-beat-time_range (SR-B3's RES-T4M9
+  precedent).
+
+Conformance: both pass the shared suite in `testing/` (§6).
+
+### 3.3 `call.py`
+
+A query → one candidate set, through one adapter. Owns criteria negotiation
+with the adapter's declared capabilities, failure mapping, spend attachment,
+budget consultation (D4, D5), pacing (D8), and replay record/replay hooks
+(Phase 3). MUST be the layer where "budget follows the bill" is enforced —
+below the retry boundary, so retried-but-unbilled attempts don't count (D4).
+MUST apply safe default bounds when the caller tunes nothing (SR-L6).
+
+### 3.4 `aggregate.py` *(Phase 3)*
+
+Many calls → one set. Owns the dedup key, the merge rule, fan-out accounting
+(SR-H2: within-batch and cross-run bounds; SR-H3: one failure never poisons
+siblings), and the `Corpus` type. MUST accept candidates from an external
+producer (D3's model-mediated seam) without them impersonating a provider —
+provenance keeps the classes distinct. MAY implement reciprocal-rank fusion
+across engines/providers (prior art: `Lombey/Local-Web-Search-MCP`); MUST NOT
+require it.
+
+### 3.5 `extract.py` *(web path Phase 2; carrier dispatch Phase 3)*
+
+A carrier → the information in it. Carrier-dispatched (SR-C4); a consumer MUST
+be able to take search with no extraction at all. Requirements:
+
+- MUST no-op (and cost nothing) when the provider already supplied content
+  (SR-A2 — the Tavily case).
+- MUST stream with a byte cap and a content-type gate; MUST NOT hold an
+  unbounded `resp.text` (SR-G5). This is the acute `MemoryMax` case.
+- MUST honor the D12 robots stance; the enforcement point is here and in the
+  transports, not per call site.
+- MUST record extraction method and status on the result (fidelity achieved,
+  SR-B6), using `media-contracts`' `extraction_status` vocabulary.
+- Escalation to hostile targets goes through the `HeavyFetcher` protocol slot;
+  `3tears-scrape` implements it; this package MUST NOT import scrape. SHOULD
+  make escalation explicit (a caller choice), not automatic — silent
+  escalation multiplies cost (shared_search OQ3, resolved conservative).
+- MAY add a Wayback fallback tier later (prior art: `TadMSTR/searxng-mcp`);
+  not in v1.
+
+### 3.6 `select.py` *(Phase 3)*
+
+Candidates + criteria → an ordered, filtered subset. Owns local criteria
+application and the cull; exposes a **ranker slot** and never a ranking
+implementation (§4.14's ruling — MMR lives in `agent-memory`, rerank metadata
+in `3tears-models`, a cross-encoder arrives as a models provider). MUST mark
+unranked output as unranked (SR-L2, P8). MUST satisfy P4's acceptance test: a
+consumer supplying its own ranker can still constrain carrier type; a
+consumer wanting the cull pays for no reranker.
+
+### 3.7 `bind.py`
+
+Candidates → what the caller consumes. Two bindings ship: prose-for-a-model
+(the LLM rendering, migrated from `_format_results` but structure-preserving
+underneath) and the metadata projection under `SEARCH_RESULTS_METADATA_KEY`
+(D22, explicit border projection à la `ObjectHandle.to_metadata`). MUST catch
+every typed exception and render a failed result carrying spend — nothing
+raises across the wire (D10). MUST NOT import `agent-tools` — the `TearsTool`
+gutting consumes these helpers, not the reverse. One binding path serves all
+three faces (check 14); a face-specific response shape is a regression by
+definition.
+
+### 3.8 `standalone.py` — `[standalone]`
+
+The bare-httpx `SearchTransport` implementation for hosts without core
+(samsung; any embedded consumer). Carries the same obligations the injected
+core transport gives for free: configurable timeout, bounded retry with
+backoff, per-attempt accounting visible to spend, SSRF guards
+(private-address and redirect policy per D21), streamed reads with caps. This
+module's path is the one added to `_SANCTIONED_HTTPX_SITES` (D19). MUST NOT
+be imported by anything else in the package at module level — it is an
+implementation a host chooses.
+
+### 3.9 `limiter.py`
+
+In-process token-bucket pacing keyed `(provider instance, egress)` (D8, D20),
+plus the port a distributed implementation satisfies (`core`'s NATS
+`TokenBucket`, host-injected, where a bus exists). The in-process limiter's
+state is the argued SR-O2 allowlist entry — argued in the build plan, not
+assumed. MUST be on by default with safe rates (SR-L6); the shared SearXNG's
+own server-side limiter remains the backstop that covers non-cooperating
+deployments (SR-H4's honest layering).
+
+### 3.10 `replay.py` *(Phase 3)*
+
+Record/replay attached at Adapter/Call (SR-F3), writing through the
+consumer's `RecordingStore` (D7). Opt-in per call (SR-F6); a replay miss is a
+typed error, never a silent live call (SR-F7); recordings rebuild the corpus,
+not just rendered text (SR-F4); ids are UUIDv7 (SR-O4), generated by the
+writer. Retention, purge, and redaction belong to the store's owner (D7,
+D12).
+
+### 3.11 `testing/`
+
+The provider-conformance suite (SR-O5): one parametrized suite every adapter
+must pass — contract shape, spend-on-failure, error taxonomy, criterion
+disposition honesty, zero-results-is-success — plus parity-declared fakes for
+the transport, the store port, and the limiter (`test_fake_protocol_parity`
+compliance). A live tier per provider, env-gated: SearXNG against a
+self-hosted instance (also settles SR-A4's unverified score-semantics
+assumption), Tavily behind explicit credentials.
+
+---
+
+## 4. Changes elsewhere in 3tears
+
+Same repo, same PRs where noted; none of these is optional garnish — each is
+load-bearing for a success check.
+
+1. **`media-contracts`**: three facet fields — rights status, pixel
+   dimensions, direct-file-versus-containing-page (SR-C3, check 13). Stdlib
+   dataclass discipline; the contract-purity pin already enforces the
+   package's floor.
+2. **`agent-tools` — gut `WebSearchTool`** (check 8): keeps
+   `threetears.web_search`, the `TearsTool` ABC, the `ToolResult` shape;
+   `execute` becomes async over the leaf (Call + Bind); prose unchanged for
+   existing callers; structure on `metadata` under the named key. The 15s
+   hardcode, the sync client in `async execute`, and string-prefix errors all
+   die here (§10 defects 2, 8).
+3. **`agent-tools` — gut `WebFetchTool`**: same identity, Extract-backed;
+   streamed + capped + typed; `time.sleep` and unbounded `resp.text` die
+   (§10 defects 6, 7). Its `[fetch]` extra forwards to
+   `3tears-search[extract]`.
+4. **`agent-tools` — `serve.py` wiring**: hosts build the leaf's transport
+   from `TracedHttpClient` via a thin adapter (lives here, where core is
+   already a hard dep); the skip-with-reason pattern extends to the new
+   configuration.
+5. **`agent-tools` — context-save node** (C8): fix the name-grain defect
+   (match bound names), read structure off `metadata`, and state the retention
+   posture in the module docstring *before* wiring it anywhere (§10 defect
+   11, as corrected 2026-08-04 — the node is inert today, so this is new
+   wiring, not a behavior change).
+6. **`agent-tools` — envelope asks** (D18): exception-path metadata carry
+   (§10.9); optional per-call deadline on `CallRequest` (§10.10, SR-G2), with
+   the server-accepts-first rollout order stated in the PR.
+7. **`scrape`**: `page_finder` reads structure off `metadata`; its callers
+   unchanged (check 4). Later, scrape implements `HeavyFetcher`.
+8. **`enforcement` / `tests/enforcement`**: (a) the D19 norm widening —
+   sanctioned-path addition + prose restatement; (b) add `packages/search` to
+   `test_dict_state_detection`'s root list; (c) a floor pin for the leaf —
+   the `test_contracts_packages_stay_dependency_free` mechanism extended with
+   an allowed-floor variant pinning `3tears-search`'s hard deps to exactly
+   D24's list; (d) the package's own import-cost/lazy-init test.
+9. **`core`**: nothing moves (the aiosqlite removal and the flush.py extras
+   refactor are that repo's separate backlog, not this workstream).
+
+---
+
+## 5. Explicit non-goals
+
+MUST NOT, restated from §2 of the requirements doc as build guardrails: crawl
+or index; own a ranking implementation; own a telemetry sink; own a replay
+store backend; summarise, judge, or conclude; cache responses in v1 (D14);
+accept caller-supplied base URLs (D21); import `threetears.core`,
+`agent-tools`, langchain, or NATS from the leaf; grow a second result shape
+for any face (check 14); let an exception cross the wire (D10).
+
+---
+
+## 6. Testing requirements
+
+- **Conformance** (§3.11) green for both adapters; live tiers env-gated.
+- **Wire round-trip**: every contract type JSON round-trips; the metadata
+  projection survives `CallResponse` end-to-end (asserted at agent-tools,
+  where the envelope lives).
+- **Enforcement**: all of §4.8; the leaf passes `test_no_bespoke_reuse`
+  **without an exemption** (check 11), `test_no_silent_swallow`,
+  `test_uuidv7_enforcement`, fake parity, dependency alignment, and the
+  intra-family bounds check on day one.
+- **Behavioral pins**: zero-results-is-success; spend-on-failure; budget
+  follows the bill (retried-unbilled attempts don't count); replay miss
+  raises; per-criterion disposition honesty; degradation marks (unranked is
+  known-unranked).
+- **The embedded smoke**: a test that runs a full search from a one-shot
+  `asyncio.run()` with the standalone transport and no broker (checks 5, 9 in
+  spirit; the Pi install-weight check itself runs in samsung's CI, not here).
+
+---
+
+## 7. Sequencing
+
+Build in this repo first, release, then migrate consumers. Phases are
+PR-sized groupings, not calendar units; each lands green through
+`./scripts/check-all.sh`. Git discipline throughout is the house rule set:
+feature branches into `develop`, stacked PRs where a phase has internal
+order, **merge commits only, never squash, never force-push**; release =
+version bump → PR into develop → PR develop→main (no second bump) → **push an
+annotated tag from main** (the tag push is the trigger; a green run without a
+tag is not a release).
+
+### Phase 1 — the leaf (branch `feature/search-leaf`, stacked PRs into develop)
+
+1. **Keystone slice** *(the first chunk of the prawduct build plan; prove the
+   architecture before widening)*: `contracts/` core (request, candidate,
+   criteria + disposition, spend, errors, transport protocol, metadata key)
+   + SearXNG adapter + `call.py` + prose Bind + `standalone.py` + the D19
+   norm widening in the same PR + wire round-trip test + conformance
+   skeleton. Done when: a live SearXNG query returns typed candidates and
+   renders prose, from a one-shot `asyncio.run()`, with enforcement green.
+2. Tavily adapter (ported from discodon) + capability declarations + budget
+   port + weighted spend + limiter + egress provenance. Done when: both
+   adapters pass conformance; the SR-E4 defect is unreproducible.
+3. Enforcement deliverables not already landed (floor pin, dict-state root,
+   import-cost test) + `media-contracts` facet fields.
+
+**Gate A (architecture checkpoint):** contracts reviewed against SR-A/B/C by
+a fresh pass before Phase 2 widens — the contract is the lock-in surface
+(every future consumer's queries are its requirements); this is where a re-cut
+is still cheap.
+
+### Phase 2 — in-family consumers (branches stacked on Phase 1)
+
+4. Extract's web path (streamed, capped, robots stance, no-op on
+   provider-supplied content).
+5. Gut `WebSearchTool` + `WebFetchTool`; serve.py wiring; metadata key
+   end-to-end test over NATS (check 8).
+6. `page_finder` structure (check 4); context-save node fix + retention
+   posture (§4.5).
+7. Envelope asks, as their own PRs with the rollout-order note (D18).
+
+### Phase 3 — pull-driven depth (may start parallel to Phase 2 after Gate A)
+
+8. `replay.py` + `RecordingStore` port + record schema (versioned envelope).
+   The record format is a lock-in decision: its consumers' future queries
+   (discodon's eval replay; samsung's re-search) are elicited in the build
+   plan before fields are cut.
+9. `aggregate.py` (corpus, dedup, producer seam) and `select.py` (criteria
+   application, cull, ranker slot, degradation marks).
+
+**Gate B (pre-release):** all §3 success checks that can be verified in-repo
+are; SR-A4's SearXNG score semantics confirmed against a live instance;
+requirements doc's §13 updated with any vetoes taken during build.
+
+### Phase 4 — release
+
+10. Family minor bump (lockstep — the bounds test names every edge), PR into
+    develop, PR develop→main, tag pushed from main. `3tears-search` appears
+    on PyPI with the rest of the family.
+
+### Phase 5 — consumer migrations (parallel, per repo; each pins the whole family to the one released version)
+
+**metallm** — precondition: close its family version lag *first*, as its own
+change (every adoption assumes a current pin).
+1. `git checkout -b feature/new-search` off its default branch.
+2. Bump the family pin to the released version — whole family, one exact
+   version, per the consumer-pinning rule.
+3. Replace the raw SearXNG helper (`admin/models.py`) with leaf Call;
+   replace `web_fetch_utils` with Extract; **delete both side-steps** — check
+   1 is "deleted, not wrapped".
+4. Its frontend/agent callers keep consuming the builtin unchanged; where it
+   filtered raw streams for structure, read `metadata` instead.
+5. PR, merge per its own workflow.
+
+**discodon** — embedded mode (it is pre-NATS-convergence; check 10 says the
+switch later costs no consumer rewrite).
+1. Any generalization it needs lands **upstream first** (convergence
+   principle 4) — e.g. gaps found while porting its budget semantics onto
+   `BudgetPort`.
+2. `git checkout -b feature/new-search`; pin the family version.
+3. Collapse `tools/web_search_tool.py` and `tools/research/web_search.py`
+   onto the leaf: persona path = Call + prose Bind; research path = Call +
+   Aggregate + both bindings (prose and corpus).
+4. Budget hooks move onto `BudgetPort` — the 2× advanced under-billing dies
+   (SR-E4); timeouts get wired to config (SR-G1 defect 3).
+5. Research evals adopt replay via a `RecordingStore` over its existing
+   store; eval cost caps include search spend (check 3).
+6. PR, merge; record acceptance of what binds it (D15).
+
+**samsung** — rides its planned phase-2 image-search work, not a
+migration-for-migration's-sake.
+1. Branch per its own conventions when that work starts.
+2. Take `3tears-search[standalone]` (or supply its own transport), `[extract]`
+   if needed; supply a `RecordingStore` over its SQLite plane.
+3. Build image search on Call + Select with deep criteria and the new
+   `media-contracts` facets; verify checks 2, 5, 9 (no fork, no torch,
+   one-shot `asyncio.run()`).
+4. Record acceptance (D15).
+
+**Ordering within Phase 5:** metallm first (smallest, exercises the gutted
+builtins), discodon second (deepest, exercises budgets + replay + corpus),
+samsung when its image work schedules. In-family consumers (scrape,
+context-save) already landed in Phase 2.
+
+**Gate C (before the first pod-resident deployment of search):** the D13 wire
+compatibility promise ruled formally; envelope asks (D18) released; identity
+scope carried for search calls pod-side (the "stateless tool" classification
+is invalidated by budgets/replay — §5.4).
+
+---
+
+## 8. Deliberately open
+
+- **OQ1 (Python floor)** — D25 flags it; nothing here waits on it, but
+  discodon's embedded adoption timeline does.
+- **One bus or two** — decides distributed-pacing reach post-convergence.
+- **Final wire-boundary placement** — D16 is the v1 answer; SR-L4 keeps the
+  rest open.
+- **Model-mediated producer detail** (D3) — designed when samsung pulls.
+- **D12 ratification** — the robots/terms stance needs per-repo acceptance,
+  not just this spec's proposal.
+
+## 9. Requirements confidence
+
+**High** for Phases 1–2: every requirement is traced to verified code
+(2026-08-04), the consumers are known call sites, and the migration path
+(metadata under a named key, identity preserved) is confirmed to survive the
+wire. **Medium** for Phase 3: SR-F5's "a wiring line per consumer" is
+estimated, not measured — the cheapest raise is wiring a `RecordingStore`
+over discodon's existing store as a spike before the record schema is cut —
+and Aggregate/Select depth depends on samsung's phase-2 requirements holding
+as written. **Open assumptions carried:** SR-A4's SearXNG score semantics
+(settled at Gate B); the six-layer cut is proposed vocabulary, not ratified
+type structure (mitigated by D23's naming rule); OQ1.

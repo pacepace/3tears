@@ -586,16 +586,19 @@ not implementations.
 ### 4.14 Web search — one contract, staged pipeline (SearXNG from metallm; budgets from discodon)
 
 > **Derivation:** `search-requirements.md` states the need behind this section
-> and traces it to code in six repos, and `search-architecture.md` derives the
-> structural shape and what each consumer adopts. Between them they are where
-> the detail now lives. The requirements doc proposes amending two things ruled
-> here: that the contract's result carries a
-> single `score` (P7/SR-A4 argue for named, provenanced scores), and that
-> "url, title, snippet" is the result shape (SR-C1 makes the core
-> carrier-neutral, since images and datasets are now in scope). Those are
-> recorded there as decisions for an owner — this section stands until one is
-> taken. The rerank ruling below is *not* in question: both documents align to
-> it, and the architecture doc records a §6 correction made to keep it that way.
+> and traces it to code in six repos, `search-architecture.md` derives the
+> structural shape and what each consumer adopts, and `search-spec.md`
+> (2026-08-04) is the buildable statement — decisions, modules, sequencing.
+> Between them they are where the detail now lives. Two amendments the
+> requirements doc proposed to this section were **taken 2026-08-04 in
+> `search-spec.md`** (as vetoable rulings): the contract's result carries
+> **named, provenanced scores**, never a single `score` (P7/SR-A4), and the
+> result core is **carrier-neutral** with facets from `media-contracts`
+> (SR-C1), since images and datasets are in scope. Read this section's
+> "url, title, snippet, score" as the illustrative sketch it was, not the
+> contract. The rerank ruling below is *not* in question: all documents align
+> to it, and the architecture doc records a §6 correction made to keep it that
+> way.
 
 The family runs web search two ways today and is about to run it a third:
 
@@ -735,9 +738,10 @@ The remedy, three moves, adopted wholesale:
 3. **Lazy imports at the seam**, so the extra is the only switch a consumer
    flips.
 
-Enforcement closes it: the suite already gates import cost; extend it to
-pin each package's hard-dep list, so a new hard edge is a reviewed decision
-rather than drift.
+Enforcement closes it: import cost is gated package-by-package today
+(`test_import_cost` / `test_lazy_init` siblings — a new package must bring
+its own); extend the suite to pin each package's hard-dep list, so a new
+hard edge is a reviewed decision rather than drift.
 
 ### discodon
 
@@ -913,6 +917,12 @@ rather than drift.
     ship inside `eval-run`/`eval-analysis`, or as a separate `3tears-eval-mcp`
     so consumers that want the engine without an agent surface skip the
     server weight?
+19. **The song-DB text projection.** hallucinote's collaboration payoff (§4.3)
+    rests on a canonical lossless text format for ~27 tables of musical data,
+    and on merge granularity chosen so two users usually conflict on different
+    files. Format, per-file grain, and the rebuild-DB-from-text path are all
+    undesigned — and clip-level merge semantics may deserve a "manual
+    resolution only" rule day one.
 20. **Contracts-leaf cut order.** Ratifying the pattern (§5, "Offer
     everything") doesn't sequence it. The channel frames leaf has a waiting
     consumer (samsung's chat), the audit envelope is small, and
@@ -928,9 +938,3 @@ rather than drift.
     tokens — or does it scope to API search, with model-native search a
     `3tears-models` capability flag? Pretending the two shapes are one would
     be a lie in the contract; pick where the seam goes.
-19. **The song-DB text projection.** hallucinote's collaboration payoff (§4.3)
-    rests on a canonical lossless text format for ~27 tables of musical data,
-    and on merge granularity chosen so two users usually conflict on different
-    files. Format, per-file grain, and the rebuild-DB-from-text path are all
-    undesigned — and clip-level merge semantics may deserve a "manual
-    resolution only" rule day one.

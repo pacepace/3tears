@@ -3,17 +3,20 @@
 **Status:** Draft — 2026-08-03
 **Scope:** structural shape and adoption. No fields, no signatures, no sequence.
 
-**Companions** — read in the order *direction → need → shape*:
+**Companions** — read in the order *direction → need → shape → spec*:
 
 | Document | Carries |
 |---|---|
 | `family-convergence.md` §4.14 | the **direction** |
 | `search-requirements.md` | the **need** — the evidence, and the cross-repo record (SR-M3) |
 | **this document** | the **shape** |
+| `search-spec.md` | the **spec** — decisions taken, modules, sequencing; the buildable statement |
 | `shared_search.md` | an earlier *mechanism* sketch, overtaken by this one |
 
-This is the newest of the four. Where it and an older one disagree, this is
-current, and the disagreement should be propagated rather than left standing.
+Where this document and an older one disagree, this is current, and the
+disagreement should be propagated rather than left standing. `search-spec.md`
+(2026-08-04) is newer still: it rules several items listed open below, and for
+anything build-facing it is the authority.
 
 ## Summary
 
@@ -26,7 +29,7 @@ today — four implementations, and the shared one destroys structure
   3tears    agent-tools WebSearchTool ──▶ flattened numbered string
                 ├── C3  the builtin's own callers
                 ├── C7  scrape page_finder     (inherits the flattening)
-                └── C8  context-save node      (persists it, truncated at 4000 chars)
+                └── C8  context-save node      (latent — inert today, wrong name grain)
 
   discodon  web_search_tool.py       ──▶ C1  persona search
             research/web_search.py   ──▶ C2  research sub-tool — prose + a typed corpus
@@ -228,10 +231,11 @@ same way, and only one of them is settled:
 
 #### Core's weight was checked rather than assumed, and the check moves this argument
 
-Read 2026-08-03: `import threetears.core` pulls none of sqlalchemy, asyncpg,
-aiosqlite, httpx, cryptography, pyjwt or pydantic, and `http_client`, `egress`
-and `coordination.token_bucket` — the three primitives this capability wants
-most — each import clean.
+Read 2026-08-03, re-checked by running 2026-08-04: `import threetears.core`
+pulls none of sqlalchemy, asyncpg, aiosqlite, httpx, cryptography, pyjwt or
+pydantic (a PEP 562 lazy surface); of the three primitives this capability
+wants most, `egress` and `coordination.token_bucket` import clean, and
+`http_client` eagerly imports only `httpx` — its own subject.
 
 So core's cost is an **install** cost, not a runtime one, and the `MemoryMax`
 framing does not apply to importing it. Reading the hard-dependency list against
@@ -240,16 +244,18 @@ actual use gives a ruling per entry:
 | Dependency | Ruling |
 |---|---|
 | `aiosqlite` | **Unused — remove.** Zero references anywhere in the monorepo outside the line declaring it. L1 uses stdlib `sqlite3`, synchronously. Added 2026-03-13 in a commit about unrelated packages. |
-| `sqlalchemy` | **Optional — make it an extra.** Four of its seven users already lazy-import it inside function bodies. Of the three module-level sites, `testing/sqla_parity.py` sits under `core.testing`, which the pyproject already treats as extras territory; the other two — `models.py` (self-described optional ORM mixins) and `collections/flush.py` — are imported by nothing but their own tests. It is a SQL builder and type mapper here, not an ORM on any live path. |
-| `asyncpg` | **Optional — make it an extra.** Imported exactly once, in that same unreachable `flush.py`. L3 arrives as an injected `L3Backend` / `DurableStore` protocol, so core generates SQL and the host supplies the pool. |
+| `sqlalchemy` | **Optional — make it an extra, after a refactor.** Four of its seven users already lazy-import it inside function bodies. Of the three module-level sites, `testing/sqla_parity.py` sits under `core.testing`, which the pyproject already treats as extras territory, and `models.py` (self-described optional ORM mixins) is imported by nothing but a test. The third, `collections/flush.py`, is **not** test-only — *corrected 2026-08-04*: `collections/__init__.py` and `collections/base.py` import it, and six downstream packages reach it through them. Still a SQL builder and type mapper here, not an ORM — but the extra costs a flush-import refactor first, not a pyproject edit. |
+| `asyncpg` | **Optional — make it an extra, after the same refactor.** Imported exactly once, in `collections/flush.py` — which is *reachable* (above), sitting on the live `BaseCollection` import path. The direction stands — L3 arrives as an injected `L3Backend` / `DurableStore` protocol, so core generates SQL and the host supplies the pool — but the module-level import has to move or be guarded before the extra is real. |
 | `httpx`, `pydantic`, `uuid-utils` | **Required**, and light. |
 | `cryptography`, `pyjwt[crypto]` | **Required by `core.security`** — a real subsystem, not dead weight, though it would take an extra cleanly. |
 
 Two consequences:
 
-- **For 3tears** — one dead dependency and two extras. A `packaging` change with
-  a real payoff for every constrained consumer, and it belongs in that repo's
-  backlog rather than in this document.
+- **For 3tears** — one dead dependency (free) and two candidate extras that
+  first require refactoring `collections/flush.py`'s module-level imports off
+  the live path. Still a change with a real payoff for every constrained
+  consumer, and it belongs in that repo's backlog rather than in this document
+  — but it is a small refactor plus a packaging change, not a pyproject edit.
 - **For search** — **SR-L7 survives but on narrower grounds than it was written
   on**: the layering rule and the unresolved Python floor, not runtime weight.
 
@@ -307,7 +313,7 @@ High level. Every row is a code change; none is a rewrite.
 |---|---|
 | `3tears` `agent-tools` | Gut `WebSearchTool` into a Bind — same name, ABC and result shape, structure on `metadata` under a named key. Two envelope gaps land here as asks from *every* pod-served tool: metadata is dropped when an exception escapes, and there is no per-call deadline. |
 | `3tears` `scrape` | Nothing at its call sites. `page_finder` starts receiving structure instead of flattened text (check 4). |
-| `3tears` context-save node | Stop binding search on a bare tool-name string and persisting truncated flattened text; read structure off `metadata`. This is where retrieved content becomes retained content, so the retention posture gets stated here. |
+| `3tears` context-save node | Wire it for real — today it is inert: it matches bare `web_search` against the namespaced `threetears.web_search` the adapter actually binds, and no production code mounts it. The migration matches on the tool's bound name, reads structure off `metadata`, and states the retention posture *before* the first byte is retained — this is where retrieved content becomes retained content. |
 | `3tears` `media-contracts` | Three fields added; nothing moves out. |
 | `3tears` `core` | Nothing moves. One norm widening asked (piece 6). |
 | `metallm` | Delete both side-steps — the raw SearXNG helper and the app-side extraction wrapper — rather than wrapping them (check 1). |
@@ -333,8 +339,12 @@ Boundaries with existing owners, stated in full in `search-requirements.md` §2.
 
 ## What is still open
 
-Stable against most of `search-requirements.md` §13. Four items change the shape
-rather than the detail:
+Stable against most of `search-requirements.md` §13. **2026-08-04:**
+`search-spec.md` §1 takes each of the four items below as a vetoable ruling —
+named scores, model-mediated in at Aggregate only, a consumer-supplied store
+port, and the norm widening (whose mechanism was verified as a path-allowlist
+edit). They are kept here as they stood when the shape was derived. Four items
+change the shape rather than the detail:
 
 - **How many score dimensions** (SR-A4). One `score` field forecloses samsung's
   phase 2, whose `confidence`/`quality_score` split is already designed and
