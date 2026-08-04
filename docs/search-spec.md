@@ -40,7 +40,7 @@ here.
 |---|---|---|
 | D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries — name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. |
 | D2 (SR-A5) | Call returns a candidate set; the corpus is Aggregate's named type | Two types, two dedup/merge stories; Call never accumulates. |
-| D3 (SR-B5, OQ21) | Model-mediated search is out of Adapter and Call, in at **Aggregate** as a candidate producer | Provenance carries a `producer` distinction from day one; the producer seam is designed in Phase 3, implemented when samsung pulls. |
+| D3 (SR-B5, OQ21) | Model-mediated search is out of Adapter and Call, in at **Aggregate** as a candidate producer | Provenance carries a `producer` distinction from day one; the producer seam is designed in Phase 3, implemented when samsung pulls. Its token cost is owned by the models usage tracker — the producer seam records a *reference* to that spend and MUST NOT re-price it into search spend (no double counting). |
 | D4 (SR-D4) | Budget follows the bill | The budget increment and the transport retry sit on the same side of the seam: a retried attempt that never billed never counts. C2's fail-closed retry bound moves into the transport's bounded-retry config in the same change. |
 | D5 (SR-D5) | Both refusal authorities, distinct roles | Local caps bound a run's *shape* (overrun is a defect); provider refusal bounds *money*. Neither substitutes for the other. |
 | D6 (SR-E6) | Self-hosted cost is zero | The rate/quota spend dimensions carry the real constraint (SR-D6); no synthetic infrastructure pricing. |
@@ -62,8 +62,10 @@ here.
 | D22 (§10.12) | Structured results ride `ToolResult.metadata` under a named key | `SEARCH_RESULTS_METADATA_KEY = "search_results"`, following the `OBJECT_HANDLE_METADATA_KEY` precedent, defined in the leaf's contracts. |
 | D23 (packaging) | **One package, `3tears-search`**, import root `threetears.search`; contracts as an import-clean module, not a separate package | See §2. The alternative (a separate `3tears-search-contracts`, the eval precedent) is not taken because the whole package already sits at the contracts-leaf floor; import paths are chosen so a later split is a non-breaking move (the OQ3 discipline). Split trigger: a consumer that needs the types but must refuse even `observe` + `media-contracts` + pydantic — none exists or is foreseen. |
 | D24 (leaf floor) | Hard deps: `pydantic`, `3tears-media-contracts`, `3tears-observe`. Extras: `[standalone]` = httpx (the bare transport impl), `[extract]` = trafilatura | Matches SR-L7's permitted floor exactly. Provider adapters ship in the base package — they are pure logic over the injected transport and weigh nothing; extras carry *weight*, and the only weights are httpx (only for hosts that don't inject their own transport) and trafilatura. |
-| D25 (Python floor) | The leaf declares `requires-python = ">=3.14"` today, avoids gratuitous 3.14-only surface | The workspace is 3.14; OQ1 (discodon at 3.12) is live and unresolved. If OQ1 resolves per-package, relaxing the leaf should be a pyproject-plus-CI change, not a rewrite — that intent is stated, not enforced. Flagged as this spec's largest external dependency. |
+| D25 (Python floor) | The leaf declares `requires-python = ">=3.14"` today, avoids gratuitous 3.14-only surface | The workspace is 3.14. **OQ1 ruled in principle 2026-08-04: discodon adopts 3.14** — its declared floor is already `>=3.12`, so this is an interpreter switch plus verification, owned by discodon. The avoid-3.14-only-surface intent stays as cheap insurance until that lands; the per-module-floor fallback is retired unless adoption hits a wall. |
 | D26 (replay durability, 2026-08-04) | Recordings outlive the stack that made them: replay records the **typed result** and keys on the **canonical caller request** | Three rules, detailed in §3.10: the key hashes explicitly-set caller parameters (never resolved defaults) plus a key-derivation version; replay short-circuits at the Call boundary and never touches an adapter, so removing a provider strands no recordings; payload readability is promised within a family major, refused loudly across, matching the cascade-delete lifetime recordings actually have (SR-F5). |
+| D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets and provider quotas bind on **execution** spend — a replay debits no credits, though wall-clock bounds still bind — while cost-model analyses read the **recorded** spend, so a replayed baseline never looks free. This is P7 applied to spend: collapsing the two facts into one number makes the trade invisible. Provenance already marks a result as replayed, so no analysis mixes them unknowingly. Detail in §3.10. |
+| D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Verified against discodon's live cassette work (an action seam wrapping tools by name; a delivery seam freezing research payloads, landed 2026-08-04; and its design record rejecting per-query freezing for character evals). Under outer replay, inner code never runs, so inner recorders are inert by construction; on capture, seams are independent and opt-in; run identity names the active seams (discodon already hashes cassette mode/version — the search-replay flag joins identically). Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser, correctly. **No replay engine enters the `TearsTool` base class** — wrap-by-name at existing choke points is the uniform mechanism, and hierarchy-attached replay is the documented failure this plan exists not to repeat. The one tool-level convention evals do need is already ruled: structure on `metadata` (SR-A1), which makes an action-seam recording semantically complete. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1–4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -177,6 +179,11 @@ them):
 - **Replay record** — typed envelope (id — UUIDv7-compatible, created-at,
   provider, key, size, `schema_version`) over a payload that can rebuild the
   corpus (SR-F4); the key is derived by search (SR-F8).
+- **Canonical serialization is a public contract feature, not a replay
+  internal.** One canonical form, two consumers that must agree: the D26
+  replay key and eval run identity (SR-F1 — search parameters already
+  participate in discodon's `canonical_digest`). MUST be exposed on the
+  request/parameter types.
 - **`SEARCH_RESULTS_METADATA_KEY`** and the metadata projection schema, with
   `schema_version` (D13, D22).
 
@@ -326,6 +333,14 @@ are derivation drift and payload readability, and each gets a rule:
   the lifetime recordings actually have (cascade-delete with the owning run,
   SR-F5) — this is not an archival format and MUST NOT be priced as one.
 
+**Dual spend on replay (D27).** A replayed result MUST carry the original
+call's spend inside the replayed payload — it is part of what SR-F4
+preserves — AND the replay's own execution spend in the ordinary place, and
+MUST NOT merge them. Budget ports are consulted with execution spend only (a
+replay debits no provider quota; wall-clock bounds still bind); cost-model
+analyses read the recorded spend. Provenance MUST mark the result replayed so
+the two readings can never be mixed silently.
+
 ### 3.11 `testing/`
 
 The provider-conformance suite (SR-O5): one parametrized suite every adapter
@@ -369,16 +384,34 @@ load-bearing for a success check.
 6. **`agent-tools` — envelope asks** (D18): exception-path metadata carry
    (§10.9); optional per-call deadline on `CallRequest` (§10.10, SR-G2), with
    the server-accepts-first rollout order stated in the PR.
-7. **`scrape`**: `page_finder` reads structure off `metadata`; its callers
-   unchanged (check 4). Later, scrape implements `HeavyFetcher`.
-8. **`enforcement` / `tests/enforcement`**: (a) the D19 norm widening —
+7. **`agent-tools` — `ToolExecutor` keeps the artifact** (audited
+   2026-08-04): `executor.py` stringifies tool output and rebuilds
+   `ToolMessage` without the artifact — and that is `page_finder`'s actual
+   execution path, so **check 4 fails without this fix**. The in-process
+   `langchain_adapter` already does it right (`content_and_artifact` →
+   `ToolMessage.artifact`); the executor matches it. Additive.
+8. **`mcp` — structure on the MCP face**: the result serializer flattens
+   everything to `TextContent`; emit spec-sanctioned `structuredContent`
+   alongside, and add the missing `metadata` field to the MCP client's
+   `McpToolResult`. Both additive. Two adjacent gaps are *named asks
+   elsewhere*, not in-repo work: the SDK-side remote wrapper that rebuilds
+   `ToolMessage`s from `CallResponse` drops metadata (re-attaching it as the
+   artifact rides each consumer's migration), and the stream protocol carries
+   no tool structure (`ToolCallEndEvent` is name + timing; `Frame.payload` is
+   a string) — that channel is designed in the chat-kit workstream
+   (`family-convergence.md` §5, 3tears obligations), before metallm's
+   frontend converges.
+9. **`scrape`**: `page_finder` reads structure off `metadata`; its callers
+   unchanged (check 4, together with item 7). Later, scrape implements
+   `HeavyFetcher`.
+10. **`enforcement` / `tests/enforcement`**: (a) the D19 norm widening —
    sanctioned-path addition + prose restatement; (b) add `packages/search` to
    `test_dict_state_detection`'s root list; (c) a floor pin for the leaf —
    the `test_contracts_packages_stay_dependency_free` mechanism extended with
    an allowed-floor variant pinning `3tears-search`'s hard deps to exactly
    D24's list; (d) the package's own import-cost/lazy-init test.
-9. **`core`**: nothing moves (the aiosqlite removal and the flush.py extras
-   refactor are that repo's separate backlog, not this workstream).
+11. **`core`**: nothing moves (the aiosqlite removal and the flush.py extras
+    refactor are that repo's separate backlog, not this workstream).
 
 ---
 
@@ -499,9 +532,22 @@ switch later costs no consumer rewrite).
    Aggregate + both bindings (prose and corpus).
 4. Budget hooks move onto `BudgetPort` — the 2× advanced under-billing dies
    (SR-E4); timeouts get wired to config (SR-G1 defect 3).
-5. Research evals adopt replay via a `RecordingStore` over its existing
-   store; eval cost caps include search spend (check 3).
-6. PR, merge; record acceptance of what binds it (D15).
+5. Search-internal replay lands where the coarse seams cannot reach:
+   research-*pipeline* evals (grounding gate and cull re-run against a
+   frozen web), through a `RecordingStore` over its existing store.
+   Character-eval freezing stays on its action- and delivery-seam cassettes
+   (D28), already wired discodon-side. Eval cost caps include search spend
+   via the `BudgetPort` (check 3, under D27's execution-spend rule).
+   Recommended pre-work, doable any time while discodon is still sole owner
+   of its evals: reshape `EvalRunCostCap` and the daily-budget mixin's
+   refusal contract to the port's `check(estimate)`/`record(spend)` shape,
+   copied from `threetears.search.contracts` rather than invented — the
+   protocol is structural, so this gates on nothing shipping.
+6. Existing web_search cassettes are keyed on the current wrapper's
+   parameter hash; the rebuilt tool reshapes parameters, so this migration
+   includes cassette re-capture (or a recorded key mapping) — never silent
+   reuse.
+7. PR, merge; record acceptance of what binds it (D15).
 
 **samsung** — rides its planned phase-2 image-search work, not a
 migration-for-migration's-sake.
@@ -527,8 +573,11 @@ is invalidated by budgets/replay — §5.4).
 
 ## 8. Deliberately open
 
-- **OQ1 (Python floor)** — D25 flags it; nothing here waits on it, but
-  discodon's embedded adoption timeline does.
+- **OQ1 (Python floor)** — ruled in principle 2026-08-04: discodon adopts
+  3.14 (its declared floor is already `>=3.12`, so this is an interpreter
+  switch plus verification, owned by discodon). Tracked until that lands;
+  D25's avoid-3.14-only-surface intent stays as cheap insurance meanwhile,
+  and the per-module-floor fallback is retired unless adoption hits a wall.
 - **One bus or two** — decides distributed-pacing reach post-convergence.
 - **Final wire-boundary placement** — D16 is the v1 answer; SR-L4 keeps the
   rest open.

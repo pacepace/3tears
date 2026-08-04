@@ -78,7 +78,8 @@ repos (2026-08-02) found:
 - **Three independent AES-256-GCM secrets implementations.**
 - **Two OTel bootstraps and two dashboard sets.**
 - **Three hand-rolled chat frontends**, with a fourth on the way.
-- **Five different answers to "how do we eval"**: discodon's ~43k-line system,
+- **Five different answers to "how do we eval"**: discodon's ~43k-line system
+  (backend plus frontend kit; ~72k counting its test suites),
   scriob's continuity harness, samsung's MCP-driver eval, hallucinote's
   hand-operated scenario briefs, and metallm's nothing — despite metallm being
   the most LLM-central app in the family.
@@ -275,6 +276,39 @@ the package split follows seams that already exist:
 - **`3tears-eval-gen`** — LLM-assisted variation expansion and rubric/case
   proposers. The most independent aspect; it only writes documents.
 
+Verified against discodon 2026-08-04 — three corrections that shape the
+extraction:
+
+- **The storage Protocol does not exist yet.** `EvalStorage` is a 65-method
+  concrete Postgres class; the narrow port (`upsert/get/query/delete` keyed
+  by `(scope, doc_type, id)`) is designed in prose with two unstarted
+  prerequisites (an eval-owned namespace; `universe` generalized to `scope`).
+  The only Protocol actually shipped is the 4-method `CassetteStore`.
+  **Pre-extraction remediation in discodon is the recommendation:** carve the
+  port and make `EvalStorage` implement it while discodon is still sole
+  owner — and shape it against the family's store contracts (document-shaped
+  → the `DurableStore` direction, blob-shaped → `ObjectStore`) so
+  eval-contracts lifts a proven port instead of minting the family's fourth
+  store shape (open question 22).
+- **The analysis *core* is dependency-free; the analysis *generator* is not.**
+  `analysis/bundle.py` and its models are stdlib + pydantic as claimed, but
+  `analysis/generator.py` imports the host's OpenRouter client and prompt
+  registry. The extraction answer stays inside patterns already ruled here:
+  the generator's prompts are *product prompts* (§4.3) — they ship as package
+  content with a plain override hook, never as a registry dependency — and
+  the LLM boundary is the same narrow completion protocol eval-run already
+  commits to for its runner and judge, satisfied by `3tears-models` through a
+  thin adapter. If the coupling still proves sticky, gen extracts last; it
+  gates nothing (open question 3 already contemplates folding it).
+- **Budget machinery is port-shaped already, refusal contract aside.**
+  `EvalRunCostCap` carries a literal `record()`/`exceeded` pair; the daily
+  budget mixin returns a host `ActionResult` on refusal. Reshaping that
+  refusal to the `check(estimate)`/`record(spend)` port the search contract
+  defines is recommended **now, while discodon is sole owner of its evals**
+  (`search-spec.md` Phase 5) — it turns the later
+  eval-cap-implements-BudgetPort wiring into the one-line change the plan
+  promises.
+
 Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
 versioning makes multi-package consumption free within the family.
@@ -357,7 +391,13 @@ eval-contracts. Rendered text can never be the A/B unit — it differs every
 turn. The lever is a *variant identity*; apparatus proof (component hashes,
 frozen case sets, deterministic seeds) shows everything else held. Discodon
 already ships this shape as run-scoped prompt overlays recorded in run
-identity.
+identity — with one unification left for the extraction (verified
+2026-08-04): identity hashes overlays *as given*, not by `content_hash`, so
+content-addressed prompt identity and eval identity are two mechanisms today,
+joined by extraction work rather than lifted. And apparatus proof cuts across
+capabilities: "everything else held" includes the *web*, so variant evals
+that search lean on the freezing seams — the cassette layer today, search
+replay for pipeline-level work (§4.14; `search-spec.md` D28).
 
 #### The variant lifecycle
 
@@ -672,7 +712,22 @@ MCP surface; bridging an external server remains an app option.
   contract with discodon's budget semantics (§4.14).
 - **Obligations:** harden the release path (it has had real incidents, including
   an untagged PyPI publish) before it carries five consumers' eval
-  infrastructure.
+  infrastructure. And close the **structured-results last mile** (audited
+  2026-08-04): `ToolResult.metadata` reaches LangGraph in-process as
+  `ToolMessage.artifact` and survives the pod envelope, but dies at
+  `ToolExecutor` (stringifies results), at MCP serialization (everything
+  flattens to `TextContent`; no `structuredContent`; the MCP client's
+  `McpToolResult` has no metadata field), at the SDK-side remote wrapper
+  (documented lossy), and never enters the stream protocol (tool events carry
+  name + timing only; `Frame.payload` is a string; the one dict-to-browser
+  conduit is turn-level `ChannelResponse.metadata`, which nothing populates
+  from tools). Every fix is additive except widening `Frame.payload`. This
+  gates §4.11 and metallm's frontend adoption: a stream protocol that carries
+  less structure than metallm's raw-event filtering currently extracts would
+  be a capability regression under principle 4 — so the tool-structure
+  channel must be designed into the chat-kit workstream before that
+  migration, while the in-repo fixes (executor, MCP faces) ride the search
+  work (`search-spec.md` §4).
 - **Normalization:** resolve the Python floor (core is ≥3.14 today; the live
   question is a per-module minimum with a relaxed subset versus moving discodon
   to 3.14 — open question 1, no recommendation recorded);
@@ -852,6 +907,13 @@ hard edge is a reviewed decision rather than drift.
    floor pays that cost only in the modules that actually have to be reachable.
    What is unknown is how large the relaxable subset is; nobody has checked what
    each module's own dependencies support.
+   **Ruled in principle 2026-08-04: discodon adopts 3.14.** Its declared floor
+   is already `requires-python = ">=3.12"` — a floor, not a pin — so adoption
+   is an interpreter switch plus verification, which discodon takes as its own
+   workstream. The per-module-floor option is retired unless that adoption
+   hits a real wall. This ordering matters most for the eval extraction:
+   discodon is the extracted packages' source *and* first consumer, so the
+   floor had to resolve before extraction, not after.
 2. **Eval extraction timing.** "After discodon's in-flight schema work lands"
    gates the family's highest-value workstream on that work's completion. Is
    partial extraction (contracts first) worth a two-step migration?
@@ -938,3 +1000,12 @@ hard edge is a reviewed decision rather than drift.
     tokens — or does it scope to API search, with model-native search a
     `3tears-models` capability flag? Pretending the two shapes are one would
     be a lie in the contract; pick where the seam goes.
+22. **Store-shape proliferation.** Four store ports are now in flight:
+    `ObjectStore` (published, blob-shaped), the `DurableStore` direction
+    (open question 16, row/document-shaped), eval-contracts' planned storage
+    Protocol (§4.2 — which does not exist yet in discodon), and search's
+    `RecordingStore` (already `ObjectStore`-shaped by ruling). Proposed rule:
+    blob-shaped ports follow `ObjectStore`, document-shaped ports follow the
+    `DurableStore` direction, and a new package *picks* one rather than
+    minting a third. Eval-contracts is the first test, which is one more
+    reason its port should be carved in discodon before extraction (§4.2).

@@ -899,12 +899,17 @@ not only money".
 
 **SR-E1 (REQUIRED, P5 — G9).** Spend is attributable per call and observable
 from any layer — in money where the call is priced, and in wall-clock, provider
-quota and call count whether it is priced or not. Discodon counts and explicitly
-declines to price:
-"Paid non-LLM calls this run made (web search). Counted, never priced"
-(`research_tool.py:2503`), with its eval surface warning that "max_cost_usd does
-not bound external search quota" (`web/mcp/eval/runs.py:190`). Closing this is
-success check 3.
+quota and call count whether it is priced or not. Discodon's ledger has moved
+since the first pass (verified 2026-08-04) and now proves the requirement
+rather than motivating it: search calls are counted always and priced when the
+operator declares a rate — `ExternalCallPricing`, per-depth credit weights,
+configured `usd_per_credit` (`eval/usage_capture.py:61-127`), fed by the count
+at `research_tool.py:2869-2871` — while its eval surface still warns that
+"max_cost_usd does not bound external search quota"
+(`web/mcp/eval/runs.py:184`). Closing that residual gap is success check 3.
+Replay adds a second spend fact and the two must never share a field —
+`search-spec.md` D27 rules the dual accounting (execution spend binds budgets;
+recorded spend feeds cost models).
 
 **SR-E2 (REQUIRED).** The count a cap enforces and the count a bill prices are
 one number. Samsung derives `searches_used` from the priced records because "a
@@ -926,10 +931,14 @@ still see it. This is an ask on `agent-tools`, not a search-side fix — §10, i
 
 **SR-E4 (REQUIRED — live defect).** Weighted units must be accounted. Discodon's
 persona tool bills every search as one unit (`_check_budget` at its `cost=1`
-default, `web_search_tool.py:224`; `tools/base.py:1412`) while
+default, `web_search_tool.py:224`; `tools/base.py:1390`) while
 `search_depth="advanced"` spends two Tavily credits — and its docstring says the
 budget exists "to manage shared API credits" (`web_search_tool.py:7,57`). The
-weighted primitive exists and `youtube_tool.py:216` uses it.
+weighted primitive exists and `youtube_tool.py:216` uses it. (Bite scope,
+verified 2026-08-04: the tool's own default depth is `basic`, so the 2× only
+fires where an operator sets `advanced` per-entity — and the eval-side ledger
+now weights correctly via `SEARCH_CREDITS_BY_DEPTH`, so the daily budget and
+the ledger disagree exactly there.)
 
 **SR-E5 (REQUIRED).** Cost granularity is per-request for some providers, and the
 model must not imply per-result pricing. Samsung: "The fee is charged per search
@@ -946,8 +955,11 @@ cross-provider comparison in the other direction.
 
 **SR-F1 (REQUIRED — G9).** Search parameters participate in eval identity so a
 score delta is attributable to a config change — already true and load-bearing
-(`eval/identity.py:221`, via `canonical_digest`). The parameter object must
-therefore be canonically serialisable.
+(`canonical_digest` at `eval/identity.py:126`, applied to the variant key with
+`resolved_tool_configs` at `:209-228`). The parameter object must therefore be
+canonically serialisable — and that canonical form has two consumers that must
+agree, this identity and the D26 replay key, so it is a public contract
+feature, not a replay internal (`search-spec.md` §3.1).
 
 **SR-F2 (REQUIRED).** Eval runs against a quota separable from production's, with
 sharing explicit rather than a fallback. Discodon designed exactly this (EVL-TQ7K,
@@ -958,12 +970,21 @@ personas' research," with unset meaning a *documented shared* quota.
 **SR-F3 (REQUIRED — ruled 2026-08-02; G4).** A search must be replayable.
 Record/replay attaches as a cross-cutting concern at Adapter and Call (P5), not
 at whatever layer happens to be a `Tool`. That placement is the lesson of the
-current gap: discodon's cassette layer records and replays at `Tool.act()`
-(`eval/cassette_proxy.py:16-18,185-207`), C1 is a `Tool` and is replayable, and
-C2's sub-tool deliberately is not — "no Tool ABC overhead"
-(`research/web_search.py:5`). Replay was attached to a class hierarchy, so a
-component that left the hierarchy silently left reproducibility, and every
-research eval now re-issues live searches against a changing web.
+gap as first found: discodon's cassette layer records and replays at
+`Tool.act()` (`eval/cassette_proxy.py:12-18`; the proxy's `act` at
+`:313-360`), C1 is a `Tool` and is replayable, and C2's sub-tool deliberately
+is not — "no Tool ABC overhead" (`research/web_search.py:3-5`). Replay was
+attached to a class hierarchy, so a component that left the hierarchy silently
+left reproducibility. *Updated 2026-08-04:* discodon has since closed the
+character-eval half of that hole from above — a **delivery seam** freezes what
+research handed to the character world (wired the same day this update was
+written), and its design record explicitly rejects freezing the sub-tool's
+individual queries for that use. The lesson stands unchanged, and it scopes
+this requirement honestly: search-internal replay serves what the coarse seams
+cannot — re-running the research *pipeline* (grounding gate, cull) against a
+frozen web, provenance re-checks, re-search diffs, and programmatic
+determinism — not character-eval freezing, which is better served above.
+`search-spec.md` D28 records how the seams compose.
 
 **SR-F4 (REQUIRED).** What is recorded must rebuild the corpus, not merely the
 rendered text — otherwise a replayed run cannot re-run its grounding gate.
@@ -1041,13 +1062,13 @@ cost on every call is waste that shows up as storage and bytes moved.
 
 **SR-F7 (REQUIRED).** A replay miss is an error, never a silent live call.
 Discodon has the precedent — a `CassetteMiss` raised on lookup failure
-(`eval/cassette_proxy.py:120`). Falling through to the network would let an eval
+(`eval/cassette_proxy.py:137`, raised at `:330`). Falling through to the network would let an eval
 go live without saying so, and its trend line would then be measuring the web.
 
 **SR-F8 (REQUIRED, P2).** The replay key is derived by search, because only
 search knows what varies — provider, query, resolved parameters, profile digest.
 Discodon already computes the analogous digest for eval variant identity
-(`eval/identity.py:221`). A consumer-derived key would go stale the first time a
+(`eval/identity.py:126`). A consumer-derived key would go stale the first time a
 provider parameter was added.
 
 ### G. Performance
@@ -1610,8 +1631,13 @@ scope.
 2. **The builtin blocks the event loop** — SR-G3.
 3. **Research search timeout is unconfigurable in practice** — the constructor
    parameter is never wired to config — SR-G1.
-4. **Research searches are unreplayable by the cassette layer**, because replay
-   was attached to a class hierarchy the sub-tool deliberately left — SR-F3.
+4. **Research searches sat outside the cassette layer**, because replay was
+   attached to a class hierarchy the sub-tool deliberately left — SR-F3.
+   *Stale as of 2026-08-04:* discodon wired a delivery seam freezing research
+   payloads for character evals the day this list was re-verified; the
+   sub-tool's individual queries stay unfrozen by recorded design. What
+   remains true: nothing can replay the research *pipeline's own* searches —
+   the consumer search-internal replay exists for.
 5. **The two discodon implementations disagree on whether a failed search costs
    budget**, and neither records a decision — SR-D4.
 6. **`time.sleep(1)` in the fetch retry loop** — same blocking class as 2.
