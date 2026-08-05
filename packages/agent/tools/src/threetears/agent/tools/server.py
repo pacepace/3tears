@@ -801,6 +801,18 @@ class ToolServer:
         # queue-group request/reply, not JetStream, so there is no stream backlog
         # for the nats scaler to read).
         self._inflight_gauge = InflightRequestsGauge("threetears_tools_inflight_requests")
+        # A SEPARATE, always-present count of dispatches that still owe a reply.
+        # Deliberately not read off `_inflight_gauge`: that is prometheus-backed
+        # and a silent no-op when the extra is absent, so control flow keyed to
+        # it would work on one deployment and not another. This governs whether
+        # the connection may be recycled, which is correctness, not telemetry.
+        self._calls_in_flight = 0
+        # Set whenever nothing is owed. The re-auth loop waits on this so a
+        # connection carrying an unanswered request is never torn down: NATS
+        # scopes `allow_responses` to the CONNECTION that received the request,
+        # so reconnecting mid-call permanently loses the right to answer it.
+        self._calls_idle = asyncio.Event()
+        self._calls_idle.set()
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -1209,6 +1221,7 @@ class ToolServer:
         # not race a second reconnect against it. a standalone pod (opened its own connection above)
         # owns the reconnect and must re-auth before its user JWT expires.
         if self._owns_nats_connection:
+            self._warn_if_tool_timeout_exceeds_jwt_ttl()
             self._nats_reauth_task = asyncio.create_task(self._nats_reauth_loop())
 
         await self._shutdown_event.wait()
@@ -1908,7 +1921,22 @@ class ToolServer:
         # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
         # count and a failed call never strands the counter above baseline.
         with self._inflight_gauge.track():
-            await self._dispatch_incoming_call(msg)
+            # The reply obligation starts here and ends when the dispatch
+            # returns. While it is outstanding the connection must survive:
+            # `allow_responses` lives on the connection that received this
+            # message, so a proactive reconnect in the middle silently converts
+            # a completed tool call into a permissions violation on publish --
+            # observed as a 92-second scan that finished with exit 0 and could
+            # never deliver its 68KB of results.
+            self._calls_in_flight += 1
+            self._calls_idle.clear()
+            try:
+                await self._dispatch_incoming_call(msg)
+            finally:
+                self._calls_in_flight -= 1
+                if self._calls_in_flight <= 0:
+                    self._calls_in_flight = 0
+                    self._calls_idle.set()
 
     async def _dispatch_incoming_call(self, msg: IncomingMessage) -> None:
         """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
@@ -2357,6 +2385,101 @@ class ToolServer:
             extra={"extra_data": {"pod_id": self._pod_id}},
         )
 
+    async def _drain_before_reauth(self, ttl_seconds: int | None) -> None:
+        """wait for outstanding replies before recycling the connection.
+
+        NATS scopes ``allow_responses`` to the CONNECTION that received a
+        request: the server remembers *this* connection may answer *that*
+        message. A proactive reconnect mid-call therefore does not merely
+        interrupt the work -- it permanently revokes the right to deliver the
+        answer, and the pod discovers this only when it tries to publish, after
+        the tool has already run to completion. Observed in production: a
+        92-second scan finished with exit 0 and 68KB of results that could never
+        be sent, because the connection had been recycled 56 seconds earlier.
+
+        So the re-auth waits for the pod to owe nothing. The wait is BOUNDED by
+        the JWT's real deadline, not open-ended: the schedule fires at
+        ``ttl - leeway - buffer``, leaving :data:`nats_reauth.REAUTH_BUFFER_SECONDS`
+        of slack before the point where the reconnect itself must begin to beat
+        expiry. Waiting past that would trade a lost reply for a dead
+        connection, which is strictly worse -- so on timeout it reconnects
+        anyway and says plainly that a reply is about to be lost.
+
+        A call longer than that slack cannot be rescued here, and no amount of
+        deferral fixes it: the connection's lifetime has to exceed the tool's.
+        :meth:`_warn_if_tool_timeout_exceeds_jwt_ttl` is what makes that
+        mismatch visible at startup instead of at the moment a result is
+        discarded.
+
+        :param ttl_seconds: the connection JWT TTL, or ``None`` when unknown
+        :ptype ttl_seconds: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if self._calls_idle.is_set():
+            return
+        grace = float(nats_reauth.REAUTH_BUFFER_SECONDS)
+        log.info(
+            "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
+            grace,
+            self._calls_in_flight,
+            extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self._calls_in_flight}},
+        )
+        try:
+            await asyncio.wait_for(self._calls_idle.wait(), timeout=grace)
+        except TimeoutError:
+            # NOSILENT: the reconnect proceeds because the JWT is about to
+            # expire; the reply that is about to be lost is named here so it is
+            # never a silent discard.
+            log.error(
+                "NATS re-auth can wait no longer: %d call(s) still in flight and the connection "
+                "JWT is near expiry; their replies will be refused. The pod's JWT TTL must exceed "
+                "its longest tool timeout.",
+                self._calls_in_flight,
+                extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self._calls_in_flight}},
+            )
+
+    def _warn_if_tool_timeout_exceeds_jwt_ttl(self) -> None:
+        """say loudly when a tool may outlive the connection that must answer it.
+
+        The two budgets are set in different places and nothing related them: a
+        tool may be given twenty minutes while the connection carrying its reply
+        is rebuilt every sixty seconds. Every call in the gap between them runs
+        to completion and then fails to deliver, which reads as the tool being
+        broken rather than the connection being recycled underneath it.
+
+        Checked at startup and reported once, naming both numbers, so the
+        mismatch is visible before a single call is made rather than inferred
+        from a scan that produced results nobody received.
+
+        :return: nothing
+        :rtype: None
+        """
+        ttl = self._current_nats_jwt_ttl_seconds()
+        if not nats_reauth.has_schedulable_ttl(ttl):
+            return
+        assert ttl is not None  # narrowed above
+        longest = max((getattr(spec, "timeout_seconds", 0) or 0) for spec in self._tools.values()) if self._tools else 0
+        usable = ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
+        if longest > usable:
+            log.error(
+                "tool timeout exceeds the connection lifetime that must carry its reply: longest "
+                "tool timeout %ss vs %ss of usable connection (JWT TTL %ss). Calls in that gap will "
+                "complete and then be refused when they publish. Raise the pod's NATS user JWT TTL "
+                "above the longest tool timeout.",
+                longest,
+                usable,
+                ttl,
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                        "longest_tool_timeout_seconds": longest,
+                        "usable_connection_seconds": usable,
+                        "nats_user_jwt_ttl_seconds": ttl,
+                    }
+                },
+            )
+
     async def _nats_reauth_loop(self) -> None:
         """force a NATS reconnect before the connection's user JWT expires; unkillable + self-healing.
 
@@ -2383,6 +2506,7 @@ class ToolServer:
                         # reconnect on a guess. SAME predicate the scheduler uses (so the two never
                         # diverge); the heartbeat supervisor covers any terminal close while unknown.
                         continue
+                    await self._drain_before_reauth(ttl)
                     await self._reauth_nats_once()
                 except Exception as exc:
                     log.warning(
