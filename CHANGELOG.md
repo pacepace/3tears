@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.3 -- 2026-08-05
+
 ### `3tears-scrape`
 
 **Network capture now records the request payload, so a POST-read API can be
