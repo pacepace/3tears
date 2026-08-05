@@ -299,9 +299,7 @@ class TestEveryOutcomeTravelsTheSameRoute:
     async def test_an_unknown_tool_is_reported_on_the_delivery_subject(self) -> None:
         nats = _FakeNats()
         server = _server(nats)
-        payload = _signed_call_payload(
-            pod_id=_POD, tool_name="test.missing", conversation_id=uuid4(), user_id=uuid4()
-        )
+        payload = _signed_call_payload(pod_id=_POD, tool_name="test.missing", conversation_id=uuid4(), user_id=uuid4())
         payload["result_subject"] = _delivery_subject()
 
         await server.handle_call(_msg(payload))
@@ -355,9 +353,7 @@ class TestADeliveryFailureIsRetriedRatherThanDiscarded:
         assert _decoded(nats.delivered[0][1])["content"] == "68KB of results"
 
     @pytest.mark.asyncio
-    async def test_exhausted_retries_do_not_raise_out_of_the_dispatch(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_exhausted_retries_do_not_raise_out_of_the_dispatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the answer is lost and logged as lost; the dispatch must not also take the pod down."""
         from threetears.agent.tools import server as server_module
 

@@ -831,9 +831,7 @@ class JetStreamResultWaiter:
                 await msgs[0].ack()
                 payload = bytes(msgs[0].data)
         if payload is None:
-            raise RequestTimeoutError(
-                f"no result delivered on {self._subject.path} within {timeout.total_seconds()}s"
-            )
+            raise RequestTimeoutError(f"no result delivered on {self._subject.path} within {timeout.total_seconds()}s")
         return payload
 
     async def _rebuild(self) -> None:

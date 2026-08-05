@@ -102,9 +102,7 @@ class _Nats:
             raise self._accept
         if self._accept is not None:
             return self._accept
-        return (
-            CallAccepted(accepted=True, pod_id="pod-1", result_subject="x").model_dump_json().encode("utf-8")
-        )
+        return CallAccepted(accepted=True, pod_id="pod-1", result_subject="x").model_dump_json().encode("utf-8")
 
     async def jetstream_result_waiter(self, *, subject: Subject, stream: str, wait_budget: timedelta) -> _Waiter:
         self.order.append("open-waiter")
@@ -149,11 +147,7 @@ def _msg(request: Any) -> IncomingMessage:
 
 
 def _pod_answer(content: str = "68KB of results", success: bool = True) -> bytes:
-    return (
-        ProxyCallResponse(success=success, content=content, context=CallContext())
-        .model_dump_json()
-        .encode("utf-8")
-    )
+    return ProxyCallResponse(success=success, content=content, context=CallContext()).model_dump_json().encode("utf-8")
 
 
 async def _dispatch(proxy: Any, nats: Any, request: Any) -> None:
@@ -291,9 +285,7 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
         """
         catalog = await _registered_catalog(_LONG, pods=("pod-1", "pod-2"))
         refusal = (
-            CallAccepted(accepted=False, pod_id="pod-1", error="not mine to publish")
-            .model_dump_json()
-            .encode("utf-8")
+            CallAccepted(accepted=False, pod_id="pod-1", error="not mine to publish").model_dump_json().encode("utf-8")
         )
         nats = _Nats(accept=refusal)
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, make_authed_request())

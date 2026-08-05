@@ -1562,7 +1562,7 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
     result: CallAccepted | None = None
     try:
         decoded = json.loads(payload)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         # NOSILENT: "this is not an acknowledgement" is the answer this function exists to give.
         # the caller then parses the same bytes as a full response, and reports the failure there
         # with the detail, so raising or logging here would double-report one bad payload.
