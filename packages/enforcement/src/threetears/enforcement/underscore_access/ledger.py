@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 from collections import Counter
 from pathlib import Path
 
@@ -106,8 +107,13 @@ def enclosing_scopes(path: Path) -> dict[int, str]:
     outside any function or class are absent from the mapping; module-level accesses key on the
     symbol alone, which is unambiguous there because there is only one such scope.
     """
+    return _scopes_from_source(path.read_text(errors="replace"))
+
+
+def _scopes_from_source(text: str) -> dict[int, str]:
+    """:func:`enclosing_scopes` for source that is not on disk -- a git blob, mainly."""
     try:
-        tree = ast.parse(path.read_text(errors="replace"))
+        tree = ast.parse(text)
     except SyntaxError:
         return {}
 
@@ -154,6 +160,42 @@ def orphan_rationales(exemptions_path: Path) -> list[int]:
     return orphans
 
 
+def _git_stdout(repo_root: Path, *args: str) -> str | None:
+    """stdout of a git command run in *repo_root*, or ``None`` when git cannot answer.
+
+    ``None`` covers every way the answer can be unavailable -- git absent, not a repository,
+    an object that does not exist -- because the callers all degrade the same way regardless
+    of which one it was.
+    """
+    try:
+        proc = subprocess.run(["git", "-C", str(repo_root), *args], capture_output=True, text=True, check=False)
+    except OSError:  # NOSILENT: a machine without git is a supported environment here -- None is this function's documented "cannot answer", and the caller degrades to current-file resolution
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _source_when_ledger_was_written(exemptions_path: Path, repo_root: Path, rel_path: str) -> str | None:
+    """*rel_path*'s content at the last commit that touched the ledger, or ``None``.
+
+    The moment the ledger was last written is the moment its line numbers were last known to
+    match the code, so that commit's tree is the one a drifted entry's number indexes into.
+    ``None`` when there is no such snapshot to consult: no git, a ledger that has never been
+    committed, or a file absent from that commit.
+
+    The pathspec and the blob path both carry an explicit ``./`` so git resolves them against
+    *repo_root* (via ``-C``) rather than against the repository toplevel -- the two differ
+    whenever the caller's root is a subdirectory of the actual repository.
+    """
+    try:
+        ledger_rel = exemptions_path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:  # NOSILENT: a ledger outside repo_root has no repo-relative path to ask git about -- None is this function's documented "no snapshot", and the caller degrades to current-file resolution
+        return None
+    commit = _git_stdout(repo_root, "rev-list", "-1", "HEAD", "--", f"./{ledger_rel}")
+    if commit is None or not commit.strip():
+        return None
+    return _git_stdout(repo_root, "show", f"{commit.strip()}:./{rel_path}")
+
+
 def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tuple[str, str, str, int], str]:
     """Map ``(path, scope, symbol, occurrence)`` to the rationale recorded for it.
 
@@ -184,11 +226,20 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
     bugs in the keying, and a test that pins only the scope walker leaves the keying free to be
     simplified back with the suite still green.
 
-    The scope is resolved against the CURRENT file at the entry's recorded line: exact while the
-    ledger is fresh, and degrading to symbol-only when a line has drifted outside its original
-    function, which is no worse than the behaviour it replaces.
+    The scope of a FRESH entry -- its recorded line still holds its symbol -- is resolved
+    against the current file, which is exact. A DRIFTED entry is resolved against the file as
+    it stood at the last commit that touched the ledger itself: the ledger's numbers were
+    correct when it was last written, so that snapshot is the one they index into. Resolving a
+    drifted line against the current file instead -- which this once did -- returned whichever
+    function had slid under the old number, so a single edit longer than a function turned
+    every reviewed rationale below it into a placeholder at the next regeneration. When no
+    snapshot exists to consult (no git, a never-committed ledger, staleness accumulated across
+    uncommitted regenerations) the current file is still used, and a mapping it cannot make
+    surfaces as a placeholder rather than as a wrong rationale.
     """
     scopes_by_path: dict[str, dict[int, str]] = {}
+    lines_by_path: dict[str, list[str]] = {}
+    recorded_scopes_by_path: dict[str, dict[int, str] | None] = {}
     found: dict[tuple[str, str, str, int], str] = {}
     seen: Counter[tuple[str, str, str]] = Counter()
     rationale: str | None = None
@@ -205,8 +256,19 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
             continue
         source = repo_root / path
         if path not in scopes_by_path:
-            scopes_by_path[path] = enclosing_scopes(source) if source.exists() else {}
-        group = (path, scopes_by_path[path].get(int(number), ""), symbol)
+            text = source.read_text(errors="replace") if source.exists() else ""
+            scopes_by_path[path] = _scopes_from_source(text)
+            lines_by_path[path] = text.split("\n")
+        entry_line = int(number)
+        lines = lines_by_path[path]
+        drifted = entry_line > len(lines) or symbol not in lines[entry_line - 1]
+        scopes = scopes_by_path[path]
+        if drifted:
+            if path not in recorded_scopes_by_path:
+                recorded = _source_when_ledger_was_written(exemptions_path, repo_root, path)
+                recorded_scopes_by_path[path] = _scopes_from_source(recorded) if recorded is not None else None
+            scopes = recorded_scopes_by_path[path] or scopes
+        group = (path, scopes.get(entry_line, ""), symbol)
         found.setdefault((*group, seen[group]), rationale)
         seen[group] += 1
     return found
