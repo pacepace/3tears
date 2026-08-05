@@ -23,89 +23,152 @@ reads as the tool being broken rather than the connection being recycled.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+from collections.abc import AsyncIterator
+from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from threetears.agent.tools import nats_reauth
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.server import ToolServer
+from threetears.nats import IncomingMessage, set_default_namespace
+
+from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 pytestmark = pytest.mark.unit
 
+_POD = "pod-under-test"
 
-class _Server:
-    """the re-auth collaborators of :class:`ToolServer`, and nothing else.
 
-    The real class needs a NATS connection, a registry and a tool manifest to
-    construct. What is under test is one rule -- do not reconnect while a reply
-    is owed -- so the two methods that implement it are exercised against the
-    same attributes they use in production.
+class _BlockingTool(TearsTool):
+    """a tool that does not finish until the test lets it, standing in for a long scan.
+
+    One gate PER CALL, not one shared gate: the concurrency test needs to release one dispatch while
+    another is still owed, and a shared gate would release both -- which would make that test pass
+    for the wrong reason (or, as it first did, fail for one).
     """
 
     def __init__(self) -> None:
-        self._pod_id = "pod-under-test"
-        self._calls_in_flight = 0
-        self._calls_idle = asyncio.Event()
-        self._calls_idle.set()
-        self.reconnects = 0
+        self.gates: list[asyncio.Event] = []
 
-    async def _reauth_nats_once(self) -> None:
-        self.reconnects += 1
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        del kwargs
+        gate = asyncio.Event()
+        self.gates.append(gate)
+        await gate.wait()
+        return ToolResult(success=True, content="ok")
 
-    def begin_call(self) -> None:
-        self._calls_in_flight += 1
-        self._calls_idle.clear()
+    def mcp_schema(self) -> MCPToolDefinition:
+        return MCPToolDefinition(
+            name="test.blocking",
+            version="1.0",
+            description="blocks until released",
+            input_schema={"type": "object", "properties": {}},
+        )
 
-    def end_call(self) -> None:
-        self._calls_in_flight -= 1
-        if self._calls_in_flight <= 0:
-            self._calls_in_flight = 0
-            self._calls_idle.set()
+    def mcp_name(self) -> str:
+        return "test.blocking"
+
+    def mcp_version(self) -> str:
+        return "1.0"
 
 
-def _bind(server: _Server):
-    """bind the real ``_drain_before_reauth`` to the stand-in."""
-    from threetears.agent.tools.server import ToolServer
+class _SilentNats:
+    """swallows every publish surface; these tests observe the obligation count, not the wire."""
 
-    return ToolServer._drain_before_reauth.__get__(server, _Server)
+    async def publish(self, **kwargs: Any) -> None:
+        del kwargs
+
+    async def jetstream_publish(self, **kwargs: Any) -> None:
+        del kwargs
+
+    async def publish_reply(self, **kwargs: Any) -> None:
+        del kwargs
+
+
+def _idle_server() -> tuple[ToolServer, _BlockingTool]:
+    """a real :class:`ToolServer` owing nothing, plus the tool the tests use to make it owe.
+
+    A real server rather than a stand-in: the obligation bookkeeping now spans ``handle_call``, the
+    acknowledgement path and the settle helper, so a hand-rolled double could satisfy every
+    assertion here while the production dispatch did something else entirely.
+    """
+    set_default_namespace("3tears")
+    tool = _BlockingTool()
+    server = ToolServer(
+        namespace="3tears",
+        nats_client=_SilentNats(),  # type: ignore[arg-type]
+        pod_id=_POD,
+        namespace_collection=None,
+        jwks_provider=_pod_jwks_provider,
+        assertion_replay_guard=_PodReplayGuard(),
+    )
+    server.register(tool)
+    return server, tool
+
+
+@contextlib.asynccontextmanager
+async def _owed_reply(server: ToolServer, tool: _BlockingTool) -> AsyncIterator[None]:
+    """hold ONE real dispatch open inside the block, so the pod genuinely owes an inbox reply."""
+    payload = _signed_call_payload(
+        pod_id=_POD,
+        tool_name="test.blocking",
+        conversation_id=uuid4(),
+        user_id=uuid4(),
+    )
+    msg = IncomingMessage(
+        data=json.dumps(payload).encode("utf-8"),
+        reply_subject="_INBOX_registry_reg-1.abc",
+        subject=f"3tears.tools.internal.{_POD}",
+    )
+    dispatch = asyncio.create_task(server.handle_call(msg))
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if tool.gates:
+            break
+    gate = tool.gates.pop()
+    try:
+        yield
+    finally:
+        gate.set()
+        await asyncio.wait_for(dispatch, timeout=1.0)
 
 
 class TestTheConnectionSurvivesAnUnansweredCall:
     async def test_reauth_waits_while_a_call_is_in_flight(self) -> None:
         """THE PRODUCTION BUG. The reconnect must not happen while the pod still
         owes an answer."""
-        server = _Server()
-        drain = _bind(server)
-        server.begin_call()
+        server, tool = _idle_server()
+        async with _owed_reply(server, tool):
+            assert server.sync_replies_in_flight == 1
+            assert await server.await_sync_replies(timeout=0.05) is False
 
-        waiter = asyncio.create_task(drain(150))
-        await asyncio.sleep(0.05)
-        assert not waiter.done(), "re-auth proceeded while a reply was still owed"
-
-        server.end_call()
-        await asyncio.wait_for(waiter, timeout=1.0)
+        assert await server.await_sync_replies(timeout=0.5) is True
 
     async def test_reauth_is_immediate_when_nothing_is_owed(self) -> None:
         """Non-vacuous: the common case must not pay for the guard. A pod with
         no work waits for nothing."""
-        server = _Server()
-        drain = _bind(server)
+        server, _tool = _idle_server()
 
-        await asyncio.wait_for(drain(150), timeout=0.2)
+        assert server.sync_replies_in_flight == 0
+        assert await asyncio.wait_for(server.await_sync_replies(timeout=5.0), timeout=0.2) is True
 
     async def test_it_waits_for_every_outstanding_call_not_just_one(self) -> None:
         """Concurrent dispatches each own a reply; draining one proves nothing
         about the rest."""
-        server = _Server()
-        drain = _bind(server)
-        server.begin_call()
-        server.begin_call()
+        server, tool = _idle_server()
+        async with _owed_reply(server, tool):
+            assert server.sync_replies_in_flight == 1
+            async with _owed_reply(server, tool):
+                assert server.sync_replies_in_flight == 2
+            assert await server.await_sync_replies(timeout=0.05) is False
 
-        waiter = asyncio.create_task(drain(150))
-        server.end_call()
-        await asyncio.sleep(0.05)
-        assert not waiter.done(), "re-auth proceeded with a second call still owed"
-
-        server.end_call()
-        await asyncio.wait_for(waiter, timeout=1.0)
+        assert await server.await_sync_replies(timeout=0.5) is True
 
 
 class TestTheWaitIsBounded:
@@ -118,18 +181,16 @@ class TestTheWaitIsBounded:
     """
 
     async def test_a_call_that_outlasts_the_grace_does_not_block_forever(self) -> None:
-        server = _Server()
-        drain = _bind(server)
-        server.begin_call()  # never ends
-
-        # The real grace is REAUTH_BUFFER_SECONDS; patched down so the test does
-        # not sit for 30 seconds proving a timeout fires.
-        original = nats_reauth.REAUTH_BUFFER_SECONDS
-        try:
-            nats_reauth.REAUTH_BUFFER_SECONDS = 0.05
-            await asyncio.wait_for(drain(150), timeout=2.0)
-        finally:
-            nats_reauth.REAUTH_BUFFER_SECONDS = original
+        server, tool = _idle_server()
+        async with _owed_reply(server, tool):
+            # The real grace is REAUTH_BUFFER_SECONDS; patched down so the test does
+            # not sit for 30 seconds proving a timeout fires.
+            original = nats_reauth.REAUTH_BUFFER_SECONDS
+            try:
+                nats_reauth.REAUTH_BUFFER_SECONDS = 0.05
+                await asyncio.wait_for(server.drain_before_reauth(150), timeout=2.0)
+            finally:
+                nats_reauth.REAUTH_BUFFER_SECONDS = original
 
 
 class TestTheTwoBudgetsAreRelated:
@@ -158,3 +219,32 @@ class TestTheTwoBudgetsAreRelated:
         scan_tool_timeout = 1200
 
         assert scan_tool_timeout > default_ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
+
+
+class TestTheSynchronousBudgetFitsInsideTheDrainGrace:
+    """The drain rescues a short call; durable delivery carries the rest.
+
+    Draining is a mitigation, not the fix: it can only hold the connection open for the slack the
+    re-auth schedule leaves, so a call longer than that grace still completes into a refused publish.
+    The remedy is that such calls never take the reply-inbox path at all -- but that only holds if the
+    threshold deciding which calls are "short" is no larger than the window the responder is actually
+    willing to wait.
+
+    The two numbers live in different packages and nothing else relates them, which is exactly how the
+    original mismatch (a 60-second connection carrying a 1200-second tool) got in.
+    """
+
+    def test_a_call_chosen_for_the_sync_path_fits_in_the_grace(self) -> None:
+        from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
+
+        assert SYNC_REPLY_BUDGET_SECONDS <= nats_reauth.REAUTH_BUFFER_SECONDS, (
+            "a call the caller chose to answer synchronously can outlast the drain grace, so the "
+            "responder will reconnect out from under it and refuse the reply"
+        )
+
+    def test_the_scan_tool_that_started_this_takes_the_durable_path(self) -> None:
+        """Non-vacuous: the concrete call that lost 68KB of results is on the other path now."""
+        from threetears.nats import requires_async_result
+
+        assert requires_async_result(1200.0) is True
+        assert requires_async_result(5.0) is False

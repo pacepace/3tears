@@ -104,7 +104,12 @@ class _RaisingUsageEmitter:
 
 
 def _make_entry(pod_id: str = "pod-001") -> CatalogEntry:
-    """build a catalog entry with one available endpoint."""
+    """build a catalog entry with one available endpoint.
+
+    The declared timeout is deliberately SHORT so these calls stay on the synchronous reply-inbox
+    path. A tool past the synchronous budget is answered on a durable subject instead, and this
+    module is about the spend gate rather than about which delivery path a call takes.
+    """
     endpoint = ToolEndpoint(pod_id=pod_id, status="available")
     return CatalogEntry(
         tool_name="threetears.calculator",
@@ -112,6 +117,7 @@ def _make_entry(pod_id: str = "pod-001") -> CatalogEntry:
         full_name="threetears.calculator@1.0.0",
         description="test tool",
         input_schema={"type": "object", "properties": {}},
+        timeout_seconds=5.0,
         endpoints=[endpoint],
     )
 

@@ -67,15 +67,19 @@ from threetears.nats import (
     IncomingMessage,
     NatsClient,
     Principal,
+    Subject,
     Subjects,
     TokenCallback,
     inbox_prefix_for,
+    result_subject_is_owned_by_pod,
+    result_subject_prefix_for_pod,
     set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger, traced
 
 __all__ = [
+    "CallAccepted",
     "CallRequest",
     "CallResponse",
     "DiscoveryProbeRequest",
@@ -181,6 +185,13 @@ _IDENTITY_LEEWAY_SECONDS = 60
 # how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
 # sized to the assertion's short accept window (its exp + clock skew).
 _ASSERTION_NONCE_TTL_SECONDS = 60
+# how many times a durable result publish is retried before the answer is declared lost. the tool has
+# already run by then, so a transport blip must not cost the work; but the caller has a deadline, so
+# the retrying cannot be unbounded either.
+_RESULT_DELIVERY_ATTEMPTS = 3
+# pace between those attempts -- long enough for a reconnect to complete, short enough to fit several
+# tries inside any caller's timeout.
+_RESULT_DELIVERY_RETRY_SECONDS = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +417,17 @@ class CallRequest(BaseModel):
         spliced/replayed). the pod verifies it on every call (enforce-only);
         a request without a valid assertion for this body is rejected
     :ptype proxy_assertion: str | None
+    :param result_subject: where to DELIVER the answer, for a call the
+        caller has decided is too long to answer on the reply inbox.
+        ``allow_responses`` belongs to the connection that received the
+        request, and the credential refresh that keeps a pod
+        authenticated is a reconnect, so a tool that outlives one
+        connection lifetime cannot answer on the inbox at all. when set,
+        the pod acknowledges immediately with :class:`CallAccepted` and
+        publishes the :class:`CallResponse` here instead -- a subject it
+        holds a STANDING grant on, re-minted identically at every
+        refresh. ``None`` keeps the fast synchronous path for short calls
+    :ptype result_subject: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -415,6 +437,7 @@ class CallRequest(BaseModel):
     arguments: dict[str, Any]
     context: CallContext | None = None
     proxy_assertion: str | None = None
+    result_subject: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -481,6 +504,35 @@ class CallResponse(BaseModel):
     metadata: dict[str, Any] | None = None
     error: str | None = None
     context: CallContext | None = None
+
+
+class CallAccepted(BaseModel):
+    """the immediate answer to a call that will be DELIVERED rather than replied to.
+
+    Published on the request/reply inbox before any tool work starts, so it is always inside the
+    window the receiving connection is guaranteed to survive. It exists for one reason: without it,
+    the caller could not tell "this pod is running your 20-minute tool" from "this pod is gone", and
+    the registry's failover to a sibling endpoint would have to wait out the whole tool budget before
+    it could act.
+
+    A pod that refuses the delivery subject answers with ``accepted=False`` and a reason, so the
+    caller learns immediately rather than waiting for a result that will never be published.
+
+    :param accepted: whether the pod took the call and will publish to the delivery subject
+    :ptype accepted: bool
+    :param pod_id: the accepting pod's own id, so the caller can confirm which endpoint took it
+    :ptype pod_id: str
+    :param result_subject: the subject the answer will be published to; echoed back so the caller
+        can assert it matches the one it is waiting on
+    :ptype result_subject: str | None
+    :param error: why the call was refused, when ``accepted`` is false
+    :ptype error: str | None
+    """
+
+    accepted: bool
+    pod_id: str
+    result_subject: str | None = None
+    error: str | None = None
 
 
 class HeartbeatMessage(BaseModel):
@@ -1921,24 +1973,89 @@ class ToolServer:
         # ``track``), so KEDA's prometheus scaler reads the true concurrent-call
         # count and a failed call never strands the counter above baseline.
         with self._inflight_gauge.track():
-            # The reply obligation starts here and ends when the dispatch
-            # returns. While it is outstanding the connection must survive:
-            # `allow_responses` lives on the connection that received this
-            # message, so a proactive reconnect in the middle silently converts
-            # a completed tool call into a permissions violation on publish --
-            # observed as a 92-second scan that finished with exit 0 and could
-            # never deliver its 68KB of results.
+            # The reply obligation starts here. While it is outstanding the
+            # connection must survive: `allow_responses` lives on the connection
+            # that received this message, so a proactive reconnect in the middle
+            # silently converts a completed tool call into a permissions
+            # violation on publish -- observed as a 92-second scan that finished
+            # with exit 0 and could never deliver its 68KB of results.
+            #
+            # A call routed to durable delivery DISCHARGES that obligation as
+            # soon as it is acknowledged, long before the tool finishes. It has
+            # to: otherwise a 20-minute scan would hold the connection against
+            # re-auth for 20 minutes, the bounded drain would give up anyway, and
+            # it would log a reply about to be lost that is in fact perfectly
+            # safe on a subject this pod holds a standing grant on. The flag is a
+            # single-element list rather than instance state because dispatches
+            # run concurrently on one server.
+            owes_sync_reply = [True]
             self._calls_in_flight += 1
             self._calls_idle.clear()
             try:
-                await self._dispatch_incoming_call(msg)
+                await self._dispatch_incoming_call(msg, owes_sync_reply)
             finally:
-                self._calls_in_flight -= 1
-                if self._calls_in_flight <= 0:
-                    self._calls_in_flight = 0
-                    self._calls_idle.set()
+                if owes_sync_reply[0]:
+                    self._settle_sync_reply()
 
-    async def _dispatch_incoming_call(self, msg: IncomingMessage) -> None:
+    @property
+    def sync_replies_in_flight(self) -> int:
+        """how many dispatches still owe an answer on the request/reply INBOX.
+
+        The question this answers is "may this connection be recycled", which is correctness rather
+        than telemetry: ``allow_responses`` belongs to the connection that received a request, so
+        rebuilding the connection while this is non-zero permanently revokes the right to answer
+        those calls. The re-auth loop reads it before reconnecting, and shutdown paths can read it
+        for the same reason.
+
+        A durably-delivered call is NOT counted once it has been acknowledged: its answer goes to a
+        subject the pod holds a standing grant on, so it no longer cares which connection is current.
+
+        Deliberately not derived from the prometheus in-flight gauge, which is a silent no-op when
+        the extra is absent -- control flow keyed to it would work on one deployment and not another.
+
+        :return: number of dispatches still owing an inbox reply
+        :rtype: int
+        """
+        return self._calls_in_flight
+
+    async def await_sync_replies(self, *, timeout: float) -> bool:
+        """wait until nothing owes an inbox answer, bounded by ``timeout``.
+
+        Reports whether it settled rather than raising, because both outcomes are ordinary here: the
+        caller (the re-auth loop) proceeds either way -- waiting past the JWT's real deadline would
+        trade a lost reply for a dead connection, which is strictly worse -- and only differs in what
+        it says about it.
+
+        :param timeout: longest to wait, in seconds
+        :ptype timeout: float
+        :return: ``True`` when the pod owes nothing, ``False`` when the wait ran out first
+        :rtype: bool
+        """
+        result = True
+        try:
+            await asyncio.wait_for(self._calls_idle.wait(), timeout=timeout)
+        except TimeoutError:
+            # NOSILENT: reported to the caller as False; the caller owns the log line, because what
+            # an unsettled wait MEANS differs by caller (re-auth loses replies, shutdown does not).
+            result = False
+        return result
+
+    def _settle_sync_reply(self) -> None:
+        """mark one dispatch as no longer owing an answer on the reply inbox.
+
+        called once per dispatch: at the acknowledgement for a durably-delivered call, and at
+        dispatch end for every other. the floor at zero is deliberate -- a double settle would
+        otherwise drive the count negative and permanently defeat the drain.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._calls_in_flight -= 1
+        if self._calls_in_flight <= 0:
+            self._calls_in_flight = 0
+            self._calls_idle.set()
+
+    async def _dispatch_incoming_call(self, msg: IncomingMessage, owes_sync_reply: list[bool]) -> None:
         """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
 
         split out of :meth:`handle_call` so the public NATS callback can
@@ -1949,6 +2066,10 @@ class ToolServer:
 
         :param msg: incoming wrapper envelope carrying the call request
         :ptype msg: IncomingMessage
+        :param owes_sync_reply: single-element flag the dispatch clears when it
+            acknowledges a durably-delivered call, so :meth:`handle_call` does
+            not settle the obligation a second time
+        :ptype owes_sync_reply: list[bool]
         :return: nothing
         :rtype: None
         """
@@ -1997,6 +2118,53 @@ class ToolServer:
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
 
+            # Where this call's answer goes, decided BEFORE any work starts. The caller sets
+            # ``result_subject`` when the call is too long to be answered on the reply inbox, and the
+            # acknowledgement below is what lets it tell "running your 20-minute tool" from "this pod
+            # is gone" -- without it, failover to a sibling endpoint could only happen after the whole
+            # tool budget elapsed. Every branch from here on answers through ``_answer``, so a
+            # rejection travels the same route as a result and the caller is never left waiting on a
+            # subject nothing will ever publish to.
+            delivery_subject: Subject | None = None
+            if request.result_subject is not None:
+                delivery_subject = self._validated_result_subject(request.result_subject)
+                if delivery_subject is None:
+                    refusal = (
+                        f"result subject {request.result_subject!r} is not this pod's to publish; "
+                        f"expected one token under {result_subject_prefix_for_pod(self._pod_id)!r}"
+                    )
+                    await self._respond(
+                        msg,
+                        CallAccepted(
+                            accepted=False,
+                            pod_id=self._pod_id,
+                            result_subject=request.result_subject,
+                            error=refusal,
+                        ),
+                    )
+                    log.warning(
+                        "pod refused a delivery subject outside its own grant",
+                        extra={
+                            "extra_data": {
+                                "requested_subject": request.result_subject,
+                                "pod_id": self._pod_id,
+                                "tool_key": tool_key,
+                                "correlation_id": correlation_id_log,
+                            }
+                        },
+                    )
+                    outcome = "failure"
+                    failure_reason = refusal
+                    return
+                await self._respond(
+                    msg,
+                    CallAccepted(accepted=True, pod_id=self._pod_id, result_subject=delivery_subject.path),
+                )
+                # the inbox obligation is discharged; the connection is now free to be recycled
+                # underneath this call, which is the entire point.
+                owes_sync_reply[0] = False
+                self._settle_sync_reply()
+
             request, identity_rejection = await self._verify_identity(request)
             if identity_rejection is not None:
                 error_response = CallResponse(
@@ -2005,7 +2173,7 @@ class ToolServer:
                     error=identity_rejection,
                     context=request.context,
                 )
-                await self._respond(msg, error_response)
+                await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call: identity unverified",
                     extra={
@@ -2033,7 +2201,7 @@ class ToolServer:
                     error=assertion_rejection,
                     context=request.context,
                 )
-                await self._respond(msg, error_response)
+                await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "pod rejected call: proxy assertion unverified",
                     extra={
@@ -2057,7 +2225,7 @@ class ToolServer:
                     error=f"unknown tool: {tool_key}",
                     context=request.context,
                 )
-                await self._respond(msg, error_response)
+                await self._answer(msg, error_response, delivery_subject)
                 log.warning(
                     "unknown tool requested",
                     extra={
@@ -2105,7 +2273,7 @@ class ToolServer:
                 outcome = "error"
                 failure_reason = f"tool execution failed: {exc}"
 
-            await self._respond(msg, response)
+            await self._answer(msg, response, delivery_subject)
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -2117,6 +2285,103 @@ class ToolServer:
                 failure_reason=failure_reason,
             )
             clear_context()
+
+    def _validated_result_subject(self, candidate: str) -> Subject | None:
+        """accept a caller-supplied delivery subject only when it is this pod's own to publish.
+
+        The broker enforces the same thing -- this pod's JWT carries a grant on nothing else -- but
+        the two failures read completely differently. A permissions violation surfaces as an opaque
+        error on the publish of a result that has ALREADY been computed, which is precisely the shape
+        of the incident this whole change exists to end. Refusing here rejects the call before the
+        tool runs and names the subject that was asked for.
+
+        :param candidate: the delivery subject the caller supplied
+        :ptype candidate: str
+        :return: the validated subject, or ``None`` when it is not this pod's to publish
+        :rtype: Subject | None
+        """
+        result: Subject | None = None
+        if result_subject_is_owned_by_pod(candidate, pod_id=self._pod_id):
+            result = Subject.raw(candidate)
+        return result
+
+    async def _answer(
+        self,
+        msg: IncomingMessage,
+        response: CallResponse,
+        delivery_subject: Subject | None,
+    ) -> None:
+        """route one dispatch's answer to wherever this call agreed it would go.
+
+        one function for both paths so every branch of the dispatch -- a rejection, an unknown tool,
+        a raising tool, a success -- lands somewhere the caller is actually listening. a branch that
+        kept replying on the inbox after the call had been acknowledged for delivery would leave the
+        caller waiting out its full timeout on a subject nothing ever publishes to.
+
+        :param msg: inbound wrapper envelope (carries the reply inbox)
+        :ptype msg: IncomingMessage
+        :param response: the answer to send
+        :ptype response: CallResponse
+        :param delivery_subject: the durable subject this call was accepted for, or ``None`` for the
+            synchronous reply-inbox path
+        :ptype delivery_subject: Subject | None
+        :return: nothing
+        :rtype: None
+        """
+        if delivery_subject is None:
+            await self._respond(msg, response)
+        else:
+            await self._deliver(delivery_subject, response)
+
+    async def _deliver(self, subject: Subject, response: CallResponse) -> None:
+        """publish an answer to the pod's own durable subject, retrying a transient failure.
+
+        JetStream rather than a core publish, so a result is retained for a caller that is
+        mid-reconnect instead of being dropped on the floor -- fixing only the publisher's half of
+        the problem would have relocated the loss rather than ended it.
+
+        The retry is not decoration. By this point the tool has already run; a broker blip that lost
+        the publish would reproduce the original incident exactly -- work done, answer discarded --
+        and the caller still has a long timeout to run, so there is time to try again. When every
+        attempt fails the answer is genuinely lost, and that is said plainly, with the subject and
+        the byte count, rather than left to surface as an unexplained caller timeout.
+
+        :param subject: the pod's own delivery subject for this call
+        :ptype subject: Subject
+        :param response: the answer to deliver
+        :ptype response: CallResponse
+        :return: nothing
+        :rtype: None
+        """
+        if self._nc is None:
+            return
+        payload = response.model_dump_json().encode("utf-8")
+        for attempt in range(1, _RESULT_DELIVERY_ATTEMPTS + 1):
+            try:
+                await self._nc.jetstream_publish(subject=subject, payload=payload)
+                return
+            except Exception as exc:  # noqa: BLE001 — the work is already done; retry beats discarding it
+                if attempt == _RESULT_DELIVERY_ATTEMPTS:
+                    # NOSILENT: the answer is now lost. say so, with the subject and the size, rather
+                    # than letting it surface as an unexplained timeout at the caller.
+                    log.error(
+                        "tool result could not be delivered after %d attempts; the answer is lost "
+                        "(subject=%s pod_id=%s bytes=%d): %s",
+                        _RESULT_DELIVERY_ATTEMPTS,
+                        subject.path,
+                        self._pod_id,
+                        len(payload),
+                        exc,
+                    )
+                    return
+                log.warning(
+                    "tool result delivery failed (attempt %d/%d, subject=%s); retrying: %s",
+                    attempt,
+                    _RESULT_DELIVERY_ATTEMPTS,
+                    subject.path,
+                    exc,
+                )
+                await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
 
     async def _respond(self, msg: IncomingMessage, response: BaseModel) -> None:
         """publish ``response`` to the inbound message's reply subject.
@@ -2385,8 +2650,12 @@ class ToolServer:
             extra={"extra_data": {"pod_id": self._pod_id}},
         )
 
-    async def _drain_before_reauth(self, ttl_seconds: int | None) -> None:
+    async def drain_before_reauth(self, ttl_seconds: int | None) -> None:
         """wait for outstanding replies before recycling the connection.
+
+        Public because it is a lifecycle operation on the server rather than an implementation
+        detail of the re-auth loop: "hold this connection open until it owes nothing" is the same
+        question a graceful shutdown asks, and the loop is only its first caller.
 
         NATS scopes ``allow_responses`` to the CONNECTION that received a
         request: the server remembers *this* connection may answer *that*
@@ -2406,75 +2675,83 @@ class ToolServer:
         anyway and says plainly that a reply is about to be lost.
 
         A call longer than that slack cannot be rescued here, and no amount of
-        deferral fixes it: the connection's lifetime has to exceed the tool's.
-        :meth:`_warn_if_tool_timeout_exceeds_jwt_ttl` is what makes that
-        mismatch visible at startup instead of at the moment a result is
-        discarded.
+        deferral fixes it -- which is why draining is the mitigation and not the
+        remedy. The remedy is that such calls never take this path: past
+        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the
+        answer to a durable subject the pod holds a standing grant on, the
+        acknowledgement settles the inbox obligation immediately, and the count
+        this method waits on never includes it. So what is left here is exactly
+        the short calls the grace can genuinely cover.
 
         :param ttl_seconds: the connection JWT TTL, or ``None`` when unknown
         :ptype ttl_seconds: int | None
         :return: nothing
         :rtype: None
         """
-        if self._calls_idle.is_set():
+        if self.sync_replies_in_flight == 0:
             return
         grace = float(nats_reauth.REAUTH_BUFFER_SECONDS)
         log.info(
             "NATS re-auth deferred: waiting up to %ss for %d in-flight call(s) to reply",
             grace,
-            self._calls_in_flight,
-            extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self._calls_in_flight}},
+            self.sync_replies_in_flight,
+            extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
         )
-        try:
-            await asyncio.wait_for(self._calls_idle.wait(), timeout=grace)
-        except TimeoutError:
+        if not await self.await_sync_replies(timeout=grace):
             # NOSILENT: the reconnect proceeds because the JWT is about to
             # expire; the reply that is about to be lost is named here so it is
             # never a silent discard.
             log.error(
-                "NATS re-auth can wait no longer: %d call(s) still in flight and the connection "
-                "JWT is near expiry; their replies will be refused. The pod's JWT TTL must exceed "
-                "its longest tool timeout.",
-                self._calls_in_flight,
-                extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self._calls_in_flight}},
+                "NATS re-auth can wait no longer: %d short call(s) still owe a reply on the inbox "
+                "and the connection JWT is near expiry, so those replies will be refused. Long "
+                "calls are unaffected (they deliver on the pod's own durable subject); a call "
+                "stuck here means a tool declared a timeout inside the synchronous budget and then "
+                "ran past it.",
+                self.sync_replies_in_flight,
+                extra={"extra_data": {"pod_id": self._pod_id, "in_flight": self.sync_replies_in_flight}},
             )
 
     def _warn_if_tool_timeout_exceeds_jwt_ttl(self) -> None:
-        """say loudly when a tool may outlive the connection that must answer it.
+        """say loudly when even a SHORT call could not be answered on this connection.
 
-        The two budgets are set in different places and nothing related them: a
-        tool may be given twenty minutes while the connection carrying its reply
-        is rebuilt every sixty seconds. Every call in the gap between them runs
-        to completion and then fails to deliver, which reads as the tool being
-        broken rather than the connection being recycled underneath it.
+        A long tool no longer needs the connection to outlive it. Past
+        :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` the caller routes the answer to a durable
+        subject this pod holds a standing grant on, so recycling the connection mid-call is
+        harmless -- which is why this no longer compares the JWT TTL against the longest tool
+        timeout, a comparison that would now fire on every pentest pod and mean nothing.
 
-        Checked at startup and reported once, naming both numbers, so the
-        mismatch is visible before a single call is made rather than inferred
-        from a scan that produced results nobody received.
+        What remains is the floor underneath that arrangement. A call INSIDE the budget is still
+        answered on the reply inbox and still depends on the drain holding the connection open until
+        the answer is out. A TTL configured so tightly that the drain grace does not fit inside it
+        breaks that floor -- and breaks it for every call, not only the long ones. That is a
+        configuration fact knowable at startup, so it is said here, naming both numbers, rather than
+        discovered from a call that completed and then could not answer.
 
         :return: nothing
         :rtype: None
         """
+        from threetears.nats import SYNC_REPLY_BUDGET_SECONDS  # noqa: PLC0415 -- local: import cost only on serve
+
         ttl = self._current_nats_jwt_ttl_seconds()
         if not nats_reauth.has_schedulable_ttl(ttl):
             return
         assert ttl is not None  # narrowed above
-        longest = max((getattr(spec, "timeout_seconds", 0) or 0) for spec in self._tools.values()) if self._tools else 0
         usable = ttl - nats_reauth.REAUTH_LEEWAY_SECONDS
-        if longest > usable:
+        if usable < SYNC_REPLY_BUDGET_SECONDS:
             log.error(
-                "tool timeout exceeds the connection lifetime that must carry its reply: longest "
-                "tool timeout %ss vs %ss of usable connection (JWT TTL %ss). Calls in that gap will "
-                "complete and then be refused when they publish. Raise the pod's NATS user JWT TTL "
-                "above the longest tool timeout.",
-                longest,
+                "NATS user JWT TTL is too short to carry even a short tool call: %ss of usable "
+                "connection (TTL %ss minus %ss leeway) against a %ss synchronous-reply budget. "
+                "Calls inside that budget are answered on the reply inbox and will be refused when "
+                "the connection is recycled underneath them. Raise the pod's NATS user JWT TTL.",
                 usable,
                 ttl,
+                nats_reauth.REAUTH_LEEWAY_SECONDS,
+                SYNC_REPLY_BUDGET_SECONDS,
                 extra={
                     "extra_data": {
                         "pod_id": self._pod_id,
-                        "longest_tool_timeout_seconds": longest,
                         "usable_connection_seconds": usable,
+                        "sync_reply_budget_seconds": SYNC_REPLY_BUDGET_SECONDS,
                         "nats_user_jwt_ttl_seconds": ttl,
                     }
                 },
@@ -2506,7 +2783,7 @@ class ToolServer:
                         # reconnect on a guess. SAME predicate the scheduler uses (so the two never
                         # diverge); the heartbeat supervisor covers any terminal close while unknown.
                         continue
-                    await self._drain_before_reauth(ttl)
+                    await self.drain_before_reauth(ttl)
                     await self._reauth_nats_once()
                 except Exception as exc:
                     log.warning(

@@ -9,12 +9,13 @@ NATS request-reply.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
@@ -25,7 +26,17 @@ from threetears.core.security.identity_token import (
     verify_identity_token,
 )
 from threetears.core.security.pop import access_token_hash, verify_pop_proof
-from threetears.nats import IncomingMessage, RequestError, Subjects
+from threetears.nats import (
+    RESULT_ACK_TIMEOUT_SECONDS,
+    IncomingMessage,
+    RequestError,
+    Subject,
+    Subjects,
+    reply_subject_is_owned_by_agent,
+    reply_subject_prefix_for_agent,
+    requires_async_result,
+    result_stream_name,
+)
 from threetears.observe import InflightRequestsGauge, clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog
@@ -38,13 +49,21 @@ _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
 _POP_LEEWAY_SECONDS = 60
 
+# how many times a durable result publish to the caller is retried before the answer is declared
+# lost. by that point the tool has already run, so a transport blip must not cost the work; the
+# caller has a deadline, so the retrying cannot be unbounded either. mirrors the pod-side pair.
+_RESULT_DELIVERY_ATTEMPTS = 3
+_RESULT_DELIVERY_RETRY_SECONDS = 2.0
+
 if TYPE_CHECKING:
+    from threetears.agent.tools.server import CallAccepted
     from threetears.core.coordination.replay_guard import ReplayGuard
     from threetears.core.security import ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
     "CallProxy",
+    "ProxyCallAccepted",
     "ProxyCallRequest",
     "ProxyCallResponse",
 ]
@@ -92,6 +111,18 @@ class ProxyCallRequest(BaseModel):
         token alone is unusable). the proxy verifies it on every call
         (enforce-only); a request without a valid pop is rejected
     :ptype pop: str | None
+    :param result_subject: where to DELIVER the answer, for a call the
+        agent has decided is too long to answer on the reply inbox.
+        ``allow_responses`` belongs to the connection that received the
+        request, and the credential refresh that keeps the registry
+        authenticated is a reconnect, so a call spanning one connection
+        lifetime cannot be answered on the inbox at all. when set, the
+        proxy acknowledges immediately and publishes the
+        :class:`ProxyCallResponse` here instead. it must name the
+        caller's VERIFIED agent id -- the proxy refuses any other, which
+        is what keeps its two-token wildcard publish grant from being a
+        way to redirect one agent's result onto another's in-flight call
+    :ptype result_subject: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -101,6 +132,7 @@ class ProxyCallRequest(BaseModel):
     arguments: dict[str, Any]
     context: CallContext | None = None
     pop: str | None = None
+    result_subject: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -168,6 +200,28 @@ class ProxyCallResponse(BaseModel):
     error: str | None = None
     error_code: str | None = None
     context: CallContext | None = None
+
+
+class ProxyCallAccepted(BaseModel):
+    """the immediate answer to a call the proxy will DELIVER rather than reply to.
+
+    Mirrors the pod-side :class:`threetears.agent.tools.server.CallAccepted` one hop up. Published on
+    the agent's reply inbox before routing begins, while that publish is still guaranteed to work,
+    so the agent can distinguish "the registry has your long call" from "no registry answered" -- a
+    distinction its own retry and error handling depends on and that a silent long wait destroys.
+
+    :param accepted: whether the proxy took the call and will publish to the delivery subject
+    :ptype accepted: bool
+    :param result_subject: the subject the answer will be published to; echoed so the caller can
+        assert it matches the one it is waiting on
+    :ptype result_subject: str | None
+    :param error: why the call was refused, when ``accepted`` is false
+    :ptype error: str | None
+    """
+
+    accepted: bool
+    result_subject: str | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +849,48 @@ class CallProxy:
             str(request.context.customer_id) if request.context.customer_id is not None else None
         )
 
+        # Where this call's answer goes. Resolved HERE -- after identity verification, before any
+        # routing -- because the check that makes it safe is against the VERIFIED agent id that
+        # ``_verify_identity`` just re-stamped, never the one the envelope claimed. The registry holds
+        # a two-token wildcard publish grant on the reply family (one connection fronts every agent,
+        # so there is no per-connection list of literals to mint from); this refusal is what stops
+        # that wildcard from being a way to redirect one agent's result onto a peer's in-flight call.
+        delivery_subject: Subject | None = None
+        if request.result_subject is not None:
+            if not reply_subject_is_owned_by_agent(request.result_subject, agent_id=agent_id_log):
+                expected = reply_subject_prefix_for_agent(agent_id_log)
+                log.warning(
+                    "rejecting a delivery subject that does not name the verified caller",
+                    extra={
+                        "extra_data": {
+                            "requested_subject": request.result_subject,
+                            "expected_prefix": expected,
+                            "agent_id": agent_id_log,
+                            "tool_name": request.tool_name,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                if msg.reply_subject is not None:
+                    await self._nc.publish_reply(
+                        reply_subject=msg.reply_subject,
+                        message=ProxyCallAccepted(
+                            accepted=False,
+                            result_subject=request.result_subject,
+                            error=(
+                                f"result subject {request.result_subject!r} does not belong to the "
+                                f"verified caller; expected one token under {expected!r}"
+                            ),
+                        ),
+                    )
+                return
+            delivery_subject = Subject.raw(request.result_subject)
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=ProxyCallAccepted(accepted=True, result_subject=delivery_subject.path),
+                )
+
         # pre-call spend gate (gu-task-06): AFTER pop / BEFORE the authorizer + catalog routing, so a
         # spend-denied call never consumes a catalog lookup. FAIL-OPEN (Fork-2): a guard that RAISES
         # or is unreachable SERVES the call (loud WARNING) -- a billing-infra outage must not brick
@@ -863,11 +959,7 @@ class CallProxy:
                     error_code="TOOL_NOT_AUTHORIZED",
                     context=request.context,
                 )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
+                await self._answer(msg, response, delivery_subject)
                 log.warning(
                     "agent tool call denied",
                     extra={
@@ -892,11 +984,7 @@ class CallProxy:
                 error_code="TOOL_UNAVAILABLE",
                 context=request.context,
             )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
-                )
+            await self._answer(msg, response, delivery_subject)
             log.warning(
                 "tool not found for call",
                 extra={
@@ -925,11 +1013,7 @@ class CallProxy:
                     error_code="TOOL_NOT_READY",
                     context=request.context,
                 )
-                if msg.reply_subject is not None:
-                    await self._nc.publish_reply(
-                        reply_subject=msg.reply_subject,
-                        message=response,
-                    )
+                await self._answer(msg, response, delivery_subject)
                 log.warning(
                     "tool endpoints still pending probe confirmation",
                     extra={
@@ -949,11 +1033,7 @@ class CallProxy:
                 error_code="TOOL_UNAVAILABLE",
                 context=request.context,
             )
-            if msg.reply_subject is not None:
-                await self._nc.publish_reply(
-                    reply_subject=msg.reply_subject,
-                    message=response,
-                )
+            await self._answer(msg, response, delivery_subject)
             log.warning(
                 "no available endpoints for call",
                 extra={
@@ -1015,11 +1095,7 @@ class CallProxy:
                 },
             )
             endpoint = next_endpoint
-        if msg.reply_subject is not None:
-            await self._nc.publish_reply(
-                reply_subject=msg.reply_subject,
-                message=response,
-            )
+        await self._answer(msg, response, delivery_subject)
 
         # post-call usage-emit seam (gu-task-16): this is the one place both the inbound request
         # arguments and the outbound response content are local. the reply is already published, so
@@ -1039,6 +1115,61 @@ class CallProxy:
                         }
                     },
                 )
+
+    async def _answer(
+        self,
+        msg: IncomingMessage,
+        response: ProxyCallResponse,
+        delivery_subject: "Subject | None",
+    ) -> None:
+        """route one dispatch's answer to wherever this call agreed it would go.
+
+        one function for every branch -- limit denial, authorization denial, unknown tool, transport
+        failure, success -- so a call acknowledged for delivery can never have its answer published
+        on the inbox instead. that mistake does not fail loudly: the caller simply waits out its
+        whole timeout on a subject nothing ever publishes to.
+
+        :param msg: inbound wrapper envelope (carries the reply inbox)
+        :ptype msg: IncomingMessage
+        :param response: the answer to send
+        :ptype response: ProxyCallResponse
+        :param delivery_subject: the durable subject this call was accepted for, or ``None`` for the
+            synchronous reply-inbox path
+        :ptype delivery_subject: Subject | None
+        :return: nothing
+        :rtype: None
+        """
+        assert self._nc is not None
+        if delivery_subject is None:
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(reply_subject=msg.reply_subject, message=response)
+            return
+        payload = response.model_dump_json().encode("utf-8")
+        for attempt in range(1, _RESULT_DELIVERY_ATTEMPTS + 1):
+            try:
+                await self._nc.jetstream_publish(subject=delivery_subject, payload=payload)
+                return
+            except Exception as exc:  # noqa: BLE001 — the tool already ran; retry beats discarding it
+                if attempt == _RESULT_DELIVERY_ATTEMPTS:
+                    # NOSILENT: the answer is now lost. name it, rather than letting it surface as an
+                    # unexplained timeout at the agent.
+                    log.error(
+                        "tool result could not be delivered to the caller after %d attempts; the "
+                        "answer is lost (subject=%s bytes=%d): %s",
+                        _RESULT_DELIVERY_ATTEMPTS,
+                        delivery_subject.path,
+                        len(payload),
+                        exc,
+                    )
+                    return
+                log.warning(
+                    "tool result delivery to caller failed (attempt %d/%d, subject=%s); retrying: %s",
+                    attempt,
+                    _RESULT_DELIVERY_ATTEMPTS,
+                    delivery_subject.path,
+                    exc,
+                )
+                await asyncio.sleep(_RESULT_DELIVERY_RETRY_SECONDS)
 
     def _resolve_timeout(self, tool_name: str, tool_version: str) -> float:
         """resolve effective timeout for a tool call.
@@ -1065,10 +1196,16 @@ class CallProxy:
         request: ProxyCallRequest,
         pod_id: str,
     ) -> ProxyCallResponse:
-        """forward tool call to target tool pod via NATS request-reply.
+        """forward tool call to target tool pod, on whichever path its declared timeout allows.
 
         uses per-tool timeout from catalog if declared, otherwise
         falls back to proxy default.
+
+        A tool whose timeout exceeds :data:`threetears.nats.SYNC_REPLY_BUDGET_SECONDS` cannot be
+        answered on the reply inbox: the pod's right to publish there dies with the connection that
+        received the call, and that connection is rebuilt every time its credential is refreshed. Such
+        calls go through :meth:`_forward_call_durable` instead. Everything shorter keeps the fast
+        request/reply path unchanged.
 
         :param request: original call request from agent
         :ptype request: ProxyCallRequest
@@ -1080,9 +1217,11 @@ class CallProxy:
         """
         if self._nc is None:
             raise RuntimeError("_forward_call invoked before NATS connected")
+        effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
+        if requires_async_result(effective_timeout):
+            return await self._forward_call_durable(request, pod_id, effective_timeout)
         internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(request, self._mint_proxy_assertion(request, pod_id))
-        effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
         correlation_id_log = _correlation_id_str(request)
 
         try:
@@ -1125,6 +1264,180 @@ class CallProxy:
                 context=request.context,
             )
         return response
+
+    async def _forward_call_durable(
+        self,
+        request: ProxyCallRequest,
+        pod_id: str,
+        effective_timeout: float,
+    ) -> ProxyCallResponse:
+        """forward a LONG call: subscribe, dispatch, and collect the answer off a durable subject.
+
+        The order is the contract. The waiter is opened BEFORE the call is dispatched, so there is no
+        window in which the pod could answer with nothing listening. The dispatch itself is still
+        request/reply, but what comes back is only an ACCEPT -- published before the tool starts, so
+        it is always inside the window the pod's connection is guaranteed to survive. That accept is
+        what preserves the dead-pod signal the failover loop above depends on: without it, an endpoint
+        that had vanished would be indistinguishable from one running a 20-minute scan, and the
+        failover could not fire until the entire tool budget had elapsed.
+
+        The answer then arrives on ``{ns}.tools.result.{pod_id}.{call_id}``. ``call_id`` is minted
+        per CALL, never the per-turn ``correlation_id``: a turn can dispatch several tool calls, and a
+        correlation-keyed subject would hand this waiter another call's result.
+
+        :param request: original call request from agent
+        :ptype request: ProxyCallRequest
+        :param pod_id: identifier of target tool pod
+        :ptype pod_id: str
+        :param effective_timeout: how long the tool is allowed to take
+        :ptype effective_timeout: float
+        :return: the pod's answer, or a well-typed error response
+        :rtype: ProxyCallResponse
+        """
+        assert self._nc is not None  # guarded by the caller
+        correlation_id_log = _correlation_id_str(request)
+        result_subject = Subjects.tools_result(pod_id, uuid7())
+        internal_payload = _build_internal_payload(
+            request,
+            self._mint_proxy_assertion(request, pod_id),
+            result_subject=result_subject.path,
+        )
+        waiter = await self._nc.jetstream_result_waiter(
+            subject=result_subject,
+            stream=result_stream_name(),
+            wait_budget=timedelta(seconds=effective_timeout),
+        )
+        try:
+            accept_error = await self._await_pod_accept(
+                pod_id=pod_id,
+                internal_payload=internal_payload,
+                result_subject=result_subject,
+                request=request,
+                correlation_id_log=correlation_id_log,
+            )
+            if accept_error is not None:
+                return accept_error
+            try:
+                delivered = await waiter.wait(timeout=timedelta(seconds=effective_timeout))
+            except Exception as exc:  # noqa: BLE001 — every failure becomes a typed response, never a hang
+                log.warning(
+                    "tool result never arrived on its durable subject",
+                    extra={
+                        "extra_data": {
+                            "pod_id": pod_id,
+                            "tool_name": request.tool_name,
+                            "correlation_id": correlation_id_log,
+                            "subject": result_subject.path,
+                            "timeout": effective_timeout,
+                            "detail": str(exc),
+                        }
+                    },
+                )
+                # TOOL_TIMEOUT, not TOOL_UNAVAILABLE: the pod ACCEPTED this call, so it may well be
+                # running it. Retrying elsewhere would risk executing a non-idempotent tool twice,
+                # which is the same reason the synchronous path never retries a timeout either.
+                return ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"tool call timed out after {effective_timeout}s awaiting durable result",
+                    error_code="TOOL_TIMEOUT",
+                    context=request.context,
+                )
+        finally:
+            await waiter.close()
+        return ProxyCallResponse.model_validate_json(delivered)
+
+    async def _await_pod_accept(
+        self,
+        *,
+        pod_id: str,
+        internal_payload: bytes,
+        result_subject: "Subject",
+        request: ProxyCallRequest,
+        correlation_id_log: str,
+    ) -> ProxyCallResponse | None:
+        """dispatch the call and confirm the pod took it; ``None`` means it did.
+
+        A pod may answer this request/reply with something other than an accept, and both cases are
+        real. A malformed-request rejection comes back as a full :class:`ProxyCallResponse`-shaped
+        body, because the pod could not parse far enough to learn where to deliver. A refusal comes
+        back as ``accepted=False`` when the delivery subject was not the pod's own to publish. Either
+        way the caller must be told now rather than waiting out the tool's whole budget for an answer
+        that will never be published.
+
+        :param pod_id: identifier of target tool pod
+        :ptype pod_id: str
+        :param internal_payload: serialized :class:`CallRequest` bytes
+        :ptype internal_payload: bytes
+        :param result_subject: the subject the pod was asked to deliver on
+        :ptype result_subject: Subject
+        :param request: original call request from agent (for context echoing)
+        :ptype request: ProxyCallRequest
+        :param correlation_id_log: stringified correlation id for log records
+        :ptype correlation_id_log: str
+        :return: an error response to return to the caller, or ``None`` when the pod accepted
+        :rtype: ProxyCallResponse | None
+        """
+        assert self._nc is not None  # guarded by the caller
+        try:
+            accept_bytes = await self._nc.request_raw(
+                subject=Subjects.tools_internal(pod_id),
+                payload=internal_payload,
+                timeout=timedelta(seconds=RESULT_ACK_TIMEOUT_SECONDS),
+            )
+        except (TimeoutError, RequestError) as exc:
+            # TOOL_UNAVAILABLE for BOTH shapes here, unlike the synchronous path. There the timeout
+            # could mean "the pod is running your tool", so retrying elsewhere risked a double
+            # execution. Here the pod had only to acknowledge before starting any work, so a silent
+            # accept window means it is not there -- and failing over to a sibling endpoint is right.
+            log.warning(
+                "tool pod did not acknowledge a durably-delivered call",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "accept_timeout": RESULT_ACK_TIMEOUT_SECONDS,
+                        "detail": str(exc),
+                    }
+                },
+            )
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"tool pod did not accept the call within {RESULT_ACK_TIMEOUT_SECONDS}s: {exc}",
+                error_code="TOOL_UNAVAILABLE",
+                context=request.context,
+            )
+        accept = _parse_pod_accept(accept_bytes)
+        if accept is None:
+            # not an accept envelope: the pod answered the call outright (it could not parse the
+            # request far enough to learn where to deliver). that IS the answer; pass it through.
+            return ProxyCallResponse.model_validate_json(accept_bytes)
+        if not accept.accepted:
+            log.error(
+                "tool pod refused the delivery subject it was given",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": correlation_id_log,
+                        "subject": result_subject.path,
+                        "reason": accept.error,
+                    }
+                },
+            )
+            # NOT retried against a sibling endpoint. A refusal means this proxy and that pod
+            # disagree about the pod's own identity, which is a wiring fault rather than a dead
+            # endpoint; failing over would paper over it until it applied to every pod at once.
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"tool pod refused the result subject: {accept.error}",
+                error_code="TOOL_RESULT_SUBJECT_REFUSED",
+                context=request.context,
+            )
+        return None
 
     def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str) -> str | None:
         """sign a proxy->pod assertion for a forwarded call, or ``None`` when unsignable.
@@ -1188,7 +1501,12 @@ def _correlation_id_str(request: ProxyCallRequest) -> str:
     return result
 
 
-def _build_internal_payload(request: ProxyCallRequest, proxy_assertion: str | None = None) -> bytes:
+def _build_internal_payload(
+    request: ProxyCallRequest,
+    proxy_assertion: str | None = None,
+    *,
+    result_subject: str | None = None,
+) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
     constructs :class:`CallRequest` from the proxy request, copying
@@ -1198,10 +1516,17 @@ def _build_internal_payload(request: ProxyCallRequest, proxy_assertion: str | No
     ``proxy_assertion`` is the proxy's body-bound signature for the pod
     to verify, or ``None`` when the binding is inert.
 
+    The agent's OWN ``result_subject`` is deliberately not forwarded: the two hops carry independent
+    delivery subjects, each naming its own responder, and passing the agent's through would ask the
+    pod to publish somewhere it holds no grant.
+
     :param request: original proxy call request
     :ptype request: ProxyCallRequest
     :param proxy_assertion: the proxy->pod assertion JWS, or ``None``
     :ptype proxy_assertion: str | None
+    :param result_subject: the pod-owned subject to deliver the answer on, or ``None`` to keep the
+        synchronous reply-inbox path
+    :ptype result_subject: str | None
     :return: serialized internal call request bytes
     :rtype: bytes
     """
@@ -1213,6 +1538,40 @@ def _build_internal_payload(request: ProxyCallRequest, proxy_assertion: str | No
         arguments=request.arguments,
         context=request.context,
         proxy_assertion=proxy_assertion,
+        result_subject=result_subject,
     )
     result = internal_request.model_dump_json().encode("utf-8")
+    return result
+
+
+def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
+    """read a pod's acknowledgement, or ``None`` when the body is not one.
+
+    Discriminated on the presence of ``accepted`` rather than on a successful parse: both envelopes
+    the pod can send here decode without error under a permissive model, so "did it validate" would
+    silently classify a real answer as an acknowledgement and then wait for a result that was already
+    in hand.
+
+    :param payload: the raw reply bytes from the pod
+    :ptype payload: bytes
+    :return: the parsed acknowledgement, or ``None`` when the body is a full answer instead
+    :rtype: CallAccepted | None
+    """
+    from threetears.agent.tools.server import CallAccepted
+
+    result: CallAccepted | None = None
+    try:
+        decoded = json.loads(payload)
+    except (ValueError, TypeError):
+        # NOSILENT: "this is not an acknowledgement" is the answer this function exists to give.
+        # the caller then parses the same bytes as a full response, and reports the failure there
+        # with the detail, so raising or logging here would double-report one bad payload.
+        return None
+    if isinstance(decoded, dict) and "accepted" in decoded:
+        try:
+            result = CallAccepted.model_validate(decoded)
+        except ValidationError:
+            # NOSILENT: same contract as above -- a body carrying ``accepted`` but not matching the
+            # model is handed on as a response and reported there rather than twice.
+            result = None
     return result

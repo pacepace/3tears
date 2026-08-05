@@ -149,6 +149,56 @@ def test_tools_subtree_and_router_wildcards() -> None:
     assert Subjects.tools_probe_wildcard().path == "3tears.tools.probe.>"
 
 
+def test_tools_result_subjects() -> None:
+    """the pod-owned durable result family renders responder-id first."""
+    assert Subjects.tools_result("tool-pod-xyz", "call-1").path == "3tears.tools.result.tool-pod-xyz.call-1"
+    assert Subjects.tools_result("tool-pod-xyz", "call-1").kind == "point"
+    assert Subjects.tools_result_pod_wildcard("tool-pod-xyz").path == "3tears.tools.result.tool-pod-xyz.>"
+    assert Subjects.tools_result_pod_wildcard("tool-pod-xyz").kind == "pattern"
+    assert Subjects.tools_result_agent_subtree("agent-A").path == "3tears.tools.result.agent-A.>"
+    assert Subjects.tools_result_wildcard().path == "3tears.tools.result.>"
+
+
+def test_tools_result_of_inprocess_pod_nests_under_the_agent_subtree() -> None:
+    """an agent's in-process result subject sits inside the grant its AGENT_POD JWT carries.
+
+    the composite pod-id's structural dot has to survive here for the same reason it does on
+    ``tools.internal``: the agent-id must be its own token or ``tools.result.{agent_id}.>`` cannot
+    wildcard-match it, and the agent could not publish its own in-process tool's result at all.
+    """
+    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    assert Subjects.tools_result(composite, "call-1").path == "3tears.tools.result.agent-A.inst-1.call-1"
+    grant = Subjects.tools_result_agent_subtree("agent-A").path.removesuffix(">")
+    assert Subjects.tools_result(composite, "call-1").path.startswith(grant)
+    assert not Subjects.tools_result(composite, "call-1").path.startswith("3tears.tools.result.agent-B.")
+
+
+def test_tools_reply_subjects_are_keyed_on_the_calling_agent() -> None:
+    """the registry->agent family names the CALLER, because the responder is queue-grouped.
+
+    ``tools.call`` load-balances across registry replicas, so the caller cannot know which replica
+    will answer and cannot subscribe a responder-named subject before dispatching. keying on the
+    caller keeps the subject derivable in advance; containment comes from the agent subscribing only
+    its own subtree and the registry refusing a subject that does not name the VERIFIED agent id.
+    """
+    assert Subjects.tools_reply("agent-A", "call-1").path == "3tears.tools.reply.agent-A.call-1"
+    assert Subjects.tools_reply("agent-A", "call-1").kind == "point"
+    assert Subjects.tools_reply_wildcard().path == "3tears.tools.reply.*.*"
+    assert Subjects.tools_reply_wildcard().kind == "pattern"
+
+
+def test_tools_result_and_reply_families_do_not_overlap() -> None:
+    """the two families are siblings, so one stream can hold both and no grant spans both.
+
+    a pod's standing ``tools.result.{pod}.>`` grant must not reach the reply family the registry
+    publishes to agents; if it did, any tool pod could forge an answer into any agent's in-flight
+    call -- the cross-tenant injection the per-request inbox grant was rejected for.
+    """
+    pod_grant = Subjects.tools_result_pod_wildcard("tool-pod-xyz").path.removesuffix(">")
+    assert not Subjects.tools_reply("agent-A", "call-1").path.startswith(pod_grant)
+    assert not Subjects.tools_result_wildcard().path.startswith("3tears.tools.reply.")
+
+
 def test_gateway_subjects() -> None:
     """gateway subject builders produce documented shapes."""
     agent_id = "agent-7"
