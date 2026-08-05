@@ -177,9 +177,7 @@ async def capture_request_shape(
             body=call.body,
             body_shape=_parse_body_shape(call.body),
             request_body=call.request_body,
-            request_body_shape=(
-                _parse_body_shape(call.request_body) if call.request_body is not None else None
-            ),
+            request_body_shape=(_parse_body_shape(call.request_body) if call.request_body is not None else None),
         )
         for call in page.network_calls
     )

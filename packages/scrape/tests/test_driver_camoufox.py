@@ -390,9 +390,7 @@ class TestCamoufoxDriverNetworkCapture:
         """None, not "" -- "had no body" and "had an empty body" are different facts."""
         page = _FakeCamoufoxPage(
             goto_result=_FakeCamoufoxResponse(200),
-            network_responses=[
-                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/rows", body='{"rows": []}')
-            ],
+            network_responses=[_FakeCamoufoxNetworkResponse(url="https://example.gov/api/rows", body='{"rows": []}')],
         )
         driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
 
