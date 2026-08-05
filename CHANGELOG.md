@@ -22,6 +22,20 @@ and the truth for every GET; a form-encoded payload parses to no shape but stays
 available verbatim. Additive with defaults, so every existing caller and every
 captured GET is unchanged.
 
+### `3tears-enforcement`
+
+**Regenerating the underscore-exemptions ledger no longer loses reviewed
+rationales when an edit is longer than a function.** `carry_forward_rationales`
+resolved every entry's enclosing scope against the CURRENT file at the entry's
+recorded line -- exact while the ledger is fresh, but a drifted line has a
+different function under it, so one insertion longer than a function turned every
+reviewed rationale below it into a TODO placeholder at the next regeneration. A
+drifted entry now resolves against the file as it stood at the last commit that
+touched the ledger, which is the tree its numbers were recorded against; a fresh
+entry (including one hand-added for uncommitted code) still resolves against the
+current file. Without git history the old behaviour remains, and a mapping that
+cannot be made still surfaces as a placeholder rather than a wrong rationale.
+
 ## v0.23.2 -- 2026-08-04
 
 > **A PATCH bump — this repairs a loss, it does not add a capability — but the whole
