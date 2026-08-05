@@ -52,7 +52,7 @@ FROM python:3.14-slim AS wheels
 # One such message named an innocent, correctly-installed package and cost most
 # of a day. uv resolved the identical dependency set in seconds and names the
 # real conflict.
-COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /usr/local/bin/uv
 
 # The root pyproject.toml is the workspace definition -- it is the INPUT to the
 # build below, not incidental metadata. Copied on its own so a packages/ change
@@ -97,7 +97,26 @@ ENV PATH="/opt/threetears/.venv/bin:${PATH}"
 # and must do so with the same resolver. Leaving them on pip is what let the
 # image chain drift away from the platform's uv-only rule in the first place.
 # It is a single static binary -- no Python dependency, negligible layer cost.
-COPY --from=ghcr.io/astral-sh/uv:0.9.9 /uv /usr/local/bin/uv
+#
+# THIS VERSION IS A CONSUMER CONTRACT, not a detail of this image. Every
+# consumer (aibots-base, hub, admin, schema) inherits this binary rather than
+# installing its own -- aibots-base's Dockerfile says so outright -- and each of
+# them runs `uv export` against ITS OWN uv.lock at build time. So this uv has to
+# be able to read the lockfiles the platform currently produces, and it could
+# not: 0.9.9 predates both the friendly-duration `exclude-newer = "14 days"` the
+# supply-chain cooldown uses and the `[options]` table the newer uv writes into
+# uv.lock. Every consumer Docker build failed identically the moment the
+# cooldown landed:
+#
+#   failed to parse year in date "14 days"
+#   Failed to parse `uv.lock` ... [options]: invalid type: map, expected a
+#   timestamp string
+#
+# Bumping it here rather than overriding uv per consumer: nine repos carry that
+# cooldown, so a per-repo override is the same workaround written nine times,
+# and it would leave this image shipping a resolver older than the locks it is
+# handed.
+COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /usr/local/bin/uv
 
 # Build tooling INTO the venv so downstream consumer Dockerfiles
 # (aibots-base, hub, admin, schema, future 3tears apps) can `python -m build`
