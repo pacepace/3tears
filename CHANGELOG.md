@@ -4,6 +4,36 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.23.1 -- 2026-08-04
+
+> **No Python changed. This release exists to ship a base image that can read
+> the lockfiles the platform now produces.** Every consumer that builds a Docker
+> image needs it; nothing that only imports the packages does.
+
+### Fixed
+
+- **Base image: uv 0.9.9 -> 0.11.1** (`docker/Dockerfile`, both stages). The uv
+  binary in `threetears-base` is a CONSUMER CONTRACT, not an internal detail:
+  `aibots-base` inherits it rather than installing its own, and every downstream
+  image (hub, admin, schema, agent) runs `uv export` against its OWN `uv.lock`
+  at build time. 0.9.9 predates two things the current uv writes, so the moment
+  the supply-chain cooldown (`exclude-newer = "14 days"`) landed in a consumer,
+  that consumer's image build failed:
+
+  ```
+  failed to parse year in date "14 days"
+  Failed to parse `uv.lock` ... [options]: invalid type: map, expected a
+  timestamp string
+  ```
+
+  Reproduced directly against `ghcr.io/astral-sh/uv:0.9.9` and confirmed fixed
+  on 0.11.1, then proven end to end by baking the hub image from source.
+
+  Bumped here rather than overridden per consumer: nine repos carry that
+  cooldown, so a per-repo override is the same workaround written nine times
+  and would leave this image shipping a resolver older than the locks it is
+  handed.
+
 ## v0.22.5 -- 2026-08-01
 
 > **A PATCH bump, and safe for every current consumer.** For a CONCRETE epoch
