@@ -4,6 +4,24 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### `3tears-scrape`
+
+**Network capture now records the request payload, so a POST-read API can be
+replayed.** A growing class of portal APIs is read with a POST whose body IS the
+query -- the URL is byte-identical for every page and every filter -- so capturing
+only the response left a caller able to see that such an API exists and unable to
+call it. `NetworkCall` and `CapturedRequestShape` carry `request_body` (verbatim,
+as sent), and the latter also `request_body_shape` (`json.loads` when it parses).
+Both drivers fill it from what they already hold: Playwright's `Request.post_data`
+in camoufox, CDP's `request.post_data` in the nodriver sidecar.
+
+`None` means the request carried no body -- a different fact from an empty one,
+and the truth for every GET; a form-encoded payload parses to no shape but stays
+available verbatim. Additive with defaults, so every existing caller and every
+captured GET is unchanged.
+
 ## v0.23.2 -- 2026-08-04
 
 > **A PATCH bump — this repairs a loss, it does not add a capability — but the whole

@@ -135,7 +135,7 @@ class _FakeCamoufoxPage:
             self._response_handler = handler
 
 
-# parity-exempt: hand-rolled subset stub of Playwright's third-party Request (only .resource_type/.method, the only attributes CamoufoxDriver reads)
+# parity-exempt: hand-rolled subset stub of Playwright's third-party Request (only .resource_type/.method/.post_data, the only attributes CamoufoxDriver reads)
 class _FakeCamoufoxRequest:
     def __init__(self, resource_type: str, method: str = "GET", post_data: str | None = None) -> None:
         self.resource_type = resource_type
