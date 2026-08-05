@@ -64,9 +64,22 @@ class _FakeDriver:
 
 
 def _call(
-    url: str, body: str, *, method: str = "GET", status: int = 200, content_type: str = "application/json"
+    url: str,
+    body: str,
+    *,
+    method: str = "GET",
+    status: int = 200,
+    content_type: str = "application/json",
+    request_body: str | None = None,
 ) -> NetworkCall:
-    return NetworkCall(url=url, method=method, status=status, content_type=content_type, body=body)
+    return NetworkCall(
+        url=url,
+        method=method,
+        status=status,
+        content_type=content_type,
+        body=body,
+        request_body=request_body,
+    )
 
 
 # ===========================================================================
@@ -201,3 +214,63 @@ class TestGamingCheckDifferentTargetClass:
         call = result.calls[0]
         assert call.method == "POST"
         assert call.body_shape == {"resultRows": [{"id": 1, "label": "x"}], "cursor": "abc123"}
+
+
+# ===========================================================================
+# The request payload -- what a POST-read API needs to be replayable at all
+# ===========================================================================
+
+
+class TestRequestPayloadCapture:
+    """A POST-read API's body IS its query: same URL for every page and every
+    filter. Capturing only the response leaves a caller able to see that such
+    an API exists and unable to call it, so the payload is carried alongside."""
+
+    async def test_json_request_payload_is_carried_and_parsed(self) -> None:
+        payload = json.dumps({"pageNumber": 1, "pageSize": 1000, "year": "2026"})
+        driver = _FakeDriver(
+            [
+                _call(
+                    "https://api.example.gov/api/Grids/GetData",
+                    json.dumps({"data": {"items": [{"id": 1, "name": "x"}], "totalItems": 1}}),
+                    method="POST",
+                    request_body=payload,
+                )
+            ]
+        )
+
+        result = await capture_request_shape("https://portal.example.gov/search", driver=driver)
+
+        call = result.calls[0]
+        # Verbatim, because a replay must send the bytes the page sent...
+        assert call.request_body == payload
+        # ...and parsed, because a caller that wants to page it must edit a field.
+        assert call.request_body_shape == {"pageNumber": 1, "pageSize": 1000, "year": "2026"}
+
+    async def test_a_bodyless_get_reports_no_payload_rather_than_an_empty_one(self) -> None:
+        driver = _FakeDriver([_call("https://api.example.gov/rows.json", json.dumps([{"id": 1}]))])
+
+        call = (await capture_request_shape("https://portal.example.gov/", driver=driver)).calls[0]
+
+        # None, not "" and not {} -- "this request had no body" is a different fact
+        # from "it had an empty one", and only the first is true of a GET.
+        assert call.request_body is None
+        assert call.request_body_shape is None
+
+    async def test_a_form_encoded_payload_stays_available_verbatim(self) -> None:
+        """Not every payload is JSON. An unparseable one must not be lost, only unparsed."""
+        driver = _FakeDriver(
+            [
+                _call(
+                    "https://portal.example.gov/Report.aspx",
+                    json.dumps({"rows": []}),
+                    method="POST",
+                    request_body="__VIEWSTATE=abc&ctl00%24Go=Go",
+                )
+            ]
+        )
+
+        call = (await capture_request_shape("https://portal.example.gov/", driver=driver)).calls[0]
+
+        assert call.request_body == "__VIEWSTATE=abc&ctl00%24Go=Go"
+        assert call.request_body_shape is None

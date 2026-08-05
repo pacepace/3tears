@@ -169,6 +169,7 @@ class _FakeTab:
         body: str = "{}",
         is_base64: bool = False,
         frame_id: str | None = None,
+        post_data: str | None = None,
     ) -> None:
         """Simulate a full XHR/fetch request/response/loading-finished cycle
         -- RequestWillBeSent -> ResponseReceived -> LoadingFinished, then
@@ -183,6 +184,7 @@ class _FakeTab:
             headers=uc.cdp.network.Headers({}),
             initial_priority=uc.cdp.network.ResourcePriority.LOW,
             referrer_policy="strict-origin-when-cross-origin",
+            post_data=post_data,
         )
         req_event = uc.cdp.network.RequestWillBeSent(
             request_id=rid,
@@ -539,7 +541,37 @@ class TestNetworkCapture:
             "status": 200,
             "content_type": "application/json",
             "body": '{"notices": [1, 2]}',
+            # None, not "" -- this GET carried no body, which is a different fact
+            # from carrying an empty one.
+            "request_body": None,
         }
+
+    async def test_captures_a_post_requests_payload(self, client: httpx.AsyncClient):
+        """A POST-read API's payload is its query -- without it the call cannot
+        be replayed. CDP carries it on the RequestWillBeSent event's request."""
+        tab = _FakeTab(
+            html="<html></html>",
+            url="https://example.gov",
+            network_calls_to_fire=[
+                {
+                    "request_id": "r1",
+                    "url": "https://api.example.gov/api/Grids/GetData",
+                    "method": "POST",
+                    "body": '{"data": {"items": [{"id": 1}]}}',
+                    "post_data": '{"pageNumber": 1, "pageSize": 1000}',
+                }
+            ],
+        )
+        main._browser = _FakeBrowser(tab=tab)
+        async with client:
+            r = await client.post(
+                "/v1/render",
+                json={"url": "https://example.gov", "timeout": 5.0, "wait_for": None, "capture_network": True},
+            )
+        calls = r.json()["network_calls"]
+        assert len(calls) == 1
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["request_body"] == '{"pageNumber": 1, "pageSize": 1000}'
 
     async def test_non_json_body_is_not_captured(self, client: httpx.AsyncClient):
         tab = _FakeTab(

@@ -272,6 +272,9 @@ class CamoufoxDriver(ScrapeDriver):
                         status=resp.status,
                         content_type=headers.get("content-type", ""),
                         body=body,
+                        # Playwright exposes the request payload on the Request object we
+                        # already hold; it is None for a bodyless request (every GET).
+                        request_body=resp.request.post_data,
                     )
                 )
             result = RenderedPage(
