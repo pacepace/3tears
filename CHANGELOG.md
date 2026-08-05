@@ -4,6 +4,119 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.23.2 -- 2026-08-04
+
+> **A PATCH bump — this repairs a loss, it does not add a capability — but the whole
+> family must still move in ONE commit.** The registry ↔ tool-pod and agent ↔
+> registry call envelopes each gain one optional field, and both models are
+> `extra="forbid"`, so a 0.23.2 registry sending `result_subject` to a 0.23.1 pod
+> gets `malformed call request`. The intra-family bounds on a patch release
+> (`>=0.23.0,<0.24.0`) permit that mix; the exact-pin rule is what prevents it. Do
+> not half-move a consumer's pins.
+
+### Fixed
+
+- **A tool that runs longer than one connection lifetime can now deliver its
+  answer.** NATS validates a connection's user JWT at CONNECT and has no in-band
+  re-auth, so refreshing a credential IS a reconnect. `allow_responses` — the right
+  to answer a request without a standing publish grant on the requester's inbox — is
+  scoped to the connection that RECEIVED the request. Those two facts compose into a
+  hard limit: **any correct credential refresh destroyed the right to answer a call
+  still in flight.** Observed in production on a pentest pod:
+
+  ```
+  03:26:12  running testssl
+  03:26:48  NATS re-authenticated (proactive reconnect)
+  03:27:44  scanner finished {"exit_code": 0, "duration_seconds": 91.964,
+                              "timed_out": false, "stdout_bytes": 67902}
+  03:27:44  NATS error: permissions violation for publish to "_inbox...."
+  ```
+
+  The scan worked. 68KB of results existed and could not be delivered — which reads
+  as the tool being broken rather than the connection being recycled underneath it.
+
+  Neither obvious lever was acceptable. A JWT TTL long enough to cover a
+  1200-second scan means 20-minute credentials. A standing publish grant on the
+  requester's inbox tree (`_INBOX_registry_*.>`) would let any tool pod forge a reply
+  into any other pod's in-flight call — a cross-customer response-injection hole.
+
+  So a long call is now **accepted, then delivered**. The responder acknowledges on
+  the reply inbox before starting any work — always inside the window its connection
+  is guaranteed to survive — and publishes the answer to a subject it holds a
+  STANDING grant on. Because that grant is derived from ids the auth-callout already
+  resolves, every refresh re-mints it identically and reconnects stop being an event
+  the call has to survive.
+
+  Both hops changed, because all three connections in `agent -> registry -> pod` run
+  the same refresh and fixing one only relocates the failure.
+
+### Added
+
+- **Two durable answer families** (`threetears.nats.Subjects`):
+
+  | subject | hop |
+  |---------|-----|
+  | `{ns}.tools.result.{pod_id}.{call_id}` | pod → registry |
+  | `{ns}.tools.reply.{agent_id}.{call_id}` | registry → agent |
+
+  The keying differs because the responders differ. A pod is a NAMED responder, so
+  the subject names the answerer and only that pod holds the publish grant. The
+  registry is an ANONYMOUS member of a queue group — the caller cannot know which
+  replica will answer, so it cannot subscribe a responder-named subject before
+  dispatching. That family names the CALLER instead (the shape
+  `gateway.stream.{agent_id}.{correlation_id}` already uses), and containment moves
+  to the registry refusing any subject that does not name the call's VERIFIED agent
+  id, re-stamped from the identity token rather than claimed by the envelope.
+
+  `call_id` is per CALL, never the per-turn `correlation_id`: a turn routinely makes
+  several tool calls, and a correlation-keyed subject would hand a waiter another
+  call's result.
+
+- **`threetears.nats.result_delivery`** — the pure decisions both responders and both
+  callers share: `requires_async_result()`, `result_stream_name()`, and the
+  subject-ownership checks. Every ownership prefix is derived from the subject
+  factory rather than reassembled locally, so the check cannot drift from what the
+  factory builds.
+
+- **`NatsClient.jetstream_result_waiter()`** returning `JetStreamResultWaiter`.
+  Delivery rides JetStream rather than a core publish, and the waiter rebuilds its
+  consumer after a failed fetch, so a CONSUMER-side reconnect cannot lose an answer
+  that took twenty minutes to compute either. Opened BEFORE the call is dispatched;
+  `DeliverPolicy.ALL` on a per-call subject removes the ordering race entirely.
+
+- **`ToolServer.sync_replies_in_flight` / `await_sync_replies()`**, and
+  `_drain_before_reauth` promoted to **`drain_before_reauth`**. "May this connection
+  be recycled" is a lifecycle question about the server, not an implementation detail
+  of the re-auth loop.
+
+- `ensure_jetstream_stream()` gains `max_age_seconds` and `max_msgs_per_subject`.
+
+### Changed
+
+- `CallRequest` and `ProxyCallRequest` gain an optional `result_subject`; new
+  `CallAccepted` / `ProxyCallAccepted` acknowledgement envelopes. The acknowledgement
+  is what preserves the registry's fast dead-pod signal — without it, an endpoint
+  that had vanished would be indistinguishable from one running a 20-minute scan
+  until the whole tool budget elapsed.
+
+- Calls inside `SYNC_REPLY_BUDGET_SECONDS` (30s) keep the fast reply-inbox path
+  unchanged. That budget is pinned `<=` the re-auth drain grace by an enforcement
+  test, so a call the caller CHOSE to answer synchronously always fits inside the
+  window the responder will actually hold its connection open for. The two numbers
+  live in different packages and nothing else related them — which is exactly how a
+  60-second connection ended up carrying a 1200-second tool.
+
+- The tool pod's startup TTL warning no longer compares the JWT TTL against the
+  longest tool timeout (that comparison would now fire on every pentest pod and mean
+  nothing). It fires when the TTL is too short to carry even a SHORT call, which is
+  the floor the synchronous path still rests on.
+
+- Standing grants minted for `TOOL_POD` (own result subtree), `AGENT_POD` (own
+  in-process result subtree), and `REGISTRY` (the reply family); all three declare
+  the `{ns}-tools-results` stream. Proven against a live nats-server — an ungranted
+  JetStream op does not fail with a denial, it hangs to its deadline, so the grant
+  strings are exercised on a real subject matcher rather than asserted in isolation.
+
 ## v0.23.1 -- 2026-08-04
 
 > **No Python changed. This release exists to ship a base image that can read

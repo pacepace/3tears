@@ -33,6 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from threetears.nats.result_delivery import result_stream_name
 from threetears.nats.subjects import Subjects, get_default_namespace
 
 __all__ = [
@@ -202,6 +203,15 @@ def _agent_pod(
         # separate ``TOOL_POD`` principal carrying single-token grants under their own ``_tool_pod`` JWT.
         str(Subjects.tools_register()),
         str(Subjects.tools_heartbeat_agent_subtree(a)),  # heartbeats only under its own authed agent subtree
+        # STANDING result grant for the tools this agent serves IN-PROCESS. A tool that outlives one
+        # connection lifetime cannot answer on the reply inbox at all: ``allow_responses`` belongs to
+        # the connection that RECEIVED the call, and re-auth is a reconnect, so the right to answer is
+        # destroyed by the very act of staying authenticated. This grant is derived from the
+        # AUTHENTICATED ``agent_id``, so every refresh re-mints it identically and a reconnect stops
+        # being an event the call has to survive. Scoped to this agent's own subtree for the same
+        # reason ``tools.internal.{a}.>`` is: the in-process pod-id is the ``{agent_id}.{instance}``
+        # composite, and no agent may deliver a result under a peer's identity.
+        str(Subjects.tools_result_agent_subtree(a)),
         # the in-process tool server emits the baseline ``tool.call`` audit envelope on every
         # dispatch (mirrors ``_tool_pod``); audit non-repudiation is required, so the grant is
         # mandatory -- without it an agent-served tool call's actor/audit row is silently dropped.
@@ -257,7 +267,10 @@ def _agent_pod(
             # (``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts`` tools).
             f"{ns}-proxy_assertion_nonces",
         ),
-        streams=(f"{ns}_channels_deliver",),
+        # the durable answer stream carries BOTH directions this pod touches: the results its
+        # in-process tool server delivers, and the replies the registry delivers back to it for the
+        # long calls it makes. one stream, so one JetStream control-plane grant.
+        streams=(f"{ns}_channels_deliver", result_stream_name()),
     )
 
 
@@ -309,6 +322,16 @@ def _tool_pod(
         # its call's engagement_id -> the authorized target set (same forwarded
         # identity-token auth; the hub verifies + tenant-scopes). read-only.
         str(Subjects.hub_engagement_scope()),
+        # THE STANDING RESULT GRANT, and the reason this file changed at all. A scan tool runs for up
+        # to 1200s while this connection is rebuilt every 60s to stay authenticated; the reply-inbox
+        # right (``allow_responses``) belongs to the connection that received the call, so it is gone
+        # by the time the tool finishes. Observed: exit 0, 68KB of output, permissions violation on
+        # publish. This grant names the pod's OWN id, so the auth-callout re-mints it byte-identically
+        # on every refresh and the answer no longer depends on which connection is current. Only this
+        # pod holds it -- which is what makes it safe where a standing grant on the requester's inbox
+        # tree (``_INBOX_registry_*.>``) was not: that one would have let any tool pod forge a reply
+        # into any other pod's in-flight call.
+        str(Subjects.tools_result_pod_wildcard(p)),
         *pipe_down,  # own authorized tools' streams, own pod id, own half only
     )
     subscribe = (
@@ -339,6 +362,10 @@ def _tool_pod(
             # platform cannot learn at construction time that it should downgrade.
             f"{ns}-leases",
         ),
+        # the stream backing the result grant above. a result rides JetStream rather than a core
+        # publish so a CONSUMER-side reconnect cannot lose an answer that took twenty minutes to
+        # compute -- fixing only the publisher's half would relocate the loss, not end it.
+        streams=(result_stream_name(),),
     )
 
 
@@ -360,6 +387,14 @@ def _registry(
         str(Subjects.tools_internal_wildcard()),  # forwards calls to ANY pod (tool pod or agent in-process)
         str(Subjects.tools_probe_wildcard()),  # probes ANY pod
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify identity tokens + pop
+        # the registry's own half of durable delivery: it answers a long agent call here instead of
+        # on the agent's reply inbox, for the same reason a pod does. the wildcard shape has the same
+        # justification as ``tools.internal.>`` directly above -- one registry connection fronts EVERY
+        # agent, so there is no per-connection list of agent ids to mint exact literals from, and it
+        # is granted ONLY to the trusted router. what keeps that wildcard from being a redirect
+        # primitive is enforced in the proxy, not here: it publishes only to a subject naming the
+        # call's VERIFIED agent id (re-stamped from the identity token, never the claimed envelope).
+        str(Subjects.tools_reply_wildcard()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
@@ -391,6 +426,11 @@ def _registry(
             # ``ReplayGuard`` opens through ``kv_bucket``, so this one carries the prefix.
             f"{ns}-pop_nonces",
         ),
+        # the registry is on BOTH sides of durable delivery: it consumes each pod's result and
+        # publishes each agent's reply, so it needs the JetStream control-plane grant for this stream
+        # in both roles. it is also the process that DECLARES the stream at startup, which the
+        # ``$JS.API.STREAM.*.{stream}`` entry this name mints is what permits.
+        streams=(result_stream_name(),),
     )
 
 

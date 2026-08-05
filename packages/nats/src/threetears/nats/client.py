@@ -60,7 +60,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, TypeVar
 
 import nats
 from nats.aio.client import Client as _NatsPyClient
-from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsConsumerConfig
+from nats.js.api import (
+    AckPolicy as _NatsAckPolicy,
+    ConsumerConfig as _NatsConsumerConfig,
+    DeliverPolicy as _NatsDeliverPolicy,
+)
 from nats.errors import (
     AuthorizationError as _NatsAuthorizationError,
     ConnectionClosedError as _NatsConnectionClosedError,
@@ -114,6 +118,7 @@ __all__ = [
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "JetStreamPullConsumer",
     "JetStreamPushConsumer",
+    "JetStreamResultWaiter",
     "NatsClient",
     "ReconnectCallback",
     "Subscription",
@@ -228,6 +233,26 @@ _RECONNECT_BACKOFF_FALLBACK_SECONDS: Final[float] = 1.0
 #: pace (seconds) the durable pull-consumer loop waits after a transport error before retrying, so a
 #: reconnect-window failure recovers without busy-spinning the CPU.
 _PULL_CONSUMER_ERROR_BACKOFF_SECONDS: Final[float] = 1.0
+
+#: how often a :class:`JetStreamResultWaiter` re-checks its own deadline while waiting.
+#:
+#: This is a poll cadence, NOT added latency: a fetch already outstanding when the answer is
+#: published returns immediately. It only bounds how long past its deadline a hopeless wait can sit,
+#: and how quickly a reconnect-broken consumer is noticed and rebuilt.
+_RESULT_WAITER_POLL_SECONDS: Final[float] = 5.0
+
+#: floor on that poll, so a nearly-elapsed budget cannot produce a zero/negative fetch timeout.
+_RESULT_WAITER_MIN_POLL_SECONDS: Final[float] = 0.05
+
+#: pace after a failed consumer rebuild, so a broker that is down does not turn the wait into a spin.
+_RESULT_WAITER_REBUILD_BACKOFF_SECONDS: Final[float] = 1.0
+
+#: margin added to a waiter's budget when setting the ephemeral consumer's inactivity threshold.
+#:
+#: The threshold must outlast the whole wait or the server reaps the consumer mid-call and the answer
+#: has nowhere to be delivered. The margin covers the gap between consecutive fetches plus any clock
+#: disagreement; it costs only how long an abandoned consumer lingers.
+_RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS: Final[float] = 60.0
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -657,6 +682,197 @@ class JetStreamPullConsumer:
         """
         self._stopped = True
         await self._psub.unsubscribe()
+
+
+class JetStreamResultWaiter:
+    """awaits exactly ONE answer on ONE exact subject, across reconnects on either side.
+
+    Returned by :meth:`NatsClient.jetstream_result_waiter`. The caller opens it BEFORE dispatching
+    the call, so the consumer exists no matter how fast the answer comes back, then awaits the
+    answer for as long as the call is allowed to take.
+
+    Two properties it has that a request/reply await does not:
+
+    - the RESPONDER can be recycled. It publishes to a subject it holds a standing grant on rather
+      than to a per-request inbox right that dies with its connection.
+    - the CALLER can be recycled. The answer is retained by the stream, and the consumer is
+      re-created against it on the next fetch, so a caller that reconnects mid-wait still collects an
+      answer published while it was away. Fixing only the publisher's half would move the loss rather
+      than end it, which is why the delivery is JetStream and not a core publish.
+
+    The consumer is EPHEMERAL and filters on the exact subject with ``DeliverPolicy.ALL``. Both
+    choices matter. Ephemeral means nothing to clean up if this process dies. ``ALL`` on a
+    single-call subject means "the answer, whenever it was published" -- so the ordering between
+    opening the consumer and the answer arriving stops being a race at all.
+
+    :param js: nats-py JetStream context
+    :ptype js: Any
+    :param subject: the exact subject the answer will be published to
+    :ptype subject: Subject
+    :param stream: backing stream name, passed explicitly so the client never issues the
+        ``$JS.API.STREAM.NAMES`` subject lookup (which no principal is granted)
+    :ptype stream: str
+    :param inactive_threshold_seconds: how long the server keeps the ephemeral consumer alive
+        between fetches; must exceed the whole wait budget or the consumer evaporates mid-call
+    :ptype inactive_threshold_seconds: float
+    :param poll_seconds: per-fetch wait, i.e. how often the loop re-checks its own deadline
+    :ptype poll_seconds: float
+    """
+
+    def __init__(
+        self,
+        *,
+        js: Any,
+        subject: Subject,
+        stream: str,
+        inactive_threshold_seconds: float,
+        poll_seconds: float,
+    ) -> None:
+        """bind the waiter to its subject; the consumer is created by :meth:`open`.
+
+        :param js: nats-py JetStream context
+        :ptype js: Any
+        :param subject: the exact subject the answer will be published to
+        :ptype subject: Subject
+        :param stream: backing stream name
+        :ptype stream: str
+        :param inactive_threshold_seconds: ephemeral-consumer keepalive, in seconds
+        :ptype inactive_threshold_seconds: float
+        :param poll_seconds: per-fetch wait, in seconds
+        :ptype poll_seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self._js = js
+        self._subject = subject
+        self._stream = stream
+        self._inactive_threshold_seconds = inactive_threshold_seconds
+        self._poll_seconds = poll_seconds
+        self._psub: Any = None
+
+    @property
+    def subject(self) -> Subject:
+        """the exact subject this waiter accepts an answer on.
+
+        :return: the awaited subject
+        :rtype: Subject
+        """
+        return self._subject
+
+    async def open(self) -> None:
+        """create the consumer, so the answer has somewhere to land before the call is dispatched.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._psub = await self._subscribe()
+
+    async def _subscribe(self) -> Any:
+        """create one ephemeral pull consumer filtered on this waiter's exact subject.
+
+        :return: nats-py pull subscription handle
+        :rtype: Any
+        """
+        config = _NatsConsumerConfig(
+            ack_policy=_NatsAckPolicy.EXPLICIT,
+            deliver_policy=_NatsDeliverPolicy.ALL,
+            filter_subject=self._subject.path,
+            inactive_threshold=self._inactive_threshold_seconds,
+            # one answer per subject: a larger window buys nothing and would let a redelivery sit
+            # unacknowledged behind a message this waiter has already returned.
+            max_ack_pending=1,
+        )
+        return await self._js.pull_subscribe(
+            self._subject.path,
+            stream=self._stream,
+            config=config,
+        )
+
+    async def wait(self, *, timeout: timedelta) -> bytes:
+        """block until the answer arrives, or ``timeout`` elapses.
+
+        Rebuilds the consumer and keeps waiting when a fetch fails for anything other than "nothing
+        yet". That is the reconnect path: after the transport cycles, the server-side ephemeral
+        consumer may be gone, and giving up there would discard an answer the stream is still
+        holding -- the precise failure this class exists to prevent, merely moved to the other end of
+        the wire. The deadline is the only thing that ends the loop.
+
+        :param timeout: total budget for the answer to arrive
+        :ptype timeout: timedelta
+        :return: the raw answer payload
+        :rtype: bytes
+        :raises RuntimeError: when called before :meth:`open`
+        :raises RequestTimeoutError: when no answer arrives within ``timeout``
+        """
+        if self._psub is None:
+            raise RuntimeError("JetStreamResultWaiter.wait called before open()")
+        deadline = time.monotonic() + timeout.total_seconds()
+        payload: bytes | None = None
+        while payload is None and time.monotonic() < deadline:
+            poll = min(self._poll_seconds, max(deadline - time.monotonic(), _RESULT_WAITER_MIN_POLL_SECONDS))
+            try:
+                msgs = await self._psub.fetch(1, timeout=poll)
+            except _NatsTimeoutError:
+                # NOSILENT: an empty fetch is the ordinary case, not a failure -- it means the tool
+                # is still running. logging it would emit a line every poll for the whole call.
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — a transport blip must not discard a live answer
+                log.warning(
+                    "result waiter fetch failed; rebuilding consumer (subject=%s stream=%s): %s",
+                    self._subject.path,
+                    self._stream,
+                    exc,
+                )
+                await self._rebuild()
+                continue
+            if msgs:
+                await msgs[0].ack()
+                payload = bytes(msgs[0].data)
+        if payload is None:
+            raise RequestTimeoutError(f"no result delivered on {self._subject.path} within {timeout.total_seconds()}s")
+        return payload
+
+    async def _rebuild(self) -> None:
+        """drop and re-create the consumer after a failed fetch; never raises.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self.close()
+        try:
+            self._psub = await self._subscribe()
+        except Exception as exc:  # noqa: BLE001 — the next poll retries; failing here would end the wait
+            log.warning(
+                "result waiter could not rebuild its consumer (subject=%s); retrying on next poll: %s",
+                self._subject.path,
+                exc,
+            )
+            await asyncio.sleep(_RESULT_WAITER_REBUILD_BACKOFF_SECONDS)
+
+    async def close(self) -> None:
+        """unsubscribe the consumer; idempotent and never raises.
+
+        the ephemeral consumer would also age out on its own inactivity threshold, so a failure here
+        leaks nothing durable -- which is why it is logged at debug and not surfaced to a caller that
+        is, by this point, already holding its answer.
+
+        :return: nothing
+        :rtype: None
+        """
+        psub = self._psub
+        self._psub = None
+        if psub is None:
+            return
+        try:
+            await psub.unsubscribe()
+        except Exception as exc:  # noqa: BLE001 — the consumer ages out anyway; nothing durable leaks
+            log.debug(
+                "result waiter unsubscribe failed (subject=%s): %s",
+                self._subject.path,
+                exc,
+            )
 
 
 class NatsClient:
@@ -1987,6 +2203,8 @@ class NatsClient:
         name: str,
         subjects: list[str],
         storage: str = "memory",
+        max_age_seconds: float | None = None,
+        max_msgs_per_subject: int | None = None,
     ) -> str:
         """create (or update) a JetStream stream over given subjects.
 
@@ -2004,6 +2222,16 @@ class NatsClient:
         :ptype subjects: list[str]
         :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
         :ptype storage: str
+        :param max_age_seconds: discard a message this long after it was published, whether or not
+            anything consumed it. ``None`` (the default) retains until another limit bites. a stream
+            whose messages are addressed to ONE waiter needs this: a caller that never returns for
+            its message would otherwise leave it resident for the life of the stream
+        :ptype max_age_seconds: float | None
+        :param max_msgs_per_subject: keep at most this many messages per SUBJECT. ``None`` (the
+            default) leaves the per-subject count unbounded. ``1`` is the right value for a family
+            whose subjects are minted per call and answered once -- a retry that republishes cannot
+            then leave a stale first answer behind for the waiter to pick up
+        :ptype max_msgs_per_subject: int | None
         :return: full namespace-prefixed stream name
         :rtype: str
         :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
@@ -2014,6 +2242,10 @@ class NatsClient:
         full_name = f"{self._namespace}-{name}"
         storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
         config = StreamConfig(name=full_name, subjects=subjects, storage=storage_type)
+        if max_age_seconds is not None:
+            config.max_age = max_age_seconds
+        if max_msgs_per_subject is not None:
+            config.max_msgs_per_subject = max_msgs_per_subject
         js = self.jetstream_context()
         try:
             await js.add_stream(config)
@@ -2346,6 +2578,48 @@ class NatsClient:
             batch,
         )
         return consumer
+
+    async def jetstream_result_waiter(
+        self,
+        *,
+        subject: Subject,
+        stream: str,
+        wait_budget: timedelta,
+    ) -> JetStreamResultWaiter:
+        """open a waiter for ONE answer on ONE exact subject, before dispatching the call.
+
+        The counterpart to :meth:`request_raw` for work that outlives a connection. A request/reply
+        answer may be published only by the connection that RECEIVED the request, so a responder
+        whose work spans a credential refresh loses the right to answer at the moment it finishes.
+        Here the responder instead publishes to a subject it holds a standing grant on, and this
+        collects it from the stream -- so neither side's reconnect can strand the answer.
+
+        Open it BEFORE publishing the call. Retention makes the ordering safe either way, but opening
+        first is what makes it obviously safe, and it costs one round trip against a call that is by
+        definition long.
+
+        :param subject: the exact subject the answer will be published to (never a wildcard: this
+            waiter is for one call, and a pattern would collect a peer's answer)
+        :ptype subject: Subject
+        :param stream: backing stream name, passed explicitly so nats-py never issues the
+            ``$JS.API.STREAM.NAMES`` lookup that no principal is granted
+        :ptype stream: str
+        :param wait_budget: how long the answer is allowed to take; sets the consumer's inactivity
+            keepalive so the server does not reap it out from under a long call
+        :ptype wait_budget: timedelta
+        :return: an opened waiter; ``await`` its :meth:`JetStreamResultWaiter.wait` for the answer
+            and always :meth:`JetStreamResultWaiter.close` it
+        :rtype: JetStreamResultWaiter
+        """
+        waiter = JetStreamResultWaiter(
+            js=self.jetstream_context(),
+            subject=subject,
+            stream=stream,
+            inactive_threshold_seconds=(wait_budget.total_seconds() + _RESULT_WAITER_KEEPALIVE_MARGIN_SECONDS),
+            poll_seconds=_RESULT_WAITER_POLL_SECONDS,
+        )
+        await waiter.open()
+        return waiter
 
     # ------------------------------------------------------------------
     # internal helpers
