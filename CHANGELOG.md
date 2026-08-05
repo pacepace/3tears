@@ -36,6 +36,26 @@ entry (including one hand-added for uncommitted code) still resolves against the
 current file. Without git history the old behaviour remains, and a mapping that
 cannot be made still surfaces as a placeholder rather than a wrong rationale.
 
+### `3tears-agent-tools`
+
+**A tool pod can now cap how many tools run at once and force-end one that
+overruns a hard time limit, reaping the process it leaves behind.** `ToolServer`
+gained two optional guards, both defaulting off so existing pods are unchanged:
+`max_concurrent_calls` bounds how many `tool.run` bodies execute simultaneously
+(excess calls queue for a slot), and `max_call_seconds` is a hard ceiling above
+each tool's own budget. Without them, a burst of memory-heavy tools -- several
+security scanners fired in one turn -- could run unbounded and OOM-kill the pod.
+
+The hard timeout actually kills the work rather than orphaning it. A tool
+registers a synchronous cleanup callback with the new
+`register_call_cleanup(hook)`; when the ceiling trips, the server runs those
+hooks (best effort, in order) before failing the call with the new
+`HardCallTimeout` -- so a tool that spawned a subprocess reaps its process group
+instead of leaving a child running and holding memory after the awaiting
+coroutine is cancelled. A tool that raises its OWN `TimeoutError` within the
+ceiling is untouched -- that stays an ordinary tool failure, distinguished via
+`asyncio.timeout().expired()`.
+
 ## v0.23.2 -- 2026-08-04
 
 > **A PATCH bump — this repairs a loss, it does not add a capability — but the whole
