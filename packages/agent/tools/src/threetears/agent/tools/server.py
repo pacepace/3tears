@@ -18,7 +18,7 @@ from datetime import timedelta
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.audit import AuditEvent, publish_audit
-from threetears.agent.tools.base_tool import TearsTool
+from threetears.agent.tools.base_tool import TearsTool, ToolResult
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
     enter_call_scope,
@@ -631,6 +631,17 @@ class DiscoveryProbeResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class HardCallTimeout(Exception):
+    """the pod's hard per-call execution limit elapsed before the tool returned.
+
+    Raised by the dispatch when ``ToolServer(max_call_seconds=...)`` is set and a
+    tool runs past that ceiling. DISTINCT from a ``TimeoutError`` a tool raises for
+    its OWN budget (e.g. a scanner's per-scan timeout), which stays an ordinary
+    tool failure -- this names the SERVER's backstop firing, after the call's
+    cleanup hooks have run to reap any process the tool left running.
+    """
+
+
 class ToolServer:
     """serves TearsTool instances via NATS.
 
@@ -660,6 +671,8 @@ class ToolServer:
         object_store: "ObjectStore | None" = None,
         object_resolver: "ObjectResolver | None" = None,
         engagement_resolver: "EngagementScopeResolver | None" = None,
+        max_concurrent_calls: int | None = None,
+        max_call_seconds: float | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -793,11 +806,39 @@ class ToolServer:
             :func:`current_scope`. an injected resolver (tests) is used as-is and
             not self-provisioned.
         :ptype engagement_resolver: EngagementScopeResolver | None
+        :param max_concurrent_calls: cap on how many tool calls execute AT ONCE on
+            this pod. ``None`` (default) leaves dispatch unbounded, preserving prior
+            behaviour. When set, a call acquires one of ``max_concurrent_calls``
+            slots around ``tool.run`` and excess calls queue for a slot -- the
+            backstop against a burst of memory- or cpu-heavy tools (e.g. several
+            scanners) overrunning the pod's resources at once. Must be >= 1.
+        :ptype max_concurrent_calls: int | None
+        :param max_call_seconds: a HARD ceiling on the wall-clock a single
+            ``tool.run`` may take, counted from when it acquires its slot. ``None``
+            (default) applies no server ceiling -- each tool is bounded only by its
+            own budget. When set it BACKSTOPS that budget: a tool that runs past it
+            has its call force-ended and its :attr:`ToolCallScope.cleanup_hooks`
+            invoked (so a subprocess-spawning tool's process is reaped, not
+            orphaned), and the caller gets a :class:`HardCallTimeout` failure. A
+            tool that raises its OWN ``TimeoutError`` within the ceiling is
+            unaffected -- that stays an ordinary tool failure. Must be > 0.
+        :ptype max_call_seconds: float | None
         :raises ValueError: when neither ``nats_url`` nor
-            ``nats_client`` carries a usable value
+            ``nats_client`` carries a usable value, or ``max_concurrent_calls`` /
+            ``max_call_seconds`` is set to a non-positive value
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
+        if max_concurrent_calls is not None and max_concurrent_calls < 1:
+            raise ValueError(f"max_concurrent_calls must be >= 1 when set, got {max_concurrent_calls}")
+        if max_call_seconds is not None and max_call_seconds <= 0:
+            raise ValueError(f"max_call_seconds must be > 0 when set, got {max_call_seconds}")
+        self._max_call_seconds = max_call_seconds
+        # A slot each concurrent tool.run holds; None leaves dispatch unbounded.
+        # Constructed here (no running loop yet) and bound to the serve() loop on
+        # first acquire -- the server runs on a single loop, so one semaphore is
+        # correct for its lifetime.
+        self._call_semaphore = asyncio.Semaphore(max_concurrent_calls) if max_concurrent_calls is not None else None
         self._nats_url = nats_url
         self._namespace = namespace
         self._nats_user = nats_user
@@ -2055,6 +2096,97 @@ class ToolServer:
             self._calls_in_flight = 0
             self._calls_idle.set()
 
+    async def _run_tool_guarded(
+        self,
+        tool: TearsTool,
+        request: CallRequest,
+        scope: ToolCallScope,
+    ) -> ToolResult:
+        """Run ``tool.run`` under the optional concurrency cap and hard timeout.
+
+        Wraps the actual tool execution -- not the identity/scope plumbing around
+        it -- so the cap counts running tools and the hard timeout counts only
+        execution time, from when the call acquires its slot. With neither guard
+        configured this is a thin pass-through that behaves exactly as the inline
+        ``enter_call_scope`` / ``tool.run`` it replaced.
+
+        :param tool: the resolved tool to run
+        :ptype tool: TearsTool
+        :param request: the verified call request carrying the arguments
+        :ptype request: CallRequest
+        :param scope: the per-call scope installed for the run; also carries the
+            cleanup hooks invoked if the hard timeout fires
+        :ptype scope: ToolCallScope
+        :return: the tool's result
+        :rtype: ToolResult
+        :raises HardCallTimeout: the call ran past ``max_call_seconds``
+        """
+
+        async def _run() -> ToolResult:
+            async with enter_call_scope(scope):
+                return await tool.run(**request.arguments)
+
+        if self._call_semaphore is None:
+            return await self._run_with_hard_timeout(_run, scope)
+        async with self._call_semaphore:
+            return await self._run_with_hard_timeout(_run, scope)
+
+    async def _run_with_hard_timeout(
+        self,
+        run: "Callable[[], Awaitable[ToolResult]]",
+        scope: ToolCallScope,
+    ) -> ToolResult:
+        """Await ``run`` under the pod's hard execution ceiling, if one is set.
+
+        With no ceiling this simply awaits ``run``. With one, it uses
+        :func:`asyncio.timeout` so a tool that raises its OWN ``TimeoutError``
+        within the ceiling is left untouched (``cm.expired()`` is False and the
+        exception propagates as an ordinary failure); only the ceiling actually
+        elapsing runs the call's cleanup hooks -- reaping any process the tool left
+        running -- and raises :class:`HardCallTimeout`.
+
+        :param run: zero-arg coroutine factory performing the guarded run
+        :ptype run: Callable[[], Awaitable[ToolResult]]
+        :param scope: the call scope whose cleanup hooks run on a hard timeout
+        :ptype scope: ToolCallScope
+        :return: the tool's result
+        :rtype: ToolResult
+        :raises HardCallTimeout: the ceiling elapsed before ``run`` returned
+        """
+        if self._max_call_seconds is None:
+            return await run()
+        try:
+            async with asyncio.timeout(self._max_call_seconds) as cm:
+                return await run()
+        except TimeoutError:
+            if not cm.expired():
+                # a tool raised its OWN TimeoutError inside the ceiling; not ours.
+                raise
+            self._invoke_call_cleanup(scope)
+            raise HardCallTimeout(f"tool exceeded the pod hard execution limit of {self._max_call_seconds}s") from None
+
+    def _invoke_call_cleanup(self, scope: ToolCallScope) -> None:
+        """Run every cleanup hook a tool registered on ``scope``, best effort.
+
+        Called when the hard timeout fires, to reap work the cancelled coroutine
+        cannot end itself -- a subprocess kill, above all. Each hook runs in
+        registration order and its failure is caught and logged so one bad hook
+        cannot strand the rest; the call is already failing.
+
+        :param scope: the call scope carrying the registered hooks
+        :ptype scope: ToolCallScope
+        :return: nothing
+        :rtype: None
+        """
+        for hook in scope.cleanup_hooks:
+            try:
+                hook()
+            except Exception as exc:
+                log.warning(
+                    "tool call cleanup hook raised during hard-timeout cleanup",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
+
     async def _dispatch_incoming_call(self, msg: IncomingMessage, owes_sync_reply: list[bool]) -> None:
         """dispatch one in-flight-tracked tool call (body of :meth:`handle_call`).
 
@@ -2241,8 +2373,7 @@ class ToolServer:
 
             try:
                 scope = await self._build_call_scope(request)
-                async with enter_call_scope(scope):
-                    tool_result = await tool.run(**request.arguments)
+                tool_result = await self._run_tool_guarded(tool, request, scope)
                 response = CallResponse(
                     success=tool_result.success,
                     content=tool_result.content,
@@ -2253,6 +2384,29 @@ class ToolServer:
                 if not tool_result.success:
                     outcome = "failure"
                     failure_reason = tool_result.error
+            except HardCallTimeout as exc:
+                # The pod's hard ceiling fired: the cleanup hooks have already run
+                # (in _run_tool_guarded) to reap any process the tool left behind.
+                # Report a failure the caller can act on, distinct from a tool that
+                # ended on its own budget.
+                log.error(
+                    "tool call force-ended on the pod hard execution limit",
+                    extra={
+                        "extra_data": {
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                            "max_call_seconds": self._max_call_seconds,
+                        }
+                    },
+                )
+                response = CallResponse(
+                    success=False,
+                    content="",
+                    error=str(exc),
+                    context=request.context,
+                )
+                outcome = "error"
+                failure_reason = str(exc)
             except Exception as exc:
                 log.error(
                     "tool execution failed",
