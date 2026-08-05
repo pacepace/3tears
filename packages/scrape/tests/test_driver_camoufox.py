@@ -137,9 +137,11 @@ class _FakeCamoufoxPage:
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Request (only .resource_type/.method, the only attributes CamoufoxDriver reads)
 class _FakeCamoufoxRequest:
-    def __init__(self, resource_type: str, method: str = "GET") -> None:
+    def __init__(self, resource_type: str, method: str = "GET", post_data: str | None = None) -> None:
         self.resource_type = resource_type
         self.method = method
+        # Playwright's own name and its own "no body" value -- None for every GET.
+        self.post_data = post_data
 
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Response used for network-capture (only .request/.status/.url/.text()/.body()/.all_headers(), the only surface CamoufoxDriver's capture_network path reads)
@@ -154,10 +156,12 @@ class _FakeCamoufoxNetworkResponse:
         content_type: str = "application/json",
         text_exc: Exception | None = None,
         headers_exc: Exception | None = None,
+        method: str = "GET",
+        post_data: str | None = None,
     ):
         self.url = url
         self.status = status
-        self.request = _FakeCamoufoxRequest(resource_type)
+        self.request = _FakeCamoufoxRequest(resource_type, method=method, post_data=post_data)
         self._body = body
         self._content_type = content_type
         self._text_exc = text_exc
@@ -360,6 +364,41 @@ class TestCamoufoxDriverNetworkCapture:
         assert call.status == 200
         assert call.content_type == "application/json"
         assert call.body == '{"notices": [1, 2]}'
+
+    async def test_captures_a_post_requests_payload(self):
+        """A POST-read API's payload is its query -- without it the call cannot be replayed."""
+        page = _FakeCamoufoxPage(
+            goto_result=_FakeCamoufoxResponse(200),
+            network_responses=[
+                _FakeCamoufoxNetworkResponse(
+                    url="https://api.example.gov/api/Grids/GetData",
+                    resource_type="xhr",
+                    body='{"data": {"items": [{"id": 1}]}}',
+                    method="POST",
+                    post_data='{"pageNumber": 1, "pageSize": 1000}',
+                )
+            ],
+        )
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        call = (await driver.render("https://portal.example.gov", capture_network=True)).network_calls[0]
+
+        assert call.method == "POST"
+        assert call.request_body == '{"pageNumber": 1, "pageSize": 1000}'
+
+    async def test_a_get_reports_no_request_payload(self):
+        """None, not "" -- "had no body" and "had an empty body" are different facts."""
+        page = _FakeCamoufoxPage(
+            goto_result=_FakeCamoufoxResponse(200),
+            network_responses=[
+                _FakeCamoufoxNetworkResponse(url="https://example.gov/api/rows", body='{"rows": []}')
+            ],
+        )
+        driver = CamoufoxDriver(browser=_FakeCamoufoxBrowser(page))
+
+        call = (await driver.render("https://example.gov", capture_network=True)).network_calls[0]
+
+        assert call.request_body is None
 
     async def test_captures_fetch_resource_type_too(self):
         page = _FakeCamoufoxPage(
