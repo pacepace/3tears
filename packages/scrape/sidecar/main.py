@@ -193,6 +193,9 @@ class NetworkCall(BaseModel):
     status: int
     content_type: str
     body: str
+    #: The request payload the page sent -- ``None`` for a bodyless request (every GET).
+    #: A POST-read API's body IS its query, so without this the call cannot be replayed.
+    request_body: str | None = None
 
 
 class RenderResponse(BaseModel):
@@ -481,7 +484,12 @@ async def _render(
 
     def _capture_request(event: uc.cdp.network.RequestWillBeSent) -> None:
         if capture_network and event.type_ in _API_RESOURCE_TYPES:
-            pending_requests[event.request_id] = {"url": event.request.url, "method": event.request.method}
+            pending_requests[event.request_id] = {
+                "url": event.request.url,
+                "method": event.request.method,
+                # CDP carries the payload on the request event itself; absent for a bodyless request.
+                "request_body": event.request.post_data,
+            }
 
     def _capture_loading_finished(event: uc.cdp.network.LoadingFinished) -> None:
         if capture_network and event.request_id in pending_requests:
@@ -569,6 +577,7 @@ async def _render(
                         "status": resp_meta["status"],
                         "content_type": resp_meta["content_type"],
                         "body": body,
+                        "request_body": req_meta.get("request_body"),
                     }
                 )
     finally:
