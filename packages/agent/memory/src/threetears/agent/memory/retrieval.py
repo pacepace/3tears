@@ -40,7 +40,9 @@ from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
-from threetears.observe import traced
+from threetears.observe import get_logger, traced
+
+log = get_logger(__name__)
 
 __all__ = [
     "MemoryRetriever",
@@ -297,6 +299,17 @@ def _format_memory_context(
         # The agent reaches the rest via chunk_search if it wants
         # them.
         surfaced_chunks = deduped_chunks[:_MAX_SURFACED_CHUNKS]
+        if len(deduped_chunks) > _MAX_SURFACED_CHUNKS:
+            # SDS-04: unlike the schema block, nothing tells the MODEL a tail
+            # exists -- it can only call chunk_recall for ids it was shown, so the
+            # dropped chunks are unreachable for the turn. tell the operator.
+            log.warning(
+                "memory chunk headlines truncated: %d of %d matching chunk(s) not surfaced "
+                "(cap=%d); the model cannot reach them this turn",
+                len(deduped_chunks) - _MAX_SURFACED_CHUNKS,
+                len(deduped_chunks),
+                _MAX_SURFACED_CHUNKS,
+            )
         for chunk in surfaced_chunks:
             chunk_id = str(chunk["chunk_id"])
             # ``summary`` is the canonical headline. Fall back to a

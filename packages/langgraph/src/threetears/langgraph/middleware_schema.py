@@ -161,6 +161,11 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # SDS-04: no runnable config means no injected integration, so this whole
+        # middleware becomes a pass-through and the turn silently loses schema priming.
+        log.warning(
+            "no runnable config available: schema priming is skipped for this turn",
+        )
         return {}
     return config.get("configurable") or {}
 
@@ -269,6 +274,14 @@ def _render_schema_block(digests: list[Any], *, budget: int) -> str:
         tables = getattr(entity, "tables", None) or []
         all_tables.extend(tables)
     if not all_tables:
+        # SDS-04: this is what a missing digest materialization looks like from the
+        # prompt side -- the agent ships the honesty preamble and looks normally
+        # primed while carrying no schema at all.
+        log.warning(
+            "documented-schema priming has no tables to render (digests=%d): the "
+            "agent is primed with NO schema; has the digest been materialized?",
+            len(digests),
+        )
         return ""
 
     rendered: list[str] = []
@@ -288,6 +301,16 @@ def _render_schema_block(digests: list[Any], *, budget: int) -> str:
     dropped = len(all_tables) - len(rendered)
     body = "\n\n".join(rendered)
     if dropped > 0:
+        # SDS-04: the footer tells the MODEL; this line tells the operator. a wide
+        # datasource primes a fraction of its documented tables and the agent then
+        # writes SQL against the un-primed remainder.
+        log.warning(
+            "documented-schema priming truncated: %d of %d table(s) dropped "
+            "(budget=%d tokens); the agent is primed with a subset of its schema",
+            dropped,
+            len(all_tables),
+            budget,
+        )
         body += (
             f"\n\n_{dropped} more documented table(s) not shown here; use "
             "the datasource schema-inspection tool to inspect them._"
