@@ -50,6 +50,8 @@ from threetears.agent.knowledge.middleware import (
     _render_entry,
     _split_invariant_concepts,
     _split_invariant_entries,
+    _warn_on_situational_starvation,
+    _warn_on_stable_order_fallback,
 )
 
 
@@ -548,6 +550,106 @@ class TestRenderAndTrim:
             budget=10_000,
         )
         assert len(kept_e) == 3
+
+
+class TestSilentDegradationSignals:
+    """SDS-02/03: every ranking soft-fail leaves a fingerprint a human can find.
+
+    The stable-order fallback and the situational starvation both change what the
+    model sees without failing the turn, which is exactly how a retrieval outage
+    shaped every answer for a product's whole life and announced nothing.
+    """
+
+    def test_unembedded_query_warns_naming_candidate_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [_entry_effective() for _ in range(3)]
+        with caplog.at_level("WARNING"):
+            _rank_and_trim_shared(
+                situational_concepts=[],
+                situational_entries=entries,
+                budget=10_000,
+            )
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "fell back to stable order" in warnings[0].getMessage()
+        assert "did not embed" in warnings[0].getMessage()
+        assert "candidates=3" in warnings[0].getMessage()
+
+    def test_no_stored_vectors_warns_naming_the_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [_entry_effective() for _ in range(2)]
+        with caplog.at_level("WARNING"):
+            _rank_and_trim_shared(
+                situational_concepts=[],
+                situational_entries=entries,
+                budget=10_000,
+                query_embedding=[1.0, 0.0],
+                embeddings={},
+            )
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "none of the 2 situational candidates carry a stored embedding" in message
+
+    def test_healthy_ranking_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        entries = [_entry_effective() for _ in range(2)]
+        embeddings = {view.entry.id: [1.0, 0.0] for view in entries}
+        with caplog.at_level("WARNING"):
+            _rank_and_trim_shared(
+                situational_concepts=[],
+                situational_entries=entries,
+                budget=10_000,
+                query_embedding=[1.0, 0.0],
+                embeddings=embeddings,
+            )
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_empty_pool_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        # nothing was retrieved, so nothing degraded -- warning here would fire on
+        # every turn of an agent that governs no situational knowledge at all.
+        with caplog.at_level("WARNING"):
+            _rank_and_trim_shared(situational_concepts=[], situational_entries=[], budget=10_000)
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_partial_embedding_coverage_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        # one stored vector still ranks; only a TOTAL absence is the fallback.
+        entries = [_entry_effective() for _ in range(2)]
+        with caplog.at_level("WARNING"):
+            _rank_and_trim_shared(
+                situational_concepts=[],
+                situational_entries=entries,
+                budget=10_000,
+                query_embedding=[1.0, 0.0],
+                embeddings={entries[0].entry.id: [1.0, 0.0]},
+            )
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_starvation_warns_with_counts(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            _warn_on_situational_starvation(situational_entries=4, kept_entries=0, budget=512)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "kept no situational entries" in message
+        assert "candidates=4" in message
+        assert "budget=512" in message
+
+    def test_starvation_silent_when_something_survived(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            _warn_on_situational_starvation(situational_entries=4, kept_entries=1, budget=512)
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_starvation_silent_when_nothing_was_offered(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            _warn_on_situational_starvation(situational_entries=0, kept_entries=0, budget=512)
+        assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+    def test_fallback_helper_prefers_the_query_cause(self, caplog: pytest.LogCaptureFixture) -> None:
+        # both causes hold at once; the query outage is the upstream one and is the
+        # only line logged, so a turn never carries two lines for one degradation.
+        with caplog.at_level("WARNING"):
+            _warn_on_stable_order_fallback(similarity_active=False, pool_size=5, embedded_count=0)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "did not embed" in warnings[0].getMessage()
 
 
 class TestRenderFaultIsolation:

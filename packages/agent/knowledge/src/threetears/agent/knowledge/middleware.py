@@ -205,6 +205,11 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # SDS-04: no runnable config means no injected integration, so this whole
+        # middleware becomes a pass-through and the turn silently loses governed knowledge.
+        log.warning(
+            "no runnable config available: governed knowledge is skipped for this turn",
+        )
         return {}
     return config.get("configurable") or {}
 
@@ -463,6 +468,11 @@ async def _build_governed_injection(
         query_embedding=query_embedding,
         embeddings=situational_embeddings,
     )
+    _warn_on_situational_starvation(
+        situational_entries=len(entry_sit),
+        kept_entries=len(kept_entry_sit),
+        budget=budget,
+    )
     block = _render_block(
         invariant_concepts=concept_inv,
         situational_concepts=kept_concept_sit,
@@ -714,6 +724,19 @@ def _rank_and_trim_shared(
             item.id_bytes,
         )
 
+    stored_vectors = [embeddings[_item_id(item)] for item in pool if _item_id(item) in embeddings]
+    embedded_count = len(stored_vectors) if similarity_active else 0
+    _warn_on_stable_order_fallback(
+        similarity_active=similarity_active,
+        pool_size=len(pool),
+        embedded_count=embedded_count,
+    )
+    if similarity_active and query_embedding is not None:
+        _warn_on_embedding_dimension_mismatch(
+            query_dimension=len(query_embedding),
+            stored_dimensions=[len(vector) for vector in stored_vectors],
+        )
+
     if similarity_active:
         ranked = sorted(
             pool,
@@ -734,7 +757,159 @@ def _rank_and_trim_shared(
         elif item.entry is not None:
             kept_entries.append(item.entry)
         spent += cost
+    _warn_on_shared_trim_drop(
+        pool_size=len(pool),
+        kept_size=len(kept_concepts) + len(kept_entries),
+        dropped_concepts=len(situational_concepts) - len(kept_concepts),
+        budget=budget,
+    )
     return kept_concepts, kept_entries
+
+
+def _warn_on_stable_order_fallback(
+    *,
+    similarity_active: bool,
+    pool_size: int,
+    embedded_count: int,
+) -> None:
+    """Warn once per turn when situational ranking degraded to stable order (SDS-02).
+
+    Similarity ranking soft-fails to the stable scope+id order in two ways, and
+    both change what the model sees: the turn query did not embed (provider
+    outage), or none of the situational candidates carry a stored vector (the
+    knowledge rows were never embedded). Neither fails the turn, so without this
+    line a retrieval outage shapes every answer and announces nothing. One line
+    per turn per cause, naming the numbers -- never one line per item.
+
+    :param similarity_active: whether the turn query produced a usable vector
+    :ptype similarity_active: bool
+    :param pool_size: number of situational candidates in the shared pool
+    :ptype pool_size: int
+    :param embedded_count: how many of those candidates carry a stored vector
+    :ptype embedded_count: int
+    :return: nothing; the signal is the log record
+    :rtype: None
+    """
+    if pool_size == 0:
+        return
+    if not similarity_active:
+        log.warning(
+            "knowledge situational ranking fell back to stable order: the turn "
+            "query did not embed (candidates=%d); ranking quality is degraded "
+            "for this turn",
+            pool_size,
+        )
+    elif embedded_count == 0:
+        log.warning(
+            "knowledge situational ranking fell back to stable order: none of "
+            "the %d situational candidates carry a stored embedding; ranking "
+            "quality is degraded for this turn",
+            pool_size,
+        )
+
+
+def _warn_on_shared_trim_drop(
+    *,
+    pool_size: int,
+    kept_size: int,
+    dropped_concepts: int,
+    budget: int,
+) -> None:
+    """Warn when the shared budget dropped situational knowledge (SDS-04).
+
+    :func:`_warn_on_situational_starvation` only catches the total loss of the
+    ENTRY tail. A partial drop, and any drop of situational CONCEPTS, is just as
+    model-visible: the governed glossary that defines a business term can be
+    trimmed away entirely while the log stays clean. One line per turn, naming
+    what the budget cost.
+
+    :param pool_size: situational candidates offered to the trim
+    :ptype pool_size: int
+    :param kept_size: candidates that survived it
+    :ptype kept_size: int
+    :param dropped_concepts: situational concepts among the dropped
+    :ptype dropped_concepts: int
+    :param budget: the shared situational token budget
+    :ptype budget: int
+    :return: nothing; the signal is the log record
+    :rtype: None
+    """
+    dropped = pool_size - kept_size
+    if dropped > 0:
+        log.warning(
+            "knowledge shared trim dropped %d of %d situational item(s) "
+            "(%d concept(s), budget=%d tokens): the trimmed knowledge never "
+            "reached the model",
+            dropped,
+            pool_size,
+            dropped_concepts,
+            budget,
+        )
+
+
+def _warn_on_embedding_dimension_mismatch(
+    *,
+    query_dimension: int,
+    stored_dimensions: list[int],
+) -> None:
+    """Warn when stored vectors disagree with the query vector's dimension (SDS-04).
+
+    A dimension mismatch is the quietest ranking degradation there is: cosine
+    returns ``0.0`` defensively, every mismatched item scores identically, and the
+    rank silently collapses to byte order INSIDE the embedded group -- so the
+    stable-order fallback signal never fires and the ranking still looks active.
+    It means a re-embed or an embedding-model swap left the stored vectors behind.
+    One line per turn naming both dimensions, never one per item.
+
+    :param query_dimension: length of the turn-query vector
+    :ptype query_dimension: int
+    :param stored_dimensions: lengths of the stored situational vectors
+    :ptype stored_dimensions: list[int]
+    :return: nothing; the signal is the log record
+    :rtype: None
+    """
+    mismatched = [dimension for dimension in stored_dimensions if dimension != query_dimension]
+    if mismatched:
+        log.warning(
+            "knowledge situational ranking has %d of %d stored embedding(s) at the "
+            "wrong dimension (query=%d, stored=%s): those items all score 0.0 and "
+            "rank by byte order; the stored vectors need re-embedding",
+            len(mismatched),
+            len(stored_dimensions),
+            query_dimension,
+            sorted(set(mismatched)),
+        )
+
+
+def _warn_on_situational_starvation(
+    *,
+    situational_entries: int,
+    kept_entries: int,
+    budget: int,
+) -> None:
+    """Warn when the shared trim kept NO situational entries (SDS-03).
+
+    Procedures then inject exactly the invariant set, so a turn that looks
+    normally governed silently lost every situational procedure it retrieved --
+    usually the invariant tail plus higher-ranked concepts consumed the whole
+    shared budget.
+
+    :param situational_entries: situational entry candidates offered to the trim
+    :ptype situational_entries: int
+    :param kept_entries: situational entries that survived the trim
+    :ptype kept_entries: int
+    :param budget: the shared situational token budget
+    :ptype budget: int
+    :return: nothing; the signal is the log record
+    :rtype: None
+    """
+    if situational_entries > 0 and kept_entries == 0:
+        log.warning(
+            "knowledge shared trim kept no situational entries "
+            "(candidates=%d budget=%d): procedures inject the invariant set only",
+            situational_entries,
+            budget,
+        )
 
 
 def _stable_order_entries(

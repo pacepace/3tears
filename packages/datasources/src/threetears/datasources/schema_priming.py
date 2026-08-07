@@ -102,10 +102,23 @@ class SchemaPrimingIntegration:
         # nothing to resolve against -> a legitimate empty result; memoize
         # it (there is nothing to retry).
         if not (self.digest_collection is not None and self.customer_id is not None and self.datasource_names):
+            # SDS-04: memoized, so this pod primes NOTHING for its whole life. one
+            # line at the moment it becomes permanent, naming which input is absent.
+            log.warning(
+                "schema priming disabled for this pod: digest_collection=%s customer_id=%s "
+                "datasource_names=%d; no documented schema will reach the agent",
+                self.digest_collection is not None,
+                self.customer_id is not None,
+                len(self.datasource_names or []),
+            )
             self._resolved_ids = []
             return self._resolved_ids
         pool = getattr(self.digest_collection, "l3_pool", None)
         if pool is None:
+            log.warning(
+                "schema priming disabled for this pod: the digest collection has no "
+                "l3_pool; no documented schema will reach the agent",
+            )
             self._resolved_ids = []
             return self._resolved_ids
         try:
@@ -150,6 +163,13 @@ class SchemaPrimingIntegration:
         # than caching [] for its whole lifetime.
         if resolved:
             self._resolved_ids = resolved
+        else:
+            log.warning(
+                "schema priming resolved no active datasource for names %s (customer=%s): "
+                "priming injects nothing this turn and retries next",
+                self.datasource_names,
+                self.customer_id,
+            )
         return resolved
 
     async def get_digest(self, datasource_id: UUID) -> Any:
