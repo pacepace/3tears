@@ -4,6 +4,60 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+## v0.23.3 -- 2026-08-05
+
+### `3tears-scrape`
+
+**Network capture now records the request payload, so a POST-read API can be
+replayed.** A growing class of portal APIs is read with a POST whose body IS the
+query -- the URL is byte-identical for every page and every filter -- so capturing
+only the response left a caller able to see that such an API exists and unable to
+call it. `NetworkCall` and `CapturedRequestShape` carry `request_body` (verbatim,
+as sent), and the latter also `request_body_shape` (`json.loads` when it parses).
+Both drivers fill it from what they already hold: Playwright's `Request.post_data`
+in camoufox, CDP's `request.post_data` in the nodriver sidecar.
+
+`None` means the request carried no body -- a different fact from an empty one,
+and the truth for every GET; a form-encoded payload parses to no shape but stays
+available verbatim. Additive with defaults, so every existing caller and every
+captured GET is unchanged.
+
+### `3tears-enforcement`
+
+**Regenerating the underscore-exemptions ledger no longer loses reviewed
+rationales when an edit is longer than a function.** `carry_forward_rationales`
+resolved every entry's enclosing scope against the CURRENT file at the entry's
+recorded line -- exact while the ledger is fresh, but a drifted line has a
+different function under it, so one insertion longer than a function turned every
+reviewed rationale below it into a TODO placeholder at the next regeneration. A
+drifted entry now resolves against the file as it stood at the last commit that
+touched the ledger, which is the tree its numbers were recorded against; a fresh
+entry (including one hand-added for uncommitted code) still resolves against the
+current file. Without git history the old behaviour remains, and a mapping that
+cannot be made still surfaces as a placeholder rather than a wrong rationale.
+
+### `3tears-agent-tools`
+
+**A tool pod can now cap how many tools run at once and force-end one that
+overruns a hard time limit, reaping the process it leaves behind.** `ToolServer`
+gained two optional guards, both defaulting off so existing pods are unchanged:
+`max_concurrent_calls` bounds how many `tool.run` bodies execute simultaneously
+(excess calls queue for a slot), and `max_call_seconds` is a hard ceiling above
+each tool's own budget. Without them, a burst of memory-heavy tools -- several
+security scanners fired in one turn -- could run unbounded and OOM-kill the pod.
+
+The hard timeout actually kills the work rather than orphaning it. A tool
+registers a synchronous cleanup callback with the new
+`register_call_cleanup(hook)`; when the ceiling trips, the server runs those
+hooks (best effort, in order) before failing the call with the new
+`HardCallTimeout` -- so a tool that spawned a subprocess reaps its process group
+instead of leaving a child running and holding memory after the awaiting
+coroutine is cancelled. A tool that raises its OWN `TimeoutError` within the
+ceiling is untouched -- that stays an ordinary tool failure, distinguished via
+`asyncio.timeout().expired()`.
+
 ## v0.23.2 -- 2026-08-04
 
 > **A PATCH bump — this repairs a loss, it does not add a capability — but the whole

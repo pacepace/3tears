@@ -19,6 +19,8 @@ describe.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 from threetears.enforcement.underscore_access import (
@@ -173,3 +175,81 @@ class TestUnderscoreExemptionsResolve:
             "these private accesses sit on a per-file-exempted path and have no ledger entry, "
             f"so nothing records why they were judged acceptable: {unlisted}"
         )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@test",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@test",
+        },
+    )
+
+
+def _committed_repo(tmp_path: Path, files: dict[str, str]) -> None:
+    _git(tmp_path, "init", "-q")
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "ledger fresh")
+
+
+class TestCarryForwardAcrossScopeDrift:
+    """A drifted entry's line indexes into the file as it stood when the ledger was last
+    written, not into the current file. Resolved against the current file, an edit longer
+    than a function slides a DIFFERENT function under every recorded line below it, and the
+    regeneration replaces each reviewed rationale below the edit with a placeholder."""
+
+    _TWO_FUNCTIONS = "def first():\n    obj._a\n\n\ndef second():\n    obj._b\n"
+    _LEDGER = (
+        "# rationale: reason belonging to first\n"
+        "sample.py:2:_a\n"
+        "# rationale: reason belonging to second\n"
+        "sample.py:6:_b\n"
+    )
+
+    def test_a_drift_past_whole_functions_still_carries_every_rationale(self, tmp_path: Path) -> None:
+        _committed_repo(tmp_path, {"sample.py": self._TWO_FUNCTIONS, "_exemptions.txt": self._LEDGER})
+        # An edit longer than either function, landing above both: every recorded line below
+        # it now sits inside a function it was never recorded against.
+        inserted = "def inserted():\n" + "    pass\n" * 10 + "\n\n"
+        (tmp_path / "sample.py").write_text(inserted + self._TWO_FUNCTIONS)
+
+        carried = carry_forward_rationales(tmp_path / "_exemptions.txt", tmp_path)
+
+        assert carried[("sample.py", "first", "_a", 0)] == "reason belonging to first"
+        assert carried[("sample.py", "second", "_b", 0)] == "reason belonging to second"
+
+    def test_a_fresh_entry_alongside_the_drift_resolves_against_the_current_file(self, tmp_path: Path) -> None:
+        """The mixed state a regeneration actually meets: entries committed before the edit
+        have drifted, while an entry hand-added for the edit's own new access is correct
+        against the current file and appears in no commit at all."""
+        _committed_repo(tmp_path, {"sample.py": self._TWO_FUNCTIONS, "_exemptions.txt": self._LEDGER})
+        (tmp_path / "sample.py").write_text("def inserted():\n    obj._c\n\n\n" + self._TWO_FUNCTIONS)
+        (tmp_path / "_exemptions.txt").write_text(
+            self._LEDGER + "# rationale: reason belonging to inserted\nsample.py:2:_c\n"
+        )
+
+        carried = carry_forward_rationales(tmp_path / "_exemptions.txt", tmp_path)
+
+        assert carried[("sample.py", "inserted", "_c", 0)] == "reason belonging to inserted"
+        assert carried[("sample.py", "first", "_a", 0)] == "reason belonging to first"
+        assert carried[("sample.py", "second", "_b", 0)] == "reason belonging to second"
+
+    def test_without_history_a_drifted_entry_degrades_to_the_current_file(self, tmp_path: Path) -> None:
+        """No git repository, so there is no snapshot to consult: resolution falls back to
+        the current file, and a mapping it cannot make is simply absent -- surfacing as a
+        placeholder at regeneration rather than as a wrong rationale."""
+        (tmp_path / "sample.py").write_text("def inserted():\n" + "    pass\n" * 10 + "\n\n" + self._TWO_FUNCTIONS)
+        (tmp_path / "_exemptions.txt").write_text(self._LEDGER)
+
+        carried = carry_forward_rationales(tmp_path / "_exemptions.txt", tmp_path)
+
+        assert ("sample.py", "first", "_a", 0) not in carried
+        assert carried[("sample.py", "inserted", "_a", 0)] == "reason belonging to first"

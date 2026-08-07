@@ -131,6 +131,12 @@ class NetworkCall:
     status: int
     content_type: str
     body: str
+    #: The request payload the page sent, exactly as captured -- ``None`` for a
+    #: request that carried no body (every GET). A growing number of portal
+    #: APIs are read with a POST whose JSON body IS the query, so a caller that
+    #: sees only the URL cannot replay the call at all; the URL is identical for
+    #: every page of every filter.
+    request_body: str | None = None
 
 
 @dataclass
