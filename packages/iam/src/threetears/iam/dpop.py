@@ -5,7 +5,10 @@ stolen bearer token alone is then useless: replaying it requires the key too.
 The binding is the RFC 7638 thumbprint of the holder's public key, carried in
 the token's ``cnf.jkt`` claim and recomputed from every proof.
 
-Scope is the AUTHORIZATION-SERVER TOKEN ENDPOINT. RFC 9449 SS4.2 says a proof
+Scope is a TOKEN-MINTING ENDPOINT: the authorization-server token endpoint in
+RFC 9449's own terms, and equally any login or refresh endpoint that mints a
+session's pair -- ``expected_htm``/``expected_htu`` are parameters precisely so
+each minting surface names its own. RFC 9449 SS4.2 says a proof
 presented there carries ``htm``/``htu``/``iat``/``jti`` and nothing else -- no
 ``ath``, because there is no access token to hash yet, and no server-issued
 ``nonce``, because the ``jti`` single-use check already provides replay

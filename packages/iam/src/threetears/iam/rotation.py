@@ -18,7 +18,14 @@ reason, and reordering them reintroduces a specific bug:
    and "deprovisioned" means nothing.
 4. ``pre_redemption_checks`` -- the deployment's own additional deny rules, in
    the same "cheap, read-only, cannot recover anyway" band as steps 2 and 3.
-5. Validate the proof of possession, if the session is bound. The holder key is
+5. Refuse a session that is not holder-key bound, then validate the proof of
+   possession. Sessions bind AT ISSUANCE: the login flow collects a proof and
+   mints the pair with ``cnf`` already set, so a refresh token carrying none
+   has no key anyone could prove, and re-authentication is the only path that
+   can bind one. Binding on first refresh instead would hand the session to
+   whoever presents the token first -- a thief who refreshes before the victim
+   does binds THEIR key. The refusal sits here, before redemption, so it never
+   burns the ``jti`` and never trips reuse detection. The holder key is
    resolved LAZILY here rather than passed in already-computed, so a refresh
    that steps 2-4 were always going to deny never pays for proof validation.
 6. Match the holder key against the token's ``cnf`` -- **without consuming the
@@ -80,8 +87,9 @@ log = get_logger(__name__)
 class RotationError(Exception):
     """A refresh could not be honoured.
 
-    Covers an untrustworthy token, a revoked session, an expired session lifetime, a failed
-    proof of possession, and reuse of an already-rotated token. One type for all of them:
+    Covers an untrustworthy token, a revoked session, an expired session lifetime, a session
+    that was never holder-key bound, a failed proof of possession, and reuse of an
+    already-rotated token. One type for all of them:
     the client's correct response to every one is to re-authenticate, and distinguishing
     them tells an attacker which of their assumptions was wrong.
 
@@ -153,7 +161,6 @@ async def rotate_refresh_token(
     ledger: RefreshTokenLedger,
     revoker: SessionRevoker | None = None,
     holder_key: HolderKeySource | None = None,
-    bind_holder_key_on_first_use: bool = False,
     lifetime_caps: LifetimeCapsSource | None = None,
     pre_redemption_checks: Sequence[RefreshGate] = (),
     post_redemption_checks: Sequence[RefreshGate] = (),
@@ -176,17 +183,13 @@ async def rotate_refresh_token(
         a thief simply retries. Supply one in any deployment that can.
     :ptype revoker: SessionRevoker | None
     :param holder_key: the thumbprint proven by an accompanying proof of possession, from
-        :func:`~threetears.iam.dpop.validate_dpop_proof`. Required when the presented token
-        carries a ``cnf`` binding. Pass a coroutine function rather than a string wherever
-        producing it costs anything: the callable is awaited at step 5 of the check order,
-        so a refresh the earlier steps deny never pays for it.
+        :func:`~threetears.iam.dpop.validate_dpop_proof`. Required for every refresh that
+        can succeed: sessions bind their holder key at issuance, so the presented token
+        always carries a ``cnf`` and a refresh presenting no key is refused. Pass a
+        coroutine function rather than a string wherever producing it costs anything: the
+        callable is awaited at step 5 of the check order, so a refresh the earlier steps
+        deny never pays for it.
     :ptype holder_key: HolderKeySource | None
-    :param bind_holder_key_on_first_use: bind ``holder_key`` as the session's ``cnf`` when
-        the presented token carries none. For deployments whose login flow collects no proof
-        of possession, so the first refresh is where binding can happen. With this set, a
-        refresh presenting no holder key at all is refused rather than left unbound --
-        otherwise a client could decline to bind indefinitely.
-    :ptype bind_holder_key_on_first_use: bool
     :param lifetime_caps: how long the session may live. Pass a resolver where the caps come
         from per-tenant policy, which cannot be read until ``customer_id`` is known.
     :ptype lifetime_caps: LifetimeCapsSource | None
@@ -227,11 +230,7 @@ async def rotate_refresh_token(
     await _run_gates(pre_redemption_checks, claims)
 
     # 5/6. Holder-key binding, checked WITHOUT consuming the jti (module docstring, step 6).
-    resolved_cnf = await _resolve_holder_binding(
-        claims,
-        holder_key=holder_key,
-        bind_on_first_use=bind_holder_key_on_first_use,
-    )
+    resolved_cnf = await _resolve_holder_binding(claims, holder_key=holder_key)
 
     # 7. Redemption -- the only consuming step.
     if not await ledger.redeem(claims.jti):
@@ -285,24 +284,20 @@ async def _resolve_holder_binding(
     claims: SessionClaims,
     *,
     holder_key: HolderKeySource | None,
-    bind_on_first_use: bool,
-) -> str | None:
+) -> str:
     """Settle what ``cnf`` the new pair carries, without consuming anything.
 
-    Returns the thumbprint to bind, or ``None`` for a session that is not holder-key bound.
-    The holder key is only ever resolved when this session actually needs one, so an
-    unbound deployment never awaits a resolver it did not have to.
+    Exactly two cases: a session with no ``cnf`` was never holder-key bound and is refused
+    -- binding happens at issuance, so re-authentication is the only path that can bind it
+    -- and a bound session must present a key whose thumbprint matches exactly. The refusal
+    of an unbound session comes BEFORE the holder key is resolved: there is nothing to match
+    it against, so paying for proof validation would be pure waste.
     """
-    if claims.cnf is None and not bind_on_first_use:
-        return None
-    if holder_key is None:
-        if claims.cnf is None:
-            raise RotationError("this session binds a holder key on first refresh and none was presented.")
-        raise RotationError("this session is holder-key bound and no proof of possession was presented.")
-
-    thumbprint = holder_key if isinstance(holder_key, str) else await holder_key()
     if claims.cnf is None:
-        return thumbprint  # bind-on-first-use
+        raise RotationError("this session is not holder-key bound; re-authenticate.")
+    if holder_key is None:
+        raise RotationError("this session is holder-key bound and no proof of possession was presented.")
+    thumbprint = holder_key if isinstance(holder_key, str) else await holder_key()
     if thumbprint != claims.cnf:
         raise RotationError("proof of possession does not match the session's bound key.")
     return claims.cnf
