@@ -74,6 +74,7 @@ from threetears.observe import get_logger
 
 from threetears.agent.knowledge.integration import (
     KnowledgeIntegration,
+    GovernedKnowledgeUnavailableError,
     retrieve_concepts,
     retrieve_entries,
 )
@@ -327,6 +328,15 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
                 # not fail open on its own hard rules, so surface the failure (the
                 # turn fails loudly) rather than swallowing it into a pass-through.
                 log.error("governed knowledge injection failed closed: an invariant rule could not be rendered")
+                raise
+            except GovernedKnowledgeUnavailableError:
+                # FAIL CLOSED, the other way in. The check above only fires for an
+                # invariant that was RETRIEVED and then failed to render; a retrieval
+                # fault yields zero rows, so there is nothing to render and nothing
+                # to fail. Without this branch the broad handler below would swallow
+                # it and the turn would proceed with NO governed knowledge at all --
+                # the same fail-open, reached from the other side.
+                log.error("governed knowledge injection failed closed: the governed layer could not be read")
                 raise
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- SITUATIONAL knowledge injection is best-effort context enrichment; a fault proceeds on the un-merged request rather than failing the turn
                 log.warning(
