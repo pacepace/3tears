@@ -292,6 +292,28 @@ def test_token_pair_shares_a_session_and_differs_by_type(
     assert refresh.exp > access.exp
 
 
+def test_a_pair_minted_with_cnf_binds_both_halves(ed_signer: Ed25519Signer, ed_verifier: Ed25519JwksVerifier) -> None:
+    # Bind-at-issuance rests on this: rotation refuses any refresh token without a cnf, so
+    # the pair minted at login must carry the binding on BOTH tokens, not only the access
+    # half whose claims the pair happens to expose.
+    pair = mint_token_pair(
+        subject="user-1",
+        session_id=new_session_id(),
+        issuer=_ISSUER,
+        audience=_AUDIENCE,
+        signer=ed_signer,
+        cnf="thumbprint-value",
+    )
+    access = verify_session_token(pair.access_token, verifier=ed_verifier, expected_type=TokenType.ACCESS)
+    refresh = verify_session_token(pair.refresh_token, verifier=ed_verifier, expected_type=TokenType.REFRESH)
+    assert access.cnf == "thumbprint-value"
+    assert refresh.cnf == "thumbprint-value"
+    # On the wire the binding is RFC 7800's confirmation claim: {"cnf": {"jkt": ...}}.
+    for token in (pair.access_token, pair.refresh_token):
+        payload = jwt.decode(token, options={"verify_signature": False})
+        assert payload["cnf"] == {"jkt": "thumbprint-value"}
+
+
 def test_token_pair_defaults_auth_time_and_session_start_to_now(ed_signer: Ed25519Signer) -> None:
     pair = mint_token_pair(
         subject="user-1", session_id=new_session_id(), issuer=_ISSUER, audience=_AUDIENCE, signer=ed_signer
