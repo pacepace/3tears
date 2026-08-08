@@ -36,7 +36,10 @@ from langchain_core.runnables.config import var_child_runnable_config
 from threetears.knowledge import ConceptEffective, ConceptSnapshot, EntryEffective, EntrySnapshot, Scope
 
 import threetears.agent.knowledge.middleware as mw_module
-from threetears.agent.knowledge.integration import KnowledgeIntegration
+from threetears.agent.knowledge.integration import (
+    GovernedKnowledgeUnavailableError,
+    KnowledgeIntegration,
+)
 from threetears.agent.knowledge.middleware import (
     GovernedKnowledgeRenderError,
     KnowledgeInjectionMiddleware,
@@ -351,14 +354,23 @@ class TestNoop:
 
 
 class TestSoftFail:
-    def test_retrieval_fault_passes_through(self) -> None:
-        # both backends raise -> retrieve_* soft-fail internally to ([], []) ->
-        # nothing retrieved -> the call proceeds on the un-merged request.
+    def test_retrieval_fault_fails_closed(self) -> None:
+        """THIS TEST PREVIOUSLY ASSERTED THE BUG.
+
+        It required a retrieval fault to pass through on the un-merged request --
+        the turn proceeding with NO governed knowledge at all, and nothing
+        anywhere saying so. That is the fail-open the governance layer exists to
+        prevent; ``GovernedKnowledgeRenderError`` already refuses it for an
+        invariant that failed to RENDER, and a fault that happens one step
+        earlier is the same hole.
+
+        Seen live: an L3 timeout produced exactly this, and the answer was
+        indistinguishable from a governed one.
+        """
         integration = _integration(entry_raises=True, concept_raises=True)
         req_in = _request(SystemMessage(content="base"))
-        req_out, out = _drive(KnowledgeInjectionMiddleware(), req_in, _configurable(integration))
-        assert req_out is req_in
-        assert not isinstance(out, ExtendedModelResponse)
+        with pytest.raises(GovernedKnowledgeUnavailableError):
+            _drive(KnowledgeInjectionMiddleware(), req_in, _configurable(integration))
 
     def test_identity_fault_passes_through(self) -> None:
         # reading the verified identity raises INSIDE the middleware try -> the
