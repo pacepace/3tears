@@ -6,6 +6,44 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.6 -- 2026-08-08
+
+### Fixed
+
+- **The governed knowledge layer no longer fails open.** `retrieve_concepts` /
+  `retrieve_entries` swallowed a retrieval fault and returned `([], [])`, so the
+  turn proceeded with NO governed knowledge and the answer was indistinguishable
+  from a governed one. `GovernedKnowledgeRenderError` already refused this for an
+  invariant that failed to RENDER; a fault one step earlier walked past that
+  guarantee, because zero rows means nothing to render and nothing to fail. Both
+  now raise `GovernedKnowledgeUnavailableError`, and the injection middleware
+  fails closed on it. A DISABLED layer is unchanged -- an unwired collection is
+  configuration, not a fault.
+
+  Observed on a cluster: an L3 timeout produced exactly this on roughly one turn
+  in fourteen during an eval run.
+
+- **Knowledge is no longer re-read from L3 on every turn.**
+  `list_visible_to_user` bypassed the Collection it lives on -- raw pool fetch,
+  raw dict, hand-built snapshot, no L1, no invalidation. Two cross-table RBAC
+  JOINs per agent turn under a 5s timeout, for rows that change about once a day.
+  That is what made the timeout above reachable.
+
+### Added
+
+- `ScanCache` (`threetears.core.collections.scan_cache`) -- an L1-backed cache
+  for visibility-filtered scans, keyed by caller identity and evicted by
+  DECLARED DEPENDENCY TABLES through the existing cross-pod invalidation
+  broadcast. The RBAC dependency is a security property, not a freshness one: a
+  scan reading `role_assignments` must drop when a grant is revoked, so the
+  registry evicts dependent scans BEFORE its early returns (those bail for
+  tables a pod does not hold as collections -- exactly what `role_assignments`
+  is on an agent pod). TTL is a backstop for a missed broadcast, never the
+  primary mechanism.
+
+  Opt-in per collection, and degrades to uncached when no registry is present.
+
+
 ## v0.23.5 -- 2026-08-07
 
 ### `3tears-iam`
