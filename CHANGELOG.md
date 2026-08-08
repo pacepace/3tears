@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.5 -- 2026-08-07
+
+### `3tears-iam`
+
+**Sessions bind their DPoP holder key at issuance, and a session that carries no
+binding can no longer refresh.** `rotate_refresh_token` loses its
+`bind_holder_key_on_first_use` parameter. Binding on first refresh handed the
+session to whoever presented the refresh token first: a thief who refreshed
+before the victim did bound THEIR key and took the session, and every
+protection after that point defended the theft. A pair is now minted with `cnf`
+already set — `mint_token_pair(cnf=...)` already accepted it — so a refresh
+token carrying none has no key anyone could prove, and re-authentication is the
+only path that binds one.
+
+`_resolve_holder_binding` is now two cases: no `cnf` refuses with `"this session
+is not holder-key bound; re-authenticate."`, and a bound session must match its
+thumbprint exactly. The refusal sits at step 5 of the documented check order,
+before `ledger.redeem`, so it burns no `jti` and trips no reuse detection — a
+denied refresh cannot be used to destroy a session it could not take.
+
+**Breaking, in two ways.** Callers passing `bind_holder_key_on_first_use` get a
+`TypeError`; delete the argument. And every session minted before a deploy of
+this version is unbound, so it is refused at its next refresh and its holder
+re-authenticates once — a bounded, one-time re-login, not a rollout to tune. A
+deployment whose login flow does not yet collect a proof at mint will refuse
+every refresh, so ship the proof-collecting side first.
+
+`validate_dpop_proof` is unchanged and was always endpoint-agnostic; only its
+docstring's scope prose moves from the token endpoint to token-minting
+endpoints generally.
+
 ## v0.23.3 -- 2026-08-05
 
 ### `3tears-scrape`
