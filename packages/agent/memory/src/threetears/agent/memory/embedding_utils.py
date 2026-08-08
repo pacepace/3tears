@@ -68,6 +68,12 @@ async def _safe_aembed_query(
         )
         return None
     if not result:
+        # SDS-04: an empty vector is a successful call that returns nothing usable.
+        # every caller then behaves exactly like "nothing was relevant", so without
+        # this line a provider degradation is indistinguishable from a quiet turn.
+        _log.warning(
+            "embedding aembed_query returned an empty vector (soft-fail): semantic recall is off for this call"
+        )
         return None
     return result
 

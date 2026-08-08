@@ -9,6 +9,9 @@ from uuid import UUID, uuid7
 
 from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.agent.tools.collections import ContextItemCollection
+from threetears.observe import get_logger
+
+log = get_logger(__name__)
 
 __all__ = [
     "ToolContextManager",
@@ -182,6 +185,14 @@ class ToolContextManager:
                 f"Variable limit reached ({self._var_limit}). Delete unused variables before adding new ones."
             )
         if len(value) > self._var_max_chars:
+            # SDS-04: the agent reads this back later mid-sentence with nothing
+            # marking the loss, so the operator log is the only fingerprint.
+            log.warning(
+                "context variable %r truncated from %d to %d chars: the agent will read back a clipped value",
+                key,
+                len(value),
+                self._var_max_chars,
+            )
             value = value[: self._var_max_chars]
 
         now = datetime.now(UTC)

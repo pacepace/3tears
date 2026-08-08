@@ -118,6 +118,11 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # SDS-04: no runnable config means no injected integration, so this whole
+        # middleware becomes a pass-through and the turn silently loses memory retrieval.
+        log.warning(
+            "no runnable config available: memory retrieval is skipped for this turn",
+        )
         return {}
     return config.get("configurable") or {}
 

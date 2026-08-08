@@ -30,6 +30,7 @@ _AUDIENCE = "platform:internal"
 
 _SIGNER = HmacSigner(_SECRET)
 _VERIFIER = HmacVerifier(_SECRET, issuer=_ISSUER, audience=_AUDIENCE)
+_THUMBPRINT = "thumbprint-abc"
 
 
 class _Ledger:
@@ -65,7 +66,11 @@ class _Revoker:
 
 
 def _pair(**overrides: Any) -> TokenPair:
-    """Mint a starting pair, with any minting argument overridable per test."""
+    """Mint a starting pair, with any minting argument overridable per test.
+
+    Holder-key bound by default: sessions bind at issuance, so an unbound pair is the
+    exceptional case a test must ask for explicitly (``cnf=None``).
+    """
     kwargs: dict[str, Any] = {
         "subject": "user-1",
         "session_id": new_session_id(),
@@ -73,6 +78,7 @@ def _pair(**overrides: Any) -> TokenPair:
         "audience": _AUDIENCE,
         "signer": _SIGNER,
         "step_up_window": 300,
+        "cnf": _THUMBPRINT,
     }
     kwargs.update(overrides)
     return mint_token_pair(**kwargs)
@@ -90,6 +96,7 @@ async def test_rotation_issues_a_new_pair() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
     )
     assert rotated.access_token != original.access_token
     assert rotated.refresh_token != original.refresh_token
@@ -102,6 +109,7 @@ async def test_the_session_survives_rotation() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
     )
     # sid persists so revoking a session still revokes everything descended from it.
     assert rotated.claims.sid == original.claims.sid
@@ -118,6 +126,7 @@ async def test_auth_time_is_carried_forward_unchanged() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
     )
     assert rotated.claims.auth_time == started
     assert rotated.claims.session_started_at == started
@@ -131,6 +140,7 @@ async def test_impersonation_context_is_carried_forward() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
     )
     # A refresh never re-derives the acting identity -- it proves continuity only.
     assert rotated.claims.act == "admin-1"
@@ -146,6 +156,7 @@ async def test_reuse_is_rejected_and_revokes_the_family() -> None:
         signer=_SIGNER,
         ledger=ledger,
         revoker=revoker,
+        holder_key=_THUMBPRINT,
     )
     with pytest.raises(RotationError, match="already been used"):
         await rotate_refresh_token(
@@ -154,6 +165,7 @@ async def test_reuse_is_rejected_and_revokes_the_family() -> None:
             signer=_SIGNER,
             ledger=ledger,
             revoker=revoker,
+            holder_key=_THUMBPRINT,
         )
     # Two parties held the same token; forcing re-authentication is something the real user
     # can do and the thief cannot.
@@ -220,6 +232,7 @@ async def test_a_session_within_the_absolute_cap_still_refreshes() -> None:
         signer=_SIGNER,
         ledger=_Ledger(),
         lifetime_caps=SessionLifetimeCaps(absolute=timedelta(days=30)),
+        holder_key=_THUMBPRINT,
     )
 
 
@@ -310,12 +323,16 @@ async def test_the_rotated_token_verifies_and_is_a_refresh_token() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
     )
     verify_session_token(rotated.refresh_token, verifier=_VERIFIER, expected_type=TokenType.REFRESH)
     verify_session_token(rotated.access_token, verifier=_VERIFIER, expected_type=TokenType.ACCESS)
 
 
 async def test_rotation_chains() -> None:
+    # Every link works because the binding carries forward: each rotated pair is minted with
+    # the same cnf the redeemed token proved, so the chain never produces an unrefreshable
+    # (unbound) token.
     ledger = _Ledger()
     current = _pair()
     for _ in range(5):
@@ -324,8 +341,10 @@ async def test_rotation_chains() -> None:
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=ledger,
+            holder_key=_THUMBPRINT,
         )
     assert len(ledger.spent) == 5
+    assert current.claims.cnf == _THUMBPRINT
 
 
 # -- the holder key is resolved lazily, at step 5 and not before ---------------------------
@@ -355,19 +374,6 @@ async def test_a_holder_key_resolver_is_awaited_for_a_bound_session() -> None:
     assert calls == ["thumbprint-abc"]
 
 
-async def test_an_unbound_session_never_resolves_a_holder_key() -> None:
-    # Nothing to match against, so paying for proof validation would be pure waste.
-    calls: list[str] = []
-    await rotate_refresh_token(
-        _pair().refresh_token,
-        verifier=_VERIFIER,
-        signer=_SIGNER,
-        ledger=_Ledger(),
-        holder_key=_counting_holder_key("thumbprint-abc", calls),
-    )
-    assert calls == []
-
-
 async def test_a_doomed_refresh_never_pays_for_proof_validation() -> None:
     # THE reason the holder key is a resolver rather than a value: proof validation is a
     # round trip, and every check that can deny this refresh has already run by step 5.
@@ -387,48 +393,57 @@ async def test_a_doomed_refresh_never_pays_for_proof_validation() -> None:
     assert calls == []
 
 
-# -- bind on first use ---------------------------------------------------------------------
+# -- sessions bind at issuance -------------------------------------------------------------
 
 
-async def test_a_holder_key_binds_on_first_refresh() -> None:
-    # For a login flow that collects no proof of possession: the first refresh is where the
-    # session can start being bound at all.
-    original = _pair()
-    rotated = await rotate_refresh_token(
-        original.refresh_token,
-        verifier=_VERIFIER,
-        signer=_SIGNER,
-        ledger=_Ledger(),
-        holder_key="thumbprint-abc",
-        bind_holder_key_on_first_use=True,
-    )
-    assert original.claims.cnf is None
-    assert rotated.claims.cnf == "thumbprint-abc"
+async def test_an_unbound_session_cannot_refresh() -> None:
+    # Sessions bind AT ISSUANCE: the login flow collects the proof of possession and mints
+    # the pair with cnf already set. A refresh token carrying no cnf therefore has no key
+    # anyone could prove, and re-authentication is the only path that can bind one.
+    ledger = _Ledger()
+    with pytest.raises(RotationError, match="not holder-key bound"):
+        await rotate_refresh_token(
+            _pair(cnf=None).refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+        )
+    # Same discipline as a wrong holder key: the refusal burns nothing, so it can never be
+    # used to deny service or to trip reuse detection against the session's real holder.
+    assert not ledger.spent
 
 
-async def test_binding_on_first_use_refuses_a_refresh_that_presents_no_key() -> None:
-    # Otherwise a client could simply decline to bind, indefinitely.
-    with pytest.raises(RotationError, match="binds a holder key"):
+async def test_a_thief_cannot_bind_their_own_key_to_an_unbound_session() -> None:
+    # The attack bind-on-first-refresh allowed: steal the refresh token before the victim's
+    # first refresh, present YOUR key, own the session. Presenting a key changes nothing --
+    # an unbound session is unrefreshable, whoever shows up.
+    original = _pair(cnf=None)
+    ledger = _Ledger()
+    calls: list[str] = []
+    with pytest.raises(RotationError, match="not holder-key bound"):
+        await rotate_refresh_token(
+            original.refresh_token,
+            verifier=_VERIFIER,
+            signer=_SIGNER,
+            ledger=ledger,
+            holder_key=_counting_holder_key("thumbprint-attacker", calls),
+        )
+    assert not ledger.spent
+    # And the refusal never pays for proof validation it cannot use.
+    assert calls == []
+
+
+async def test_the_bind_on_first_use_parameter_is_gone() -> None:
+    # Deleted, not deprecated: with binding at issuance there is no first-use bind to widen,
+    # and a surviving flag would silently re-open the stolen-token window it existed in.
+    with pytest.raises(TypeError):
         await rotate_refresh_token(
             _pair().refresh_token,
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=_Ledger(),
-            bind_holder_key_on_first_use=True,
-        )
-
-
-async def test_an_already_bound_session_still_has_to_match() -> None:
-    # bind-on-first-use widens the FIRST refresh only; it never relaxes a later one.
-    original = _pair(cnf="thumbprint-abc")
-    with pytest.raises(RotationError, match="does not match"):
-        await rotate_refresh_token(
-            original.refresh_token,
-            verifier=_VERIFIER,
-            signer=_SIGNER,
-            ledger=_Ledger(),
-            holder_key="thumbprint-xyz",
-            bind_holder_key_on_first_use=True,
+            holder_key=_THUMBPRINT,
+            bind_holder_key_on_first_use=True,  # type: ignore[call-arg]
         )
 
 
@@ -481,6 +496,7 @@ async def test_a_post_redemption_gate_denies_a_token_that_is_already_spent() -> 
             verifier=_VERIFIER,
             signer=_SIGNER,
             ledger=ledger,
+            holder_key=_THUMBPRINT,
             post_redemption_checks=[_gate("re-check failed.", [])],
         )
     assert len(ledger.spent) == 1
@@ -493,6 +509,7 @@ async def test_a_gate_returning_none_allows_the_refresh() -> None:
         verifier=_VERIFIER,
         signer=_SIGNER,
         ledger=_Ledger(),
+        holder_key=_THUMBPRINT,
         pre_redemption_checks=[_gate(None, seen)],
         post_redemption_checks=[_gate(None, seen)],
     )
