@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.7 -- 2026-08-08
+
+### Added
+
+- `threetears.iam.dpop_client` -- the client half of `threetears.iam.dpop`:
+  `new_holder_key` and `sign_dpop_proof`, for producing an RFC 9449 proof.
+  Every browser, CLI and SDK that authenticates against this platform needs the
+  identical wire format, and a second implementation of it is a second chance to
+  disagree with the verifier. The module arrived in identity-core because a
+  headless bootstrap had to log itself in; this is that code, unchanged in
+  behaviour, moved to where its other consumers can reach it.
+
+  Callers must keep the holder key for as long as they want the session: an
+  issued token pair's `cnf` is that key's thumbprint, so losing it ends the
+  session rather than degrading it.
+
 ## v0.23.6 -- 2026-08-08
 
 ### Fixed
