@@ -8,6 +8,8 @@ keep reading rows.
 
 from __future__ import annotations
 
+import pytest
+
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache, ScanCacheKey
 
@@ -99,3 +101,62 @@ class TestDisabled:
         cache.put(key, _ROWS, depends_on=("concepts",), now_monotonic=0.0)
         assert cache.get(key, now_monotonic=0.0) is None
         assert cache.drop_for_table("concepts") == 0
+
+
+class TestLocalWriteEvictsLocalScans:
+    """the pod that WRITES is the one pod that never hears its own broadcast.
+
+    The invalidation listener skips self-published messages on purpose: for a
+    by-pk row the writer holds the freshest copy, so evicting it would force a
+    needless re-read. A SCAN inverts that. The write changed which rows match,
+    so the writer's cached result is stale the moment it commits -- and it is
+    guaranteed never to be told.
+
+    Shipped without this in 0.23.6: a hub that imported knowledge kept serving
+    the pre-import concept set until the TTL lapsed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_publish_invalidation_drops_dependent_scans(self) -> None:
+        from threetears.core.collections.registry import CollectionRegistry
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=SQLiteBackend())
+        key = ScanCacheKey("concepts", "user-1")
+        registry.scan_cache.put(key, _ROWS, depends_on=("concepts",), now_monotonic=0.0)
+
+        await registry.publish_invalidation(None, "concepts", "some-id")
+
+        assert registry.scan_cache.get(key, now_monotonic=0.0) is None
+
+    @pytest.mark.asyncio
+    async def test_eviction_happens_without_a_nats_client(self) -> None:
+        """local eviction is not a broadcast; no bus must not mean no eviction.
+
+        The method returns early when there is no NATS client. Ordering the
+        scan drop after that return would leave devx, tests, and any pod whose
+        bus is down serving stale scans forever.
+        """
+        from threetears.core.collections.registry import CollectionRegistry
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=SQLiteBackend())
+        key = ScanCacheKey("concepts", "user-1")
+        registry.scan_cache.put(key, _ROWS, depends_on=("concepts", "role_assignments"), now_monotonic=0.0)
+
+        await registry.publish_invalidation(None, "role_assignments", "grant-id")
+
+        assert registry.scan_cache.get(key, now_monotonic=0.0) is None
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_write_leaves_the_scan_alone(self) -> None:
+        from threetears.core.collections.registry import CollectionRegistry
+
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=SQLiteBackend())
+        key = ScanCacheKey("concepts", "user-1")
+        registry.scan_cache.put(key, _ROWS, depends_on=("concepts",), now_monotonic=0.0)
+
+        await registry.publish_invalidation(None, "conversations", "other-id")
+
+        assert registry.scan_cache.get(key, now_monotonic=0.0) == _ROWS
