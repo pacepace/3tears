@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.8 -- 2026-08-09
+
+### Fixed
+
+- A LOCAL write now evicts LOCAL scans. The scan cache was invalidated only by
+  the bus listener, which deliberately ignores this registry's own broadcasts --
+  correct for a by-pk row, backwards for a scan. A write changes WHICH ROWS
+  MATCH, so the cached result set is stale the instant it commits, and the pod
+  that made the write is the one pod guaranteed never to hear about it.
+
+  The visible symptom was a service that imported content and kept answering
+  from the pre-import set until the TTL lapsed. The eviction sits deliberately
+  ahead of the `nats_client is None` return: it is not a broadcast, so it must
+  not be skipped where there is no bus.
+
 ## v0.23.7 -- 2026-08-08
 
 ### Added
