@@ -362,6 +362,25 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
+        # A LOCAL write evicts LOCAL scans, before anything touches the bus.
+        #
+        # The listener below deliberately ignores this registry's own
+        # broadcasts: for a by-pk row that is right, because `save_entity` just
+        # wrote the freshest copy into L1 and evicting it would force a needless
+        # re-read. A SCAN is the opposite. The write changed WHICH ROWS MATCH,
+        # so the result this pod has cached is stale the instant it commits --
+        # and it is the one pod guaranteed never to hear about it.
+        #
+        # Shipped without this in 0.23.6: a hub that imported knowledge kept
+        # serving the pre-import concept set until the TTL lapsed. Deploy
+        # content, ask a question, get the old answer, with nothing to indicate
+        # why. Caught by the concept-visibility tests, which write and then read
+        # back through the same registry.
+        #
+        # Deliberately ahead of the `nats_client is None` return: local eviction
+        # is not a broadcast and must not be skipped when there is no bus (devx,
+        # tests, a pod whose NATS is down).
+        self.scan_cache.drop_for_table(table_name)
         if nats_client is None:
             return
         if isinstance(entity_id, tuple):
