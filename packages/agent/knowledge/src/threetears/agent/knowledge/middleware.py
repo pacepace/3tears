@@ -107,7 +107,18 @@ class GovernedKnowledgeRenderError(RuntimeError):
 #: budget governs ONLY the situational (non-invariant) tail, SHARED across both
 #: concepts and entries (task-03 Note 5). Invariants inject in full regardless
 #: (KNW-17 / KNW-25). Configured per-middleware via the constructor.
-_DEFAULT_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET: int = 2000
+#:
+#: 3500, raised from the original 2000, and the number is measured rather than
+#: chosen: the same governed agent (ots) against the same warehouse scored
+#: 50/51 on its eval suite at 3500 and 48/51 at the unconfigured default of
+#: 2000 (2026-08-09, local dev vs cobalt-dev). The two extra failures were
+#: exactly the routing entries that ranked below the 2000-token cut and never
+#: reached the turn. A budget that silently culls authored knowledge is the
+#: delivery failure this layer exists to prevent, so the DEFAULT is the value
+#: the correctness evidence was earned on: an unconfigured environment drifts
+#: toward working, and a deployment that wants a leaner cut says so
+#: explicitly per-middleware.
+_DEFAULT_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET: int = 3500
 
 #: Conventional characters-per-token heuristic for the deterministic token
 #: estimate. The budget is a soft cost/latency guard, not a hard correctness
