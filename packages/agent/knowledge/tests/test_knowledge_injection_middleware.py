@@ -44,6 +44,9 @@ from threetears.agent.knowledge.middleware import (
     GovernedKnowledgeRenderError,
     KnowledgeInjectionMiddleware,
     KnowledgeInjectionState,
+    _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET,
+    _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET,
+    _SITUATIONAL_TOKENS_PER_CANDIDATE,
     _concept_shadow_disclosures,
     _cosine_similarity,
     _entry_shadow_disclosures,
@@ -51,6 +54,7 @@ from threetears.agent.knowledge.middleware import (
     _rank_and_trim_shared,
     _render_block,
     _render_entry,
+    _resolve_situational_budget,
     _split_invariant_concepts,
     _split_invariant_entries,
     _warn_on_situational_starvation,
@@ -69,6 +73,23 @@ def _entry_snapshot(*, title: str = "Filter", body: str = "use active", always_i
         title=title,
         body=body,
         always_inject=always_inject,
+        datasource_id=None,
+    )
+
+
+def _sized_entry_snapshot(index: int, *, body_chars: int = 800) -> EntrySnapshot:
+    """Build a situational entry with a uniform, predictable rendered token cost.
+
+    The default entry builders render to a handful of tokens, which no realistic
+    budget ever trims; the corpus-scaling tests need items whose cost is the same
+    order as a real authored procedure so the budget is what decides the cut.
+    """
+    return EntrySnapshot(
+        id=uuid7(),
+        scope=Scope.PLATFORM,
+        title=f"Rule {index:02d}",
+        body="x" * body_chars,
+        always_inject=False,
         datasource_id=None,
     )
 
@@ -263,6 +284,15 @@ def _drive(
 
     out = asyncio.run(_run())
     return captured["req"], out
+
+
+def _injected_entry_count(out: Any) -> int:
+    """Count the entries a drive actually injected, off the metadata ledger."""
+    assert isinstance(out, ExtendedModelResponse)
+    assert out.command is not None
+    update = out.command.update
+    assert isinstance(update, dict)
+    return len(update["metadata"]["knowledge_injected_entries"])
 
 
 class TestInjection:
@@ -562,6 +592,125 @@ class TestRenderAndTrim:
             budget=10_000,
         )
         assert len(kept_e) == 3
+
+
+class TestBudgetScalesWithCorpus:
+    """The situational budget grows with the corpus instead of sitting at a constant.
+
+    A constant budget makes every item authored past its capacity evict another
+    item from the SAME turn: ots authored 90 situational items and a flat 3500 kept
+    14 to 25 of them per turn, so the same eval suite scored 48-50/51 with a
+    different set of cases failing each run. Documenting more made the agent know
+    less, which is the opposite of what the FIX_PROTOCOL asks for.
+    """
+
+    def test_empty_pool_keeps_the_floor(self) -> None:
+        assert _resolve_situational_budget(configured=None, pool_size=0) == _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+
+    def test_small_corpus_keeps_the_floor(self) -> None:
+        # a corpus too small to fill the floor gains nothing from scaling, and the
+        # floor is the value the 50/51 correctness evidence was earned on.
+        assert _resolve_situational_budget(configured=None, pool_size=3) == _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+
+    def test_large_corpus_scales_above_the_floor(self) -> None:
+        scaled = _resolve_situational_budget(configured=None, pool_size=90)
+        assert scaled == 90 * _SITUATIONAL_TOKENS_PER_CANDIDATE
+        assert scaled > _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+        assert scaled <= _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+
+    def test_ceiling_caps_an_unbounded_corpus(self) -> None:
+        # unbounded scaling is a context bomb: without the cap a runaway corpus
+        # puts the whole library in every system prompt on every turn.
+        assert _resolve_situational_budget(configured=None, pool_size=100_000) == _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET
+
+    def test_explicit_budget_wins_over_scaling(self) -> None:
+        assert _resolve_situational_budget(configured=512, pool_size=100_000) == 512
+
+    def test_explicit_zero_budget_is_honoured_not_treated_as_unset(self) -> None:
+        # zero is a real deployment setting (invariants only), which is why the
+        # "scale me" signal is None and not an in-range sentinel.
+        assert _resolve_situational_budget(configured=0, pool_size=90) == 0
+
+    def test_constructor_default_defers_to_scaling(self) -> None:
+        assert KnowledgeInjectionMiddleware().token_budget is None
+        assert KnowledgeInjectionMiddleware(token_budget=99).token_budget == 99
+
+    def test_default_admits_more_of_a_large_corpus_than_the_floor(self) -> None:
+        snapshots = [_sized_entry_snapshot(i) for i in range(30)]
+        _req, scaled_out = _drive(
+            KnowledgeInjectionMiddleware(),
+            _request(SystemMessage(content="base")),
+            _configurable(_integration(entries=snapshots)),
+        )
+        _req2, pinned_out = _drive(
+            KnowledgeInjectionMiddleware(token_budget=_MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET),
+            _request(SystemMessage(content="base")),
+            _configurable(_integration(entries=snapshots)),
+        )
+        assert _injected_entry_count(scaled_out) > _injected_entry_count(pinned_out)
+
+    def test_explicit_budget_still_trims_a_large_corpus(self) -> None:
+        # the override is honoured END TO END, not just at the resolver: a
+        # deployment that asks for a lean cut gets one no matter how big the pool.
+        snapshots = [_sized_entry_snapshot(i) for i in range(30)]
+        per_item = _estimate_tokens(_render_entry(EntryEffective(entry=snapshots[0], shadows_scope=None)))
+        _req, out = _drive(
+            KnowledgeInjectionMiddleware(token_budget=per_item * 2),
+            _request(SystemMessage(content="base")),
+            _configurable(_integration(entries=snapshots)),
+        )
+        assert _injected_entry_count(out) == 2
+
+    def test_scaling_counts_only_situational_candidates(self) -> None:
+        # invariants inject in full regardless (D9) and never enter the trim pool,
+        # so counting them would buy budget for items that do not spend it.
+        seen: dict[str, int] = {}
+
+        def _spy(*, configured: int | None, pool_size: int) -> int:
+            seen["pool_size"] = pool_size
+            return 10_000
+
+        integration = _integration(
+            entries=[_entry_snapshot(always_inject=True) for _ in range(4)] + [_entry_snapshot() for _ in range(2)],
+        )
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(mw_module, "_resolve_situational_budget", _spy)
+            _drive(
+                KnowledgeInjectionMiddleware(),
+                _request(SystemMessage(content="base")),
+                _configurable(integration),
+            )
+        assert seen["pool_size"] == 2
+
+    def test_invariants_inject_in_full_under_a_zero_budget(self) -> None:
+        # the budget governs the situational tail ONLY; hard rules are exempt, so
+        # even the leanest explicit budget cannot cull one.
+        snapshots = [_entry_snapshot(title=f"Hard {i}", body="always apply", always_inject=True) for i in range(3)]
+        req, out = _drive(
+            KnowledgeInjectionMiddleware(token_budget=0),
+            _request(SystemMessage(content="base")),
+            _configurable(_integration(entries=snapshots)),
+        )
+        assert req.system_message is not None
+        content = req.system_message.content
+        assert isinstance(content, str)
+        for index in range(3):
+            assert f"Hard {index}" in content
+        assert _injected_entry_count(out) == 3
+
+    def test_trim_drop_warning_names_the_effective_budget(self, caplog: pytest.LogCaptureFixture) -> None:
+        # the drop warning is how this bug was found; it stays honest only if it
+        # reports the budget that actually did the cutting, not the floor.
+        snapshots = [_sized_entry_snapshot(i) for i in range(30)]
+        with caplog.at_level("WARNING"):
+            _drive(
+                KnowledgeInjectionMiddleware(),
+                _request(SystemMessage(content="base")),
+                _configurable(_integration(entries=snapshots)),
+            )
+        drops = [r.getMessage() for r in caplog.records if "shared trim dropped" in r.getMessage()]
+        assert drops
+        assert f"budget={30 * _SITUATIONAL_TOKENS_PER_CANDIDATE}" in drops[0]
 
 
 class TestSilentDegradationSignals:
