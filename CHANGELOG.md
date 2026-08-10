@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.11 -- 2026-08-10
+
+### Fixed
+
+- `agent-tools`: a permanent tool-pod configuration fault now STOPS the pod
+  instead of feeding a restart loop. Config validation raises
+  `ToolPodConfigError` (a `ValueError` subclass, so existing handlers keep
+  working) naming the offending variable, and `ToolServerBootstrap.run` reports
+  it as one structured ERROR record and exits `EX_CONFIG` (78) rather than a
+  bare 1. A supervisor can branch on the status; it cannot branch on a message.
+  Transient failures, including secret-ref resolution against a projected
+  Secret that is merely late, still exit 1 and stay retryable. Reported as
+  bluelabsio/14-eng-ai-bot#235, where a renamed variable produced 9,580
+  restarts across 8 days without one successful start.
+
 ## v0.23.10 -- 2026-08-10
 
 ### Changed
