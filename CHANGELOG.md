@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.9 -- 2026-08-09
+
+### Changed
+
+- `agent-knowledge`: the default situational-tail retrieval token budget is
+  3500, raised from 2000. The number is measured, not chosen: the same
+  governed agent scored 50/51 on its eval suite at 3500 and 48/51 at the
+  unconfigured 2000 default, with the two extra failures being exactly the
+  routing entries that ranked below the 2000-token cut. Deployments wanting
+  the leaner cut still set it per-middleware via the constructor. (#292)
+
 ## v0.23.8 -- 2026-08-09
 
 ### Fixed
