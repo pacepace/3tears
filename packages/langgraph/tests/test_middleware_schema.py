@@ -12,6 +12,13 @@ the tail with a footer, and the sync mirror passes through. A REAL ``create_agen
 capturing fake model regression proves the model receives exactly one leading
 ``SystemMessage`` (the crash guard the stub-model unit tests cannot see).
 
+Two more properties are load-bearing and covered here. WHICH tables survive truncation
+is decided by the priority rule (hazard notes, then documentation weight, then name),
+not by the order the digest yielded, so the same block renders from any permutation of
+the same tables. And the budget is DERIVED from the documented-table count between a
+floor and a ceiling, so the 35-table corpus that used to prime 3 tables now primes all
+35 while a runaway corpus still stops at the ceiling.
+
 The integration is read off ``config["configurable"]``; the direct-drive tests set the
 runnable-config contextvar so the middleware's ``get_config`` sees it, and the
 real-agent test passes it via ``ainvoke``'s ``config``.
@@ -22,6 +29,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from random import Random
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -34,10 +42,14 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 
 from threetears.langgraph.middleware_schema import (
+    _SCHEMA_PRIMING_TOKEN_CEILING,
+    _SCHEMA_PRIMING_TOKEN_FLOOR,
+    _SCHEMA_PRIMING_TOKENS_PER_TABLE,
     SchemaPrimingMiddleware,
     SchemaPrimingState,
     _HONESTY_PREAMBLE,
     _render_schema_block,
+    _scaled_budget,
 )
 
 
@@ -204,6 +216,40 @@ class TestNoop:
         assert not isinstance(out, ExtendedModelResponse)
 
 
+def _rich(name: str, columns: int = 4) -> dict[str, Any]:
+    """a heavily documented table: table prose plus described columns."""
+    return {
+        "schema": "public",
+        "table": name,
+        "description": "what this table is for. " * 8,
+        "columns": [
+            {"name": f"c{i}", "type": "int", "description": "what this column means. " * 3} for i in range(columns)
+        ],
+    }
+
+
+def _bare(name: str) -> dict[str, Any]:
+    """a minimally documented table: one short line, undescribed columns."""
+    return {
+        "schema": "public",
+        "table": name,
+        "description": "x",
+        "columns": [{"name": "c0", "type": "int"}],
+    }
+
+
+def _hazardous(name: str) -> dict[str, Any]:
+    """a thinly documented table carrying an unloaded-column warning."""
+    entry = _bare(name)
+    entry["unloaded_columns"] = ["never_loaded"]
+    return entry
+
+
+def _rendered_names(block: str) -> list[str]:
+    """the qualified table names in the block, in rendered order."""
+    return [line.removeprefix("### ") for line in block.splitlines() if line.startswith("### ")]
+
+
 class TestBudget:
     def test_tail_dropped_with_footer(self) -> None:
         tables = [{"schema": "public", "table": f"t{i}", "description": "x" * 200, "columns": []} for i in range(10)]
@@ -214,6 +260,107 @@ class TestBudget:
 
     def test_empty_when_no_tables(self) -> None:
         assert _render_schema_block([_digest([])], budget=1500) == ""
+
+    def test_single_oversized_table_still_renders(self) -> None:
+        # the at-least-one rule: a budget smaller than one table still primes that table.
+        block = _render_schema_block([_digest([_rich("only", columns=20)])], budget=10)
+        assert _rendered_names(block) == ["public.only"]
+        assert "not shown here" not in block
+
+    def test_footer_count_matches_tables_dropped(self) -> None:
+        tables = [_rich(f"t{i:02d}") for i in range(20)]
+        block = _render_schema_block([_digest(tables)], budget=400)
+        dropped = len(tables) - len(_rendered_names(block))
+        assert dropped > 0
+        assert f"_{dropped} more documented table(s) not shown here" in block
+
+    def test_footer_states_the_selection_rule(self) -> None:
+        # a table missing from the block must read as a stated decision, not a fault.
+        tables = [_rich(f"t{i:02d}") for i in range(20)]
+        block = _render_schema_block([_digest(tables)], budget=400)
+        assert "keeps the tables carrying the most documentation" in block
+
+
+class TestScaledBudget:
+    def test_budget_scales_with_table_count(self) -> None:
+        assert _scaled_budget(10) == 10 * _SCHEMA_PRIMING_TOKENS_PER_TABLE
+        assert _scaled_budget(20) > _scaled_budget(10)
+
+    def test_floor_holds_for_a_small_corpus(self) -> None:
+        assert _scaled_budget(0) == _SCHEMA_PRIMING_TOKEN_FLOOR
+        assert _scaled_budget(1) == _SCHEMA_PRIMING_TOKEN_FLOOR
+        assert _scaled_budget(2) == _SCHEMA_PRIMING_TOKEN_FLOOR
+
+    def test_ceiling_holds_for_a_huge_corpus(self) -> None:
+        assert _scaled_budget(1000) == _SCHEMA_PRIMING_TOKEN_CEILING
+        assert _scaled_budget(100_000) == _SCHEMA_PRIMING_TOKEN_CEILING
+
+    def test_wide_corpus_renders_whole_where_the_old_constant_truncated(self) -> None:
+        # the measured regression: 35 documented tables, of which the fixed 1500-token
+        # budget primed 3. the derived budget primes all 35.
+        tables = [_rich(f"t{i:02d}", columns=12) for i in range(35)]
+        scaled = _render_schema_block([_digest(tables)])
+        assert len(_rendered_names(scaled)) == 35
+        assert "not shown here" not in scaled
+        fixed = _render_schema_block([_digest(tables)], budget=_SCHEMA_PRIMING_TOKEN_FLOOR)
+        assert len(_rendered_names(fixed)) < 10
+
+    def test_middleware_defaults_to_the_derived_budget(self) -> None:
+        assert SchemaPrimingMiddleware().token_budget is None
+
+
+class TestPriority:
+    def test_documented_tables_survive_over_bare_ones(self) -> None:
+        # the lottery this replaces: the bare tables led the input, so they used to be
+        # the ones that survived. selection is by documentation now, not by position.
+        tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
+        block = _render_schema_block([_digest(tables)], budget=300)
+        names = _rendered_names(block)
+        assert names, "at least one table must always render"
+        assert all(name.startswith("public.r") for name in names)
+        assert "not shown here" in block
+
+    def test_selection_is_independent_of_input_order(self) -> None:
+        tables = [_bare(f"b{i:02d}") for i in range(20)] + [_rich(f"r{i}") for i in range(3)]
+        forward = _render_schema_block([_digest(list(tables))], budget=300)
+        backward = _render_schema_block([_digest(list(reversed(tables)))], budget=300)
+        rotated = _render_schema_block([_digest(tables[7:] + tables[:7])], budget=300)
+        assert forward == backward == rotated
+
+    def test_output_is_byte_stable_across_shuffled_input(self) -> None:
+        tables = [_rich(f"r{i}") for i in range(4)] + [_bare(f"b{i}") for i in range(4)] + [_hazardous("h0")]
+        shuffled = Random(1234)  # seeded so a failure is reproducible
+        orders = []
+        for _ in range(5):
+            permutation = list(tables)
+            shuffled.shuffle(permutation)
+            orders.append(_render_schema_block([_digest(permutation)]))
+        assert len(set(orders)) == 1
+
+    def test_hazard_tables_outrank_richer_documentation(self) -> None:
+        # an unloaded column reads as a measured 0; nothing in the live catalog says
+        # otherwise, so that warning outranks even a heavily documented table.
+        tables = [_rich("r0"), _rich("r1"), _hazardous("h0")]
+        names = _rendered_names(_render_schema_block([_digest(tables)]))
+        assert names[0] == "public.h0"
+
+    def test_caveats_count_as_hazard_documentation(self) -> None:
+        # forward-compatible: the projection carries no caveats today, but when it does
+        # they rank with the unloaded-column overlay rather than falling to the tail.
+        with_caveats = _bare("c0") | {"caveats": "never sum across geo_level"}
+        names = _rendered_names(_render_schema_block([_digest([_rich("r0"), with_caveats])]))
+        assert names[0] == "public.c0"
+
+    def test_equal_documentation_is_tie_broken_by_name(self) -> None:
+        tables = [_rich("zebra"), _rich("alpha"), _rich("mango")]
+        names = _rendered_names(_render_schema_block([_digest(tables)]))
+        assert names == ["public.alpha", "public.mango", "public.zebra"]
+
+    def test_tables_from_every_digest_are_ranked_together(self) -> None:
+        # ranking spans datasources: a rich table on the second digest beats a bare one
+        # on the first, which per-digest ordering would have preferred.
+        block = _render_schema_block([_digest([_bare("b0")]), _digest([_rich("r0")])])
+        assert _rendered_names(block) == ["public.r0", "public.b0"]
 
 
 class TestSyncMirror:

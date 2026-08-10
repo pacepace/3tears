@@ -10,6 +10,14 @@ domain-routed CONCEPTS (a glossary) and playbook ENTRIES (procedures) are
 retrieved, ranked, trimmed to a shared token budget, rendered, and FOLDED into
 ``request.system_message`` -- definitions before procedures (task-03 Note 5).
 
+That shared budget SCALES with the corpus rather than sitting at a constant. A
+constant makes every item authored past its capacity evict another item from the
+same turn, so documenting more makes the agent know less -- the exact inversion of
+the incentive the FIX_PROTOCOL runs on. The default is therefore derived from the
+turn's situational candidate count, clamped between a measured floor and a bounded
+ceiling (:func:`_resolve_situational_budget`); an explicit constructor
+``token_budget`` still wins verbatim.
+
 Why the fold and not an extra ``SystemMessage`` in the message list: ``create_agent``
 assembles the model prompt as ``[request.system_message, *request.messages]`` with
 NO consolidation, and LangChain's Anthropic binding then RAISES on multiple
@@ -103,22 +111,47 @@ class GovernedKnowledgeRenderError(RuntimeError):
     """
 
 
-#: Platform default for the situational-tail token budget (KNW-17 / note 4). The
-#: budget governs ONLY the situational (non-invariant) tail, SHARED across both
-#: concepts and entries (task-03 Note 5). Invariants inject in full regardless
-#: (KNW-17 / KNW-25). Configured per-middleware via the constructor.
+#: FLOOR for the situational-tail token budget (KNW-17 / note 4). The budget
+#: governs ONLY the situational (non-invariant) tail, SHARED across both concepts
+#: and entries (task-03 Note 5). Invariants inject in full regardless (KNW-17 /
+#: KNW-25). Overridden per-middleware via the constructor.
 #:
 #: 3500, raised from the original 2000, and the number is measured rather than
 #: chosen: the same governed agent (ots) against the same warehouse scored
 #: 50/51 on its eval suite at 3500 and 48/51 at the unconfigured default of
 #: 2000 (2026-08-09, local dev vs cobalt-dev). The two extra failures were
 #: exactly the routing entries that ranked below the 2000-token cut and never
-#: reached the turn. A budget that silently culls authored knowledge is the
-#: delivery failure this layer exists to prevent, so the DEFAULT is the value
-#: the correctness evidence was earned on: an unconfigured environment drifts
-#: toward working, and a deployment that wants a leaner cut says so
-#: explicitly per-middleware.
-_DEFAULT_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET: int = 3500
+#: reached the turn. It is now a FLOOR rather than the value: a corpus small
+#: enough to fit under it has nothing to gain from scaling headroom, and the
+#: floor keeps the correctness evidence above intact for those agents.
+_MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET: int = 3500
+
+#: Per-candidate allowance the situational budget scales by, and the reason the
+#: budget is no longer a constant. A constant does not fit a growing corpus: the
+#: ots agent authored 90 situational items and a flat 3500 kept 14 to 25 of them
+#: per turn (65 to 76 dropped, measured across a full eval run, 2026-08-10), so
+#: which knowledge reached the model was decided by a similarity lottery over a
+#: starved budget. The same suite then scored 48-50/51 with a DIFFERENT set of
+#: cases failing each run: nine distinct cases failed across four runs and only
+#: one failed twice. Under that regime authoring MORE knowledge makes the agent
+#: know LESS, which inverts the incentive the FIX_PROTOCOL depends on.
+#:
+#: 175 is measured from the same run: 3500 tokens bought a mean of ~20 kept
+#: candidates, so a rendered candidate costs ~175 estimated tokens. Scaling on
+#: the candidate COUNT rather than the pool's rendered bytes keeps the budget a
+#: property of how much knowledge was authored, so the same corpus gets the same
+#: budget every turn and the trim stays reproducible.
+_SITUATIONAL_TOKENS_PER_CANDIDATE: int = 175
+
+#: CEILING on the scaled situational budget. Scaling without a bound is a context
+#: bomb: a corpus grown to thousands of items would push the whole library into
+#: every system prompt, on every turn, forever. 16000 is the spend the repo owner
+#: accepted for a corpus this size ("15k isn't horrible to get it to understand"),
+#: rounded up to a round bound. At 175 tokens per candidate it admits a
+#: ~91-candidate situational tail IN FULL, which covers the measured ots corpus
+#: with no trim at all; past that the trim engages again, but from a budget 4.5x
+#: the old constant, so the ranking lottery stops being the dominant term.
+_MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET: int = 16000
 
 #: Conventional characters-per-token heuristic for the deterministic token
 #: estimate. The budget is a soft cost/latency guard, not a hard correctness
@@ -275,18 +308,25 @@ class KnowledgeInjectionMiddleware(AgentMiddleware[KnowledgeInjectionState, Any,
 
     state_schema: type[KnowledgeInjectionState] = KnowledgeInjectionState
 
-    def __init__(self, *, token_budget: int = _DEFAULT_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET) -> None:
+    def __init__(self, *, token_budget: int | None = None) -> None:
         """Configure the situational-tail token budget.
 
-        :param token_budget: token budget for the shared situational (non-invariant)
-            tail across concepts + entries; invariants inject in full regardless
-            (KNW-17 / KNW-25 / task-03 Note 5).
-        :ptype token_budget: int
+        ``None`` is the "scale it" signal rather than a sentinel int because ``0``
+        and every other non-negative int is a legitimate explicit setting (``0``
+        means "invariants only"), so no in-range value can stand for "unset"
+        without colliding with a deployment that meant it.
+
+        :param token_budget: explicit token budget for the shared situational
+            (non-invariant) tail across concepts + entries, honoured verbatim;
+            ``None`` (the default) scales the budget to the turn's candidate pool
+            per :func:`_resolve_situational_budget`. Invariants inject in full
+            regardless of either (KNW-17 / KNW-25 / task-03 Note 5).
+        :ptype token_budget: int | None
         :return: nothing.
         :rtype: None
         """
         super().__init__()
-        self.token_budget = token_budget
+        self.token_budget: int | None = token_budget
 
     async def awrap_model_call(
         self,
@@ -403,7 +443,7 @@ async def _build_governed_injection(
     datasource_table_id: UUID | None,
     scope_context: str | None,
     messages: Sequence[BaseMessage],
-    budget: int,
+    budget: int | None,
 ) -> tuple[str, dict[str, Any]]:
     """Retrieve, rank, trim, and render the governed-knowledge block + ledgers.
 
@@ -431,8 +471,9 @@ async def _build_governed_injection(
     :ptype scope_context: str | None
     :param messages: the running message list (source of the turn query)
     :ptype messages: Sequence[BaseMessage]
-    :param budget: shared situational-tail token budget
-    :ptype budget: int
+    :param budget: explicit shared situational-tail token budget, or ``None`` to
+        scale it to the turn's candidate pool
+    :ptype budget: int | None
     :return: tuple ``(block, metadata)``; ``("", {})`` when nothing is injected
     :rtype: tuple[str, dict[str, Any]]
     """
@@ -457,17 +498,25 @@ async def _build_governed_injection(
 
     concept_inv, concept_sit = _split_invariant_concepts(concept_effective)
     entry_inv, entry_sit = _split_invariant_entries(entry_effective)
+    # the pool the budget must cover is known only here, after the invariant split
+    # and before the trim, so this is where the scaling is resolved. every budget
+    # consumer below (the D9 warning, the trim, the starvation + drop warnings)
+    # reads the EFFECTIVE value, so the logs report the budget that actually ran.
+    effective_budget = _resolve_situational_budget(
+        configured=budget,
+        pool_size=len(concept_sit) + len(entry_sit),
+    )
     # D9: invariants inject in full, exempt from the trim. when the invariant set
     # ALONE exceeds the situational budget they still all inject (correctness beats
     # a soft budget) -- warn so the cost/latency overrun is observable, never silent.
     invariant_cost = _invariant_token_cost(concept_inv, entry_inv)
-    if invariant_cost > budget:
+    if invariant_cost > effective_budget:
         log.warning(
             "knowledge invariant set alone exceeds situational budget "
             "(invariant_tokens=%d budget=%d): injecting all invariants anyway "
             "(D9 correctness over soft budget)",
             invariant_cost,
-            budget,
+            effective_budget,
         )
     # KNW-92 / KNW-94: embed the turn query + fetch the situational candidates'
     # vectors so the shared trim can rank the SITUATIONAL pool by query<->item
@@ -485,14 +534,14 @@ async def _build_governed_injection(
     kept_concept_sit, kept_entry_sit = _rank_and_trim_shared(
         situational_concepts=concept_sit,
         situational_entries=entry_sit,
-        budget=budget,
+        budget=effective_budget,
         query_embedding=query_embedding,
         embeddings=situational_embeddings,
     )
     _warn_on_situational_starvation(
         situational_entries=len(entry_sit),
         kept_entries=len(kept_entry_sit),
-        budget=budget,
+        budget=effective_budget,
     )
     block = _render_block(
         invariant_concepts=concept_inv,
@@ -519,6 +568,38 @@ async def _build_governed_injection(
         "knowledge_injected_entries": [{"scope": e.entry.scope.value} for e in injected_entries],
     }
     return block, metadata
+
+
+def _resolve_situational_budget(*, configured: int | None, pool_size: int) -> int:
+    """Resolve the situational-tail budget for this turn: explicit, else scaled.
+
+    An explicit constructor budget is a deployment decision and is returned
+    VERBATIM, including ``0``; only the DEFAULT scales. The default scales because
+    a constant is the wrong shape for a corpus that grows: every authored item
+    added past the constant's capacity evicts another item from the SAME turn, so
+    documenting more makes the agent know less, and which items survive is decided
+    by a similarity lottery that re-rolls every turn.
+
+    The scaled value is ``pool_size * _SITUATIONAL_TOKENS_PER_CANDIDATE`` clamped
+    into ``[_MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET,
+    _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET]``. The floor keeps the measured
+    correctness evidence for agents whose corpus is too small to earn more; the
+    ceiling keeps an ungoverned corpus from becoming an unbounded prompt. The pool
+    is the SITUATIONAL candidate count only: invariants are split out before this
+    and inject in full regardless (D9), so counting them would pay for them twice.
+
+    :param configured: an explicit per-middleware token budget, or ``None`` to
+        scale
+    :ptype configured: int | None
+    :param pool_size: situational candidates offered to this turn's trim
+    :ptype pool_size: int
+    :return: the effective situational-tail token budget for this turn
+    :rtype: int
+    """
+    if configured is not None:
+        return configured
+    scaled = pool_size * _SITUATIONAL_TOKENS_PER_CANDIDATE
+    return min(max(scaled, _MIN_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET), _MAX_KNOWLEDGE_RETRIEVAL_TOKEN_BUDGET)
 
 
 def _split_invariant_entries(
@@ -850,7 +931,8 @@ def _warn_on_shared_trim_drop(
     :ptype kept_size: int
     :param dropped_concepts: situational concepts among the dropped
     :ptype dropped_concepts: int
-    :param budget: the shared situational token budget
+    :param budget: the EFFECTIVE shared situational token budget this turn ran on
+        (post-scaling), so the line names the number that actually did the cutting
     :ptype budget: int
     :return: nothing; the signal is the log record
     :rtype: None
