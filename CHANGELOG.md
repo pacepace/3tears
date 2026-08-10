@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.23.10 -- 2026-08-10
+
+### Changed
+
+- `agent-knowledge`: the situational-tail retrieval budget SCALES with the corpus
+  (`clamp(candidates * 175, 3500, 16000)`) instead of sitting at a constant. A
+  constant made every item authored past its capacity evict another from the same
+  turn, so documenting more made the agent know less. Measured: a 90-item corpus
+  had 65 to 76 items dropped per turn at the old 3500, and the same eval suite
+  scored 48-50/51 with a different set of cases failing each run. An explicit
+  `token_budget=` still wins verbatim. (#295)
+- `langgraph`: documented-schema priming no longer truncates by arbitrary digest
+  order. Tables are ranked by hazard notes, then documentation weight, then
+  qualified name as a total order, and the budget scales with the table count
+  (`clamp(tables * 500, 1500, 16000)`). Measured: 32 of 35 tables were dropped
+  every turn, always the same three surviving, whatever the question. (#296)
+
 ## v0.23.9 -- 2026-08-09
 
 ### Changed
