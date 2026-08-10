@@ -19,6 +19,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from threetears.agent.tools.bootstrap import ToolPodConfigError
 from threetears.agent.tools.serve import _BuiltinToolBootstrap, _register_builtin_tools
 from threetears.core.security import IdentityMinter, verify_identity_token
 
@@ -145,6 +146,49 @@ async def test_identity_key_without_issuer_fails_loud(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="THREETEARS_TOOL_POD_CONNECT_ISSUER"):
         await _BuiltinToolBootstrap("builtin").build_server()
+
+
+class TestIdentityConfigFaultsAreTerminal:
+    """every identity guard raises the TERMINAL config type, and each names its own variable.
+
+    the three tests above already pin "fails loud" by catching ``ValueError``, and they still
+    pass unchanged: ``ToolPodConfigError`` subclasses it precisely so they do. what they cannot
+    see is the half that ended the restart loop -- that the raise is classified as permanent, and
+    that it carries the variable the bootstrap's single ERROR record is going to name. A guard
+    that quietly reverted to a bare ``ValueError`` would still satisfy them while putting the pod
+    straight back into 9,580 restarts.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_signing_key_ref_is_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF", raising=False)
+
+        with pytest.raises(ToolPodConfigError) as err:
+            await _BuiltinToolBootstrap("builtin").build_server()
+
+        assert err.value.variable == "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF"
+
+    @pytest.mark.asyncio
+    async def test_missing_pod_id_is_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_signing_key_ref(monkeypatch, _signing_key_pem())
+        monkeypatch.delenv("THREETEARS_TOOL_POD_ID", raising=False)
+        monkeypatch.setenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", _ISSUER)
+
+        with pytest.raises(ToolPodConfigError) as err:
+            await _BuiltinToolBootstrap("builtin").build_server()
+
+        assert err.value.variable == "THREETEARS_TOOL_POD_ID"
+
+    @pytest.mark.asyncio
+    async def test_missing_connect_issuer_is_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _set_signing_key_ref(monkeypatch, _signing_key_pem())
+        monkeypatch.setenv("THREETEARS_TOOL_POD_ID", _POD_ID)
+        monkeypatch.delenv("THREETEARS_TOOL_POD_CONNECT_ISSUER", raising=False)
+
+        with pytest.raises(ToolPodConfigError) as err:
+            await _BuiltinToolBootstrap("builtin").build_server()
+
+        assert err.value.variable == "THREETEARS_TOOL_POD_CONNECT_ISSUER"
 
 
 class TestEveryBuiltinToolIsAccountedFor:

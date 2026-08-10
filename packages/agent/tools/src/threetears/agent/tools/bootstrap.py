@@ -13,6 +13,13 @@ this module owns the canonical lifecycle. host applications subclass
 ``ToolServerBootstrap`` to add lifecycle (e.g. opening / closing a hub
 client around ``serve()``); the base class provides everything that is
 not host-specific.
+
+it also owns the *terminal* half of that lifecycle. a permanent config
+fault and a transient crash both used to exit ``1``, and a supervisor
+cannot tell them apart, so ``restart: unless-stopped`` restarted a pod
+that could never start. :class:`ToolPodConfigError` + :data:`EX_CONFIG`
+give the supervisor something to branch on, and give the observability
+pipeline one record instead of a traceback per restart.
 """
 
 from __future__ import annotations
@@ -35,9 +42,68 @@ from threetears.observe import (
 if TYPE_CHECKING:
     from threetears.agent.tools.server import ToolServer
 
-__all__ = ["ToolServerBootstrap"]
+__all__ = ["EX_CONFIG", "ToolPodConfigError", "ToolServerBootstrap"]
 
 log = get_logger(__name__)
+
+#: exit status for a permanent, operator-fixable configuration fault: ``EX_CONFIG``
+#: from BSD ``sysexits.h``.
+#:
+#: a supervisor can branch on a STATUS and on nothing else. it never reads the
+#: message, so a config fault that exits ``1`` is, to docker's
+#: ``restart: unless-stopped`` or a k8s ``restartPolicy``, the same event as a
+#: transient crash, and gets the same answer: restart. bluelabsio/14-eng-ai-bot#235
+#: is what that costs -- a tool pod started with a renamed identity env var
+#: restarted 9,580 times over 8 days, never once reaching ``running``, writing
+#: 278,110 byte-identical traceback lines. nothing alerted: a healthcheck cannot
+#: fire on a container that never starts, and nothing declared ``depends_on`` it,
+#: so the only signal was a ``RestartCount`` no one reads.
+#:
+#: 78 is the conventional "the configuration is wrong, do not try again" status.
+#: being conventional is the point: systemd's ``RestartPreventExitStatus``, a k8s
+#: exit-code alert, and an operator reading ``docker inspect`` all classify it with
+#: no agreement needed between them and this module.
+EX_CONFIG = 78
+
+
+class ToolPodConfigError(ValueError):
+    """a tool pod's configuration is permanently wrong; restarting cannot fix it.
+
+    raise this from a ``build_server`` (or any startup-config validation) when a
+    required environment variable is missing, renamed, or malformed.
+    :meth:`ToolServerBootstrap.run` catches exactly this type, logs one structured
+    ERROR naming ``variable``, and exits :data:`EX_CONFIG`.
+
+    it subclasses :class:`ValueError` deliberately. the config-validation sites it
+    replaces raised bare ``ValueError``, so every existing ``except ValueError``
+    caller and test keeps working unchanged. the reason it is a distinct type
+    rather than the bare ``ValueError`` the incident report proposed catching: a
+    ``ValueError`` raised from deep inside a tool's own business logic during
+    startup is a bug, not a config fault, and catching the base type would make it
+    terminal -- turning a pod that a restart might have recovered into one that
+    stays down. the same subclass-for-compatibility shape is already used by
+    :class:`threetears.core.security.secret_refs.SecretResolutionError`.
+
+    :param message: operator-facing description of what is wrong and how to fix it
+    :ptype message: str
+    :param variable: name of the environment variable at fault. required, because
+        an operator reading one ERROR line needs the thing to go change, and a
+        message that only says "config is invalid" sends them to the source
+    :ptype variable: str
+    """
+
+    def __init__(self, message: str, *, variable: str) -> None:
+        """record the offending variable alongside the message.
+
+        :param message: operator-facing description of the fault
+        :ptype message: str
+        :param variable: environment variable name at fault
+        :ptype variable: str
+        :return: None
+        :rtype: None
+        """
+        super().__init__(message)
+        self.variable = variable
 
 
 class ToolServerBootstrap:
@@ -106,11 +172,42 @@ class ToolServerBootstrap:
         call. subclasses override async hooks to plug in host-specific
         lifecycle (build dependency, register tools, await serve).
 
+        a :class:`ToolPodConfigError` terminates here: one structured ERROR
+        record, then :data:`EX_CONFIG`. every other failure propagates
+        untouched, exits ``1``, and stays retryable -- a NATS server that is
+        not up yet is exactly the case a supervisor restart exists for.
+
+        the catch lives here and NOT in :meth:`run_async` because this is the
+        method that owns the process exit status. a caller that drives
+        ``run_async`` on its own loop owns its own failure policy and must be
+        free to handle the error rather than have the library exit under it.
+
         :return: None
         :rtype: None
+        :raises SystemExit: with :data:`EX_CONFIG` when startup config is
+            permanently wrong
         """
         configure_logging(level=self._log_level)
-        asyncio.run(self.run_async())
+        try:
+            asyncio.run(self.run_async())
+        except ToolPodConfigError as exc:
+            # ONE record, through the repo logger, so this reaches the observability
+            # pipeline as a queryable event rather than as container stderr nobody
+            # tails. `from None` drops the traceback: 278,110 lines of it is what the
+            # incident actually produced, and none of them said anything this one
+            # record does not.
+            log.error(
+                f"{self._service_name} configuration is invalid; exiting without retry",
+                extra={
+                    "extra_data": {
+                        "service": self._service_name,
+                        "variable": exc.variable,
+                        "error": str(exc),
+                        "exit_code": EX_CONFIG,
+                    }
+                },
+            )
+            raise SystemExit(EX_CONFIG) from None
 
     async def run_async(self) -> None:
         """async driver: build server, register tools, install signals, serve.
