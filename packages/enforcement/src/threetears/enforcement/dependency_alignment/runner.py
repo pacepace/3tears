@@ -20,6 +20,7 @@ from threetears.enforcement.dependency_alignment.config import DependencyAlignme
 from threetears.enforcement.dependency_alignment.walkers import (
     contract_purity_violations,
     dependency_alignment_violations,
+    dependency_floor_violations,
 )
 
 __all__ = ["run_dependency_alignment_enforcement"]
@@ -27,6 +28,7 @@ __all__ = ["run_dependency_alignment_enforcement"]
 _WALKERS = {
     "alignment": dependency_alignment_violations,
     "contract_purity": contract_purity_violations,
+    "dependency_floor": dependency_floor_violations,
 }
 
 
@@ -38,7 +40,8 @@ def run_dependency_alignment_enforcement(
 
     :param config: per-repo enforcement config
     :ptype config: DependencyAlignmentConfig
-    :param walker: which walker to run (``alignment`` / ``contract_purity``)
+    :param walker: which walker to run (``alignment`` /
+        ``contract_purity`` / ``dependency_floor``)
     :ptype walker: str
     :raises pytest.fail.Exception: in strict mode with violations
     """

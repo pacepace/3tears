@@ -32,6 +32,7 @@ __all__ = [
     "PackageInfo",
     "contract_purity_violations",
     "dependency_alignment_violations",
+    "dependency_floor_violations",
     "dist_symbol",
 ]
 
@@ -267,6 +268,100 @@ def contract_purity_violations(config: DependencyAlignmentConfig) -> list[Violat
                         ),
                     )
                 )
+    return violations
+
+
+def _canonical_dist(name: str) -> str:
+    """fold a distribution name to its PEP 503 comparison form.
+
+    ``Pydantic`` and ``pydantic``, ``3tears_observe`` and
+    ``3tears-observe`` name the same distribution to pip, so a floor pin
+    that compared raw strings would report a spelling change as a floor
+    breach.
+
+    :param name: distribution name as written
+    :ptype name: str
+    :return: lowercased, dash-normalized form
+    :rtype: str
+    """
+    return name.lower().replace("_", "-")
+
+
+def dependency_floor_violations(config: DependencyAlignmentConfig) -> list[Violation]:
+    """flag any drift between a pinned package's hard deps and its ruled floor.
+
+    the :func:`contract_purity_violations` guarantee for packages that
+    cannot be dependency-free: instead of "imports nothing", the rule is
+    "declares exactly these". Both directions are violations --
+    ``dependency.floor_excess`` for a dependency nobody ruled in, and
+    ``dependency.floor_missing`` for one the ruling requires that has
+    gone away. The second matters as much as the first: a floor entry
+    that quietly disappears means the argued floor no longer describes
+    the package, and a *smaller* dependency set can still be a breaking
+    change for the consumers reading the ruling.
+
+    A pin naming a directory that holds no parseable package is reported
+    (``dependency.floor_unknown``) rather than skipped, so a renamed or
+    mistyped path cannot pass by scanning nothing.
+
+    Extras are out of scope by construction -- see
+    :class:`DependencyFloor`.
+
+    :param config: per-repo enforcement config
+    :ptype config: DependencyAlignmentConfig
+    :return: ``dependency.floor_*`` violations
+    :rtype: list[Violation]
+    """
+    violations: list[Violation] = []
+    for floor in config.dependency_floors:
+        pkg_root = config.repo_root / floor.package
+        info = _load_package(pkg_root)
+        if info is None:
+            violations.append(
+                Violation(
+                    category="dependency.floor_unknown",
+                    file=pkg_root / "pyproject.toml",
+                    line=1,
+                    symbol=dist_symbol(pkg_root.name),
+                    reason=(
+                        f"dependency floor pins {floor.package} but no package with a "
+                        f"[project] table lives there; fix the path or drop the pin"
+                    ),
+                )
+            )
+            continue
+        pyproject = info.root / "pyproject.toml"
+        allowed = {_canonical_dist(dep): dep for dep in floor.allowed}
+        declared = {_canonical_dist(dep): dep for dep in info.hard_deps}
+        for key in sorted(declared.keys() - allowed.keys()):
+            violations.append(
+                Violation(
+                    category="dependency.floor_excess",
+                    file=pyproject,
+                    line=1,
+                    symbol=dist_symbol(declared[key]),
+                    reason=(
+                        f"{info.name} declares {declared[key]} as a hard dependency, which its "
+                        f"pinned floor does not permit (allowed: {', '.join(sorted(floor.allowed))}). "
+                        f"move it to an optional extra, or change the ruling and this pin "
+                        f"together. floor rationale: {floor.rationale}"
+                    ),
+                )
+            )
+        for key in sorted(allowed.keys() - declared.keys()):
+            violations.append(
+                Violation(
+                    category="dependency.floor_missing",
+                    file=pyproject,
+                    line=1,
+                    symbol=dist_symbol(allowed[key]),
+                    reason=(
+                        f"{info.name}'s pinned floor includes {allowed[key]} but [project] "
+                        f"dependencies does not declare it; the floor no longer describes the "
+                        f"package. floor rationale: {floor.rationale}"
+                    ),
+                )
+            )
     return violations
 
 
