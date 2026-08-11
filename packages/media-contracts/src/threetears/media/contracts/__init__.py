@@ -8,6 +8,11 @@ feature package's dependency closure. purity is enforced by the
 contract-purity check in the workspace's ``tests/enforcement/``.
 """
 
+from threetears.media.contracts.facets import (
+    LOCATOR_KIND_CONTAINING_PAGE,
+    LOCATOR_KIND_DIRECT_FILE,
+    MediaFacets,
+)
 from threetears.media.contracts.keys import build_object_key, sanitize_segment
 from threetears.media.contracts.protocols import (
     OBJECT_HANDLE_METADATA_KEY,
@@ -24,9 +29,12 @@ from threetears.media.contracts.protocols import (
 )
 
 __all__ = [
+    "LOCATOR_KIND_CONTAINING_PAGE",
+    "LOCATOR_KIND_DIRECT_FILE",
     "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
+    "MediaFacets",
     "MediaInfo",
     "MediaStorage",
     "ObjectHandle",
