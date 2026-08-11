@@ -29,6 +29,7 @@ from threetears.search.contracts.capabilities import (
     list_capabilities,
     register_capabilities,
 )
+from threetears.search.contracts.budget import BudgetDecision, BudgetPort
 from threetears.search.contracts.candidate import (
     Candidate,
     CandidateSet,
@@ -75,6 +76,7 @@ from threetears.search.contracts.fidelity import (
     FIDELITY_CONTENT,
     FIDELITY_SNIPPET,
 )
+from threetears.search.contracts.limiter import RateLimitDecision, RateLimiterPort
 from threetears.search.contracts.metadata import (
     SEARCH_RESULTS_METADATA_KEY,
     SEARCH_RESULTS_SCHEMA_VERSION,
@@ -131,6 +133,8 @@ __all__ = [
     "SEARCH_RESULTS_SCHEMA_VERSION",
     "WELL_KNOWN_CRITERIA",
     "AuthFailed",
+    "BudgetDecision",
+    "BudgetPort",
     "Candidate",
     "CandidateSet",
     "ContentSlot",
@@ -145,7 +149,9 @@ __all__ = [
     "Provenance",
     "ProviderCapabilities",
     "QuotaExhausted",
+    "RateLimitDecision",
     "RateLimited",
+    "RateLimiterPort",
     "ScoreEntry",
     "SearchFailure",
     "SearchProvider",
