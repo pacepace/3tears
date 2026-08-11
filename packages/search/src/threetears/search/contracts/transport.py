@@ -31,6 +31,16 @@ What an implementation owes, behind this one ``request`` method:
 
 Ports are parameters, never payload (SR-L4): a transport is handed to
 adapters and Call at construction and never appears in any wire type.
+
+**Two protocols, decided at Gate A (2026-08-10).** Search responses are
+small and fully buffered; Extract's fetches are arbitrary web content that
+MUST be read against a byte cap and SHOULD be refusable on content type
+before the body is pulled (SR-G5, §3.5). Those are different obligations,
+so they are different protocols: widening :class:`SearchTransport` later
+would retroactively invalidate every implementation written against the
+Phase-1 shape, while a second protocol lets an implementation satisfy the
+union (the standalone transport and the host-side ``TracedHttpClient``
+adapter will) and leaves search-only implementers conformant forever.
 """
 
 from __future__ import annotations
@@ -41,7 +51,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
-__all__ = ["SearchTransport", "TransportResponse"]
+__all__ = ["FetchTransport", "SearchTransport", "TransportResponse"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,5 +140,87 @@ class SearchTransport(Protocol):
             typed taxonomy in :mod:`threetears.search.contracts.errors`
             (SR-J1) -- the taxonomy mapping is adapter business, not
             transport business
+        """
+        ...
+
+
+@runtime_checkable
+class FetchTransport(Protocol):
+    """Structural protocol for the byte-capped content fetch Extract requires.
+
+    Declared at Gate A (2026-08-10), implemented when Extract lands (Phase
+    2), so no Phase-1 :class:`SearchTransport` implementer is ever
+    retroactively non-conformant: an implementation that also serves
+    Extract satisfies both protocols; one that only serves search never
+    has to. Expected implementers of the union: this package's
+    ``standalone`` module and the host-side ``TracedHttpClient`` adapter.
+
+    What :meth:`fetch` owes beyond :meth:`SearchTransport.request`'s
+    obligations (which all still apply -- bounded retry, configurable
+    timeout, egress, the D21 guards):
+
+    - **the byte cap is per call and load-bearing** (SR-G5): the body is
+      read incrementally against ``max_bytes`` and an overrun is refused
+      as the implementation's local-cap failure -- at no point may more
+      than ``max_bytes`` of body be held, declared lengths past the cap
+      are refused before a byte is read, and lying lengths are caught
+      chunk by chunk;
+    - **the content-type gate refuses before the body** : when
+      ``allowed_content_types`` is given and the response's declared
+      media type prefix-matches none of them, the implementation refuses
+      without reading the body -- the gate exists so Extract never pulls
+      megabytes of video to learn it wanted text (§3.5).
+    """
+
+    @property
+    def egress_name(self) -> str:
+        """Name of the egress this transport's requests leave by (D20).
+
+        :return: the configured exit's name; ``direct`` for the default
+            route
+        :rtype: str
+        """
+        ...
+
+    async def fetch(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> TransportResponse:
+        """Perform one bounded, byte-capped content read.
+
+        :param method: HTTP method (``GET``, ``HEAD``)
+        :ptype method: str
+        :param url: absolute URL to fetch. Unlike search calls this is
+            candidate-derived, which is exactly why the D21 guards
+            (redirect policy, private-address refusal) bind hardest here
+        :ptype url: str
+        :param headers: request headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :param max_bytes: hard cap on the body for this call (SR-G5).
+            Required and per-call: Extract's cap is the caller's memory
+            budget, not a transport constant
+        :ptype max_bytes: int
+        :param allowed_content_types: media-type prefixes this read will
+            accept (e.g. ``("text/html", "application/xhtml+xml")``);
+            None accepts anything. A declared type outside the gate is
+            refused before the body is read
+        :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout_seconds: per-call override of the configured
+            timeout (SR-G2); None uses the configured value (SR-G1)
+        :ptype timeout_seconds: float | None
+        :return: the completed exchange; ``body`` never exceeds
+            ``max_bytes``
+        :rtype: TransportResponse
+        :raises Exception: implementations surface failures however they
+            choose (the standalone implementation speaks the typed
+            taxonomy: cap and gate refusals as ``LocalCapExceeded`` with
+            the refusing scope named); Extract maps everything else onto
+            the taxonomy (SR-J1)
         """
         ...

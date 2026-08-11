@@ -22,6 +22,7 @@ from threetears.search.contracts import (
     WELL_KNOWN_CRITERIA,
     CandidateSet,
     Criterion,
+    FetchTransport,
     Provenance,
     ScoreEntry,
     SearchTransport,
@@ -96,6 +97,69 @@ async def test_transport_is_satisfiable_by_shape() -> None:
     assert response.status_code == 200
     assert response.egress == EGRESS_DIRECT
     assert response.attempts == 1
+
+
+class FakeFetchTransport(FetchTransport):  # parity-with: threetears.search.contracts.FetchTransport
+    """Minimal in-memory implementer of Extract's byte-capped fetch seam."""
+
+    @property
+    def egress_name(self) -> str:
+        """Report the configured exit's name.
+
+        :return: always ``direct`` for this fake
+        :rtype: str
+        """
+        return EGRESS_DIRECT
+
+    async def fetch(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> TransportResponse:
+        """Answer every fetch with an empty capped body.
+
+        :param method: HTTP method
+        :ptype method: str
+        :param url: absolute URL
+        :ptype url: str
+        :param headers: ignored
+        :ptype headers: Mapping[str, str] | None
+        :param max_bytes: the per-call cap the seam requires
+        :ptype max_bytes: int
+        :param allowed_content_types: ignored
+        :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout_seconds: ignored
+        :ptype timeout_seconds: float | None
+        :return: a canned successful exchange, body under the cap
+        :rtype: TransportResponse
+        """
+        return TransportResponse(
+            status_code=200,
+            body=b"x" * min(4, max_bytes),
+            final_url=url,
+            egress=self.egress_name,
+            elapsed_seconds=0.001,
+            attempts=1,
+        )
+
+
+async def test_fetch_transport_is_a_second_seam_not_a_widening() -> None:
+    """the Gate A ruling: Extract's byte-capped read is its own protocol, so a
+    search-only transport stays conformant forever -- the two shapes are
+    independently satisfiable and neither implies the other."""
+    fetcher = FakeFetchTransport()
+    assert isinstance(fetcher, FetchTransport)
+    assert not isinstance(FakeSearchTransport(), FetchTransport), (
+        "a Phase-1 SearchTransport implementer must never be retroactively non-conformant, which is "
+        "exactly what folding fetch() into SearchTransport would have done"
+    )
+    response = await fetcher.fetch("GET", "https://example.org/page", max_bytes=4)
+    assert len(response.body) <= 4
 
 
 def test_unknown_plain_criterion_key_is_rejected() -> None:

@@ -180,10 +180,18 @@ them):
 - **Protocols** (structural, injected — P9): `SearchTransport` (shaped so
   `core.http_client.TracedHttpClient` satisfies it via a thin host-side
   adapter: configurable timeout, bounded retry, circuit-breaking, per-call
-  span, egress selection — SR-N1, SR-G1, SR-G4, SR-D3), `BudgetPort`
-  (`check(estimate)` / `record(spend)` with plural scopes — SR-D1, SR-D2),
-  `RateLimiterPort` (D8), `RecordingStore` (D7, `ObjectStore`-shaped,
-  streaming), `HeavyFetcher` (implemented by `3tears-scrape`, never imported).
+  span, egress selection — SR-N1, SR-G1, SR-G4, SR-D3), `FetchTransport`
+  (the streamed, byte-capped, content-type-gated read Extract requires —
+  declared as a *second* protocol at Gate A, 2026-08-10, so Phase-1
+  `SearchTransport` implementers are never retroactively non-conformant;
+  the standalone transport and the host adapter implement the union from
+  Phase 2), `SearchProvider` (the provider seam Call consumes and the
+  conformance suite parametrizes over — named here at Gate A; it is the
+  one seam-vocabulary addition §3.1's original field list did not carry),
+  `BudgetPort` (`check(estimate)` / `record(spend)` with plural scopes —
+  SR-D1, SR-D2), `RateLimiterPort` (D8), `RecordingStore` (D7,
+  `ObjectStore`-shaped, streaming), `HeavyFetcher` (implemented by
+  `3tears-scrape`, never imported).
 - **Replay record** — typed envelope (id — UUIDv7-compatible, created-at,
   provider, key, size, `schema_version`) over a payload that can rebuild the
   corpus (SR-F4); the key is derived by search (SR-F8).
@@ -257,7 +265,10 @@ be able to take search with no extraction at all. Requirements:
 - MUST no-op (and cost nothing) when the provider already supplied content
   (SR-A2 — the Tavily case).
 - MUST stream with a byte cap and a content-type gate; MUST NOT hold an
-  unbounded `resp.text` (SR-G5). This is the acute `MemoryMax` case.
+  unbounded `resp.text` (SR-G5). This is the acute `MemoryMax` case. The
+  seam that carries this is `FetchTransport` (§3.1) — Extract's fetches go
+  through it, never through `SearchTransport.request`, whose fully-buffered
+  response shape cannot express the cap (Gate A, 2026-08-10).
 - MUST honor the D12 robots stance; the enforcement point is here and in the
   transports, not per call site.
 - MUST record extraction method and status on the result (fidelity achieved,
@@ -300,7 +311,11 @@ backoff, per-attempt accounting visible to spend, SSRF guards
 (private-address and redirect policy per D21), streamed reads with caps. This
 module's path is the one added to `_SANCTIONED_HTTPX_SITES` (D19). MUST NOT
 be imported by anything else in the package at module level — it is an
-implementation a host chooses.
+implementation a host chooses. When Extract lands (Phase 2) this module
+implements `FetchTransport` alongside `SearchTransport` — the union is the
+declared shape (Gate A, 2026-08-10), and its per-request-client lifecycle is
+revisited in the same change (right for one search, wrong for Extract's
+many-fetch path).
 
 ### 3.9 `limiter.py`
 

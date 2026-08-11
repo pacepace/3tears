@@ -95,7 +95,7 @@ from threetears.search.contracts.scores import (
     ScoreEntry,
 )
 from threetears.search.contracts.spend import Spend
-from threetears.search.contracts.transport import SearchTransport, TransportResponse
+from threetears.search.contracts.transport import FetchTransport, SearchTransport, TransportResponse
 
 __all__ = [
     "CANONICAL_FORM_VERSION",
@@ -138,6 +138,7 @@ __all__ = [
     "CriterionDisposition",
     "Disposition",
     "FailureRecord",
+    "FetchTransport",
     "LocalCapExceeded",
     "Locator",
     "MalformedResponse",
