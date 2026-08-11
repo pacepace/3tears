@@ -388,7 +388,7 @@ consider_namespace_packages = true
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
-    "live: tests that connect to a real external warehouse (env-gated); not run by default",
+    "live: tests that connect to a real external service -- a warehouse, a search provider (env-gated); not run by default",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched
     # suite-wide and never executed, so the code binding a robots read to the configured exit

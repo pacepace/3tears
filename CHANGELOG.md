@@ -82,6 +82,17 @@ packages (bumped in lock-step).
   622 unlisted-access findings, every one in a foreign working tree; the
   walker test holds both failure directions apart, so nested configs of
   this repo's own tree stay discovered.
+- `docs`: the root README's package table lists `3tears-search`, which
+  CLAUDE.md names as the family's full package list. The `live` pytest
+  marker's description said "a real external warehouse", which was true
+  while `datasources` was its only user; the search leaf's env-gated
+  provider tier carries the same marker, so the description names the
+  category rather than one member of it.
+- `docs`: em and en dashes in the search spec and the two touched READMEs
+  are the family's ` -- `. `docs/search-spec.md` is converted whole rather
+  than only on the lines this branch added, because a document carrying
+  both spellings reads as drift in whichever half a later editor copies
+  from; ranges (`D1-D28`) take a hyphen, not a double.
 
 ### Notes
 

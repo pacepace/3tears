@@ -116,6 +116,7 @@ Every package shares the `threetears.*` import namespace and installs independen
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |
 | [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
+| [`3tears-search`](packages/search/) | `threetears.search` | Provider-agnostic web and media search. Provider contracts with per-criterion dispositions, SearXNG and Tavily adapters, injected budget and rate-limiter ports, and a shared provider-conformance suite |
 | [`3tears-enforcement`](packages/enforcement/) | `threetears.enforcement` | Static-analysis enforcement scanners and shared test utilities. Naming conventions, schema agreement, datetime-aware auditing |
 
 ### Agent framework

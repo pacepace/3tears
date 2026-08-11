@@ -12,7 +12,7 @@ contracts without inheriting any feature package's dependency closure.
 from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
 ```
 
-`MediaFacets` carries the additive carrier facets — rights status, pixel
+`MediaFacets` carries the additive carrier facets -- rights status, pixel
 dimensions, and whether a locator points at the file itself or at the page
 containing it. The vocabulary grows by addition only, and a consumer that
 does not recognise a facet ignores it rather than failing, so a new carrier
