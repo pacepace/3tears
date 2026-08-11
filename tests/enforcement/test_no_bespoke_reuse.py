@@ -9,6 +9,22 @@ one of the three patterns the platform already solves:
     (``threetears.conversations.buffer``);
 (b) a raw, long-lived ``httpx.AsyncClient`` / ``httpx.Client`` held as a field outside
     the sanctioned traced HTTP-client wrapper (``threetears.core.http_client``);
+    **the norm, restated (D19).** The rule is not "no package may touch httpx". It is
+    that raw HTTP client ownership belongs in a *dedicated transport module* which
+    carries the full set of obligations -- configurable timeout, bounded retry with
+    backoff, per-attempt accounting, SSRF guards, streamed reads under a byte cap --
+    and that every SERVICE reaches an upstream through one of those rather than
+    opening its own. Adding a path to ``_SANCTIONED_HTTPX_SITES`` is therefore a
+    WIDENING of the norm rather than an exemption from it, and it is legitimate on
+    exactly one condition: the module is a transport, it is single-purpose, and it
+    discharges the obligations in full. A service, a tool, or a client-holding
+    helper never qualifies, whatever its docstring says.
+    That distinction is why ``3tears-search``'s ``standalone`` module is listed below
+    and files no entry in ``_no_bespoke_reuse_exemptions.txt``: hosts without
+    ``threetears.core`` need one sanctioned place to open a socket, and the
+    alternative to giving them one is a bespoke ``httpx.get`` per call site --
+    which is the thing this guard exists to prevent, arrived at by refusing to
+    say where the sanctioned place is.
 (c) a KV / counter that stores an ``SQLiteBackend`` and exposes cache-style verbs
     without subclassing ``BaseCollection`` — reuse the Collection primitive.
 
@@ -72,6 +88,20 @@ _SANCTIONED_HTTPX_SITES: frozenset[str] = frozenset(
         # client module); the anti-pattern is a SERVICE holding a bespoke client, not
         # a dedicated transport module.
         "packages/mcp/src/threetears/mcp/http_client.py",
+        # 3tears-search's bare-httpx SearchTransport implementation, behind its
+        # ``[standalone]`` extra (D19). The leaf must not import core (SR-L7), and its
+        # embedded consumers -- samsung, anything on a Pi -- have no traced wrapper to
+        # inject, so this is the ONE module in the leaf permitted to open a client. It
+        # earns the listing by discharging the full obligation set rather than a subset:
+        # configurable timeout with a per-call override (SR-G1, SR-G2), bounded retry
+        # with backoff where 5xx and connect/timeout retry and no 4xx does (SR-G4),
+        # per-attempt accounting surfaced on the response so budget can follow the bill
+        # (D4), private-address refusal plus a host allowlist plus a non-following
+        # redirect policy (D21, SR-K3, SR-N3), and streamed reads under a byte cap
+        # rather than an unbounded read (SR-G5). Every other module in that package
+        # reaches an upstream through the injected ``SearchTransport`` protocol, which
+        # this walker correctly never flags.
+        "packages/search/src/threetears/search/standalone.py",
     }
 )
 

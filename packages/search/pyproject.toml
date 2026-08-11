@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-search"
+version = "0.23.11"
+description = "Provider-agnostic web and media search for the 3tears family: contracts, adapters, and the staged pipeline"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# D24's permitted leaf floor, exactly: pydantic plus the two dependency-free
+# family leaves. Provider adapters are pure logic over the injected transport
+# and ship in the base package; anything with weight rides an extra.
+dependencies = [
+    "3tears-media-contracts>=0.23.0,<0.24.0",
+    "3tears-observe>=0.23.0,<0.24.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# the bare-httpx SearchTransport implementation, for hosts that do not inject
+# their own transport (embedded consumers without core). D24 / D19.
+standalone = ["httpx>=0.27"]
+# Extract's HTML-to-text path. D24.
+extract = ["trafilatura>=2.0.0"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-media-contracts = { workspace = true }
+3tears-observe = { workspace = true }

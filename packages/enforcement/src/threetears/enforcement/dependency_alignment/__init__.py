@@ -17,6 +17,18 @@ against the package's declared dependencies:
   module in the package imports through any path (including guarded,
   deferred, and ``TYPE_CHECKING`` imports).
 
+two further walkers answer the question one level up -- not "do the
+declarations match the imports" but "is this the dependency set that was
+ruled":
+
+- ``contract.impure`` -- a designated contracts package importing
+  anything outside the stdlib, its own namespace, and its configured
+  extras. the floor is *nothing*.
+- ``dependency.floor_excess`` / ``dependency.floor_missing`` /
+  ``dependency.floor_unknown`` -- a package whose hard dependencies are
+  pinned to an exact ruled list has drifted off it. the floor is *these
+  and no others*, for packages that need a short list to exist at all.
+
 imports inside ``if TYPE_CHECKING:`` blocks, ``try/except
 ImportError`` guards, or function bodies are deliberately NOT flagged
 as missing -- those are the sanctioned shapes for optional and
@@ -24,12 +36,17 @@ deferred dependencies (see ``channels``' webhook extra) -- but they DO
 count as usage when deciding staleness.
 """
 
-from threetears.enforcement.dependency_alignment.config import DependencyAlignmentConfig
+from threetears.enforcement.dependency_alignment.config import DependencyAlignmentConfig, DependencyFloor
 from threetears.enforcement.dependency_alignment.runner import run_dependency_alignment_enforcement
-from threetears.enforcement.dependency_alignment.walkers import dependency_alignment_violations
+from threetears.enforcement.dependency_alignment.walkers import (
+    dependency_alignment_violations,
+    dependency_floor_violations,
+)
 
 __all__ = [
     "DependencyAlignmentConfig",
+    "DependencyFloor",
     "dependency_alignment_violations",
+    "dependency_floor_violations",
     "run_dependency_alignment_enforcement",
 ]
