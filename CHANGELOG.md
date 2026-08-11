@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
+  `__version__` must be read from installed metadata, never written as a
+  literal. The lockstep bump touches ~30 `pyproject.toml` files
+  mechanically and walks straight past a literal in a different file,
+  which is exactly how the drift below survived. Verified to flag the old
+  file and pass the fixed one.
+
 ### Fixed
 
 - `media-contracts`: the runtime `__version__` is derived from package
@@ -15,14 +24,20 @@ packages (bumped in lock-step).
   version this package had not been for months. Nothing failed, which is
   the point: a hardcoded version is wrong silently.
 
-### Added
+### Notes
 
-- `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
-  `__version__` must be read from installed metadata, never written as a
-  literal. The lockstep bump touches ~30 `pyproject.toml` files
-  mechanically and walks straight past a literal in a different file,
-  which is exactly how the drift above survived. Verified to flag the old
-  file and pass the fixed one.
+- `search`: the 0.24.0 release published `3tears-search` three phases ahead
+  of where the spec sequences the release step, which retired the premise
+  under one Gate A disposition ("nothing is released, so there is no older
+  reader to protect"). Ruled as **D29**: publication does not freeze the
+  contracts -- *binding* does, and nobody has bound. Phases 2-3 may still
+  re-cut contract types; the window closes at the first consumer release
+  pinning a version that carries search. `SEARCH_RESULTS_SCHEMA_VERSION` and
+  `CANONICAL_FORM_VERSION` now count from 0.24.0, so a non-additive change
+  must be spelled as a bump instead of absorbed. Gate B kept its content and
+  changed which release it guards -- the next one, carrying Phase 2-3, not
+  the leaf's first appearance on PyPI. Recorded in docs/search-spec.md §1
+  (D29) and §7, and in docs/convergence-sequencing.md.
 
 ## v0.24.0 -- 2026-08-11
 

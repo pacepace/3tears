@@ -94,17 +94,25 @@ compiled = graph.compile(checkpointer=saver)
 
 ## Packages
 
-Every package shares the `threetears.*` import namespace and installs independently. The `agent-*` family lives under `packages/agent/` for grouping. Each one is still its own PyPI distribution.
+Every package shares the `threetears.*` import namespace and installs independently. The `agent-*` family lives under `packages/agent/` for grouping. Each one is still its own PyPI distribution, and every one of them releases at the same version -- see [Versioning](#versioning).
+
+The tables below list the whole family. If a package exists in `packages/`, it belongs in one of them.
 
 ### Core data
+
+The entity tiers and the durable storage under them.
 
 | Package | Import | Description |
 |---|---|---|
 | [`3tears`](packages/core/) | `threetears.core` | Three-tier entities, collections, and caching. L1 SQLite, L2 NATS KV, L3 PostgreSQL. `DataStore` for dynamic tables. Canonical `MigrationRunner` with platform and agent scopes, multi-package composition, and topological ordering |
 | [`3tears-conversations`](packages/conversations/) | `threetears.conversations` | `Conversation` entity, three-tier `ConversationsCollection`, and per-agent schema migrations |
 | [`3tears-datasources`](packages/datasources/) | `threetears.datasources` | Datasource entities, collections, and a driver abstraction for PostgreSQL, Redshift, Snowflake, and BigQuery backends |
+| [`3tears-object-store`](packages/object-store/) | `threetears.object_store` | Streaming S3-compatible object store for large binary artifacts. Pcaps, database dumps, rendered reports, and evidence, kept out of the entity tiers rather than pushed through them |
+| [`3tears-backup`](packages/backup/) | `threetears.backup` | Encrypted, grandfather-father-son rotated database backups to any `ObjectStore`, with restore verification |
 
 ### Infrastructure
+
+Cross-pod plumbing: transport, identity, scheduling, and the things every pod needs.
 
 | Package | Import | Description |
 |---|---|---|
@@ -112,71 +120,157 @@ Every package shares the `threetears.*` import namespace and installs independen
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, a `@traced` decorator, ContextVar-backed tags, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast and per-message echo, for coherent cross-pod cache reloads |
 | [`3tears-iam`](packages/iam/) | `threetears.iam` | Identity and access primitives. Passwords, OAuth2/OIDC, SAML, GitHub sign-in, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them |
-| [`3tears-mcp`](packages/mcp/) | `threetears.mcp` | A Model Context Protocol framework. RBAC-gated `McpServer`, `McpTool` plus `register_tool`, an auth-aware HTTP client, and pluggable identity and authorizer protocols |
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |
-| [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
-| [`3tears-search`](packages/search/) | `threetears.search` | Provider-agnostic web and media search. Provider contracts with per-criterion dispositions, SearXNG and Tavily adapters, injected budget and rate-limiter ports, and a shared provider-conformance suite |
-| [`3tears-enforcement`](packages/enforcement/) | `threetears.enforcement` | Static-analysis enforcement scanners and shared test utilities. Naming conventions, schema agreement, datetime-aware auditing |
+| [`3tears-geo`](packages/geo/) | `threetears.geo` | Slippy-map tile geometry. WKB decoding, zoom bands, and MVT encoding in application code, with no PostGIS dependency |
 
 ### Agent framework
+
+What an LLM agent is made of: what it can do, what it remembers, what it is allowed to touch, and who it is.
 
 | Package | Import | Description |
 |---|---|---|
 | [`3tears-agent-tools`](packages/agent/tools/) | `threetears.agent.tools` | Tool framework. `TearsTool` base, `ToolServer` for NATS registration plus dispatch plus audit, context management, built-in tools, and tool-group aliases |
 | [`3tears-agent-memory`](packages/agent/memory/) | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search, and MMR reranking for LLM agents |
+| [`3tears-agent-knowledge`](packages/agent/knowledge/) | `threetears.agent.knowledge` | Governed-knowledge retrieval and injection. Concepts, playbook entries, three-scope shadow merge, and `before_model` middleware |
 | [`3tears-agent-skills`](packages/agent/skills/) | `threetears.agent.skills` | Procedural memory. Skill definitions and invocation history |
+| [`3tears-agent-identity`](packages/agent/identity/) | `threetears.agent.identity` | Versioned identity blocks, the substrate for agent self-evolution. A linear version chain with propose, consent, and apply, carrying rationale and rollback so nothing is lost, only superseded |
+| [`3tears-agent-intention`](packages/agent/intention/) | `threetears.agent.intention` | Standing-wants corpus. Intention lifecycle, salience decay, embedding dedup, and private deliberation tools, with restraint brakes so a want surfaces occasionally rather than every turn |
 | [`3tears-agent-workspace`](packages/agent/workspace/) | `threetears.agent.workspace` | Workspace entities, sandbox, format handlers, and namespace-routed L3 access |
 | [`3tears-agent-acl`](packages/agent/acl/) | `threetears.agent.acl` | Unified RBAC evaluator and cache. Groups, roles, assignments, an evaluation hot path, and an introspection trail. Pure Python |
 | [`3tears-agent-audit`](packages/agent/audit/) | `threetears.agent.audit` | One audit envelope and a fire-and-forget `publish_audit` helper, with a single wire format and subject tree across every domain |
 | [`3tears-agent-wake`](packages/agent/wake/) | `threetears.agent.wake` | Foundation for long-running agents. Wake schedules, fires, and webhook subscriptions |
 
-### Models, channels, LangGraph
+### Models, channels, and protocols
+
+How an agent reaches a model, a human, or another system.
 
 | Package | Import | Description |
 |---|---|---|
 | [`3tears-models`](packages/models/) | `threetears.models` | LangChain-native model adapters. Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, and image providers, with capability metadata, circuit breakers, error translation, and unified usage tracking |
 | [`3tears-channels`](packages/channels/) | `threetears.channels` | A unified message protocol with Slack, Discord, and WebSocket adapters |
 | [`3tears-langgraph`](packages/langgraph/) | `threetears.langgraph` | LangGraph integration. Three-tier checkpoint savers, graph builders, and a context registry |
+| [`3tears-mcp`](packages/mcp/) | `threetears.mcp` | A Model Context Protocol framework. RBAC-gated `McpServer`, `McpTool` plus `register_tool`, an auth-aware HTTP client, and pluggable identity and authorizer protocols |
+
+### Web, search, and media
+
+Getting content in from the open web, and describing it once it is here.
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-search`](packages/search/) | `threetears.search` | Provider-agnostic web and media search. Provider contracts with per-criterion dispositions, SearXNG and Tavily adapters, injected budget and rate-limiter ports, and a shared provider-conformance suite |
+| [`3tears-scrape`](packages/scrape/) | `threetears.scrape` | AI-driven, self-healing web scraping. Pluggable render backends plus LLM-proposed extraction candidates, each structurally validated and judged against real page content, then persisted as a reusable recipe rather than a hand-written per-site parser |
+| [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
+
+### Development
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-enforcement`](packages/enforcement/) | `threetears.enforcement` | Static-analysis enforcement scanners and shared test utilities. Naming conventions, schema agreement, datetime-aware auditing |
+
+## Versioning
+
+Every `3tears*` package releases at the same version, and every dependency between them is bounded to the releasing minor line. Install them as a set, pinned to one release:
+
+```bash
+pip install "3tears==X.Y.Z" "3tears-agent-memory==X.Y.Z"   # same X.Y.Z for every 3tears package
+```
+
+Mixing versions is not supported. The bounds exist so that a mixed set fails loudly at resolution time rather than quietly at runtime.
 
 ## Architecture
 
+Every box is a package from the tables above. **A solid arrow means "builds on"** -- it is
+a declared dependency, not a suggestion of how you might wire things. Dotted arrows are
+what a package talks to outside the process.
+
+Follow the arrows and they all end in the same place: `core` and the three tiers.
+`agent-acl` and `langgraph` are shared by most of the agent family, and `agent-tools` is
+the hub that `registry`, `agent-workspace` and `scrape` all build on.
+
 ```mermaid
-graph TB
-    subgraph "Agent Pod"
-        AGENT[LangGraph Agent]
-        TOOLS[Tool Wrapper]
-        CHECK[ThreeTierCheckpointSaver]
-        DATA[DataStore]
+graph LR
+    subgraph "Outside"
+        WEB[The open web]
+        HUM[Humans]
+        LLM[Model providers]
     end
 
-    subgraph "3tears Core"
-        ENT[BaseEntity<br/>change tracking]
-        COL[BaseCollection<br/>three-tier cache]
+    subgraph "Reach"
+        SCRAPE[scrape]
+        SEARCH[search]
+        CHAN[channels]
+        MODELS[models]
+        MCP[mcp]
+    end
+
+    subgraph "Agent framework"
+        REG[registry]
+        WORK[agent-workspace]
+        TOOLS[agent-tools]
+        WAKE[agent-wake]
+        KNOW[agent-knowledge]
+        MEM[agent-memory]
+        SKILL[agent-skills]
+        IDENT[agent-identity]
+        INT[agent-intention]
+        ACL[agent-acl]
+        AUDIT[agent-audit]
+    end
+
+    subgraph "Platform"
+        LG[langgraph]
+        BACK[backup]
+        OBJ[object-store]
+        CORE[core]
+        NATS[nats]
+        MEDIA[media-contracts]
+    end
+
+    subgraph "Tiers"
         L1[L1 SQLite]
         L2[L2 NATS KV]
         L3[L3 PostgreSQL]
     end
 
-    subgraph "3tears Registry"
-        CAT[ToolCatalog<br/>multi-endpoint]
-        PROXY[CallProxy<br/>load-balanced]
-        HB[HeartbeatMonitor]
-    end
-
-    subgraph "3tears MCP"
-        MCP_SERVER[McpServer<br/>RBAC-gated]
-        MCP_GRANTS[Tool grants<br/>+ epoch broadcast]
-    end
-
-    AGENT --> DATA
-    AGENT --> CHECK
-    DATA --> COL
-    COL --> L1 --> L2 --> L3
-    TOOLS --> PROXY
-    PROXY --> CAT
-    MCP_SERVER --> MCP_GRANTS
+    SCRAPE --> TOOLS
+    SCRAPE --> MODELS
+    REG --> TOOLS
+    REG --> ACL
+    WORK --> TOOLS
+    WORK --> AUDIT
+    TOOLS --> MEM
+    TOOLS --> AUDIT
+    TOOLS --> LG
+    TOOLS --> MEDIA
+    KNOW --> MEM
+    MEM --> ACL
+    IDENT --> ACL
+    INT --> ACL
+    MEM --> LG
+    WAKE --> SKILL
+    SKILL --> CORE
+    ACL --> CORE
+    LG --> CORE
+    AUDIT --> NATS
+    MCP --> NATS
+    BACK --> OBJ
+    OBJ --> CORE
+    SEARCH --> MEDIA
+    CORE --> L1
+    CORE --> L2
+    CORE --> L3
+    SCRAPE -.-> WEB
+    SEARCH -.-> WEB
+    CHAN -.-> HUM
+    MODELS -.-> LLM
 ```
+
+Two things the diagram is telling you deliberately. **`search` connects only to
+`media-contracts`** -- it takes no `core` dependency at all, so it runs from a one-shot
+`asyncio.run()` with no broker, and nothing consumes it yet: wiring it into `agent-tools`
+is a later phase. **`observe` is on every box and drawn on none**, because an arrow from
+all 30 packages to one node is noise rather than information.
 
 ## Development
 
@@ -214,7 +308,7 @@ AI generates code faster than humans can review it. Architectural drift compound
 
 | Pillar | Implementation in 3tears |
 |---|---|
-| Context Sharding | Task docs in `docs/` at roughly 500 LOC each |
+| Context Sharding | Task docs in `docs/`, sharded per unit of work so a change reads one document rather than the whole design |
 | Enforcement Tests | Static and AST verification in `tests/enforcement/` and the `3tears-enforcement` package |
 | Evidence-Based Debugging | `function:line` context in structured logs via `3tears-observe` |
 
