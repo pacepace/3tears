@@ -12,13 +12,24 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from pydantic import JsonValue
 
 from threetears.search.adapters.searxng import (
     SEARXNG_403_REMEDIATION,
+    SEARXNG_CAPABILITIES,
+    SEARXNG_PARAM_CATEGORIES,
+    SEARXNG_PARAM_ENGINES,
+    SEARXNG_PARAM_PAGE,
+    SEARXNG_PARAM_SAFESEARCH,
     SEARXNG_PARAM_TIME_RANGE,
     SearxngAdapter,
 )
 from threetears.search.contracts import (
+    CRITERION_CARRIER,
+    CRITERION_DOMAINS_INCLUDE,
+    CRITERION_LANGUAGE,
+    CRITERION_MAX_RESULTS,
+    WELL_KNOWN_CRITERIA,
     FACET_HAS_DOWNLOADABLE_DATA,
     FACET_HEIGHT,
     FACET_LOCATOR_KIND,
@@ -552,6 +563,223 @@ async def test_every_criterion_gets_exactly_one_answer() -> None:
         "max-results": "local",
         "rights-class": "unsatisfied",
         "tavily:topic": "ignored-unknown",
+    }
+
+
+# --- one parameter, one owner ---------------------------------------------
+
+
+def _categories_pair(explicit: JsonValue = "news") -> tuple[Criterion, Criterion]:
+    """The two criteria that both reach for SearXNG's 'categories' slot.
+
+    :param explicit: value for the namespaced criterion
+    :ptype explicit: JsonValue
+    :return: the carrier criterion and the namespaced one, in that order
+    :rtype: tuple[Criterion, Criterion]
+    """
+    return Criterion.carrier("image"), Criterion.namespaced("searxng", "categories", explicit)
+
+
+@pytest.mark.parametrize("reversed_order", [False, True])
+async def test_only_the_criterion_that_wins_the_categories_slot_reports_pushdown(reversed_order: bool) -> None:
+    """Two criteria, one wire parameter: the loser is named, not overwritten.
+
+    Both wrote params['categories'] and both reported pushdown, so whichever
+    came last silently won while the caller was told both scopings applied.
+    """
+    carrier, explicit = _categories_pair()
+    criteria = (explicit, carrier) if reversed_order else (carrier, explicit)
+    adapter, transport = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=criteria))
+
+    params = transport.calls[-1]["params"]
+    assert isinstance(params, dict)
+    assert params["categories"] == "news", "the explicit SearXNG vocabulary takes the slot, whatever the order"
+    answers = {disposition.criterion_key: disposition for disposition in result.dispositions}
+    assert answers[SEARXNG_PARAM_CATEGORIES].disposition == "pushdown"
+    assert answers[CRITERION_CARRIER].disposition == "unsatisfied"
+
+
+@pytest.mark.parametrize("reversed_order", [False, True])
+async def test_the_losing_carrier_names_the_clash_and_why_the_two_are_not_merged(reversed_order: bool) -> None:
+    """SR-B3: a suppressed criterion teaches, and the teaching is order-free."""
+    carrier, explicit = _categories_pair()
+    criteria = (explicit, carrier) if reversed_order else (carrier, explicit)
+    adapter, _ = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=criteria))
+
+    detail = next(d.detail or "" for d in result.dispositions if d.criterion_key == CRITERION_CARRIER)
+    assert SEARXNG_PARAM_CATEGORIES in detail, "the winner is named"
+    assert "union" in detail, "and why merging would widen rather than intersect the two scopings"
+    assert "images" in detail, "with the category value that would express both intents in one"
+
+
+async def test_a_carrier_alone_still_takes_the_categories_slot() -> None:
+    """Precedence only bites when something else is actually asking for it."""
+    adapter, transport = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=(Criterion.carrier("video"),)))
+
+    params = transport.calls[-1]["params"]
+    assert isinstance(params, dict)
+    assert params["categories"] == "videos"
+    assert result.dispositions[0].disposition == "pushdown"
+
+
+async def test_an_unusable_categories_criterion_suppresses_nothing() -> None:
+    """Gating on validity, not presence: one typo must not lose both scopings."""
+    carrier, explicit = _categories_pair(explicit=42)
+    adapter, transport = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=(explicit, carrier)))
+
+    params = transport.calls[-1]["params"]
+    assert isinstance(params, dict)
+    assert params["categories"] == "images", "the carrier claims the slot the refused criterion never took"
+    answers = {disposition.criterion_key: disposition.disposition for disposition in result.dispositions}
+    assert answers == {SEARXNG_PARAM_CATEGORIES: "unsatisfied", CRITERION_CARRIER: "pushdown"}
+
+
+# --- a recognised key with a value the adapter cannot use ------------------
+
+
+@pytest.mark.parametrize("value", [-1, 0, True, "10", 2.5, None])
+async def test_a_malformed_result_cap_is_refused_rather_than_mis_sliced(value: JsonValue) -> None:
+    """The slice reads -1 as 'drop the last' and 0 as 'return nothing'.
+
+    Both came back as a clean success under a disposition claiming the cap
+    had been honoured -- 0 in particular reported an empty result set as one
+    the caller had asked for.
+    """
+    adapter, _ = _scripted(TransportScript(body=TWO_RESULTS_BODY))
+    result = await adapter.search(
+        SearchRequest(query="capybara", criteria=(Criterion(key=CRITERION_MAX_RESULTS, value=value),))
+    )
+
+    assert len(result.candidates) == 2, "an uncapped search returns what the page returned"
+    assert result.dispositions[0].disposition == "unsatisfied"
+    assert "positive integer" in (result.dispositions[0].detail or "")
+    assert type(value).__name__ in (result.dispositions[0].detail or ""), "the detail names what arrived"
+
+
+async def test_a_well_formed_result_cap_is_still_applied_locally() -> None:
+    """The guard refuses bad values without refusing the criterion itself."""
+    adapter, _ = _scripted(TransportScript(body=TWO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=(Criterion.max_results(1),)))
+
+    assert len(result.candidates) == 1
+    assert result.dispositions[0].disposition == "local"
+
+
+@pytest.mark.parametrize(
+    ("criterion", "parameter"),
+    [
+        (Criterion(key=CRITERION_LANGUAGE, value=["en", "fr"]), "language"),
+        (Criterion(key=CRITERION_LANGUAGE, value=""), "language"),
+        (Criterion(key=CRITERION_CARRIER, value={"kind": "image"}), "categories"),
+        (Criterion.namespaced("searxng", "safesearch", "high"), "safesearch"),
+        (Criterion.namespaced("searxng", "safesearch", 7), "safesearch"),
+        (Criterion.namespaced("searxng", "safesearch", True), "safesearch"),
+        (Criterion.namespaced("searxng", "page", 0), "pageno"),
+        (Criterion.namespaced("searxng", "page", {"n": 2}), "pageno"),
+        (Criterion.namespaced("searxng", "page", "2"), "pageno"),
+        (Criterion.namespaced("searxng", "time-range", ["week"]), "time_range"),
+        (Criterion.namespaced("searxng", "categories", 42), "categories"),
+        (Criterion.namespaced("searxng", "engines", []), "engines"),
+        (Criterion(key=CRITERION_DOMAINS_INCLUDE, value=["example.org", 7]), "domains"),
+    ],
+)
+async def test_a_recognised_key_with_a_bad_value_is_unsatisfied_and_never_reaches_the_wire(
+    criterion: Criterion, parameter: str
+) -> None:
+    """One disease, one answer shape: unsatisfied, with what was expected."""
+    adapter, transport = _scripted(TransportScript(body=TWO_RESULTS_BODY))
+    result = await adapter.search(SearchRequest(query="capybara", criteria=(criterion,)))
+
+    params = transport.calls[-1]["params"]
+    assert isinstance(params, dict)
+    assert parameter not in params, "a value the adapter refused must not have gone out anyway"
+    answer = result.dispositions[0]
+    assert answer.disposition == "unsatisfied", f"{criterion.key} was answered {answer.disposition}"
+    assert answer.detail and "takes" in answer.detail, "the detail says what the criterion takes"
+    assert repr(criterion.value) in answer.detail, "and what arrived instead"
+
+
+async def test_a_domain_list_carrying_a_non_domain_is_refused_whole() -> None:
+    """Scoping by three of the four domains a caller named is the quiet lie."""
+    adapter, _ = _scripted(TransportScript(body=TWO_RESULTS_BODY))
+    result = await adapter.search(
+        SearchRequest(query="capybara", criteria=(Criterion(key=CRITERION_DOMAINS_INCLUDE, value=["example.org", 7]),))
+    )
+
+    assert len(result.candidates) == 2, "no partial filter was applied"
+    assert result.dispositions[0].disposition == "unsatisfied"
+
+
+@pytest.mark.parametrize("key", sorted(WELL_KNOWN_CRITERIA | set(SEARXNG_CAPABILITIES.namespaced_parameters)))
+async def test_no_key_this_adapter_declares_can_ever_be_answered_ignored_unknown(key: str) -> None:
+    """Recognition is decided by key, before any value is looked at.
+
+    The bug this pins: a well-known key with a wrong-typed value fell out of
+    the elif chain into the unknown branch and was told "'language' is not a
+    criterion this adapter recognises" -- contradicting the adapter's own
+    capability declaration in the same breath.
+    """
+    adapter, _ = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(
+        SearchRequest(query="capybara", criteria=(Criterion(key=key, value={"nonsense": [1, 2]}),))
+    )
+
+    assert len(result.dispositions) == 1
+    assert result.dispositions[0].disposition != "ignored-unknown"
+    assert result.dispositions[0].detail, "and it says what went wrong (SR-B3)"
+
+
+async def test_a_key_this_adapter_really_does_not_know_is_still_ignored_unknown() -> None:
+    """'ignored-unknown' keeps its meaning: a key from someone else's vocabulary."""
+    adapter, _ = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+    result = await adapter.search(
+        SearchRequest(query="capybara", criteria=(Criterion.namespaced("acme", "vibe", ["loud"]),))
+    )
+
+    assert result.dispositions[0].disposition == "ignored-unknown"
+
+
+async def test_a_valid_safesearch_level_still_reaches_the_wire_as_an_integer() -> None:
+    """The vocabulary check refuses the wrong values, not the right ones."""
+    for level in SEARXNG_CAPABILITIES.safesearch_levels or ():
+        adapter, transport = _scripted(TransportScript(body=ZERO_RESULTS_BODY))
+        result = await adapter.search(
+            SearchRequest(query="capybara", criteria=(Criterion.namespaced("searxng", "safesearch", level),))
+        )
+        params = transport.calls[-1]["params"]
+        assert isinstance(params, dict)
+        assert params["safesearch"] == str(level)
+        assert result.dispositions[0].disposition == "pushdown"
+
+
+async def test_a_refused_namespaced_value_leaves_the_deployment_default_alone() -> None:
+    """A local refusal must not clear configuration it was never asked about."""
+    transport = ScriptedTransport((TransportScript(body=ZERO_RESULTS_BODY),))
+    adapter = _adapter(transport, default_safesearch=1, default_engines=("duckduckgo",))
+    result = await adapter.search(
+        SearchRequest(query="capybara", criteria=(Criterion.namespaced("searxng", "safesearch", "high"),))
+    )
+
+    params = transport.calls[-1]["params"]
+    assert isinstance(params, dict)
+    assert params["safesearch"] == "1", "the instance's configured level stayed in force, as the detail says"
+    assert params["engines"] == "duckduckgo"
+    assert result.dispositions[0].disposition == "unsatisfied"
+    assert "configured level stayed in force" in (result.dispositions[0].detail or "")
+
+
+async def test_every_declared_namespaced_parameter_has_a_mapping() -> None:
+    """A declaration with no branch would answer nothing, or the wrong thing."""
+    assert set(SEARXNG_CAPABILITIES.namespaced_parameters) == {
+        SEARXNG_PARAM_CATEGORIES,
+        SEARXNG_PARAM_ENGINES,
+        SEARXNG_PARAM_PAGE,
+        SEARXNG_PARAM_SAFESEARCH,
+        SEARXNG_PARAM_TIME_RANGE,
     }
 
 

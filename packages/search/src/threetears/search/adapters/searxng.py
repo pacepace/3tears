@@ -19,6 +19,36 @@ into the nearest relative one would return results outside what the caller
 asked for while reporting success. It is named unsatisfied, with the
 namespaced parameter that *does* work stated in the detail.
 
+**A value the adapter cannot use is unsatisfied, never ignored** (SR-B3).
+Recognition is decided by *key* alone -- every well-known criterion and
+every parameter :data:`SEARXNG_CAPABILITIES` declares has its own branch --
+so ``ignored-unknown`` can only ever be reached by a key this adapter
+genuinely does not know. A recognised key carrying a value the adapter
+cannot send (a ``language`` that is a list, a ``max-results`` of ``-1``, a
+``searxng:safesearch`` of ``"high"``) is answered ``unsatisfied`` with one
+shared detail shape -- *what was expected; what arrived, so what happened
+instead* -- produced by the checks around :class:`_Refused`. The rule those
+checks exist for: nothing malformed reaches the wire, and nothing malformed
+is silently applied as something else. ``max-results`` is the sharp case,
+because the slice it feeds turns ``-1`` into "drop the last result" and
+``0`` into "return nothing", both of which would otherwise be reported as
+the cap being honoured.
+
+**One parameter, one owner.** SearXNG scopes by a single ``categories``
+parameter, and two criteria can reach for it: the well-known ``carrier``
+(mapped onto a category here) and the namespaced
+:data:`SEARXNG_PARAM_CATEGORIES` (SearXNG's own vocabulary, stated
+directly). They are *not* merged. SearXNG unions the categories it is
+given -- ``images,news`` searches both -- so merging two scoping criteria
+would search more than either asked for, which is the opposite of the
+intersection a caller stating both means. Instead the namespaced criterion
+wins, on the RES-T4M9 precedent: the more specific, more direct expression
+takes precedence and the loser is reported ``unsatisfied`` naming the
+winner, rather than either one vanishing. Precedence is decided by a
+pre-pass over the whole request, so it does not depend on criteria order,
+and it is gated on the winner's value being *usable* rather than merely
+present -- a malformed ``searxng:categories`` suppresses nothing.
+
 **Spend** (SR-E1, D6): a self-hosted SearXNG bills nothing, so money and
 weighted units are zero and the real constraints live in the other
 dimensions -- wall-clock, bytes, and the ``calls`` count a rate budget
@@ -39,6 +69,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Final
@@ -338,6 +369,127 @@ def _string_list(value: object) -> list[str]:
     return []
 
 
+@dataclass(frozen=True, slots=True)
+class _Refused:
+    """A recognised criterion whose value this adapter cannot use.
+
+    The single failure shape every value check below returns, so that a bad
+    value lands on the same honest answer wherever it arrives rather than on
+    four hand-written variations of one idea. :meth:`_Plan.accept` is what
+    turns it into the disposition; nothing else constructs one.
+    """
+
+    #: what was expected and what arrived, as a sentence fragment the plan
+    #: completes with what it did instead.
+    detail: str
+
+
+def _shape(value: object) -> str:
+    """Name a criterion value for a teaching detail, type included.
+
+    The type is half the lesson: ``'10'`` and ``10`` read identically in a
+    message that prints only the value, and it is exactly that pair a caller
+    building criteria from JSON gets wrong.
+
+    :param value: the value the criterion carried
+    :ptype value: object
+    :return: the value and its type name
+    :rtype: str
+    """
+    return f"{value!r} ({type(value).__name__})"
+
+
+def _text(value: object, key: str, expected: str) -> str | _Refused:
+    """Read a criterion value as a non-empty string.
+
+    :param value: the value the criterion carried
+    :ptype value: object
+    :param key: the criterion key, for the detail
+    :ptype key: str
+    :param expected: what the criterion takes, for the detail
+    :ptype expected: str
+    :return: the string, or the refusal naming why it is not one
+    :rtype: str | _Refused
+    """
+    if isinstance(value, str) and value:
+        return value
+    return _Refused(f"'{key}' takes {expected}; got {_shape(value)}")
+
+
+def _counting_number(value: object, key: str, expected: str) -> int | _Refused:
+    """Read a criterion value as an integer of at least one.
+
+    A bool is refused rather than read as its integer value: ``True`` is a
+    caller saying something other than "one", and honouring it as a count of
+    one would invent a bound nobody asked for. Zero and negatives are
+    refused because the things this feeds -- a result cap and a page number
+    -- have no meaning at or below zero, and the cap's slice would quietly
+    turn them into "return nothing" and "drop the last result".
+
+    :param value: the value the criterion carried
+    :ptype value: object
+    :param key: the criterion key, for the detail
+    :ptype key: str
+    :param expected: what the criterion takes, for the detail
+    :ptype expected: str
+    :return: the count, or the refusal naming why it is not one
+    :rtype: int | _Refused
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return _Refused(f"'{key}' takes {expected}; got {_shape(value)}")
+    return value
+
+
+def _level(value: object, accepted: tuple[int, ...], key: str, expected: str) -> int | _Refused:
+    """Read a criterion value as one of a closed set of integer levels.
+
+    :param value: the value the criterion carried
+    :ptype value: object
+    :param accepted: the levels the provider actually accepts
+    :ptype accepted: tuple[int, ...]
+    :param key: the criterion key, for the detail
+    :ptype key: str
+    :param expected: what the criterion takes, for the detail
+    :ptype expected: str
+    :return: the level, or the refusal naming why it is not one
+    :rtype: int | _Refused
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value not in accepted:
+        return _Refused(f"'{key}' takes {expected}; got {_shape(value)}")
+    return value
+
+
+def _names(value: object, key: str, expected: str) -> tuple[str, ...] | _Refused:
+    """Read a criterion value as a non-empty tuple of names.
+
+    A single string is one name; a list must be all strings. A list carrying
+    a non-string is refused whole rather than having the offender dropped:
+    silently scoping by three of the four domains a caller named is the
+    quiet-wrong-answer this module exists to avoid.
+
+    :param value: the value the criterion carried
+    :ptype value: object
+    :param key: the criterion key, for the detail
+    :ptype key: str
+    :param expected: what the criterion takes, for the detail
+    :ptype expected: str
+    :return: the names, or the refusal naming why there are none
+    :rtype: tuple[str, ...] | _Refused
+    """
+    if isinstance(value, str):
+        raw: list[object] = [value]
+    elif isinstance(value, list):
+        raw = list(value)
+    else:
+        return _Refused(f"'{key}' takes {expected}; got {_shape(value)}")
+    if not all(isinstance(item, str) for item in raw):
+        return _Refused(f"'{key}' takes {expected}; got {_shape(value)}")
+    names = tuple(item.strip() for item in raw if isinstance(item, str) and item.strip())
+    if not names:
+        return _Refused(f"'{key}' takes {expected} and this one named none; got {_shape(value)}")
+    return names
+
+
 class _Plan:
     """The request as SearXNG will receive it, with its honest dispositions.
 
@@ -347,17 +499,23 @@ class _Plan:
     passes that can disagree.
     """
 
-    def __init__(self, params: dict[str, str]) -> None:
+    def __init__(self, params: dict[str, str], *, categories_owner: str | None = None) -> None:
         """Start a plan from the parameters every query carries.
 
         :param params: the base wire parameters (query, format, defaults)
         :ptype params: dict[str, str]
+        :param categories_owner: the criterion key that owns SearXNG's single
+            ``categories`` parameter for this request, decided before the
+            pass so precedence does not depend on criteria order. ``None``
+            means nothing has claimed it
+        :ptype categories_owner: str | None
         """
         self.params = params
         self.dispositions: list[CriterionDisposition] = []
         self.max_results: int | None = None
         self.domains_include: tuple[str, ...] = ()
         self.domains_exclude: tuple[str, ...] = ()
+        self.categories_owner = categories_owner
 
     def answer(self, key: str, disposition: Disposition, detail: str | None = None) -> None:
         """Record how one criterion was handled.
@@ -370,6 +528,29 @@ class _Plan:
         :ptype detail: str | None
         """
         self.dispositions.append(CriterionDisposition(criterion_key=key, disposition=disposition, detail=detail))
+
+    def accept[T](self, key: str, checked: T | _Refused, *, consequence: str) -> T | None:
+        """Unwrap a checked criterion value, answering for it when unusable.
+
+        The one place a bad value becomes a disposition, which is what keeps
+        the answer shape identical across every criterion: *what was
+        expected; what arrived, so what the adapter did instead*. A caller
+        that gets ``None`` back has already been answered for and must
+        return without touching the wire parameters.
+
+        :param key: the criterion key being answered for
+        :ptype key: str
+        :param checked: the value, or the refusal one of the checks produced
+        :ptype checked: T | _Refused
+        :param consequence: what the adapter did instead, for the detail
+        :ptype consequence: str
+        :return: the usable value, or None when it was refused
+        :rtype: T | None
+        """
+        if isinstance(checked, _Refused):
+            self.answer(key, "unsatisfied", f"{checked.detail}, so {consequence}")
+            return None
+        return checked
 
 
 class SearxngAdapter:
@@ -507,6 +688,15 @@ class SearxngAdapter:
         Every criterion the request carried gets exactly one answer, and an
         answer is never "nothing" (SR-B2, SR-B3).
 
+        The ``categories`` ownership scan happens before the pass rather
+        than inside it, because that precedence cannot be decided one
+        criterion at a time: whether a ``carrier`` criterion may claim
+        SearXNG's single ``categories`` parameter depends on whether a
+        *usable* :data:`SEARXNG_PARAM_CATEGORIES` was asked for somewhere
+        else in the same request, and criteria have no order the caller must
+        respect. This is the shape Tavily's absolute-window pre-scan already
+        has, for the same reason (RES-T4M9).
+
         :param request: the caller's request
         :ptype request: SearchRequest
         :return: the plan the exchange and the local filters both read
@@ -519,13 +709,41 @@ class SearxngAdapter:
             params["engines"] = ",".join(self._default_engines)
         if self._default_safesearch is not None:
             params["safesearch"] = str(self._default_safesearch)
-        plan = _Plan(params)
+        plan = _Plan(params, categories_owner=self._categories_owner(request))
         for criterion in request.criteria:
             self._plan_criterion(plan, criterion)
         return plan
 
+    def _categories_owner(self, request: SearchRequest) -> str | None:
+        """Which criterion owns SearXNG's single ``categories`` parameter.
+
+        Gated on the value being usable rather than merely present, the same
+        way Tavily gates its absolute window: a malformed
+        :data:`SEARXNG_PARAM_CATEGORIES` is going to be refused anyway, and
+        letting it suppress a perfectly good ``carrier`` would lose both
+        scopings to one typo.
+
+        :param request: the caller's request
+        :ptype request: SearchRequest
+        :return: :data:`SEARXNG_PARAM_CATEGORIES` when the request carries a
+            usable one, otherwise None -- leaving ``carrier`` free to claim it
+        :rtype: str | None
+        """
+        for criterion in request.criteria:
+            if criterion.key != SEARXNG_PARAM_CATEGORIES:
+                continue
+            if not isinstance(_names(criterion.value, criterion.key, "category names"), _Refused):
+                return SEARXNG_PARAM_CATEGORIES
+        return None
+
     def _plan_criterion(self, plan: _Plan, criterion: Criterion) -> None:
         """Fold one criterion into ``plan``.
+
+        Dispatch is on the *key* alone. Value validation happens inside each
+        branch, so a recognised key carrying an unusable value is answered
+        ``unsatisfied`` by that branch and can never fall through to the
+        ``ignored-unknown`` arm -- which would tell the caller this adapter
+        does not know a criterion its own capabilities declare.
 
         :param plan: the plan under construction
         :ptype plan: _Plan
@@ -533,20 +751,16 @@ class SearxngAdapter:
         :ptype criterion: Criterion
         """
         key = criterion.key
-        if key == CRITERION_LANGUAGE and isinstance(criterion.value, str):
-            plan.params["language"] = criterion.value
-            plan.answer(key, "pushdown", "sent as SearXNG's 'language' parameter")
+        if key == CRITERION_LANGUAGE:
+            self._plan_language(plan, criterion)
         elif key == CRITERION_CARRIER:
             self._plan_carrier(plan, criterion)
         elif key == CRITERION_DOMAINS_INCLUDE:
-            plan.domains_include = tuple(domain.lower() for domain in _string_list(criterion.value))
-            plan.answer(key, "local", "SearXNG has no domain allow-list; results are filtered here by hostname")
+            self._plan_domains(plan, criterion, include=True)
         elif key == CRITERION_DOMAINS_EXCLUDE:
-            plan.domains_exclude = tuple(domain.lower() for domain in _string_list(criterion.value))
-            plan.answer(key, "local", "SearXNG has no domain deny-list; results are filtered here by hostname")
-        elif key == CRITERION_MAX_RESULTS and isinstance(criterion.value, int):
-            plan.max_results = criterion.value
-            plan.answer(key, "local", "SearXNG returns a full page; the cap is applied here after parsing")
+            self._plan_domains(plan, criterion, include=False)
+        elif key == CRITERION_MAX_RESULTS:
+            self._plan_max_results(plan, criterion)
         elif key == CRITERION_TIME_RANGE:
             plan.answer(
                 key,
@@ -574,31 +788,133 @@ class SearxngAdapter:
         elif key in SEARXNG_CAPABILITIES.namespaced_parameters:
             self._plan_namespaced(plan, criterion)
         else:
+            # Only reachable by a key with no branch above -- which, since
+            # every branch above is keyed off this module's own constants and
+            # SEARXNG_CAPABILITIES' declaration, means a key this adapter
+            # genuinely does not recognise. A well-known key with a value the
+            # adapter cannot use was answered 'unsatisfied' by its own branch.
             plan.answer(key, "ignored-unknown", f"'{key}' is not a criterion this adapter recognises")
+
+    def _plan_language(self, plan: _Plan, criterion: Criterion) -> None:
+        """Push a language tag down as SearXNG's ``language`` parameter.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the language criterion
+        :ptype criterion: Criterion
+        """
+        tag = plan.accept(
+            criterion.key,
+            _text(criterion.value, criterion.key, "a BCP 47 language tag as a non-empty string"),
+            consequence="no language was sent and the instance's own default stayed in force",
+        )
+        if tag is None:
+            return
+        plan.params["language"] = tag
+        plan.answer(criterion.key, "pushdown", "sent as SearXNG's 'language' parameter")
+
+    def _plan_domains(self, plan: _Plan, criterion: Criterion, *, include: bool) -> None:
+        """Record domain scoping for the local filter to apply.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the domain criterion
+        :ptype criterion: Criterion
+        :param include: whether this is the allow half or the deny half
+        :ptype include: bool
+        """
+        half = "allow-list" if include else "deny-list"
+        domains = plan.accept(
+            criterion.key,
+            _names(criterion.value, criterion.key, "a domain string or a list of domain strings"),
+            consequence="no domain filter was applied and the full result set is returned",
+        )
+        if domains is None:
+            return
+        lowered = tuple(domain.lower() for domain in domains)
+        if include:
+            plan.domains_include = lowered
+        else:
+            plan.domains_exclude = lowered
+        plan.answer(criterion.key, "local", f"SearXNG has no domain {half}; results are filtered here by hostname")
+
+    def _plan_max_results(self, plan: _Plan, criterion: Criterion) -> None:
+        """Record the result cap for the local filter to apply.
+
+        The validation is not decoration: the cap feeds a slice, and a slice
+        reads ``-1`` as "drop the last candidate" and ``0`` as "return
+        nothing" -- one the opposite of a cap, the other an empty answer
+        reported as a clean success. Both would carry a disposition saying
+        the cap was honoured, which is the failure mode SR-B3 forbids.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``max-results`` criterion
+        :ptype criterion: Criterion
+        """
+        cap = plan.accept(
+            criterion.key,
+            _counting_number(criterion.value, criterion.key, "a positive integer count"),
+            consequence="no cap was applied and every candidate the page returned is kept",
+        )
+        if cap is None:
+            return
+        plan.max_results = cap
+        plan.answer(criterion.key, "local", "SearXNG returns a full page; the cap is applied here after parsing")
 
     def _plan_carrier(self, plan: _Plan, criterion: Criterion) -> None:
         """Map a carrier criterion onto a SearXNG category.
+
+        Loses the ``categories`` parameter to an explicit
+        :data:`SEARXNG_PARAM_CATEGORIES` in the same request, and says so
+        rather than being overwritten while still claiming pushdown.
 
         :param plan: the plan under construction
         :ptype plan: _Plan
         :param criterion: the carrier criterion
         :ptype criterion: Criterion
         """
-        carrier = criterion.value if isinstance(criterion.value, str) else ""
+        key = criterion.key
+        carrier = plan.accept(
+            key,
+            _text(criterion.value, key, "a media-contracts carrier name as a non-empty string"),
+            consequence="the search was not scoped to a category",
+        )
+        if carrier is None:
+            return
         category = _CARRIER_CATEGORIES.get(carrier)
         if category is None:
             plan.answer(
-                criterion.key,
+                key,
                 "unsatisfied",
                 f"no SearXNG category means '{carrier}'; the carriers it can scope are "
                 f"{', '.join(sorted(_CARRIER_CATEGORIES))}",
             )
             return
+        if plan.categories_owner is not None and plan.categories_owner != key:
+            plan.answer(
+                key,
+                "unsatisfied",
+                f"SearXNG scopes by exactly one 'categories' parameter, and this request also carries "
+                f"'{plan.categories_owner}', which takes it: that criterion names SearXNG's own category "
+                f"vocabulary directly, while a carrier is mapped onto it here. The two are not merged, "
+                f"because SearXNG *unions* the categories it is given -- 'images,news' searches both -- so "
+                f"merging would widen the search past what either criterion asked for rather than "
+                f"intersecting them. To scope by '{carrier}', drop '{plan.categories_owner}' or include "
+                f"'{category}' in its value",
+            )
+            return
         plan.params["categories"] = category
-        plan.answer(criterion.key, "pushdown", f"sent as SearXNG's categories='{category}'")
+        plan.answer(key, "pushdown", f"sent as SearXNG's categories='{category}'")
 
     def _plan_namespaced(self, plan: _Plan, criterion: Criterion) -> None:
         """Push a ``searxng:``-namespaced parameter down to the provider.
+
+        Every value is checked against what SearXNG actually accepts before
+        it reaches the wire. A bad one refused here costs nothing; sent, it
+        buys either an error the caller has to decode or -- worse for
+        ``safesearch`` -- a silently-applied instance default under a
+        disposition claiming the requested level was in force.
 
         :param plan: the plan under construction
         :ptype plan: _Plan
@@ -607,24 +923,138 @@ class SearxngAdapter:
         """
         key = criterion.key
         if key == SEARXNG_PARAM_TIME_RANGE:
-            window = str(criterion.value)
-            if window not in SEARXNG_RELATIVE_TIME_RANGES:
-                plan.answer(
-                    key,
-                    "unsatisfied",
-                    f"'{window}' is not a SearXNG relative window; accepted: {', '.join(SEARXNG_RELATIVE_TIME_RANGES)}",
-                )
-                return
-            plan.params["time_range"] = window
+            self._plan_relative_window(plan, criterion)
         elif key == SEARXNG_PARAM_CATEGORIES:
-            plan.params["categories"] = ",".join(_string_list(criterion.value))
+            self._plan_categories(plan, criterion)
         elif key == SEARXNG_PARAM_ENGINES:
-            plan.params["engines"] = ",".join(_string_list(criterion.value))
+            self._plan_engines(plan, criterion)
         elif key == SEARXNG_PARAM_SAFESEARCH:
-            plan.params["safesearch"] = str(criterion.value)
+            self._plan_safesearch(plan, criterion)
         elif key == SEARXNG_PARAM_PAGE:
-            plan.params["pageno"] = str(criterion.value)
-        plan.answer(key, "pushdown", f"sent as SearXNG's '{key.split(':', 1)[1]}' parameter")
+            self._plan_page(plan, criterion)
+        else:
+            # A parameter declared in SEARXNG_CAPABILITIES with no branch
+            # here. An answer is still owed (SR-B2), and the honest one is
+            # that the declaration outran the mapping.
+            plan.answer(
+                key,
+                "unsatisfied",
+                f"'{key}' is declared in this adapter's capabilities but is not mapped onto a SearXNG "
+                f"parameter, so nothing was sent for it",
+            )
+
+    def _plan_relative_window(self, plan: _Plan, criterion: Criterion) -> None:
+        """Push SearXNG's relative publication window down.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``searxng:time-range`` criterion
+        :ptype criterion: Criterion
+        """
+        key = criterion.key
+        accepted = ", ".join(SEARXNG_RELATIVE_TIME_RANGES)
+        window = plan.accept(
+            key,
+            _text(criterion.value, key, f"one of SearXNG's relative windows ({accepted}) as a string"),
+            consequence="no publication window was sent",
+        )
+        if window is None:
+            return
+        if window not in SEARXNG_RELATIVE_TIME_RANGES:
+            plan.answer(key, "unsatisfied", f"'{window}' is not a SearXNG relative window; accepted: {accepted}")
+            return
+        plan.params["time_range"] = window
+        plan.answer(key, "pushdown", "sent as SearXNG's 'time_range' parameter")
+
+    def _plan_categories(self, plan: _Plan, criterion: Criterion) -> None:
+        """Push explicit SearXNG categories down, winning the slot.
+
+        An unrecognised category name is passed through rather than refused:
+        :data:`SEARXNG_CATEGORIES` is what a stock instance ships, and an
+        operator can define more in ``settings.yml``, so refusing an unknown
+        name here would refuse a category that works on this deployment.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``searxng:categories`` criterion
+        :ptype criterion: Criterion
+        """
+        key = criterion.key
+        names = plan.accept(
+            key,
+            _names(criterion.value, key, "a category name or a list of category names"),
+            consequence="the search was not scoped to a category",
+        )
+        if names is None:
+            return
+        plan.params["categories"] = ",".join(names)
+        plan.answer(key, "pushdown", "sent as SearXNG's 'categories' parameter")
+
+    def _plan_engines(self, plan: _Plan, criterion: Criterion) -> None:
+        """Restrict the search to named engines.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``searxng:engines`` criterion
+        :ptype criterion: Criterion
+        """
+        key = criterion.key
+        names = plan.accept(
+            key,
+            _names(criterion.value, key, "an engine name or a list of engine names"),
+            consequence="the search was not restricted to any engine",
+        )
+        if names is None:
+            return
+        plan.params["engines"] = ",".join(names)
+        plan.answer(key, "pushdown", "sent as SearXNG's 'engines' parameter")
+
+    def _plan_safesearch(self, plan: _Plan, criterion: Criterion) -> None:
+        """Push a safesearch level down, within SearXNG's own vocabulary.
+
+        The levels are integers in SearXNG's settings vocabulary -- 0 off,
+        1 moderate, 2 strict -- and this is the criterion where an
+        unvalidated value is worst: SearXNG applies its configured default
+        for anything it cannot read, so ``"high"`` sent blind returns
+        whatever the instance felt like under a disposition claiming strict
+        filtering was applied.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``searxng:safesearch`` criterion
+        :ptype criterion: Criterion
+        """
+        key = criterion.key
+        levels = SEARXNG_CAPABILITIES.safesearch_levels or ()
+        expected = f"one of SearXNG's safesearch levels as an integer ({', '.join(str(level) for level in levels)})"
+        level = plan.accept(
+            key,
+            _level(criterion.value, levels, key, expected),
+            consequence="the instance's own configured level stayed in force",
+        )
+        if level is None:
+            return
+        plan.params["safesearch"] = str(level)
+        plan.answer(key, "pushdown", "sent as SearXNG's 'safesearch' parameter")
+
+    def _plan_page(self, plan: _Plan, criterion: Criterion) -> None:
+        """Push a 1-based page number down as SearXNG's ``pageno``.
+
+        :param plan: the plan under construction
+        :ptype plan: _Plan
+        :param criterion: the ``searxng:page`` criterion
+        :ptype criterion: Criterion
+        """
+        key = criterion.key
+        page = plan.accept(
+            key,
+            _counting_number(criterion.value, key, "a 1-based page number as a positive integer"),
+            consequence="the first page was requested",
+        )
+        if page is None:
+            return
+        plan.params["pageno"] = str(page)
+        plan.answer(key, "pushdown", "sent as SearXNG's 'pageno' parameter")
 
     # -- the exchange -------------------------------------------------------
 
