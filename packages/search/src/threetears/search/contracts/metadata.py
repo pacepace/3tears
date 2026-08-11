@@ -20,6 +20,7 @@ from pydantic import Field
 from threetears.search.contracts._base import ContractModel
 from threetears.search.contracts.candidate import Candidate, CandidateSet
 from threetears.search.contracts.criteria import CriterionDisposition
+from threetears.search.contracts.errors import FailureRecord
 from threetears.search.contracts.spend import Spend
 
 __all__ = [
@@ -58,6 +59,16 @@ class SearchResultsMetadata(ContractModel):
     dispositions: tuple[CriterionDisposition, ...] = ()
     #: what the call consumed (SR-E1); carried on failures too (SR-E3).
     spend: Spend = Field(default_factory=Spend)
+    #: provider-reported degradations carried through to the border, so a
+    #: structure-reading consumer learns about a partial answer without
+    #: parsing prose (SR-L2, P8).
+    notices: tuple[str, ...] = ()
+    #: the typed failure, when this projection describes a failed call. This
+    #: is how D10 holds across the wire: nothing raises, and the far side
+    #: still reads *which* of the seven classes said no -- rather than
+    #: string-matching an error prefix, which is the defect the gutting
+    #: removes. ``None`` on every successful call.
+    failure: FailureRecord | None = None
 
     @classmethod
     def from_candidate_set(cls, *, query: str, candidate_set: CandidateSet) -> SearchResultsMetadata:
@@ -75,7 +86,25 @@ class SearchResultsMetadata(ContractModel):
             candidates=candidate_set.candidates,
             dispositions=candidate_set.dispositions,
             spend=candidate_set.spend,
+            notices=candidate_set.notices,
         )
+
+    @classmethod
+    def from_failure(cls, *, query: str, failure: FailureRecord) -> SearchResultsMetadata:
+        """Build the projection for a call that failed.
+
+        The candidates are empty and the spend is the failure's own, so a
+        structure-reading consumer gets the accounting for a broken call by
+        reading the same key it reads on a working one (SR-E3, D10).
+
+        :param query: the query the failed call was answering
+        :ptype query: str
+        :param failure: the typed failure's wire record
+        :ptype failure: FailureRecord
+        :return: the border projection, at the current schema version
+        :rtype: SearchResultsMetadata
+        """
+        return cls(query=query, spend=failure.spend, failure=failure)
 
     def to_metadata(self) -> dict[str, Any]:
         """Project to the JSON-safe dict placed under the named key.

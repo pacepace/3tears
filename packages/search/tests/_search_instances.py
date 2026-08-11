@@ -13,7 +13,12 @@ from decimal import Decimal
 from threetears.search.contracts import (
     FACET_EXTRACTION_STATUS,
     FACET_HAS_DOWNLOADABLE_DATA,
+    FACET_HEIGHT,
+    FACET_LOCATOR_KIND,
     FACET_MEDIA_CATEGORY,
+    FACET_RIGHTS_STATUS,
+    FACET_WIDTH,
+    PRICING_FREE_SELF_HOSTED,
     PRODUCER_API_PROVIDER,
     SCALE_UNIT_INTERVAL,
     Candidate,
@@ -24,6 +29,7 @@ from threetears.search.contracts import (
     FailureRecord,
     Locator,
     Provenance,
+    ProviderCapabilities,
     ScoreEntry,
     SearchRequest,
     SearchResultsMetadata,
@@ -83,17 +89,41 @@ CANDIDATE = Candidate(
     provenance=PROVENANCE,
     title="Capybara habitats",
     snippet="Where capybaras live, and why.",
+    published_at=datetime(2026, 3, 4, 9, 0, 0, tzinfo=UTC),
     scores=(SCORE,),
     fidelity_available="content",
     fidelity_achieved="content",
     content=CONTENT,
-    facets={FACET_MEDIA_CATEGORY: "document", FACET_EXTRACTION_STATUS: "complete", FACET_HAS_DOWNLOADABLE_DATA: True},
+    facets={
+        FACET_MEDIA_CATEGORY: "document",
+        FACET_EXTRACTION_STATUS: "complete",
+        FACET_HAS_DOWNLOADABLE_DATA: True,
+        FACET_LOCATOR_KIND: "direct-file",
+        FACET_RIGHTS_STATUS: "CC BY-SA 4.0",
+        FACET_WIDTH: 1920,
+        FACET_HEIGHT: 1080,
+    },
 )
 
 CANDIDATE_SET = CandidateSet(
     candidates=(CANDIDATE,),
     dispositions=(DISPOSITION,),
     spend=SPEND,
+    notices=("searxng engines did not answer, so this result set is narrower than the query: brave",),
+)
+
+CAPABILITIES = ProviderCapabilities(
+    provider="searxng",
+    pushdown_criteria=("language", "carrier"),
+    local_criteria=("domains-include", "max-results"),
+    unsatisfiable_criteria=("time-range", "rights-class"),
+    namespaced_parameters=("searxng:engines",),
+    supports_paging=True,
+    max_results_per_page=None,
+    categories=("general", "images"),
+    safesearch_levels=(0, 1, 2),
+    relative_time_ranges=("day", "week", "month", "year"),
+    pricing_model=PRICING_FREE_SELF_HOSTED,
 )
 
 REQUEST = SearchRequest(
@@ -118,6 +148,11 @@ METADATA = SearchResultsMetadata.from_candidate_set(
     candidate_set=CANDIDATE_SET,
 )
 
+FAILED_METADATA = SearchResultsMetadata.from_failure(
+    query="capybara habitat range",
+    failure=FAILURE_RECORD,
+)
+
 #: one fully-populated instance per exported wire type. The round-trip
 #: suite asserts this list covers every exported ContractModel subclass.
 ALL_INSTANCES = [
@@ -133,4 +168,5 @@ ALL_INSTANCES = [
     REQUEST,
     FAILURE_RECORD,
     METADATA,
+    CAPABILITIES,
 ]

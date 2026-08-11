@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, JsonValue
+from pydantic import AwareDatetime, Field, JsonValue
 
 from threetears.search.contracts._base import ContractModel
 from threetears.search.contracts.criteria import CriterionDisposition
@@ -84,6 +84,15 @@ class Candidate(ContractModel):
     title: str | None = None
     #: provider snippet / summary text, when given.
     snippet: str | None = None
+    #: when the candidate was published, where the provider reported it and
+    #: the report was parseable. A first-class field rather than a facet: a
+    #: publication date is not carrier-specific, and adapters MUST keep what
+    #: the provider returned in typed form rather than a disclaimed blob
+    #: (search-spec.md §3.2). Timezone-aware by construction; an adapter
+    #: reading a naive provider date states the zone it assumed, and keeps
+    #: the raw string on :attr:`Provenance.provider_ids` so the assumption
+    #: stays inspectable.
+    published_at: AwareDatetime | None = None
     #: named, provenanced judgments (D1). Never a single ``score`` field.
     scores: tuple[ScoreEntry, ...] = ()
     #: the best fidelity the provider can supply for this candidate
@@ -116,3 +125,9 @@ class CandidateSet(ContractModel):
     dispositions: tuple[CriterionDisposition, ...] = ()
     #: what the call consumed (SR-E1); zero-valued for a free provider.
     spend: Spend = Field(default_factory=Spend)
+    #: degradations the provider reported that are neither per-candidate nor
+    #: per-criterion -- engines that did not answer, a partial fan-in, output
+    #: known to be unranked (SR-L2). Named in the typed response because a
+    #: partial answer that reads as complete is exactly the defect P8 exists
+    #: to prevent; empty means the provider reported nothing wrong.
+    notices: tuple[str, ...] = ()

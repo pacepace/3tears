@@ -20,6 +20,15 @@ from threetears.search.contracts._canonical import (
     canonical_digest,
     canonicalize,
 )
+from threetears.search.contracts.capabilities import (
+    PRICING_FREE_SELF_HOSTED,
+    PRICING_PER_REQUEST,
+    PRICING_PER_WEIGHTED_UNIT,
+    ProviderCapabilities,
+    get_capabilities,
+    list_capabilities,
+    register_capabilities,
+)
 from threetears.search.contracts.candidate import (
     Candidate,
     CandidateSet,
@@ -55,7 +64,11 @@ from threetears.search.contracts.errors import (
 from threetears.search.contracts.facets import (
     FACET_EXTRACTION_STATUS,
     FACET_HAS_DOWNLOADABLE_DATA,
+    FACET_HEIGHT,
+    FACET_LOCATOR_KIND,
     FACET_MEDIA_CATEGORY,
+    FACET_RIGHTS_STATUS,
+    FACET_WIDTH,
 )
 from threetears.search.contracts.fidelity import (
     FIDELITY_BYTES,
@@ -73,6 +86,7 @@ from threetears.search.contracts.provenance import (
     PRODUCER_MODEL_MEDIATED,
     Provenance,
 )
+from threetears.search.contracts.provider import SearchProvider
 from threetears.search.contracts.request import SearchRequest
 from threetears.search.contracts.scores import (
     SCALE_RANK,
@@ -96,11 +110,18 @@ __all__ = [
     "EGRESS_DIRECT",
     "FACET_EXTRACTION_STATUS",
     "FACET_HAS_DOWNLOADABLE_DATA",
+    "FACET_HEIGHT",
+    "FACET_LOCATOR_KIND",
     "FACET_MEDIA_CATEGORY",
+    "FACET_RIGHTS_STATUS",
+    "FACET_WIDTH",
     "FAILURE_CLASSES",
     "FIDELITY_BYTES",
     "FIDELITY_CONTENT",
     "FIDELITY_SNIPPET",
+    "PRICING_FREE_SELF_HOSTED",
+    "PRICING_PER_REQUEST",
+    "PRICING_PER_WEIGHTED_UNIT",
     "PRODUCER_API_PROVIDER",
     "PRODUCER_MODEL_MEDIATED",
     "SCALE_RANK",
@@ -121,10 +142,12 @@ __all__ = [
     "Locator",
     "MalformedResponse",
     "Provenance",
+    "ProviderCapabilities",
     "QuotaExhausted",
     "RateLimited",
     "ScoreEntry",
     "SearchFailure",
+    "SearchProvider",
     "SearchRequest",
     "SearchResultsMetadata",
     "SearchTransport",
@@ -134,4 +157,7 @@ __all__ = [
     "TransportResponse",
     "canonical_digest",
     "canonicalize",
+    "get_capabilities",
+    "list_capabilities",
+    "register_capabilities",
 ]
