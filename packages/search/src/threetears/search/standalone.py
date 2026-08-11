@@ -48,6 +48,14 @@ What it owes, and where each obligation is discharged:
   chunks against a cap and never through an unbounded ``response.text``,
   which is a memory incident on a ``MemoryMax``-capped host.
 
+**Both transport protocols, one machine.** :meth:`StandaloneTransport.request`
+serves search calls and :meth:`StandaloneTransport.fetch` serves Extract's
+content reads (the union Gate A predicted this module would satisfy). They
+differ in exactly two things -- who states the byte cap, and whether a media
+type is refused before the body -- so they share one retry loop, one deadline,
+one set of guards. Duplicating the loop to add a cap parameter would have left
+two SSRF guards to keep in step, which is the arrangement D21 exists to avoid.
+
 **No client is held between calls.** A search is one request, and SR-L5
 requires a single call to work from a one-shot ``asyncio.run()`` with no
 lifecycle to manage and nothing left to close. Connection reuse is what the
@@ -88,6 +96,7 @@ from threetears.search.contracts import (
 )
 
 __all__ = [
+    "CONTENT_TYPE_SCOPE",
     "DEFAULT_INITIAL_BACKOFF_SECONDS",
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_MAX_BACKOFF_SECONDS",
@@ -135,6 +144,11 @@ DEFAULT_MAX_CONNECTIONS: Final[int] = 10
 #: the scope name a byte-cap refusal reports, so a reader can tell it from a
 #: budget refusal without parsing the message.
 RESPONSE_BYTES_SCOPE: Final[str] = "response-bytes"
+
+#: the scope name a content-type refusal reports. A second cap identity on
+#: the same field, following the ``query-length`` / ``response-bytes``
+#: precedent: what refused is machine-readable, never prose to be parsed.
+CONTENT_TYPE_SCOPE: Final[str] = "content-type"
 
 #: the least time worth starting another attempt with, in seconds. A retry
 #: given less than this cannot resolve a name, connect and read inside it on
@@ -353,6 +367,124 @@ class StandaloneTransport:
         :raises threetears.search.contracts.errors.LocalCapExceeded: when a
             response body exceeds the configured cap (SR-G5)
         """
+        return await self._perform(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json_body=json_body,
+            max_bytes=self._max_response_bytes,
+            allowed_content_types=None,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def fetch(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> TransportResponse:
+        """Perform one bounded, guarded, byte-capped content read.
+
+        Satisfies
+        :class:`~threetears.search.contracts.transport.FetchTransport`. Every
+        obligation :meth:`request` discharges holds here unchanged -- and the
+        guards bind hardest on this method, because a fetched URL is
+        *candidate-derived*: it came from a provider's answer rather than from
+        deployment config, so it is the one URL in this package a caller can
+        influence without touching a config file.
+
+        **A per-call cap can tighten the deployment cap, never loosen it.**
+        The effective cap is the lesser of ``max_bytes`` and the transport's
+        configured ``max_response_bytes``. The per-call number is the caller's
+        memory budget (the protocol's point); the configured one is the host's,
+        and a host that declared how much memory this process may hold does not
+        lose that because a caller asked for more. A refusal names the cap that
+        actually bound, so neither is a mystery.
+
+        :param method: HTTP method; ``GET`` or ``HEAD``
+        :ptype method: str
+        :param url: absolute URL to fetch
+        :ptype url: str
+        :param headers: request headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :param max_bytes: this call's cap on the body (SR-G5), tightening the
+            configured cap where it is lower
+        :ptype max_bytes: int
+        :param allowed_content_types: media-type prefixes this read accepts;
+            None accepts anything. A successful response declaring a type
+            outside the gate -- or declaring none at all -- is refused before
+            its body is read, which is the point of the gate: never pull
+            megabytes of video to learn it was not text
+        :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout_seconds: per-call override of the configured timeout,
+            bounding the **whole call** including retries and backoff (SR-G2)
+        :ptype timeout_seconds: float | None
+        :return: the completed exchange; ``body`` never exceeds the effective
+            cap
+        :rtype: TransportResponse
+        :raises ValueError: when ``max_bytes`` is not positive
+        :raises threetears.search.contracts.errors.TimedOut: when the attempts
+            timed out, or the whole-call bound ran out before another fit
+        :raises threetears.search.contracts.errors.TransportFailed: on a
+            refused address, a refused redirect, or a connect/protocol failure
+            that outlasted the attempts
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when the
+            body exceeds the effective cap, or the content-type gate refuses
+        """
+        if max_bytes < 1:
+            raise ValueError(f"max_bytes must be positive, got {max_bytes}")
+        return await self._perform(
+            method,
+            url,
+            headers=headers,
+            params=None,
+            json_body=None,
+            max_bytes=min(max_bytes, self._max_response_bytes),
+            allowed_content_types=allowed_content_types,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def _perform(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None,
+        params: Mapping[str, str] | None,
+        json_body: Mapping[str, JsonValue] | None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None,
+        timeout_seconds: float | None,
+    ) -> TransportResponse:
+        """Run the bounded, guarded, retrying exchange both protocols share.
+
+        :param method: HTTP method
+        :ptype method: str
+        :param url: absolute URL to reach
+        :ptype url: str
+        :param headers: request headers, if any
+        :ptype headers: Mapping[str, str] | None
+        :param params: query parameters, if any
+        :ptype params: Mapping[str, str] | None
+        :param json_body: JSON request body, if any
+        :ptype json_body: Mapping[str, JsonValue] | None
+        :param max_bytes: effective cap on one response body
+        :ptype max_bytes: int
+        :param allowed_content_types: media-type prefixes a successful
+            response must match, or None to accept any
+        :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout_seconds: per-call override of the configured timeout
+        :ptype timeout_seconds: float | None
+        :return: the completed exchange, with the attempt count on it
+        :rtype: TransportResponse
+        :raises threetears.search.contracts.errors.SearchFailure: the typed
+            failures both public methods document
+        """
         effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
         started = self._clock()
         deadline = started + effective_timeout
@@ -382,6 +514,8 @@ class StandaloneTransport:
                         headers=request_headers,
                         params=params,
                         json_body=json_body,
+                        max_bytes=max_bytes,
+                        allowed_content_types=allowed_content_types,
                         elapsed_so_far=self._clock() - started,
                         bytes_so_far=bytes_seen,
                     )
@@ -578,6 +712,8 @@ class StandaloneTransport:
         headers: Mapping[str, str],
         params: Mapping[str, str] | None,
         json_body: Mapping[str, JsonValue] | None,
+        max_bytes: int,
+        allowed_content_types: tuple[str, ...] | None,
         elapsed_so_far: float,
         bytes_so_far: int,
     ) -> tuple[int, bytes, str, int, dict[str, str]]:
@@ -595,6 +731,11 @@ class StandaloneTransport:
         :ptype params: Mapping[str, str] | None
         :param json_body: JSON request body, if any
         :ptype json_body: Mapping[str, JsonValue] | None
+        :param max_bytes: effective cap on one response body
+        :ptype max_bytes: int
+        :param allowed_content_types: media-type prefixes a successful
+            response must match, or None to accept any
+        :ptype allowed_content_types: tuple[str, ...] | None
         :param elapsed_so_far: wall-clock already spent, for failure spend
         :ptype elapsed_so_far: float
         :param bytes_so_far: bytes already read, for failure spend
@@ -605,7 +746,7 @@ class StandaloneTransport:
         :raises threetears.search.contracts.errors.TransportFailed: on a
             refused address or a refused redirect
         :raises threetears.search.contracts.errors.LocalCapExceeded: when
-            the body exceeds the configured cap
+            the body exceeds the cap, or the content-type gate refuses
         """
         target = url
         read_total = 0
@@ -618,18 +759,33 @@ class StandaloneTransport:
                 params=dict(params) if params else None,
                 json=dict(json_body) if json_body else None,
             ) as response:
+                # header keys are normalised here so every consumer of the
+                # seam reads one casing -- the protocol promises lower-case,
+                # and httpx answers case-insensitively rather than
+                # case-normalised.
+                response_headers = {name.lower(): value for name, value in response.headers.items()}
+                location = response_headers.get("location")
+                following = 300 <= response.status_code < 400 and bool(location) and hop < self._max_redirects
+                if not following:
+                    self._gate_content_type(
+                        response_headers,
+                        target,
+                        allowed_content_types,
+                        status_code=response.status_code,
+                        elapsed=elapsed_so_far,
+                        bytes_seen=bytes_so_far + read_total,
+                    )
                 body, read = await self._read_capped(
-                    response, target, elapsed=elapsed_so_far, bytes_seen=bytes_so_far + read_total
+                    response,
+                    target,
+                    max_bytes=max_bytes,
+                    elapsed=elapsed_so_far,
+                    bytes_seen=bytes_so_far + read_total,
                 )
             read_total += read
-            # header keys are normalised here so every consumer of the seam
-            # reads one casing -- the protocol promises lower-case, and httpx
-            # answers case-insensitively rather than case-normalised.
-            response_headers = {name.lower(): value for name, value in response.headers.items()}
-            location = response_headers.get("location")
-            if not (300 <= response.status_code < 400) or not location or hop >= self._max_redirects:
+            if not following:
                 return response.status_code, body, target, read_total, response_headers
-            target = self._guarded_redirect(target, location)
+            target = self._guarded_redirect(target, location or "")
         # unreachable: the loop returns or raises on its last iteration, and
         # ``range`` is non-empty because max_redirects is never negative.
         raise TransportFailed(
@@ -642,6 +798,7 @@ class StandaloneTransport:
         response: httpx.Response,
         url: str,
         *,
+        max_bytes: int,
         elapsed: float,
         bytes_seen: int,
     ) -> tuple[bytes, int]:
@@ -655,6 +812,8 @@ class StandaloneTransport:
         :ptype response: httpx.Response
         :param url: the URL being read, for the failure message
         :ptype url: str
+        :param max_bytes: the cap this read must stay under
+        :ptype max_bytes: int
         :param elapsed: wall-clock already spent, for failure spend
         :ptype elapsed: float
         :param bytes_seen: bytes already read, for failure spend
@@ -665,18 +824,79 @@ class StandaloneTransport:
             the body exceeds the cap
         """
         declared = response.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > self._max_response_bytes:
-            raise self._over_cap(url, int(declared), elapsed=elapsed, bytes_seen=bytes_seen)
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise self._over_cap(url, int(declared), cap=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen)
         chunks: list[bytes] = []
         total = 0
         async for chunk in response.aiter_bytes():
             total += len(chunk)
-            if total > self._max_response_bytes:
-                raise self._over_cap(url, total, elapsed=elapsed, bytes_seen=bytes_seen + total)
+            if total > max_bytes:
+                raise self._over_cap(url, total, cap=max_bytes, elapsed=elapsed, bytes_seen=bytes_seen + total)
             chunks.append(chunk)
         return b"".join(chunks), total
 
-    def _over_cap(self, url: str, size: int, *, elapsed: float, bytes_seen: int) -> LocalCapExceeded:
+    def _gate_content_type(
+        self,
+        headers: Mapping[str, str],
+        url: str,
+        allowed: tuple[str, ...] | None,
+        *,
+        status_code: int,
+        elapsed: float,
+        bytes_seen: int,
+    ) -> None:
+        """Refuse a media type this read will not accept, before the body.
+
+        Called with the response's headers in hand and the body still
+        unread, which is the whole value of the gate: a caller after HTML
+        learns a URL is a 400MB video without pulling any of it (§3.5).
+
+        Two deliberate narrowings, both about not lying to the caller:
+
+        - **Only successful responses are gated.** An error status is an
+          answer the caller asked for and is entitled to see; refusing a 404
+          because its error page was ``text/plain`` would replace a true
+          status with a misleading cap refusal. Error bodies stay bounded by
+          the byte cap either way, so nothing unbounded is held.
+        - **A missing type is refused**, not accepted. The gate exists
+          because unknown content can be arbitrarily expensive; a response
+          declining to say what it is has to be treated as unknown rather
+          than assumed to be what the caller hoped for.
+
+        :param headers: the response headers, lower-cased keys
+        :ptype headers: Mapping[str, str]
+        :param url: the URL that answered, for the failure message
+        :ptype url: str
+        :param allowed: media-type prefixes accepted, or None to accept any
+        :ptype allowed: tuple[str, ...] | None
+        :param status_code: the response's status
+        :ptype status_code: int
+        :param elapsed: wall-clock already spent, for failure spend
+        :ptype elapsed: float
+        :param bytes_seen: bytes already read, for failure spend
+        :ptype bytes_seen: int
+        :raises threetears.search.contracts.errors.LocalCapExceeded: when
+            the declared media type matches no accepted prefix
+        """
+        if not allowed or not (200 <= status_code < 300):
+            return
+        declared = headers.get("content-type", "")
+        media_type = declared.split(";", 1)[0].strip().lower()
+        if media_type and any(media_type.startswith(prefix.lower()) for prefix in allowed):
+            return
+        described = f"declared content type {media_type!r}" if media_type else "declared no content type"
+        raise LocalCapExceeded(
+            f"response from {url} {described}, which this read does not accept: {list(allowed)}",
+            spend=Spend(wall_clock_seconds=elapsed, calls=0, bytes_transferred=bytes_seen),
+            remediation=(
+                "widen allowed_content_types if this media type is wanted, or leave it None to accept "
+                "anything the byte cap allows -- the gate refuses before the body precisely so a wrong "
+                "media type costs nothing to discover"
+            ),
+            scope=CONTENT_TYPE_SCOPE,
+        )
+
+    def _over_cap(self, url: str, size: int, *, cap: int, elapsed: float, bytes_seen: int) -> LocalCapExceeded:
         """Build the refusal for a response past the byte cap.
 
         ``LocalCapExceeded`` rather than a transport failure, because that is
@@ -689,6 +909,12 @@ class StandaloneTransport:
         :ptype url: str
         :param size: bytes seen or declared
         :ptype size: int
+        :param cap: the cap that actually bound this read -- the transport's
+            for a search call, the lesser of the two for a fetch. Named
+            rather than assumed, so a caller who passed ``max_bytes`` and
+            was bound by the deployment ceiling can see which number
+            refused
+        :ptype cap: int
         :param elapsed: wall-clock spent, in seconds
         :ptype elapsed: float
         :param bytes_seen: bytes read across the whole request
@@ -696,12 +922,13 @@ class StandaloneTransport:
         :return: the typed refusal
         :rtype: LocalCapExceeded
         """
+        source = "this transport's" if cap == self._max_response_bytes else "this read's"
         return LocalCapExceeded(
-            f"response from {url} is {size} bytes, past this transport's {self._max_response_bytes}-byte cap",
+            f"response from {url} is {size} bytes, past {source} {cap}-byte cap",
             spend=Spend(wall_clock_seconds=elapsed, calls=0, bytes_transferred=bytes_seen),
             remediation=(
-                "raise max_response_bytes on the transport if the host can afford the memory, or narrow "
-                "the request so the provider returns less"
+                "raise max_response_bytes on the transport if the host can afford the memory, raise this "
+                "call's max_bytes where that is the lower of the two, or narrow the request so less comes back"
             ),
             scope=RESPONSE_BYTES_SCOPE,
         )
