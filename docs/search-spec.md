@@ -637,9 +637,12 @@ recorded here per the Gate A precedent:
   `SearchProvider` carries the transport's egress today. If contracts later
   let a provider declare its egress, the parameter becomes derivable; that
   is a contracts change, not taken here.
-- **`bind_search` does not yet forward the ports** — the D10 caller-facing
-  path gains budget/limiter pass-through when the Phase-2 consumers wire it
-  (§4), not before.
+- **`bind_search` forwards the ports** — deferred at first build to the
+  Phase-2 consumers (§4), then landed same-branch on 2026-08-11 after
+  review: an entry point the tool envelope reaches that could not carry
+  `budget`/`limiter`/`egress` enforced nothing for the caller most able to
+  search in a loop. They pass through verbatim; a refusal from either
+  authority renders as a failed result like any other typed failure (D10).
 - **Contract gaps carried, worked around with precedent, not patched
   mid-chunk:** `Spend` cannot distinguish *unpriced* from *free* (the
   capability declaration's `pricing_model` carries the difference; an

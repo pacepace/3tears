@@ -9,12 +9,21 @@ Loopback is what a test can reach, and loopback is exactly what the address
 guard refuses -- so most pins construct the transport with
 ``allow_private_addresses=True``, and the guard gets its own pins proving the
 default refuses.
+
+The whole-call deadline is the one property that cannot be pinned by waiting
+for it: proving "three attempts under a 10s bound do not cost 30s" honestly
+would cost thirty seconds. So those pins drive the injected clock and sleeper,
+the way ``test_limiter.py`` does -- the attempts still run against a real
+socket, and only the passage of time is simulated. One pin uses the real clock
+anyway, because a bound that only holds against a driven clock has proved
+nothing about the shipped path.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -51,6 +60,54 @@ def _transport(**kwargs: object) -> StandaloneTransport:
     settings: dict[str, object] = {"allow_private_addresses": True, **FAST_BACKOFF}
     settings.update(kwargs)
     return StandaloneTransport(**settings)  # type: ignore[arg-type]
+
+
+class _ManualClock:
+    """A monotonic source the test advances, and the sleeper that advances it.
+
+    The same two callables the limiter's tests drive, for the same reason: a
+    deadline is only testable in reasonable time if the test owns the passage
+    of time. Not a fake of any production protocol, so it declares none.
+    """
+
+    def __init__(self, start: float = 1_000.0) -> None:
+        """Start at an arbitrary non-zero reading.
+
+        :param start: initial monotonic value
+        :ptype start: float
+        """
+        self.now = start
+        self.sleeps: list[float] = []
+
+    def read(self) -> float:
+        """Report the current simulated monotonic reading.
+
+        :return: seconds since this clock's arbitrary origin
+        :rtype: float
+        """
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Move simulated time forward.
+
+        :param seconds: how far forward
+        :ptype seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self.now += seconds
+
+    async def sleep(self, seconds: float) -> None:
+        """Record a backoff, advance the clock by it, and yield to the loop.
+
+        :param seconds: what the transport asked to wait
+        :ptype seconds: float
+        :return: nothing
+        :rtype: None
+        """
+        self.sleeps.append(seconds)
+        self.now += seconds
+        await asyncio.sleep(0)
 
 
 def test_the_transport_satisfies_the_seam_by_shape() -> None:
@@ -208,6 +265,93 @@ async def test_the_per_call_timeout_overrides_the_configured_one() -> None:
             await _transport(timeout_seconds=30.0, max_attempts=1).request(
                 "GET", f"{server.base_url}/search", timeout_seconds=0.05
             )
+
+
+# --- one deadline for the whole call (SR-G2) ------------------------------
+
+
+async def test_the_bound_the_caller_stated_bounds_the_whole_call() -> None:
+    """Three attempts under a 0.3s bound cost 0.3s, not three times 0.3s plus backoff.
+
+    Real time on purpose: this is the promise a caller under its own deadline
+    is relying on, and a driven clock cannot prove the shipped path keeps it.
+    """
+    async with LocalHttpServer((Reply(delay=2.0),)) as server:
+        transport = _transport(max_attempts=3, timeout_seconds=30.0)
+        started = time.monotonic()
+        with pytest.raises(TimedOut) as raised:
+            await transport.request("GET", f"{server.base_url}/search", timeout_seconds=0.3)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 0.9, "the attempts and the backoffs come out of the one bound, not one copy each"
+    assert len(server.requests) == 1, "the bound was gone after the first attempt, so there was no second"
+    assert "1 attempt(s)" in raised.value.message, "the accounting says what it actually did"
+
+
+async def test_a_deadline_that_expires_mid_retry_never_starts_another_attempt() -> None:
+    """A backoff that would outlast the bound is not taken: the caller hears TimedOut.
+
+    The clock and the sleeper are driven, so the 5s backoff costs the suite
+    nothing -- the attempt itself still runs against a real socket.
+    """
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(close_early=True), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = StandaloneTransport(
+            allow_private_addresses=True,
+            max_attempts=3,
+            initial_backoff=5.0,
+            max_backoff=5.0,
+            clock=clock.read,
+            sleep=clock.sleep,
+        )
+        with pytest.raises(TimedOut) as raised:
+            await transport.request("GET", f"{server.base_url}/search", timeout_seconds=3.0)
+
+    assert clock.sleeps == [], "sleeping out the last of a deadline only reports the same failure later"
+    assert len(server.requests) == 1, "the second attempt never started"
+    assert "1 attempt(s)" in raised.value.message
+    assert "3.000s bound" in raised.value.message, "the message names what ran out"
+    assert "timeout" in (raised.value.remediation or "")
+
+
+async def test_a_retry_the_bound_can_fund_is_still_taken() -> None:
+    """The deadline is a bound on retrying, not a replacement for it (SR-G4)."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(close_early=True), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = StandaloneTransport(
+            allow_private_addresses=True,
+            max_attempts=3,
+            initial_backoff=0.5,
+            max_backoff=0.5,
+            clock=clock.read,
+            sleep=clock.sleep,
+        )
+        response = await transport.request("GET", f"{server.base_url}/search", timeout_seconds=10.0)
+
+    assert response.status_code == 200
+    assert response.attempts == 2
+    assert clock.sleeps == [0.5], "one backoff, charged to the bound"
+    assert response.elapsed_seconds == 0.5
+
+
+async def test_a_5xx_the_bound_cannot_fund_a_retry_for_comes_back_as_itself() -> None:
+    """An answer the caller can see beats a TimedOut that hides it."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(status=503, body=b"busy"), Reply(body=TWO_RESULTS_BODY))) as server:
+        transport = StandaloneTransport(
+            allow_private_addresses=True,
+            max_attempts=3,
+            initial_backoff=5.0,
+            max_backoff=5.0,
+            clock=clock.read,
+            sleep=clock.sleep,
+        )
+        response = await transport.request("GET", f"{server.base_url}/search", timeout_seconds=1.0)
+
+    assert response.status_code == 503
+    assert response.attempts == 1
+    assert clock.sleeps == []
+    assert len(server.requests) == 1
 
 
 # --- byte caps (SR-G5) ----------------------------------------------------

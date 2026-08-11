@@ -20,17 +20,22 @@ from threetears.search.bind import (
     project_metadata,
     render_prose,
 )
+from threetears.search.call import PACING_BURST_SCOPE
 from threetears.search.contracts import (
+    EGRESS_DIRECT,
     SEARCH_RESULTS_METADATA_KEY,
+    BudgetDecision,
     CandidateSet,
     Criterion,
     QuotaExhausted,
+    RateLimitDecision,
     RateLimited,
     SearchRequest,
     SearchResultsMetadata,
     Spend,
 )
-from threetears.search.testing import ScriptedTransport, TransportScript
+from threetears.search.limiter import InProcessRateLimiter
+from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, ScriptedTransport, TransportScript
 from _search_instances import CANDIDATE, CANDIDATE_SET, DISPOSITION, SPEND
 from _searxng_payloads import MALFORMED_BODY, TWO_RESULTS_BODY, ZERO_RESULTS_BODY, body
 
@@ -262,6 +267,108 @@ async def test_nothing_raises_past_bind_for_a_local_cap_refusal() -> None:
     payload = rendered.metadata[SEARCH_RESULTS_METADATA_KEY]
     assert payload["failure"]["failure_class"] == "local-cap-exceeded"
     assert payload["failure"]["scope"] == "max-results"
+
+
+# --- the injected ports, through the never-raising entry point ------------
+
+
+async def test_bind_search_carries_the_ports_down_to_call() -> None:
+    """A tool-envelope consumer is exactly the consumer budgets and pacing are for.
+
+    ``bind_search`` is the entry point the far side of the envelope reaches,
+    so an entry point that could not carry the ports would have enforced
+    nothing for the caller most able to search in a loop (D4, D8, D20).
+    """
+    budget = FakeBudgetPort()
+    limiter = FakeRateLimiterPort()
+
+    rendered = await bind_search(
+        SearchRequest(query="capybara"),
+        provider=_searxng(TransportScript(body=TWO_RESULTS_BODY)),
+        budget=budget,
+        limiter=limiter,
+        egress="corp-proxy",
+    )
+
+    assert rendered.success is True
+    assert len(budget.checks) == 1, "checked before the call"
+    assert len(budget.records) == 1, "and debited after it"
+    instance, egress, tokens, _ = limiter.acquisitions[0]
+    assert (instance, egress, tokens) == ("searx.example.org", "corp-proxy", 1.0)
+
+
+async def test_bind_search_with_no_ports_consults_nothing() -> None:
+    """Passing none is passing none: no implicit budget appears down the stack."""
+    rendered = await bind_search(
+        SearchRequest(query="capybara"), provider=_searxng(TransportScript(body=TWO_RESULTS_BODY))
+    )
+
+    assert rendered.success is True
+    assert rendered.metadata[SEARCH_RESULTS_METADATA_KEY]["spend"]["calls"] == 1
+
+
+async def test_a_budget_refusal_renders_as_a_failed_result_with_its_accounting() -> None:
+    """D10 covers the refusals too: 'search failed' with no accounting is how a run overspends."""
+    budget = FakeBudgetPort(
+        BudgetDecision(
+            allowed=False,
+            scope="run:7",
+            reason="the run's 40-call allowance is spent",
+            remediation="raise the per-run allowance, or start a new run",
+            consumed=Spend(calls=40, money=Decimal("1.25")),
+        )
+    )
+    transport = ScriptedTransport((TransportScript(body=TWO_RESULTS_BODY),))
+    adapter = SearxngAdapter(base_url="https://searx.example.org", transport=transport)
+
+    rendered = await bind_search(SearchRequest(query="capybara"), provider=adapter, budget=budget)
+
+    assert rendered.success is False
+    assert "the run's 40-call allowance is spent" in rendered.content
+    assert "raise the per-run allowance" in rendered.content
+    payload = rendered.metadata[SEARCH_RESULTS_METADATA_KEY]
+    assert payload["failure"]["failure_class"] == "local-cap-exceeded"
+    assert payload["failure"]["scope"] == "run:7"
+    assert payload["spend"]["calls"] == 40, "the refusing scope's own consumed total (SR-E3)"
+    assert transport.calls == [], "the refused call never reached the wire"
+
+
+async def test_a_pacing_denial_renders_as_a_failed_result_too() -> None:
+    """The limiter's no arrives as structure, not as an exception (D8, D10)."""
+    limiter = FakeRateLimiterPort(RateLimitDecision(acquired=False, retry_after_seconds=2.5))
+    transport = ScriptedTransport((TransportScript(body=TWO_RESULTS_BODY),))
+    adapter = SearxngAdapter(base_url="https://searx.example.org", transport=transport)
+
+    rendered = await bind_search(SearchRequest(query="capybara"), provider=adapter, limiter=limiter, egress="warp")
+
+    assert rendered.success is False
+    payload = rendered.metadata[SEARCH_RESULTS_METADATA_KEY]["failure"]
+    assert payload["failure_class"] == "rate-limited"
+    assert payload["retry_after_seconds"] == 2.5
+    assert payload["egress"] == "warp", "a consumer-side pacing tracker rebuilds D8's key from this record"
+    assert transport.calls == []
+
+
+async def test_a_pacing_configuration_that_can_never_grant_still_renders() -> None:
+    """The one path that used to escape untyped: a host burst below one call.
+
+    Through ``bind_search`` because that is where it was visible -- an
+    unmapped ``ValueError`` rendered as "search failed with an unmapped
+    ValueError", blaming the provider for the host's own pacing numbers.
+    """
+    rendered = await bind_search(
+        SearchRequest(query="capybara"),
+        provider=_searxng(TransportScript(body=TWO_RESULTS_BODY)),
+        limiter=InProcessRateLimiter(burst_tokens=0.5),
+    )
+
+    assert rendered.success is False
+    assert "unmapped" not in rendered.content
+    assert "burst_tokens" in rendered.content, "the remediation names the knob the host has to move"
+    payload = rendered.metadata[SEARCH_RESULTS_METADATA_KEY]["failure"]
+    assert payload["failure_class"] == "local-cap-exceeded"
+    assert payload["scope"] == PACING_BURST_SCOPE
+    assert payload["egress"] == EGRESS_DIRECT
 
 
 def test_bind_candidate_set_and_project_metadata_agree() -> None:

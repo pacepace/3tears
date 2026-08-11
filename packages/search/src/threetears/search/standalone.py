@@ -25,6 +25,15 @@ What it owes, and where each obligation is discharged:
   backoff between two configured bounds. Connect failures, read timeouts and
   5xx are retried; **no 4xx is**, so a 429 comes back for the adapter to
   raise as ``RateLimited`` rather than being hammered.
+- **one deadline for the whole call, not one per attempt** (SR-G2) -- the
+  timeout a caller states bounds the request, and the attempts and the
+  backoff sleeps are all spent out of it. Per-attempt was the wrong reading
+  of the same number: three attempts and two backoffs under a 10s timeout
+  can hold a caller for half a minute, which is not a bound the caller
+  agreed to. So each attempt is given what remains, a backoff that would
+  leave no room for the attempt after it is not taken, and a request whose
+  deadline ran out mid-retry says so with :class:`TimedOut` and the attempts
+  it actually made.
 - **per-attempt accounting visible to spend** (D4) --
   :attr:`~threetears.search.contracts.transport.TransportResponse.attempts`
   on success, and the attempt count in the failure message. It has to be
@@ -59,7 +68,7 @@ import asyncio
 import ipaddress
 import socket
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Final
 from urllib.parse import urljoin, urlparse
@@ -86,6 +95,7 @@ __all__ = [
     "DEFAULT_MAX_REDIRECTS",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "DEFAULT_TIMEOUT_SECONDS",
+    "MINIMUM_RETRY_SECONDS",
     "RESPONSE_BYTES_SCOPE",
     "StandaloneTransport",
 ]
@@ -125,6 +135,14 @@ DEFAULT_MAX_CONNECTIONS: Final[int] = 10
 #: the scope name a byte-cap refusal reports, so a reader can tell it from a
 #: budget refusal without parsing the message.
 RESPONSE_BYTES_SCOPE: Final[str] = "response-bytes"
+
+#: the least time worth starting another attempt with, in seconds. A retry
+#: given less than this cannot resolve a name, connect and read inside it on
+#: any real network, so taking it would spend the caller's last milliseconds
+#: to arrive at the same timeout by a slower route. Ten milliseconds is far
+#: below any real exchange and far above the loop's own overhead, which is
+#: what makes it a floor rather than a policy.
+MINIMUM_RETRY_SECONDS: Final[float] = 0.01
 
 
 def _is_blocked_address(address: str) -> bool:
@@ -214,6 +232,8 @@ class StandaloneTransport:
         allowed_hosts: Sequence[str] = (),
         verify_tls: bool = True,
         user_agent: str = "3tears-search/standalone",
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         """Configure the transport from deployment facts.
 
@@ -250,6 +270,19 @@ class StandaloneTransport:
         :ptype verify_tls: bool
         :param user_agent: value sent as ``User-Agent``
         :ptype user_agent: str
+        :param clock: monotonic seconds source, read for the whole-call
+            deadline and for the elapsed figures on spend. Injectable so a
+            test can drive the deadline rather than wait it out, on the
+            precedent :class:`~threetears.search.limiter.InProcessRateLimiter`
+            set; a wall clock does not belong here, because a clock step
+            backwards would extend a deadline that had passed
+        :ptype clock: Callable[[], float]
+        :param sleep: how a backoff waits. ``asyncio.sleep`` by default, and
+            any replacement must yield to the loop rather than block it.
+            Injected alongside ``clock`` for the reason the limiter states:
+            a test that drives the clock must also own the sleeping, or a
+            backoff would wait in real time against a clock that never moves
+        :ptype sleep: Callable[[float], Awaitable[None]]
         :raises ValueError: when ``max_attempts`` is below 1 or
             ``max_response_bytes`` is not positive
         """
@@ -269,6 +302,8 @@ class StandaloneTransport:
         self._allowed_hosts = frozenset(host.lower() for host in allowed_hosts)
         self._verify_tls = verify_tls
         self._user_agent = user_agent
+        self._clock = clock
+        self._sleep = sleep
 
     @property
     def egress_name(self) -> str:
@@ -302,12 +337,16 @@ class StandaloneTransport:
         :ptype params: Mapping[str, str] | None
         :param json_body: JSON request body, if any
         :ptype json_body: Mapping[str, JsonValue] | None
-        :param timeout_seconds: per-call override of the configured timeout
+        :param timeout_seconds: per-call override of the configured timeout.
+            A bound on the **whole call** (SR-G2): the attempts and the
+            backoff sleeps are all spent out of it, never one copy of it
+            each
         :ptype timeout_seconds: float | None
         :return: the completed exchange, with the attempt count on it
         :rtype: TransportResponse
-        :raises threetears.search.contracts.errors.TimedOut: when every
-            attempt timed out
+        :raises threetears.search.contracts.errors.TimedOut: when the
+            attempts timed out, or when the whole-call bound ran out before
+            another attempt could be made
         :raises threetears.search.contracts.errors.TransportFailed: on a
             refused address, a refused redirect, or a connect/protocol
             failure that outlasted the attempts
@@ -315,17 +354,23 @@ class StandaloneTransport:
             response body exceeds the configured cap (SR-G5)
         """
         effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
-        started = time.monotonic()
+        started = self._clock()
+        deadline = started + effective_timeout
         request_headers = {"User-Agent": self._user_agent, **dict(headers or {})}
         attempt = 0
         bytes_seen = 0
         last: BaseException | None = None
+        bound_spent = False
         limits = httpx.Limits(max_connections=self._max_connections, max_keepalive_connections=0)
         while attempt < self._max_attempts:
             attempt += 1
             try:
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(effective_timeout),
+                    # What remains of the caller's bound, never the whole of
+                    # it again: attempt two under a 10s bound that attempt
+                    # one spent 6s of gets 4s, so the request cannot outlive
+                    # the deadline whatever the attempt ceiling is.
+                    timeout=httpx.Timeout(max(0.0, min(effective_timeout, deadline - self._clock()))),
                     follow_redirects=False,
                     limits=limits,
                     verify=self._verify_tls,
@@ -337,7 +382,7 @@ class StandaloneTransport:
                         headers=request_headers,
                         params=params,
                         json_body=json_body,
-                        elapsed_so_far=time.monotonic() - started,
+                        elapsed_so_far=self._clock() - started,
                         bytes_so_far=bytes_seen,
                     )
                 bytes_seen += read
@@ -349,14 +394,23 @@ class StandaloneTransport:
                         attempt,
                         self._max_attempts,
                     )
-                    await asyncio.sleep(self._backoff(attempt))
-                    continue
+                    if await self._wait_to_retry(attempt, deadline):
+                        continue
+                    # The bound will not fund another attempt -- and we are
+                    # holding a real answer. A 5xx the caller can see beats a
+                    # TimedOut that hides it, so the retry stops here and the
+                    # response goes back with the attempts it took.
+                    _logger.warning(
+                        "standalone transport stopped retrying %s after %d attempt(s): the caller's bound is spent",
+                        url,
+                        attempt,
+                    )
                 return TransportResponse(
                     status_code=status,
                     body=body,
                     final_url=final_url,
                     egress=self._egress_name,
-                    elapsed_seconds=time.monotonic() - started,
+                    elapsed_seconds=self._clock() - started,
                     attempts=attempt,
                     headers=response_headers,
                 )
@@ -380,12 +434,43 @@ class StandaloneTransport:
                     url,
                     type(exc).__name__,
                 )
-                await asyncio.sleep(self._backoff(attempt))
+                if not await self._wait_to_retry(attempt, deadline):
+                    bound_spent = True
+                    break
             except httpx.HTTPError as exc:
                 last = exc
                 break
-        exhausted = self._exhausted(url, attempt, last, elapsed=time.monotonic() - started, bytes_seen=bytes_seen)
+        exhausted = self._exhausted(
+            url,
+            attempt,
+            last,
+            elapsed=self._clock() - started,
+            bytes_seen=bytes_seen,
+            bound=effective_timeout,
+            bound_spent=bound_spent,
+        )
         raise self._stamped(exhausted)
+
+    async def _wait_to_retry(self, attempt: int, deadline: float) -> bool:
+        """Back off before the next attempt, where the bound still allows one.
+
+        The backoff is part of the caller's bound rather than an addition to
+        it (SR-G2), so this both caps the wait and refuses to take one that
+        would leave no attempt on the other side of it: sleeping out the last
+        of a deadline to then report a timeout is the same failure, later.
+
+        :param attempt: the attempt that just failed, 1-based
+        :ptype attempt: int
+        :param deadline: the monotonic reading the whole call must end by
+        :ptype deadline: float
+        :return: whether the backoff was taken and another attempt fits
+        :rtype: bool
+        """
+        pause = self._backoff(attempt)
+        if deadline - self._clock() - pause < MINIMUM_RETRY_SECONDS:
+            return False
+        await self._sleep(pause)
+        return True
 
     def _stamped(self, failure: SearchFailure) -> SearchFailure:
         """Fill the transport facts every typed failure must leave with.
@@ -433,13 +518,18 @@ class StandaloneTransport:
         *,
         elapsed: float,
         bytes_seen: int,
+        bound: float,
+        bound_spent: bool = False,
     ) -> SearchFailure:
         """Build the typed failure for a request that ran out of attempts.
 
         A timeout and a connect failure are different answers to the caller
         -- one is worth retrying later, the other is not (SR-J1) -- so the
         last exception decides the class rather than everything collapsing
-        into one.
+        into one. A request that ran out of *deadline* rather than out of
+        attempts is a timeout whatever ended its last attempt: the caller
+        stated a bound and the bound is what stopped this, and saying so is
+        what makes the attempt count readable rather than mysterious.
 
         :param url: the URL that was being reached
         :ptype url: str
@@ -451,6 +541,12 @@ class StandaloneTransport:
         :ptype elapsed: float
         :param bytes_seen: bytes read across every attempt
         :ptype bytes_seen: int
+        :param bound: the whole-call bound this request was given, in
+            seconds, named in the message so the reader can see what ran out
+        :ptype bound: float
+        :param bound_spent: whether the bound, rather than the attempt
+            ceiling, is what ended the retrying
+        :ptype bound_spent: bool
         :return: the typed failure, carrying what the attempts consumed
         :rtype: SearchFailure
         """
@@ -459,6 +555,15 @@ class StandaloneTransport:
         # adapter owns the money and the call count.
         spend = Spend(wall_clock_seconds=elapsed, calls=0, bytes_transferred=bytes_seen)
         detail = f"{type(last).__name__}: {last}" if last is not None else "no attempt completed"
+        if bound_spent:
+            return TimedOut(
+                f"request to {url} spent its {bound:.3f}s bound after {attempts} attempt(s): {detail}",
+                spend=spend,
+                remediation=(
+                    "raise this call's timeout, or lower max_attempts/initial_backoff so the attempts fit "
+                    "inside it -- the bound covers the whole call, retries and backoff included"
+                ),
+            )
         message = f"request to {url} failed after {attempts} attempt(s): {detail}"
         if isinstance(last, httpx.TimeoutException):
             return TimedOut(message, spend=spend)

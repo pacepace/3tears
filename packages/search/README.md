@@ -81,6 +81,14 @@ asyncio.run(main())
 `RenderedSearch` carrying its spend under the same metadata key (D10). Callers
 that want the exception go through `threetears.search.call.search` instead.
 
+Budgets and pacing pass through the same entry point: hand `bind_search` (or
+`search`) a `budget=` implementing `BudgetPort`, a `limiter=` such as
+`threetears.search.limiter.InProcessRateLimiter` — construct **one per
+process** and share it, or pacing paces nothing — and the `egress=` name your
+transport actually exits by (D8, D20). A budget refusal or pacing denial
+renders as a failed result like any other typed failure; omitting the ports
+means no budget is consulted and no pacing applies.
+
 Hosts that already have `threetears.core` should inject a thin adapter over
 `TracedHttpClient` rather than take the `[standalone]` extra — it brings
 timeouts, retry, circuit-breaking and spans for free.

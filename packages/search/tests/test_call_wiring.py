@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
+from typing import ClassVar
 
 import pytest
 
-from threetears.search.call import DEFAULT_TIMEOUT_SECONDS, search
+from threetears.search.call import DEFAULT_TIMEOUT_SECONDS, PACING_BURST_SCOPE, search
 from threetears.search.contracts import (
     CRITERION_LANGUAGE,
     CRITERION_MAX_RESULTS,
@@ -35,12 +36,14 @@ from threetears.search.contracts import (
     QuotaExhausted,
     RateLimitDecision,
     RateLimited,
+    SearchFailure,
     SearchProvider,
     SearchRequest,
     Spend,
     TransportFailed,
 )
 from threetears.search.adapters.searxng import SearxngAdapter
+from threetears.search.limiter import InProcessRateLimiter
 from threetears.search.testing import FakeBudgetPort, FakeRateLimiterPort, ScriptedTransport, TransportScript
 from _searxng_payloads import TWO_RESULTS_BODY
 
@@ -52,6 +55,19 @@ _DECLARATION = ProviderCapabilities(
 )
 
 _WEIGHTED_DECLARATION = ProviderCapabilities(provider="wiring", pricing_model=PRICING_PER_WEIGHTED_UNIT)
+
+
+class _ReindexingFailure(SearchFailure):
+    """A failure class this package's registry has never heard of.
+
+    Not a ``Fake*`` and not a stub for anything: it stands for a third-party
+    adapter's own addition to the taxonomy, which D13 makes a supported shape
+    rather than a defect -- structurally conformant (a ``SearchFailure``
+    subclass with its own wire name) and deliberately absent from
+    ``FAILURE_CLASSES``.
+    """
+
+    failure_class: ClassVar[str] = "provider-reindexing"
 
 
 class _JournallingBudget(FakeBudgetPort):
@@ -473,6 +489,45 @@ async def test_a_denied_call_bills_nothing_and_records_nothing() -> None:
     assert budget.checks != [], "the budget was still asked -- the refusal came from pacing, not from it"
 
 
+# --- pacing a host configured so that nothing can pass (SR-J1, D5) --------
+
+
+async def test_a_burst_smaller_than_one_call_refuses_typed_and_names_the_cap() -> None:
+    """A host's own pacing numbers cannot reach a caller as an untyped ValueError.
+
+    Driven by the shipped limiter rather than by the witness on purpose: what
+    is being pinned is that a *reachable* host configuration -- a burst below
+    the one token a call costs -- comes out of ``search`` inside the taxonomy,
+    and a double raising a canned ``ValueError`` would only prove the mapping
+    agrees with itself.
+    """
+    limiter = InProcessRateLimiter(burst_tokens=0.5)
+    provider = _WiringProvider()
+    budget = FakeBudgetPort()
+
+    with pytest.raises(LocalCapExceeded) as raised:
+        await search(SearchRequest(query="capybara"), provider=provider, budget=budget, limiter=limiter)
+
+    assert raised.value.failure_class == "local-cap-exceeded", "our pacing config is not the provider's 429"
+    assert raised.value.scope == PACING_BURST_SCOPE
+    assert "1.0 tokens" in raised.value.message and "burst of 0.5" in raised.value.message, (
+        "the diagnostic names what was asked for and what the key allows"
+    )
+    assert "burst_tokens" in (raised.value.remediation or "")
+    assert raised.value.provider_instance == "wiring-1"
+    assert raised.value.egress == EGRESS_DIRECT
+    assert provider.requests == [], "the call was never made"
+    assert budget.records == [], "and a call nobody attempted has no bill (D4)"
+
+
+async def test_a_negative_ask_stays_the_programming_error_it_is() -> None:
+    """The mapping covers unsatisfiable *configuration*, not a caller's bug."""
+    limiter = InProcessRateLimiter()
+
+    with pytest.raises(ValueError, match="must not be negative"):
+        await limiter.acquire(provider_instance="wiring-1", egress=EGRESS_DIRECT, tokens=-1.0)
+
+
 # --- recording (SR-E2, SR-E3, D4) -----------------------------------------
 
 
@@ -498,6 +553,43 @@ async def test_a_typed_failure_is_recorded_before_it_propagates() -> None:
     assert recorded.calls == 1
     assert recorded.provider_units == Decimal(2)
     assert recorded == raised.value.spend, "the budget hears exactly what the caller hears"
+
+
+async def test_a_failure_class_the_registry_never_heard_of_still_debits() -> None:
+    """SR-E3/SR-E2: an attempted call bills, whatever class the adapter raised.
+
+    D13 makes the taxonomy additive, so a structurally-conformant third party
+    may raise its own ``SearchFailure`` subclass. Round-tripping the caught
+    failure through the seven-entry wire registry to stamp wall-clock would
+    turn that into a ``ValueError`` inside the except handler -- and, because
+    the debit sits behind the stamp, would leave a call that reached the
+    provider and may have been billed with nothing recorded against it.
+    """
+    failure = _ReindexingFailure("the instance is rebuilding its index", spend=Spend(calls=1, bytes_transferred=880))
+    budget = FakeBudgetPort()
+
+    with pytest.raises(_ReindexingFailure) as raised:
+        await search(SearchRequest(query="capybara"), provider=_WiringProvider(failure=failure), budget=budget)
+
+    assert type(raised.value) is _ReindexingFailure, "the caller's typed failure is not replaced on its way out"
+    assert raised.value.spend.calls == 1
+    assert raised.value.spend.wall_clock_seconds > 0, "Call's own measurement still lands on an unknown class"
+    recorded, _ = budget.records[0]
+    assert recorded == raised.value.spend, "the budget hears exactly what the caller hears"
+    assert recorded.bytes_transferred == 880
+
+
+async def test_a_base_search_failure_is_carried_out_as_itself() -> None:
+    """The base class is a shape an adapter may raise, and it is not in the registry."""
+    budget = FakeBudgetPort()
+    provider = _WiringProvider(failure=SearchFailure("something the adapter would not name", spend=Spend(calls=1)))
+
+    with pytest.raises(SearchFailure) as raised:
+        await search(SearchRequest(query="capybara"), provider=provider, budget=budget)
+
+    assert type(raised.value) is SearchFailure
+    assert not isinstance(raised.value, TransportFailed), "an unmapped class is not an adapter defect"
+    assert budget.records[0][0] == raised.value.spend
 
 
 async def test_an_adapter_defect_records_what_call_could_measure() -> None:

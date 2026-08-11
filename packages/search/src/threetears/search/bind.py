@@ -37,8 +37,11 @@ from typing import Any, Final
 from threetears.observe import get_logger
 from threetears.search.call import search
 from threetears.search.contracts import (
+    EGRESS_DIRECT,
     SEARCH_RESULTS_METADATA_KEY,
+    BudgetPort,
     CandidateSet,
+    RateLimiterPort,
     SearchFailure,
     SearchProvider,
     SearchRequest,
@@ -224,12 +227,28 @@ async def bind_search(
     provider: SearchProvider,
     timeout_seconds: float | None = None,
     max_candidates: int = PROSE_MAX_CANDIDATES,
+    budget: BudgetPort | None = None,
+    limiter: RateLimiterPort | None = None,
+    egress: str = EGRESS_DIRECT,
 ) -> RenderedSearch:
     """Run a search and render it, whatever happens.
 
     The one entry point with the D10 guarantee: no exception leaves it. A
     caller across the tool envelope cannot receive one, and a caller that
     can would still rather have the spend.
+
+    **The injected ports pass straight through** to
+    :func:`threetears.search.call.search`, unread and unwrapped. A consumer
+    reaching this package through the tool envelope is exactly the consumer
+    a budget and a limiter are for -- an agent that can issue searches in a
+    loop -- so an entry point that could not carry them would have paced and
+    capped nothing for the caller who needs it most. Nothing about them is
+    decided here: Bind renders, Call enforces (D4, D5, D8, D20), and a
+    refusal from either authority arrives as one of Call's typed failures
+    and leaves through :func:`bind_failure` like any other, carrying the
+    refusing scope's spend and its remediation. Passing none is passing
+    none, all the way down: a consumer without budgets is not given an
+    implicit one.
 
     :param request: what the caller asked for
     :ptype request: SearchRequest
@@ -240,12 +259,29 @@ async def bind_search(
     :ptype timeout_seconds: float | None
     :param max_candidates: how many candidates the prose renders
     :ptype max_candidates: int
+    :param budget: the local refusal authority Call consults before the call
+        and debits after it (D4, D5). None makes no consultation at all
+    :ptype budget: BudgetPort | None
+    :param limiter: the pacing seam for this call's ``(provider instance,
+        egress)`` key (D8, D20). None leaves the call unpaced by Call
+    :ptype limiter: RateLimiterPort | None
+    :param egress: which exit this provider's transport leaves by (D20),
+        half of the pacing key and stamped onto refusals. ``direct`` is a
+        named value, not an absence
+    :ptype egress: str
     :return: the rendered result -- successful, or a failure carrying its
         spend
     :rtype: RenderedSearch
     """
     try:
-        result = await search(request, provider=provider, timeout_seconds=timeout_seconds)
+        result = await search(
+            request,
+            provider=provider,
+            timeout_seconds=timeout_seconds,
+            budget=budget,
+            limiter=limiter,
+            egress=egress,
+        )
     except SearchFailure as failure:
         _logger.warning(
             "search failed against %s: %s: %s", provider.provider_instance, failure.failure_class, failure.message

@@ -102,6 +102,7 @@ __all__ = [
     "DEFAULT_MAX_RESULTS",
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_RESULTS_CEILING",
+    "PACING_BURST_SCOPE",
     "search",
 ]
 
@@ -123,6 +124,13 @@ MAX_RESULTS_CEILING: Final[int] = 50
 #: constant: every caller can override it, and one running under its own
 #: deadline should pass what remains of it (SR-G1, SR-G2).
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 20.0
+
+#: the cap identity a never-grantable pacing ask reports on its refusal, so a
+#: reader can tell "the host's burst is smaller than one call" from a budget
+#: refusal without parsing prose. ``LocalCapExceeded.scope`` doubles as cap
+#: identity here, following ``response-bytes`` and ``max-results``
+#: (search-spec.md §7).
+PACING_BURST_SCOPE: Final[str] = "pacing-burst"
 
 
 def _bounded_criteria(request: SearchRequest, *, max_results_ceiling: int) -> tuple[Criterion, ...]:
@@ -310,13 +318,59 @@ async def _pace(
     :rtype: float
     :raises threetears.search.contracts.errors.RateLimited: when the key did
         not release inside the bound the caller gave
+    :raises threetears.search.contracts.errors.LocalCapExceeded: when the
+        key's configured burst is smaller than the one token a call costs,
+        so no wait could ever release it
     """
     waiting_from = time.monotonic()
-    decision = await limiter.acquire(
-        provider_instance=provider.provider_instance,
-        egress=egress,
-        max_wait_seconds=max(0.0, budget_seconds),
-    )
+    try:
+        decision = await limiter.acquire(
+            provider_instance=provider.provider_instance,
+            egress=egress,
+            max_wait_seconds=max(0.0, budget_seconds),
+        )
+    except ValueError as exc:
+        # A limiter whose key is configured with a burst below one token can
+        # never release a single call, and the port's answer to an ask no
+        # amount of waiting could satisfy is a ValueError rather than a
+        # denial (threetears.search.limiter, and any adapter written to the
+        # same shape). Left uncaught it would reach the caller untyped,
+        # violating SR-J1 and -- through Bind's unmapped-exception path --
+        # blaming the provider for what is purely local configuration.
+        #
+        # Mapped here rather than fixed in the limiter, for three reasons:
+        #
+        # - the taxonomy mapping belongs in the consuming layer, which is
+        #   the same ruling that keeps a budget's refusal a returned
+        #   decision rather than a raise (search-spec.md §7). Call is also
+        #   the only layer that meets *every* limiter, ours or a host's
+        #   adapter over core's TokenBucket, so mapping here covers the
+        #   injected one too;
+        # - a denial would be the wrong value for the limiter to return: a
+        #   denial carries a retry_after, and this pacing loop sleeps toward
+        #   it -- toward a token that is never coming;
+        # - and the limiter must keep raising for a genuinely negative ask,
+        #   which is a programming error rather than configuration.
+        #
+        # LocalCapExceeded rather than RateLimited because of who said no
+        # (D5): RateLimited means "the pace is too fast, come back later",
+        # and there is no later here. This is a locally-configured cap
+        # refusing the run's shape, and ``scope`` names which cap.
+        raise LocalCapExceeded(
+            f"pacing for {provider.provider_instance} via {egress} can never release a call: {exc}",
+            # The call never happened, so the only real dimension is the
+            # wall-clock the caller waited (SR-E3), exactly as on the denial
+            # below.
+            spend=Spend(wall_clock_seconds=time.monotonic() - started),
+            provider_instance=provider.provider_instance,
+            remediation=(
+                "raise burst_tokens for this key on the limiter the host constructed -- one call costs one "
+                "token, so a burst below one paces every call to a standstill; this is our own pacing "
+                "configuration, not the provider's refusal"
+            ),
+            egress=egress,
+            scope=PACING_BURST_SCOPE,
+        ) from exc
     waited = time.monotonic() - waiting_from
     if not decision.acquired:
         raise RateLimited(
@@ -411,14 +465,19 @@ async def search(
     try:
         result = await provider.search(bounded, timeout_seconds=remaining_seconds)
     except SearchFailure as failure:
-        timed = _timed(failure, elapsed=time.monotonic() - started)
+        _stamp(failure, elapsed=time.monotonic() - started)
         # SR-E3: a typed failure carries the spend it incurred, and that
         # spend is as real as a success's -- an attempt that reached the
         # provider and failed after billing has to debit. Recorded before
         # the failure propagates, and with the same number the caller is
-        # about to receive.
-        await _record(budget, timed.spend, scope_tags=scope_tags)
-        raise timed from failure
+        # about to receive. Nothing between the catch and this line can fail
+        # on the failure's *class*, which is what SR-E2/SR-E3 need: a
+        # third-party adapter's own SearchFailure subclass is as billable as
+        # one of the seven, and a debit skipped because a taxonomy reader
+        # did not recognise the class would under-count a call that was
+        # attempted and possibly billed.
+        await _record(budget, failure.spend, scope_tags=scope_tags)
+        raise
     except Exception as exc:
         # An adapter that lets an untyped exception out is a defect in the
         # adapter, not a reason for the caller to meet one: the taxonomy is
@@ -483,16 +542,43 @@ async def _record(budget: BudgetPort | None, spend: Spend, *, scope_tags: tuple[
         await budget.record(spend, scope_tags=scope_tags)
 
 
-def _timed(failure: SearchFailure, *, elapsed: float) -> SearchFailure:
-    """Restate ``failure`` with this layer's authoritative wall-clock.
+def _stamp(failure: SearchFailure, *, elapsed: float) -> None:
+    """Give ``failure`` this layer's authoritative wall-clock, in place.
 
-    :param failure: the typed failure a provider raised
+    **Why the failure is stamped rather than rebuilt.** The obvious spelling
+    -- project to :class:`~threetears.search.contracts.errors.FailureRecord`,
+    copy the spend, and rebuild through
+    :meth:`~threetears.search.contracts.errors.FailureRecord.to_failure` --
+    round-trips through the seven-entry class registry, which refuses
+    anything it does not recognise (correctly: a reader meeting an unknown
+    wire name must not guess, D26). But nothing here is reading a wire
+    record. The typed failure is already in hand, raised in this process by
+    an adapter that may legitimately be a third party's: base
+    :class:`~threetears.search.contracts.errors.SearchFailure` and any
+    subclass of it satisfy the seam, and D13 makes the taxonomy additive, so
+    an unknown class is a supported shape rather than a defect. Sending one
+    through the registry would replace the caller's typed failure with a
+    ``ValueError`` *inside the except handler* -- the exact untyped escape
+    SR-J1 forbids -- and would strand the debit SR-E3 owes.
+
+    Rebuilding through ``type(failure)(...)`` was the other candidate and is
+    rejected for a smaller reason: the taxonomy declares no constructor
+    contract subclasses must keep, so a subclass with one required keyword
+    of its own would fail exactly where the registry does. Stamping needs no
+    such contract, preserves every field a subclass carries (``scope``,
+    ``retry_after_seconds``, whatever a third party added), and keeps the
+    original traceback because the caller re-raises rather than raising
+    anew. The mutation is safe because the object is a failure in flight:
+    it was constructed for this raise and is on its way to one caller.
+
+    Wall-clock is *replaced* rather than added: Call's measurement strictly
+    contains the transport's (see this module's docstring).
+
+    :param failure: the typed failure a provider raised, mutated in place
     :ptype failure: SearchFailure
     :param elapsed: seconds measured across the whole call
     :ptype elapsed: float
-    :return: the same failure class, carrying the call's own wall-clock
-    :rtype: SearchFailure
+    :return: nothing
+    :rtype: None
     """
-    record = failure.to_record()
-    timed_spend = record.spend.model_copy(update={"wall_clock_seconds": elapsed})
-    return record.model_copy(update={"spend": timed_spend}).to_failure()
+    failure.spend = failure.spend.model_copy(update={"wall_clock_seconds": elapsed})
