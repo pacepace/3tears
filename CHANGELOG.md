@@ -8,6 +8,25 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `search`: `extract.py` -- Extract's web path (§3.5, Phase 2 item 4). One
+  candidate in, the same candidate out with its content slot filled, its
+  fidelity at `content`, and `extraction_status` / `extraction_method`
+  recorded as facets. A candidate that already carries provider-supplied
+  content is returned untouched and costs nothing (SR-A2), checked before
+  robots -- a fetch that will not happen needs no permission. Everything
+  reaches the network through the injected `FetchTransport`, `robots.txt`
+  included, so the D21 guards, the cap, the pacing and the egress are the
+  ones the deployment configured rather than a second, weaker set. Robots
+  is honored by default with a config override (D12, still proposed
+  pending cross-repo ratification), and RFC 9309's failure posture:
+  4xx means no rules exist, 5xx or a transport failure means unknown
+  rules, honored as deny.
+- `search`: `HeavyFetcher` joins `FetchTransport` in `contracts/transport`
+  -- the escalation slot `3tears-scrape` implements for carriers an
+  ordinary fetch cannot read. Its method is named `fetch_rendered` rather
+  than `fetch` so an ordinary transport cannot satisfy the protocol by
+  accident and be used as one: escalation is a caller's explicit choice
+  per candidate, never a fallback Extract reaches for after a failure.
 - `media-contracts`: `EXTRACTION_STATUS_NONE` / `_PENDING` / `_COMPLETE` /
   `_FAILED` / `_REFUSED` name the `MediaInfo.extraction_status` vocabulary,
   which until now was a comment listing two of the five. The spellings are
