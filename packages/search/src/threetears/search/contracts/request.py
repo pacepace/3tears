@@ -8,9 +8,15 @@ for redaction; redaction policy stays with the consumer.
 
 Canonical serialization is exposed here as a public contract feature
 (D26, SR-F1): :meth:`SearchRequest.canonical_form` and
-:meth:`SearchRequest.canonical_digest` render explicitly-set parameters
-only, with absent and defaulted canonically identical, and with criteria
-and budget-scope-tag order canonically irrelevant.
+:meth:`SearchRequest.canonical_digest` render the explicitly-set
+*semantic* parameters only -- query, criteria, fidelity -- with absent and
+defaulted canonically identical and criteria order canonically
+irrelevant. The operational fields (``record``, ``budget_scope_tags``)
+never participate: a recording is made with ``record=True`` by definition
+(SR-F6), so keying the flag would make every recorded search's digest one
+that no later replay of the same search derives (SR-F7), and scope tags
+carry per-run identity (SR-D2), which would give every eval run a unique
+digest and defeat SR-F1's attributability (Gate A, 2026-08-10).
 """
 
 from __future__ import annotations
@@ -27,7 +33,8 @@ __all__ = ["SearchRequest"]
 class SearchRequest(ContractModel):
     """One search, as the caller states it."""
 
-    CANONICAL_ORDER_INSENSITIVE: ClassVar[frozenset[str]] = frozenset({"criteria", "budget_scope_tags"})
+    CANONICAL_ORDER_INSENSITIVE: ClassVar[frozenset[str]] = frozenset({"criteria"})
+    CANONICAL_EXCLUDED: ClassVar[frozenset[str]] = frozenset({"record", "budget_scope_tags"})
 
     #: the query text. User content (D11) -- never logged or persisted by
     #: this package's layers except where the consumer's policy says so.
@@ -51,8 +58,9 @@ class SearchRequest(ContractModel):
     def canonical_form(self) -> str:
         """Render this request in canonical form (D26, SR-F1).
 
-        Explicitly-set parameters only; absent and defaulted identical;
-        criteria and budget-scope-tag order irrelevant; stable output.
+        Explicitly-set semantic parameters only (``record`` and
+        ``budget_scope_tags`` are operational and never appear); absent
+        and defaulted identical; criteria order irrelevant; stable output.
 
         :return: canonical JSON text
         :rtype: str

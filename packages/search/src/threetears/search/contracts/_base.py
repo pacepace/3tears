@@ -34,3 +34,12 @@ class ContractModel(BaseModel):
     #: requests differing only in, e.g., criteria order share one canonical
     #: form (D26, SR-F1).
     CANONICAL_ORDER_INSENSITIVE: ClassVar[frozenset[str]] = frozenset()
+
+    #: field names that never participate in canonical serialization --
+    #: consumed by :func:`threetears.search.contracts.canonicalize`.
+    #: Operational fields say how one invocation was wired (whether it
+    #: recorded, which budget scopes it debited), not which search it is;
+    #: keying them into the digest would give every recording a key no
+    #: later replay can derive (SR-F7) and every eval run a unique identity
+    #: (SR-F1). Only the semantic parameters key (Gate A, 2026-08-10).
+    CANONICAL_EXCLUDED: ClassVar[frozenset[str]] = frozenset()

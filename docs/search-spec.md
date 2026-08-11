@@ -188,7 +188,13 @@ them):
   internal.** One canonical form, two consumers that must agree: the D26
   replay key and eval run identity (SR-F1 — search parameters already
   participate in discodon's `canonical_digest`). MUST be exposed on the
-  request/parameter types.
+  request/parameter types. Only the *semantic* parameters participate —
+  query, criteria, fidelity; the operational fields (`record`,
+  `budget_scope_tags`) MUST NOT enter the canonical form: a recording is
+  made with `record=True` by definition (SR-F6) and replayed without it
+  (SR-F7), and scope tags carry per-run identity (SR-D2), so keying either
+  strands recordings and gives every eval run a unique digest *(Gate A
+  finding, 2026-08-10)*.
 - **`SEARCH_RESULTS_METADATA_KEY`** and the metadata projection schema, with
   `schema_version` (D13, D22).
 
@@ -317,11 +323,12 @@ digest used for equality lookup only — nobody ever parses it — so the risks
 are derivation drift and payload readability, and each gets a rule:
 
 - **Canonical-request keying.** MUST derive the key from the caller's request
-  in canonical form — explicitly-set parameters only, stably serialized, with
-  absent and defaulted canonically identical — plus provider-instance
-  identity and profile digest (SR-F8); MUST NOT derive it from the resolved
-  provider wire request. Adding a parameter with a default therefore shifts
-  no existing key. The record envelope MUST carry a key-derivation version;
+  in canonical form — explicitly-set *semantic* parameters only (operational
+  fields like the record flag and budget scope tags never participate; Gate A,
+  2026-08-10), stably serialized, with absent and defaulted canonically
+  identical — plus provider-instance identity and profile digest (SR-F8);
+  MUST NOT derive it from the resolved provider wire request. Adding a
+  parameter with a default therefore shifts no existing key. The record envelope MUST carry a key-derivation version;
   a genuinely incompatible derivation change bumps it, and the resulting
   miss names both versions instead of being mysterious.
 - **Adapter-free replay.** The recorded payload is the contract-shaped typed

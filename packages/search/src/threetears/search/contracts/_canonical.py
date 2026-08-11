@@ -9,6 +9,12 @@ already participate in discodon's ``canonical_digest``). The rules:
 - **absent and defaulted are canonically identical** -- a caller that
   explicitly passes a field's default value produces the same form as one
   that omitted the field;
+- **semantic parameters only** -- operational fields (per type, via
+  :attr:`ContractModel.CANONICAL_EXCLUDED`) never appear, however they were
+  set: the record flag and budget scope wiring are facts about one
+  invocation, not about which search this is, and keying them would strand
+  every recording behind a key no replay can re-derive (Gate A,
+  2026-08-10);
 - **stable form** -- sorted keys, compact separators, and (per type, via
   :attr:`ContractModel.CANONICAL_ORDER_INSENSITIVE`) order-insensitive
   fields sorted element-wise, so equal requests can never serialize
@@ -65,12 +71,14 @@ def canonicalize(model: BaseModel) -> str:
     dumped = model.model_dump(mode="json")
     fields = type(model).model_fields
     order_insensitive: frozenset[str] = frozenset()
+    excluded: frozenset[str] = frozenset()
     if isinstance(model, ContractModel):
         order_insensitive = type(model).CANONICAL_ORDER_INSENSITIVE
+        excluded = type(model).CANONICAL_EXCLUDED
 
     payload: dict[str, object] = {}
     for name in fields:
-        if name not in model.model_fields_set:
+        if name in excluded or name not in model.model_fields_set:
             continue
         value = dumped[name]
         default = fields[name].get_default(call_default_factory=True)
