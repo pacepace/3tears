@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
+  `__version__` must be read from installed metadata, never written as a
+  literal. The lockstep bump touches ~30 `pyproject.toml` files
+  mechanically and walks straight past a literal in a different file,
+  which is exactly how the drift below survived. Verified to flag the old
+  file and pass the fixed one.
+
 ### Changed
 
 - `search`: `StandaloneTransport.connection_scope()` documents that its
@@ -23,8 +32,29 @@ packages (bumped in lock-step).
   ruling now says so rather than leaving it inferred, and notes the row
   stops applying at 1.0.0.
 
+### Fixed
+
+- `media-contracts`: the runtime `__version__` is derived from package
+  metadata like every other package in the family, instead of a hardcoded
+  literal. It read `0.10.6` while the package shipped at 0.24.0 --
+  fourteen minor releases of drift, published each time, reporting a
+  version this package had not been for months. Nothing failed, which is
+  the point: a hardcoded version is wrong silently.
+
 ### Notes
 
+- `search`: the `extraction_status` vocabulary is ruled canonical **in the
+  shipped DDL, not in the contract's comment**, before the constants that
+  Extract needs are written. The two disagree today:
+  `MediaInfo.extraction_status` documents `"pending"` / `"complete"` /
+  `None`, while migration v021 declares the column `TEXT NOT NULL DEFAULT
+  'none'` over `'none'` / `'pending'` / `'complete'` / `'failed'` and v022
+  indexes `WHERE extraction_status = 'pending'`. The DDL wins because a
+  spelling in a column default and an index predicate costs a migration to
+  change. So `failed` already exists, only `refused` is new, and the field
+  stays `str | None` -- narrowing it to a `Literal` would break bare-`str`
+  consumers and force a data ruling on `None` versus `'none'`, which is
+  recorded rather than fixed. Recorded in docs/search-spec.md §3.5.
 - `search`: the 0.24.0 release published `3tears-search` three phases ahead
   of where the spec sequences the release step, which retired the premise
   under one Gate A disposition ("nothing is released, so there is no older

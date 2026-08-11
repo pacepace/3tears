@@ -281,6 +281,67 @@ be able to take search with no extraction at all. Requirements:
 - MAY add a Wayback fallback tier later (prior art: `TadMSTR/searxng-mcp`);
   not in v1.
 
+#### Rulings taken before the build -- 2026-08-11
+
+Recorded ahead of the build rather than after it, per the Gate A precedent
+and for the reason that precedent exists: a ruling that lives only in the
+session that took it is a ruling the next session re-litigates. Each is
+vetoable; a veto lands here and in `search-requirements.md` §13.
+
+- **Robots is fetched through the same `FetchTransport`**, parsed with
+  stdlib `urllib.robotparser`, and memoized for the life of one Extract
+  call and no longer. Fetching it through the injected seam means it
+  inherits the guards, the byte cap, the pacing and the egress provenance
+  rather than acquiring a second, weaker path to the same hosts. It costs
+  one extra fetch per host per call; the alternative is honoring robots
+  without reading it, which is not honoring it. **This is not a response
+  cache and D14 is untouched** -- D14 governs *search responses*, and the
+  memo dies with the call rather than outliving it.
+- **A missing `[extract]` extra is a typed refusal naming the extra**, never
+  a silently degraded extraction. A caller handed prose has to be able to
+  tell whether a real extractor produced it; a crude tag-strip fallback
+  would be indistinguishable at the call site and wrong in a way that only
+  shows up in a model's output.
+- **The `extraction_status` vocabulary gets named constants in
+  `media-contracts` first.** Today it is a bare `str | None` with a comment
+  listing `"pending"` / `"complete"` -- no constants, and no value for
+  *refused* (robots said no) or *failed* (the fetch died), both of which
+  Extract produces. Additive constants land beside the facet vocabulary,
+  in the package that owns the neighbourhood, rather than a second status
+  vocabulary being invented in the search leaf (SR-C3's rule applied to
+  status rather than to facets).
+- **The shipped DDL is that vocabulary's canonical statement, not the
+  contract's comment** -- the two already disagree, and the constants have
+  to land on one side of it. `MediaInfo.extraction_status` documents
+  `"pending"` / `"complete"` / `None`; migration v021 declares the column
+  `TEXT NOT NULL DEFAULT 'none'` and names `'none'` / `'pending'` /
+  `'complete'` / `'failed'`, and v022 builds a partial index
+  `WHERE extraction_status = 'pending'`. The DDL wins because it is the
+  side with rows in it: a spelling in a column default and an index
+  predicate is changed by a migration and an index rebuild, not by an
+  edit. Two consequences. **`failed` already exists** -- of the two values
+  the ruling above says Extract produces, only `refused` is new, so the
+  constants are `none` / `pending` / `complete` / `failed` / `refused`.
+  And **the field stays `str | None`** -- no `Literal`, no `StrEnum`.
+  Narrowing it would break consumers that assign a bare `str`
+  (`analyze_media.py` compares against these values today) and would force
+  a ruling on the dataclass default `None` versus the column default
+  `'none'`, which is a data question wearing a typing costume. That split
+  is **recorded, not fixed**: both spellings mean *no extraction
+  attempted*, every consumer today falls through both branches
+  identically, and reconciling them is a migration, not a side effect of
+  adding a string constant.
+- **Escalation to `HeavyFetcher` is a caller choice**, never automatic --
+  the conservative resolution `shared_search` OQ3 already reached, restated
+  here because "SHOULD" above left it open and silent escalation multiplies
+  cost by a factor nobody sees until the bill.
+
+**Not Extract's to open: the transport's connection scope.** The
+`StandaloneTransport` gained `connection_scope()` with the fetch seam (§3.8),
+and Extract deliberately opens none of its own: a transport is an injected
+port, and how long its connections live belongs to the deployment that
+constructed it. A host that wants pooling wraps its own work in the scope.
+
 ### 3.6 `select.py` *(Phase 3)*
 
 Candidates + criteria → an ordered, filtered subset. Owns local criteria
@@ -670,7 +731,7 @@ shared retry loop and SSRF guard) and settled §3.8's per-request-client
 condition with an opt-in `connection_scope()` that Extract's many-fetch path
 needs and does not itself open, and
 [#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
-four Extract rulings before the build. Item 4 itself is unstarted; items 5-7
+five Extract rulings before the build. Item 4 itself is unstarted; items 5-7
 are untouched.
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
