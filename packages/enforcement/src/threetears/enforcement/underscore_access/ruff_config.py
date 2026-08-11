@@ -26,13 +26,29 @@ _VENDORED = {".venv", "node_modules", ".git", "__pycache__"}
 
 
 def _is_vendored(path: Path, repo_root: Path) -> bool:
-    """whether *path* sits under a vendored directory INSIDE the repo.
+    """whether *path* sits under a vendored directory or a nested checkout INSIDE the repo.
 
     relative to the root deliberately: testing an absolute path's parts means a checkout living
     under a directory named ``.venv`` or ``.git`` excludes the whole tree, and every caller then
     scans nothing while reporting success.
+
+    a nested checkout -- any directory strictly below *repo_root* that carries its own ``.git``
+    (a directory in a clone, a file in a worktree or submodule) -- is another working tree's
+    code, not this repo's to enforce: reading its pyprojects as THIS repo's ruff configs made
+    every file in a ``.claude/worktrees/*`` tree an unlisted-access finding. the check widens
+    only in the safe direction: no file of this repo's own tree can sit below a nested ``.git``,
+    so nothing this discovery previously covered legitimately is dropped -- the incident the
+    module docstring records was root-only *config* blindness, which this does not reintroduce.
     """
-    return any(part in _VENDORED for part in path.relative_to(repo_root).parts)
+    relative_parts = path.relative_to(repo_root).parts
+    if any(part in _VENDORED for part in relative_parts):
+        return True
+    current = repo_root
+    for part in relative_parts[:-1]:
+        current = current / part
+        if (current / ".git").exists():
+            return True
+    return False
 
 
 def ruff_configs(repo_root: Path) -> list[Path]:
