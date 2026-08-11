@@ -534,6 +534,36 @@ async def test_a_per_call_cap_tightens_the_deployment_cap_and_cannot_loosen_it()
             await transport.fetch("GET", f"{server.base_url}/page", max_bytes=32)
 
 
+@pytest.mark.parametrize(("size", "refused"), [(64, False), (65, True)])
+async def test_the_cap_is_exact_at_its_own_boundary(size: int, refused: bool) -> None:
+    """A cap that is off by one is a cap nobody can reason about.
+
+    Coarse pins -- 4096 bytes against a 64-byte cap -- pass whether the
+    comparison is ``>`` or ``>=``, so they prove the cap exists without
+    proving where it sits. Exactly-at and one-past are the only two sizes
+    that tell those two implementations apart, and the answer has to be the
+    same on the declared-length path and the streaming one, which is why
+    both run here.
+    """
+    replies = (Reply(body=b"x" * size), Reply(body=b"x" * size, undeclared_length=True))
+    async with LocalHttpServer(replies) as server:
+        transport = _transport(max_attempts=1)
+        for _ in range(2):
+            if refused:
+                with pytest.raises(LocalCapExceeded):
+                    await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+            else:
+                response = await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+                assert len(response.body) == size
+
+
+async def test_an_undeclared_length_past_the_fetch_cap_is_caught_while_streaming() -> None:
+    """The lying-length path, on the seam that reads arbitrary web content."""
+    async with LocalHttpServer((Reply(body=b"y" * 8192, undeclared_length=True),)) as server:
+        with pytest.raises(LocalCapExceeded, match="this read's"):
+            await _transport(max_attempts=1).fetch("GET", f"{server.base_url}/page", max_bytes=64)
+
+
 async def test_a_body_inside_the_fetch_cap_comes_back_whole() -> None:
     """The cap bounds; it does not truncate. Same promise request makes."""
     page = b"<html><body>capybara</body></html>"
