@@ -682,6 +682,18 @@ requirements doc's §13 updated with any vetoes taken during build.
 
 ### Phase 5 — consumer migrations (parallel, per repo; each pins the whole family to the one released version)
 
+*Consumption modes (recorded 2026-08-11).* metallm's and discodon's
+**develop** branches track 3tears **develop**; their **releases** pin the
+whole family to one exact released version. Two consequences the steps below
+inherit: migration *development* in those repos starts when the surface it
+needs merges to 3tears develop (metallm's needs the gutted `WebSearchTool`,
+Phase 2 item 5; discodon's replay piece needs Phase 3 item 8) and does not
+wait for a tag — but a consumer *release* containing migration work gates on
+the Phase 4 tag, because the release pin must name a released version that
+carries that surface. The modes MUST NOT hybridise inside one environment: a
+develop checkout of one family member beside pinned-PyPI siblings is exactly
+the mixed-family install the pinning rule exists to prevent.
+
 **metallm** — precondition: close its family version lag *first*, as its own
 change (every adoption assumes a current pin).
 1. `git checkout -b feature/new-search` off its default branch.
