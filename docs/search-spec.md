@@ -24,7 +24,12 @@ that document once, then works from this one.
 
 Everything below was written against code verified on 2026-08-04 (post-merge
 from develop at 0.23.0), including a correction pass on the three older
-documents made the same day.
+documents made the same day. **Re-verified 2026-08-10** against develop at
+0.23.11: every build-facing claim held — the gutting targets, check 4's
+consumer, the mcp serializer, and `media-contracts` are all unchanged — and
+the two envelope deltas that landed meanwhile (`CallRequest.result_subject`;
+manifest-level `timeout_seconds` with server-side enforcement) are recorded
+at D18 and §4.6.
 
 ---
 
@@ -55,7 +60,7 @@ here.
 | D15 (SR-M3, OQ13) | Ratification home is `search-requirements.md` | discodon, metallm, samsung each record acceptance of what binds them, in their own repos, pointing at it. |
 | D16 (§5.4) | The v1 wire hop is the existing `TearsTool` envelope, at Bind | No new wire protocol. Every contract type still JSON-round-trips (SR-L4) so a future intra-stack hop stays open — paid in design discipline, not in v1 machinery. |
 | D17 (§5.5) | One tool, one contract, all faces; search stays in the `web` alias; `skill_eligible = False` initially | Image/carrier scoping is a *criteria* parameter of the one tool, not a second tool — so an agent granted `web` gets exactly what it got before. Samsung's image search is embedded and never enters the tool surface. |
-| D18 (§10.9, §10.10) | Both envelope asks are accepted as in-repo work | (a) exception-path metadata carry; (b) an optional per-call deadline field. Sequenced in Phase 2 with an explicit rollout order — the server must accept the field a release before any client sends it, because `extra="forbid"` on an old server rejects unknown fields. |
+| D18 (§10.9, §10.10) | Both envelope asks are accepted as in-repo work | (a) exception-path metadata carry; (b) an optional per-call deadline field. Sequenced in Phase 2 with an explicit rollout order — the server must accept the field a release before any client sends it, because `extra="forbid"` on an old server rejects unknown fields. *Re-verified 2026-08-10 (0.23.11):* both asks still open; the envelope meanwhile gained `result_subject` additively — live precedent for exactly this rollout — and a manifest-level `timeout_seconds` the deadline field must compose with (§4.6). |
 | D19 (SR-N1) | The no-bespoke-client norm **widens**; no exemption is filed | Verified mechanism: `_SANCTIONED_HTTPX_SITES` is a path frozenset, and the walker only flags raw httpx clients stored on `self` — a protocol-typed transport field never trips it. The widening = add the leaf's standalone-transport module path to the sanctioned set + restate the norm prose. Lands in the same PR as that module (check 11). |
 | D20 (SR-N2) | Egress is per-upstream input at Adapter and provenance on every result; `direct` is a named value | Rate/ban budgets key on it (D8); replay comparability depends on it. |
 | D21 (SR-K3, SR-N3) | The SSRF ruling binds at the transport seam | Provider base URLs come from deployment config only — MUST NOT accept a caller-supplied base URL. Redirect policy and private-address guards live in the transport implementations, not per call site. |
@@ -344,7 +349,10 @@ the two readings can never be mixed silently.
 **Recorder composition (D28).** Verified against discodon's live cassette
 work: an action seam wraps tools by name, and a delivery seam (landed
 2026-08-04) freezes research payloads — its design record rejects per-query
-freezing for character evals. The rules:
+freezing for character evals. (Since then, scrape grew a request-payload
+capture so POST-read APIs can be replayed — 0.23.2 — one more in-family
+freezing seam; the multiplication these rules assume is already happening.)
+The rules:
 
 - **Outermost active recorder wins.** Under outer replay, inner code never
   runs, so inner recorders are inert by construction. On capture, seams are
@@ -400,7 +408,15 @@ load-bearing for a success check.
    wiring, not a behavior change).
 6. **`agent-tools` — envelope asks** (D18): exception-path metadata carry
    (§10.9); optional per-call deadline on `CallRequest` (§10.10, SR-G2), with
-   the server-accepts-first rollout order stated in the PR.
+   the server-accepts-first rollout order stated in the PR. *Elicit against
+   the 0.23.11 envelope, not 0.23.0's* — it has moved twice since this spec
+   was cut: `CallRequest.result_subject` + `CallAccepted` now give long calls
+   a durable delivery path (a standing subject that survives connection
+   refresh), and `ToolManifestEntry.timeout_seconds` plus server-side
+   hard-timeout of runaways (0.23.2) give every tool a declared ceiling. The
+   deadline field carries a different quantity — the *caller's remaining
+   budget* — and composes with that ceiling: the effective bound is the min
+   of the two. `result_subject`'s own rollout is the pattern to copy.
 7. **`agent-tools` — `ToolExecutor` keeps the artifact** (audited
    2026-08-04): `executor.py` stringifies tool output and rebuilds
    `ToolMessage` without the artifact — and that is `page_finder`'s actual

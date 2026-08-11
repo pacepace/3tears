@@ -1111,6 +1111,11 @@ without lying about the tool's own input schema. `MCPToolDefinition.timeout_seco
 is the *tool's* declared ceiling, not the caller's remaining budget — a different
 quantity. Honouring SR-G2 pod-side means amending the shared envelope: an ask on
 `agent-tools`, stated here rather than assumed free (§10, item 10).
+*Corrected 2026-08-10:* at 0.23.11 `CallRequest` also carries `result_subject`
+(durable long-call delivery) — still no deadline field, so the finding stands —
+and `ToolManifestEntry.timeout_seconds` has joined `MCPToolDefinition`'s in the
+tool-ceiling category, now server-enforced. Same different-quantity distinction;
+§10 item 10 carries the composition consequence.
 
 **SR-G3 (REQUIRED).** No blocking IO on an async path. The builtin's `execute()`
 is `async` but calls a synchronous `httpx.Client` (`builtin/web_search.py:50-56`,
@@ -1676,12 +1681,24 @@ scope.
    metadata=…)` reaches `CallResponse` intact (`server.py:2050-2056`) — so this
    is an exception-path defect, not a failed-call defect. Search can route around
    it by never letting an exception cross the wire (SR-J3); tools that raise
-   cannot, which is why the ask stands.
+   cannot, which is why the ask stands. *Re-verified 2026-08-10 (0.23.11):*
+   still true after the durable-results work more than doubled `server.py` —
+   every error-path `CallResponse` is still built without metadata (the
+   constructions now sit near `server.py:2219`, `:2302`, `:2330`, `:2354`;
+   line references above are the 0.23.0 tree's).
 10. **The envelope has no per-call deadline** (`server.py:376-417`, and
     `extra="forbid"` closes the workaround), so no pod-served tool can derive its
     timeout from the caller's remaining budget — SR-G2. A gap rather than a
     defect: it was never asked to carry one. Items 9 and 10 are both asks on
-    `agent-tools` rather than search-side fixes.
+    `agent-tools` rather than search-side fixes. *Re-verified 2026-08-10
+    (0.23.11):* still no per-call deadline, and `extra="forbid"` stands. Two
+    adjacent things landed meanwhile, neither closing the gap:
+    `CallRequest.result_subject` (durable long-call delivery — and live proof
+    the envelope takes additive fields under the server-accepts-first rollout
+    D18 prescribes), and `ToolManifestEntry.timeout_seconds` with server-side
+    hard-timeout of runaways (0.23.2) — the *tool's* declared ceiling again,
+    not the caller's remaining budget. When the deadline field lands it
+    composes with that ceiling: the effective bound is the min of the two.
 11. **The LangGraph context-save node is silently inert** — it matches
     `ToolMessage.name` against bare `web_search`/`web_fetch` by exact equality
     while the adapter binds the namespaced `threetears.*` names
