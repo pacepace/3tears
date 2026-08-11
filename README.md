@@ -180,42 +180,97 @@ Mixing versions is not supported. The bounds exist so that a mixed set fails lou
 
 ## Architecture
 
+Every box is a package from the tables above. **A solid arrow means "builds on"** -- it is
+a declared dependency, not a suggestion of how you might wire things. Dotted arrows are
+what a package talks to outside the process.
+
+Follow the arrows and they all end in the same place: `core` and the three tiers.
+`agent-acl` and `langgraph` are shared by most of the agent family, and `agent-tools` is
+the hub that `registry`, `agent-workspace` and `scrape` all build on.
+
 ```mermaid
-graph TB
-    subgraph "Agent Pod"
-        AGENT[LangGraph Agent]
-        TOOLS[Tool Wrapper]
-        CHECK[ThreeTierCheckpointSaver]
-        DATA[DataStore]
+graph LR
+    subgraph "Outside"
+        WEB[The open web]
+        HUM[Humans]
+        LLM[Model providers]
     end
 
-    subgraph "3tears Core"
-        ENT[BaseEntity<br/>change tracking]
-        COL[BaseCollection<br/>three-tier cache]
+    subgraph "Reach"
+        SCRAPE[scrape]
+        SEARCH[search]
+        CHAN[channels]
+        MODELS[models]
+        MCP[mcp]
+    end
+
+    subgraph "Agent framework"
+        REG[registry]
+        WORK[agent-workspace]
+        TOOLS[agent-tools]
+        WAKE[agent-wake]
+        KNOW[agent-knowledge]
+        MEM[agent-memory]
+        SKILL[agent-skills]
+        IDENT[agent-identity]
+        INT[agent-intention]
+        ACL[agent-acl]
+        AUDIT[agent-audit]
+    end
+
+    subgraph "Platform"
+        LG[langgraph]
+        BACK[backup]
+        OBJ[object-store]
+        CORE[core]
+        NATS[nats]
+        MEDIA[media-contracts]
+    end
+
+    subgraph "Tiers"
         L1[L1 SQLite]
         L2[L2 NATS KV]
         L3[L3 PostgreSQL]
     end
 
-    subgraph "3tears Registry"
-        CAT[ToolCatalog<br/>multi-endpoint]
-        PROXY[CallProxy<br/>load-balanced]
-        HB[HeartbeatMonitor]
-    end
-
-    subgraph "3tears MCP"
-        MCP_SERVER[McpServer<br/>RBAC-gated]
-        MCP_GRANTS[Tool grants<br/>+ epoch broadcast]
-    end
-
-    AGENT --> DATA
-    AGENT --> CHECK
-    DATA --> COL
-    COL --> L1 --> L2 --> L3
-    TOOLS --> PROXY
-    PROXY --> CAT
-    MCP_SERVER --> MCP_GRANTS
+    SCRAPE --> TOOLS
+    SCRAPE --> MODELS
+    REG --> TOOLS
+    REG --> ACL
+    WORK --> TOOLS
+    WORK --> AUDIT
+    TOOLS --> MEM
+    TOOLS --> AUDIT
+    TOOLS --> LG
+    TOOLS --> MEDIA
+    KNOW --> MEM
+    MEM --> ACL
+    IDENT --> ACL
+    INT --> ACL
+    MEM --> LG
+    WAKE --> SKILL
+    SKILL --> CORE
+    ACL --> CORE
+    LG --> CORE
+    AUDIT --> NATS
+    MCP --> NATS
+    BACK --> OBJ
+    OBJ --> CORE
+    SEARCH --> MEDIA
+    CORE --> L1
+    CORE --> L2
+    CORE --> L3
+    SCRAPE -.-> WEB
+    SEARCH -.-> WEB
+    CHAN -.-> HUM
+    MODELS -.-> LLM
 ```
+
+Two things the diagram is telling you deliberately. **`search` connects only to
+`media-contracts`** -- it takes no `core` dependency at all, so it runs from a one-shot
+`asyncio.run()` with no broker, and nothing consumes it yet: wiring it into `agent-tools`
+is a later phase. **`observe` is on every box and drawn on none**, because an arrow from
+all 30 packages to one node is noise rather than information.
 
 ## Development
 
