@@ -342,6 +342,48 @@ and Extract deliberately opens none of its own: a transport is an injected
 port, and how long its connections live belongs to the deployment that
 constructed it. A host that wants pooling wraps its own work in the scope.
 
+#### Built 2026-08-11 -- what the web path ruled
+
+The five rulings above held; four more were forced by writing it, recorded
+here for the same reason.
+
+- **Per-candidate outcomes are recorded on the candidate, not raised.** A
+  404, a cap refusal, a robots file saying no: each returns a candidate
+  whose `extraction_status` facet says what happened. One unreadable page
+  must never take down the extraction of a set -- SR-H3's rule for
+  fan-out siblings, applied to carriers. The single exception is the
+  missing `[extract]` extra, which raises because it would refuse *every*
+  candidate identically, and marking a hundred `refused` one at a time
+  hides one fixable fault behind a hundred plausible ones.
+- **The missing extra raises `LocalCapExceeded` with scope
+  `extractor-unavailable`.** It is a local refusal the provider never saw,
+  which is that class's definition, and `scope` already doubles as refusal
+  identity here (`query-length`, `response-bytes`, `content-type`). **This
+  is the ruling most worth a veto**: the honest alternative is an eighth
+  taxonomy class, `CapabilityUnavailable`, and it was not taken mid-build
+  because a taxonomy change should be somebody's deliberate decision
+  rather than a side effect of writing this module. D29's window makes the
+  re-cut cheap for now.
+- **Robots follows RFC 9309 on its own failures.** A 4xx for `robots.txt`
+  means no rules exist and the fetch proceeds; a 5xx or a transport failure
+  means the rules are unknown, and unknown rules are honored as *deny*.
+  Reading "allowed" out of a server error is how a polite fetcher turns
+  impolite for exactly as long as the origin is having a bad day.
+- **Escalation is a parameter, not a fallback.** Passing `heavy_fetcher`
+  says *use it for this candidate*; Extract never reaches for it after an
+  ordinary fetch fails, so "a caller choice" means the caller wrote the
+  policy. `HeavyFetcher` is declared beside `FetchTransport` in §3.1 with
+  a deliberately distinct method name (`fetch_rendered`), so an ordinary
+  transport cannot satisfy it by accident and be used as one.
+
+Two smaller dispositions, so they stop being open: the robots memo is
+**not** offered as a batch-scoped parameter -- a memo outliving one call is
+a wider scope than the ruling sanctions, and it belongs with Phase 3's
+carrier dispatch where something owns the set; and `extraction_method` is
+recorded under a **search-owned** facet key, because `media-contracts`
+names the status vocabulary but not the method one, and promoting the key
+belongs with the second producer that needs it rather than the first.
+
 ### 3.6 `select.py` *(Phase 3)*
 
 Candidates + criteria → an ordered, filtered subset. Owns local criteria
@@ -735,8 +777,8 @@ five Extract rulings before the build. Item 4 itself is unstarted; items 5-7
 are untouched.
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
-   provider-supplied content). *Its transport half is done (#307); robots
-   (D12) lands here, deliberately not there.*
+   provider-supplied content). **Done 2026-08-11** -- `extract.py` plus the
+   `HeavyFetcher` slot in §3.1; rulings in §3.5.
 5. Gut `WebSearchTool` + `WebFetchTool`; serve.py wiring; metadata key
    end-to-end test over NATS (check 8).
 6. `page_finder` structure (check 4); context-save node fix + retention
