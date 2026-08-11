@@ -6,6 +6,63 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `search`: the leaf's keystone slice lands as `3tears-search`
+  (`threetears.search`; docs/search-spec.md §7 Phase 1 item 1).
+  `contracts/` carries the lingua franca -- `SearchRequest`, `Candidate` /
+  `CandidateSet`, the open criteria vocabulary with per-criterion
+  dispositions, named provenanced scores (no single `score` field, D1),
+  `Spend`, the seven-class typed failure taxonomy with its `FailureRecord`
+  wire projection, the `SearchTransport` / `FetchTransport` protocols, the
+  `SearchResultsMetadata` border projection under `search_results` (D22),
+  and canonical serialization for the D26 replay key and eval run
+  identity. Around it: the SearXNG adapter, Call, prose + metadata Bind
+  (nothing raises past it, D10), the sanctioned bare-httpx standalone
+  transport (the D19 norm widening, no exemption filed), and the provider
+  conformance suite in `testing/`. Contracts import-clean at the D24
+  floor; every payload type JSON round-trips; a full search runs from a
+  one-shot `asyncio.run()` with no broker.
+- `media-contracts`: carrier facets (`MediaFacets`) -- rights status,
+  pixel dimensions, and direct-file-versus-containing-page (SR-C3,
+  check 13). Additive only; unrecognised facets are ignored, not
+  rejected, so a new carrier ships without a coordinated release.
+- `enforcement`: the search leaf registered in the checks that were not
+  watching it (dict-state detection, the import-cost test), plus a
+  dependency-floor pin holding `3tears-search`'s hard dependencies to
+  exactly D24's list.
+
+### Changed
+
+- `search`: the Gate A review's findings landed the same night, while the
+  re-cut was still cheap (no consumer has bound). The canonical form
+  excludes operational fields -- `record` and `budget_scope_tags` no
+  longer key the replay/eval digest, only the semantic parameters do;
+  `FailureRecord` gains optional `egress` and `occurred_at` so a
+  consumer-side pacing or ban tracker can rebuild D8's
+  `(provider instance, egress)` key from the record; `Criterion.time_range`
+  refuses naive datetimes and normalizes to UTC; `FetchTransport` is
+  declared beside `SearchTransport` so Extract's byte-capped read never
+  forces a protocol widening on Phase-1 implementers; and D13's additive
+  wire promise is scoped to exact-version pairs until Gate C. The full
+  record is docs/search-spec.md §7, "Gate A findings -- 2026-08-10".
+
+### Fixed
+
+- `enforcement`: underscore-access discovery no longer reads nested
+  checkouts (a worktree or clone below the repo root, e.g. under
+  `.claude/worktrees/`) as this repo's own ruff configs. The symptom was
+  622 unlisted-access findings, every one in a foreign working tree; the
+  walker test holds both failure directions apart, so nested configs of
+  this repo's own tree stay discovered.
+
+### Notes
+
+- No release tag: this work rides `feature/convergence` at 0.23.11, the
+  release-pending state. `3tears-search` joins the lockstep family at the
+  Phase 4 minor bump (spec §7); its version and intra-family bounds
+  already conform.
+
 ## v0.23.11 -- 2026-08-10
 
 ### Fixed
