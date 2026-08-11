@@ -717,6 +717,174 @@ class Subjects:
         return f"{_sanitize(agent_id)}.{_sanitize(instance_id)}"
 
     # ------------------------------------------------------------------
+    # tools -- asynchronous result delivery
+    #
+    # A request/reply answer may only be published by the connection that
+    # RECEIVED the request (NATS ``allow_responses``), and a credential refresh
+    # is a reconnect, so any responder whose work outlives one connection
+    # lifetime loses the right to answer at the moment it finishes. The families
+    # below replace that per-request right with a STANDING grant on a subject
+    # the responder names with its OWN identity: derived from ids the
+    # auth-callout already knows, so every refresh re-mints the identical grant
+    # and reconnects stop mattering.
+    #
+    # Two families rather than one, because the two hops have different
+    # responder shapes:
+    #
+    # - ``tools.result.{pod_id}.{call_id}`` -- pod -> registry. The responder is
+    #   a NAMED pod, so the subject carries the responder's id and only that pod
+    #   holds the publish grant. The caller subscribes the exact subject it
+    #   dispatched, so it accepts a result only from the pod it called.
+    # - ``tools.reply.{agent_id}.{call_id}`` -- registry -> agent. The responder
+    #   is an ANONYMOUS member of the ``registry`` queue group; the caller cannot
+    #   know which replica will take the call, so it cannot subscribe a
+    #   responder-named subject in advance. The subject therefore carries the
+    #   CALLER's authenticated agent id (the shape ``gateway.stream.{agent_id}.
+    #   {correlation_id}`` already uses): the registry publishes ``*.*`` and each
+    #   agent subscribes only its OWN ``{agent_id}.*``, so no pod can forge into
+    #   it and no agent can read a peer's results. The registry additionally
+    #   refuses a caller-supplied subject that does not name the caller's
+    #   VERIFIED agent id, so the wildcard is never a way to redirect a result.
+    #
+    # ``call_id`` is per-CALL, not the per-turn ``correlation_id``: one turn can
+    # dispatch several tool calls, so a correlation-keyed subject would collide
+    # between them and hand a caller the wrong tool's result.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def tools_result(cls, pod_id: str | UUID, call_id: str | UUID) -> Subject:
+        """durable result subject one tool pod publishes ONE call's answer to.
+
+        the pod holds a standing publish grant on its own
+        :meth:`tools_result_pod_wildcard` subtree, so the right to deliver
+        survives every credential refresh -- unlike the request/reply inbox,
+        where the right dies with the connection that received the call.
+
+        ``pod_id`` is a single UUID token for a Tool Pod, or the
+        ``{agent_id}.{instance}`` composite for an agent's IN-PROCESS tool
+        server; its structural dots are preserved (:func:`_routing_token`) so
+        the composite nests under the ``tools.result.{agent_id}.>`` subtree the
+        AGENT_POD JWT grants.
+
+        :param pod_id: answering tool routing pod identifier (single token or composite)
+        :ptype pod_id: str | UUID
+        :param call_id: per-call identifier minted by the caller (never the per-turn
+            correlation id, which is not unique across a turn's tool calls)
+        :ptype call_id: str | UUID
+        :return: subject ``{ns}.tools.result.{pod_id}.{call_id}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.tools.result.{_routing_token(pod_id)}.{_sanitize(call_id)}",
+            kind="point",
+        )
+
+    @classmethod
+    def tools_result_pod_wildcard(cls, pod_id: str | UUID) -> Subject:
+        """standing publish-grant pattern for ONE tool pod's own results.
+
+        minted from the pod's own id at every connect, so a reconnect re-mints
+        the identical grant. only this pod holds it, so no pod can forge a
+        result into another pod's in-flight call.
+
+        :param pod_id: the connecting pod's own routing identifier
+        :ptype pod_id: str | UUID
+        :return: subject ``{ns}.tools.result.{pod_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.result.{_routing_token(pod_id)}.>", kind="pattern")
+
+    @classmethod
+    def tools_result_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """standing publish-grant pattern for an agent pod's OWN in-process tool results.
+
+        mirrors :meth:`tools_internal_agent_subtree`: an agent serving tools
+        in-process answers under the ``{agent_id}.{instance}`` composite pod-id,
+        and the auth-callout knows only the AUTHENTICATED ``agent_id``, so the
+        grant is the ``{agent_id}.>`` subtree. a peer agent gets only its own
+        subtree and can never publish a result under another agent's identity.
+
+        :param agent_id: the authenticated agent identity to scope the subtree on
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.result.{agent_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.result.{_sanitize(agent_id)}.>", kind="pattern")
+
+    @classmethod
+    def tools_result_wildcard(cls) -> Subject:
+        """pattern spanning EVERY pod's result subtree.
+
+        the stream declaration's subject filter -- the registry declares one
+        JetStream stream over this family so a result published while the caller
+        is mid-reconnect is retained rather than dropped. NOT granted as a
+        subscribe permission to anyone: the registry consumes each result
+        through a JetStream pull consumer delivered on its own scoped inbox, so
+        it needs no standing subscribe right on the family itself.
+
+        :return: subject ``{ns}.tools.result.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.result.>", kind="pattern")
+
+    @classmethod
+    def tools_reply(cls, agent_id: str | UUID, call_id: str | UUID) -> Subject:
+        """durable reply subject the registry publishes ONE call's answer to.
+
+        keyed on the CALLING agent rather than the answering registry replica:
+        ``{ns}.tools.call`` is queue-grouped, so the caller cannot know which
+        replica will serve it and cannot subscribe a responder-named subject
+        before dispatching. the registry validates that a caller-supplied
+        subject names the caller's VERIFIED agent id before publishing to it.
+
+        :param agent_id: the calling agent's authenticated identity
+        :ptype agent_id: str | UUID
+        :param call_id: per-call identifier minted by the caller
+        :ptype call_id: str | UUID
+        :return: subject ``{ns}.tools.reply.{agent_id}.{call_id}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.tools.reply.{_sanitize(agent_id)}.{_sanitize(call_id)}",
+            kind="point",
+        )
+
+    @classmethod
+    def tools_reply_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """the tool-reply family belonging to ONE agent.
+
+        the ownership prefix the registry validates a caller-supplied delivery subject against, built
+        here rather than assembled by hand so the check can never drift from what
+        :meth:`tools_reply` produces. a single ``*`` tail, not ``>``: the family is exactly two tokens
+        deep, and widening it would match a future sibling family under the same prefix.
+
+        :param agent_id: the authenticated agent identity to scope on
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.reply.{agent_id}.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.reply.{_sanitize(agent_id)}.*", kind="pattern")
+
+    @classmethod
+    def tools_reply_wildcard(cls) -> Subject:
+        """registry-side publish-grant pattern spanning EVERY agent's reply subject.
+
+        the mirror of :meth:`tools_internal_wildcard`: one registry connection
+        fronts every agent, so there is no per-connection list of agent ids to
+        mint exact literals from. the two-token ``*.*`` shape is deliberate --
+        it names the family precisely and is granted ONLY to the trusted
+        registry, which already reaches every pod. the containment that matters
+        is at the registry itself, which refuses to publish to a subject not
+        naming the call's VERIFIED agent id.
+
+        also the second subject the results stream is declared over.
+
+        :return: subject ``{ns}.tools.reply.*.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.reply.*.*", kind="pattern")
+
+    # ------------------------------------------------------------------
     # gateway (AI model gateway)
     # ------------------------------------------------------------------
 

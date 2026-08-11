@@ -520,3 +520,88 @@ class TestHitlSessionControlGrants:
         for principal in Principal:
             for subject in _all_subjects(_build(principal)):
                 assert subject not in {f"{_NS}.forward.>", f"{_NS}.forward.*"}, principal
+
+
+class TestDurableAnswerGrants:
+    """A responder must still be able to answer after the refresh that recycled its connection.
+
+    ``allow_responses`` is scoped to the connection that RECEIVED a request, and NATS has no in-band
+    re-auth, so a correct credential refresh destroys the right to answer an in-flight call. In
+    production that surfaced as a scan finishing with exit 0 and 68KB of results and a permissions
+    violation on the publish. The grants below replace that per-request right with a standing one on
+    a subject the responder names with its OWN identity -- derived from ids the auth-callout already
+    holds, so every refresh re-mints the same grant and reconnects stop mattering.
+
+    What makes them safe is what a standing grant on the requester's inbox tree would not have been:
+    each is confined to one principal's own subtree, so no responder can forge an answer into another
+    responder's in-flight call.
+    """
+
+    def test_tool_pod_may_deliver_only_under_its_own_pod_id(self) -> None:
+        perm = build_permissions(Principal.TOOL_POD, pod_id="pod-1")
+        assert str(Subjects.tools_result_pod_wildcard("pod-1")) in perm.publish
+        assert str(Subjects.tools_result_pod_wildcard("pod-2")) not in perm.publish
+
+    def test_no_principal_may_publish_the_whole_result_family(self) -> None:
+        """the forgery hole this design exists to avoid, checked across every principal.
+
+        a coarse ``tools.result.>`` publish grant anywhere would let its holder answer for any pod,
+        which is the cross-customer response injection that ruled out the inbox-tree grant.
+        """
+        for principal in Principal:
+            for subject in _all_subjects(_build(principal)):
+                assert subject != f"{_NS}.tools.result.>", principal
+                assert subject != f"{_NS}.tools.result.*.*", principal
+
+    def test_agent_pod_may_deliver_only_under_its_own_authenticated_agent(self) -> None:
+        """an in-process tool server answers under the ``{agent_id}.{instance}`` composite pod-id.
+
+        the auth-callout knows the authenticated agent, never the per-replica instance, so the grant
+        is the agent subtree -- the same shape ``tools.internal.{agent_id}.>`` already uses, and for
+        the same reason: a connect-name-scoped grant would be spoofable.
+        """
+        perm = build_permissions(Principal.AGENT_POD, agent_id="agent-1", pod_id="pod-1")
+        assert str(Subjects.tools_result_agent_subtree("agent-1")) in perm.publish
+        assert str(Subjects.tools_result_agent_subtree("agent-2")) not in perm.publish
+
+    def test_only_the_registry_may_answer_agents(self) -> None:
+        """the reply family is the router's to publish and nobody else's.
+
+        the wildcard is granted because one registry connection fronts every agent and there is no
+        per-connection list of agent ids to mint literals from; it is contained at the proxy, which
+        publishes only to a subject naming the call's VERIFIED agent id. a POD holding it would be
+        able to forge an answer into any agent's in-flight call.
+        """
+        registry = build_permissions(Principal.REGISTRY, conn_id="reg-1")
+        assert str(Subjects.tools_reply_wildcard()) in registry.publish
+        for principal in Principal:
+            if principal is Principal.REGISTRY:
+                continue
+            for subject in _all_subjects(_build(principal)):
+                assert not subject.startswith(f"{_NS}.tools.reply."), f"{principal}: {subject}"
+
+    def test_every_participant_declares_the_stream_that_carries_the_answer(self) -> None:
+        """delivery rides JetStream, and a JS grant is pinned per DECLARED stream name.
+
+        the failure of omitting one is not a denial that says so: an ungranted JetStream operation
+        blocks to its deadline, which reads as an unreachable broker rather than a missing grant.
+        """
+        from threetears.nats.result_delivery import result_stream_name
+
+        stream = result_stream_name()
+        for principal in (Principal.TOOL_POD, Principal.AGENT_POD, Principal.REGISTRY):
+            assert stream in _build(principal).streams, principal
+
+    def test_the_result_grant_survives_a_refresh_because_it_is_derived(self) -> None:
+        """re-minting for the same principal yields byte-identical grants.
+
+        this is the whole mechanism: the grant is a function of ids the auth-callout resolves at
+        connect, not of anything about the connection, so the reconnect that a credential refresh
+        performs cannot invalidate it. if a future edit made any of these depend on connection state,
+        the answer would start dying at the refresh again -- silently, and only for long calls.
+        """
+        first = build_permissions(Principal.TOOL_POD, pod_id="pod-1")
+        second = build_permissions(Principal.TOOL_POD, pod_id="pod-1", conn_id="a-different-connection")
+        result_grants = str(Subjects.tools_result_pod_wildcard("pod-1"))
+        assert result_grants in first.publish
+        assert result_grants in second.publish

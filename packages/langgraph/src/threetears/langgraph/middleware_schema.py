@@ -29,6 +29,16 @@ still needs the rule that makes the model consume it. The documented-schema bloc
 is merely appended when a digest documents tables; a fault reading the digest drops
 the block but still ships the honesty rule (a SEPARATE soft-fail).
 
+The block is a BOUNDED digest, not the whole documented schema, so which tables it
+keeps is a decision and is made by a rule (:func:`_priority_key`): hazard notes first,
+then the most-documented tables, tie-broken by qualified name. It used to be whatever
+order the digest yielded, which meant the same arbitrary handful survived every turn no
+matter what was asked; a live 35-table datasource logged 32 tables dropped, 145 times in
+one run. The budget itself scales with the documented-table count between a floor and a
+ceiling rather than sitting at a constant. Deciding WHICH table answers a given question
+is NOT this block's job: that binding rides on the datasource read tool's definition,
+the channel the model reads at the moment it picks a table.
+
 The documented-schema block (honesty rule excluded) is persisted onto the
 ``metadata`` state channel via a returned
 :class:`~langchain.agents.middleware.types.ExtendedModelResponse` carrying a
@@ -67,11 +77,26 @@ __all__ = ["SchemaPrimingMiddleware", "SchemaPrimingState"]
 
 log = get_logger(__name__)
 
-#: Default token budget for the injected documented-schema block. Conservative: the
-#: digest is the FAST path, not a full schema dump -- a 6000-column dump is a context
-#: bomb, not priming. When the documented schema exceeds this, the long tail is
-#: dropped with a one-line footer (truncation is never silent -- logging contract).
-_DEFAULT_SCHEMA_PRIMING_TOKEN_BUDGET = 1500
+#: Token allowance the block budget is derived from, per DOCUMENTED table. A fixed
+#: budget cannot serve both a 3-table datasource and a 35-table one: on a live 35-table
+#: corpus the old constant 1500 dropped 32 tables on EVERY turn. Measured on that
+#: corpus, a documented table renders at roughly 430 tokens (description + documented
+#: columns), so 500 keeps a normally-documented corpus whole with headroom while still
+#: pricing each table rather than handing out an open budget.
+_SCHEMA_PRIMING_TOKENS_PER_TABLE = 500
+
+#: Floor on the derived budget: the previous fixed budget. A datasource documenting one
+#: or two tables still gets a block worth reading, and the derived budget can never
+#: shrink below what the block was already allowed to spend.
+_SCHEMA_PRIMING_TOKEN_FLOOR = 1500
+
+#: Ceiling on the derived budget. This is where the block stops being priming and starts
+#: being a dump: the 35-table corpus above renders whole at roughly 15k tokens, which is
+#: an accepted per-turn spend for a corpus that size, and past it the marginal table buys
+#: less than the context it costs. It is also no longer the routing channel -- WHICH
+#: table to query is decided from the read tool's definition, read at the moment the
+#: model picks a table, so this block only has to be a bounded digest.
+_SCHEMA_PRIMING_TOKEN_CEILING = 16000
 
 #: Chars-per-token heuristic; keeps the budget accounting tokenizer-free + reproducible.
 _CHARS_PER_TOKEN = 4
@@ -161,6 +186,11 @@ def _configurable() -> dict[str, Any]:
     try:
         config = get_config()
     except RuntimeError:
+        # SDS-04: no runnable config means no injected integration, so this whole
+        # middleware becomes a pass-through and the turn silently loses schema priming.
+        log.warning(
+            "no runnable config available: schema priming is skipped for this turn",
+        )
         return {}
     return config.get("configurable") or {}
 
@@ -248,19 +278,98 @@ def _render_table(table: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_schema_block(digests: list[Any], *, budget: int) -> str:
+def _scaled_budget(table_count: int) -> int:
+    """Derive the block token budget from the documented-table count.
+
+    Linear in the documented tables, clamped to
+    ``[_SCHEMA_PRIMING_TOKEN_FLOOR, _SCHEMA_PRIMING_TOKEN_CEILING]``. A constant budget
+    is wrong at both ends: it overspends on a datasource documenting two tables and
+    silently drops most of a wide one (the 32-of-35 truncation this replaces). The
+    clamp keeps the spend bounded no matter how wide the corpus grows.
+
+    :param table_count: number of documented tables across every digest.
+    :ptype table_count: int
+    :return: token budget for the rendered block.
+    :rtype: int
+    """
+    return min(
+        max(table_count * _SCHEMA_PRIMING_TOKENS_PER_TABLE, _SCHEMA_PRIMING_TOKEN_FLOOR),
+        _SCHEMA_PRIMING_TOKEN_CEILING,
+    )
+
+
+def _documentation_weight(table: dict[str, Any]) -> int:
+    """Estimate the prose in one table that live introspection could NOT recover.
+
+    Names and types come back free from a schema-inspection call; the description and
+    the per-column descriptions do not exist anywhere but the digest. So the prose is
+    exactly what is LOST when a table is dropped from the block, which makes it the
+    honest measure of what priming buys per table.
+
+    :param table: one projection entry.
+    :ptype table: dict[str, Any]
+    :return: estimated tokens of documentation prose on the table.
+    :rtype: int
+    """
+    weight = _estimate_tokens(str(table.get("description") or ""))
+    for column in table.get("columns", []) or []:
+        weight += _estimate_tokens(str(column.get("description") or ""))
+    return weight
+
+
+def _priority_key(table: dict[str, Any]) -> tuple[int, int, str]:
+    """Rank one table for block inclusion; lower sorts first (survives truncation).
+
+    THE selection rule. It exists because the previous code took the digest's incidental
+    order and stopped at the budget, so the same arbitrary first tables survived every
+    turn regardless of the question and the rest were invisible forever. The order here
+    is by what the model cannot get any other way, most first:
+
+    1. Hazard notes (``unloaded_columns``, or ``caveats`` should the projection ever
+       carry them). An all-zero unloaded column reads as a measured 0, and nothing in
+       the live catalog contradicts it; a table whose documentation is the ONLY thing
+       standing between the agent and a confidently wrong number is never the one to
+       drop.
+    2. Documentation weight (:func:`_documentation_weight`). Tables carrying real prose
+       teach the most per token and are the least inferable; a bare row that documents
+       little is the cheapest thing to lose to the schema-inspection tool.
+    3. Qualified name, ascending. A total order, so the block is byte-identical across
+       runs and independent of the order the digest happened to yield.
+
+    Deliberately NOT query-aware: routing (which table answers THIS question) is decided
+    from the read tool's definition, the channel the model reads at the moment it picks
+    a table. This block is background, so it is ranked once and rendered the same way
+    every turn, which also keeps it prefix-stable for prompt caching.
+
+    :param table: one projection entry.
+    :ptype table: dict[str, Any]
+    :return: sort key (hazard, weight, qualified name) with the first two negated so
+        that "more" sorts first.
+    :rtype: tuple[int, int, str]
+    """
+    hazard = 1 if (table.get("unloaded_columns") or table.get("caveats")) else 0
+    schema = table.get("schema", "")
+    name = table.get("table", "")
+    qualified = f"{schema}.{name}" if schema else str(name)
+    return (-hazard, -_documentation_weight(table), qualified)
+
+
+def _render_schema_block(digests: list[Any], *, budget: int | None = None) -> str:
     """Render the bounded ``# Documented schema`` block from the digests.
 
-    Flattens the documented tables across every datasource's digest, renders each,
-    and trims to the token budget -- always keeping at least one table so a single
-    large table still primes. When the tail is dropped a one-line footer names the
-    count so truncation is never silent (logging contract). Returns an empty string
-    when no documented table exists.
+    Flattens the documented tables across every datasource's digest, orders them by
+    :func:`_priority_key`, renders in that order and trims to the token budget -- always
+    keeping at least one table so a single large table still primes. Truncation drops
+    the lowest-priority TAIL (never a hole in the middle), so the dropped set is
+    statable: it is the least-documented end of the corpus. When the tail is dropped a
+    one-line footer names the count and the rule so truncation is never silent (logging
+    contract). Returns an empty string when no documented table exists.
 
     :param digests: digest entities, each exposing a ``tables`` projection.
     :ptype digests: list[Any]
-    :param budget: documented-schema token budget.
-    :ptype budget: int
+    :param budget: documented-schema token budget; ``None`` derives it from the
+        documented-table count via :func:`_scaled_budget`.
+    :ptype budget: int | None
     :return: rendered block (preamble + tables [+ footer]), or empty string.
     :rtype: str
     """
@@ -269,33 +378,62 @@ def _render_schema_block(digests: list[Any], *, budget: int) -> str:
         tables = getattr(entity, "tables", None) or []
         all_tables.extend(tables)
     if not all_tables:
+        # SDS-04: this is what a missing digest materialization looks like from the
+        # prompt side -- the agent ships the honesty preamble and looks normally
+        # primed while carrying no schema at all.
+        log.warning(
+            "documented-schema priming has no tables to render (digests=%d): the "
+            "agent is primed with NO schema; has the digest been materialized?",
+            len(digests),
+        )
         return ""
+
+    effective_budget = _scaled_budget(len(all_tables)) if budget is None else budget
+    # rank BEFORE spending, so what survives is decided by the rule and not by the order
+    # the digest yielded. sorted() is stable, but the key is a total order, so the result
+    # does not depend on that.
+    ranked = sorted(all_tables, key=_priority_key)
 
     rendered: list[str] = []
     # seed the budget with the fixed block overhead so the BLOCK total (preamble +
     # tables [+ footer]) stays within budget, not just the table body. reserve a
     # footer allowance too, since dropping the tail appends a one-line footer.
     spent = _estimate_tokens(_BLOCK_PREAMBLE) + _FOOTER_TOKEN_RESERVE
-    for table in all_tables:
+    for table in ranked:
         text = _render_table(table)
         cost = _estimate_tokens(text)
         # keep at least one table even if it alone exceeds budget.
-        if rendered and spent + cost > budget:
+        if rendered and spent + cost > effective_budget:
             break
         rendered.append(text)
         spent += cost
 
-    dropped = len(all_tables) - len(rendered)
+    dropped = len(ranked) - len(rendered)
     body = "\n\n".join(rendered)
     if dropped > 0:
+        # SDS-04: the footer tells the MODEL; this line tells the operator. a wide
+        # datasource primes a fraction of its documented tables and the agent then
+        # writes SQL against the un-primed remainder. name the RULE too: a table missing
+        # from the block is then readable as a stated decision rather than a lookup that
+        # quietly failed.
+        log.warning(
+            "documented-schema priming truncated: %d of %d table(s) dropped "
+            "(budget=%d tokens); the block keeps tables with hazard notes first, then "
+            "the most-documented, tie-broken by name, and drops that ranking's tail; "
+            "the agent is primed with a subset of its schema",
+            dropped,
+            len(ranked),
+            effective_budget,
+        )
         body += (
-            f"\n\n_{dropped} more documented table(s) not shown here; use "
-            "the datasource schema-inspection tool to inspect them._"
+            f"\n\n_{dropped} more documented table(s) not shown here. This block keeps "
+            "the tables carrying the most documentation; the rest are documented too. "
+            "Use the datasource schema-inspection tool to inspect them._"
         )
     return _BLOCK_PREAMBLE + body
 
 
-async def _read_schema_block(integration: Any, datasource_ids: list[Any], budget: int) -> str:
+async def _read_schema_block(integration: Any, datasource_ids: list[Any], budget: int | None) -> str:
     """Read each datasource's digest and render the documented-schema block.
 
     A SEPARATE soft-fail from the honesty rule: a fault reading any digest yields an
@@ -307,8 +445,9 @@ async def _read_schema_block(integration: Any, datasource_ids: list[Any], budget
     :ptype integration: Any
     :param datasource_ids: the agent's resolved datasource ids.
     :ptype datasource_ids: list[Any]
-    :param budget: documented-schema token budget.
-    :ptype budget: int
+    :param budget: documented-schema token budget; ``None`` derives it from the
+        documented-table count.
+    :ptype budget: int | None
     :return: rendered ``# Documented schema`` block, or empty string when no digest
         documents tables / a digest read faults.
     :rtype: str
@@ -346,12 +485,17 @@ class SchemaPrimingMiddleware(AgentMiddleware[SchemaPrimingState, Any, Any]):
 
     state_schema: type[SchemaPrimingState] = SchemaPrimingState
 
-    def __init__(self, *, token_budget: int = _DEFAULT_SCHEMA_PRIMING_TOKEN_BUDGET) -> None:
+    def __init__(self, *, token_budget: int | None = None) -> None:
         """Configure the documented-schema block token budget.
 
-        :param token_budget: token budget for the injected documented-schema block;
-            tables past the budget are dropped with a one-line footer.
-        :ptype token_budget: int
+        Defaults to ``None``: the budget is DERIVED from how many tables the digests
+        document (:func:`_scaled_budget`), because one constant cannot fit both a
+        two-table datasource and a thirty-five-table one. An explicit value pins it.
+
+        :param token_budget: fixed token budget for the injected documented-schema
+            block, or ``None`` to scale it with the documented-table count; tables past
+            the budget are dropped by :func:`_priority_key` order with a one-line footer.
+        :ptype token_budget: int | None
         :return: nothing.
         :rtype: None
         """

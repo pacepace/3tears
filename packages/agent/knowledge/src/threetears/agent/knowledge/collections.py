@@ -22,10 +22,12 @@ are cross-table JOINs the by-pk Collection abstraction cannot express.
 from __future__ import annotations
 
 import json
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import three_scope_visibility_clause
+from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -43,6 +45,34 @@ from threetears.knowledge import (
     build_table_ref,
     derive_scope,
 )
+
+
+#: Every table the concept visibility scan reads. The RBAC pair is not optional:
+#: the visibility clause JOINs them, so a REVOKED GRANT must evict the cached
+#: result rather than linger until the TTL. Declaring only the data table would
+#: turn a staleness window into an authorization one.
+_CONCEPT_SCAN_DEPENDS_ON = ("concepts", "datasource_tables", "role_assignments", "group_members")
+
+#: Same, for the entry scan.
+_ENTRY_SCAN_DEPENDS_ON = ("playbook_entries", "role_assignments", "group_members")
+
+
+def _scan_cache_for(collection: Any) -> Any:
+    """return the pod's scan cache, or ``None`` when there is nowhere to cache.
+
+    A collection can be constructed without a registry (bare, in tests, or in a
+    minimal embedding). It still has to serve reads -- just uncached -- so this
+    degrades to ``None`` rather than raising. Caching is an optimisation; the
+    query is the contract.
+
+    :param collection: the collection asking for its cache
+    :ptype collection: Any
+    :return: the registry's scan cache, or ``None``
+    :rtype: Any
+    """
+    registry = getattr(collection, "_registry", None)
+    return None if registry is None else registry.scan_cache
+
 
 from threetears.agent.knowledge.entities import ConceptEntity, PlaybookEntryEntity
 from threetears.agent.knowledge.integration import DraftView
@@ -374,9 +404,22 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
                 )
             sql += " ORDER BY pe.date_created ASC"
 
-            rows = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
-            for row in rows:
-                result.append(_row_to_snapshot(dict(row)))
+            cache = _scan_cache_for(self)
+            cache_key = ScanCacheKey("playbook_entries", user_id, datasource_id, customer_scope)
+            now = monotonic()
+            cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
+            if cached is None:
+                fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
+                cached = [dict(row) for row in fetched]
+                if cache is not None:
+                    cache.put(
+                        cache_key,
+                        cached,
+                        depends_on=_ENTRY_SCAN_DEPENDS_ON,
+                        now_monotonic=now,
+                    )
+            for row in cached:
+                result.append(_row_to_snapshot(row))
         return result
 
     async def list_own_drafts(
@@ -599,9 +642,28 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
                 sql += f" AND co.datasource_table_id = ${len(params)}"
             sql += " ORDER BY co.date_created ASC"
 
-            rows = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
-            for row in rows:
-                result.append(_row_to_concept_snapshot(dict(row)))
+            cache = _scan_cache_for(self)
+            cache_key = ScanCacheKey(
+                "concepts",
+                user_id,
+                datasource_id,
+                datasource_table_id,
+                customer_scope,
+            )
+            now = monotonic()
+            cached = None if cache is None else cache.get(cache_key, now_monotonic=now)
+            if cached is None:
+                fetched = await self.l3_pool.fetch(sql, *params, customer_scope=customer_scope)
+                cached = [dict(row) for row in fetched]
+                if cache is not None:
+                    cache.put(
+                        cache_key,
+                        cached,
+                        depends_on=_CONCEPT_SCAN_DEPENDS_ON,
+                        now_monotonic=now,
+                    )
+            for row in cached:
+                result.append(_row_to_concept_snapshot(row))
         return result
 
     async def list_own_drafts(

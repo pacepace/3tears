@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ValidationError
 from threetears.nats import Subjects
 from threetears.nats.errors import PublishError, SubscribeError
+from threetears.core.collections.scan_cache import ScanCache
 from threetears.observe import get_logger
 from uuid_utils import uuid7
 
@@ -108,6 +109,7 @@ class CollectionRegistry:
         # skip self-published messages and avoid evicting rows it just
         # wrote. An opaque token, never used as a UUID.
         self._origin_id: str = str(uuid7())  # convert at border: invalidation wire-envelope origin token
+        self._scan_cache: ScanCache | None = None
 
     def configure(
         self,
@@ -118,6 +120,9 @@ class CollectionRegistry:
         """Set default dependencies for all collections."""
         if l1_backend is not None:
             self._l1_backend = l1_backend
+            # a cache built over the previous backend would keep answering from
+            # it; drop it so the next access rebuilds over the new one.
+            self._scan_cache = None
         if l2_client is not None:
             self._l2_client = l2_client
         if l3_pool is not None:
@@ -202,6 +207,21 @@ class CollectionRegistry:
         overrides = self._overrides.get(table_name, {})
         return overrides.get("l1_backend", self._l1_backend)
 
+    @property
+    def scan_cache(self) -> ScanCache:
+        """the pod's visibility-scan cache, created on first use.
+
+        Built over the DEFAULT L1 backend rather than a per-table override: a
+        scan spans tables (its visibility predicate reads the RBAC tables), so
+        it has no single owning table's backend to live in.
+
+        :return: the scan cache
+        :rtype: ScanCache
+        """
+        if self._scan_cache is None:
+            self._scan_cache = ScanCache(self._l1_backend)
+        return self._scan_cache
+
     def get_l2_client(self, table_name: str) -> Any:
         """Get L2 client for a collection (override or default)."""
         overrides = self._overrides.get(table_name, {})
@@ -250,6 +270,14 @@ class CollectionRegistry:
             # evict OTHER pods, which carry a different origin.
             if message.origin is not None and message.origin == self._origin_id:
                 return
+
+            # Evict dependent SCANS first, and unconditionally. Every check
+            # below returns early for a table this pod does not hold as a
+            # collection -- and `role_assignments` / `group_members` are exactly
+            # that on an agent pod, while being precisely the tables whose write
+            # must drop a cached visibility scan. Ordering this after those
+            # guards would leave a revoked grant readable until the TTL lapsed.
+            self.scan_cache.drop_for_table(message.table)
 
             collection = self._collections.get(message.table)
             if collection is None:
@@ -334,6 +362,25 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
+        # A LOCAL write evicts LOCAL scans, before anything touches the bus.
+        #
+        # The listener below deliberately ignores this registry's own
+        # broadcasts: for a by-pk row that is right, because `save_entity` just
+        # wrote the freshest copy into L1 and evicting it would force a needless
+        # re-read. A SCAN is the opposite. The write changed WHICH ROWS MATCH,
+        # so the result this pod has cached is stale the instant it commits --
+        # and it is the one pod guaranteed never to hear about it.
+        #
+        # Shipped without this in 0.23.6: a hub that imported knowledge kept
+        # serving the pre-import concept set until the TTL lapsed. Deploy
+        # content, ask a question, get the old answer, with nothing to indicate
+        # why. Caught by the concept-visibility tests, which write and then read
+        # back through the same registry.
+        #
+        # Deliberately ahead of the `nats_client is None` return: local eviction
+        # is not a broadcast and must not be skipped when there is no bus (devx,
+        # tests, a pod whose NATS is down).
+        self.scan_cache.drop_for_table(table_name)
         if nats_client is None:
             return
         if isinstance(entity_id, tuple):

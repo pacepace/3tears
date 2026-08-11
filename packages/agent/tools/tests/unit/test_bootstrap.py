@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.agent.tools.bootstrap import ToolServerBootstrap
+from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
 from threetears.observe import HealthTier
 
 
@@ -188,6 +189,134 @@ class TestHealthServerReadinessGate:
             assert ready.healthy is False
         finally:
             await health_server.stop()
+
+
+class _StartupFailureBootstrap(ToolServerBootstrap):
+    """subclass whose ``build_server`` raises, to drive ``run``'s failure classification."""
+
+    def __init__(self, exc: BaseException) -> None:
+        # health_port=0 -> OS-assigned ephemeral port, so nothing collides in CI.
+        super().__init__("test-pod", health_port=0)
+        self.exc = exc
+
+    async def build_server(self) -> Any:
+        raise self.exc
+
+    async def register_tools(self, server: Any) -> None:  # pragma: no cover - startup never gets here
+        raise AssertionError("register_tools must not run after build_server raised")
+
+
+class _SucceedingBootstrap(ToolServerBootstrap):
+    """subclass that reaches and returns from the serve loop, driving ``run``'s happy path."""
+
+    def __init__(self, server: _FakeToolServer) -> None:
+        super().__init__("test-pod", health_port=0)
+        self.server = server
+
+    async def build_server(self) -> Any:
+        return self.server
+
+    async def register_tools(self, server: Any) -> None:
+        pass
+
+
+def _error_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """the ERROR-or-worse records the bootstrap emitted, in order."""
+    return [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+class TestConfigFaultIsTerminal:
+    """a permanent config fault must stop the pod, not feed a restart loop.
+
+    bluelabsio/14-eng-ai-bot#235: a built-in tool pod started with a renamed identity
+    env var raised, exited 1, and was restarted 9,580 times over 8 days without ever
+    reaching ``running``. no healthcheck could fire (the container never started), no
+    neighbour declared ``depends_on`` it, and the 278,110 identical traceback lines it
+    wrote went to a stderr nobody tails. the fail-loud intent was right; "loud once"
+    is what the deployment turned into "invisible forever".
+
+    the fix has two halves and both are asserted here: a distinct exit STATUS, which
+    is the only thing a supervisor can branch on, and ONE structured record naming the
+    variable an operator has to go change.
+    """
+
+    def test_config_fault_exits_with_ex_config(self) -> None:
+        """the status is 78, ``EX_CONFIG`` from sysexits.h -- not the generic 1."""
+        bootstrap = _StartupFailureBootstrap(
+            ToolPodConfigError("SOME_VAR is required", variable="SOME_VAR"),
+        )
+
+        with pytest.raises(SystemExit) as exit_info:
+            bootstrap.run()
+
+        assert exit_info.value.code == EX_CONFIG
+        assert EX_CONFIG == 78, "the value is the contract: compose / k8s alerting branches on it"
+
+    def test_config_fault_logs_exactly_one_error_naming_the_variable(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """one record, through the repo logger, carrying the offending variable.
+
+        one, because the incident's cost was repetition. through ``get_logger``, because
+        a traceback on container stderr never reaches the observability pipeline and so
+        was never queryable. naming the variable, because an operator who reads the line
+        and still has to open the source has not been told anything.
+        """
+        bootstrap = _StartupFailureBootstrap(
+            ToolPodConfigError(
+                "THREETEARS_TOOL_POD_ID is missing (the minter kid must be the pod id)",
+                variable="THREETEARS_TOOL_POD_ID",
+            ),
+        )
+
+        with caplog.at_level(logging.ERROR), pytest.raises(SystemExit):
+            bootstrap.run()
+
+        errors = _error_records(caplog)
+        assert len(errors) == 1, f"expected exactly one ERROR record, got {[r.getMessage() for r in errors]}"
+        extra = getattr(errors[0], "extra_data", {})
+        assert extra.get("variable") == "THREETEARS_TOOL_POD_ID"
+        assert extra.get("exit_code") == EX_CONFIG
+        assert "THREETEARS_TOOL_POD_ID" in extra.get("error", "")
+
+    def test_unrelated_value_error_is_not_treated_as_config(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """the reason the terminal path keys on a distinct type, not on ``ValueError``.
+
+        a ``ValueError`` out of a tool's own business logic during registration is a bug
+        that a restart may well clear. catching the base type would make it terminal and
+        keep a recoverable pod down.
+        """
+        bootstrap = _StartupFailureBootstrap(ValueError("bad payload from some tool's own parsing"))
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ValueError, match="bad payload"):
+            bootstrap.run()
+
+        assert _error_records(caplog) == [], "a non-config failure must not emit the terminal record"
+
+    def test_transient_failure_still_propagates_and_stays_retryable(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """a NATS server that is not up yet is exactly what supervisor restarts are for."""
+        bootstrap = _StartupFailureBootstrap(ConnectionRefusedError("nats://nats:4222 refused"))
+
+        with caplog.at_level(logging.ERROR), pytest.raises(ConnectionRefusedError):
+            bootstrap.run()
+
+        assert _error_records(caplog) == []
+
+    def test_successful_run_is_unaffected(self) -> None:
+        """the guard is inert on the path that actually serves."""
+        server = _FakeToolServer()
+        server.serve_event.set()  # release serve immediately so run returns
+
+        _SucceedingBootstrap(server).run()
+
+        assert server.serve_called is True
 
 
 def test_signal_handler_uses_service_name_in_task_name() -> None:

@@ -11,7 +11,8 @@ from uuid import UUID
 import pytest
 from threetears.agent.tools.context_envelope import CallContext
 
-from threetears.nats import IncomingMessage, set_default_namespace
+from threetears.agent.tools.server import CallAccepted
+from threetears.nats import RESULT_ACK_TIMEOUT_SECONDS, IncomingMessage, Subject, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
@@ -30,6 +31,77 @@ def _bind_namespace() -> None:
 
 
 # -- helpers --
+
+
+# parity-with: threetears.nats.client.JetStreamResultWaiter
+class _FakeWaiter:
+    """a :class:`JetStreamResultWaiter` stand-in that hands back one scripted answer."""
+
+    def __init__(self, delivered: bytes, subject: Subject) -> None:
+        self._delivered = delivered
+        self.subject = subject
+        self.closed = False
+
+    async def open(self) -> None:
+        """the real waiter is opened by its factory; this double is handed out already open."""
+        return None
+
+    async def wait(self, *, timeout: Any) -> bytes:
+        del timeout
+        return self._delivered
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _DurableNats:
+    """a NATS double for the durable-delivery path.
+
+    Records the accept round trip and the wait budget each waiter was opened with, because those two
+    numbers are the whole routing decision: a long call's declared timeout must size the DURABLE wait
+    while the request/reply hop shrinks to the pod's acknowledgement window.
+    """
+
+    def __init__(self, delivered: bytes, *, accept: bytes | None = None) -> None:
+        self._delivered = delivered
+        self._accept = accept
+        self.request_raw_calls: list[dict[str, Any]] = []
+        self.waiters: list[_FakeWaiter] = []
+        self.waiter_budgets: list[float] = []
+        self.replies: list[Any] = []
+        self.delivered_to: list[tuple[str, bytes]] = []
+
+    async def subscribe(self, **kwargs: Any) -> Any:
+        del kwargs
+        return MagicMock()
+
+    async def unsubscribe(self, sub: Any) -> None:
+        del sub
+
+    async def request_raw(self, **kwargs: Any) -> bytes:
+        self.request_raw_calls.append(kwargs)
+        if self._accept is not None:
+            return self._accept
+        return CallAccepted(accepted=True, pod_id="pod", result_subject="s").model_dump_json().encode("utf-8")
+
+    async def jetstream_result_waiter(self, *, subject: Subject, stream: str, wait_budget: Any) -> _FakeWaiter:
+        del stream
+        self.waiter_budgets.append(wait_budget.total_seconds())
+        waiter = _FakeWaiter(self._delivered, subject)
+        self.waiters.append(waiter)
+        return waiter
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        self.delivered_to.append((subject.path, payload))
+
+    async def publish_reply(self, *, reply_subject: str, message: Any) -> None:
+        del reply_subject
+        self.replies.append(message)
+
+
+def _durable_nats(delivered: bytes, *, accept: bytes | None = None) -> _DurableNats:
+    """build the durable-path NATS double (typed as ``Any`` at the proxy's injection point)."""
+    return _DurableNats(delivered, accept=accept)
 
 
 def _make_entry(
@@ -444,8 +516,48 @@ class TestCallProxyTimeout:
         )
 
     @pytest.mark.asyncio
-    async def test_per_tool_timeout_from_catalog(self) -> None:
-        """proxy uses per-tool timeout_seconds from catalog entry when declared."""
+    async def test_short_tool_keeps_its_declared_timeout_on_the_reply_path(self) -> None:
+        """a tool inside the synchronous budget is still forwarded with its own declared timeout."""
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="test.quick",
+            tool_version="1.0",
+            full_name="test.quick@1.0",
+            description="a quick tool",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=20.0,
+            endpoints=[ToolEndpoint(pod_id="pod-quick", status="available")],
+        )
+        await catalog.register(entry)
+
+        proxy = _make_proxy(catalog, namespace="test", timeout=5.0)
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        request = _make_call_request(tool_name="test.quick", tool_version="1.0")
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        nc.request_raw.assert_called_once()
+        call_kwargs = nc.request_raw.call_args
+        # timeout is a timedelta (kw-only on the wrapper)
+        assert call_kwargs.kwargs["timeout"].total_seconds() == 20.0, (
+            "proxy should use per-tool timeout (20s) from catalog, not proxy default (5s)"
+        )
+        nc.jetstream_result_waiter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_per_tool_timeout_from_catalog_sizes_the_durable_wait(self) -> None:
+        """a long tool's declared timeout becomes the DURABLE wait, not the request/reply timeout.
+
+        Past the synchronous budget the answer cannot come back on the reply inbox at all: the pod's
+        right to publish there dies with the connection that received the call, which is rebuilt
+        every time the pod refreshes its credential. So the declared timeout now bounds how long the
+        caller waits on the pod's own delivery subject; the request/reply hop shrinks to the short
+        window in which the pod merely acknowledges.
+        """
         catalog = ToolCatalog()
         entry = CatalogEntry(
             tool_name="test.slow_wait",
@@ -459,24 +571,16 @@ class TestCallProxyTimeout:
         await catalog.register(entry)
 
         proxy = _make_proxy(catalog, namespace="test", timeout=120.0)
-        nc = AsyncMock()
-        nc.request_raw = AsyncMock(return_value=_make_tool_response())
+        nc = _durable_nats(_make_tool_response())
         await proxy.start(nc)
 
-        request = _make_call_request(
-            tool_name="test.slow_wait",
-            tool_version="1.0",
-        )
+        request = _make_call_request(tool_name="test.slow_wait", tool_version="1.0")
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.request_raw.assert_called_once()
-        call_kwargs = nc.request_raw.call_args
-        # timeout is now a timedelta (kw-only on the wrapper)
-        assert call_kwargs.kwargs["timeout"].total_seconds() == 300.0, (
-            "proxy should use per-tool timeout (300s) from catalog, not proxy default (120s)"
-        )
+        assert nc.waiter_budgets == [300.0], "the tool's declared timeout must bound the durable wait"
+        assert nc.request_raw_calls[0]["timeout"].total_seconds() == RESULT_ACK_TIMEOUT_SECONDS
 
     @pytest.mark.asyncio
     async def test_falls_back_to_proxy_default_when_no_tool_timeout(self) -> None:
@@ -494,21 +598,15 @@ class TestCallProxyTimeout:
         await catalog.register(entry)
 
         proxy = _make_proxy(catalog, namespace="test", timeout=120.0)
-        nc = AsyncMock()
-        nc.request_raw = AsyncMock(return_value=_make_tool_response())
+        nc = _durable_nats(_make_tool_response())
         await proxy.start(nc)
 
-        request = _make_call_request(
-            tool_name="test.fast_tool",
-            tool_version="1.0",
-        )
+        request = _make_call_request(tool_name="test.fast_tool", tool_version="1.0")
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.request_raw.assert_called_once()
-        call_kwargs = nc.request_raw.call_args
-        assert call_kwargs.kwargs["timeout"].total_seconds() == 120.0
+        assert nc.waiter_budgets == [120.0]
 
     @pytest.mark.asyncio
     async def test_slow_tool_survives_with_declared_timeout(self) -> None:
@@ -531,12 +629,7 @@ class TestCallProxyTimeout:
         await catalog.register(entry)
 
         proxy = _make_proxy(catalog, namespace="test")
-        nc = AsyncMock()
-        nc.request_raw = AsyncMock(
-            return_value=_make_tool_response(
-                content="waited 100 seconds successfully",
-            )
-        )
+        nc = _durable_nats(_make_tool_response(content="waited 100 seconds successfully"))
         await proxy.start(nc)
 
         request = _make_call_request(
@@ -548,13 +641,9 @@ class TestCallProxyTimeout:
         await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.request_raw.assert_called_once()
-        call_kwargs = nc.request_raw.call_args
-        assert call_kwargs.kwargs["timeout"].total_seconds() == 120.0, (
-            "slow_tool with timeout_seconds=120 must get 120s, not 30s"
-        )
+        assert nc.waiter_budgets == [120.0], "slow_tool with timeout_seconds=120 must get 120s, not 30s"
 
-        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
+        response_data = json.loads(nc.replies[0].model_dump_json())
         assert response_data["success"] is True
         assert "waited 100 seconds" in response_data["content"]
 

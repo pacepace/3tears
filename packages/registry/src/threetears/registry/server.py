@@ -23,7 +23,12 @@ from threetears.core.security import (
     ProxyAssertionSigner,
     resolve_secret,
 )
-from threetears.nats import NatsClient
+from threetears.nats import (
+    RESULT_RETENTION_SECONDS,
+    RESULT_STREAM_SUFFIX,
+    NatsClient,
+    Subjects,
+)
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
@@ -468,6 +473,11 @@ class RegistryServer:
             "registry.kv_catalog_load",
         )
 
+        await retry_with_backoff(
+            self._ensure_result_stream,
+            "registry.result_stream_declare",
+        )
+
         await self._start_handlers()
 
         self._install_signal_handlers()
@@ -478,6 +488,42 @@ class RegistryServer:
         )
 
         await self._shutdown_event.wait()
+
+    async def _ensure_result_stream(self) -> None:
+        """declare the stream that carries every answer too long to ride the reply inbox.
+
+        Declared HERE, and before the handlers start, because the registry is the one process on both
+        sides of that path: it consumes each pod's result and publishes each agent's reply. It is also
+        the only participant guaranteed to be running before any call can route at all, so a pod can
+        never find itself publishing into a stream that does not exist.
+
+        Both families live on one stream. A subject belongs to exactly one stream on a NATS account,
+        the two have identical retention needs, and one name means one JetStream control-plane grant
+        per principal rather than two.
+
+        ``max_msgs_per_subject=1`` matters as much as the age bound: each subject is minted for one
+        call and answered once, so a retried delivery must replace its predecessor rather than leave a
+        stale first answer for the waiter to collect.
+
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when invoked before NATS is connected
+        """
+        if self._nc is None:
+            raise RuntimeError("_ensure_result_stream invoked before NATS connected")
+        stream = await self._nc.ensure_jetstream_stream(
+            name=RESULT_STREAM_SUFFIX,
+            subjects=[
+                str(Subjects.tools_result_wildcard()),
+                str(Subjects.tools_reply_wildcard()),
+            ],
+            max_age_seconds=RESULT_RETENTION_SECONDS,
+            max_msgs_per_subject=1,
+        )
+        _logger.info(
+            "durable tool-result stream ensured",
+            extra={"extra_data": {"stream": stream, "retention_seconds": RESULT_RETENTION_SECONDS}},
+        )
 
     async def _start_handlers(self) -> None:
         """initialize and start all registry handlers.

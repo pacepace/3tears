@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from threetears.agent.tools.bootstrap import ToolServerBootstrap
+from threetears.agent.tools.bootstrap import ToolPodConfigError, ToolServerBootstrap
 from threetears.agent.tools.server import ToolServer
 from threetears.core.security import IdentityMinter
 from threetears.core.security.secret_refs import resolve_secret
@@ -255,20 +255,29 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
         deploy without one is a config error that must crash startup, never register ZERO tools on
         an anonymous connect).
 
+        fails loud AND terminal: the missing-variable guards raise
+        :class:`~threetears.agent.tools.bootstrap.ToolPodConfigError`, which the bootstrap turns
+        into exit :data:`~threetears.agent.tools.bootstrap.EX_CONFIG` instead of a restart loop.
+        ``SecretResolutionError`` is deliberately NOT in that class: a ``k8s://`` ref points at a
+        projected-Secret volume that can genuinely be late, so a resolution failure is the one
+        startup fault here that a restart can legitimately clear.
+
         :return: configured ToolServer presenting a self-minted identity token
         :rtype: ToolServer
-        :raises ValueError: when ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF`` (or, downstream,
-            its required companion vars) is missing
+        :raises threetears.agent.tools.bootstrap.ToolPodConfigError: when
+            ``THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF`` (or, downstream, its required
+            companion vars) is missing
         :raises threetears.core.security.secret_refs.SecretResolutionError: when the ref is
             malformed or cannot be resolved
         """
         identity_signing_key_ref = os.environ.get("THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF") or None
         if identity_signing_key_ref is None:
-            raise ValueError(
+            raise ToolPodConfigError(
                 "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is required: the built-in tool pod "
                 "self-mints its NATS connect + registration identity from a per-pod Ed25519 key "
                 "(referenced, never the raw key, via a scheme://locator); there is no "
-                "static-credential fallback (v0.14.1 per-key cutover)"
+                "static-credential fallback (v0.14.1 per-key cutover)",
+                variable="THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF",
             )
         identity_signing_key = resolve_secret(identity_signing_key_ref).get_secret_value()
         nats_url = os.environ.get("THREETEARS_NATS_URL", "nats://localhost:4222")
@@ -299,19 +308,22 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
         :ptype identity_signing_key: str
         :return: configured ToolServer presenting a self-minted identity token
         :rtype: ToolServer
-        :raises ValueError: when ``THREETEARS_TOOL_POD_ID`` / ``THREETEARS_TOOL_POD_CONNECT_ISSUER``
-            is missing while an identity signing key is set
+        :raises threetears.agent.tools.bootstrap.ToolPodConfigError: when
+            ``THREETEARS_TOOL_POD_ID`` / ``THREETEARS_TOOL_POD_CONNECT_ISSUER`` is missing while an
+            identity signing key is set
         """
         if not pod_id:
-            raise ValueError(
+            raise ToolPodConfigError(
                 "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is set but THREETEARS_TOOL_POD_ID is "
-                "missing (the minter kid must be the pod id)"
+                "missing (the minter kid must be the pod id)",
+                variable="THREETEARS_TOOL_POD_ID",
             )
         issuer = os.environ.get("THREETEARS_TOOL_POD_CONNECT_ISSUER") or None
         if not issuer:
-            raise ValueError(
+            raise ToolPodConfigError(
                 "THREETEARS_TOOL_POD_IDENTITY_SIGNING_KEY_REF is set but "
-                "THREETEARS_TOOL_POD_CONNECT_ISSUER is missing (the issuer the Hub verifier pins)"
+                "THREETEARS_TOOL_POD_CONNECT_ISSUER is missing (the issuer the Hub verifier pins)",
+                variable="THREETEARS_TOOL_POD_CONNECT_ISSUER",
             )
         customer_id = os.environ.get("THREETEARS_TOOL_POD_CUSTOMER_ID") or _PLATFORM_CUSTOMER_SENTINEL
         # the CALLER builds the minter; ToolServer stays issuer/minter-agnostic. the provider
@@ -343,7 +355,10 @@ def main() -> None:
     (defaults to ``nats://localhost:4222``). registers all available
     built-in tools and serves them until interrupted. the lifecycle
     plumbing (logging configuration, signal handlers, serve loop) is
-    owned by :class:`ToolServerBootstrap`.
+    owned by :class:`ToolServerBootstrap`, including the exit status: a
+    missing or renamed identity variable exits
+    :data:`~threetears.agent.tools.bootstrap.EX_CONFIG` so a supervisor
+    stops rather than restarts.
 
     :return: None
     :rtype: None

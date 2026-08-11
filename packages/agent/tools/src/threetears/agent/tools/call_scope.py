@@ -48,7 +48,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from threetears.media.contracts import ObjectStore
 
@@ -59,6 +59,7 @@ __all__ = [
     "current_scope",
     "enter_call_scope",
     "get_current_context",
+    "register_call_cleanup",
     "tool_context_provider",
 ]
 
@@ -110,6 +111,15 @@ class ToolCallScope:
         wired with one (no NATS client, as in unit tests); a tool that needs it
         fails closed at first use rather than authorizing against nothing
     :ptype engagement_resolver: EngagementScopeResolver | None
+    :param cleanup_hooks: synchronous callbacks the tool server runs -- best
+        effort, in registration order -- if it force-ends this call on its hard
+        execution-time limit (``ToolServer(max_call_seconds=...)``). A tool
+        registers one via :func:`register_call_cleanup` to reap work the awaiting
+        coroutine cannot end by itself: a subprocess-spawning tool registers a
+        process-group kill so a hard timeout REAPS the process instead of leaving
+        an orphaned child holding memory. Empty on the normal path; never invoked
+        when the tool returns on its own.
+    :ptype cleanup_hooks: list[Callable[[], None]]
     """
 
     context: CallContext = field(default_factory=CallContext)
@@ -117,6 +127,7 @@ class ToolCallScope:
     object_store: ObjectStore | None = None
     object_resolver: "ObjectResolver | None" = None
     engagement_resolver: "EngagementScopeResolver | None" = None
+    cleanup_hooks: list[Callable[[], None]] = field(default_factory=list)
 
 
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(
@@ -155,6 +166,36 @@ def current_scope() -> ToolCallScope | None:
     :rtype: ToolCallScope | None
     """
     return _current_scope.get()
+
+
+def register_call_cleanup(hook: Callable[[], None]) -> None:
+    """register a synchronous cleanup callback for the current tool call.
+
+    The tool server invokes every registered hook -- best effort, in registration
+    order -- if it force-ends this call on its hard execution-time limit
+    (``ToolServer(max_call_seconds=...)``). This is how "time is up" reaches work
+    the awaiting coroutine cannot end by itself: a tool that spawned an OS
+    subprocess registers a process-group kill here, so a hard timeout REAPS the
+    process rather than merely cancelling the Python coroutine and orphaning a
+    child that keeps running and holding memory.
+
+    Hooks must be non-blocking (they run inline on the dispatch task) and should
+    not raise for their own reasons; a raising hook is caught and logged by the
+    server so it cannot block the others. On the normal path -- the tool returns
+    before the hard limit -- no hook is ever invoked.
+
+    :param hook: zero-arg synchronous callback run on hard-timeout cleanup
+    :ptype hook: Callable[[], None]
+    :raises RuntimeError: called outside a ToolServer call scope (no
+        :func:`enter_call_scope` block is active)
+    """
+    scope = _current_scope.get()
+    if scope is None:
+        raise RuntimeError(
+            "register_call_cleanup called outside a ToolServer call scope; "
+            "enter_call_scope must wrap every tool.run() dispatch"
+        )
+    scope.cleanup_hooks.append(hook)
 
 
 def get_current_context() -> ToolContextManager:

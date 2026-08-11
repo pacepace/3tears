@@ -1208,6 +1208,35 @@ async def test_ensure_jetstream_stream_defaults_to_memory() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_jetstream_stream_applies_retention_bounds() -> None:
+    """a stream whose messages are addressed to ONE waiter needs both bounds.
+
+    without ``max_age`` a caller that never returns for its answer leaves it resident for the life of
+    the stream; without ``max_msgs_per_subject=1`` a retried delivery leaves a stale first answer
+    behind for the next waiter on that subject to pick up.
+    """
+    client, js = _client_with_js()
+    await client.ensure_jetstream_stream(
+        name="tools-results",
+        subjects=["3tears.tools.result.>"],
+        max_age_seconds=900.0,
+        max_msgs_per_subject=1,
+    )
+    config = js.add_stream.await_args.args[0]
+    assert config.max_age == 900.0
+    assert config.max_msgs_per_subject == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_leaves_retention_unbounded_by_default() -> None:
+    """existing streams must not silently acquire a retention bound they never had."""
+    client, js = _client_with_js()
+    await client.ensure_jetstream_stream(name="plain", subjects=["3tears.x.*"])
+    config = js.add_stream.await_args.args[0]
+    assert config.max_age is None
+
+
+@pytest.mark.asyncio
 async def test_ensure_jetstream_stream_reconciles_existing() -> None:
     """when the stream already exists, fall back to update_stream (reconcile)."""
     client, js = _client_with_js()

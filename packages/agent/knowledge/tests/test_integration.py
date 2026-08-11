@@ -20,6 +20,7 @@ from threetears.knowledge import KnowledgeDraftCommand, KnowledgeDraftEvent
 from threetears.agent.knowledge.integration import (
     DraftView,
     KnowledgeIntegration,
+    GovernedKnowledgeUnavailableError,
     retrieve_concepts,
     retrieve_entries,
     scope_context_admitted_scopes,
@@ -118,11 +119,11 @@ class TestRetrieveEntries:
         assert eff == []
         assert lay == []
 
-    async def test_soft_fail_returns_empty(self) -> None:
+    async def test_retrieval_fault_fails_closed(self) -> None:
+        """an entry fault fails closed too -- an invariant ENTRY is a hard rule."""
         integration = KnowledgeIntegration(entry_collection=_EntryColl([], raises=True))
-        eff, lay = await retrieve_entries(integration, uuid7(), customer_scope=uuid7())
-        assert eff == []
-        assert lay == []
+        with pytest.raises(GovernedKnowledgeUnavailableError, match="always-inject"):
+            await retrieve_entries(integration, uuid7(), customer_scope=uuid7())
 
     async def test_scope_clamp_baseline_drops_non_platform(self) -> None:
         integration = KnowledgeIntegration(
@@ -147,11 +148,28 @@ class TestRetrieveConcepts:
         assert eff == []
         assert lay == []
 
-    async def test_soft_fail_returns_empty(self) -> None:
+    async def test_retrieval_fault_fails_closed(self) -> None:
+        """THIS TEST PREVIOUSLY ASSERTED THE BUG.
+
+        It required a retrieval fault to yield ``([], [])`` -- which let the turn
+        proceed with NO governed concepts, including any ``always_inject`` rule
+        the agent is required to apply on EVERY turn. Nothing downstream could
+        tell that apart from "no concepts applied".
+
+        ``GovernedKnowledgeRenderError`` already fails closed for an invariant
+        that was retrieved and then could not be rendered. A retrieval fault
+        never reached that check, because there was nothing to render. Same
+        fail-open, reached from the other side.
+        """
         integration = KnowledgeIntegration(concept_collection=_ConceptColl([], raises=True))
+        with pytest.raises(GovernedKnowledgeUnavailableError, match="always-inject"):
+            await retrieve_concepts(integration, uuid7(), customer_scope=uuid7())
+
+    async def test_disabled_collection_is_not_a_fault(self) -> None:
+        """a deliberately unwired layer stays empty -- only a FAULT fails closed."""
+        integration = KnowledgeIntegration(concept_collection=None)
         eff, lay = await retrieve_concepts(integration, uuid7(), customer_scope=uuid7())
-        assert eff == []
-        assert lay == []
+        assert (eff, lay) == ([], [])
 
     async def test_scope_clamp_customer_effective(self) -> None:
         integration = KnowledgeIntegration(

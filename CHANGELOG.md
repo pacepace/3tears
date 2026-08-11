@@ -4,6 +4,346 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+## v0.23.11 -- 2026-08-10
+
+### Fixed
+
+- `agent-tools`: a permanent tool-pod configuration fault now STOPS the pod
+  instead of feeding a restart loop. Config validation raises
+  `ToolPodConfigError` (a `ValueError` subclass, so existing handlers keep
+  working) naming the offending variable, and `ToolServerBootstrap.run` reports
+  it as one structured ERROR record and exits `EX_CONFIG` (78) rather than a
+  bare 1. A supervisor can branch on the status; it cannot branch on a message.
+  Transient failures, including secret-ref resolution against a projected
+  Secret that is merely late, still exit 1 and stay retryable. Reported as
+  bluelabsio/14-eng-ai-bot#235, where a renamed variable produced 9,580
+  restarts across 8 days without one successful start.
+
+## v0.23.10 -- 2026-08-10
+
+### Changed
+
+- `agent-knowledge`: the situational-tail retrieval budget SCALES with the corpus
+  (`clamp(candidates * 175, 3500, 16000)`) instead of sitting at a constant. A
+  constant made every item authored past its capacity evict another from the same
+  turn, so documenting more made the agent know less. Measured: a 90-item corpus
+  had 65 to 76 items dropped per turn at the old 3500, and the same eval suite
+  scored 48-50/51 with a different set of cases failing each run. An explicit
+  `token_budget=` still wins verbatim. (#295)
+- `langgraph`: documented-schema priming no longer truncates by arbitrary digest
+  order. Tables are ranked by hazard notes, then documentation weight, then
+  qualified name as a total order, and the budget scales with the table count
+  (`clamp(tables * 500, 1500, 16000)`). Measured: 32 of 35 tables were dropped
+  every turn, always the same three surviving, whatever the question. (#296)
+
+## v0.23.9 -- 2026-08-09
+
+### Changed
+
+- `agent-knowledge`: the default situational-tail retrieval token budget is
+  3500, raised from 2000. The number is measured, not chosen: the same
+  governed agent scored 50/51 on its eval suite at 3500 and 48/51 at the
+  unconfigured 2000 default, with the two extra failures being exactly the
+  routing entries that ranked below the 2000-token cut. Deployments wanting
+  the leaner cut still set it per-middleware via the constructor. (#292)
+
+## v0.23.8 -- 2026-08-09
+
+### Fixed
+
+- A LOCAL write now evicts LOCAL scans. The scan cache was invalidated only by
+  the bus listener, which deliberately ignores this registry's own broadcasts --
+  correct for a by-pk row, backwards for a scan. A write changes WHICH ROWS
+  MATCH, so the cached result set is stale the instant it commits, and the pod
+  that made the write is the one pod guaranteed never to hear about it.
+
+  The visible symptom was a service that imported content and kept answering
+  from the pre-import set until the TTL lapsed. The eviction sits deliberately
+  ahead of the `nats_client is None` return: it is not a broadcast, so it must
+  not be skipped where there is no bus.
+
+## v0.23.7 -- 2026-08-08
+
+### Added
+
+- `threetears.iam.dpop_client` -- the client half of `threetears.iam.dpop`:
+  `new_holder_key` and `sign_dpop_proof`, for producing an RFC 9449 proof.
+  Every browser, CLI and SDK that authenticates against this platform needs the
+  identical wire format, and a second implementation of it is a second chance to
+  disagree with the verifier. The module arrived in identity-core because a
+  headless bootstrap had to log itself in; this is that code, unchanged in
+  behaviour, moved to where its other consumers can reach it.
+
+  Callers must keep the holder key for as long as they want the session: an
+  issued token pair's `cnf` is that key's thumbprint, so losing it ends the
+  session rather than degrading it.
+
+## v0.23.6 -- 2026-08-08
+
+### Fixed
+
+- **The governed knowledge layer no longer fails open.** `retrieve_concepts` /
+  `retrieve_entries` swallowed a retrieval fault and returned `([], [])`, so the
+  turn proceeded with NO governed knowledge and the answer was indistinguishable
+  from a governed one. `GovernedKnowledgeRenderError` already refused this for an
+  invariant that failed to RENDER; a fault one step earlier walked past that
+  guarantee, because zero rows means nothing to render and nothing to fail. Both
+  now raise `GovernedKnowledgeUnavailableError`, and the injection middleware
+  fails closed on it. A DISABLED layer is unchanged -- an unwired collection is
+  configuration, not a fault.
+
+  Observed on a cluster: an L3 timeout produced exactly this on roughly one turn
+  in fourteen during an eval run.
+
+- **Knowledge is no longer re-read from L3 on every turn.**
+  `list_visible_to_user` bypassed the Collection it lives on -- raw pool fetch,
+  raw dict, hand-built snapshot, no L1, no invalidation. Two cross-table RBAC
+  JOINs per agent turn under a 5s timeout, for rows that change about once a day.
+  That is what made the timeout above reachable.
+
+### Added
+
+- `ScanCache` (`threetears.core.collections.scan_cache`) -- an L1-backed cache
+  for visibility-filtered scans, keyed by caller identity and evicted by
+  DECLARED DEPENDENCY TABLES through the existing cross-pod invalidation
+  broadcast. The RBAC dependency is a security property, not a freshness one: a
+  scan reading `role_assignments` must drop when a grant is revoked, so the
+  registry evicts dependent scans BEFORE its early returns (those bail for
+  tables a pod does not hold as collections -- exactly what `role_assignments`
+  is on an agent pod). TTL is a backstop for a missed broadcast, never the
+  primary mechanism.
+
+  Opt-in per collection, and degrades to uncached when no registry is present.
+
+
+## v0.23.5 -- 2026-08-07
+
+### `3tears-iam`
+
+**Sessions bind their DPoP holder key at issuance, and a session that carries no
+binding can no longer refresh.** `rotate_refresh_token` loses its
+`bind_holder_key_on_first_use` parameter. Binding on first refresh handed the
+session to whoever presented the refresh token first: a thief who refreshed
+before the victim did bound THEIR key and took the session, and every
+protection after that point defended the theft. A pair is now minted with `cnf`
+already set — `mint_token_pair(cnf=...)` already accepted it — so a refresh
+token carrying none has no key anyone could prove, and re-authentication is the
+only path that binds one.
+
+`_resolve_holder_binding` is now two cases: no `cnf` refuses with `"this session
+is not holder-key bound; re-authenticate."`, and a bound session must match its
+thumbprint exactly. The refusal sits at step 5 of the documented check order,
+before `ledger.redeem`, so it burns no `jti` and trips no reuse detection — a
+denied refresh cannot be used to destroy a session it could not take.
+
+**Breaking, in two ways.** Callers passing `bind_holder_key_on_first_use` get a
+`TypeError`; delete the argument. And every session minted before a deploy of
+this version is unbound, so it is refused at its next refresh and its holder
+re-authenticates once — a bounded, one-time re-login, not a rollout to tune. A
+deployment whose login flow does not yet collect a proof at mint will refuse
+every refresh, so ship the proof-collecting side first.
+
+`validate_dpop_proof` is unchanged and was always endpoint-agnostic; only its
+docstring's scope prose moves from the token endpoint to token-minting
+endpoints generally.
+
+## v0.23.3 -- 2026-08-05
+
+### `3tears-scrape`
+
+**Network capture now records the request payload, so a POST-read API can be
+replayed.** A growing class of portal APIs is read with a POST whose body IS the
+query -- the URL is byte-identical for every page and every filter -- so capturing
+only the response left a caller able to see that such an API exists and unable to
+call it. `NetworkCall` and `CapturedRequestShape` carry `request_body` (verbatim,
+as sent), and the latter also `request_body_shape` (`json.loads` when it parses).
+Both drivers fill it from what they already hold: Playwright's `Request.post_data`
+in camoufox, CDP's `request.post_data` in the nodriver sidecar.
+
+`None` means the request carried no body -- a different fact from an empty one,
+and the truth for every GET; a form-encoded payload parses to no shape but stays
+available verbatim. Additive with defaults, so every existing caller and every
+captured GET is unchanged.
+
+### `3tears-enforcement`
+
+**Regenerating the underscore-exemptions ledger no longer loses reviewed
+rationales when an edit is longer than a function.** `carry_forward_rationales`
+resolved every entry's enclosing scope against the CURRENT file at the entry's
+recorded line -- exact while the ledger is fresh, but a drifted line has a
+different function under it, so one insertion longer than a function turned every
+reviewed rationale below it into a TODO placeholder at the next regeneration. A
+drifted entry now resolves against the file as it stood at the last commit that
+touched the ledger, which is the tree its numbers were recorded against; a fresh
+entry (including one hand-added for uncommitted code) still resolves against the
+current file. Without git history the old behaviour remains, and a mapping that
+cannot be made still surfaces as a placeholder rather than a wrong rationale.
+
+### `3tears-agent-tools`
+
+**A tool pod can now cap how many tools run at once and force-end one that
+overruns a hard time limit, reaping the process it leaves behind.** `ToolServer`
+gained two optional guards, both defaulting off so existing pods are unchanged:
+`max_concurrent_calls` bounds how many `tool.run` bodies execute simultaneously
+(excess calls queue for a slot), and `max_call_seconds` is a hard ceiling above
+each tool's own budget. Without them, a burst of memory-heavy tools -- several
+security scanners fired in one turn -- could run unbounded and OOM-kill the pod.
+
+The hard timeout actually kills the work rather than orphaning it. A tool
+registers a synchronous cleanup callback with the new
+`register_call_cleanup(hook)`; when the ceiling trips, the server runs those
+hooks (best effort, in order) before failing the call with the new
+`HardCallTimeout` -- so a tool that spawned a subprocess reaps its process group
+instead of leaving a child running and holding memory after the awaiting
+coroutine is cancelled. A tool that raises its OWN `TimeoutError` within the
+ceiling is untouched -- that stays an ordinary tool failure, distinguished via
+`asyncio.timeout().expired()`.
+
+## v0.23.2 -- 2026-08-04
+
+> **A PATCH bump — this repairs a loss, it does not add a capability — but the whole
+> family must still move in ONE commit.** The registry ↔ tool-pod and agent ↔
+> registry call envelopes each gain one optional field, and both models are
+> `extra="forbid"`, so a 0.23.2 registry sending `result_subject` to a 0.23.1 pod
+> gets `malformed call request`. The intra-family bounds on a patch release
+> (`>=0.23.0,<0.24.0`) permit that mix; the exact-pin rule is what prevents it. Do
+> not half-move a consumer's pins.
+
+### Fixed
+
+- **A tool that runs longer than one connection lifetime can now deliver its
+  answer.** NATS validates a connection's user JWT at CONNECT and has no in-band
+  re-auth, so refreshing a credential IS a reconnect. `allow_responses` — the right
+  to answer a request without a standing publish grant on the requester's inbox — is
+  scoped to the connection that RECEIVED the request. Those two facts compose into a
+  hard limit: **any correct credential refresh destroyed the right to answer a call
+  still in flight.** Observed in production on a pentest pod:
+
+  ```
+  03:26:12  running testssl
+  03:26:48  NATS re-authenticated (proactive reconnect)
+  03:27:44  scanner finished {"exit_code": 0, "duration_seconds": 91.964,
+                              "timed_out": false, "stdout_bytes": 67902}
+  03:27:44  NATS error: permissions violation for publish to "_inbox...."
+  ```
+
+  The scan worked. 68KB of results existed and could not be delivered — which reads
+  as the tool being broken rather than the connection being recycled underneath it.
+
+  Neither obvious lever was acceptable. A JWT TTL long enough to cover a
+  1200-second scan means 20-minute credentials. A standing publish grant on the
+  requester's inbox tree (`_INBOX_registry_*.>`) would let any tool pod forge a reply
+  into any other pod's in-flight call — a cross-customer response-injection hole.
+
+  So a long call is now **accepted, then delivered**. The responder acknowledges on
+  the reply inbox before starting any work — always inside the window its connection
+  is guaranteed to survive — and publishes the answer to a subject it holds a
+  STANDING grant on. Because that grant is derived from ids the auth-callout already
+  resolves, every refresh re-mints it identically and reconnects stop being an event
+  the call has to survive.
+
+  Both hops changed, because all three connections in `agent -> registry -> pod` run
+  the same refresh and fixing one only relocates the failure.
+
+### Added
+
+- **Two durable answer families** (`threetears.nats.Subjects`):
+
+  | subject | hop |
+  |---------|-----|
+  | `{ns}.tools.result.{pod_id}.{call_id}` | pod → registry |
+  | `{ns}.tools.reply.{agent_id}.{call_id}` | registry → agent |
+
+  The keying differs because the responders differ. A pod is a NAMED responder, so
+  the subject names the answerer and only that pod holds the publish grant. The
+  registry is an ANONYMOUS member of a queue group — the caller cannot know which
+  replica will answer, so it cannot subscribe a responder-named subject before
+  dispatching. That family names the CALLER instead (the shape
+  `gateway.stream.{agent_id}.{correlation_id}` already uses), and containment moves
+  to the registry refusing any subject that does not name the call's VERIFIED agent
+  id, re-stamped from the identity token rather than claimed by the envelope.
+
+  `call_id` is per CALL, never the per-turn `correlation_id`: a turn routinely makes
+  several tool calls, and a correlation-keyed subject would hand a waiter another
+  call's result.
+
+- **`threetears.nats.result_delivery`** — the pure decisions both responders and both
+  callers share: `requires_async_result()`, `result_stream_name()`, and the
+  subject-ownership checks. Every ownership prefix is derived from the subject
+  factory rather than reassembled locally, so the check cannot drift from what the
+  factory builds.
+
+- **`NatsClient.jetstream_result_waiter()`** returning `JetStreamResultWaiter`.
+  Delivery rides JetStream rather than a core publish, and the waiter rebuilds its
+  consumer after a failed fetch, so a CONSUMER-side reconnect cannot lose an answer
+  that took twenty minutes to compute either. Opened BEFORE the call is dispatched;
+  `DeliverPolicy.ALL` on a per-call subject removes the ordering race entirely.
+
+- **`ToolServer.sync_replies_in_flight` / `await_sync_replies()`**, and
+  `_drain_before_reauth` promoted to **`drain_before_reauth`**. "May this connection
+  be recycled" is a lifecycle question about the server, not an implementation detail
+  of the re-auth loop.
+
+- `ensure_jetstream_stream()` gains `max_age_seconds` and `max_msgs_per_subject`.
+
+### Changed
+
+- `CallRequest` and `ProxyCallRequest` gain an optional `result_subject`; new
+  `CallAccepted` / `ProxyCallAccepted` acknowledgement envelopes. The acknowledgement
+  is what preserves the registry's fast dead-pod signal — without it, an endpoint
+  that had vanished would be indistinguishable from one running a 20-minute scan
+  until the whole tool budget elapsed.
+
+- Calls inside `SYNC_REPLY_BUDGET_SECONDS` (30s) keep the fast reply-inbox path
+  unchanged. That budget is pinned `<=` the re-auth drain grace by an enforcement
+  test, so a call the caller CHOSE to answer synchronously always fits inside the
+  window the responder will actually hold its connection open for. The two numbers
+  live in different packages and nothing else related them — which is exactly how a
+  60-second connection ended up carrying a 1200-second tool.
+
+- The tool pod's startup TTL warning no longer compares the JWT TTL against the
+  longest tool timeout (that comparison would now fire on every pentest pod and mean
+  nothing). It fires when the TTL is too short to carry even a SHORT call, which is
+  the floor the synchronous path still rests on.
+
+- Standing grants minted for `TOOL_POD` (own result subtree), `AGENT_POD` (own
+  in-process result subtree), and `REGISTRY` (the reply family); all three declare
+  the `{ns}-tools-results` stream. Proven against a live nats-server — an ungranted
+  JetStream op does not fail with a denial, it hangs to its deadline, so the grant
+  strings are exercised on a real subject matcher rather than asserted in isolation.
+
+## v0.23.1 -- 2026-08-04
+
+> **No Python changed. This release exists to ship a base image that can read
+> the lockfiles the platform now produces.** Every consumer that builds a Docker
+> image needs it; nothing that only imports the packages does.
+
+### Fixed
+
+- **Base image: uv 0.9.9 -> 0.11.1** (`docker/Dockerfile`, both stages). The uv
+  binary in `threetears-base` is a CONSUMER CONTRACT, not an internal detail:
+  `aibots-base` inherits it rather than installing its own, and every downstream
+  image (hub, admin, schema, agent) runs `uv export` against its OWN `uv.lock`
+  at build time. 0.9.9 predates two things the current uv writes, so the moment
+  the supply-chain cooldown (`exclude-newer = "14 days"`) landed in a consumer,
+  that consumer's image build failed:
+
+  ```
+  failed to parse year in date "14 days"
+  Failed to parse `uv.lock` ... [options]: invalid type: map, expected a
+  timestamp string
+  ```
+
+  Reproduced directly against `ghcr.io/astral-sh/uv:0.9.9` and confirmed fixed
+  on 0.11.1, then proven end to end by baking the hub image from source.
+
+  Bumped here rather than overridden per consumer: nine repos carry that
+  cooldown, so a per-repo override is the same workaround written nine times
+  and would leave this image shipping a resolver older than the locks it is
+  handed.
+
 ## v0.22.5 -- 2026-08-01
 
 > **A PATCH bump, and safe for every current consumer.** For a CONCRETE epoch

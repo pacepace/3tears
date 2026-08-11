@@ -17,6 +17,10 @@ dev = [
 ]
 
 [tool.uv]
+# Supply-chain cooldown: refuse any PyPI release younger than 14 days, so a version
+# published by a registry account takeover leaves the index before we can resolve to it.
+# Only registry indexes are filtered; path and git sources are unaffected.
+exclude-newer = "14 days"
 package = false
 
 [tool.pytest.ini_options]

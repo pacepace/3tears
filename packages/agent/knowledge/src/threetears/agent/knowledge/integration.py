@@ -51,12 +51,37 @@ from threetears.observe import get_logger
 __all__ = [
     "DraftView",
     "KnowledgeIntegration",
+    "GovernedKnowledgeUnavailableError",
     "retrieve_concepts",
     "retrieve_entries",
     "scope_context_admitted_scopes",
 ]
 
 log = get_logger(__name__)
+
+
+class GovernedKnowledgeUnavailableError(RuntimeError):
+    """Raised when the governed knowledge layer could not be READ this turn.
+
+    The sibling of :class:`~threetears.agent.knowledge.middleware.GovernedKnowledgeRenderError`,
+    and it closes that error's blind spot. Render-failure fails closed on an
+    INVARIANT that was retrieved and then could not be rendered. A retrieval
+    fault never reaches that check: it yields zero concepts, so there is nothing
+    to render, so nothing fails -- and an ``always_inject`` rule the agent is
+    required to apply on EVERY turn silently does not apply.
+
+    The fail-open is the same one, arrived at from the other side. We cannot
+    know whether an invariant was among the rows we failed to fetch, so we must
+    assume one was.
+
+    Seen live on cobalt-dev: an L3 timeout (``aibots.l3.query: nats: timeout``)
+    made this retrieval soft-fail, the turn continued with NO governed concepts,
+    and the answer was indistinguishable from a governed one -- roughly one turn
+    in fourteen during an eval run.
+
+    A DISABLED layer (no collection wired) is not this: that is a deliberate
+    configuration and still returns empty.
+    """
 
 
 #: The three scope-context values (mirrors the hub's ``eval_runs.scope_context``
@@ -339,14 +364,20 @@ async def retrieve_entries(
             admitted = scope_context_admitted_scopes(scope_context)
             snapshots = [s for s in snapshots if s.scope in admitted]
         effective, layered = merge_entry_views(snapshots)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- retrieval is best-effort context enrichment; a fault yields no knowledge rather than failing the turn
+    # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- same reason as
+    # concepts. An invariant entry is a hard rule for every turn, and a fetch we
+    # never completed cannot prove one was absent.
+    except Exception as exc:
         log.warning(
-            "knowledge retrieval failed (soft-fail): %s: %s",
+            "entry retrieval failed (FAIL-CLOSED, the turn does not proceed ungoverned): %s: %s",
             type(exc).__name__,
             exc,
             exc_info=True,
         )
-        effective, layered = [], []
+        raise GovernedKnowledgeUnavailableError(
+            f"governed knowledge entries could not be read this turn ({type(exc).__name__}: {exc}); "
+            "an always-inject rule may not have been applied, so the turn does not proceed",
+        ) from exc
 
     return effective, layered
 
@@ -414,13 +445,19 @@ async def retrieve_concepts(
             admitted = scope_context_admitted_scopes(scope_context)
             snapshots = [s for s in snapshots if s.scope in admitted]
         effective, layered = merge_concept_views(snapshots)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- concept retrieval is best-effort; a fault yields no concepts and never breaks the separate entry injection or the turn
+    # NOSILENT: re-raised as GovernedKnowledgeUnavailableError -- a retrieval
+    # fault cannot be scored as "no concepts applied", because an always-inject
+    # rule may have been among the rows we could not fetch.
+    except Exception as exc:
         log.warning(
-            "concept retrieval failed (soft-fail): %s: %s",
+            "concept retrieval failed (FAIL-CLOSED, the turn does not proceed ungoverned): %s: %s",
             type(exc).__name__,
             exc,
             exc_info=True,
         )
-        effective, layered = [], []
+        raise GovernedKnowledgeUnavailableError(
+            f"governed concepts could not be read this turn ({type(exc).__name__}: {exc}); "
+            "an always-inject rule may not have been applied, so the turn does not proceed",
+        ) from exc
 
     return effective, layered

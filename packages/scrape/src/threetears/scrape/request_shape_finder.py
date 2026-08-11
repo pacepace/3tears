@@ -83,6 +83,16 @@ class CapturedRequestShape:
     #: (see ``NetworkCaptureDriver``'s sibling sidecar fix) -- ``None`` when
     #: the body isn't JSON-shaped at all, not fabricated as ``{}``.
     body_shape: Any = None
+    #: The request payload the page sent, exactly as captured -- ``None`` for a
+    #: bodyless request (every GET). A POST-read API's body IS its query: the URL
+    #: is identical for every page and every filter, so a caller holding only the
+    #: URL cannot replay the call at all.
+    request_body: str | None = None
+    #: ``json.loads(request_body)`` when it parses, else ``None`` -- never a
+    #: fabricated ``{}``, matching ``body_shape``'s own honesty about absence.
+    #: A form-encoded payload is a real body that is simply not JSON, and it
+    #: stays available verbatim in ``request_body``.
+    request_body_shape: Any = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +176,8 @@ async def capture_request_shape(
             content_type=call.content_type,
             body=call.body,
             body_shape=_parse_body_shape(call.body),
+            request_body=call.request_body,
+            request_body_shape=(_parse_body_shape(call.request_body) if call.request_body is not None else None),
         )
         for call in page.network_calls
     )
