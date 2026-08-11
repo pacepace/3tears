@@ -541,6 +541,56 @@ a fresh pass before Phase 2 widens — the contract is the lock-in surface
 (every future consumer's queries are its requirements); this is where a re-cut
 is still cheap.
 
+#### Gate A findings — 2026-08-10
+
+The independent review returned **pass-with-findings**: the shapes honor
+D1/D2/D20/D22/D23, the naming rule, open criteria, honest dispositions, and
+Spend's pricing model; one canonical-form mistake had to be re-cut before
+Phase 2/3 widens, and no structural re-cut was needed. All findings landed
+the same night, while no consumer had bound. Taken:
+
+- **BLOCKING — operational fields left the canonical form.** `record` and
+  `budget_scope_tags` participated in the replay/eval digest, which made
+  replay structurally unusable (recorded with `record=True`, replayed
+  without — SR-F6/SR-F7) and gave every eval run a unique identity
+  (SR-D2 tags carry run identity, defeating SR-F1). Fixed via
+  `ContractModel.CANONICAL_EXCLUDED`; the semantic parameters — query,
+  criteria, fidelity — are the canonical form. `CANONICAL_FORM_VERSION`
+  stays 1: no digest had been persisted, which is the point of catching it
+  here.
+- **`FetchTransport` declared** as a second protocol beside
+  `SearchTransport` (§3.1, §3.5, §3.8), so Extract's byte-capped,
+  content-type-gated read never forces a widening that would retroactively
+  invalidate Phase-1 transport implementers. Implementations arrive with
+  Extract in Phase 2.
+- **`FailureRecord` carries `egress` and `occurred_at`** (optional,
+  additive), stamped by the standalone transport and the SearXNG adapter —
+  a consumer-side pacing/ban tracker can now rebuild D8's
+  `(provider instance, egress)` key from the one record that survives the
+  wire.
+- **`Criterion.time_range` refuses naive datetimes and normalizes to UTC**,
+  matching the Provenance stance, so equal instants cannot canonicalize
+  unequally.
+- **D13 skew stance ruled** (see the D13 rider in §1): the additive promise
+  is scoped to exact-version pairs while `extra="forbid"` stands; Gate C's
+  wire-compatibility promise must include the ignore-unknown flip for
+  wire-read payload types. The flip itself is deliberately deferred to that
+  gate — strict rejection is the safer default while every reader shares a
+  venv.
+
+Dispositions on the build's carried questions, so they stop being open:
+
+- **`ProviderCapabilities` stays in `contracts/`** — capability
+  declarations are consumed before an adapter is constructed (SR-B4), which
+  makes them contract vocabulary, not adapter internals. No move.
+- **`SEARCH_RESULTS_SCHEMA_VERSION` stays 1** despite the additive
+  `published_at`/`notices`/`failure` fields — nothing is released, so there
+  is no older reader to protect; the version starts counting at first
+  release.
+- **`SearchProvider` is accepted contract vocabulary** (now named in
+  §3.1) — Call's dependency and the conformance suite's parametrization
+  axis; it is a seam name, not a layer name, so the §2 naming rule holds.
+
 ### Phase 2 — in-family consumers (branches stacked on Phase 1)
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
