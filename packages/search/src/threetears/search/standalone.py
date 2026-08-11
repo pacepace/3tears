@@ -380,6 +380,17 @@ class StandaloneTransport:
         Re-entrant and concurrency-safe: two overlapping scopes over one
         transport each get their own client, and each closes only its own.
 
+        **The block bounds the client, so work must finish inside it.** A task
+        started in the scope inherits the context, and therefore the client,
+        because that is how a ``ContextVar`` is copied into a task. If that
+        task outlives the block it keeps a client the exiting scope has
+        already closed, and its next call fails on a closed pool. Awaiting
+        inside the block -- ``gather`` included -- is the ordinary shape and
+        is fine; the trap is only a task deliberately left running past the
+        ``async with``. That reads as a lifetime bug either way, and the
+        reason it is worth naming is that the symptom surfaces on the *task*
+        rather than at the scope that closed the client underneath it.
+
         :return: an async context manager whose block shares one client
         :rtype: AsyncIterator[None]
         """

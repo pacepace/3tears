@@ -71,7 +71,7 @@ here.
 | D26 (replay durability, 2026-08-04) | Recordings outlive the stack that made them: replay records the **typed result** and keys on the **canonical caller request** | Three rules, detailed in §3.10: the key hashes explicitly-set caller parameters (never resolved defaults) plus a key-derivation version; replay short-circuits at the Call boundary and never touches an adapter, so removing a provider strands no recordings; payload readability is promised within a family major, refused loudly across, matching the cascade-delete lifetime recordings actually have (SR-F5). |
 | D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets bind on execution spend; cost-model analyses read recorded spend, so a replayed baseline never looks free. P7 applied to spend. Detail in §3.10. |
 | D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser (discodon's action- and delivery-seam cassettes), correctly. **No replay engine enters the `TearsTool` base class.** Detail in §3.10. |
-| D29 (freeze window, 2026-08-11) | Publication does not freeze the contracts. They stay **re-cuttable until the first consumer release pins a version carrying search** | 0.24.0 shipped `3tears-search` to PyPI after Phase 1, not at Phase 4 (§7). What makes a re-cut cheap was never "unpublished" -- it is that nobody has bound: no consumer pins it, and exact-version family pinning (the D13 rider) means a changed shape cannot reach an installed reader. So Phases 2-3 may still re-cut contract types. The window closes at the first consumer *release* naming a version that carries search; past that, a change to a wire-read payload type is a compatibility event, not an edit. Two counters therefore begin at 0.24.0 rather than "first release": `SEARCH_RESULTS_SCHEMA_VERSION` and `CANONICAL_FORM_VERSION` both stay 1 while changes remain additive, and any non-additive change now MUST be spelled as a bump rather than absorbed. |
+| D29 (freeze window, 2026-08-11) | Publication does not freeze the contracts. They stay **re-cuttable until the first consumer release pins a version carrying search** | 0.24.0 shipped `3tears-search` to PyPI after Phase 1, not at Phase 4 (§7). What makes a re-cut cheap was never "unpublished" -- it is that nobody has bound: no consumer pins it, and exact-version family pinning (the D13 rider) means a changed shape cannot reach an installed reader. So Phases 2-3 may still re-cut contract types. The window closes at the first consumer *release* naming a version that carries search; past that, a change to a wire-read payload type is a compatibility event, not an edit. Two counters therefore begin at 0.24.0 rather than "first release": `SEARCH_RESULTS_SCHEMA_VERSION` and `CANONICAL_FORM_VERSION` both stay 1 while changes remain additive, and any non-additive change now MUST be spelled as a bump rather than absorbed. **The consumers this window is measured against are ours** -- metallm and discodon, the two the sequencing tracks. A third party can `pip install 3tears-search==0.24.0` today and is outside that definition entirely; what covers them is the alpha policy the root README states, that the public API may shift between minor versions until 1.0.0, and a re-cut here lands in 0.25.0. That is the whole of their protection and it is deliberate: a package published three phases before its consumers exist has no installed base to protect, and pretending otherwise would freeze a contract nobody is holding. Past 1.0.0 this row does not apply -- the freeze is then whatever semver promises, and "nobody has bound" stops being knowable. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1-4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -577,6 +577,10 @@ tag is not a release).
 
 ### Phase 1 -- the leaf (branch `feature/search-leaf`, stacked PRs into develop)
 
+**Landed 2026-08-11 in [#303](https://github.com/pacepace/3tears/pull/303)**
+-- all three items plus the Gate A findings, which the branch absorbed the
+same night the review returned them.
+
 1. **Keystone slice** *(the first chunk of the prawduct build plan; prove the
    architecture before widening)*: `contracts/` core (request, candidate,
    criteria + disposition, spend, errors, transport protocol, metadata key)
@@ -699,8 +703,19 @@ recorded here per the Gate A precedent:
 
 ### Phase 2 -- in-family consumers (branches stacked on Phase 1)
 
+*Landed toward this phase:*
+[#307](https://github.com/pacepace/3tears/pull/307) implemented
+`FetchTransport` on `StandaloneTransport` (byte cap, content-type gate,
+shared retry loop and SSRF guard) and settled §3.8's per-request-client
+condition with an opt-in `connection_scope()` that Extract's many-fetch path
+needs and does not itself open, and
+[#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
+four Extract rulings before the build. Item 4 itself is unstarted; items 5-7
+are untouched.
+
 4. Extract's web path (streamed, capped, robots stance, no-op on
-   provider-supplied content).
+   provider-supplied content). *Its transport half is done (#307); robots
+   (D12) lands here, deliberately not there.*
 5. Gut `WebSearchTool` + `WebFetchTool`; serve.py wiring; metadata key
    end-to-end test over NATS (check 8).
 6. `page_finder` structure (check 4); context-save node fix + retention
@@ -734,9 +749,13 @@ appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
 
 The family shipped its lockstep minor with Phase 1 complete and Phases 2-3
 not started, so the release step ran three phases ahead of where this
-section puts it. Verified: tag `v0.24.0` on origin, the GitHub Release
-exists, and all 30 packages -- `3tears-search` among them -- are on PyPI at
-0.24.0. Three consequences, none of which reorder the remaining build:
+section puts it. Bump in
+[#304](https://github.com/pacepace/3tears/pull/304), develop→main in
+[#305](https://github.com/pacepace/3tears/pull/305), D29 ruled in
+[#306](https://github.com/pacepace/3tears/pull/306). Verified: tag `v0.24.0`
+on origin, the GitHub Release exists, and all 30 packages --
+`3tears-search` among them -- are on PyPI at 0.24.0. Three consequences,
+none of which reorder the remaining build:
 
 - **The contracts are published but not bound.** Ruled as D29: Phases 2-3
   may still re-cut them; the freeze is the first consumer *release* that
