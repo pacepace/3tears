@@ -32,12 +32,19 @@ from threetears.enforcement.dict_state_detection import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The five packages that hold flagged state. Explicit rather than discovered: these are the
-#: trees the allowlist below describes, and a wider scan would report packages nobody has
+#: The packages whose state this domain watches. Explicit rather than discovered: these are
+#: the trees the allowlist below describes, and a wider scan would report packages nobody has
 #: triaged yet as unexplained failures.
+#:
+#: ``search`` is here with nothing to declare, which is the point of adding it (search-spec.md
+#: §4.10 b). Its in-process limiter is the one piece of state it is *expected* to grow (§3.9,
+#: SR-O2) and that entry is to be argued when the limiter lands -- so the root goes in first,
+#: while the answer is still "none", rather than arriving alongside the state it should have
+#: been questioning.
 _SRC_ROOTS = (
     _REPO_ROOT / "packages/core/src/threetears/core",
     _REPO_ROOT / "packages/registry/src/threetears/registry",
+    _REPO_ROOT / "packages/search/src/threetears/search",
     _REPO_ROOT / "packages/agent/memory/src/threetears/agent/memory",
     _REPO_ROOT / "packages/agent/tools/src/threetears/agent/tools",
     _REPO_ROOT / "packages/langgraph/src/threetears/langgraph",
