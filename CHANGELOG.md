@@ -15,6 +15,23 @@ packages (bumped in lock-step).
   which is exactly how the drift below survived. Verified to flag the old
   file and pass the fixed one.
 
+### Changed
+
+- `search`: `StandaloneTransport.connection_scope()` documents that its
+  block bounds the client. A task started inside the scope inherits the
+  context and therefore the client, so one left running past the
+  `async with` keeps a client the exiting scope has already closed --
+  verified, not theorised. Awaiting inside the block, `gather` included,
+  is unaffected. The docstring previously said "concurrency-safe"
+  unqualified, which is true of overlapping scopes and reads as a promise
+  about escaping tasks.
+- `search`: D29 records which consumers its freeze window is measured
+  against. It is ours -- metallm and discodon -- and a third party can
+  install the published leaf today and sits outside that definition. What
+  covers them is the alpha policy the root README already states; the
+  ruling now says so rather than leaving it inferred, and notes the row
+  stops applying at 1.0.0.
+
 ### Fixed
 
 - `media-contracts`: the runtime `__version__` is derived from package
