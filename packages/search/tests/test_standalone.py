@@ -697,6 +697,98 @@ async def test_a_fetch_failure_leaves_stamped_like_any_other() -> None:
     assert raised.value.occurred_at is not None
 
 
+# --- the connection scope (spec section 3.8) ------------------------------
+
+
+async def test_calls_in_a_scope_share_one_connection() -> None:
+    """Extract's many-fetch path pays a handshake per host, not per document."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            for _ in range(3):
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert len(server.requests) == 3
+    assert server.connections == 1
+
+
+async def test_calls_outside_a_scope_stand_alone() -> None:
+    """SR-L5 stays the default: no scope, no pool, nothing left to close."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        for _ in range(3):
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert server.connections == 3
+
+
+async def test_a_scope_closes_what_it_opened() -> None:
+    """A pool that outlived its block would be the lifecycle SR-L5 refuses."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+        # outside the block the transport is what it was before it: the next
+        # call opens its own connection rather than reaching for a closed one.
+        await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert server.connections == 2
+
+
+async def test_a_scope_survives_a_failure_inside_it() -> None:
+    """The pool is released by the block ending, however it ends."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096),)) as server:
+        transport = _transport(max_attempts=1)
+        with pytest.raises(LocalCapExceeded):
+            async with transport.connection_scope():
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+        # a scope that leaked its client would hand this call a closed one.
+        response = await transport.fetch("GET", f"{server.base_url}/page", max_bytes=1_000_000)
+
+    assert response.status_code == 200
+
+
+async def test_concurrent_scopes_over_one_transport_do_not_share_a_pool() -> None:
+    """A transport is a deployment fact; two callers are not one caller."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+
+        async def _scoped() -> None:
+            async with transport.connection_scope():
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+        await asyncio.gather(_scoped(), _scoped())
+
+    assert len(server.requests) == 2
+    assert server.connections == 2
+
+
+async def test_the_deadline_still_bounds_calls_made_inside_a_scope() -> None:
+    """A shared client outlives one call's bound; the bound still binds."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(close_early=True),)) as server:
+        transport = _transport(max_attempts=3, clock=clock.read, sleep=clock.sleep)
+        async with transport.connection_scope():
+            with pytest.raises((TimedOut, TransportFailed)):
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096, timeout_seconds=5.0)
+
+
+async def test_a_search_call_shares_the_scope_too() -> None:
+    """One loop, one lifecycle: the scope is not a fetch-only affordance."""
+    async with LocalHttpServer((Reply(body=TWO_RESULTS_BODY),)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            await transport.request("GET", f"{server.base_url}/search")
+            await transport.request("GET", f"{server.base_url}/search")
+
+    assert len(server.requests) == 2
+    assert server.connections == 1
+
+
 # --- composed with the adapter -------------------------------------------
 
 

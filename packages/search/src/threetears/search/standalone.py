@@ -56,11 +56,25 @@ type is refused before the body -- so they share one retry loop, one deadline,
 one set of guards. Duplicating the loop to add a cap parameter would have left
 two SSRF guards to keep in step, which is the arrangement D21 exists to avoid.
 
-**No client is held between calls.** A search is one request, and SR-L5
-requires a single call to work from a one-shot ``asyncio.run()`` with no
-lifecycle to manage and nothing left to close. Connection reuse is what the
-injected core transport is *for*; a host that needs it should inject that
-rather than have this module grow a lifecycle.
+**No client is held between calls, and one is held inside a scope.** A search
+is one request, and SR-L5 requires a single call to work from a one-shot
+``asyncio.run()`` with no lifecycle to manage and nothing left to close -- so
+that stays the default, and a caller who never asks for anything else never
+acquires a thing to close. But §3.8 flagged the other half of this when it
+declared the fetch seam: a per-request client is right for one search and
+wrong for Extract's many-fetch path, where ten candidate pages plus a
+robots.txt per host means twenty fresh TCP and TLS handshakes to read twenty
+documents. :meth:`StandaloneTransport.connection_scope` is the opt-in --
+inside the block, the calls share one client and its connection pool; outside
+it, nothing changed.
+
+The scope's client lives in a module-level ``ContextVar`` rather than on the
+transport, so one transport instance stays reentrant: two concurrent scopes
+over the same transport get their own pools instead of racing over an
+attribute, and a scope that exits closes only what it opened. The lifecycle
+belongs to whoever *constructed* the transport, which is the host -- an
+injected port does not get to decide how long its own connections live, and
+Extract therefore asks for no scope of its own.
 
 **Retry is a loop here rather than ``observe.retry_with_backoff``.** That
 function returns a bool and never raises, so it can neither return a
@@ -76,7 +90,9 @@ import asyncio
 import ipaddress
 import socket
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Final
 from urllib.parse import urljoin, urlparse
@@ -149,6 +165,19 @@ RESPONSE_BYTES_SCOPE: Final[str] = "response-bytes"
 #: the same field, following the ``query-length`` / ``response-bytes``
 #: precedent: what refused is machine-readable, never prose to be parsed.
 CONTENT_TYPE_SCOPE: Final[str] = "content-type"
+
+#: clients shared by an open :meth:`StandaloneTransport.connection_scope`,
+#: keyed by the identity of the transport that opened the scope.
+#:
+#: A ``ContextVar`` rather than an attribute on the transport, for the reason
+#: the module docstring gives: a transport instance is a deployment fact that
+#: may serve several concurrent callers, and an attribute would make the last
+#: scope to open the one everybody uses. Keyed by ``id`` because the key must
+#: hold for exactly as long as the scope does, and the scope holds a reference
+#: to the transport throughout -- so the identity cannot be recycled underneath
+#: it. The mapping is replaced rather than mutated on entry so a nested or
+#: concurrent scope inherits a snapshot instead of sharing a dict.
+_SCOPED_CLIENTS: ContextVar[Mapping[int, httpx.AsyncClient]] = ContextVar("_SCOPED_CLIENTS", default={})
 
 #: the least time worth starting another attempt with, in seconds. A retry
 #: given less than this cannot resolve a name, connect and read inside it on
@@ -328,6 +357,80 @@ class StandaloneTransport:
         """
         return self._egress_name
 
+    @asynccontextmanager
+    async def connection_scope(self) -> AsyncIterator[None]:
+        """Share one client, and its connection pool, across a block of calls.
+
+        The answer to §3.8's flag that a per-request client is "right for one
+        search, wrong for Extract's many-fetch path". Inside the block every
+        call this transport makes reuses one pool, so a run that reads twenty
+        documents pays for a handshake per *host* rather than per document.
+        Outside it nothing changes, which is what keeps SR-L5 true for the
+        caller who only ever makes one call: no scope, no client to close, no
+        lifecycle to get wrong.
+
+        Opening a scope is the *host's* call, not a stage's. The transport is
+        an injected port, and how long its connections live is a property of
+        the deployment that constructed it -- so Extract opens no scope of its
+        own, and a host that wants pooling wraps its own work in one::
+
+            async with transport.connection_scope():
+                candidates = await extract(candidate_set, transport=transport)
+
+        Re-entrant and concurrency-safe: two overlapping scopes over one
+        transport each get their own client, and each closes only its own.
+
+        :return: an async context manager whose block shares one client
+        :rtype: AsyncIterator[None]
+        """
+        client = self._new_client(keepalive=self._max_connections)
+        token = _SCOPED_CLIENTS.set({**_SCOPED_CLIENTS.get(), id(self): client})
+        try:
+            yield
+        finally:
+            _SCOPED_CLIENTS.reset(token)
+            await client.aclose()
+
+    def _new_client(self, *, keepalive: int) -> httpx.AsyncClient:
+        """Build a client carrying this transport's deployment configuration.
+
+        No timeout is set here: a timeout belongs to a call, not to a client
+        (SR-G1/SR-G2), and a shared client outlives the deadline of any one
+        call made through it. Each request states what remains of its own
+        bound.
+
+        :param keepalive: connections this client may hold open between
+            requests. Zero for the per-request client, which has no next
+            request to hold one for
+        :ptype keepalive: int
+        :return: the configured client
+        :rtype: httpx.AsyncClient
+        """
+        return httpx.AsyncClient(
+            follow_redirects=False,
+            limits=httpx.Limits(max_connections=self._max_connections, max_keepalive_connections=keepalive),
+            verify=self._verify_tls,
+        )
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Yield the scope's client where one is open, a fresh one where not.
+
+        The one place the two lifecycles meet, so every call site below stays
+        unaware of which it got.
+
+        :return: an async context manager yielding the client to use
+        :rtype: AsyncIterator[httpx.AsyncClient]
+        """
+        shared = _SCOPED_CLIENTS.get().get(id(self))
+        if shared is not None:
+            # not closed here: it belongs to the scope that opened it, and a
+            # call that closed it would break every later call in the block.
+            yield shared
+            return
+        async with self._new_client(keepalive=0) as client:
+            yield client
+
     async def request(
         self,
         method: str,
@@ -493,20 +596,16 @@ class StandaloneTransport:
         bytes_seen = 0
         last: BaseException | None = None
         bound_spent = False
-        limits = httpx.Limits(max_connections=self._max_connections, max_keepalive_connections=0)
         while attempt < self._max_attempts:
             attempt += 1
+            # What remains of the caller's bound, never the whole of it
+            # again: attempt two under a 10s bound that attempt one spent 6s
+            # of gets 4s, so the request cannot outlive the deadline whatever
+            # the attempt ceiling is. Stated per request rather than on the
+            # client, because a scoped client outlives any one call's bound.
+            timeout = httpx.Timeout(max(0.0, min(effective_timeout, deadline - self._clock())))
             try:
-                async with httpx.AsyncClient(
-                    # What remains of the caller's bound, never the whole of
-                    # it again: attempt two under a 10s bound that attempt
-                    # one spent 6s of gets 4s, so the request cannot outlive
-                    # the deadline whatever the attempt ceiling is.
-                    timeout=httpx.Timeout(max(0.0, min(effective_timeout, deadline - self._clock()))),
-                    follow_redirects=False,
-                    limits=limits,
-                    verify=self._verify_tls,
-                ) as client:
+                async with self._client() as client:
                     status, body, final_url, read, response_headers = await self._exchange(
                         client,
                         method,
@@ -516,6 +615,7 @@ class StandaloneTransport:
                         json_body=json_body,
                         max_bytes=max_bytes,
                         allowed_content_types=allowed_content_types,
+                        timeout=timeout,
                         elapsed_so_far=self._clock() - started,
                         bytes_so_far=bytes_seen,
                     )
@@ -714,6 +814,7 @@ class StandaloneTransport:
         json_body: Mapping[str, JsonValue] | None,
         max_bytes: int,
         allowed_content_types: tuple[str, ...] | None,
+        timeout: httpx.Timeout,
         elapsed_so_far: float,
         bytes_so_far: int,
     ) -> tuple[int, bytes, str, int, dict[str, str]]:
@@ -736,6 +837,9 @@ class StandaloneTransport:
         :param allowed_content_types: media-type prefixes a successful
             response must match, or None to accept any
         :ptype allowed_content_types: tuple[str, ...] | None
+        :param timeout: what remains of this call's bound, stated per request
+            because the client may be shared by a connection scope
+        :ptype timeout: httpx.Timeout
         :param elapsed_so_far: wall-clock already spent, for failure spend
         :ptype elapsed_so_far: float
         :param bytes_so_far: bytes already read, for failure spend
@@ -758,6 +862,7 @@ class StandaloneTransport:
                 headers=dict(headers),
                 params=dict(params) if params else None,
                 json=dict(json_body) if json_body else None,
+                timeout=timeout,
             ) as response:
                 # header keys are normalised here so every consumer of the
                 # seam reads one casing -- the protocol promises lower-case,
