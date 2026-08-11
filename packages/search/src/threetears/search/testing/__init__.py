@@ -19,9 +19,16 @@ whose install weight is a requirement (SR-L6).
 from __future__ import annotations
 
 from threetears.search.testing.conformance import ProviderConformanceCase, ProviderConformanceSuite
-from threetears.search.testing.fakes import ScriptedTransport, TransportScript
+from threetears.search.testing.fakes import (
+    FakeBudgetPort,
+    FakeRateLimiterPort,
+    ScriptedTransport,
+    TransportScript,
+)
 
 __all__ = [
+    "FakeBudgetPort",
+    "FakeRateLimiterPort",
     "ProviderConformanceCase",
     "ProviderConformanceSuite",
     "ScriptedTransport",
