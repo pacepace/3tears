@@ -2,6 +2,11 @@
 
 **Status:** Proposal — 2026-08-02
 **Scope:** 3tears, discodon, metallm, scriob, samsung-frame-art-loader, hallucinote
+**Execution status lives elsewhere.** This document stays the proposal it was
+written as; what has actually shipped, and against which PR, is tracked in
+[`convergence-sequencing.md`](convergence-sequencing.md) (cross-repo phases)
+and [`search-spec.md` §7](search-spec.md#7-sequencing) (in-repo detail).
+Don't mirror status here — one place, or they drift.
 
 ---
 

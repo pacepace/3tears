@@ -537,6 +537,10 @@ tag is not a release).
 
 ### Phase 1 -- the leaf (branch `feature/search-leaf`, stacked PRs into develop)
 
+**Landed 2026-08-11 in [#303](https://github.com/pacepace/3tears/pull/303)**
+-- all three items plus the Gate A findings, which the branch absorbed the
+same night the review returned them.
+
 1. **Keystone slice** *(the first chunk of the prawduct build plan; prove the
    architecture before widening)*: `contracts/` core (request, candidate,
    criteria + disposition, spend, errors, transport protocol, metadata key)
@@ -659,8 +663,17 @@ recorded here per the Gate A precedent:
 
 ### Phase 2 -- in-family consumers (branches stacked on Phase 1)
 
+*Landed toward this phase:*
+[#307](https://github.com/pacepace/3tears/pull/307) implemented
+`FetchTransport` on `StandaloneTransport` (byte cap, content-type gate,
+shared retry loop and SSRF guard), and
+[#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
+four Extract rulings before the build. Item 4 itself is unstarted; items 5-7
+are untouched.
+
 4. Extract's web path (streamed, capped, robots stance, no-op on
-   provider-supplied content).
+   provider-supplied content). *Its transport half is done (#307); robots
+   (D12) lands here, deliberately not there.*
 5. Gut `WebSearchTool` + `WebFetchTool`; serve.py wiring; metadata key
    end-to-end test over NATS (check 8).
 6. `page_finder` structure (check 4); context-save node fix + retention
@@ -694,9 +707,13 @@ appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
 
 The family shipped its lockstep minor with Phase 1 complete and Phases 2-3
 not started, so the release step ran three phases ahead of where this
-section puts it. Verified: tag `v0.24.0` on origin, the GitHub Release
-exists, and all 30 packages -- `3tears-search` among them -- are on PyPI at
-0.24.0. Three consequences, none of which reorder the remaining build:
+section puts it. Bump in
+[#304](https://github.com/pacepace/3tears/pull/304), develop→main in
+[#305](https://github.com/pacepace/3tears/pull/305), D29 ruled in
+[#306](https://github.com/pacepace/3tears/pull/306). Verified: tag `v0.24.0`
+on origin, the GitHub Release exists, and all 30 packages --
+`3tears-search` among them -- are on PyPI at 0.24.0. Three consequences,
+none of which reorder the remaining build:
 
 - **The contracts are published but not bound.** Ruled as D29: Phases 2-3
   may still re-cut them; the freeze is the first consumer *release* that
