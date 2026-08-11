@@ -43,6 +43,18 @@ packages (bumped in lock-step).
 
 ### Notes
 
+- `search`: the `extraction_status` vocabulary is ruled canonical **in the
+  shipped DDL, not in the contract's comment**, before the constants that
+  Extract needs are written. The two disagree today:
+  `MediaInfo.extraction_status` documents `"pending"` / `"complete"` /
+  `None`, while migration v021 declares the column `TEXT NOT NULL DEFAULT
+  'none'` over `'none'` / `'pending'` / `'complete'` / `'failed'` and v022
+  indexes `WHERE extraction_status = 'pending'`. The DDL wins because a
+  spelling in a column default and an index predicate costs a migration to
+  change. So `failed` already exists, only `refused` is new, and the field
+  stays `str | None` -- narrowing it to a `Literal` would break bare-`str`
+  consumers and force a data ruling on `None` versus `'none'`, which is
+  recorded rather than fixed. Recorded in docs/search-spec.md §3.5.
 - `search`: the 0.24.0 release published `3tears-search` three phases ahead
   of where the spec sequences the release step, which retired the premise
   under one Gate A disposition ("nothing is released, so there is no older

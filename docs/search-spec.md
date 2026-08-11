@@ -310,6 +310,27 @@ vetoable; a veto lands here and in `search-requirements.md` §13.
   in the package that owns the neighbourhood, rather than a second status
   vocabulary being invented in the search leaf (SR-C3's rule applied to
   status rather than to facets).
+- **The shipped DDL is that vocabulary's canonical statement, not the
+  contract's comment** -- the two already disagree, and the constants have
+  to land on one side of it. `MediaInfo.extraction_status` documents
+  `"pending"` / `"complete"` / `None`; migration v021 declares the column
+  `TEXT NOT NULL DEFAULT 'none'` and names `'none'` / `'pending'` /
+  `'complete'` / `'failed'`, and v022 builds a partial index
+  `WHERE extraction_status = 'pending'`. The DDL wins because it is the
+  side with rows in it: a spelling in a column default and an index
+  predicate is changed by a migration and an index rebuild, not by an
+  edit. Two consequences. **`failed` already exists** -- of the two values
+  the ruling above says Extract produces, only `refused` is new, so the
+  constants are `none` / `pending` / `complete` / `failed` / `refused`.
+  And **the field stays `str | None`** -- no `Literal`, no `StrEnum`.
+  Narrowing it would break consumers that assign a bare `str`
+  (`analyze_media.py` compares against these values today) and would force
+  a ruling on the dataclass default `None` versus the column default
+  `'none'`, which is a data question wearing a typing costume. That split
+  is **recorded, not fixed**: both spellings mean *no extraction
+  attempted*, every consumer today falls through both branches
+  identically, and reconciling them is a migration, not a side effect of
+  adding a string constant.
 - **Escalation to `HeavyFetcher` is a caller choice**, never automatic --
   the conservative resolution `shared_search` OQ3 already reached, restated
   here because "SHOULD" above left it open and silent escalation multiplies
@@ -710,7 +731,7 @@ shared retry loop and SSRF guard) and settled §3.8's per-request-client
 condition with an opt-in `connection_scope()` that Extract's many-fetch path
 needs and does not itself open, and
 [#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
-four Extract rulings before the build. Item 4 itself is unstarted; items 5-7
+five Extract rulings before the build. Item 4 itself is unstarted; items 5-7
 are untouched.
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
