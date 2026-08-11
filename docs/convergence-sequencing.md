@@ -91,7 +91,8 @@ consume either — see the Phase 2 note.
 finished; two pieces of the ground under item 4 are.
 [#307](https://github.com/pacepace/3tears/pull/307) gave `FetchTransport`
 the implementation Gate A deferred, so Extract is no longer due to be
-written against a protocol nothing satisfies.
+written against a protocol nothing satisfies — and settled the connection
+lifecycle that path depends on.
 [#310](https://github.com/pacepace/3tears/pull/310) (open) records the four
 Extract rulings in [`search-spec.md` §3.5](search-spec.md#35-extractpy-web-path-phase-2-carrier-dispatch-phase-3)
 ahead of the build, per the Gate A precedent. `extract.py` itself does not

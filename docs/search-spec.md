@@ -666,7 +666,9 @@ recorded here per the Gate A precedent:
 *Landed toward this phase:*
 [#307](https://github.com/pacepace/3tears/pull/307) implemented
 `FetchTransport` on `StandaloneTransport` (byte cap, content-type gate,
-shared retry loop and SSRF guard), and
+shared retry loop and SSRF guard) and settled §3.8's per-request-client
+condition with an opt-in `connection_scope()` that Extract's many-fetch path
+needs and does not itself open, and
 [#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
 four Extract rulings before the build. Item 4 itself is unstarted; items 5-7
 are untouched.
