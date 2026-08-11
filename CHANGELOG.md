@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.24.0 -- 2026-08-11
 
 ### Added
 
@@ -96,10 +96,15 @@ packages (bumped in lock-step).
 
 ### Notes
 
-- No release tag: this work rides `feature/convergence` at 0.23.11, the
-  release-pending state. `3tears-search` joins the lockstep family at the
-  Phase 4 minor bump (spec §7); its version and intra-family bounds
-  already conform.
+- **Minor rather than patch because the family gained a member.**
+  `3tears-search` is a new distribution, published here for the first
+  time; every other package moves with it because the family releases in
+  lockstep, and every intra-family bound now names `>=0.24.0,<0.25.0`.
+- This is the Phase 4 release of docs/search-spec.md §7 for the search
+  leaf's Phase 1 surface only. Phases 2 and 3 (Extract and the
+  `WebSearchTool` / `WebFetchTool` rework; replay, aggregate, select)
+  are not in it, so `threetears.search` ships Call, Bind, both provider
+  adapters and the contracts, and nothing downstream of them yet.
 
 ## v0.23.11 -- 2026-08-10
 
