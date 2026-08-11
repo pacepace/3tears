@@ -8,6 +8,27 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `agent-tools`: `ToolCallFailure` carries structure out of the exception
+  path (§10.9, D18). A tool that *returned* a `ToolResult` always had its
+  `metadata` forwarded onto `CallResponse`; a tool that raised got a
+  string, so any failure with a shape -- which provider refused, which cap
+  fired, what may be retried -- had to choose between raising and being
+  understood. Opt-in by exception type, not by duck-typed attribute: every
+  other exception behaves exactly as before. No rollout ordering, because
+  `CallResponse.metadata` already existed and the exception path simply
+  stopped leaving it empty.
+- `agent-tools`: `CallRequest.deadline_seconds` -- the CALLER's remaining
+  budget (§10.10, SR-G2), distinct from `ToolManifestEntry.timeout_seconds`
+  (the tool's declared ceiling) and `max_call_seconds` (the pod's
+  backstop). The effective bound is the minimum of whichever are set: a
+  caller cannot buy more time than the pod allows, and the pod does not
+  spend time on an answer the caller stopped waiting for. `0.0` means no
+  time left and is honoured as a budget rather than treated as absent.
+  **This release ACCEPTS the field and nothing sends it.** `CallRequest` is
+  `extra="forbid"`, so a client that sends it to a server predating it gets
+  its call *rejected*, not degraded -- the server side ships and deploys a
+  release before any caller is taught to populate it, the same order
+  `result_subject` went out under.
 - `search`: `extract.py` -- Extract's web path (§3.5, Phase 2 item 4). One
   candidate in, the same candidate out with its content slot filled, its
   fidelity at `content`, and `extraction_status` / `extraction_method`

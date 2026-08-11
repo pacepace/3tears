@@ -89,6 +89,7 @@ __all__ = [
     "HeartbeatMessage",
     "ProbeAck",
     "RegistrationManifest",
+    "ToolCallFailure",
     "ToolManifestEntry",
     "ToolServer",
     "nats_connect",
@@ -428,6 +429,23 @@ class CallRequest(BaseModel):
         holds a STANDING grant on, re-minted identically at every
         refresh. ``None`` keeps the fast synchronous path for short calls
     :ptype result_subject: str | None
+    :param deadline_seconds: how much time the CALLER has left for this call
+        (§10.10, SR-G2). A different quantity from
+        :attr:`ToolManifestEntry.timeout_seconds`, which is the *tool's*
+        declared ceiling, and from ``ToolServer(max_call_seconds=...)``, which
+        is the *pod's* backstop -- this one is the caller's remaining budget,
+        and it is the only one of the three that no other party can know. The
+        effective bound is the MINIMUM of whichever are set: a caller cannot
+        buy itself more time than the pod allows, and the pod does not spend
+        time the caller has already given up waiting for.
+
+        **Rollout: this release ACCEPTS the field; no client sends it yet.**
+        :attr:`model_config` is ``extra="forbid"``, so a client that sends
+        this to a server predating it gets its whole call rejected -- not a
+        degraded call, a refused one. The server side therefore ships and
+        deploys a release before any caller is taught to populate it, which is
+        the same order ``result_subject`` went out under
+    :ptype deadline_seconds: float | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -438,6 +456,7 @@ class CallRequest(BaseModel):
     context: CallContext | None = None
     proxy_assertion: str | None = None
     result_subject: str | None = None
+    deadline_seconds: float | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -640,6 +659,64 @@ class HardCallTimeout(Exception):
     tool failure -- this names the SERVER's backstop firing, after the call's
     cleanup hooks have run to reap any process the tool left running.
     """
+
+
+def _effective_ceiling(pod_ceiling: float | None, caller_deadline: float | None) -> float | None:
+    """The tighter of the pod's backstop and the caller's remaining budget (§10.10).
+
+    Minimum rather than either alone, because the two answer different
+    questions and both answers bind: a caller cannot buy itself more time than
+    the pod allows, and the pod should not spend time on an answer the caller
+    has already stopped waiting for. A non-positive deadline means the caller
+    has no time left at all, and is honoured as such rather than treated as
+    absent -- ``0.0`` states a budget, where ``None`` states that there isn't
+    one to state.
+
+    :param pod_ceiling: ``ToolServer(max_call_seconds=...)``, when configured
+    :ptype pod_ceiling: float | None
+    :param caller_deadline: ``CallRequest.deadline_seconds``, when the caller
+        sent one
+    :ptype caller_deadline: float | None
+    :return: the bound to run under, or None when neither party set one
+    :rtype: float | None
+    """
+    bounds = [bound for bound in (pod_ceiling, caller_deadline) if bound is not None]
+    return min(bounds) if bounds else None
+
+
+class ToolCallFailure(Exception):
+    """a tool failure that still has structure worth sending back (§10.9).
+
+    The exception path had no way to carry ``metadata``: a tool that returns a
+    :class:`~threetears.agent.tools.base_tool.ToolResult` gets its structure
+    forwarded onto :attr:`CallResponse.metadata`, and a tool that *raises* got
+    a string. So any tool whose failure has a shape -- which provider refused,
+    which cap fired, what the caller may retry -- had to choose between raising
+    and being understood.
+
+    Raise this instead, and the dispatch forwards ``metadata`` exactly as it
+    forwards a returned result's. Nothing else changes: the response is still
+    ``success=False``, still carries ``error``, and every other exception type
+    behaves precisely as before.
+
+    Search itself does not need this -- D10 says nothing raises across the wire
+    there, and Bind renders a failed result carrying spend. The ask is on
+    ``agent-tools`` for every *other* pod-served tool, which is the ground
+    §10.9 states it on.
+    """
+
+    def __init__(self, message: str, *, metadata: dict[str, Any] | None = None) -> None:
+        """Record the failure and the structure that explains it.
+
+        :param message: what went wrong, rendered onto ``CallResponse.error``
+        :ptype message: str
+        :param metadata: structure to forward onto ``CallResponse.metadata``;
+            keyed by the same convention a returned result uses, so a reader
+            does not need to know which path produced it
+        :ptype metadata: dict[str, Any] | None
+        """
+        super().__init__(message)
+        self.metadata = metadata
 
 
 class ToolServer:
@@ -2126,15 +2203,17 @@ class ToolServer:
             async with enter_call_scope(scope):
                 return await tool.run(**request.arguments)
 
+        ceiling = _effective_ceiling(self._max_call_seconds, request.deadline_seconds)
         if self._call_semaphore is None:
-            return await self._run_with_hard_timeout(_run, scope)
+            return await self._run_with_hard_timeout(_run, scope, ceiling)
         async with self._call_semaphore:
-            return await self._run_with_hard_timeout(_run, scope)
+            return await self._run_with_hard_timeout(_run, scope, ceiling)
 
     async def _run_with_hard_timeout(
         self,
         run: "Callable[[], Awaitable[ToolResult]]",
         scope: ToolCallScope,
+        ceiling: float | None = None,
     ) -> ToolResult:
         """Await ``run`` under the pod's hard execution ceiling, if one is set.
 
@@ -2149,21 +2228,25 @@ class ToolServer:
         :ptype run: Callable[[], Awaitable[ToolResult]]
         :param scope: the call scope whose cleanup hooks run on a hard timeout
         :ptype scope: ToolCallScope
+        :param ceiling: the effective bound for this call -- the pod's
+            ``max_call_seconds`` and the caller's ``deadline_seconds``, whichever
+            is tighter (§10.10). None when neither is set
+        :ptype ceiling: float | None
         :return: the tool's result
         :rtype: ToolResult
         :raises HardCallTimeout: the ceiling elapsed before ``run`` returned
         """
-        if self._max_call_seconds is None:
+        if ceiling is None:
             return await run()
         try:
-            async with asyncio.timeout(self._max_call_seconds) as cm:
+            async with asyncio.timeout(ceiling) as cm:
                 return await run()
         except TimeoutError:
             if not cm.expired():
                 # a tool raised its OWN TimeoutError inside the ceiling; not ours.
                 raise
             self._invoke_call_cleanup(scope)
-            raise HardCallTimeout(f"tool exceeded the pod hard execution limit of {self._max_call_seconds}s") from None
+            raise HardCallTimeout(f"tool exceeded the pod hard execution limit of {ceiling}s") from None
 
     def _invoke_call_cleanup(self, scope: ToolCallScope) -> None:
         """Run every cleanup hook a tool registered on ``scope``, best effort.
@@ -2421,6 +2504,7 @@ class ToolServer:
                 response = CallResponse(
                     success=False,
                     content="",
+                    metadata=exc.metadata if isinstance(exc, ToolCallFailure) else None,
                     error=f"tool execution failed: {exc}",
                     context=request.context,
                 )

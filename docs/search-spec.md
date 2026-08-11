@@ -784,6 +784,16 @@ are untouched.
 6. `page_finder` structure (check 4); context-save node fix + retention
    posture (§4.5).
 7. Envelope asks, as their own PRs with the rollout-order note (D18).
+   **Done 2026-08-11, pulled forward.** Both landed early for a reason the
+   phase ordering hid: they are additive in *different* directions. §10.9
+   populates `CallResponse.metadata`, a field that already existed, so it
+   has no ordering constraint at all. §10.10 adds
+   `CallRequest.deadline_seconds` to a model with `extra="forbid"`, where a
+   client that sends it to an older server gets its call **rejected**, not
+   degraded -- so only the accepting half shipped, and a caller may not be
+   taught to populate it until a release carrying this one is deployed.
+   That is the only item in Phase 2 that needs two release cycles, which is
+   why it stopped being last.
 
 ### Phase 3 -- pull-driven depth (may start parallel to Phase 2 after Gate A)
 
