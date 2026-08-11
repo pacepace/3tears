@@ -170,6 +170,30 @@ async def test_exhausted_attempts_raise_a_typed_failure_with_spend() -> None:
     assert raised.value.spend.calls == 0, "the transport bills nothing; the adapter owns the call count"
 
 
+async def test_a_typed_failure_leaves_stamped_with_egress_and_occurrence_time() -> None:
+    """D8/D20: rate/ban budgets key on (provider instance, egress), and only
+    this seam knows which egress the failing call left by. The occurrence
+    time rides along -- the failure record may be the only surviving fact."""
+    async with LocalHttpServer((Reply(close_early=True),)) as server:
+        with pytest.raises(TransportFailed) as raised:
+            await _transport(max_attempts=1, egress_name="warp").request("GET", f"{server.base_url}/search")
+
+    assert raised.value.egress == "warp"
+    assert raised.value.occurred_at is not None
+    assert raised.value.occurred_at.tzinfo is not None, "occurrence time is timezone-aware, like all provenance"
+
+
+async def test_a_guard_refusal_is_stamped_too() -> None:
+    """The refusal never opened a socket, but it still names the exit it
+    refused to use -- a consumer-side ban tracker reads one shape."""
+    async with LocalHttpServer() as server:
+        with pytest.raises(TransportFailed) as raised:
+            await StandaloneTransport(max_attempts=1, egress_name="warp").request("GET", f"{server.base_url}/search")
+
+    assert raised.value.egress == "warp"
+    assert raised.value.occurred_at is not None
+
+
 async def test_a_deadline_that_elapses_raises_a_timeout_not_a_transport_failure() -> None:
     """SR-J1: a timeout is worth retrying later and a connect failure is not."""
     async with LocalHttpServer((Reply(delay=2.0),)) as server:

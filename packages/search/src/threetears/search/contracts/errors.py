@@ -23,7 +23,10 @@ projection that round-trips the whole taxonomy (SR-L4).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import ClassVar, Final
+
+from pydantic import AwareDatetime
 
 from threetears.search.contracts._base import ContractModel
 from threetears.search.contracts.spend import Spend
@@ -61,6 +64,8 @@ class SearchFailure(Exception):
         spend: Spend,
         provider_instance: str | None = None,
         remediation: str | None = None,
+        egress: str | None = None,
+        occurred_at: datetime | None = None,
     ) -> None:
         """Record the failure with what it cost.
 
@@ -73,12 +78,22 @@ class SearchFailure(Exception):
         :ptype provider_instance: str | None
         :param remediation: how to fix it, where the cause is known
         :ptype remediation: str | None
+        :param egress: which egress the failing call left by, when the
+            transport is known (D8/D20 -- rate and ban budgets key on
+            ``(provider instance, egress)``, and pod-resident this record
+            is the only fact that survives the wire)
+        :ptype egress: str | None
+        :param occurred_at: when the failure happened (timezone-aware),
+            when the failing site can say
+        :ptype occurred_at: datetime | None
         """
         super().__init__(message)
         self.message = message
         self.spend = spend
         self.provider_instance = provider_instance
         self.remediation = remediation
+        self.egress = egress
+        self.occurred_at = occurred_at
 
     def to_record(self) -> FailureRecord:
         """Project this failure to its JSON-safe wire record.
@@ -92,6 +107,8 @@ class SearchFailure(Exception):
             spend=self.spend,
             provider_instance=self.provider_instance,
             remediation=self.remediation,
+            egress=self.egress,
+            occurred_at=self.occurred_at,
         )
 
 
@@ -107,6 +124,8 @@ class RateLimited(SearchFailure):
         spend: Spend,
         provider_instance: str | None = None,
         remediation: str | None = None,
+        egress: str | None = None,
+        occurred_at: datetime | None = None,
         retry_after_seconds: float | None = None,
     ) -> None:
         """Record a rate-limit refusal.
@@ -119,11 +138,23 @@ class RateLimited(SearchFailure):
         :ptype provider_instance: str | None
         :param remediation: how to fix it, where known
         :ptype remediation: str | None
+        :param egress: which egress the refused call left by, when known
+            (D8 -- pacing keys on it)
+        :ptype egress: str | None
+        :param occurred_at: when the refusal happened (timezone-aware)
+        :ptype occurred_at: datetime | None
         :param retry_after_seconds: the provider's stated backoff, when it
             gave one
         :ptype retry_after_seconds: float | None
         """
-        super().__init__(message, spend=spend, provider_instance=provider_instance, remediation=remediation)
+        super().__init__(
+            message,
+            spend=spend,
+            provider_instance=provider_instance,
+            remediation=remediation,
+            egress=egress,
+            occurred_at=occurred_at,
+        )
         self.retry_after_seconds = retry_after_seconds
 
     def to_record(self) -> FailureRecord:
@@ -193,6 +224,8 @@ class LocalCapExceeded(SearchFailure):
         spend: Spend,
         provider_instance: str | None = None,
         remediation: str | None = None,
+        egress: str | None = None,
+        occurred_at: datetime | None = None,
         scope: str | None = None,
     ) -> None:
         """Record a local-cap refusal.
@@ -206,10 +239,22 @@ class LocalCapExceeded(SearchFailure):
         :ptype provider_instance: str | None
         :param remediation: how to fix it, where known
         :ptype remediation: str | None
+        :param egress: which egress the refused call would have left by,
+            when known
+        :ptype egress: str | None
+        :param occurred_at: when the refusal happened (timezone-aware)
+        :ptype occurred_at: datetime | None
         :param scope: which budget scope tag refused (SR-D2)
         :ptype scope: str | None
         """
-        super().__init__(message, spend=spend, provider_instance=provider_instance, remediation=remediation)
+        super().__init__(
+            message,
+            spend=spend,
+            provider_instance=provider_instance,
+            remediation=remediation,
+            egress=egress,
+            occurred_at=occurred_at,
+        )
         self.scope = scope
 
     def to_record(self) -> FailureRecord:
@@ -257,6 +302,16 @@ class FailureRecord(ContractModel):
     provider_instance: str | None = None
     #: how to fix it, where the cause is known.
     remediation: str | None = None
+    #: which egress the failing call left by, when the transport is known
+    #: (D8/D20). Rate and ban budgets key on ``(provider instance,
+    #: egress)``, and a consumer-side pacing or ban tracker reading this
+    #: record off ``ToolResult.metadata`` has nothing else to rebuild the
+    #: key from -- pod-resident, this record is the only surviving fact.
+    egress: str | None = None
+    #: when the failure happened (timezone-aware), when the failing site
+    #: could say. Provenance on the spend record, per §3.1's
+    #: provenance-on-every-spend-record rule (P2, SR-A3).
+    occurred_at: AwareDatetime | None = None
     #: provider-stated backoff; only meaningful for ``rate-limited``.
     retry_after_seconds: float | None = None
     #: refusing budget scope; only meaningful for ``local-cap-exceeded``.
@@ -282,6 +337,8 @@ class FailureRecord(ContractModel):
                 spend=self.spend,
                 provider_instance=self.provider_instance,
                 remediation=self.remediation,
+                egress=self.egress,
+                occurred_at=self.occurred_at,
                 retry_after_seconds=self.retry_after_seconds,
             )
         if failure_type is LocalCapExceeded:
@@ -290,6 +347,8 @@ class FailureRecord(ContractModel):
                 spend=self.spend,
                 provider_instance=self.provider_instance,
                 remediation=self.remediation,
+                egress=self.egress,
+                occurred_at=self.occurred_at,
                 scope=self.scope,
             )
         return failure_type(
@@ -297,4 +356,6 @@ class FailureRecord(ContractModel):
             spend=self.spend,
             provider_instance=self.provider_instance,
             remediation=self.remediation,
+            egress=self.egress,
+            occurred_at=self.occurred_at,
         )

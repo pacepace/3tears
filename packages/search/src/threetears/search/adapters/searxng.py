@@ -476,11 +476,21 @@ class SearxngAdapter:
         :rtype: CandidateSet
         :raises SearchFailure: one of the typed classes, carrying spend
         """
-        plan = self._plan(request)
-        response = await self._exchange(plan, timeout_seconds=timeout_seconds)
-        spend = self._spend_for(response)
-        payload = self._decode(response, spend)
-        candidates = self._candidates(request, payload, response, spend)
+        try:
+            plan = self._plan(request)
+            response = await self._exchange(plan, timeout_seconds=timeout_seconds)
+            spend = self._spend_for(response)
+            payload = self._decode(response, spend)
+            candidates = self._candidates(request, payload, response, spend)
+        except SearchFailure as failure:
+            # every failure leaves this adapter fully attributed: which
+            # instance, which egress, when (D8/D20, SR-A3) -- the record
+            # riding ToolResult.metadata is the only fact that survives the
+            # wire, so a consumer-side ban tracker rebuilds its key from it.
+            attributed = self._attributed(failure)
+            if attributed is failure:
+                raise
+            raise attributed from failure
         candidates = self._apply_local_criteria(candidates, plan)
         return CandidateSet(
             candidates=tuple(candidates),
@@ -666,16 +676,30 @@ class SearxngAdapter:
         return response
 
     def _attributed(self, failure: SearchFailure) -> SearchFailure:
-        """Re-stamp a transport-raised failure with this provider instance.
+        """Re-stamp a failure with what only this adapter can attribute.
 
-        :param failure: the failure the transport raised
+        The transport knows attempts, elapsed and bytes; the adapter knows
+        which provider instance the call was for, which egress its
+        transport's requests leave by (D8/D20), and when the failure
+        happened. Whatever the failure already carries is kept -- a
+        transport that stamped its own egress said something truer than
+        this adapter's view of it.
+
+        :param failure: the failure about to leave this adapter
         :ptype failure: SearchFailure
-        :return: the same failure class, naming the provider instance
+        :return: the same failure class, fully attributed
         :rtype: SearchFailure
         """
-        if failure.provider_instance == self._provider_instance:
+        updates: dict[str, object] = {}
+        if failure.provider_instance != self._provider_instance:
+            updates["provider_instance"] = self._provider_instance
+        if failure.egress is None:
+            updates["egress"] = self._transport.egress_name
+        if failure.occurred_at is None:
+            updates["occurred_at"] = datetime.now(UTC)
+        if not updates:
             return failure
-        return failure.to_record().model_copy(update={"provider_instance": self._provider_instance}).to_failure()
+        return failure.to_record().model_copy(update=updates).to_failure()
 
     def _raise_for_status(self, response: TransportResponse) -> None:
         """Map a non-2xx status onto the typed taxonomy.

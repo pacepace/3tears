@@ -140,6 +140,8 @@ FAILURE_RECORD = FailureRecord(
     spend=SPEND,
     provider_instance="searxng-main",
     remediation="lower the configured rate for this instance",
+    egress="warp",
+    occurred_at=RETRIEVED_AT,
     retry_after_seconds=30.0,
 )
 

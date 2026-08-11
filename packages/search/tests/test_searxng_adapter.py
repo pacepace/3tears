@@ -285,6 +285,24 @@ async def test_a_429_carries_the_providers_stated_backoff() -> None:
     assert raised.value.retry_after_seconds == 30.0
 
 
+async def test_a_failure_is_fully_attributed_for_pacing_keys() -> None:
+    """D8/D20: rate and ban budgets key on (provider instance, egress), and
+    pod-resident the failure record on ToolResult.metadata is the only fact
+    a consumer-side tracker can rebuild that key from -- so every failure
+    leaves the adapter carrying instance, egress and occurrence time."""
+    adapter, transport = _scripted(TransportScript(status_code=429, body=b"", headers={"retry-after": "30"}))
+    with pytest.raises(RateLimited) as raised:
+        await adapter.search(SearchRequest(query="capybara"))
+
+    assert raised.value.provider_instance == "searx.example.org"
+    assert raised.value.egress == transport.egress_name
+    assert raised.value.occurred_at is not None
+    assert raised.value.occurred_at.tzinfo is not None
+    record = raised.value.to_record()
+    assert record.egress == transport.egress_name
+    assert record.occurred_at == raised.value.occurred_at
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [

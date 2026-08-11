@@ -173,7 +173,10 @@ them):
 - **Typed errors** — the seven distinguishable failure classes of SR-J1, each
   carrying `Spend`; remediation text where the cause is known (the SearXNG
   403-json-formats teaching error). Zero results is a success value, not an
-  error (SR-J2).
+  error (SR-J2). The wire record carries provenance enough to rebuild D8's
+  pacing key consumer-side — provider instance, egress, occurrence time —
+  because pod-resident it is the only fact that survives the wire (D10, P2;
+  Gate A, 2026-08-10).
 - **Protocols** (structural, injected — P9): `SearchTransport` (shaped so
   `core.http_client.TracedHttpClient` satisfies it via a thin host-side
   adapter: configurable timeout, bounded retry, circuit-breaking, per-call

@@ -60,6 +60,7 @@ import ipaddress
 import socket
 import time
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Final
 from urllib.parse import urljoin, urlparse
 
@@ -359,11 +360,15 @@ class StandaloneTransport:
                     attempts=attempt,
                     headers=response_headers,
                 )
-            except SearchFailure:
+            except SearchFailure as failure:
                 # already typed and already terminal: a refused address, a
                 # refused redirect, or a body past the cap. Retrying a
-                # deterministic refusal only spends the caller's deadline.
-                raise
+                # deterministic refusal only spends the caller's deadline;
+                # it leaves stamped with what only this transport knows.
+                stamped = self._stamped(failure)
+                if stamped is failure:
+                    raise
+                raise stamped from failure
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = exc
                 if attempt >= self._max_attempts:
@@ -379,7 +384,31 @@ class StandaloneTransport:
             except httpx.HTTPError as exc:
                 last = exc
                 break
-        raise self._exhausted(url, attempt, last, elapsed=time.monotonic() - started, bytes_seen=bytes_seen)
+        exhausted = self._exhausted(url, attempt, last, elapsed=time.monotonic() - started, bytes_seen=bytes_seen)
+        raise self._stamped(exhausted)
+
+    def _stamped(self, failure: SearchFailure) -> SearchFailure:
+        """Fill the transport facts every typed failure must leave with.
+
+        Which egress the failing call left by is this transport's
+        configuration (D20), and rate/ban budgets key on it together with
+        the provider instance (D8) -- so the failure record has to carry it
+        out, and only this seam knows it. The occurrence time rides along
+        for the same reason: the record may be the only surviving fact.
+
+        :param failure: the failure about to leave this transport
+        :ptype failure: SearchFailure
+        :return: the same failure class, carrying egress and occurrence time
+        :rtype: SearchFailure
+        """
+        updates: dict[str, object] = {}
+        if failure.egress is None:
+            updates["egress"] = self._egress_name
+        if failure.occurred_at is None:
+            updates["occurred_at"] = datetime.now(UTC)
+        if not updates:
+            return failure
+        return failure.to_record().model_copy(update=updates).to_failure()
 
     def _backoff(self, attempt: int) -> float:
         """Seconds to wait before the attempt after ``attempt``.

@@ -9,6 +9,7 @@ timezone-aware timestamps. The typed error taxonomy round-trips through its
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
@@ -25,6 +26,8 @@ from threetears.search.contracts import (
     Spend,
 )
 from _search_instances import ALL_INSTANCES, METADATA, SPEND
+
+OCCURRED_AT = datetime(2026, 8, 10, 12, 30, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("instance", ALL_INSTANCES, ids=lambda i: type(i).__name__)
@@ -73,6 +76,8 @@ def test_every_failure_roundtrips_through_its_record(failure_class: str) -> None
         spend=SPEND,
         provider_instance="searxng-main",
         remediation="teaching text",
+        egress="warp",
+        occurred_at=OCCURRED_AT,
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -84,6 +89,8 @@ def test_every_failure_roundtrips_through_its_record(failure_class: str) -> None
     assert rebuilt.spend == SPEND
     assert rebuilt.provider_instance == "searxng-main"
     assert rebuilt.remediation == "teaching text"
+    assert rebuilt.egress == "warp", "D8/D20: the (provider instance, egress) key must survive the record"
+    assert rebuilt.occurred_at == OCCURRED_AT
     if isinstance(original, RateLimited):
         assert isinstance(rebuilt, RateLimited)
         assert rebuilt.retry_after_seconds == original.retry_after_seconds
