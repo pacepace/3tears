@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -131,6 +132,26 @@ def test_degenerate_constructor_arguments_are_refused() -> None:
         Criterion.time_range()
     with pytest.raises(ValueError, match="positive"):
         Criterion.max_results(0)
+
+
+def test_time_range_rejects_naive_datetimes() -> None:
+    """the Provenance stance applied to the one constructor that lacked it:
+    a naive bound has unknown-timezone semantics and is refused at the
+    border, never embedded (Gate A, 2026-08-10)."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        Criterion.time_range(start=datetime(2026, 1, 1))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        Criterion.time_range(end=datetime(2026, 8, 1))
+
+
+def test_time_range_normalizes_equal_instants_to_one_form() -> None:
+    """criterion values participate in the canonical form (D26, SR-F1):
+    12:00+00:00 and 14:00+02:00 are one instant and must be one criterion
+    value, or one search splits into two replay keys."""
+    utc_bound = Criterion.time_range(start=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+    offset_bound = Criterion.time_range(start=datetime(2026, 1, 1, 14, 0, tzinfo=timezone(timedelta(hours=2))))
+    assert utc_bound == offset_bound
+    assert utc_bound.value == {"start": "2026-01-01T12:00:00+00:00"}
 
 
 def test_provider_native_scores_are_never_comparable() -> None:

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final, Literal
 
 from pydantic import JsonValue, field_validator
@@ -86,6 +86,29 @@ Disposition = Literal["pushdown", "local", "unsatisfied", "ignored-unknown"]
 _NAMESPACED_KEY: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._-]*$")
 
 
+def _canonical_instant(bound_value: datetime, *, bound: str) -> str:
+    """Serialize one time-range bound in its canonical form.
+
+    Naive is refused (the Provenance stance: unknown-timezone semantics are
+    rejected at the border, never embedded); aware is normalized to UTC so
+    equal instants can never canonicalize unequally (D26, SR-F1).
+
+    :param bound_value: the bound to serialize
+    :ptype bound_value: datetime
+    :param bound: which bound this is (``start``/``end``), for the message
+    :ptype bound: str
+    :return: the ISO 8601 text of the instant, in UTC
+    :rtype: str
+    :raises ValueError: when ``bound_value`` is naive
+    """
+    if bound_value.tzinfo is None or bound_value.tzinfo.utcoffset(bound_value) is None:
+        raise ValueError(
+            f"time_range {bound}= must be timezone-aware: a naive datetime has unknown-timezone semantics, "
+            f"and this value participates in the canonical form (D26) where it must mean one instant"
+        )
+    return bound_value.astimezone(UTC).isoformat()
+
+
 class Criterion(ContractModel):
     """One constraint on what comes back.
 
@@ -126,21 +149,32 @@ class Criterion(ContractModel):
     def time_range(cls, *, start: datetime | None = None, end: datetime | None = None) -> Criterion:
         """Constrain publication time to an absolute window.
 
-        :param start: earliest publication time (inclusive), if bounded below
+        Bounds are timezone-aware by construction, matching the Provenance
+        stance: a naive datetime is rejected at the border rather than
+        embedded with unknown-timezone semantics. Aware bounds are
+        normalized to UTC before serialization, because criterion values
+        participate in the canonical form (D26, SR-F1) -- the same instant
+        written as ``12:00+00:00`` and ``14:00+02:00`` must produce one
+        canonical form, not two replay keys for one search.
+
+        :param start: earliest publication time (inclusive, timezone-aware),
+            if bounded below
         :ptype start: datetime | None
-        :param end: latest publication time (inclusive), if bounded above
+        :param end: latest publication time (inclusive, timezone-aware), if
+            bounded above
         :ptype end: datetime | None
         :return: the criterion
         :rtype: Criterion
-        :raises ValueError: when neither bound is supplied
+        :raises ValueError: when neither bound is supplied, or a bound is
+            naive
         """
         if start is None and end is None:
             raise ValueError("time_range requires at least one of start=, end=")
         value: dict[str, JsonValue] = {}
         if start is not None:
-            value["start"] = start.isoformat()
+            value["start"] = _canonical_instant(start, bound="start")
         if end is not None:
-            value["end"] = end.isoformat()
+            value["end"] = _canonical_instant(end, bound="end")
         return cls(key=CRITERION_TIME_RANGE, value=value)
 
     @classmethod
