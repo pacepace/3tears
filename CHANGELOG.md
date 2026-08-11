@@ -8,6 +8,25 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `media-contracts`: `EXTRACTION_STATUS_NONE` / `_PENDING` / `_COMPLETE` /
+  `_FAILED` / `_REFUSED` name the `MediaInfo.extraction_status` vocabulary,
+  which until now was a comment listing two of the five. The spellings are
+  taken from the shipped DDL rather than proposed: `agent-memory`'s v021
+  declares the column `TEXT NOT NULL DEFAULT 'none'` and v022 indexes
+  `WHERE extraction_status = 'pending'`, so four of the five already exist
+  in databases and only `refused` is new (docs/search-spec.md §3.5). The
+  field stays `str | None` -- no `Literal`, no `StrEnum` -- because the
+  column carries no CHECK constraint and consumers compare bare `str`;
+  an unrecognised status is ignored, not rejected, the way an unrecognised
+  facet is. Purely additive: nothing reads these yet, and `MediaInfo`'s
+  shape is unchanged.
+- `enforcement`: `test_extraction_status_vocabulary` -- every status
+  spelling reaching SQL must be one `media-contracts` names, and v022's
+  partial-index predicate must still equal `EXTRACTION_STATUS_PENDING`.
+  That pair is the one whose disagreement is silent: the index still
+  builds, the writes still succeed, and the extraction work queue simply
+  reports no work, which looks exactly like a quiet day. Verified
+  discriminating -- re-spelling the constant fails both checks.
 - `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
   `__version__` must be read from installed metadata, never written as a
   literal. The lockstep bump touches ~30 `pyproject.toml` files

@@ -34,6 +34,11 @@ from threetears.media.contracts.facets import (
 )
 from threetears.media.contracts.keys import build_object_key, sanitize_segment
 from threetears.media.contracts.protocols import (
+    EXTRACTION_STATUS_COMPLETE,
+    EXTRACTION_STATUS_FAILED,
+    EXTRACTION_STATUS_NONE,
+    EXTRACTION_STATUS_PENDING,
+    EXTRACTION_STATUS_REFUSED,
     OBJECT_HANDLE_METADATA_KEY,
     GeneratedImage,
     ImageGenerationBackend,
@@ -48,6 +53,11 @@ from threetears.media.contracts.protocols import (
 )
 
 __all__ = [
+    "EXTRACTION_STATUS_COMPLETE",
+    "EXTRACTION_STATUS_FAILED",
+    "EXTRACTION_STATUS_NONE",
+    "EXTRACTION_STATUS_PENDING",
+    "EXTRACTION_STATUS_REFUSED",
     "LOCATOR_KIND_CONTAINING_PAGE",
     "LOCATOR_KIND_DIRECT_FILE",
     "OBJECT_HANDLE_METADATA_KEY",
