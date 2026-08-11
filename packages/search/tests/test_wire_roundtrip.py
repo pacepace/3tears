@@ -127,3 +127,16 @@ def test_metadata_refuses_newer_schema_version() -> None:
     payload["schema_version"] = 99
     with pytest.raises(ValueError, match="99"):
         SearchResultsMetadata.from_metadata(payload)
+
+
+def test_version_refusal_beats_structural_rejection() -> None:
+    """the D13 Gate A rider: a newer payload usually differs structurally too,
+    and the reader must refuse naming BOTH versions -- never surface the
+    unknown field as a bare pydantic error, which sends the operator hunting
+    a shape bug when the actual problem is version skew."""
+    payload = METADATA.to_metadata()
+    payload["schema_version"] = 99
+    payload["field_this_reader_has_never_heard_of"] = True
+    with pytest.raises(ValueError, match="schema_version 99") as raised:
+        SearchResultsMetadata.from_metadata(payload)
+    assert "refusing rather than misreading" in str(raised.value)
