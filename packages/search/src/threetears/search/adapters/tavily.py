@@ -77,17 +77,24 @@ else to put it; here there is.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from typing import Final
-from urllib.parse import urlparse
 
 from pydantic import JsonValue
 
 from threetears.observe import get_logger
+from threetears.search.adapters._common import (
+    _as_float,
+    _as_str,
+    _string_list,
+    _DispositionPlan,
+    attributed_failure,
+    decode_results_payload,
+    parsed_base_url,
+)
 from threetears.search.contracts import (
     CRITERION_CARRIER,
     CRITERION_DOMAINS_EXCLUDE,
@@ -109,8 +116,6 @@ from threetears.search.contracts import (
     CandidateSet,
     ContentSlot,
     Criterion,
-    CriterionDisposition,
-    Disposition,
     LocalCapExceeded,
     Locator,
     MalformedResponse,
@@ -270,29 +275,6 @@ TAVILY_CAPABILITIES: Final[ProviderCapabilities] = ProviderCapabilities(
 register_capabilities(TAVILY_CAPABILITIES)
 
 
-def _as_float(value: object) -> float | None:
-    """Read ``value`` as a float, or ``None`` when it is not numeric.
-
-    A bool is not a number here: ``True`` is a provider saying something
-    other than "one", and reading it as 1.0 would invent a measurement.
-
-    :param value: a header or payload value
-    :ptype value: object
-    :return: the float, or None when the value cannot be one
-    :rtype: float | None
-    """
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return None
-    # Probing a provider value for a number: a non-numeric value is the provider
-    # not reporting one, which the caller reads as an absence rather than as a
-    # zero. Absence is the honest answer and there is nothing to log per result.
-    try:
-        return float(value)
-    # NOSILENT: a non-numeric provider value means nothing was reported
-    except ValueError:
-        return None
-
-
 def _coerce_score(value: object) -> float | None:
     """Read Tavily's per-result ``score`` as a float, or ``None`` if unusable.
 
@@ -310,32 +292,6 @@ def _coerce_score(value: object) -> float | None:
     :rtype: float | None
     """
     return _as_float(value)
-
-
-def _as_str(value: object) -> str | None:
-    """Read ``value`` as a non-empty string, or ``None``.
-
-    :param value: a JSON value from a provider payload
-    :ptype value: object
-    :return: the string, or None when it is absent or not a string
-    :rtype: str | None
-    """
-    return value if isinstance(value, str) and value else None
-
-
-def _string_list(value: object) -> list[str]:
-    """Read a provider or criterion value as a list of strings.
-
-    :param value: a string, or a sequence of values to stringify
-    :ptype value: object
-    :return: the values as strings; empty when there are none
-    :rtype: list[str]
-    """
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, Sequence):
-        return [str(item) for item in value]
-    return []
 
 
 def _as_published_at(value: object) -> datetime | None:
@@ -443,7 +399,7 @@ def _absolute_days(criterion: Criterion) -> dict[str, str]:
     return days
 
 
-class _Plan:
+class _Plan(_DispositionPlan):
     """The request as Tavily will receive it, with its honest dispositions.
 
     Not a contract type -- it never leaves this module. It exists so the
@@ -451,7 +407,9 @@ class _Plan:
     dispositions and the billed weight together, instead of three passes that
     can disagree. The billed weight is the point: :meth:`set_depth` is the
     only way to change the depth, and it moves the wire parameter and the
-    credits as one operation (SR-E4).
+    credits as one operation (SR-E4). The dispositions list and
+    :meth:`answer` itself come from :class:`_DispositionPlan`, shared with
+    SearXNG's own ``_Plan`` (SR-B2/SR-B3).
     """
 
     def __init__(self, body: dict[str, JsonValue], *, search_depth: str) -> None:
@@ -462,8 +420,8 @@ class _Plan:
         :param search_depth: the depth this deployment defaults to
         :ptype search_depth: str
         """
+        super().__init__()
         self.body = body
-        self.dispositions: list[CriterionDisposition] = []
         self.search_depth = ""
         self.set_depth(search_depth)
 
@@ -490,18 +448,6 @@ class _Plan:
         :rtype: Decimal
         """
         return TAVILY_CREDITS_BY_DEPTH.get(self.search_depth, max(TAVILY_CREDITS_BY_DEPTH.values()))
-
-    def answer(self, key: str, disposition: Disposition, detail: str | None = None) -> None:
-        """Record how one criterion was handled.
-
-        :param key: the criterion key being answered for
-        :ptype key: str
-        :param disposition: how it was handled
-        :ptype disposition: Disposition
-        :param detail: specifics -- why unsatisfiable, which rule applied
-        :ptype detail: str | None
-        """
-        self.dispositions.append(CriterionDisposition(criterion_key=key, disposition=disposition, detail=detail))
 
 
 class TavilyAdapter:
@@ -586,9 +532,7 @@ class TavilyAdapter:
                 "TavilyAdapter requires a host-supplied api_key: this package reads no environment "
                 "variable and no secret store (D21, SR-K1)"
             )
-        parsed = urlparse(base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(f"base_url must be an absolute http(s) URL from deployment config, got {base_url!r}")
+        parsed = parsed_base_url(base_url)
         if default_search_depth not in TAVILY_SEARCH_DEPTHS:
             raise ValueError(
                 f"default_search_depth must be one of {TAVILY_SEARCH_DEPTHS}, got {default_search_depth!r}"
@@ -1056,29 +1000,20 @@ class TavilyAdapter:
         return response
 
     def _attributed(self, failure: SearchFailure) -> SearchFailure:
-        """Re-stamp a failure with what only this adapter can attribute.
+        """Re-stamp a failure with what only this adapter can attribute (D8/D20, SR-A3).
 
-        The transport knows attempts, elapsed and bytes; the adapter knows
-        which configured key the call was for, which egress its transport's
-        requests leave by (D8/D20), and when the failure happened. Whatever
-        the failure already carries is kept -- a transport that stamped its
-        own egress said something truer than this adapter's view of it.
+        Shared with SearXNG's identical method as
+        :func:`_common.attributed_failure`: which key, which egress, when,
+        is the same three facts for every provider.
 
         :param failure: the failure about to leave this adapter
         :ptype failure: SearchFailure
         :return: the same failure class, fully attributed
         :rtype: SearchFailure
         """
-        updates: dict[str, object] = {}
-        if failure.provider_instance != self._provider_instance:
-            updates["provider_instance"] = self._provider_instance
-        if failure.egress is None:
-            updates["egress"] = self._transport.egress_name
-        if failure.occurred_at is None:
-            updates["occurred_at"] = datetime.now(UTC)
-        if not updates:
-            return failure
-        return failure.to_record().model_copy(update=updates).to_failure()
+        return attributed_failure(
+            failure, provider_instance=self._provider_instance, egress_name=self._transport.egress_name
+        )
 
     def _raise_for_status(self, plan: _Plan, response: TransportResponse) -> None:
         """Map a non-2xx status onto the typed taxonomy.
@@ -1178,6 +1113,10 @@ class TavilyAdapter:
     def _decode(self, response: TransportResponse, spend: Spend) -> Mapping[str, object]:
         """Parse the JSON body Tavily returned.
 
+        Shared shape with SearXNG's identical method as
+        :func:`_common.decode_results_payload`; Tavily has no known common
+        cause for a non-JSON body, so it names none.
+
         :param response: the successful exchange
         :ptype response: TransportResponse
         :param spend: what the call consumed, carried onto any failure
@@ -1187,22 +1126,9 @@ class TavilyAdapter:
         :raises MalformedResponse: when the body is not a JSON object, or
             carries no ``results`` list
         """
-        try:
-            payload = json.loads(response.body)
-        except ValueError as exc:
-            raise MalformedResponse(
-                f"tavily instance {self._provider_instance} answered {response.status_code} with a body that "
-                f"is not JSON",
-                spend=spend,
-                provider_instance=self._provider_instance,
-            ) from exc
-        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
-            raise MalformedResponse(
-                f"tavily instance {self._provider_instance} answered JSON without a 'results' list",
-                spend=spend,
-                provider_instance=self._provider_instance,
-            )
-        return payload
+        return decode_results_payload(
+            response, spend, provider_name="tavily", provider_instance=self._provider_instance
+        )
 
     # -- candidates ---------------------------------------------------------
 
