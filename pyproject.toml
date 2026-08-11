@@ -151,6 +151,7 @@ dev-dependencies = [
 "3tears-registry" = "PT0S"
 "3tears-scheduled-jobs" = "PT0S"
 "3tears-scrape" = "PT0S"
+"3tears-search" = "PT0S"
 
 [tool.ruff]
 line-length = 120
@@ -444,6 +445,7 @@ mypy_path = [
     "packages/registry/src",
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
+    "packages/search/src",
     "packages/geo/src",
     "packages/iam/src",
 ]
@@ -479,6 +481,7 @@ files = [
     "packages/registry/src",
     "packages/scheduled-jobs/src",
     "packages/scrape/src",
+    "packages/search/src",
 ]
 exclude = [
     "^packages/[^/]+/tests/",

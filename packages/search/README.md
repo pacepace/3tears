@@ -12,7 +12,16 @@ requirement IDs (`SR-*`, `G*`, `P*`) defined in
 ```
 threetears/search/
   contracts/        # the leaf within the leaf — types, protocols, errors, keys
+  adapters/
+    searxng.py      # one provider's API, over the injected transport
+  call.py           # a query → one candidate set, bounded and negotiated
+  bind.py           # prose for a model + the metadata projection
+  standalone.py     # bare-httpx transport   [standalone] — the sanctioned path (D19)
+  testing/          # the shared provider-conformance suite + declared doubles
 ```
+
+Layer names (Adapter, Call, Bind, …) are module vocabulary and never type
+names, so a later re-cut of the layers stays cheap.
 
 `contracts/` is the lingua franca every layer and every consumer speaks:
 
@@ -32,8 +41,71 @@ threetears/search/
   satisfies it structurally; this package never imports core.
 - `SEARCH_RESULTS_METADATA_KEY` and the versioned metadata projection (D13,
   D22).
+- `ProviderCapabilities` — what a provider can express, declared and
+  queryable so a consumer branches before sending rather than after failing
+  (SR-B4), following the `3tears-models` capability-metadata pattern.
+- `SearchProvider` — the provider seam Call depends on and the conformance
+  suite parametrizes over.
 - Canonical serialization of request/parameter types — one canonical form
   consumed by both the D26 replay key and eval run identity (SR-F1).
+
+## Using it
+
+```python
+import asyncio
+
+from threetears.search.adapters.searxng import SearxngAdapter
+from threetears.search.bind import bind_search
+from threetears.search.contracts import Criterion, SearchRequest
+from threetears.search.standalone import StandaloneTransport   # or your own
+
+
+async def main() -> None:
+    adapter = SearxngAdapter(
+        base_url="https://searx.internal.example",   # deployment config, never env
+        transport=StandaloneTransport(allow_private_addresses=True),
+        provider_instance="searxng-main",
+    )
+    rendered = await bind_search(
+        SearchRequest(query="capybara habitat range", criteria=(Criterion.max_results(5),)),
+        provider=adapter,
+    )
+    print(rendered.content)                                  # prose for a model
+    print(rendered.metadata["search_results"]["candidates"])  # structure for a program
+
+
+asyncio.run(main())
+```
+
+`bind_search` never raises: a typed failure arrives as a failed
+`RenderedSearch` carrying its spend under the same metadata key (D10). Callers
+that want the exception go through `threetears.search.call.search` instead.
+
+Hosts that already have `threetears.core` should inject a thin adapter over
+`TracedHttpClient` rather than take the `[standalone]` extra — it brings
+timeouts, retry, circuit-breaking and spans for free.
+
+## Provider conformance
+
+`threetears.search.testing` ships the suite every adapter passes — contract
+shape, spend on failure, error taxonomy, disposition honesty,
+zero-results-is-success (SR-O5). It imports no test framework, so a consumer
+can run it against its own wiring:
+
+```python
+from threetears.search.testing import ProviderConformanceCase, ProviderConformanceSuite
+
+
+class TestMyProviderConformance(ProviderConformanceSuite):
+    case = ProviderConformanceCase(...)
+```
+
+## Not here yet
+
+`aggregate.py`, `extract.py`, `select.py`, `limiter.py` and `replay.py` are
+later phases of `docs/search-spec.md` §7. Budget-port consultation and pacing
+are marked seams inside `call.py`: the port types are Phase 1 PR 2, and a
+placeholder protocol would only be a second vocabulary to migrate off.
 
 ## Import-cleanliness
 
@@ -42,3 +114,11 @@ and `3tears-media-contracts`. Nothing in this package imports
 `threetears.core`, `threetears.agent.*`, langchain, or NATS. Nothing reads
 environment variables — the host passes base URLs, secret references, and
 transport (SR-K1).
+
+`standalone.py` is the only module that imports `httpx`, and nothing in the
+package imports `standalone` at module level: the extra stays opt-in, and a
+host that injects its own transport never installs it. Both facts are pinned
+by `tests/test_package_boundaries.py`, and the module's path is the D19
+widening of the no-bespoke-client norm in
+`tests/enforcement/test_no_bespoke_reuse.py` — a sanctioned transport, with no
+exemption filed.
