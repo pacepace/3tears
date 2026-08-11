@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from langchain_core.messages import ToolMessage
 
 from threetears.agent.tools.executor import ToolExecutor
 
@@ -63,7 +64,74 @@ async def test_invoke_with_tool_calls():
     assert result.rounds_used == 2
     assert len(result.tool_calls_made) == 1
     assert result.tool_calls_made[0]["name"] == "calculator"
-    tool.ainvoke.assert_awaited_once_with({"expr": "6*7"})
+    # The whole tool call, not just its args: that is what makes LangChain
+    # build the ToolMessage and keep a content_and_artifact tool's artifact
+    # (§4.7). This assertion previously pinned the args-only shape, which is
+    # the defect -- a test can encode a bug as firmly as the code does.
+    tool.ainvoke.assert_awaited_once_with(
+        {"name": "calculator", "args": {"expr": "6*7"}, "id": "tc_1", "type": "tool_call"}
+    )
+
+
+async def test_a_tool_message_answer_is_kept_whole_with_its_artifact():
+    """§4.7: the structured artifact survives the executor.
+
+    ``page_finder`` runs through this executor and returns its structure as
+    an artifact. Stringifying the invocation result dropped it, so the
+    structure never reached the caller -- check 4 fails without this.
+    """
+    artifact = {"pages": [{"url": "https://example.org/a", "score": 0.9}]}
+    tool = _make_mock_tool("page_finder")
+    tool.ainvoke = AsyncMock(return_value=ToolMessage(content="found 1 page", tool_call_id="tc_1", artifact=artifact))
+    tc_response = _make_tool_call_response([{"name": "page_finder", "args": {"q": "a"}, "id": "tc_1"}])
+
+    model = AsyncMock()
+    model.ainvoke = AsyncMock(side_effect=[tc_response, _make_text_response("done")])
+
+    executor = ToolExecutor(max_rounds=3)
+    await executor.invoke_with_tools(model, [], [tool])
+
+    appended = model.ainvoke.await_args_list[1].args[0]
+    tool_messages = [m for m in appended if isinstance(m, ToolMessage)]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].artifact == artifact
+    assert tool_messages[0].content == "found 1 page"
+
+
+async def test_a_plain_value_answer_still_becomes_content():
+    """A tool that is not artifact-aware behaves exactly as it did before."""
+    tool = _make_mock_tool("calculator", "42")
+    tc_response = _make_tool_call_response([{"name": "calculator", "args": {"expr": "6*7"}, "id": "tc_1"}])
+
+    model = AsyncMock()
+    model.ainvoke = AsyncMock(side_effect=[tc_response, _make_text_response("done")])
+
+    executor = ToolExecutor(max_rounds=3)
+    await executor.invoke_with_tools(model, [], [tool])
+
+    appended = model.ainvoke.await_args_list[1].args[0]
+    tool_messages = [m for m in appended if isinstance(m, ToolMessage)]
+    assert tool_messages[0].content == "42"
+    assert tool_messages[0].artifact is None
+
+
+async def test_a_raising_tool_still_answers_with_error_text():
+    """The failure path keeps its shape: one ToolMessage, naming the tool."""
+    tool = _make_mock_tool("calculator")
+    tool.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+    tc_response = _make_tool_call_response([{"name": "calculator", "args": {}, "id": "tc_1"}])
+
+    model = AsyncMock()
+    model.ainvoke = AsyncMock(side_effect=[tc_response, _make_text_response("done")])
+
+    executor = ToolExecutor(max_rounds=3)
+    await executor.invoke_with_tools(model, [], [tool])
+
+    appended = model.ainvoke.await_args_list[1].args[0]
+    tool_messages = [m for m in appended if isinstance(m, ToolMessage)]
+    assert len(tool_messages) == 1
+    assert "Error executing calculator" in str(tool_messages[0].content)
+    assert "boom" in str(tool_messages[0].content)
 
 
 async def test_max_rounds_exhausted():
