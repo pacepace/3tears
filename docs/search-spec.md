@@ -280,6 +280,46 @@ be able to take search with no extraction at all. Requirements:
 - MAY add a Wayback fallback tier later (prior art: `TadMSTR/searxng-mcp`);
   not in v1.
 
+#### Rulings taken before the build -- 2026-08-11
+
+Recorded ahead of the build rather than after it, per the Gate A precedent
+and for the reason that precedent exists: a ruling that lives only in the
+session that took it is a ruling the next session re-litigates. Each is
+vetoable; a veto lands here and in `search-requirements.md` §13.
+
+- **Robots is fetched through the same `FetchTransport`**, parsed with
+  stdlib `urllib.robotparser`, and memoized for the life of one Extract
+  call and no longer. Fetching it through the injected seam means it
+  inherits the guards, the byte cap, the pacing and the egress provenance
+  rather than acquiring a second, weaker path to the same hosts. It costs
+  one extra fetch per host per call; the alternative is honoring robots
+  without reading it, which is not honoring it. **This is not a response
+  cache and D14 is untouched** -- D14 governs *search responses*, and the
+  memo dies with the call rather than outliving it.
+- **A missing `[extract]` extra is a typed refusal naming the extra**, never
+  a silently degraded extraction. A caller handed prose has to be able to
+  tell whether a real extractor produced it; a crude tag-strip fallback
+  would be indistinguishable at the call site and wrong in a way that only
+  shows up in a model's output.
+- **The `extraction_status` vocabulary gets named constants in
+  `media-contracts` first.** Today it is a bare `str | None` with a comment
+  listing `"pending"` / `"complete"` -- no constants, and no value for
+  *refused* (robots said no) or *failed* (the fetch died), both of which
+  Extract produces. Additive constants land beside the facet vocabulary,
+  in the package that owns the neighbourhood, rather than a second status
+  vocabulary being invented in the search leaf (SR-C3's rule applied to
+  status rather than to facets).
+- **Escalation to `HeavyFetcher` is a caller choice**, never automatic --
+  the conservative resolution `shared_search` OQ3 already reached, restated
+  here because "SHOULD" above left it open and silent escalation multiplies
+  cost by a factor nobody sees until the bill.
+
+**Not Extract's to open: the transport's connection scope.** The
+`StandaloneTransport` gained `connection_scope()` with the fetch seam (§3.8),
+and Extract deliberately opens none of its own: a transport is an injected
+port, and how long its connections live belongs to the deployment that
+constructed it. A host that wants pooling wraps its own work in the scope.
+
 ### 3.6 `select.py` *(Phase 3)*
 
 Candidates + criteria → an ordered, filtered subset. Owns local criteria

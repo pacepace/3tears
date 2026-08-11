@@ -4,6 +4,26 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Fixed
+
+- `media-contracts`: the runtime `__version__` is derived from package
+  metadata like every other package in the family, instead of a hardcoded
+  literal. It read `0.10.6` while the package shipped at 0.24.0 --
+  fourteen minor releases of drift, published each time, reporting a
+  version this package had not been for months. Nothing failed, which is
+  the point: a hardcoded version is wrong silently.
+
+### Added
+
+- `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
+  `__version__` must be read from installed metadata, never written as a
+  literal. The lockstep bump touches ~30 `pyproject.toml` files
+  mechanically and walks straight past a literal in a different file,
+  which is exactly how the drift above survived. Verified to flag the old
+  file and pass the fixed one.
+
 ## v0.24.0 -- 2026-08-11
 
 ### Added

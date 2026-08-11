@@ -47,4 +47,21 @@ __all__ = [
     "sanitize_segment",
 ]
 
-__version__ = "0.10.6"
+# Version derived from pyproject.toml so the metadata is the single
+# source of truth -- a future release that bumps pyproject without
+# updating ``__init__.py`` can't drift the runtime ``__version__``.
+# This module is the one that did: it carried a hardcoded 0.10.6
+# through fourteen minor releases, reporting a version this package
+# had not been for months. The except guard handles the rare case
+# where the package isn't installed via importlib.metadata (e.g.
+# running directly from a checked-out source tree without ``uv
+# sync``); the fallback keeps imports working but reports ``unknown``
+# rather than crashing. ``importlib.metadata`` is stdlib, so the
+# dependency-free floor this package is pinned at is untouched.
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _version
+
+try:
+    __version__ = _version("3tears-media-contracts")
+except _PackageNotFoundError:  # pragma: no cover - dev fallback
+    __version__ = "unknown"
