@@ -46,7 +46,9 @@ print(extraction.validation_status, extraction.structured_fields["records"])
 
 ## Architecture
 
-> Lifted from faidh's `src/faidh/scrape/` into this package ([`docs/scrape-task-01-lift-core-package.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-01-lift-core-package.md), 2026-07-15) as a directory move -- zero logic changes. faidh's WARN Act plugin is used throughout as the running example of a consumer; it remains a faidh-side module (`faidh/src/faidh/intake/plugins/warn_act.py`), not part of this package, and is the only place WARN-domain meaning exists.
+> Lifted out of the application it was written for ([`docs/scrape-task-01-lift-core-package.md`](https://github.com/pacepace/3tears/blob/main/docs/scrape-task-01-lift-core-package.md), 2026-07-15) as a directory move -- zero logic changes.
+>
+> **The running example throughout is a WARN Act notice tracker**: a real deployment that polls ~24 US state labor departments and turns their filings into a signal stream. It is a *consumer* of this package, not part of it, and it is the only place WARN-domain meaning exists. It is named here because every claim below is grounded in what it actually did rather than in what the design intends -- where a number or a failure appears, that is where it came from.
 
 ### Why this exists
 
@@ -54,7 +56,11 @@ WARN Act notices are published by ~24 US state labor departments in wildly incon
 
 The actual answer: **two orthogonal, config-selected axes** -- how to *fetch* a page and how to *extract* from it -- cover every state as a combination of the two, with zero jurisdiction-specific code in the core.
 
-### 1. Data flow: source → Postgres (faidh's WARN Act consumer, as an example)
+### 1. Data flow: source → Postgres
+
+Everything above the dashed line is this package. Everything below `ScrapeExtraction` is
+the consumer's, shown so the seam is visible: this package produces validated records and
+stops, and the consumer decides what they mean.
 
 ```mermaid
 flowchart TD
@@ -64,13 +70,13 @@ flowchart TD
     D -->|reuse existing recipe| E[ScrapeRecipe]
     D -->|regenerate via LLM candidates + judge| E
     E --> F[ScrapeExtraction persisted<br/>structured_fields = records]
-    F --> G["WarnActPlugin._produce()<br/>generic records → Tier-2 fields"]
-    G --> H[ArbitrarySignalEntity.create<br/>signal_type=warn_act_notice]
-    H --> I["PluginBase.collect()<br/>throttle-gate → _produce() → save_entity() → yield"]
-    I --> J[(Postgres:<br/>faidh_arbitrary_signals)]
-    I --> K["publish_arbitrary_signals()"]
-    K --> L[NATS subject: arbitrary_signals]
-    L --> M[Downstream: scoreboard, retrospect, ...]
+    F --> G["consumer mapping step<br/>generic records → domain fields"]
+    G --> H[domain entity<br/>created by the consumer]
+    H --> I["consumer's collect loop<br/>throttle-gate → map → persist → yield"]
+    I --> J[(Postgres:<br/>the consumer's own signal table)]
+    I --> K["the consumer's publish step"]
+    K --> L[NATS subject]
+    L --> M[Downstream consumers]
 
     F -.-> N[(Postgres:<br/>scrape_targets / scrape_recipes /<br/>scrape_extractions / scrape_target_health -- provenance)]
 ```
@@ -78,11 +84,11 @@ flowchart TD
 Two Postgres-writing paths run **in parallel, not sequentially**:
 
 - **Provenance** (`scrape_targets`, `scrape_recipes`, `scrape_extractions`, `scrape_target_health`) -- what was fetched, what strategy won, when, and whether the fetch itself is healthy. Domain-agnostic, lives in this package.
-- **Signal** (`faidh_arbitrary_signals`) -- what faidh's forecasting actually reads. Faidh-specific, mapped by `WarnActPlugin._produce()`, stays in faidh.
+- **Signal** -- whatever the consumer's own domain reads. Mapped from the generic records by the consumer's plugin, in the consumer's schema, and never in this package. In the WARN Act tracker that is one signal row per notice; in yours it is whatever your domain is.
 
 ### 2. The abstraction: `ScrapeTarget` is the entire adapter surface
 
-Zero jurisdiction-specific Python exists anywhere in this package. In faidh's WARN Act consumer, every state is a `ScrapeTarget` row (`faidh/src/faidh/intake/plugins/seeds/warn_act_targets.yaml`), bootstrapped into the DB.
+Zero jurisdiction-specific Python exists anywhere in this package. In the WARN Act tracker, every state is a `ScrapeTarget` row in a YAML seed file, bootstrapped into the DB.
 
 | Field | Controls |
 |---|---|
@@ -130,16 +136,16 @@ flowchart LR
     S1 & S2 & S3 & S4 --> J[Identical propose → validate →<br/>judge → persist cycle, eval_loop.py]
 ```
 
-In faidh's WARN Act consumer, every one of the ~24 onboarded states is one config row picking a combination from this matrix. A new driver/strategy is only written when a target needs a *fetch mechanism* or *extraction shape* that doesn't exist yet -- and each one that was written has a named real target behind it: the regex strategy (a prose listing with no table), `ApiDriver` (a JSON search endpoint), native CSV support, `NetworkCaptureDriver` (an authenticated Aura POST), `MultiDocumentDriver` plus `per_document` (one PDF letter per notice, no two worded alike), `NodriverDownloadDriver` (those PDFs behind a Cloudflare challenge), `multi_row_vision` (a born-digital PDF table that text extraction mis-split), and `ListingDetailDriver` (a listing whose records are genuinely split across two pages).
+In the WARN Act tracker, every one of the ~24 onboarded states is one config row picking a combination from this matrix. A new driver/strategy is only written when a target needs a *fetch mechanism* or *extraction shape* that doesn't exist yet -- and each one that was written has a named real target behind it: the regex strategy (a prose listing with no table), `ApiDriver` (a JSON search endpoint), native CSV support, `NetworkCaptureDriver` (an authenticated Aura POST), `MultiDocumentDriver` plus `per_document` (one PDF letter per notice, no two worded alike), `NodriverDownloadDriver` (those PDFs behind a Cloudflare challenge), `multi_row_vision` (a born-digital PDF table that text extraction mis-split), and `ListingDetailDriver` (a listing whose records are genuinely split across two pages).
 
 ### 4. "The signal must carry the value; the model must never infer it" -- where the rule actually lives
 
-| Checkpoint | Mechanism | Proof (faidh's WARN Act consumer) |
+| Checkpoint | Mechanism | Proof (the WARN Act tracker) |
 |---|---|---|
 | Structural validation, all-or-nothing per record | `validate_candidate` / `validate_row_candidate` (+ regex variants), `extraction.py` -- no coercion, no defaults, a record missing even one requested field is **dropped entirely** | Oklahoma: 217 real records exist, only 128 survived -- the other 89 genuinely lack a workforce-region value on the page |
 | Schema omits what a page can't provide | `field_schema` per target -- never forces a value that isn't there | New York schema doesn't request `affected_count`/`effective_date` because its page has neither |
 | Judge does semantic verification, not just structural plausibility | `_judge_candidates` / `_judge_row_candidates`, `eval_loop.py` -- sees real page HTML + candidate values, told structural validity is already checked, job is *semantic correctness* | Georgia: an earlier schema mistakenly asked for `county`; judge rejected the resulting hallucinated-mapping candidate rather than accepting it |
-| Confirmed vs. best-guess survives to the signal | `ScrapeExtraction.validation_status` ∈ `validated` / `needs_review` / `failed` / `blocked` | `WarnActPlugin._produce()` logs a distinct warning for `needs_review` yields rather than treating them as confirmed |
+| Confirmed vs. best-guess survives to the signal | `ScrapeExtraction.validation_status` ∈ `validated` / `needs_review` / `failed` / `blocked` | the consumer's mapping step logs a distinct warning for `needs_review` yields rather than treating them as confirmed |
 | "We never received the page" is not "the page was wrong" | `challenge.classify_failed_page`, `challenge.py` -- asked only once extraction has already failed, and only about a page that differs from the last one that worked; a `blocked` verdict persists `validation_status="blocked"` with no records and leaves the recipe untouched | A bot wall used to increment the same failure counter a redesign does, so three polls later the recipe was discarded and an LLM round spent learning to extract data from a challenge page |
 
 One value appears in `ScrapeTool`'s JSON payload under the same key and is deliberately not a `ValidationStatus`: `backoff`, reported when the fetch circuit suppressed the poll. It is never stored, because a suppressed poll persists nothing -- the other four all describe a page we did or did not receive, where `backoff` describes a fetch we declined to attempt. A consumer that lumps it in with `blocked` will record a bot wall for a target that was merely being backed off, which is the exact conflation the circuit was built to stop.
@@ -218,15 +224,30 @@ packages/scrape/src/threetears/scrape/
 ├── enrichment.py                secondary free-form LLM notes pass (separate from structured_fields)
 └── llm_retry.py                 bounded_retry_structured_call() -- shared by extraction.py + eval_loop.py
 
-Example consumer (faidh repo, not part of this package):
-faidh/src/faidh/intake/plugins/warn_act.py               WarnActPlugin -- the ONLY place WARN-domain meaning exists
-faidh/src/faidh/intake/plugins/seeds/warn_act_targets.yaml   the ScrapeTarget config rows
-faidh/src/faidh/intake/runner.py                          publish_observations(), publish_arbitrary_signals(), poll_scrape_targets()
-faidh/src/faidh/intake/plugins/__init__.py                PluginBase.collect() -- persist-then-yield template method
-faidh/src/faidh/intake/signals/arbitrary.py               ArbitrarySignalEntity/Collection -- the actual Postgres sink
 ```
 
-**Call chain, one live poll cycle (faidh's WARN Act consumer):** `runner.publish_observations()` → `WarnActPlugin.collect()` (inherited `PluginBase`) → `WarnActPlugin._produce()` → resolves `self._drivers[target.driver_backend]` → `driver.render(...)` → `run_eval_loop_multi_row(...)` (or `run_eval_loop` if `multi_row=False`) → `_run_reuse_cycle` (re-runs the stored strategy; on a miss, classifies the page and routes) or `_regenerate` → `_persist_extraction()` writes `scrape_extractions` → back in `_produce()`, each record becomes an `ArbitrarySignalEntity` → `collect()`'s `save_entity()` writes `faidh_arbitrary_signals` → `publish_arbitrary_signals()` re-drives `collect()` and publishes each yielded entity to `arbitrary_signals()` on NATS.
+**What a consumer supplies.** Nothing in the list above is domain-aware, so a consumer
+adds exactly four things, none of which live here:
+
+| The consumer owns | What it does |
+|---|---|
+| A plugin with a mapping step | turns this package's generic `structured_fields` records into its own domain entity. The only place domain meaning exists |
+| A collect loop | throttle-gate, map, persist, yield. Persist-then-yield, so a crash after the write does not lose the record |
+| A signal entity + collection | its own table, its own schema. This package never writes it |
+| A runner | drives the poll, then publishes each yielded entity to its own NATS subject |
+
+**Call chain, one live poll cycle.** The consumer's runner calls its plugin's collect loop,
+which calls the mapping step, which resolves `self._drivers[target.driver_backend]` and calls
+`driver.render(...)`. That hands off to `run_eval_loop_multi_row(...)` (or `run_eval_loop` if
+`multi_row=False`), which routes to `_run_reuse_cycle` -- re-running the stored strategy, and
+on a miss classifying the page and re-routing -- or to `_regenerate`. Either way
+`_persist_extraction()` writes `scrape_extractions`, and control returns to the consumer's
+mapping step, where each record becomes a domain entity, gets persisted to the consumer's own
+table, and is published.
+
+**This package's half of that chain ends at `_persist_extraction()`.** Everything before it is
+here and testable here; everything after it is the consumer's and is why no domain vocabulary
+appears anywhere in `src/`.
 
 ### 7. When a target needs a human: the whole loop
 
