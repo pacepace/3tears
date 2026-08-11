@@ -57,6 +57,15 @@ All items independent; all can start today.
 **Checkpoint:** search-leaf **Gate A** passed (contract review); discodon on
 3.14 with port-shaped storage and budgets; metallm current.
 
+*Status 2026-08-11:* the two **3tears** items are done — the leaf shipped
+(both adapters, budgets, pacing, wiring) and Gate A passed with its findings
+landed the same night; the `media-contracts` facets rode the keystone
+commits. The discodon and metallm items are outstanding and owned outside
+this repo: discodon still declares `>=3.12`, and metallm's lock resolves the
+family at 0.10.6. Because the phase gate is a coordination convention rather
+than a build dependency, 3tears carried on into Phase 2 work that does not
+consume either — see the Phase 2 note.
+
 ## Phase 2 — In-family integration (3tears)
 
 - **3tears:** search Phase 2 — Extract's web path; gut
@@ -76,6 +85,16 @@ All items independent; all can start today.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
 
+*Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
+one thing here consumes them: the **replay record schema** (search Phase 3
+item 8) is elicited against discodon's carved storage port and its
+pipeline-eval needs, which is the whole reason "Why this order" puts Phase 1
+first. Cutting that schema before the port exists would be cutting it
+against an imagined consumer. Everything else in this phase — the Extract
+web path, gutting the builtins, the serve wiring, the envelope asks, and
+Phase 3's `aggregate`/`select` — depends on nothing outside this repo and
+proceeds.
+
 **Checkpoint:** **Gate B** — success checks verified in-repo, SearXNG score
 semantics confirmed against a live instance, decisions/vetoes propagated
 back into
@@ -92,6 +111,17 @@ back into
 
 **Checkpoint:** `3tears-search` and the bumped family on PyPI; tag verified
 via `git ls-remote --tags origin`.
+
+**Ran early — v0.24.0, 2026-08-11, with Phase 2 not started.** The
+checkpoint is met on its own terms: tag on origin, Release present, all 30
+packages at 0.24.0 including `3tears-search`. But it published the leaf
+*alone*, so it does not open Phase 4 — the consumer migrations below need
+the Phase 2 surface (metallm the gutted `WebSearchTool`, discodon the Phase
+3 replay piece), and a consumer release carrying migration work must pin a
+version that has it. Phase 2 still closes at Gate B, which now guards the
+**next** release rather than the first. The contracts stay re-cuttable
+meanwhile: nobody has bound them
+([`search-spec.md` D29](search-spec.md#1-decisions-taken)).
 
 ## Phase 4 — Consumer search migrations (parallel per repo)
 
