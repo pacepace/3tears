@@ -60,7 +60,9 @@ All items independent; all can start today.
 *Status 2026-08-11:* the two **3tears** items are done — the leaf shipped
 (both adapters, budgets, pacing, wiring) and Gate A passed with its findings
 landed the same night; the `media-contracts` facets rode the keystone
-commits. The discodon and metallm items are outstanding and owned outside
+commits. Both landed in
+[#303](https://github.com/pacepace/3tears/pull/303), Gate A findings
+included. The discodon and metallm items are outstanding and owned outside
 this repo: discodon still declares `>=3.12`, and metallm's lock resolves the
 family at 0.10.6. Because the phase gate is a coordination convention rather
 than a build dependency, 3tears carried on into Phase 2 work that does not
@@ -84,6 +86,20 @@ consume either — see the Phase 2 note.
   *frontend* convergence later, not this sequence's next phase, but deciding
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
+
+*Status 2026-08-11 — what has landed toward this phase.* Nothing here is
+finished; two pieces of the ground under item 4 are.
+[#307](https://github.com/pacepace/3tears/pull/307) gave `FetchTransport`
+the implementation Gate A deferred, so Extract is no longer due to be
+written against a protocol nothing satisfies — and settled the connection
+lifecycle that path depends on.
+[#310](https://github.com/pacepace/3tears/pull/310) (open) records the four
+Extract rulings in [`search-spec.md` §3.5](search-spec.md#35-extractpy-web-path-phase-2-carrier-dispatch-phase-3)
+ahead of the build, per the Gate A precedent. `extract.py` itself does not
+exist yet, and neither do any of items 5–7: `WebSearchTool` and
+`WebFetchTool` are un-gutted, `serve.py` has no leaf wiring, the
+`ToolExecutor` artifact fix is unlanded, and the MCP face still flattens
+everything to `TextContent`.
 
 *Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
 one thing here consumes them: the **replay record schema** (search Phase 3
@@ -112,7 +128,11 @@ back into
 **Checkpoint:** `3tears-search` and the bumped family on PyPI; tag verified
 via `git ls-remote --tags origin`.
 
-**Ran early — v0.24.0, 2026-08-11, with Phase 2 not started.** The
+**Ran early — v0.24.0, 2026-08-11, with Phase 2 not started.** Bump in
+[#304](https://github.com/pacepace/3tears/pull/304), develop→main in
+[#305](https://github.com/pacepace/3tears/pull/305), tag `v0.24.0` pushed
+from main; the ruling it forced is
+[#306](https://github.com/pacepace/3tears/pull/306) (D29). The
 checkpoint is met on its own terms: tag on origin, Release present, all 30
 packages at 0.24.0 including `3tears-search`. But it published the leaf
 *alone*, so it does not open Phase 4 — the consumer migrations below need
