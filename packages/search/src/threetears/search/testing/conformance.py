@@ -20,6 +20,16 @@ holding for *whichever* provider it was handed:
 5. **zero results is a success** -- an empty candidate set, never an
    exception (SR-J2).
 
+A sixth pin rides along wherever the vocabulary lets it be stated generically
+rather than per-provider: **weighted pricing bills something** -- a provider
+that declares :data:`~threetears.search.contracts.PRICING_PER_WEIGHTED_UNIT`
+attaches nonzero ``provider_units`` to a served call (SR-E4). It reads its
+condition off the provider's own capability declaration rather than off which
+case is running, so it is one assertion for every provider rather than a
+per-case restatement -- and it is silent, not skipped, for a provider that
+prices some other way, because the suite carries no pytest dependency to skip
+with (see below).
+
 **How to run it.** Subclass :class:`ProviderConformanceSuite` in a test
 module, set the ``case`` class attribute, and name the subclass so the
 runner collects it::
@@ -44,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from threetears.search.contracts import (
+    PRICING_PER_WEIGHTED_UNIT,
     PRODUCER_API_PROVIDER,
     AuthFailed,
     CandidateSet,
@@ -81,8 +92,13 @@ class ProviderConformanceCase:
     malformed_body: bytes
     #: a criterion this provider pushes down to its API.
     pushdown_criterion: Criterion
-    #: a criterion this provider honours by filtering locally.
-    local_criterion: Criterion
+    #: a criterion this provider honours by filtering locally, or ``None``
+    #: when the provider declares no ``local`` criterion at all (Tavily: it
+    #: either pushes a criterion to its API or reports it unsatisfied --
+    #: SR-B3 -- so there is nothing this pin can drive for it, and the
+    #: ``local`` assertion is skipped rather than assuming every provider
+    #: has one).
+    local_criterion: Criterion | None
     #: a criterion this provider cannot honour at all.
     unsatisfiable_criterion: Criterion
     #: the wire parameter name ``pushdown_criterion`` should produce.
@@ -213,11 +229,15 @@ class ProviderConformanceSuite:
     async def test_dispositions_are_honest(self) -> None:
         """Every criterion gets one answer, and it matches the declaration."""
         unknown = Criterion.namespaced("conformance", "not-a-real-criterion", True)
-        criteria = (
-            self.case.pushdown_criterion,
-            self.case.local_criterion,
-            self.case.unsatisfiable_criterion,
-            unknown,
+        criteria = tuple(
+            criterion
+            for criterion in (
+                self.case.pushdown_criterion,
+                self.case.local_criterion,
+                self.case.unsatisfiable_criterion,
+                unknown,
+            )
+            if criterion is not None
         )
         provider, transport = self._provider((TransportScript(body=self.case.success_body),))
         result = await provider.search(SearchRequest(query="conformance dispositions", criteria=criteria))
@@ -226,7 +246,8 @@ class ProviderConformanceSuite:
         assert len(result.dispositions) == len(answers), "one answer per criterion, never two"
         assert set(answers) == {criterion.key for criterion in criteria}, "no criterion is silently dropped (SR-B3)"
         assert answers[self.case.pushdown_criterion.key].disposition == "pushdown"
-        assert answers[self.case.local_criterion.key].disposition == "local"
+        if self.case.local_criterion is not None:
+            assert answers[self.case.local_criterion.key].disposition == "local"
         assert answers[self.case.unsatisfiable_criterion.key].disposition == "unsatisfied"
         assert answers[unknown.key].disposition == "ignored-unknown"
         assert answers[self.case.unsatisfiable_criterion.key].detail, "an unsatisfiable criterion says why (SR-B3)"
@@ -237,10 +258,35 @@ class ProviderConformanceSuite:
                 f"{criterion.key} was reported {answers[criterion.key].disposition} but declared {declared}"
             )
 
-        sent = transport.calls[-1]["params"]
-        assert isinstance(sent, dict)
-        assert self.case.pushdown_parameter in sent, (
+        # A pushdown parameter may leave on the query string (SearXNG) or the
+        # JSON body (Tavily) -- the wire shape is the adapter's business, and
+        # the pin only cares that the parameter left by *some* channel.
+        sent_params = transport.calls[-1]["params"]
+        sent_body = transport.calls[-1]["json_body"]
+        assert isinstance(sent_params, dict)
+        assert isinstance(sent_body, dict)
+        wire = {**sent_params, **sent_body}
+        assert self.case.pushdown_parameter in wire, (
             f"{self.case.pushdown_criterion.key} claims pushdown but sent no {self.case.pushdown_parameter!r} parameter"
+        )
+
+    async def test_weighted_pricing_bills_nonzero_provider_units(self) -> None:
+        """A provider billing per weighted unit reports what one call cost (SR-E4).
+
+        Expressible generically because the condition -- "does this provider
+        price per weighted unit" -- is the provider's own capability
+        declaration, not a fact the case has to restate. A provider that
+        prices some other way (SearXNG's free-self-hosted) has nothing to
+        check here, and this method simply returns rather than asserting
+        against a case field that provider does not have.
+        """
+        provider, _ = self._provider((TransportScript(body=self.case.success_body),))
+        if provider.capabilities.pricing_model != PRICING_PER_WEIGHTED_UNIT:
+            return
+        result = await provider.search(SearchRequest(query="conformance weighted spend"))
+        assert result.spend.provider_units > 0, (
+            f"{provider.provider} declares {PRICING_PER_WEIGHTED_UNIT!r} pricing but billed "
+            f"provider_units={result.spend.provider_units} on a served call"
         )
 
     async def test_the_success_fixture_is_this_provider_s_own_shape(self) -> None:
