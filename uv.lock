@@ -19,6 +19,7 @@ exclude-newer-span = "P14D"
 3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
