@@ -14,3 +14,13 @@
 # maintained in lockstep with the import-context rules in
 # threetears.enforcement.dependency_alignment.walkers: guarded,
 # deferred, and TYPE_CHECKING imports never need exemptions.
+#
+# the domain's two FLOOR walkers report through this same file
+# (contract.impure; dependency.floor_excess / floor_missing /
+# floor_unknown), but an exemption is almost never the right answer for
+# them. those categories do not describe a mismatch between two
+# statements about one package -- they describe a package that no longer
+# matches a ruling made about its dependency floor (D24 for
+# 3tears-search). the fix is to move the dependency into an extra, or to
+# change the ruling and the pin in tests/enforcement together, so that
+# what consumers read still matches what they get.
