@@ -23,26 +23,95 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 because the scope step below diffs against the PR base,
+      # which a shallow clone does not have.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # A documentation-only PR runs no suite. The skip is decided HERE, inside
+      # the job, rather than by a `paths-ignore:` on the trigger -- and that is
+      # not a style preference.
+      #
+      # `check` is a REQUIRED status context on both develop and main. A
+      # workflow that `paths-ignore` filters out never starts, so it never
+      # reports that context, so the PR waits on a check that can never
+      # arrive and blocks forever. That is strictly worse than running the
+      # suite. It is also the same failure this file's trigger comments
+      # already record twice, from the other direction.
+      #
+      # Keeping the job unconditional and skipping its STEPS keeps the
+      # contract: `check` always reports, and a docs PR gets its green in
+      # seconds instead of minutes.
+      - name: Decide whether this change needs the suite
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            # Every push to develop runs the full suite whatever it touched.
+            # The develop -> main release PR is gated on THIS commit's stored
+            # result (see the push trigger's comment), so a stamp that skipped
+            # the suite would hand main a green light nothing verified.
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "push to develop: running the full suite."
+            exit 0
+          fi
+          changed=$(git diff --name-only '${{ github.event.pull_request.base.sha }}...HEAD')
+          echo "changed files:"
+          echo "$changed"
+          # Classified with shell `case` rather than a grep expression, on
+          # purpose. `grep -qv` means "some line did not match", which is one
+          # negation away from "no line matched" and reads the same at a
+          # glance -- and the two differ exactly on the case that matters
+          # here, a PR mixing docs with code. `case` states the doc shapes
+          # positively and needs no negation to be read correctly.
+          #
+          # The default branch is `needed=true`: an unrecognised path is
+          # treated as code, so a new kind of file is tested rather than
+          # silently skipped. A changeset that is somehow empty also runs.
+          needed=false
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              *.md|docs/*|LICENSE|*/LICENSE) ;;
+              *) needed=true; break ;;
+            esac
+          done <<CHANGED
+          $changed
+          CHANGED
+          if [ -z "$changed" ]; then
+            needed=true
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          if [ "$needed" = "true" ]; then
+            echo "-> code changed: running the full suite."
+          else
+            echo "-> documentation only: skipping lint, typecheck and tests."
+          fi
 
       - uses: astral-sh/setup-uv@v8.2.0
+        if: steps.scope.outputs.needed == 'true'
         with:
           version: "latest"
 
       - name: Set up Python
+        if: steps.scope.outputs.needed == 'true'
         run: uv python install 3.14
 
       - name: Install dependencies
+        if: steps.scope.outputs.needed == 'true'
         run: uv sync --extra vision
 
       - name: Lint
+        if: steps.scope.outputs.needed == 'true'
         run: |
           uv run ruff check .
           uv run ruff format . --check
 
       - name: Typecheck
         # single source of truth for the mypy target set (avoids CI/local drift).
+        if: steps.scope.outputs.needed == 'true'
         run: ./scripts/typecheck.sh
 
       - name: Test (unit + enforcement; integration excluded - no docker on the runner)
+        if: steps.scope.outputs.needed == 'true'
         run: uv run pytest packages/ tests/ -m "not integration" -v
