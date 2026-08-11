@@ -99,7 +99,7 @@ threetears/search/
   select.py         # Select     (Phase 3)
   bind.py           # Bind helpers: prose render + metadata projection
   standalone.py     # bare-httpx transport impl   [standalone] — the sanctioned path (D19)
-  limiter.py        # in-process pacing + distributed-limiter port (D8)
+  limiter.py        # in-process pacing (D8; the port is contract vocabulary, §3.1)
   replay.py         # record/replay over the store port (Phase 3)
   testing/          # provider-conformance suite + parity-declared fakes (SR-O5)
 ```
@@ -319,13 +319,26 @@ many-fetch path).
 
 ### 3.9 `limiter.py`
 
-In-process token-bucket pacing keyed `(provider instance, egress)` (D8, D20),
-plus the port a distributed implementation satisfies (`core`'s NATS
-`TokenBucket`, host-injected, where a bus exists). The in-process limiter's
-state is the argued SR-O2 allowlist entry — argued in the build plan, not
-assumed. MUST be on by default with safe rates (SR-L6); the shared SearXNG's
-own server-side limiter remains the backstop that covers non-cooperating
-deployments (SR-H4's honest layering).
+In-process token-bucket pacing keyed `(provider instance, egress)` (D8, D20).
+The port a distributed implementation satisfies (`core`'s NATS `TokenBucket`,
+host-injected, where a bus exists) is contract vocabulary and lives in
+`contracts/` per §3.1's protocol list — `threetears.search.contracts.limiter`
+declares the shape, this module ships the in-process implementation, and the
+two module names mirror each other on purpose *(placement settled at build,
+2026-08-11, following §3.1 where the two sections disagreed)*. The
+in-process limiter's state is the argued SR-O2 allowlist entry — the
+argument is written into the enforcement allowlist entry itself. MUST be on
+by default with safe rates (SR-L6); the shared SearXNG's own server-side
+limiter remains the backstop that covers non-cooperating deployments
+(SR-H4's honest layering). *Build ruling (2026-08-11):* "on by default" is
+discharged by the implementation's own no-argument construction — 1
+token/second, burst 3, chosen so too-slow is latency a host can tune away at
+construction while too-fast is a shared-instance ban nobody can tune away
+after the fact. Call mints no implicit instance when none is injected: a
+per-call limiter paces nothing (buckets unshared), and a hidden process-wide
+one is exactly what the ports discipline (P9) and the SR-O2 stance forbid.
+The host constructs one limiter per process and passes it; the Phase-2 pod
+wiring is the construction site that owns the default.
 
 ### 3.10 `replay.py` *(Phase 3)*
 
@@ -534,7 +547,9 @@ tag is not a release).
    port + weighted spend + limiter + egress provenance. Done when: both
    adapters pass conformance; the SR-E4 defect is unreproducible.
 3. Enforcement deliverables not already landed (floor pin, dict-state root,
-   import-cost test) + `media-contracts` facet fields.
+   import-cost test) + `media-contracts` facet fields. *(Landed with the
+   keystone commits, before item 2 — the facet fields ship in
+   `media-contracts`' `facets.py`, the three tests in their §6 homes.)*
 
 **Gate A (architecture checkpoint):** contracts reviewed against SR-A/B/C by
 a fresh pass before Phase 2 widens — the contract is the lock-in surface
@@ -590,6 +605,50 @@ Dispositions on the build's carried questions, so they stop being open:
 - **`SearchProvider` is accepted contract vocabulary** (now named in
   §3.1) — Call's dependency and the conformance suite's parametrization
   axis; it is a seam name, not a layer name, so the §2 naming rule holds.
+
+#### Phase 1 item 2 — built 2026-08-11
+
+Both done-when conditions hold: both adapters pass the shared conformance
+suite, and the SR-E4 defect is pinned unreproducible at three levels — the
+adapter's own coupling (`_Plan.set_depth` moves the wire parameter and the
+billed weight as one operation; an unknown depth bills the *highest* known
+weight), a generic conformance pin read off the provider's pricing
+declaration, and the env-gated live tier. Rulings taken during the build,
+recorded here per the Gate A precedent:
+
+- **Budget refusal is a returned decision, not a raise.** `BudgetPort.check`
+  returns a `BudgetDecision`; the taxonomy mapping stays in the consuming
+  layer (Call raises `LocalCapExceeded` from it), so a local refusal can
+  never be spelled `QuotaExhausted` (SR-D3) and the port stays satisfiable
+  purely by shape. The estimate is denominated in `Spend` itself — a second
+  estimate vocabulary would let the cap and the bill drift (SR-E2).
+- **Call's estimate is a floor, not a quote:** `calls=1`, plus one weighted
+  unit when — and only when — the provider's own capability declaration says
+  per-weighted-unit pricing. What *this* request weighs is the adapter's
+  planning knowledge; re-deriving it in Call would be a second tally.
+- **Ordering in Call:** check → acquire → provider call → record, all below
+  the retry boundary; a budget refusal short-circuits the limiter too (a
+  call that will not be made takes no pacing slot); the pacing wait is paid
+  out of the caller's bound, not on top of it (SR-G2); `record` fires
+  exactly once per *attempted* call — success, typed failure, or unmapped
+  defect — and never for a refusal or denial, with the same `Spend` the
+  caller receives. An explicit `timeout_seconds=0.0` now means zero.
+- **Egress reaches Call as a parameter** defaulting to `direct` — nothing on
+  `SearchProvider` carries the transport's egress today. If contracts later
+  let a provider declare its egress, the parameter becomes derivable; that
+  is a contracts change, not taken here.
+- **`bind_search` does not yet forward the ports** — the D10 caller-facing
+  path gains budget/limiter pass-through when the Phase-2 consumers wire it
+  (§4), not before.
+- **Contract gaps carried, worked around with precedent, not patched
+  mid-chunk:** `Spend` cannot distinguish *unpriced* from *free* (the
+  capability declaration's `pricing_model` carries the difference; an
+  additive `money_known` flag would close it); the taxonomy has no
+  invalid-request class (a provider 400 maps to `TransportFailed` with
+  teaching remediation, matching the SearXNG else-branch);
+  `LocalCapExceeded.scope` doubles as cap identity (`query-length`,
+  `response-bytes`) beyond SR-D2's scope-tag reading — existing `standalone`
+  precedent, now shared by the Tavily adapter and Call's budget refusals.
 
 ### Phase 2 — in-family consumers (branches stacked on Phase 1)
 
