@@ -31,6 +31,33 @@ packages (bumped in lock-step).
   watching it (dict-state detection, the import-cost test), plus a
   dependency-floor pin holding `3tears-search`'s hard dependencies to
   exactly D24's list.
+- `search`: budget and pacing land as real seams instead of the deferred
+  ports `call.py` left a comment for. `BudgetPort` (`check`/`record`,
+  required plural scope tags, refusal is a returned `BudgetDecision`,
+  never a raise -- SR-D1 through SR-D3) and `RateLimiterPort` (`acquire`
+  keyed on the full `(provider instance, egress)` pair, no default
+  egress, no `release`, no `tokens_remaining` -- D8, D20) join
+  `contracts/`. `InProcessRateLimiter` is the on-by-default
+  implementation: a lazily-refilling token bucket with no lock and no
+  background task, so an idle limiter still costs a one-shot
+  `asyncio.run()` nothing (SR-L5). `call.py` now wires both below the
+  retry boundary -- check, acquire, provider call, record, in that order
+  -- so a refused or rate-limited attempt never reaches the transport and
+  a retried-but-unbilled attempt bills nothing (D4, SR-E2); an explicit
+  `timeout=0.0` is now honored rather than silently replaced by the
+  default.
+- `search`: the Tavily adapter joins SearXNG as the second provider,
+  ported from discodon with its depth/credit coupling intact (`advanced`
+  bills two credits, never one, by construction -- SR-E4) and quota
+  exhaustion (`432`/`433`/`402`) kept distinct from rate limiting (`429`,
+  SR-D3); provider-supplied page text lands directly in the
+  `ContentSlot`. The conformance suite now runs both adapters, gained a
+  sixth pin generic to any per-weighted-unit provider (a served call must
+  bill nonzero `provider_units`), and the `testing/` module gained
+  `FakeBudgetPort` / `FakeRateLimiterPort` witness doubles for the two
+  new ports. The env-gated live tier (§3.11) now covers both providers --
+  Tavily's gates on `TAVILY_API_KEY`, alongside SearXNG's
+  `SEARXNG_BASE_URL`.
 
 ### Changed
 
