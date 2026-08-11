@@ -16,6 +16,7 @@ This replaces a previous pattern in which the same enforcement test files were v
 | `underscore_access` | Underscore prefix is a stability contract: no cross-module private import, no cross-class protected access, modules with public names have `__all__`, no subclass shadowing of base private attributes, no `__all__` listing private names. |
 | `codebase_conventions` | No bare `print()`, no stdlib `logging.getLogger` (use `threetears.observe`), `from __future__ import annotations` required, return type annotations required. |
 | `coercion_coverage` | Tool subclasses override `execute`, never `run`, preserving the `normalize_kwargs → execute` input-coercion path. |
+| `dependency_alignment` | Declared dependencies match actual imports (no undeclared module-top sibling import, no declaration nothing imports); designated contracts packages import only stdlib, their own namespace, and configured extras; a package with a pinned `DependencyFloor` declares exactly the ruled hard-dependency list, no more and no fewer. |
 | `dict_state_detection` | No raw `dict`/`OrderedDict` persistent state in `__init__`; use `SQLiteBackend` (L1) or NATS KV for shared state. |
 | `logger_coverage` | Every production module declares a module-level `log = get_logger(__name__)` unless explicitly exempt. |
 | `migration_yugabyte_safety` | Migration shapes are yugabyte-safe per `threetears.core.data.migrations.enforcement`. |

@@ -12,5 +12,15 @@ contracts without inheriting any feature package's dependency closure.
 from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
 ```
 
+`MediaFacets` carries the additive carrier facets -- rights status, pixel
+dimensions, and whether a locator points at the file itself or at the page
+containing it. The vocabulary grows by addition only, and a consumer that
+does not recognise a facet ignores it rather than failing, so a new carrier
+ships without a coordinated release.
+
+```python
+from threetears.media.contracts import LOCATOR_KIND_DIRECT_FILE, MediaFacets
+```
+
 The legacy import path `threetears.agent.tools.protocols` remains a
 re-export shim for installed `3tears-agent-tools` consumers.

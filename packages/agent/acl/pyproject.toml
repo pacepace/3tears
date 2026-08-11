@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-acl"
-version = "0.23.11"
+version = "0.24.0"
 description = "shared rbac evaluator + cache for the 3tears platform: groups, roles, role assignments, evaluation trails"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,14 +22,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.23.0,<0.24.0",
-    "3tears-observe>=0.23.0,<0.24.0",
+    "3tears>=0.24.0,<0.25.0",
+    "3tears-observe>=0.24.0,<0.25.0",
     "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
 # The cross-process rbac invalidation bus (threetears.agent.acl.invalidation_bus).
-bus = ["3tears-nats[client]>=0.23.0,<0.24.0"]
+bus = ["3tears-nats[client]>=0.24.0,<0.25.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
