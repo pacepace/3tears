@@ -4,10 +4,21 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.24.2 -- 2026-08-12
 
 ### Added
 
+- `scrape`: `page_finder` reads the typed search result off
+  `ToolMessage.artifact` instead of re-parsing the prose rendering
+  (search-spec.md check 4). `PageFinderResult` gains `candidates_seen`,
+  `url_was_a_search_result`, `search_notices` and `search_failure`, every
+  one defaulted, so no caller changes. Filtering is by the tool's *bound*
+  name: `web_fetch` writes its projection under the same metadata key as
+  `web_search`, so an unfiltered scan would report a fetched page as one
+  the search returned. A payload too new to read degrades to the prose
+  path rather than raising, because `find_target_page` promises never to.
+  `scrape` now declares `3tears-search` directly rather than leaning on
+  it arriving through `agent-tools[fetch]`.
 - `core`: `searxng_container` joins the canonical testcontainer fixtures.
   Readiness polls a JSON search rather than matching a log line -- the
   image prints its listening banner before it will serve, so a log-match
@@ -24,6 +35,18 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `agent-tools`: an empty `saveable_tools` set means empty rather than
+  its own opposite. `saveable_tools or _DEFAULT_SAVEABLE_TOOLS` made
+  `frozenset()` falsy and fell back to the defaults, so a caller asking
+  for "no tools by name" got the defaults; `None` now means defaults and
+  empty means empty, which also makes "structure only" expressible.
+  **A behaviour change** for any caller that passed an empty set.
+- `agent-tools`: `chunk_content` resolves a namespaced strategy hint to
+  its bare tail, so `threetears.web_fetch` finds a strategy registered as
+  `web_fetch`. An exact registration still wins. Without this, passing a
+  message's own tool name -- which is what the context-save node does --
+  silently missed every registered strategy and degraded to line
+  chunking.
 - `docs`: SR-A4's residue is discharged. Multi-engine fusion is observed,
   not derived: a live instance returned `4.642857142857142` for
   `positions=[1, 21, 2]` across two engines, matching `3/1 + 3/21 + 3/2`.
@@ -31,6 +54,25 @@ packages (bumped in lock-step).
   `len(engines)` -- two engines produced three positions, so a reading
   based on engine count would have been wrong and would have looked right
   on every single-engine result.
+
+### Fixed
+
+- `agent-tools`: the context-save node stops being inert.
+  `_DEFAULT_SAVEABLE_TOOLS` held bare `web_search` / `web_fetch` matched
+  by equality against `ToolMessage.name`, while the adapter binds every
+  tool under `mcp_name()`, so the default set matched nothing in
+  production. It now binds on the *result type* as well, so a message
+  carrying search structure is saved whatever the tool is called and a
+  rename cannot silently change what is retained. The stored row keeps
+  the query, candidate identities and titles, notices and any typed
+  failure class beside the prose, so SR-A3's re-checkability survives the
+  truncation. Wiring stays deliberately undone; the retention posture is
+  recorded before the first retained byte.
+- `scrape`: `page_finder`'s verification fetch is bounded. `client.get`
+  buffered a whole body an LLM had picked out of search results and
+  handed it to BeautifulSoup; it now streams under a 2 MiB cap and says
+  when it truncated. The same defect class the gutting removed from
+  `web_fetch`, which survived here because this is scrape's own fetch.
 
 ## v0.24.1 -- 2026-08-12
 
