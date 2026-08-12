@@ -350,3 +350,26 @@ def test_fusion_does_not_reorder_the_corpus() -> None:
     corpus = aggregate([call_a, call_b], fuse=True)
 
     assert [e.identity for e in corpus.entries] == ["https://only-a", "https://both"]
+
+
+def test_one_call_repeating_an_identity_contributes_one_rank() -> None:
+    """RRF is one rank per ranked list, not one per row.
+
+    SearXNG's cross-engine merge is imperfect and a normalising ``key=`` makes
+    a repeat routine. Counting both would let a call that returned the same URL
+    at positions 1 and 7 outscore an entry that genuinely placed first.
+    """
+    repeated = CandidateSet(
+        candidates=(
+            _candidate("https://dup", provider="searxng-main", query="q"),
+            _candidate("https://other", provider="searxng-main", query="q"),
+            _candidate("https://dup", provider="searxng-main", query="q"),
+        )
+    )
+
+    corpus = aggregate([repeated], fuse=True)
+    scores = {e.identity: e.derived_scores[0].value for e in corpus.entries}
+
+    assert scores["https://dup"] == pytest.approx(1.0 / (FUSION_RRF_K + 1))
+    assert scores["https://dup"] < scores["https://other"] + 1.0 / (FUSION_RRF_K + 1)
+    assert scores["https://other"] == pytest.approx(1.0 / (FUSION_RRF_K + 2))

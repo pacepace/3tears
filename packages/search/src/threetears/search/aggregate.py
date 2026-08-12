@@ -149,11 +149,20 @@ def aggregate(
             dispositions.setdefault(disposition.criterion_key, []).append(disposition)
         # rank is position within *this* call, read here because grouping
         # by identity below destroys the order it comes from.
+        counted: set[str] = set()
         for rank, candidate in enumerate(result.candidates, start=1):
             dedup_key = key(candidate)
             grouped.setdefault(dedup_key, []).append(candidate)
-            if fuse:
-                fusion[dedup_key] = fusion.get(dedup_key, 0.0) + 1.0 / (fusion_k + rank)
+            if not fuse or dedup_key in counted:
+                # RRF is defined as one rank per ranked list, so a key that
+                # appears twice in one call contributes once, at its best
+                # position. A call can repeat an identity -- SearXNG's
+                # cross-engine merge is imperfect, and a normalising `key=`
+                # makes it routine -- and counting both would let one call
+                # outscore a genuine first place in another.
+                continue
+            counted.add(dedup_key)
+            fusion[dedup_key] = fusion.get(dedup_key, 0.0) + 1.0 / (fusion_k + rank)
 
     for candidate in extra_candidates:
         grouped.setdefault(key(candidate), []).append(candidate)

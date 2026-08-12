@@ -40,6 +40,7 @@ from threetears.search.contracts.criteria import (
     CRITERION_MIN_RESOLUTION,
     CRITERION_RIGHTS_CLASS,
     CRITERION_TIME_RANGE,
+    WELL_KNOWN_CRITERIA,
     Criterion,
     CriterionDisposition,
 )
@@ -96,11 +97,15 @@ def select(
     :raises ValueError: when a ranker returns a different set of entries than
         it was given -- ordering is its job, culling is not
     """
-    pushed_down = {d.criterion_key for d in corpus.dispositions if d.disposition == "pushdown"}
+    # every corpus answer is carried forward, not just the pushdowns: an
+    # adapter's `unsatisfied` or `ignored-unknown` is an answer SR-B2 owes the
+    # caller, and dropping it makes the shortlist claim nothing asked.
+    inherited = {d.criterion_key: d for d in corpus.dispositions}
+    pushed_down = {key for key, d in inherited.items() if d.disposition == "pushdown"}
     entries = list(corpus.entries)
     notices = list(corpus.notices)
-    dispositions: list[CriterionDisposition] = [d for d in corpus.dispositions if d.criterion_key in pushed_down]
-    answered = set(pushed_down)
+    dispositions: list[CriterionDisposition] = []
+    answered: set[str] = set()
 
     cap: int | None = None
     for criterion in criteria:
@@ -108,11 +113,24 @@ def select(
             continue
         answered.add(criterion.key)
         if criterion.key == CRITERION_MAX_RESULTS:
-            cap = int(criterion.value) if isinstance(criterion.value, int) else None
-            dispositions.append(_local(criterion.key, "cull applied after ordering"))
+            # deliberately NOT short-circuited by pushdown. Every provider
+            # honouring a cap of 10 individually leaves a corpus of 30: a
+            # per-call cap does not satisfy the aggregate ask, and treating it
+            # as satisfied is the false-satisfaction P8 targets.
+            cap, disposition = _cap(criterion)
+            dispositions.append(disposition)
+            continue
+        if criterion.key in pushed_down:
+            dispositions.append(inherited[criterion.key])
             continue
         if criterion.key not in LOCALLY_APPLICABLE:
-            dispositions.append(_unsatisfied(criterion))
+            dispositions.append(_unanswerable(criterion))
+            continue
+        malformed = _malformed(criterion)
+        if malformed is not None:
+            dispositions.append(
+                CriterionDisposition(criterion_key=criterion.key, disposition="unsatisfied", detail=malformed)
+            )
             continue
         kept, dropped_blind = _apply(criterion, entries)
         entries = kept
@@ -121,6 +139,8 @@ def select(
             detail = f"applied locally; {dropped_blind} candidate(s) dropped for missing data"
             notices.append(f"{criterion.key}: {dropped_blind} candidate(s) lacked the data to be judged")
         dispositions.append(_local(criterion.key, detail))
+
+    dispositions.extend(d for key, d in inherited.items() if key not in answered)
 
     ranked = False
     ranker_name: str | None = None
@@ -172,8 +192,46 @@ def _local(key: str, detail: str) -> CriterionDisposition:
     return CriterionDisposition(criterion_key=key, disposition="local", detail=detail)
 
 
-def _unsatisfied(criterion: Criterion) -> CriterionDisposition:
-    """Record a criterion nothing could honour, naming why (SR-B3)."""
+def _cap(criterion: Criterion) -> tuple[int | None, CriterionDisposition]:
+    """Read a ``max-results`` value, refusing one that is not a positive int.
+
+    Matches the guard `tavily._plan_max_results` already carries, for the
+    reason it carries it. ``bool`` is an ``int`` subclass, so ``True`` would
+    otherwise cap at 1; a negative slices from the end and silently drops the
+    *last* entry; a float or string from a JSON round-trip caps nothing while
+    the disposition still claims the criterion was applied.
+
+    :param criterion: the ``max-results`` criterion
+    :ptype criterion: Criterion
+    :return: the cap (None when unusable) and the disposition to record
+    :rtype: tuple[int | None, CriterionDisposition]
+    """
+    value = criterion.value
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None, CriterionDisposition(
+            criterion_key=criterion.key,
+            disposition="unsatisfied",
+            detail=f"'max-results' takes a positive integer; {value!r} is not one, so no cull was applied",
+        )
+    return value, _local(criterion.key, "cull applied after ordering")
+
+
+def _unanswerable(criterion: Criterion) -> CriterionDisposition:
+    """Record a criterion Select could not apply, distinguishing why (SR-B3).
+
+    A namespaced key nothing recognised is ``ignored-unknown``, not
+    ``unsatisfied``: the criteria contract keeps those distinct so an
+    unrecognised vocabulary "can never be mistaken for a typo'd well-known
+    key". ``unsatisfied`` is for a key we *do* understand and cannot honour --
+    ``language`` is the standing example, since nothing on a candidate records
+    it.
+    """
+    if criterion.key not in WELL_KNOWN_CRITERIA:
+        return CriterionDisposition(
+            criterion_key=criterion.key,
+            disposition="ignored-unknown",
+            detail="no adapter recognised this key and Select does not know the vocabulary",
+        )
     return CriterionDisposition(
         criterion_key=criterion.key,
         disposition="unsatisfied",
@@ -250,19 +308,68 @@ def _domain_match(entry: CorpusEntry, value: object, *, include: bool) -> bool |
     if not isinstance(value, list):
         return None
     domains = [str(d).lower().lstrip(".") for d in value]
+    if not domains:
+        # an empty list constrains nothing, and is the natural shape when a
+        # caller builds the list dynamically and it comes out empty. Treating
+        # it as missing data would drop every entry and blame the candidates.
+        return True
     hosts = {
         (urlparse(locator.url).hostname or "").lower()
         for contribution in entry.contributions
         for locator in contribution.locators
     } - {""}
-    if not hosts or not domains:
+    if not hosts:
         return None
     hit = any(host == domain or host.endswith(f".{domain}") for host in hosts for domain in domains)
     return hit if include else not hit
 
 
+def _malformed(criterion: Criterion) -> str | None:
+    """Say why a criterion cannot be applied at all, before any entry is judged.
+
+    A criterion whose *value* is unusable is unsatisfiable, and saying so once
+    is honest. Discovering it per-entry would instead report every candidate as
+    lacking the data to be judged -- blaming the results for a defect in the
+    request.
+
+    :param criterion: the criterion about to be applied
+    :ptype criterion: Criterion
+    :return: the reason it cannot be applied, or None when it can
+    :rtype: str | None
+    """
+    value = criterion.value
+    if criterion.key == CRITERION_TIME_RANGE:
+        if not isinstance(value, dict):
+            return f"'time-range' takes a window object; {value!r} is not one"
+        for edge in ("start", "end"):
+            raw = value.get(edge)
+            if raw is None:
+                continue
+            if not isinstance(raw, str):
+                return f"'time-range' {edge} must be an ISO-8601 string; {raw!r} is not"
+            try:
+                parsed = datetime.fromisoformat(raw)
+            except ValueError:
+                return f"'time-range' {edge} is not a readable ISO-8601 instant: {raw!r}"
+            if parsed.tzinfo is None:
+                # the Provenance stance, applied to the request side: an
+                # unknown-timezone bound compared against an aware
+                # `published_at` raises, and guessing a zone silently shifts
+                # the window by up to a day.
+                return f"'time-range' {edge} must state a timezone; {raw!r} is naive"
+    if criterion.key == CRITERION_MIN_RESOLUTION and not isinstance(value, dict):
+        return f"'min-resolution' takes a dimensions object; {value!r} is not one"
+    if criterion.key in (CRITERION_DOMAINS_INCLUDE, CRITERION_DOMAINS_EXCLUDE) and not isinstance(value, list):
+        return f"{criterion.key!r} takes a list of domains; {value!r} is not one"
+    return None
+
+
 def _within_window(entry: CorpusEntry, value: object) -> bool | None:
-    """Test publication time against an absolute window."""
+    """Test publication time against an absolute window.
+
+    Bounds are known well-formed and timezone-aware by the time this runs --
+    `_malformed` refused the criterion otherwise.
+    """
     if not isinstance(value, dict):
         return None
     published = next((c.published_at for c in entry.contributions if c.published_at is not None), None)
@@ -276,12 +383,12 @@ def _within_window(entry: CorpusEntry, value: object) -> bool | None:
 
 
 def _parse_bound(raw: object) -> datetime | None:
-    """Read one ISO-8601 window bound, tolerating an absent one."""
+    """Read one validated ISO-8601 window bound, tolerating an absent one."""
     if not isinstance(raw, str):
         return None
     try:
         return datetime.fromisoformat(raw)
-    except ValueError:
+    except ValueError:  # pragma: no cover -- `_malformed` already refused it
         return None
 
 
@@ -291,14 +398,19 @@ def _meets_resolution(entry: CorpusEntry, value: object) -> bool | None:
         return None
     want_width = value.get("width")
     want_height = value.get("height")
+    judged = False
     for contribution in entry.contributions:
         width = contribution.facets.get(FACET_WIDTH)
         height = contribution.facets.get(FACET_HEIGHT)
         if not isinstance(width, int) or not isinstance(height, int):
             continue
+        judged = True
         wide = not isinstance(want_width, int) or width >= want_width
         tall = not isinstance(want_height, int) or height >= want_height
         if wide and tall:
             return True
-        return False
-    return None
+    # every dimensioned contribution is checked before failing: two providers
+    # can carry the same image at different renditions, and one returning a
+    # 150x150 thumbnail must not veto the other's 4000x3000 original. This is
+    # the `any` semantics the other facet tests already use.
+    return False if judged else None

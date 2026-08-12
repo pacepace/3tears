@@ -12,7 +12,9 @@ from datetime import UTC, datetime
 import pytest
 
 from threetears.search.contracts import (
+    FACET_HEIGHT,
     FACET_MEDIA_CATEGORY,
+    FACET_WIDTH,
     SCALE_UNBOUNDED,
     Candidate,
     Corpus,
@@ -217,3 +219,123 @@ def test_spend_is_carried_forward_untouched() -> None:
     shortlist = select(corpus, criteria=[Criterion.max_results(1)])
 
     assert shortlist.spend == corpus.spend
+
+
+# -- review fixes -----------------------------------------------------------
+
+
+def test_a_pushed_down_max_results_still_culls_the_corpus() -> None:
+    """Every provider honouring a cap of 2 individually still leaves a corpus of 4.
+
+    A per-call cap does not satisfy the aggregate ask, so `max-results` is the
+    one criterion pushdown must not short-circuit.
+    """
+    corpus = Corpus(
+        entries=(_entry("https://a"), _entry("https://b"), _entry("https://c"), _entry("https://d")),
+        dispositions=(CriterionDisposition(criterion_key="max-results", disposition="pushdown"),),
+    )
+
+    shortlist = select(corpus, criteria=[Criterion.max_results(2)])
+
+    assert len(shortlist.entries) == 2
+
+
+def test_a_thumbnail_contribution_does_not_veto_a_full_size_one() -> None:
+    """`any` semantics across contributions, matching every other facet test."""
+    small = Candidate(
+        identity="https://img",
+        locators=(Locator(url="https://img"),),
+        provenance=Provenance(query="q", provider_instance="a", retrieved_at=RETRIEVED_AT),
+        facets={FACET_WIDTH: 150, FACET_HEIGHT: 150},
+    )
+    large = Candidate(
+        identity="https://img",
+        locators=(Locator(url="https://img"),),
+        provenance=Provenance(query="q", provider_instance="b", retrieved_at=RETRIEVED_AT),
+        facets={FACET_WIDTH: 4000, FACET_HEIGHT: 3000},
+    )
+    corpus = Corpus(entries=(CorpusEntry(identity="https://img", contributions=(small, large)),))
+
+    shortlist = select(corpus, criteria=[Criterion(key="min-resolution", value={"width": 1000, "height": 1000})])
+
+    assert len(shortlist.entries) == 1
+
+
+def test_an_entry_below_every_contribution_is_still_dropped() -> None:
+    """The `any` fix must not turn the filter into a no-op."""
+    corpus = Corpus(entries=(_entry("https://small"),))
+    small = corpus.entries[0].contributions[0].model_copy(update={"facets": {FACET_WIDTH: 10, FACET_HEIGHT: 10}})
+    corpus = Corpus(entries=(CorpusEntry(identity="https://small", contributions=(small,)),))
+
+    shortlist = select(corpus, criteria=[Criterion(key="min-resolution", value={"width": 1000, "height": 1000})])
+
+    assert shortlist.entries == ()
+
+
+def test_an_empty_domain_list_constrains_nothing() -> None:
+    """The natural shape when a caller builds the list dynamically and it is empty."""
+    corpus = Corpus(entries=(_entry("https://a/x"), _entry("https://b/y")))
+
+    shortlist = select(corpus, criteria=[Criterion(key="domains-exclude", value=[])])
+
+    assert len(shortlist.entries) == 2
+    assert not any("lacked the data" in notice for notice in shortlist.notices)
+
+
+def test_a_naive_time_bound_is_unsatisfied_rather_than_a_crash() -> None:
+    """An aware `published_at` compared against a naive bound raises TypeError."""
+    corpus = Corpus(entries=(_entry("https://a", published_at=datetime(2026, 3, 1, tzinfo=UTC)),))
+
+    shortlist = select(corpus, criteria=[Criterion(key="time-range", value={"start": "2024-01-01"})])
+
+    assert shortlist.dispositions[0].disposition == "unsatisfied"
+    assert shortlist.dispositions[0].detail is not None
+    assert "naive" in shortlist.dispositions[0].detail
+    assert len(shortlist.entries) == 1
+
+
+def test_an_unreadable_time_bound_is_unsatisfied_rather_than_silently_ignored() -> None:
+    """A bound nobody could parse must not report as applied."""
+    corpus = Corpus(entries=(_entry("https://a", published_at=datetime(2026, 3, 1, tzinfo=UTC)),))
+
+    shortlist = select(corpus, criteria=[Criterion(key="time-range", value={"start": "last-week"})])
+
+    assert shortlist.dispositions[0].disposition == "unsatisfied"
+
+
+@pytest.mark.parametrize("bad", [True, -1, 0, 10.0, "10"], ids=["bool", "negative", "zero", "float", "string"])
+def test_an_unusable_max_results_culls_nothing_and_says_so(bad: object) -> None:
+    """`bool` is an int subclass and a negative slices from the end."""
+    corpus = Corpus(entries=(_entry("https://a"), _entry("https://b"), _entry("https://c")))
+
+    shortlist = select(corpus, criteria=[Criterion(key="max-results", value=bad)])
+
+    assert len(shortlist.entries) == 3
+    assert shortlist.dispositions[0].disposition == "unsatisfied"
+
+
+def test_an_unknown_namespaced_criterion_is_ignored_unknown_not_unsatisfied() -> None:
+    """The criteria contract keeps those distinct so a typo cannot hide as a vocabulary."""
+    shortlist = select(
+        Corpus(entries=(_entry("https://a"),)), criteria=[Criterion.namespaced("vendor", "freshness", 1)]
+    )
+
+    assert shortlist.dispositions[0].disposition == "ignored-unknown"
+
+
+def test_corpus_answers_survive_when_the_caller_restates_no_criteria() -> None:
+    """SR-B2: an adapter's answer is owed to the caller whether or not Select re-asks."""
+    corpus = Corpus(
+        entries=(_entry("https://a"),),
+        dispositions=(
+            CriterionDisposition(criterion_key="rights-class", disposition="unsatisfied"),
+            CriterionDisposition(criterion_key="vendor:x", disposition="ignored-unknown"),
+        ),
+    )
+
+    shortlist = select(corpus)
+
+    assert {d.criterion_key: d.disposition for d in shortlist.dispositions} == {
+        "rights-class": "unsatisfied",
+        "vendor:x": "ignored-unknown",
+    }
