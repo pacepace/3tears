@@ -1530,6 +1530,50 @@ problems, and building one without deciding the other tends to produce a cache
 that is *almost* a replay store.
 *Recommendation:* decide replay first; caching after, in its light.
 
+**SR-M4 (REQUIRED — conditions SR-M2, D7, D12; ruled 2026-08-12).** The fetch
+path carries **caller-supplied validators**, and reports *not modified* as an
+outcome.
+
+This is not SR-M2 arriving early, and D14 does not reach it. D14 forbids the
+capability **holding** a stored response; SR-O3 sharpens that to "a cache is a
+`BaseCollection`" — stored state with cache-style verbs and a lifetime beyond
+the call. A conditional request stores nothing here: the caller supplies
+`If-None-Match` / `If-Modified-Since`, the transport forwards them as request
+headers, and upstream answers `304`. The same line is already drawn one
+paragraph over, for the robots memo — *"this is not a response cache and D14 is
+untouched … the memo dies with the call rather than outliving it"* — and the
+identical reasoning covers this with less to argue, because nothing is held even
+for the duration of the call.
+
+**The gap this closes is one the design created.** D7 puts the recorded bytes in
+the consumer's store, and D12 makes retention the consumer's policy *"which is
+what makes that dischargeable."* So the consumer holds the copy — and therefore
+holds, or could hold, the validator that copy arrived with. Today nothing in the
+stack lets it spend that validator. The capability pushed the copy outward and
+then required every re-read of an unchanged page to pay full freight, forever.
+That is an incoherence rather than a deferral, and it is why this is REQUIRED
+rather than another DECISION deferred behind replay.
+
+**Scope: the fetch path, never the search path.** Conditionalising a provider
+*query* is worthless — the result changes under you, and providers do not emit
+usable validators for it. The value is entirely in Extract's carrier fetch and
+in what re-reads an already-known URL. Stating the boundary because "add ETag
+support" invites exactly the wrong scoping.
+
+**Additive and opt-in, so it binds no consumer.** A caller that supplies no
+validator gets today's behaviour byte for byte. This is why it needs no
+cross-repo ratification under D15 to land, unlike D12.
+
+The transport seam already satisfies this and needs no change:
+`FetchTransport.fetch` takes `headers`, and `TransportResponse` carries
+`status_code` and lower-cased `headers`. Verified 2026-08-12 that a `304`
+already survives `StandaloneTransport` intact — the content-type gate declines
+to fire because it gates only `2xx` (*"an error status is an answer the caller
+asked for"*), and the redirect branch declines because a `304` carries no
+`Location`. Both rules were written for other reasons and happen to be right
+here. What is missing sits above the transport, and is specified in
+`search-task-01-conditional-revalidation.md`.
+
 **SR-M3 (DECISION — open question 13).** Ratification home.
 *Recommendation:* this file is the cross-repo record; discodon, metallm and
 samsung each record acceptance of what binds them. Otherwise the next session in
@@ -1884,6 +1928,7 @@ table remains the evidence record; a veto lands there and propagates here.
 | SR-K4 | robots.txt / provider terms | A family stance, enforced per adapter |
 | SR-M1 | Versioning and compatibility promise | Lockstep already covers the in-family Python API; rule the **wire** contract before the first pod-resident deployment |
 | SR-M2 | Response caching | Decide replay first, cache in its light — and note it has two legal shapes (SR-O3) |
+| SR-M4 | Revalidating a copy the consumer holds | Carry caller-supplied validators on the **fetch** path and report *not modified*; D14 does not reach it, because nothing is stored |
 | SR-M3 | Ratification home (OQ13) | This file, per-repo acceptance |
 | §5.4 | Where the wire boundary falls in the layer stack | Not answered here; SR-L4 makes any answer survivable |
 | §5.4 | One NATS bus for discodon and metallm, or two | Gates how much of SR-H4's pacing the client side can carry |
