@@ -36,6 +36,7 @@ __all__ = [
     "db_image",
     "nats_container",
     "nats_jetstream",
+    "searxng_container",
 ]
 
 
@@ -147,3 +148,94 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
 
     with NatsContainer(jetstream=nats_jetstream) as container:
         yield container.nats_uri()
+
+
+@pytest.fixture(scope="session")
+def searxng_container() -> Iterator[str]:
+    """session-scoped SearXNG testcontainer, yielding its base URL.
+
+    Exists so a claim about SearXNG's scoring can be checked against SearXNG
+    rather than against a fixture that restates it. The shipped
+    ``search/tests`` suite drives the adapter over recorded payloads, which
+    proves the adapter reads the field and cannot prove the field means what
+    the adapter's docstring says it means -- only the real scorer can do
+    that.
+
+    **JSON is off by default in the image**, so the settings file is not
+    optional configuration: without ``search.formats`` naming ``json`` the
+    instance answers HTML to an API request and every caller sees a parse
+    failure rather than a disabled format. The limiter is off for the same
+    class of reason -- it is a bot defence, and a test client hammering one
+    query looks exactly like the thing it defends against.
+
+    **What this container cannot give you is engines.** SearXNG's own
+    scoring is deterministic; the upstream engines it federates are not.
+    They rate-limit, they vary between calls, and a run that saw two engines
+    agree will not reliably see it again -- which is why a test using this
+    fixture must assert an invariant that holds over whatever came back,
+    never that a particular fusion occurred. See
+    ``packages/search/tests/test_searxng_live_scoring.py``.
+
+    :yield: the container's base URL, e.g. ``http://localhost:32768``
+    :rtype: Iterator[str]
+    """
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    import tempfile  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
+
+    settings = (
+        "use_default_settings: true\n"
+        "server:\n"
+        '  secret_key: "testcontainer-only-never-a-deployment"\n'
+        "  limiter: false\n"
+        "  public_instance: false\n"
+        "search:\n"
+        "  formats:\n"
+        "    - html\n"
+        "    - json\n"
+    )
+    with tempfile.TemporaryDirectory() as workdir:
+        path = Path(workdir) / "settings.yml"
+        path.write_text(settings, encoding="utf-8")
+        container = (
+            DockerContainer("searxng/searxng:latest")
+            .with_exposed_ports(8080)
+            .with_volume_mapping(str(path), "/etc/searxng/settings.yml", "ro")
+        )
+        with container:
+            host = container.get_container_host_ip()
+            port = container.get_exposed_port(8080)
+            base_url = f"http://{host}:{port}"
+            # Readiness is "answers a search", not "logged a line". The image
+            # prints its listening banner before it will serve, so a log-match
+            # wait hands the first request a reset connection -- observed, not
+            # feared. Engines failing to register (a 403 from an upstream on
+            # init) is normal and must NOT block readiness: an instance with
+            # half its engines suspended still scores correctly, which is the
+            # only thing a caller of this fixture is asking it.
+            deadline = time.monotonic() + 180
+            while True:
+                try:
+                    with urllib.request.urlopen(  # noqa: S310
+                        f"{base_url}/search?q=ready&format=json", timeout=10
+                    ) as probe:
+                        if probe.status == 200:
+                            break
+                except urllib.error.URLError, OSError:
+                    # NOSILENT: a refused or reset connection IS the not-ready
+                    # signal this loop exists to poll for, so each one is an
+                    # expected outcome rather than a fault worth reporting.
+                    # The failure that matters -- never becoming ready -- is
+                    # raised at the deadline below, naming the URL.
+                    pass
+                if time.monotonic() > deadline:
+                    pytest.fail(f"SearXNG container at {base_url} never answered a JSON search")
+                time.sleep(2)
+            yield base_url

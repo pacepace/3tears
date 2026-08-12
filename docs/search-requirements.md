@@ -815,15 +815,35 @@ readable (the adapter never read it); and the SearXNG JSON API answers 403
 until `json` is added to `search.formats`, which the adapter's own refusal
 message already names.
 
-*What is still owed:* multi-engine fusion was not observed live — only one
-engine responded before the instance's engines were rate-limited — so the
-`> 1.0` claim rests on the formula rather than on a capture. The formula's
-arithmetic is pinned offline (`test_the_fixture_formula_is_searxngs_formula`);
-what is missing is a live instance producing one of those numbers. Gate B's
-SR-A4 line should be discharged against an instance with healthy engines, with
-`SEARXNG_REQUIRE_RESULTS=1` set so an empty run fails instead of passing
-silently; the live test emits every weight it saw as a warning, so the run
-itself is the capture.
+*Residue discharged 2026-08-12.* Multi-engine fusion is now observed rather
+than derived. A containerised instance returned, before its engines were
+rate-limited:
+
+    score     = 4.642857142857142
+    engines   = ["duckduckgo", "brave"]
+    positions = [1, 21, 2]
+
+`3/1 + 3/21 + 3/2` is 4.642857142857143, matching to floating point. That is a
+score above 1.0 produced by real fusion and agreeing with the formula, which
+is exactly what was owed.
+
+It settled something the formula's prose left ambiguous: **two engines
+produced three positions**, so `len(positions)` drives the weight and
+`len(engines)` does not. One engine returned the page twice. A
+`searx_score(engines)` reading would have been wrong and would have looked
+right on every single-engine result ever captured.
+
+*What remains true about verifying this:* the capture cannot be demanded. The
+engines rate-limit — building the fixture that produced this earned a
+24-hour suspension — so `packages/search/tests/test_searxng_live_scoring.py`
+asserts the invariant that holds over whatever came back (every scored result
+equals `searx_score` of its own positions) and never that a fusion occurred.
+That test also records its own limit: on single-position results the
+`len(positions)` factor is invisible, since `len(p) * (1/p)` and `1/p` agree
+when `p` has one entry, so the multiplier is pinned by its sibling, which
+skips rather than passes when the data cannot settle it. The
+`searxng_container` fixture means discharging this no longer waits on someone
+having an instance to hand.
 *Recommendation:* a set of named, provenanced scores. Provider scores marked
 non-comparable across providers; a comparable relevance exists only if Select
 produced one.
