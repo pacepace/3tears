@@ -186,7 +186,9 @@ its four consequences and the one residue are recorded at SR-A4
 [#328](https://github.com/pacepace/3tears/pull/328) gave it a container to check
 itself against. The residue wants an instance whose engines are not
 rate-limited, run with `SEARXNG_REQUIRE_RESULTS=1`. The in-repo success-check
-sweep and the §13 propagation are untouched, and both wait on Phase 3.
+sweep and the §13 propagation are untouched, and both wait on search Phase 3
+(`aggregate`/`select`) — not on this document's Phase 3, which is the release
+Gate B gates.
 
 ## Phase 3 — Release
 
