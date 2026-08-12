@@ -48,6 +48,22 @@ What it owes, and where each obligation is discharged:
   chunks against a cap and never through an unbounded ``response.text``,
   which is a memory incident on a ``MemoryMax``-capped host.
 
+**Who actually injects this, as of Phase 2 item 5.** The paragraph above is
+still right about *search*: a host with core hands the SearXNG or Tavily
+adapter a thin ``TracedHttpClient`` adapter, and does. It turned out to be
+wrong about *fetch*, and the reason is structural rather than a gap somebody
+could close. ``TracedHttpClient`` is constructed per upstream -- one
+``upstream_base_url``, one circuit breaker guarding it -- and reads whole
+bodies. Extract fetches a different host on every call, chosen by whatever a
+provider returned, under a per-call byte cap, refusing on content type before
+the body. There is no upstream to construct a client for and no way to cap a
+buffered read. So ``3tears-agent-tools`` -- a host that very much has core --
+injects :meth:`StandaloneTransport.fetch` for Extract while keeping the
+traced adapter for search. That is not a host re-implementing the sanctioned
+client, which is what D19 forbids; it is a host reaching for the family's one
+transport that can read an arbitrary URL under a cap, which is what this
+module is.
+
 **Both transport protocols, one machine.** :meth:`StandaloneTransport.request`
 serves search calls and :meth:`StandaloneTransport.fetch` serves Extract's
 content reads (the union Gate A predicted this module would satisfy). They

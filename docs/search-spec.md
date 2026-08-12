@@ -184,9 +184,14 @@ them):
   span, egress selection -- SR-N1, SR-G1, SR-G4, SR-D3), `FetchTransport`
   (the streamed, byte-capped, content-type-gated read Extract requires --
   declared as a *second* protocol at Gate A, 2026-08-10, so Phase-1
-  `SearchTransport` implementers are never retroactively non-conformant;
-  the standalone transport and the host adapter implement the union from
-  Phase 2), `SearchProvider` (the provider seam Call consumes and the
+  `SearchTransport` implementers are never retroactively non-conformant.
+  *Corrected 2026-08-11 (Phase 2 item 5):* Gate A expected the standalone
+  transport **and the host adapter** to implement the union. Only the
+  standalone one does, and cannot be otherwise -- `TracedHttpClient` is
+  constructed per upstream and buffers whole bodies, while a fetch is an
+  arbitrary candidate URL read under a per-call cap. A host injects the
+  traced adapter for search and the standalone transport for fetch; the
+  ruling is in §7 Phase 2), `SearchProvider` (the provider seam Call consumes and the
   conformance suite parametrizes over -- named here at Gate A; it is the
   one seam-vocabulary addition §3.1's original field list did not carry),
   `BudgetPort` (`check(estimate)` / `record(spend)` with plural scopes --
@@ -542,7 +547,10 @@ load-bearing for a success check.
 4. **`agent-tools` -- `serve.py` wiring**: hosts build the leaf's transport
    from `TracedHttpClient` via a thin adapter (lives here, where core is
    already a hard dep); the skip-with-reason pattern extends to the new
-   configuration.
+   configuration. *As built (item 5):* the adapter serves **search** only --
+   the fetch half is `StandaloneTransport`, for the structural reason ruled
+   in §7 Phase 2 -- and the skip-with-reason had to become a probe rather
+   than a caught `ImportError`, because Extract imports its extractor lazily.
 5. **`agent-tools` -- context-save node** (C8): fix the name-grain defect
    (match bound names), read structure off `metadata`, and state the retention
    posture in the module docstring *before* wiring it anywhere (§10 defect
@@ -781,17 +789,102 @@ Then the phase itself:
 | Item | State |
 |---|---|
 | 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
-| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Not started** -- the phase's remaining work |
+| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below |
 | 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
 | 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
 | §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
 | §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
 
-What remains before Gate B is item 5, the rest of item 6, and Phase 3's
-`aggregate`/`select`. Item 5 is the one with user-visible consequence:
-gutting `WebFetchTool` onto Extract makes robots binding for callers it was
-never binding for, so its PR owes that a stated rollout, the way item 7
-owed one.
+What remains before Gate B is the rest of item 6 and Phase 3's
+`aggregate`/`select`.
+
+#### Phase 2 item 5 -- built 2026-08-11
+
+Both builtins now run on the leaf, `serve.py` wires them, and check 8 is
+pinned end-to-end: a real `ToolServer` dispatch of the real `WebSearchTool`
+publishes a `CallResponse` whose bytes a consumer rebuilds with
+`SearchResultsMetadata.from_metadata` -- on the failure path as well as the
+success one, which is the half a success-only carry would have left on prose.
+The defects the gutting was scheduled to retire are gone with the bodies that
+held them: the 15-second hardcode and the sync client inside `async execute`
+(§10 defect 2), `time.sleep` and unbounded `resp.text` (§10 defects 6, 7), and
+`[TOOL ERROR]` string-prefix error detection on both tools (§10 defect 8).
+
+Rulings taken during the build, recorded here per the Gate A precedent:
+
+- **The two transport protocols get two implementations, and §3.8's
+  expectation that one host adapter would satisfy the union was wrong.**
+  Gate A declared `FetchTransport` beside `SearchTransport` and predicted the
+  `TracedHttpClient` adapter would implement both. It cannot, for a reason
+  that is structural rather than unfinished: `TracedHttpClient` is
+  constructed **per upstream** -- one `upstream_base_url` that request paths
+  join onto, one circuit breaker guarding it -- and it buffers whole bodies.
+  A search call is one configured upstream and a small buffered response, so
+  the adapter fits it exactly. Extract fetches a *candidate-derived* URL: a
+  different host every call, under a per-call byte cap, refused on content
+  type before the body. There is no upstream to construct a client for, no
+  breaker whose state would mean anything, and no way to cap a buffered read.
+  So `agent-tools` injects `TracedSearchTransport` for search and
+  `StandaloneTransport` for fetch. This does not reopen D19: what that norm
+  forbids is a host hand-rolling a client, and `standalone` is the sanctioned
+  single-purpose transport module it explicitly widened to admit. The
+  module's own docstring, which said hosts with core would not need it, has
+  been corrected rather than left to contradict the code.
+- **The traced client gained a per-call timeout and a visible attempt
+  count**, both additive, both required for the adapter to be a conformant
+  transport rather than one that quietly ignores its obligations. SR-G1/G2
+  make the per-call bound the mechanism a caller's deadline travels through,
+  and item 7's `deadline_seconds` has nowhere to land without it. D4 needs
+  the attempts: retry lives *inside* the client, so a caller billing per
+  exchange sees one where there were three, which is the SR-E4 under-billing
+  class this package exists to retire. The count rides `Response.extensions`
+  -- httpx's own channel for transport-level facts -- so no existing caller
+  learns a new shape to ignore. §4.11's "core: nothing moves" is unaffected:
+  nothing moved, and the two additions are this workstream's, not core's
+  separate backlog.
+- **A search transport refuses a URL off its configured base** (D21). The
+  guard is cheap and it is the only seam that can enforce "base URLs come
+  from deployment config" for a per-upstream client; it keys on
+  scheme/host/**port**, because same-host-different-port is exactly what a
+  host-only check waves through.
+- **`web_fetch` projects its one candidate under the search-results key**
+  rather than inventing a second border vocabulary (D22). A consumer reading
+  structure off a tool result reads one shape whether the tool searched or
+  fetched, and learns *why* an empty fetch was empty from the typed
+  `extraction_status` facet. The projection's `query` slot carries the URL
+  asked for, since a direct fetch has no query behind it and inventing one
+  would be worse than naming what was actually requested.
+- **`credential_resolver` was dropped, not ported.** Its only path in was a
+  `_credential_resolver` key in the tool's config dict that nothing in the
+  family ever set; carrying an unexercised credential-injection seam through
+  the rewrite would have meant re-deriving its failure semantics for no
+  caller.
+- **The skip-with-reason pattern had to be extended by probing, not by
+  catching.** Extract imports trafilatura lazily, so the extra's absence no
+  longer raises `ImportError` at registration -- the tool constructs fine and
+  refuses every call. `serve.py` therefore probes for the extractor and skips
+  with a reason naming `3tears-agent-tools[fetch]`, because a pod that
+  registers a tool it cannot serve is the exact failure the pattern exists to
+  prevent.
+
+**Two user-visible behaviour changes, and the rollout they need.** Both are
+`web_fetch`'s, both were foreseen in kind, and neither needs a second release
+cycle -- they need *saying*, because a caller cannot discover either from a
+signature:
+
+1. **Robots became binding** for callers it was never binding for (D12). A
+   page whose rules refuse `3tears-search` now returns a refusal instead of
+   content. The stance is deployment config, not a per-call parameter, so a
+   deployment with its own agreement with a site sets `respect_robots=False`
+   where it constructs the tool.
+2. **Extraction refuses instead of degrading.** The old body fell back to
+   stripping tags with a regex when trafilatura was absent; Extract refuses
+   with a typed `LocalCapExceeded` naming the extra. Regex tag-stripping is
+   not extraction, and returning it as though it were is how a caller ends up
+   reasoning over navigation chrome -- but the consequence is that an install
+   without the extra stops returning *anything*. `3tears-scrape` declares
+   `3tears-agent-tools[document,fetch]` as a result; any other consumer
+   driving `web_fetch` owes itself the same line.
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
    provider-supplied content). **Done 2026-08-11** -- `extract.py` plus the

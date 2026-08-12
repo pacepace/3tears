@@ -107,13 +107,23 @@ sending it to an older server is *rejected*, not degraded. Only the
 accepting half shipped. It is the one item in this phase needing two
 release cycles, which is why it should not have been last.
 
-**What remains here:** item 5 (gut both builtins, serve wiring, the NATS
-metadata end-to-end test) and the rest of item 6 (`page_finder` structure,
-the context-save node). Item 5 carries the phase's only user-visible
-behavior change — an Extract-backed `WebFetchTool` makes robots binding for
-callers it was never binding for — so it owes a stated rollout of its own.
-See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the
-per-item table.
+**Item 5 landed 2026-08-11.** Both builtins run on the leaf, `serve.py`
+wires them, and check 8 is pinned end-to-end — a real pod dispatch, read back
+from the published bytes, on the failure path as well as the success one.
+Two things came out of the build that reach past this phase. Gate A's
+expectation that one host adapter would satisfy **both** transport protocols
+was wrong: `TracedHttpClient` is per-upstream and buffers bodies, so the
+search half is a thin adapter over it and the fetch half is
+`StandaloneTransport` — the split is ruled and explained in the spec. And the
+phase's user-visible change is **two** changes, not one: robots became
+binding (foreseen), and extraction now refuses rather than falling back to
+stripping tags with a regex, so a consumer driving `web_fetch` must declare
+`3tears-agent-tools[fetch]` or get nothing back.
+
+**What remains here:** the rest of item 6 (`page_finder` structure, the
+context-save node). See
+[`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
+table and the item 5 rulings.
 
 *Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
 one thing here consumes them: the **replay record schema** (search Phase 3

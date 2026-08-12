@@ -39,8 +39,16 @@ before the body is pulled (SR-G5, §3.5). Those are different obligations,
 so they are different protocols: widening :class:`SearchTransport` later
 would retroactively invalidate every implementation written against the
 Phase-1 shape, while a second protocol lets an implementation satisfy the
-union (the standalone transport and the host-side ``TracedHttpClient``
-adapter will) and leaves search-only implementers conformant forever.
+union and leaves search-only implementers conformant forever.
+
+*Corrected 2026-08-11 (Phase 2 item 5).* Gate A expected the union's
+implementers to be the standalone transport **and** the host-side
+``TracedHttpClient`` adapter. Only the standalone transport implements both,
+and the adapter structurally cannot: ``TracedHttpClient`` is constructed per
+upstream -- one base URL that paths join onto, one breaker guarding it -- and
+buffers whole bodies, while a fetch is a different host every call read
+against a per-call cap. Hosts therefore inject *two* objects, and the split
+is the reason declaring two protocols was right rather than merely cautious.
 """
 
 from __future__ import annotations
