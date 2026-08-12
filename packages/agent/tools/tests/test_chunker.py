@@ -169,3 +169,36 @@ def test_unknown_hint_falls_back_to_lines() -> None:
     chunks = chunk_content(content, strategy_hint="unknown_tool")
 
     assert len(chunks) >= 2
+
+
+class TestNamespacedStrategyHints:
+    """A bound tool name must find a strategy registered under its bare name.
+
+    The context-save node passes a ToolMessage's own tool name as the hint, and
+    that name is namespaced (``threetears.web_fetch``) while the registry's
+    documented keys -- including this module's own default registration -- are
+    bare. Without the fallback, fixing the save node's names would have silently
+    downgraded every registered strategy to line chunking.
+    """
+
+    def test_a_namespaced_hint_finds_the_bare_registration(self) -> None:
+        content = "# Header One\n" + ("body line\n" * 40) + "# Header Two\n" + ("more body\n" * 40)
+
+        namespaced = chunk_content(content, strategy_hint="threetears.web_fetch")
+        bare = chunk_content(content, strategy_hint="web_fetch")
+
+        assert namespaced == bare
+        assert namespaced != chunk_content(content, strategy_hint="")
+
+    def test_an_exact_registration_wins_over_the_bare_tail(self) -> None:
+        marker = [ChunkResult(chunk_index=0, short_desc="exact", long_desc="exact", content="exact")]
+        register_chunk_strategy("ns.exact_wins", lambda _c: marker)
+        register_chunk_strategy("exact_wins", lambda _c: [])
+        content = "x" * 5000
+
+        assert chunk_content(content, strategy_hint="ns.exact_wins") == marker
+
+    def test_an_unregistered_namespaced_hint_still_falls_back_to_lines(self) -> None:
+        content = "plain line\n" * 200
+
+        assert chunk_content(content, strategy_hint="threetears.nothing_registered") == chunk_by_lines(content)

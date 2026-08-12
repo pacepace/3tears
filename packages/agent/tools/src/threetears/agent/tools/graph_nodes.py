@@ -9,6 +9,55 @@ These nodes plug into a LangGraph StateGraph to provide:
 - **Context save**: After the agent responds, scan tool call results and
   auto-save significant outputs to the conversation context store. Configurable
   via a ``saveable_tools`` set and optional chunker.
+
+Retention posture -- read this before wiring the save node
+==========================================================
+
+This module holds the seam where retrieved third-party content becomes *our
+own* stored content, and `search-requirements.md` C8 requires the posture
+stated **before** the first byte is retained rather than after. The node has
+been shipped-but-inert since it was written (it matched bare tool names that
+nothing binds), so that ordering is still available; wiring it into a graph is
+what starts retention, and the wiring is deliberately not done here.
+
+What is retained, when a host wires this node:
+
+- **The rendered prose of a tool result**, truncated (``max_content``), plus
+  chunks of it. This is the agent's working memory of what it read.
+- **The typed structure a search result carried**, when it carried any --
+  the query, candidate identities and titles, provider notices, and any typed
+  failure, read off ``ToolResult.metadata`` under
+  :data:`~threetears.search.contracts.SEARCH_RESULTS_METADATA_KEY` (D22). This
+  is retained *because* it is what makes the prose re-checkable: a stored
+  4000-character truncation with no provenance is a claim nobody can trace back
+  (SR-A3), and structure is what turns it back into a citation.
+
+The rules that govern it, none of which this module decides:
+
+- **Queries are user content** (D11/SR-K2). The capability makes the query
+  available for redaction; it does not redact on its own, because redaction
+  policy is an opinion from above (P1). A host with a redaction policy applies
+  it to what this node writes -- the node deliberately holds no policy of its
+  own to be overridden or forgotten.
+- **Retention and purge follow the consumer's policy** (D7/D12). The bytes land
+  in the consumer's own context store, which is exactly what makes a retention
+  stance dischargeable rather than aspirational.
+- **Fetched page text is third-party content** and the deployment's agreement
+  with the site governs keeping it (SR-K4/D12), the same way ``respect_robots``
+  is deployment config rather than code.
+
+**A rename is a data-retention change.** The node binds on what a result *is*
+before it binds on what the tool is *called*, precisely so that renaming or
+splitting a tool cannot silently change what gets remembered. It already fired
+once in the silent-off direction -- see :data:`_DEFAULT_SAVEABLE_TOOLS`.
+
+**The levers, and what each one reaches.** ``saveable_tools`` governs retention
+by *name*; ``save_structured`` governs the structure-first path, which is the
+one that also captures fetched page text, because ``web_fetch`` projects under
+the same metadata key as ``web_search``. A deployment bound by an agreement with
+a particular site needs a way to say "not this" that is not "stop using the
+node", so structure-first is a default rather than an invariant. Neither lever
+is a redaction policy: this module holds none, by P1.
 """
 
 from __future__ import annotations
@@ -21,6 +70,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from threetears.agent.tools.chunker import ChunkResult, chunk_content
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
+from threetears.search.contracts import SEARCH_RESULTS_METADATA_KEY, SearchResultsMetadata
 
 __all__ = [
     "EntityFormatter",
@@ -123,8 +173,91 @@ def create_context_enrichment_node(
 # Context Save Node
 # ======================================================================
 
-_DEFAULT_SAVEABLE_TOOLS = frozenset({"web_search", "web_fetch"})
+#: tools whose output is saved when a host names none of its own.
+#:
+#: These are the names the adapter actually **binds** -- ``mcp_name()``, not the
+#: bare strings. They read as redundant with the structure check in
+#: :func:`_search_structure_of` and are not: a tool can be saveable by name
+#: without carrying search structure, and this set is what a host overrides.
+#:
+#: This constant is where C8 fired. It held ``{"web_search", "web_fetch"}``,
+#: matched by exact equality against ``ToolMessage.name``, while
+#: ``langchain_adapter`` binds every tool under its namespaced name -- so the
+#: default set never matched anything, the node was inert in production, and
+#: the tests could not see it because they all passed bare names explicitly.
+#: A retention path that silently does nothing is the same class of defect as
+#: one that silently does too much.
+_DEFAULT_SAVEABLE_TOOLS = frozenset({"threetears.web_search", "threetears.web_fetch"})
 _MAX_SAVE_CONTENT = 4000
+
+#: how many candidate records ride the saved metadata. The prose is already
+#: truncated; this bounds the structure beside it so one enormous result set
+#: cannot turn a context row into a page dump.
+_MAX_SAVED_CANDIDATES = 20
+
+
+def _search_structure_of(message: ToolMessage) -> SearchResultsMetadata | None:
+    """Read the typed search result off a ``ToolMessage``, if it carries one.
+
+    Both ``web_search`` and ``web_fetch`` project under the same key, and this
+    node wants either -- unlike a consumer that must tell them apart, what
+    matters here is only that the result carries re-checkable provenance.
+
+    A payload too new to read is skipped rather than raised: this node runs
+    post-turn inside a graph, where raising would fail a turn whose real work
+    already succeeded. The prose still gets saved; only the structure is lost.
+
+    :param message: the tool message to inspect
+    :ptype message: ToolMessage
+    :return: the typed projection, or None when there is none to read
+    :rtype: SearchResultsMetadata | None
+    """
+    artifact = getattr(message, "artifact", None)
+    if not isinstance(artifact, dict):
+        return None
+    payload = artifact.get(SEARCH_RESULTS_METADATA_KEY)
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return SearchResultsMetadata.from_metadata(payload)
+    except ValueError:
+        logger.warning("Context save could not read search structure; saving prose only", exc_info=True)
+        return None
+
+
+def _provenance_of(structure: SearchResultsMetadata) -> dict[str, Any]:
+    """Project a search result into the facts worth storing beside the prose.
+
+    Not the whole projection: candidate content slots can carry entire page
+    bodies, and this is a context row, not a second copy of the corpus. What is
+    kept is what makes the saved prose traceable (SR-A3) -- the query it
+    answers, where each result can be re-read, and any reason the answer was
+    partial.
+
+    :param structure: the typed projection read off the message
+    :ptype structure: SearchResultsMetadata
+    :return: a JSON-safe provenance record for ``save_tool_result``'s metadata
+    :rtype: dict[str, Any]
+    """
+    record: dict[str, Any] = {
+        "schema_version": structure.schema_version,
+        "query": structure.query,
+        "candidate_count": len(structure.candidates),
+        "candidates": [
+            {"identity": candidate.identity, "title": candidate.title}
+            for candidate in structure.candidates[:_MAX_SAVED_CANDIDATES]
+        ],
+    }
+    if len(structure.candidates) > _MAX_SAVED_CANDIDATES:
+        record["candidates_truncated"] = True
+    if structure.notices:
+        record["notices"] = list(structure.notices)
+    if structure.failure is not None:
+        # A failed search is worth remembering as a failure. Storing its prose
+        # without this would leave a row that reads like a thin answer rather
+        # than like no answer at all.
+        record["failure_class"] = structure.failure.failure_class
+    return record
 
 
 def create_context_save_node(
@@ -133,28 +266,51 @@ def create_context_save_node(
     saveable_tools: frozenset[str] | None = None,
     saveable_suffixes: tuple[str, ...] = (),
     max_content: int = _MAX_SAVE_CONTENT,
+    save_structured: bool = True,
 ) -> Any:
     """Create a post-response context save node.
 
-    Scans ToolMessages for results from saveable tools and persists
-    them to the conversation context store. Optionally chunks large
-    results using the chunker.
+    Scans ToolMessages and persists the saveable ones to the conversation
+    context store, chunking large results. A message is saveable if it carries
+    typed search structure **or** its tool name matches; see this module's
+    docstring for the retention posture that governs what that stores, and read
+    it before wiring this node into a graph.
 
     :param context_manager: conversation context manager
     :ptype context_manager: ToolContextManager
-    :param saveable_tools: tool names whose output should be saved
+    :param saveable_tools: tool names whose output should be saved; these are
+        matched against the *bound* name a ``ToolMessage`` carries
+        (``threetears.web_search``), not the bare one. ``None`` uses
+        :data:`_DEFAULT_SAVEABLE_TOOLS`; an **empty** set means no tool is
+        saveable by name -- it no longer falls back to the defaults, so
+        "structure only" is expressible and an empty set cannot silently mean
+        its opposite
     :ptype saveable_tools: frozenset[str] | None
     :param saveable_suffixes: tool name suffixes to match (e.g. ("_scan",))
     :ptype saveable_suffixes: tuple[str, ...]
     :param max_content: maximum content length before truncation
     :ptype max_content: int
+    :param save_structured: whether a result carrying typed search structure is
+        saved regardless of its tool name. ``True`` is the C8 posture -- bind on
+        what a result *is*, so a rename cannot silently change what is retained.
+        It is a parameter rather than an invariant because ``web_fetch`` projects
+        under the same key as ``web_search``, so structure-first retention also
+        captures **fetched page text** -- third-party content whose retention the
+        deployment's own agreement with a site governs (SR-K4/D12). A deployment
+        that must not keep a given site's text needs a lever that is not "stop
+        using the node", and this is it. Setting it ``False`` returns the node to
+        name-only matching; it does not disable saving
+    :ptype save_structured: bool
     :return: async node function for LangGraph
     :rtype: Any
     """
-    tools_to_save = saveable_tools or _DEFAULT_SAVEABLE_TOOLS
+    tools_to_save = saveable_tools if saveable_tools is not None else _DEFAULT_SAVEABLE_TOOLS
 
     def _is_saveable(tool_name: str | None) -> bool:
-        """Check if a tool's results should be saved.
+        """Check if a tool's results should be saved, by name.
+
+        The name test alone; :func:`_search_structure_of` carries the
+        type test, and the node takes either.
 
         :param tool_name: tool name
         :ptype tool_name: str | None
@@ -180,9 +336,15 @@ def create_context_save_node(
 
         for msg in tool_messages:
             tool_name: str | None = getattr(msg, "name", None)
-            if not _is_saveable(tool_name):
+            # Structure first, name second: a result that carries re-checkable
+            # provenance is worth keeping whatever the tool ended up being
+            # called, which is what stops a rename from being a silent
+            # retention change in either direction (C8).
+            structure = _search_structure_of(msg) if save_structured else None
+            if structure is None and not _is_saveable(tool_name):
                 continue
-            assert tool_name is not None  # narrowed by _is_saveable
+            if tool_name is None:
+                tool_name = "unnamed_tool"
 
             raw = msg.content or ""
             content: str = raw if isinstance(raw, str) else str(raw)
@@ -191,15 +353,43 @@ def create_context_save_node(
 
             short_desc = content[:200]
             long_desc = content[:1000]
-            key = f"{tool_name}:{msg.tool_call_id}"
+
+            metadata: dict[str, Any] | None = None
+            fingerprint: str | None = None
+            if structure is not None:
+                # The same key the payload rides under at the tool border (D22),
+                # deliberately: a literal here would be a second name for one
+                # payload, free to drift from the reader -- the defect class this
+                # whole change exists to close.
+                metadata = {SEARCH_RESULTS_METADATA_KEY: _provenance_of(structure)}
+                # The query IS the input, so it is the honest dedup key: asking
+                # the same thing twice in one conversation refreshes the row
+                # rather than stacking a second copy of the same page.
+                fingerprint = structure.query or None
+                if len(structure.candidates) > 1:
+                    # Only for a genuine result *set*. web_fetch projects a single
+                    # candidate whose query is the URL, and "1 result(s) for
+                    # 'https://...'" is a worse prompt-side summary than the page's
+                    # own opening text. Bounded because save_tool_result documents
+                    # short_desc as <=200 chars, and a long query or long URL would
+                    # otherwise write straight past that into the prompt.
+                    short_desc = f"{len(structure.candidates)} result(s) for {structure.query!r}"[:200]
 
             try:
+                # The bare bound name, never a composite. save_tool_result derives
+                # the row key itself: ``tool_name:sha256(fingerprint)`` when a
+                # fingerprint is given, ``tool_name:context_id`` when not. Passing
+                # a key with the per-call ``tool_call_id`` already baked in made
+                # the dedup key unique per call, so the fingerprint could never
+                # collide and the dedup it exists for never happened.
                 ctx_id = await context_manager.save_tool_result(
-                    tool_name=key,
+                    tool_name=tool_name,
                     result=content,
                     short_desc=short_desc,
                     long_desc=long_desc,
                     context_type="tool_result",
+                    metadata=metadata,
+                    input_fingerprint=fingerprint,
                 )
                 chunks = chunk_content(content, strategy_hint=tool_name)
                 for chunk in chunks:

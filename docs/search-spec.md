@@ -72,6 +72,7 @@ here.
 | D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets bind on execution spend; cost-model analyses read recorded spend, so a replayed baseline never looks free. P7 applied to spend. Detail in §3.10. |
 | D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser (discodon's action- and delivery-seam cassettes), correctly. **No replay engine enters the `TearsTool` base class.** Detail in §3.10. |
 | D29 (freeze window, 2026-08-11) | Publication does not freeze the contracts. They stay **re-cuttable until the first consumer release pins a version carrying search** | 0.24.0 shipped `3tears-search` to PyPI after Phase 1, not at Phase 4 (§7). What makes a re-cut cheap was never "unpublished" -- it is that nobody has bound: no consumer pins it, and exact-version family pinning (the D13 rider) means a changed shape cannot reach an installed reader. So Phases 2-3 may still re-cut contract types. The window closes at the first consumer *release* naming a version that carries search; past that, a change to a wire-read payload type is a compatibility event, not an edit. Two counters therefore begin at 0.24.0 rather than "first release": `SEARCH_RESULTS_SCHEMA_VERSION` and `CANONICAL_FORM_VERSION` both stay 1 while changes remain additive, and any non-additive change now MUST be spelled as a bump rather than absorbed. **The consumers this window is measured against are ours** -- metallm and discodon, the two the sequencing tracks. A third party can `pip install 3tears-search==0.24.0` today and is outside that definition entirely; what covers them is the alpha policy the root README states, that the public API may shift between minor versions until 1.0.0, and a re-cut here lands in 0.25.0. That is the whole of their protection and it is deliberate: a package published three phases before its consumers exist has no installed base to protect, and pretending otherwise would freeze a contract nobody is holding. Past 1.0.0 this row does not apply -- the freeze is then whatever semver promises, and "nobody has bound" stops being knowable. |
+| D30 (SR-M4, 2026-08-12) | The fetch path carries **caller-supplied validators** and reports *not modified*; D14 is untouched | D14 forbids the capability **holding** a response; a conditional request holds nothing -- the caller's `If-None-Match` / `If-Modified-Since` go out as request headers and a `304` comes back. Same carve-out the robots memo already took, with less to argue since nothing survives even the call. Ruled REQUIRED rather than deferred behind replay because D7/D12 put the bytes in the consumer's store and then left it no way to spend the validator they arrived with -- an incoherence, not a deferral. **Fetch path only** (Extract's carrier read and re-reads of a known URL); conditionalising a provider *query* is worthless and mis-scopes the work. Additive and opt-in, so it binds no consumer and needs no D15 ratification. The transport seam already suffices -- `FetchTransport.fetch` takes `headers`, `TransportResponse` carries `status_code` + `headers`, and a `304` verifiably survives `StandaloneTransport` today. Build sequence in `search-task-01-conditional-revalidation.md`. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1-4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -793,13 +794,178 @@ Then the phase itself:
 |---|---|
 | 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
 | 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below, plus a correction pass ([#321](https://github.com/pacepace/3tears/pull/321)) that fixed seven review findings and the seam gap that hid them |
-| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
+| 6 -- `page_finder` structure; context-save node | **Done** -- `ToolExecutor` in [#318](https://github.com/pacepace/3tears/pull/318); `page_finder` reads structure (check 4) and the context-save node's C8 fix, both below |
 | 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
 | §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
 | §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
 
-What remains before Gate B is the rest of item 6 and Phase 3's
-`aggregate`/`select`.
+**Phase 2 is complete.** What remains before Gate B is Phase 3's
+`aggregate`/`select`, plus the gate's own sweep of the in-repo success checks.
+
+#### Phase 2 item 6, `page_finder` -- built 2026-08-12
+
+Check 4 is discharged, and its "without its callers changing" clause is the
+literal shape of the change: every new fact arrives as a defaulted
+`PageFinderResult` field, so existing construction and existing readers are
+untouched. `page_finder` reads the typed projection off `ToolMessage.artifact`
+-- the artifact item 7 stopped the executor from stringifying -- rather than
+re-parsing the prose the LLM read.
+
+Three things structure buys that prose could not, and one it deliberately does
+not:
+
+- **A URL the search never returned is now visible as such.** The coercion step
+  can name a page the loop reached by following a fetched link, or one it
+  invented outright; `url_was_a_search_result` tells those from a real find.
+  The URL is still the LLM's choice -- structure qualifies the answer, it does
+  not replace it.
+- **A refused search stops reading as a fruitless one.** Every empty run used
+  to report "exhausted its turn budget"; a typed `rate-limited` now says so,
+  class first, because that is the fact an operator acts on. The verdict needs
+  *every* turn to have failed, not merely one: a run whose first search was
+  rate-limited and whose next four searched fine did not fail for want of
+  searching, and blaming the provider would send an operator after a quota
+  problem that had already cleared. The first failure is reported on its own
+  field either way.
+- **Provider degradations survive** (SR-L2, P8) -- a page found over a search
+  that lost two engines is still a finding, just one whose thinness has a
+  stated cause.
+- **No ranking is implied.** `candidates_seen` is provider order across turns,
+  deduplicated by identity; ordering them is Select's business, not this
+  module's.
+
+Two seam facts worth keeping, because both are the kind that pass a unit test
+and fail in production. `web_fetch` writes its projection under the *same*
+metadata key as `web_search`, so the reader filters by bound tool name --
+`threetears.web_search`, never the bare string, the identical name-grain bug
+`_extract_search_queries` already carries a regression test for. And
+`from_metadata` refuses a newer `schema_version` loudly (D13), which is right
+for a reader that may fail and wrong inside a function that promises never to
+raise, so here that refusal degrades to a warning and the prose path.
+
+`scrape` now declares `3tears-search` directly. It had been arriving only
+transitively through `agent-tools[fetch]`, which is not a dependency a package
+may lean on for its own imports.
+
+**One adjacent defect, found by testing the module rather than the change.**
+`_verify_candidate_page` fetched unbounded: `client.get` buffered the whole
+body and BeautifulSoup then built a parse tree from it, measured at **77x** the
+served size -- 19 MiB of HTML peaked at ~1.5 GiB of heap. It fetches a URL an
+LLM picked out of search results, so that size was never this process's to
+choose. This is the same defect class as §10 defect 7, which the gutting
+removed from `web_fetch`; it survived because this is scrape's own fetch rather
+than the leaf's. Now streamed under a 2 MiB cap matching `extract.py`'s
+`DEFAULT_MAX_BYTES` (SR-G5), same peak measurement down to 157 MiB, and the
+"nothing found" note distinguishes *nothing in what I read* from *nothing on
+the page* -- a note that conflated them would send the next reader hunting a
+structure bug that is really a size cap.
+
+Encoding behaviour is pinned rather than assumed, because the decode moved from
+`response.text` to an explicit one: declared Shift-JIS, windows-1256 and UTF-16
+all decode; an undeclared or self-contradicting charset degrades with
+`errors="replace"` instead of raising; and a body sliced mid-multibyte at the
+cap does the same. A charset Python has *never heard of* falls back to UTF-8
+with a warning: `httpx` returns the `charset=` parameter verbatim without
+checking it against the codec registry, so a server declaring `utf8mb4` (a real
+MySQL-ism) or any typo raises `LookupError` -- which is **not** a `ValueError`,
+so it escaped the fetch's own guard and left `find_target_page`, whose contract
+is that it never raises. Third-party input on the strength of a string match. Structure detection survives all of it for a reason worth
+stating -- every marker it looks for (`<table>`, `<tr>`, `href`) is ASCII, so
+finding structure never depended on rendering the text correctly. A bidi
+override that makes a link *render* as `.pdf` is also pinned as not verifying,
+since the extension check reads the real characters.
+
+#### Phase 2 item 6, the context-save node (C8) -- built 2026-08-12
+
+The last of Phase 2. Three deliverables, and the third is the one with a
+deadline attached.
+
+**The name-grain defect is fixed, and the fix is not the interesting part.**
+`_DEFAULT_SAVEABLE_TOOLS` held bare `web_search` / `web_fetch` matched by exact
+equality against `ToolMessage.name`, while the adapter binds every tool under
+`mcp_name()` -- so the default set matched nothing and the node was inert in
+production. The interesting part is *why the suite could not see it*: every
+test passed its own bare names explicitly, so the node's logic was asserted
+against names the tests chose rather than the name production binds. The
+regression pin therefore reads the real tools' real `mcp_name()` values rather
+than restating a string, and a seam test drives the real adapter end to end and
+lets it pick the name.
+
+**The node binds on result type before tool name**, which is what C8 actually
+asked for: *"it binds on the tool name as a string, not on the result type --
+and the failure class this predicts has already fired."* A message carrying
+search structure is saved whatever the tool is called, so renaming or splitting
+a tool per carrier can no longer silently change what is retained. The name set
+remains, for tools with no structure to recognise.
+
+**Structure is retained beside the prose**, making this the consumer C8 said
+should *"get better rather than merely unbroken."* The stored row previously
+held a flattened 4000-character truncation with no provenance -- a claim nobody
+could trace back. It now carries the query, candidate identities and titles,
+notices, and any typed failure class, so SR-A3's re-checkability survives the
+truncation. The query also becomes the dedup fingerprint, so asking the same
+thing twice refreshes a row instead of stacking a second copy. A failed search
+is recorded *as* a failure, which prose alone could not distinguish from a thin
+answer.
+
+**The retention posture is stated in the module docstring, before any wiring**
+-- the ordering C8 required and the reason it was still available: the node has
+been shipped-but-inert since it was written, so the posture could still precede
+the first retained byte. It records what is kept and the rules that govern it
+(D11/SR-K2 queries are user content, redaction is the host's; D7/D12 retention
+follows the consumer's policy; SR-K4 fetched page text is third-party content),
+and it states that none of those are this module's to decide. Wiring remains
+deliberately undone.
+
+Two adjacent corrections, both the same defect class one layer over:
+
+- **`chunker.py` registered its only default strategy under the bare
+  `web_fetch`.** The save node passes a message's tool name as the strategy
+  hint, so fixing the node's names alone would have silently downgraded header
+  chunking to line chunking. `chunk_content` now falls back from a namespaced
+  hint to its bare tail, which fixes it for every namespaced tool rather than
+  just this one.
+- **An empty `saveable_tools` set meant its own opposite.** `saveable_tools or
+  _DEFAULT_SAVEABLE_TOOLS` made `frozenset()` falsy and fell back to the
+  defaults, so a caller asking for "no tools by name" got the defaults instead.
+  Now `None` means defaults and empty means empty, which also makes
+  "structure only" expressible.
+
+Review corrected three things, one of which falsified a claim made for this
+node:
+
+- **The dedup fingerprint never deduped.** `save_tool_result` derives the row
+  key as `tool_name:sha256(fingerprint)`, and the node passed
+  `tool_name=f"{name}:{tool_call_id}"` -- so the per-call id was baked into the
+  key and two identical queries could never collide. The node was duplicating
+  uniqueness logic the store already provides; it now passes the bare bound
+  name and lets the store key it. The original test asserted only that the
+  kwarg was *passed*, which is precisely why it passed; the replacement drives
+  the real key derivation and asserts two identical queries land on one key.
+- **Structure-first retention had no off switch**, and `web_fetch` projects
+  under the same metadata key as `web_search` -- so it also captured fetched
+  page text, which SR-K4/D12 make the deployment's own agreement with a site.
+  "Stop using the node" is not a lever. `save_structured` is, and it defaults
+  to the C8 posture.
+- **`short_desc` could exceed its documented 200 characters**, and degraded a
+  fetched page's summary from a content preview to `1 result(s) for
+  'https://...'`. The structured summary is now bounded, and reserved for a
+  genuine result *set* rather than the single candidate `web_fetch` projects.
+
+**Conditional requests: nothing today, and the question it raised is now ruled.**
+No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape, or
+core's traced client. For `_verify_candidate_page` specifically that is correct
+and stays correct — it runs once per candidate at discovery, holds no copy, and
+would have nothing to inspect on a 304.
+
+Asking why led somewhere larger, and the answer is **SR-M4 / D30**, ruled
+2026-08-12. D14 was never the obstacle: it forbids the capability *holding* a
+response, and a conditional request holds nothing. What the gap actually was is
+that D7/D12 put the bytes in the consumer's store and then left the consumer no
+way to spend the validator they arrived with, so every re-read of an unchanged
+page pays full freight — on the scrape path, a render and an LLM extraction. The
+build sequence is `search-task-01-conditional-revalidation.md`; the transport
+seam already suffices and the work sits above it.
 
 #### Phase 2 item 5 -- built 2026-08-11
 

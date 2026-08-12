@@ -74,9 +74,22 @@ def chunk_content(content: str, strategy_hint: str = "") -> list[ChunkResult]:
     Looks up the hint in the strategy registry first, then
     falls back to line-based chunking.
 
+    A namespaced hint falls back to its bare tail: ``threetears.web_fetch``
+    finds a strategy registered as ``web_fetch``. Both names are real and name
+    the same tool -- the bare one is what this registry documents and what
+    callers hand-register, while the *bound* name is what a real
+    ``ToolMessage`` carries, because the adapter binds tools under
+    ``mcp_name()``. Without the fallback, passing a message's own tool name --
+    the obvious thing for a caller to do, and what the context-save node does
+    -- silently misses every registered strategy and degrades to line
+    chunking. That is the same name-grain defect C8 records in the save node,
+    one layer down, and it would have been re-introduced by fixing that one
+    alone.
+
     :param content: raw content to split
     :ptype content: str
-    :param strategy_hint: tool name or hint for strategy selection
+    :param strategy_hint: tool name or hint for strategy selection; a
+        namespaced name falls back to its bare tail
     :ptype strategy_hint: str
     :return: list of chunk results
     :rtype: list[ChunkResult]
@@ -85,6 +98,8 @@ def chunk_content(content: str, strategy_hint: str = "") -> list[ChunkResult]:
         return []
 
     strategy = _STRATEGY_REGISTRY.get(strategy_hint)
+    if strategy is None and "." in strategy_hint:
+        strategy = _STRATEGY_REGISTRY.get(strategy_hint.rsplit(".", 1)[-1])
     if strategy is not None:
         return strategy(content)
 
