@@ -252,10 +252,14 @@ the producer seam when it is built.
   Those are separable and the first draft conflated them. It is required on
   `ProposedWork`, required on the stored row, and rendered on a live review
   card — so a producer omitting it is a producer defect, not a thin result. It
-  rides a **namespaced** facet key (`samsung:match_rationale`, following
-  `Criterion.namespaced`'s house style), because samsung already has a second,
+  rides a **namespaced** facet key (`curation:match_rationale`, following
+  `Criterion.namespaced`'s house style), because that repo already has a second,
   different sentence called `selection_rationale` at a later hop and a bare
-  `rationale` would eventually be rendered in the wrong place.
+  `rationale` would eventually be rendered in the wrong place. The namespace
+  names the **producing component**, not the consuming product: `curation` is
+  the package that reads an intent and proposes works, and would produce the
+  same sentence if the pictures ended up on a projector. `samsung` names the
+  display plane the facet never travels to.
 - **Spend is referenced by opaque `SpendRecord.id`, never by `EngineSpend`'s
   shape.** `EngineSpend` is pre-persistence: no id, no timestamp, two instances
   indistinguishable. `SpendRecord` is the priced ledger row. Holding a pointer
@@ -264,6 +268,30 @@ the producer seam when it is built.
   `SpendCategory` grows, and its members carry attribution rules that are not
   derivable from the shape (`CONVERSATION_TOKENS` is deliberately not attributed
   to the run a conversation seeds, so a naive roll-up double-counts).
+
+### An unresolved tension for step 4: rank as trusted, versus rank as preserved
+
+Worth settling before the seam sketch decides whether producer candidates carry
+a position, because the two repos have reached opposite rules from the same
+observation.
+
+**This package's rule (3a above):** a rank is only *recoverable* inside the call
+that produced it, so capture it before grouping destroys it.
+
+**samsung's rule (`discovery/browse.py`):** a rank is only *meaningful* inside
+the call that produced it, so do not export it. Measured rather than assumed —
+the Art Institute's relevance survives a filter-only query, where one Ellsworth
+Kelly painting returns at 13,535 against its siblings' 6 to 8. A caller handed
+that order gets a ranking that looks meaningful and is not, which is D1's
+concern arriving from the provider side.
+
+Same observation, opposite remedies. They do not conflict today (samsung's phase
+2 has one search provider, so there is no second ordering to fuse), but if the
+producer seam ever carries samsung's candidates, this package would be asking
+for exactly the thing that repo refuses to hand its own callers. The likely
+resolution is that a producer candidate carries **no** position and therefore no
+fused score — which is already what 3a rules for candidates that ranked nowhere
+— but it should be decided rather than inherited from an implementation detail.
 
 ## 4. What is missing (the build)
 
