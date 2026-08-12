@@ -87,7 +87,8 @@ consume either — see the Phase 2 note.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
 
-*Status 2026-08-11 — most of this phase has landed.* Extract's web path is
+*Status 2026-08-12 — this phase is complete; the entries below run in build
+order, and the closing one is item 6.* Extract's web path is
 built ([#316](https://github.com/pacepace/3tears/pull/316)), on ground laid
 by [#307](https://github.com/pacepace/3tears/pull/307) (the `FetchTransport`
 implementation and the connection lifecycle it needs),
@@ -135,9 +136,32 @@ configured**. Phase 3's `aggregate`/`select` and the Phase 5 consumer
 migrations each stand up new wiring of exactly this kind. Detail and rulings
 in [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing).
 
-**What remains here:** the rest of item 6 (`page_finder` structure, the
-context-save node). See
-[`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
+**Item 6 closed 2026-08-12, and with it the phase.** `page_finder` reads the
+typed projection off `ToolMessage.artifact`
+([#326](https://github.com/pacepace/3tears/pull/326)) rather than re-parsing the
+prose the LLM read; every new fact arrives as a defaulted field, so check 4's
+"without its callers changing" clause is the literal shape of the change. The
+context-save node ([#327](https://github.com/pacepace/3tears/pull/327)) had been
+inert in production — its default tool set held bare names while the adapter
+binds every tool under `mcp_name()` — and now binds on result *type* before tool
+name, which is what C8 asked for, retaining structure beside the prose so
+SR-A3's re-checkability survives the truncation.
+
+Both builds turned up an adjacent defect one layer over, and the pattern is the
+same one item 5 recorded: a unit test that asserts a value was *passed* rather
+than that behaviour *held*. `_verify_candidate_page` fetched unbounded (19 MiB
+of HTML peaking at ~1.5 GiB of heap), and `chunker.py` registered its only
+default strategy under the same bare name the node was being fixed for.
+
+**Phase 2 is complete.** What remains before Gate B is Phase 3's
+`aggregate`/`select` plus the gate's own sweep. One item spun *out* rather than
+in: asking why nothing in the stack sends a conditional request produced
+**SR-M4 / D30**, ruled 2026-08-12, whose build sequence is
+[`search-task-01-conditional-revalidation.md`](search-task-01-conditional-revalidation.md).
+It blocks nothing and is blocked by nothing, and its step 1 is a
+`media-contracts` change, so it moves the family bound when it lands.
+
+See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
 
 *Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
@@ -155,6 +179,14 @@ semantics confirmed against a live instance, decisions/vetoes propagated
 back into
 [`search-requirements.md` §13](search-requirements.md#13-decisions-needing-an-owner).
 → [`search-spec.md` §7](search-spec.md#7-sequencing)
+
+*Status 2026-08-12:* the SearXNG half is substantially discharged — the formula,
+its four consequences and the one residue are recorded at SR-A4
+([#322](https://github.com/pacepace/3tears/pull/322)), and
+[#328](https://github.com/pacepace/3tears/pull/328) gave it a container to check
+itself against. The residue wants an instance whose engines are not
+rate-limited, run with `SEARXNG_REQUIRE_RESULTS=1`. The in-repo success-check
+sweep and the §13 propagation are untouched, and both wait on Phase 3.
 
 ## Phase 3 — Release
 
