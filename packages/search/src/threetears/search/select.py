@@ -388,7 +388,14 @@ def _parse_bound(raw: object) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(raw)
-    except ValueError:  # pragma: no cover -- `_malformed` already refused it
+    except ValueError:  # pragma: no cover
+        # NOSILENT: unreachable by construction -- `_malformed` parses both
+        # bounds and refuses the criterion before any entry is judged, so a
+        # value reaching here already parsed once. Kept as a guard rather than
+        # deleted because the two functions could drift apart, and returning
+        # None means exactly what an absent bound means: this edge does not
+        # constrain. Logging an unreachable branch would be noise, and raising
+        # would turn a defensive guard into the crash it exists to prevent.
         return None
 
 
