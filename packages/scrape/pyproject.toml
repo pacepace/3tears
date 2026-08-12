@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scrape"
-version = "0.24.1"
+version = "0.24.2"
 description = "AI-driven, self-healing web scraping: pluggable render backends + LLM-proposed extraction candidates validated and judged against real page content, never hand-rolled per-site parsers"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -56,6 +56,12 @@ dependencies = [
     "3tears-agent-tools[document,fetch]>=0.24.0,<0.25.0",
     "3tears-models>=0.24.0,<0.25.0",
     "3tears-observe>=0.24.0,<0.25.0",
+    # page_finder.py reads the typed search result off ToolMessage.artifact
+    # (search-spec.md check 4) rather than re-parsing the prose rendering, so
+    # the contracts are a direct import now -- previously they arrived only
+    # transitively through agent-tools[fetch], which is not a dependency this
+    # package may lean on for its own imports.
+    "3tears-search>=0.24.0,<0.25.0",
     "httpx[socks]>=0.27",
     # extraction.py's vision-extraction path builds a multimodal
     # HumanMessage directly -- an explicit dependency rather than relying on
@@ -122,3 +128,4 @@ packages = ["src/threetears"]
 3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-scheduled-jobs = { workspace = true }
+3tears-search = { workspace = true }

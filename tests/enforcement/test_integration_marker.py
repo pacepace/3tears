@@ -55,6 +55,7 @@ _DOCKER_ROOTED_FIXTURES: frozenset[str] = frozenset(
         "pg_url",
         "pg_schema",
         "nats_container",
+        "searxng_container",
     }
 )
 
