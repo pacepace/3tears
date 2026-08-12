@@ -26,6 +26,7 @@ from threetears.search.contracts import (
 
 from threetears.scrape.page_finder import (
     _VERIFY_MAX_BYTES,
+    _every_search_failed,
     PageFinderResult,
     _all_notices,
     _candidate_urls,
@@ -580,7 +581,7 @@ class TestFindTargetPageReadsStructure:
             result = await find_target_page("Ohio WARN notices", api_key="k", searxng_url="http://searx.local")
 
         assert result.search_failure == "rate-limited: slow down"
-        assert "search refused" in result.verification_note
+        assert "every search turn was refused" in result.verification_note
         assert result.url == ""
 
     async def test_no_structure_at_all_leaves_the_new_fields_at_their_defaults(self):
@@ -1329,3 +1330,107 @@ class TestStructureCarriesExoticText:
         projections = _read_search_structure(messages, _SEARCH_TOOL)
 
         assert len(projections) <= 1  # read or skipped, never raised
+
+
+class TestUnknownDeclaredCharset:
+    async def test_a_charset_python_does_not_know_falls_back_instead_of_raising(self):
+        # httpx hands back the charset= parameter verbatim without checking it
+        # against the codec registry, so bytes.decode raises LookupError -- which
+        # is NOT a ValueError and so escaped the fetch's own guard, out of a
+        # function whose contract is that it never raises. The header comes off a
+        # page an LLM picked out of search results.
+        body = ("<html><body>" + _TABLE.format("data") + "</body></html>").encode()
+
+        verified, backend, _ = await _verify_candidate_page(
+            "https://example.gov/x", client=_serving(body, {"content-type": "text/html; charset=utf8mb4"})
+        )
+
+        assert verified is True
+        assert backend == "nodriver"
+
+    async def test_find_target_page_survives_an_unknown_charset_end_to_end(self):
+        # The contract that was actually at risk: find_target_page never raises.
+        body = "<html><body><p>nothing structural</p></body></html>".encode()
+        found = _CandidatePage(
+            url="https://example.gov/warn", driver_backend_guess=None, wait_for_guess=None, summary="ok"
+        )
+        with (
+            patch(
+                "threetears.scrape.page_finder.create_chat_model",
+                return_value=SimpleNamespace(bind_tools=lambda t: None),
+            ),
+            patch("threetears.scrape.llm_retry.create_chat_model", return_value=_coercion_returning(found)),
+            patch("threetears.scrape.page_finder.ToolExecutor") as executor_cls,
+            patch(
+                "threetears.scrape.page_finder.httpx.AsyncClient",
+                return_value=_serving(body, {"content-type": "text/html; charset=unknown-8bit"}),
+            ),
+        ):
+            executor_cls.return_value.invoke_with_tools = _executor_that_deposits(
+                output="https://example.gov/warn is the page."
+            )
+            result = await find_target_page("Ohio WARN notices", api_key="k", searxng_url="http://searx.local")
+
+        assert result.verified is False
+        assert result.url == "https://example.gov/warn"
+
+    async def test_an_empty_charset_parameter_falls_back_too(self):
+        body = ("<html><body>" + _TABLE.format("data") + "</body></html>").encode()
+
+        verified, _, _ = await _verify_candidate_page(
+            "https://example.gov/x", client=_serving(body, {"content-type": "text/html; charset="})
+        )
+
+        assert verified is True
+
+
+class TestEverySearchFailed:
+    def _failed(self, cls_: str = "rate-limited") -> SearchResultsMetadata:
+        return SearchResultsMetadata.from_failure(
+            query="q", failure=FailureRecord(failure_class=cls_, message="m", spend=Spend())
+        )
+
+    def _ok(self) -> SearchResultsMetadata:
+        return SearchResultsMetadata.from_candidate_set(
+            query="q", candidate_set=CandidateSet(candidates=(_candidate("https://a.gov"),))
+        )
+
+    def test_all_failed_is_true(self):
+        assert _every_search_failed([self._failed(), self._failed("timeout")]) is True
+
+    def test_one_recovered_turn_makes_it_false(self):
+        # The run did not fail for want of searching; it failed to converge.
+        # Blaming the provider would send an operator after a cleared quota.
+        assert _every_search_failed([self._failed(), self._ok()]) is False
+
+    def test_no_turns_is_false(self):
+        assert _every_search_failed([]) is False
+
+    async def test_a_recovered_search_does_not_get_blamed_on_the_provider(self):
+        refused = SearchResultsMetadata.from_failure(
+            query="Ohio WARN notices",
+            failure=FailureRecord(failure_class="rate-limited", message="slow down", spend=Spend()),
+        )
+        failed_turn = ToolMessage(
+            content="search failed",
+            tool_call_id="tc-1",
+            name=_SEARCH_TOOL,
+            artifact={SEARCH_RESULTS_METADATA_KEY: refused.to_metadata()},
+        )
+        good_turn = _search_tool_message(_candidate("https://example.gov/warn"))
+        with (
+            patch(
+                "threetears.scrape.page_finder.create_chat_model",
+                return_value=SimpleNamespace(bind_tools=lambda t: None),
+            ),
+            patch("threetears.scrape.page_finder.ToolExecutor") as executor_cls,
+        ):
+            executor_cls.return_value.invoke_with_tools = _executor_that_deposits(
+                failed_turn, good_turn, output="", error="max rounds exhausted"
+            )
+            result = await find_target_page("Ohio WARN notices", api_key="k", searxng_url="http://searx.local")
+
+        assert "exhausted its turn budget" in result.verification_note
+        assert "refused" not in result.verification_note
+        # still carried as a fact, just not as the verdict
+        assert result.search_failure == "rate-limited: slow down"

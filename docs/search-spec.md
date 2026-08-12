@@ -821,7 +821,12 @@ not:
   not replace it.
 - **A refused search stops reading as a fruitless one.** Every empty run used
   to report "exhausted its turn budget"; a typed `rate-limited` now says so,
-  class first, because that is the fact an operator acts on.
+  class first, because that is the fact an operator acts on. The verdict needs
+  *every* turn to have failed, not merely one: a run whose first search was
+  rate-limited and whose next four searched fine did not fail for want of
+  searching, and blaming the provider would send an operator after a quota
+  problem that had already cleared. The first failure is reported on its own
+  field either way.
 - **Provider degradations survive** (SR-L2, P8) -- a page found over a search
   that lost two engines is still a finding, just one whose thinness has a
   stated cause.
@@ -859,7 +864,12 @@ Encoding behaviour is pinned rather than assumed, because the decode moved from
 `response.text` to an explicit one: declared Shift-JIS, windows-1256 and UTF-16
 all decode; an undeclared or self-contradicting charset degrades with
 `errors="replace"` instead of raising; and a body sliced mid-multibyte at the
-cap does the same. Structure detection survives all of it for a reason worth
+cap does the same. A charset Python has *never heard of* falls back to UTF-8
+with a warning: `httpx` returns the `charset=` parameter verbatim without
+checking it against the codec registry, so a server declaring `utf8mb4` (a real
+MySQL-ism) or any typo raises `LookupError` -- which is **not** a `ValueError`,
+so it escaped the fetch's own guard and left `find_target_page`, whose contract
+is that it never raises. Third-party input on the strength of a string match. Structure detection survives all of it for a reason worth
 stating -- every marker it looks for (`<table>`, `<tr>`, `href`) is ASCII, so
 finding structure never depended on rendering the text correctly. A bidi
 override that makes a link *render* as `.pdf` is also pinned as not verifying,
