@@ -72,6 +72,7 @@ here.
 | D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets bind on execution spend; cost-model analyses read recorded spend, so a replayed baseline never looks free. P7 applied to spend. Detail in §3.10. |
 | D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser (discodon's action- and delivery-seam cassettes), correctly. **No replay engine enters the `TearsTool` base class.** Detail in §3.10. |
 | D29 (freeze window, 2026-08-11) | Publication does not freeze the contracts. They stay **re-cuttable until the first consumer release pins a version carrying search** | 0.24.0 shipped `3tears-search` to PyPI after Phase 1, not at Phase 4 (§7). What makes a re-cut cheap was never "unpublished" -- it is that nobody has bound: no consumer pins it, and exact-version family pinning (the D13 rider) means a changed shape cannot reach an installed reader. So Phases 2-3 may still re-cut contract types. The window closes at the first consumer *release* naming a version that carries search; past that, a change to a wire-read payload type is a compatibility event, not an edit. Two counters therefore begin at 0.24.0 rather than "first release": `SEARCH_RESULTS_SCHEMA_VERSION` and `CANONICAL_FORM_VERSION` both stay 1 while changes remain additive, and any non-additive change now MUST be spelled as a bump rather than absorbed. **The consumers this window is measured against are ours** -- metallm and discodon, the two the sequencing tracks. A third party can `pip install 3tears-search==0.24.0` today and is outside that definition entirely; what covers them is the alpha policy the root README states, that the public API may shift between minor versions until 1.0.0, and a re-cut here lands in 0.25.0. That is the whole of their protection and it is deliberate: a package published three phases before its consumers exist has no installed base to protect, and pretending otherwise would freeze a contract nobody is holding. Past 1.0.0 this row does not apply -- the freeze is then whatever semver promises, and "nobody has bound" stops being knowable. |
+| D30 (SR-M4, 2026-08-12) | The fetch path carries **caller-supplied validators** and reports *not modified*; D14 is untouched | D14 forbids the capability **holding** a response; a conditional request holds nothing -- the caller's `If-None-Match` / `If-Modified-Since` go out as request headers and a `304` comes back. Same carve-out the robots memo already took, with less to argue since nothing survives even the call. Ruled REQUIRED rather than deferred behind replay because D7/D12 put the bytes in the consumer's store and then left it no way to spend the validator they arrived with -- an incoherence, not a deferral. **Fetch path only** (Extract's carrier read and re-reads of a known URL); conditionalising a provider *query* is worthless and mis-scopes the work. Additive and opt-in, so it binds no consumer and needs no D15 ratification. The transport seam already suffices -- `FetchTransport.fetch` takes `headers`, `TransportResponse` carries `status_code` + `headers`, and a `304` verifiably survives `StandaloneTransport` today. Build sequence in `search-task-01-conditional-revalidation.md`. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1-4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -864,17 +865,20 @@ finding structure never depended on rendering the text correctly. A bidi
 override that makes a link *render* as `.pdf` is also pinned as not verifying,
 since the extension check reads the real characters.
 
-**Conditional requests: nothing, deliberately here and untracked elsewhere.**
-No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape,
-or core's traced client. For everything this spec governs that is correct and
-already ruled: conditional requests revalidate a copy the caller holds, D14
-forbids holding one in v1, and SR-O3 owns the revisit. `_verify_candidate_page`
-likewise runs once per candidate at discovery and would have nothing to inspect
-on a 304. The gap that is *not* covered by that reasoning is scrape's own
-repeat-fetching of already-onboarded targets, where a validator would skip a
-render and an LLM extraction on unchanged pages; no target stores one today.
-Recorded here rather than fixed, because it is the scrape pipeline's decision
-and not this workstream's.
+**Conditional requests: nothing today, and the question it raised is now ruled.**
+No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape, or
+core's traced client. For `_verify_candidate_page` specifically that is correct
+and stays correct — it runs once per candidate at discovery, holds no copy, and
+would have nothing to inspect on a 304.
+
+Asking why led somewhere larger, and the answer is **SR-M4 / D30**, ruled
+2026-08-12. D14 was never the obstacle: it forbids the capability *holding* a
+response, and a conditional request holds nothing. What the gap actually was is
+that D7/D12 put the bytes in the consumer's store and then left the consumer no
+way to spend the validator they arrived with, so every re-read of an unchanged
+page pays full freight — on the scrape path, a render and an LLM extraction. The
+build sequence is `search-task-01-conditional-revalidation.md`; the transport
+seam already suffices and the work sits above it.
 
 #### Phase 2 item 5 -- built 2026-08-11
 

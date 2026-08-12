@@ -329,13 +329,13 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
 
     The GET is unconditional -- no ``If-None-Match``, no ``If-Modified-Since``
     -- and that is not an oversight. Conditional requests are how a caller
-    revalidates a copy it already holds; this function holds none, keeps none
-    (D14 forbids response caching in v1, revisited at SR-O3 once replay ships),
-    and runs once per candidate at discovery time. A 304 here would leave it
-    with nothing to inspect. Repeat fetching of an *already-onboarded* target
-    is the scrape pipeline's concern, not this module's, and conditional
-    requests would be worth real money there -- a 304 skips a render and an
-    LLM extraction -- but nothing in the pipeline stores a validator today.
+    revalidates a copy it already holds; this function holds none, keeps none,
+    and runs once per candidate at discovery time, so a 304 would leave it with
+    nothing to inspect. Revalidating an *already-onboarded* target is a real
+    and valuable thing -- a 304 there skips a render and an LLM extraction --
+    and it is ruled at SR-M4 / D30 with a build sequence in
+    ``docs/search-task-01-conditional-revalidation.md``. It belongs to the
+    scrape pipeline and to Extract, never to this discovery-time check.
 
     The body is read under :data:`_VERIFY_MAX_BYTES` and may therefore be
     truncated; the returned note distinguishes "no structure in what I read"
