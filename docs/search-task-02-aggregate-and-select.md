@@ -310,21 +310,56 @@ fused score — which is already what 3a rules for candidates that ranked nowher
 4. Producer seam driven by **samsung C5** as a real second producer.
 5. Carrier dispatch driven by **samsung C6** (image, deep) — §3.5's Phase 3 half.
 
-Steps 1-3 start now. Steps 4-5 are why samsung is being pulled forward: a seam
-with one implementer and a dispatch with one carrier are the shape this repo has
+Steps 1-3 start now. Steps 4-5 are why samsung was pulled forward: a seam with
+one implementer and a dispatch with one carrier are the shape this repo has
 shipped inert three times in a fortnight (the context-save node's default set,
 `chunker.py`'s bare-name strategy, and item 5's untested tool/transport seam).
-D3 deferred the seam to "when samsung pulls" on the same reasoning that
-correctly blocks item 8 on discodon's storage port — but discodon's port does
-not exist yet and samsung is available, so the deferral inherited a constraint
-that does not apply to it.
+
+**Corrected 2026-08-12, and it splits step 4 in two.** The claim above — that
+samsung is available, so D3's deferral inherited a constraint that does not
+apply — is half right, and the wrong half matters. samsung's session reports
+that its active build plan is an eleven-chunk curation surface with nothing in
+it a search producer, and that `3tears-core` is deliberately absent from that
+repo: its durable tier matches the `DurableStore` contract *structurally*, with
+no framework import, and the only declared 3tears package is `3tears-models`,
+pinned inside an opt-in `eval` group a default install never touches. So:
+
+- samsung is available for **contract elicitation**, and that has already paid —
+  every finding in §3b came from its real code rather than an imagined consumer,
+  and two of them (zero locators; spend by opaque ledger id) contradict what
+  this document would otherwise have specified.
+- samsung is **not** available to *consume* the seam soon. Building step 4 now
+  would therefore still produce a seam nothing drives, which is the exact
+  failure the paragraph above invokes to justify building it. The argument, run
+  honestly, now points the other way.
+
+**So step 4 splits: sketch and review it now, build it when samsung can consume
+it.** Reviewing a contract costs nothing and catching a boundary mismatch on
+paper is the whole point of doing it early; writing an implementation whose only
+caller is a test is not.
+
+**Success check 2 is designable now and not satisfiable now**, and that
+distinction should not be inherited by anything downstream. It does *not* block
+Gate B: the gate's wording is "all §3 success checks **that can be verified
+in-repo**", and check 2 lives in samsung's repo. Gate B was never waiting on it.
+
+**One constraint the seam must hold to stay cheap when the time comes: it must
+be importable without pulling `3tears-core`.** If consuming the producer seam
+means taking the framework, samsung's dependency argument bites again and the
+answer will be the same one it was in July. Verified for steps 1-3 —
+`threetears.search.aggregate` and `threetears.search.select` load only
+`threetears.media` and `threetears.search`, no core, no agent, no httpx, no
+torch. That is currently a fact somebody checked rather than a test that holds
+it; `test_import_cost.py` probes `threetears.search.contracts` only, and
+extending it to the stage modules is owed.
 
 samsung is also the consumer that has **already recorded package rejections**
-for `3tears-core` and `3tears-models` on `MemoryMax` grounds. Success checks 5
-and 9 (no torch; a synchronous one-shot `asyncio.run()`) are its constraints,
-and the requirements doc's warning is that *"a capability that does not state
-its deployment constraints gets refused the same way, on the same evidence,
-after it is built."*
+for `3tears-core` and `3tears-models` on `MemoryMax` grounds — seven
+dependencies into the default install of a plane that runs on a Pi beside the
+display process. Success checks 5 and 9 (no torch; a synchronous one-shot
+`asyncio.run()`) are its constraints, and the requirements doc's warning is that
+*"a capability that does not state its deployment constraints gets refused the
+same way, on the same evidence, after it is built."*
 
 ## 6. Tests the build owes
 
