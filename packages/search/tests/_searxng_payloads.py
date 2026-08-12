@@ -28,6 +28,15 @@ __all__ = [
 
 #: an ordinary web result, with a naive published date (which is what
 #: SearXNG's engines commonly report).
+#:
+#: ``score`` is the value SearXNG's own ``calculate_score`` produces for this
+#: ``engines``/``positions`` pair, not a plausible-looking number: with two
+#: default-weight engines, ``weight = 1.0 * len(positions) = 2.0`` and
+#: ``score = 2.0/1 + 2.0/3``. It read 2.5 until SR-A4 was settled against a
+#: live instance (2026-08-12). The adapter only passes the field through, so
+#: nothing failed -- but a fixture whose docstring says it mirrors what
+#: SearXNG reports is where someone goes to learn the formula, and this one
+#: taught a wrong one. Keep the two fields consistent if either changes.
 WEB_RESULT: dict[str, Any] = {
     "url": "https://example.org/capybara",
     "title": "Capybara",
@@ -35,7 +44,7 @@ WEB_RESULT: dict[str, Any] = {
     "engine": "duckduckgo",
     "engines": ["duckduckgo", "brave"],
     "positions": [1, 3],
-    "score": 2.5,
+    "score": 2.0 / 1 + 2.0 / 3,
     "category": "general",
     "template": "default.html",
     "publishedDate": "2026-02-01T00:00:00",
@@ -50,7 +59,9 @@ IMAGE_RESULT: dict[str, Any] = {
     "engine": "bing images",
     "engines": ["bing images"],
     "positions": [2],
-    "score": 1.0,
+    # one default-weight engine at rank 2: weight = 1.0 * 1, score = 1.0/2.
+    # Read 1.0 before SR-A4 was settled; see WEB_RESULT above.
+    "score": 1.0 / 2,
     "category": "images",
     "template": "images.html",
     "img_src": "https://cdn.example.net/capy.jpg",

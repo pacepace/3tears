@@ -43,7 +43,7 @@ here.
 
 | # | Ruling | Build consequence |
 |---|---|---|
-| D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries -- name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. |
+| D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries -- name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. *Evidence-backed 2026-08-12:* SearXNG's weight is unbounded above (two agreeing engines score 4.0, three 9.0) while Tavily's relevance is `[0,1]`, so one shared field would corrupt a mixed-corpus ranking silently. Select's cull MUST NOT read `score > 0` as "relevant" -- a `priority: low` engine scores everything 0. |
 | D2 (SR-A5) | Call returns a candidate set; the corpus is Aggregate's named type | Two types, two dedup/merge stories; Call never accumulates. |
 | D3 (SR-B5, OQ21) | Model-mediated search is out of Adapter and Call, in at **Aggregate** as a candidate producer | Provenance carries a `producer` distinction from day one; the producer seam is designed in Phase 3, implemented when samsung pulls. Its token cost is owned by the models usage tracker -- the producer seam records a *reference* to that spend and MUST NOT re-price it into search spend (no double counting). |
 | D4 (SR-D4) | Budget follows the bill | The budget increment and the transport retry sit on the same side of the seam: a retried attempt that never billed never counts. C2's fail-closed retry bound moves into the transport's bounded-retry config in the same change. |
@@ -515,8 +515,11 @@ must pass -- contract shape, spend-on-failure, error taxonomy, criterion
 disposition honesty, zero-results-is-success -- plus parity-declared fakes for
 the transport, the store port, and the limiter (`test_fake_protocol_parity`
 compliance). A live tier per provider, env-gated: SearXNG against a
-self-hosted instance (also settles SR-A4's unverified score-semantics
-assumption), Tavily behind explicit credentials.
+self-hosted instance (which settled SR-A4's score-semantics assumption on
+2026-08-12), Tavily behind explicit credentials. The SearXNG live test
+tolerates zero results, because zero results is a success (SR-J2) -- so it
+takes `SEARXNG_REQUIRE_RESULTS=1` to make an empty run fail, without which
+every per-candidate assertion sits in a loop that ran zero times.
 
 ---
 
@@ -823,8 +826,12 @@ owed one.
    application, cull, ranker slot, degradation marks).
 
 **Gate B (pre-release):** all §3 success checks that can be verified in-repo
-are; SR-A4's SearXNG score semantics confirmed against a live instance;
-requirements doc's §13 updated with any vetoes taken during build. *Rider
+are; SR-A4's SearXNG score semantics confirmed against a live instance
+(**done 2026-08-12** -- the formula, its four consequences and the one residue
+are recorded at SR-A4 in the requirements doc; discharging the last of it wants
+an instance whose engines are not rate-limited, run with
+`SEARXNG_REQUIRE_RESULTS=1`); requirements doc's §13 updated with any vetoes
+taken during build. *Rider
 2026-08-11:* a release overtook this gate (below), so Gate B now gates the
 **next** release -- the one carrying Phase 2-3 -- not the leaf's first
 appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
@@ -958,6 +965,6 @@ wire. **Medium** for Phase 3: SR-F5's "a wiring line per consumer" is
 estimated, not measured -- the cheapest raise is wiring a `RecordingStore`
 over discodon's existing store as a spike before the record schema is cut --
 and Aggregate/Select depth depends on samsung's phase-2 requirements holding
-as written. **Open assumptions carried:** SR-A4's SearXNG score semantics
-(settled at Gate B); the six-layer cut is proposed vocabulary, not ratified
-type structure (mitigated by D23's naming rule); OQ1.
+as written. **Open assumptions carried:** ~~SR-A4's SearXNG score semantics~~
+(**settled 2026-08-12**, ahead of Gate B); the six-layer cut is proposed
+vocabulary, not ratified type structure (mitigated by D23's naming rule); OQ1.

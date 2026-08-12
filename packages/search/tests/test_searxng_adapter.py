@@ -197,12 +197,40 @@ async def test_scores_are_named_scaled_and_non_comparable() -> None:
     candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
 
     by_name = {score.name: score for score in candidate.scores}
-    assert by_name["engine-fusion-weight"].value == 2.5
+    # read off the fixture rather than restated: the adapter passes the weight
+    # through, so a literal here is a second place for the value to drift from
+    # what SearXNG actually computes (it held 2.5 against positions [1, 3],
+    # which the real formula puts at 2.667 -- see _searxng_payloads).
+    assert by_name["engine-fusion-weight"].value == WEB_RESULT["score"]
     assert by_name["engine-fusion-weight"].scale == SCALE_UNBOUNDED
-    assert by_name["best-engine-position"].value == 1.0
+    assert by_name["best-engine-position"].value == min(WEB_RESULT["positions"])
     assert by_name["best-engine-position"].scale == SCALE_RANK
     assert all(score.comparable is False for score in candidate.scores)
     assert all(score.source == "searx.example.org" for score in candidate.scores)
+
+
+async def test_a_zero_score_is_reported_rather_than_dropped() -> None:
+    """SR-A4: 0 is a judgment, not an absence -- a ``priority: low`` engine scores every result 0.
+
+    So a consumer culling on ``score > 0`` would drop results the deployment
+    deliberately included, and it can only know that if the zero survives to
+    the border. Pinned because the natural truthiness check here would eat it.
+    """
+    adapter, _ = _scripted(TransportScript(body=body(({**WEB_RESULT, "score": 0.0},))))
+    candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
+
+    by_name = {score.name: score for score in candidate.scores}
+    assert "engine-fusion-weight" in by_name
+    assert by_name["engine-fusion-weight"].value == 0.0
+
+
+async def test_a_missing_score_is_an_absence_not_a_zero() -> None:
+    """The other side of it: no reported score means no entry, never a fabricated 0."""
+    without_score = {key: value for key, value in WEB_RESULT.items() if key != "score"}
+    adapter, _ = _scripted(TransportScript(body=body((without_score,))))
+    candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
+
+    assert "engine-fusion-weight" not in {score.name for score in candidate.scores}
 
 
 async def test_an_image_result_carries_the_media_facets() -> None:

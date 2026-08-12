@@ -36,6 +36,7 @@ from threetears.search.adapters.searxng import SEARXNG_PROVIDER, SearxngAdapter
 from threetears.search.adapters.tavily import TavilyAdapter
 from threetears.search.bind import bind_search
 from threetears.search.contracts import (
+    SCALE_UNIT_INTERVAL,
     SEARCH_RESULTS_METADATA_KEY,
     Criterion,
     SearchRequest,
@@ -54,6 +55,18 @@ LIVE_BASE_URL_VAR = "SEARXNG_BASE_URL"
 #: set to ``1`` when the live instance is on the host's own network, which a
 #: self-hosted SearXNG usually is (D21 makes that deployment config).
 LIVE_ALLOW_PRIVATE_VAR = "SEARXNG_ALLOW_PRIVATE"
+
+#: set to ``1`` to require the live instance to actually return candidates.
+#:
+#: Zero results is a legitimate success (SR-J2), so this test tolerates it --
+#: but the tolerance means every per-candidate assertion below sits inside a
+#: loop that runs zero times, and the test passes having checked nothing about
+#: a score. That is how it passed on 2026-08-12 against a real instance whose
+#: four general engines had all been CAPTCHA'd: the run was green and settled
+#: nothing. Set this where the instance is known healthy -- which is what
+#: discharging Gate B's SR-A4 line requires -- and the empty run becomes a
+#: failure instead of a silent pass.
+LIVE_REQUIRE_RESULTS_VAR = "SEARXNG_REQUIRE_RESULTS"
 
 
 def test_a_whole_search_runs_from_one_shot_asyncio_run() -> None:
@@ -126,18 +139,28 @@ def test_a_live_searxng_instance_returns_typed_candidates() -> None:
     answers = {disposition.criterion_key: disposition.disposition for disposition in projection.dispositions}
     assert answers["max-results"] == "local"
 
+    if os.environ.get(LIVE_REQUIRE_RESULTS_VAR, "") == "1":
+        assert projection.candidates, (
+            "the instance answered zero results, so every score assertion below was skipped; "
+            f"unset {LIVE_REQUIRE_RESULTS_VAR} to tolerate that, or check the instance's engines"
+        )
+
     for candidate in projection.candidates:
         assert candidate.identity.startswith("http")
         assert candidate.locators
         assert candidate.provenance.provider_instance == f"live:{base_url}"
         assert candidate.provenance.retrieved_at.tzinfo is not None
         for score in candidate.scores:
-            # SR-A4's open assumption is about what these values MEAN, and a
-            # live run is where that gets settled. What is pinned here is that
-            # whatever they mean, they arrive named, scaled and marked
-            # non-comparable rather than as a bare number.
+            # SR-A4 is settled (2026-08-12): the engine-fusion weight is
+            # ``sum(weight/position)`` with ``weight`` scaled by the number of
+            # agreeing engines, so it is unbounded above and deployment-
+            # dependent -- see SearxngAdapter._scores. What a live run can
+            # still catch is the shape: named, scaled, and never comparable.
             assert score.name and score.scale
             assert score.comparable is False
+            # unbounded means unbounded; a real instance handing back a value
+            # past 1.0 is the whole reason this is not a unit-interval score.
+            assert score.scale != SCALE_UNIT_INTERVAL
     assert prose
 
 
