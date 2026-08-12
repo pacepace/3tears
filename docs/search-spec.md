@@ -931,6 +931,27 @@ Two adjacent corrections, both the same defect class one layer over:
   Now `None` means defaults and empty means empty, which also makes
   "structure only" expressible.
 
+Review corrected three things, one of which falsified a claim made for this
+node:
+
+- **The dedup fingerprint never deduped.** `save_tool_result` derives the row
+  key as `tool_name:sha256(fingerprint)`, and the node passed
+  `tool_name=f"{name}:{tool_call_id}"` -- so the per-call id was baked into the
+  key and two identical queries could never collide. The node was duplicating
+  uniqueness logic the store already provides; it now passes the bare bound
+  name and lets the store key it. The original test asserted only that the
+  kwarg was *passed*, which is precisely why it passed; the replacement drives
+  the real key derivation and asserts two identical queries land on one key.
+- **Structure-first retention had no off switch**, and `web_fetch` projects
+  under the same metadata key as `web_search` -- so it also captured fetched
+  page text, which SR-K4/D12 make the deployment's own agreement with a site.
+  "Stop using the node" is not a lever. `save_structured` is, and it defaults
+  to the C8 posture.
+- **`short_desc` could exceed its documented 200 characters**, and degraded a
+  fetched page's summary from a content preview to `1 result(s) for
+  'https://...'`. The structured summary is now bounded, and reserved for a
+  genuine result *set* rather than the single candidate `web_fetch` projects.
+
 **Conditional requests: nothing today, and the question it raised is now ruled.**
 No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape, or
 core's traced client. For `_verify_candidate_page` specifically that is correct

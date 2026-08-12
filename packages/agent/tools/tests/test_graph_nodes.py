@@ -535,7 +535,157 @@ class TestTheSeamThatCouldNotSeeTheDefect:
         mock_cm.save_tool_result.assert_awaited_once()
         kwargs = _saved_kwargs(mock_cm)
         # the adapter's own name, not one this test chose
-        assert kwargs["tool_name"].startswith("threetears.web_search:")
+        assert kwargs["tool_name"] == "threetears.web_search"
         record = kwargs["metadata"]["search_results"]
         assert record["query"] == "ohio warn notices"
         assert record["candidates"][0]["identity"] == "https://example.gov/warn"
+
+
+class TestTheDedupKeyActuallyDedups:
+    """The fingerprint is only worth passing if the key it lands in can collide.
+
+    The node used to pass ``tool_name=f"{tool_name}:{msg.tool_call_id}"``, and
+    ``save_tool_result`` derives ``tool_name:sha256(fingerprint)`` from that --
+    so the per-call tool_call_id was baked into the dedup key and two identical
+    queries could never collide. The original test asserted only that the kwarg
+    was passed, which is exactly why it passed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_tool_name_carries_no_per_call_id(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-a")
+
+        node = create_context_save_node(context_manager=mock_cm)
+        await node({"messages": [_structured_message(_candidate("https://example.gov/warn"))]})
+
+        assert _saved_kwargs(mock_cm)["tool_name"] == "threetears.web_search"
+
+    @pytest.mark.asyncio
+    async def test_two_identical_queries_derive_the_same_row_key(self) -> None:
+        # The property that matters, asserted through the real key derivation
+        # rather than through the kwarg.
+        from threetears.agent.tools.context import make_tool_result_dedup_key
+
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-b")
+        node = create_context_save_node(context_manager=mock_cm)
+
+        keys = []
+        for call_id in ("tc-first", "tc-second"):
+            msg = _structured_message(_candidate("https://example.gov/warn"))
+            msg.tool_call_id = call_id
+            await node({"messages": [msg]})
+            kwargs = _saved_kwargs(mock_cm)
+            keys.append(make_tool_result_dedup_key(kwargs["tool_name"], kwargs["input_fingerprint"]))
+
+        assert keys[0] == keys[1]
+
+    @pytest.mark.asyncio
+    async def test_two_different_queries_derive_different_row_keys(self) -> None:
+        from threetears.agent.tools.context import make_tool_result_dedup_key
+
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-c")
+        node = create_context_save_node(context_manager=mock_cm)
+
+        keys = []
+        for query in ("ohio warn notices", "texas warn notices"):
+            await node({"messages": [_structured_message(_candidate("https://example.gov/a"), query=query)]})
+            kwargs = _saved_kwargs(mock_cm)
+            keys.append(make_tool_result_dedup_key(kwargs["tool_name"], kwargs["input_fingerprint"]))
+
+        assert keys[0] != keys[1]
+
+
+class TestSaveStructuredIsALever:
+    @pytest.mark.asyncio
+    async def test_disabling_it_returns_the_node_to_name_only_matching(self) -> None:
+        # SR-K4: fetched page text is third-party content whose retention the
+        # deployment's agreement with the site governs. "Stop using the node" is
+        # not a lever; this is.
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock()
+
+        node = create_context_save_node(
+            context_manager=mock_cm, saveable_tools=frozenset({"my_tool"}), save_structured=False
+        )
+        await node({"messages": [_structured_message(_candidate("https://example.gov/warn"), name="web.search.v2")]})
+
+        mock_cm.save_tool_result.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disabling_it_does_not_disable_saving_by_name(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-d")
+
+        node = create_context_save_node(context_manager=mock_cm, save_structured=False)
+        await node({"messages": [_structured_message(_candidate("https://example.gov/warn"))]})
+
+        # matched by name, so still saved -- but with no structure recorded
+        mock_cm.save_tool_result.assert_awaited_once()
+        assert _saved_kwargs(mock_cm)["metadata"] is None
+
+    @pytest.mark.asyncio
+    async def test_it_defaults_to_the_c8_posture(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-e")
+
+        node = create_context_save_node(context_manager=mock_cm, saveable_tools=frozenset({"my_tool"}))
+        await node({"messages": [_structured_message(_candidate("https://example.gov/warn"), name="web.search.v2")]})
+
+        mock_cm.save_tool_result.assert_awaited_once()
+
+
+class TestShortDescStaysWithinItsDocumentedBound:
+    @pytest.mark.asyncio
+    async def test_a_single_candidate_keeps_its_prose_preview(self) -> None:
+        # web_fetch projects one candidate whose query is the URL, so the
+        # structured summary would read "1 result(s) for 'https://...'" -- worse
+        # than the page's own opening text.
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-f")
+
+        node = create_context_save_node(context_manager=mock_cm)
+        await node(
+            {
+                "messages": [
+                    _structured_message(
+                        _candidate("https://example.gov/warn"),
+                        name="threetears.web_fetch",
+                        query="https://example.gov/warn",
+                        content="The Ohio WARN notice list for 2026 begins here.",
+                    )
+                ]
+            }
+        )
+
+        assert _saved_kwargs(mock_cm)["short_desc"] == "The Ohio WARN notice list for 2026 begins here."
+
+    @pytest.mark.asyncio
+    async def test_a_long_query_cannot_write_past_the_200_char_bound(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-g")
+
+        node = create_context_save_node(context_manager=mock_cm)
+        await node(
+            {
+                "messages": [
+                    _structured_message(
+                        _candidate("https://a.gov"), _candidate("https://b.gov"), query="warn notices " * 40
+                    )
+                ]
+            }
+        )
+
+        assert len(_saved_kwargs(mock_cm)["short_desc"]) <= 200
+
+    @pytest.mark.asyncio
+    async def test_a_real_result_set_still_gets_the_structured_summary(self) -> None:
+        mock_cm = AsyncMock()
+        mock_cm.save_tool_result = AsyncMock(return_value="ctx-h")
+
+        node = create_context_save_node(context_manager=mock_cm)
+        await node({"messages": [_structured_message(_candidate("https://a.gov"), _candidate("https://b.gov"))]})
+
+        assert _saved_kwargs(mock_cm)["short_desc"] == "2 result(s) for 'ohio warn notices'"

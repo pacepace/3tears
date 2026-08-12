@@ -50,6 +50,14 @@ The rules that govern it, none of which this module decides:
 before it binds on what the tool is *called*, precisely so that renaming or
 splitting a tool cannot silently change what gets remembered. It already fired
 once in the silent-off direction -- see :data:`_DEFAULT_SAVEABLE_TOOLS`.
+
+**The levers, and what each one reaches.** ``saveable_tools`` governs retention
+by *name*; ``save_structured`` governs the structure-first path, which is the
+one that also captures fetched page text, because ``web_fetch`` projects under
+the same metadata key as ``web_search``. A deployment bound by an agreement with
+a particular site needs a way to say "not this" that is not "stop using the
+node", so structure-first is a default rather than an invariant. Neither lever
+is a redaction policy: this module holds none, by P1.
 """
 
 from __future__ import annotations
@@ -258,6 +266,7 @@ def create_context_save_node(
     saveable_tools: frozenset[str] | None = None,
     saveable_suffixes: tuple[str, ...] = (),
     max_content: int = _MAX_SAVE_CONTENT,
+    save_structured: bool = True,
 ) -> Any:
     """Create a post-response context save node.
 
@@ -281,6 +290,17 @@ def create_context_save_node(
     :ptype saveable_suffixes: tuple[str, ...]
     :param max_content: maximum content length before truncation
     :ptype max_content: int
+    :param save_structured: whether a result carrying typed search structure is
+        saved regardless of its tool name. ``True`` is the C8 posture -- bind on
+        what a result *is*, so a rename cannot silently change what is retained.
+        It is a parameter rather than an invariant because ``web_fetch`` projects
+        under the same key as ``web_search``, so structure-first retention also
+        captures **fetched page text** -- third-party content whose retention the
+        deployment's own agreement with a site governs (SR-K4/D12). A deployment
+        that must not keep a given site's text needs a lever that is not "stop
+        using the node", and this is it. Setting it ``False`` returns the node to
+        name-only matching; it does not disable saving
+    :ptype save_structured: bool
     :return: async node function for LangGraph
     :rtype: Any
     """
@@ -320,7 +340,7 @@ def create_context_save_node(
             # provenance is worth keeping whatever the tool ended up being
             # called, which is what stops a rename from being a silent
             # retention change in either direction (C8).
-            structure = _search_structure_of(msg)
+            structure = _search_structure_of(msg) if save_structured else None
             if structure is None and not _is_saveable(tool_name):
                 continue
             if tool_name is None:
@@ -333,7 +353,6 @@ def create_context_save_node(
 
             short_desc = content[:200]
             long_desc = content[:1000]
-            key = f"{tool_name}:{msg.tool_call_id}"
 
             metadata: dict[str, Any] | None = None
             fingerprint: str | None = None
@@ -347,12 +366,24 @@ def create_context_save_node(
                 # the same thing twice in one conversation refreshes the row
                 # rather than stacking a second copy of the same page.
                 fingerprint = structure.query or None
-                if structure.candidates:
-                    short_desc = f"{len(structure.candidates)} result(s) for {structure.query!r}"
+                if len(structure.candidates) > 1:
+                    # Only for a genuine result *set*. web_fetch projects a single
+                    # candidate whose query is the URL, and "1 result(s) for
+                    # 'https://...'" is a worse prompt-side summary than the page's
+                    # own opening text. Bounded because save_tool_result documents
+                    # short_desc as <=200 chars, and a long query or long URL would
+                    # otherwise write straight past that into the prompt.
+                    short_desc = f"{len(structure.candidates)} result(s) for {structure.query!r}"[:200]
 
             try:
+                # The bare bound name, never a composite. save_tool_result derives
+                # the row key itself: ``tool_name:sha256(fingerprint)`` when a
+                # fingerprint is given, ``tool_name:context_id`` when not. Passing
+                # a key with the per-call ``tool_call_id`` already baked in made
+                # the dedup key unique per call, so the fingerprint could never
+                # collide and the dedup it exists for never happened.
                 ctx_id = await context_manager.save_tool_result(
-                    tool_name=key,
+                    tool_name=tool_name,
                     result=content,
                     short_desc=short_desc,
                     long_desc=long_desc,
