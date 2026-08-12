@@ -766,15 +766,32 @@ recorded here per the Gate A precedent:
 
 ### Phase 2 -- in-family consumers (branches stacked on Phase 1)
 
-*Landed toward this phase:*
+*Status 2026-08-11 -- most of this phase has landed.* The ground first:
 [#307](https://github.com/pacepace/3tears/pull/307) implemented
-`FetchTransport` on `StandaloneTransport` (byte cap, content-type gate,
-shared retry loop and SSRF guard) and settled §3.8's per-request-client
-condition with an opt-in `connection_scope()` that Extract's many-fetch path
-needs and does not itself open, and
-[#310](https://github.com/pacepace/3tears/pull/310) (open) records §3.5's
-five Extract rulings before the build. Item 4 itself is unstarted; items 5-7
-are untouched.
+`FetchTransport` on `StandaloneTransport` and settled §3.8's
+per-request-client condition with an opt-in `connection_scope()`;
+[#310](https://github.com/pacepace/3tears/pull/310) recorded §3.5's five
+Extract rulings before the build; and
+[#315](https://github.com/pacepace/3tears/pull/315) landed the
+`extraction_status` constants Extract records into, ruled off the shipped
+DDL rather than proposed.
+
+Then the phase itself:
+
+| Item | State |
+|---|---|
+| 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
+| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Not started** -- the phase's remaining work |
+| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
+| 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
+| §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
+| §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
+
+What remains before Gate B is item 5, the rest of item 6, and Phase 3's
+`aggregate`/`select`. Item 5 is the one with user-visible consequence:
+gutting `WebFetchTool` onto Extract makes robots binding for callers it was
+never binding for, so its PR owes that a stated rollout, the way item 7
+owed one.
 
 4. Extract's web path (streamed, capped, robots stance, no-op on
    provider-supplied content). **Done 2026-08-11** -- `extract.py` plus the
