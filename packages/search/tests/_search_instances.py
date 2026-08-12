@@ -20,10 +20,13 @@ from threetears.search.contracts import (
     FACET_WIDTH,
     PRICING_FREE_SELF_HOSTED,
     PRODUCER_API_PROVIDER,
+    SCALE_RANK,
     SCALE_UNIT_INTERVAL,
     Candidate,
     CandidateSet,
     ContentSlot,
+    Corpus,
+    CorpusEntry,
     Criterion,
     CriterionDisposition,
     FailureRecord,
@@ -112,6 +115,27 @@ CANDIDATE_SET = CandidateSet(
     notices=("searxng engines did not answer, so this result set is narrower than the query: brave",),
 )
 
+CORPUS_ENTRY = CorpusEntry(
+    identity=CANDIDATE.identity,
+    contributions=(CANDIDATE,),
+    derived_scores=(
+        ScoreEntry(
+            name="reciprocal-rank-fusion",
+            value=0.0327868852459016,
+            scale=SCALE_RANK,
+            source="aggregate.reciprocal-rank-fusion",
+            comparable=True,
+        ),
+    ),
+)
+
+CORPUS = Corpus(
+    entries=(CORPUS_ENTRY,),
+    dispositions=(DISPOSITION,),
+    spend=SPEND,
+    notices=("call failed (rate-limited): provider returned 429",),
+)
+
 CAPABILITIES = ProviderCapabilities(
     provider="searxng",
     pushdown_criteria=("language", "carrier"),
@@ -167,6 +191,8 @@ ALL_INSTANCES = [
     CONTENT,
     CANDIDATE,
     CANDIDATE_SET,
+    CORPUS_ENTRY,
+    CORPUS,
     REQUEST,
     FAILURE_RECORD,
     METADATA,

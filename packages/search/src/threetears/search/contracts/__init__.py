@@ -36,6 +36,7 @@ from threetears.search.contracts.candidate import (
     ContentSlot,
     Locator,
 )
+from threetears.search.contracts.corpus import Corpus, CorpusEntry
 from threetears.search.contracts.criteria import (
     CRITERION_CARRIER,
     CRITERION_DOMAINS_EXCLUDE,
@@ -138,6 +139,8 @@ __all__ = [
     "Candidate",
     "CandidateSet",
     "ContentSlot",
+    "Corpus",
+    "CorpusEntry",
     "Criterion",
     "CriterionDisposition",
     "Disposition",
