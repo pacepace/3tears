@@ -1341,6 +1341,45 @@ class SearxngAdapter:
         the contributing engines gave, which is a second, differently-scaled
         judgment rather than a restatement of the first.
 
+        **SR-A4, settled 2026-08-12** against a live instance plus its own
+        ``searx/results.py:calculate_score``, which computes::
+
+            W      = product of each contributing engine's configured weight
+            weight = W * len(positions)
+            score  = sum over positions of (weight / position)
+
+        with two special cases: a ``priority == 'high'`` engine contributes
+        ``weight`` per position instead of ``weight / position``, and
+        ``priority == 'low'`` contributes nothing at all. Four consequences,
+        each of which a consumer gets wrong by guessing:
+
+        - **It is not in [0, 1] and has no upper bound.** A single engine at
+          rank 1 scores exactly 1.0, so single-engine data *looks* like a
+          unit interval; two engines agreeing on rank 1 score 4.0 and three
+          score 9.0, because ``len(positions)`` multiplies the weight that is
+          then summed per position. Tavily's ``relevance`` genuinely is
+          ``[0, 1]``, so treating both as one comparable ``score`` -- the
+          thing D1 forbids -- would silently corrupt any ranking over a mixed
+          corpus.
+        - **Zero does not mean irrelevant.** A ``priority: low`` engine's
+          results score 0 whatever their rank, so a cull written as
+          ``score > 0`` drops results the deployment deliberately included.
+          The zero is published as a score entry rather than dropped as an
+          absence, because "the instance scored this 0" and "the instance
+          reported no score" are different facts.
+        - **It is deployment-dependent.** Engine weights are ``settings.yml``
+          config, so the same query against two instances yields different
+          numbers for the same page. This is why the entry is scoped to
+          ``provider_instance`` and never marked comparable.
+        - **Rank and engine-agreement are fused and unrecoverable from it.**
+          0.5 could be one engine at rank 2, or a weighted combination; the
+          number cannot say which. So ``best-engine-position`` below is
+          genuinely orthogonal information rather than a restatement, which
+          is the evidence for publishing both.
+
+        A live instance also reported ``number_of_results: 0`` while
+        returning seven results, which is why nothing here reads that field.
+
         :param raw: one provider result object
         :ptype raw: Mapping[str, object]
         :return: the score entries, empty when the provider reported none

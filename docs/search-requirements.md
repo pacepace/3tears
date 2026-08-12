@@ -769,11 +769,61 @@ provider's own identifiers, retrieval time. C2's grounding gate answers a
 per-result question — "does this claim appear on the page it was cited from"
 (`research/web_search.py:105-110`) — that no aggregate can answer.
 
-**SR-A4 (DECISION, P7 — G2).** How many score dimensions, and whose?
+**SR-A4 (DECISION, P7 — G2 — RULED 2026-08-12).** How many score dimensions, and whose?
 Tavily returns relevance ∈ [0,1] and C2's cull ranks on it
 (`research/web_search.py:27-44`). SearXNG returns an engine-fusion weight on a
-different scale — *unverified; confirm against a live instance before ruling*.
-C6 needs three orthogonal judgments.
+different scale. C6 needs three orthogonal judgments.
+
+**Confirmed against a live instance**, closing the "unverified" rider this
+requirement carried since 2026-08-02. From SearXNG's own
+`searx/results.py:calculate_score`, corroborated by a live capture:
+
+```
+W      = product of each contributing engine's configured weight
+weight = W * len(positions)
+score  = sum over positions of (weight / position)
+```
+
+`priority: high` contributes `weight` per position instead of `weight /
+position`; `priority: low` contributes nothing. Observed live: a single
+engine at ranks 1–7 produced exactly `1/rank`.
+
+The ruling stands and is now evidence-backed rather than precautionary:
+
+- **The scales are not merely different, they are differently *shaped*.**
+  SearXNG's is unbounded above — one engine at rank 1 scores 1.0, two agreeing
+  engines score 4.0, three score 9.0, because `len(positions)` multiplies a
+  weight that is then summed per position. Single-engine data looks like a
+  unit interval and is not one. A single comparable `score` field carrying
+  both this and Tavily's `[0,1]` relevance would corrupt ranking over a mixed
+  corpus silently, which is what D1 exists to prevent.
+- **Score 0 does not mean irrelevant** — a `priority: low` engine scores every
+  result 0 regardless of rank, so a cull written `score > 0` drops results the
+  deployment deliberately included. Recorded here because it binds Select's
+  cull (§6) before that code is written.
+- **The value is deployment-dependent**: engine weights are `settings.yml`
+  config, so two instances answer the same query with different numbers.
+  Hence `provider_instance` scoping and `comparable = False`.
+- **Rank and engine-agreement are fused and unrecoverable from the score
+  alone**, which is the evidence that `best-engine-position` (from
+  `min(positions)`) is a second orthogonal judgment rather than a restatement
+  of the first.
+
+Two incidental findings worth keeping: a live instance reported
+`number_of_results: 0` while returning seven results, so that field is not
+readable (the adapter never read it); and the SearXNG JSON API answers 403
+until `json` is added to `search.formats`, which the adapter's own refusal
+message already names.
+
+*What is still owed:* multi-engine fusion was not observed live — only one
+engine responded before the instance's engines were rate-limited — so the
+`> 1.0` claim rests on the formula rather than on a capture. The formula's
+arithmetic is pinned offline (`test_the_fixture_formula_is_searxngs_formula`);
+what is missing is a live instance producing one of those numbers. Gate B's
+SR-A4 line should be discharged against an instance with healthy engines, with
+`SEARXNG_REQUIRE_RESULTS=1` set so an empty run fails instead of passing
+silently; the live test emits every weight it saw as a warning, so the run
+itself is the capture.
 *Recommendation:* a set of named, provenanced scores. Provider scores marked
 non-comparable across providers; a comparable relevance exists only if Select
 produced one.
@@ -1767,8 +1817,12 @@ plus a transport seam the sketch does not have.
 
 ## 12. Open assumptions
 
-- **SR-A4** — SearXNG's score semantics are stated from general knowledge, not
-  measured. Confirm against a live instance before ruling.
+- ~~**SR-A4** — SearXNG's score semantics are stated from general knowledge,
+  not measured.~~ **Closed 2026-08-12**: measured against a live instance and
+  read off `searx/results.py:calculate_score`; the ruling and its four
+  consequences are recorded at SR-A4 in §9. One residue, not an assumption:
+  multi-engine fusion was not *observed* (the instance's engines were
+  rate-limited), so the unbounded claim rests on the formula.
 - The layer cut in §6 is proposed here, not derived from any owner's recorded
   position. Every requirement is attributed to it, so re-cutting it ripples.
   *This is also the document's one violation of convergence principle 2*
@@ -1816,7 +1870,7 @@ table remains the evidence record; a veto lands there and propagates here.
 
 | ID | Decision | Recommendation |
 |----|----------|----------------|
-| SR-A4 | How many score dimensions, whose | Named provenanced scores; never one `score` |
+| SR-A4 | How many score dimensions, whose | **RULED 2026-08-12** — named provenanced scores; never one `score`. Confirmed against a live instance and SearXNG's own `calculate_score`: the weight is unbounded above, deployment-dependent, and `0` means "a low-priority engine scored it", not "irrelevant" |
 | SR-A5 | Candidate set vs corpus | Call returns a set; corpus is Aggregate's named type |
 | SR-B5 | Model-mediated search in or out (OQ21) | Out of Adapter/Call; in at Aggregate |
 | SR-D4 | Does a failed search consume budget | Follow the bill; move the retry bound in the same change |

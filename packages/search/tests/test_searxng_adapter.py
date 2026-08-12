@@ -55,7 +55,15 @@ from threetears.search.contracts import (
     TransportFailed,
 )
 from threetears.search.testing import ScriptedTransport, TransportScript
-from _searxng_payloads import IMAGE_RESULT, MALFORMED_BODY, TWO_RESULTS_BODY, WEB_RESULT, ZERO_RESULTS_BODY, body
+from _searxng_payloads import (
+    IMAGE_RESULT,
+    MALFORMED_BODY,
+    TWO_RESULTS_BODY,
+    WEB_RESULT,
+    ZERO_RESULTS_BODY,
+    body,
+    searx_score,
+)
 
 BASE_URL = "https://searx.example.org"
 
@@ -197,12 +205,63 @@ async def test_scores_are_named_scaled_and_non_comparable() -> None:
     candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
 
     by_name = {score.name: score for score in candidate.scores}
-    assert by_name["engine-fusion-weight"].value == 2.5
+    # derived from the fixture's own ``positions`` via SearXNG's formula, not
+    # restated as a literal and not read back as ``WEB_RESULT["score"]``. A
+    # literal is a second place for the value to drift (it held 2.5 against
+    # positions [1, 3], which the formula puts at 2.667); reading the fixture
+    # field back asserts only that the adapter echoes the fixture, which is
+    # true of a wrong fixture too.
+    assert by_name["engine-fusion-weight"].value == pytest.approx(searx_score(WEB_RESULT["positions"]))
     assert by_name["engine-fusion-weight"].scale == SCALE_UNBOUNDED
-    assert by_name["best-engine-position"].value == 1.0
+    assert by_name["best-engine-position"].value == min(WEB_RESULT["positions"])
     assert by_name["best-engine-position"].scale == SCALE_RANK
     assert all(score.comparable is False for score in candidate.scores)
     assert all(score.source == "searx.example.org" for score in candidate.scores)
+
+
+def test_the_fixture_formula_is_searxngs_formula() -> None:
+    """SR-A4: the arithmetic the fixtures and the docs both rest on.
+
+    ``searx_score`` is now the single source of every fixture score, so
+    nothing else can catch it being wrong -- and the "unbounded above" claim
+    that D1 turns on lives in prose everywhere else. These are the numbers
+    that claim is made of: one engine at rank 1 scores exactly 1.0, so
+    single-engine data *looks* like a unit interval and is not one, while two
+    agreeing engines score 4.0 and three score 9.0 because ``len(positions)``
+    multiplies a weight that is then summed per position.
+    """
+    assert searx_score([1]) == pytest.approx(1.0)
+    assert searx_score([1, 1]) == pytest.approx(4.0)
+    assert searx_score([1, 1, 1]) == pytest.approx(9.0)
+    assert searx_score([1, 3]) == pytest.approx(2.0 / 1 + 2.0 / 3)
+    assert searx_score([2]) == pytest.approx(0.5)
+    # engine weights are settings.yml config, which is why the value is
+    # deployment-dependent and the entry is never marked comparable.
+    assert searx_score([1, 1], engine_weights=[2.0, 1.0]) == pytest.approx(8.0)
+
+
+async def test_a_zero_score_is_reported_rather_than_dropped() -> None:
+    """SR-A4: 0 is a judgment, not an absence -- a ``priority: low`` engine scores every result 0.
+
+    So a consumer culling on ``score > 0`` would drop results the deployment
+    deliberately included, and it can only know that if the zero survives to
+    the border. Pinned because the natural truthiness check here would eat it.
+    """
+    adapter, _ = _scripted(TransportScript(body=body(({**WEB_RESULT, "score": 0.0},))))
+    candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
+
+    by_name = {score.name: score for score in candidate.scores}
+    assert "engine-fusion-weight" in by_name
+    assert by_name["engine-fusion-weight"].value == 0.0
+
+
+async def test_a_missing_score_is_an_absence_not_a_zero() -> None:
+    """The other side of it: no reported score means no entry, never a fabricated 0."""
+    without_score = {key: value for key, value in WEB_RESULT.items() if key != "score"}
+    adapter, _ = _scripted(TransportScript(body=body((without_score,))))
+    candidate = (await adapter.search(SearchRequest(query="capybara"))).candidates[0]
+
+    assert "engine-fusion-weight" not in {score.name for score in candidate.scores}
 
 
 async def test_an_image_result_carries_the_media_facets() -> None:
