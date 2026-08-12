@@ -9,7 +9,8 @@ takes) runs the standard ``save_entity`` → evict → ``get`` (pull-through fro
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from unittest.mock import AsyncMock
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.durable_store import DurableStoreCollection
+from threetears.core.collections.flush import WriteBuffer, flush_pending
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -51,7 +53,7 @@ class _InMemoryDurableStore:
     def _key(pk: Mapping[str, Any]) -> tuple[Any, ...]:
         return tuple(pk[k] for k in sorted(pk))
 
-    async def fetch_one(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
         row = self.tables.get(table, {}).get(self._key(pk))
         return dict(row) if row is not None else None
 
@@ -63,6 +65,7 @@ class _InMemoryDurableStore:
         pk: Sequence[str],
         on_conflict: str = "update",
         cas: datetime | None = None,
+        conn: Any = None,
     ) -> int:
         t = self.tables.setdefault(table, {})
         key = tuple(row[c] for c in sorted(pk))
@@ -71,7 +74,7 @@ class _InMemoryDurableStore:
         t[key] = dict(row)
         return 1
 
-    async def delete(self, table: str, pk: Mapping[str, Any]) -> None:
+    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
         self.tables.get(table, {}).pop(self._key(pk), None)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -176,3 +179,90 @@ async def test_l2_resolves_from_registry_when_nats_client_not_passed(l1_backend:
 
     await coll.save_entity(_SceneEntity({"id": "scn-2", "text": "beta"}, is_new=True))
     assert "scenes.scn-2" in nats.store  # L2 written ⇒ cross-pod path is live, not disabled
+
+
+class _TransactionalDurableStore(_InMemoryDurableStore):
+    """A DurableStore whose ``transaction()`` batches writes, like a BigQuery backend.
+
+    ``_InMemoryDurableStore`` writes through on every call, so it cannot tell whether the
+    collection honoured a transaction handle. This one only commits what it was handed
+    inside the ``async with``, which makes a dropped handle observable: the batch stays
+    empty and the rows land individually instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[tuple[str, dict[str, Any]]]] = []
+        self.direct_writes: list[tuple[str, dict[str, Any]]] = []
+
+    async def upsert(  # type: ignore[override]
+        self,
+        table: str,
+        row: Mapping[str, Any],
+        *,
+        pk: Sequence[str],
+        on_conflict: str = "update",
+        cas: datetime | None = None,
+        conn: Any = None,
+    ) -> int:
+        if conn is not None:
+            conn.append((table, dict(row)))
+            return 1
+        self.direct_writes.append((table, dict(row)))
+        return await super().upsert(table, row, pk=pk, on_conflict=on_conflict, cas=cas)
+
+    @asynccontextmanager
+    async def transaction(self, namespace: str | None = None) -> AsyncIterator[list[tuple[str, dict[str, Any]]]]:
+        """Collect writes bound to the yielded handle and commit them together on exit."""
+        batch: list[tuple[str, dict[str, Any]]] = []
+        yield batch
+        for table, row in batch:
+            t = self.tables.setdefault(table, {})
+            t[(row["id"],)] = dict(row)
+        self.batches.append(batch)
+
+
+@pytest.mark.asyncio
+async def test_save_to_store_forwards_the_transaction_handle(registry: CollectionRegistry) -> None:
+    """``save_to_store`` must pass ``conn`` through to ``DurableStore.upsert``.
+
+    ``flush_pending``'s atomic-batch path opens ``backend.transaction()`` and threads the
+    handle down through ``persist_to_store``. Dropping it here means each write executes
+    on its own, so a backend implementing ``transaction()`` as a batch never batches.
+    """
+    store = _TransactionalDurableStore()
+    coll = _SceneCollection(registry, DefaultCoreConfig(), store, nats_client=None)
+
+    async with store.transaction() as conn:
+        await coll.save_to_store({"id": "scn-tx", "text": "gamma"}, conn=conn)
+        assert not store.direct_writes, "the write bypassed the transaction handle"
+
+    assert store.tables["scenes"][("scn-tx",)]["text"] == "gamma"
+
+
+@pytest.mark.asyncio
+async def test_flush_batches_through_a_transactional_durable_store(l1_backend: SQLiteBackend) -> None:
+    """A buffered flush over a transaction-capable ``DurableStore`` commits as ONE batch.
+
+    The regression this guards is silent: ``flush_pending`` degrades to the per-entity loop
+    by design, so a batch that never batches looks exactly like a batch that worked. Only
+    the write-grouping distinguishes them.
+    """
+    store = _TransactionalDurableStore()
+    reg = CollectionRegistry()
+    reg.configure(l1_backend=l1_backend, l3_pool=store)
+    coll = _SceneCollection(reg, DefaultCoreConfig(), store, nats_client=None)
+
+    buffer = WriteBuffer()
+    for index in range(4):
+        await buffer.add(coll.table_name, f"scn-{index}", {"id": f"scn-{index}", "text": f"v{index}"})
+
+    flushed = await flush_pending(buffer, reg)
+
+    assert flushed == 4
+    assert not store.direct_writes, (
+        f"{len(store.direct_writes)} write(s) bypassed the batch; the transaction handle "
+        f"was dropped and the flush degraded to one durable write per entity"
+    )
+    assert len(store.batches) == 1
+    assert len(store.batches[0]) == 4

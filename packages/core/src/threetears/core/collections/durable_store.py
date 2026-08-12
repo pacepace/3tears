@@ -66,16 +66,29 @@ class DurableStoreCollection(BaseCollection[EntityT], Generic[EntityT]):
     async def save_to_store(
         self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
     ) -> int:
-        """Persist the entity to L3 via the structured ``DurableStore.upsert`` (CAS rides ``original_timestamp``)."""
-        # `conn` is the raw-SQL transactional handle — not meaningful for a structured
-        # DurableStore (a git backend has no asyncpg connection); the structured `upsert`
-        # owns its own atomicity. The optimistic-lock fence rides `cas`.
+        """Persist the entity to L3 via the structured ``DurableStore.upsert`` (CAS rides ``original_timestamp``).
+
+        ``conn`` is forwarded rather than dropped. ``flush_pending``'s atomic-batch path opens
+        ``async with backend.transaction() as conn`` and threads that handle down through
+        ``persist_to_store`` so a whole toposorted batch commits together; a store that
+        implements ``transaction()`` needs the handle to know which batch a write belongs to.
+
+        This used to be discarded on the reasoning that a structured ``DurableStore`` owns its
+        own atomicity and a git backend has no connection to bind to. That holds for git, which
+        does not implement ``transaction()`` and is served by the per-entity degrade. It does
+        not hold for a backend whose ``transaction()`` is a batch accumulator — dropping the
+        handle left the accumulator empty, every write executed on its own, and the batch path
+        silently produced per-entity durable writes. ``DurableStore.upsert`` declares ``conn``
+        precisely so the structured layer can participate; a backend that has no use for it
+        ignores it, which is what the protocol already asks of a non-transactional store.
+        """
         return await self._durable_store.upsert(
             self.table_name,
             data,
             pk=self.primary_key_columns,
             on_conflict=self.on_conflict,
             cas=original_timestamp,
+            conn=conn,
         )
 
     async def delete_from_store(self, entity_id: Any) -> None:
