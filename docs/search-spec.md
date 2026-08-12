@@ -789,7 +789,7 @@ Then the phase itself:
 | Item | State |
 |---|---|
 | 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
-| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below |
+| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below, plus a correction pass ([#321](https://github.com/pacepace/3tears/pull/321)) that fixed seven review findings and the seam gap that hid them |
 | 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
 | 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
 | §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
@@ -865,7 +865,52 @@ Rulings taken during the build, recorded here per the Gate A precedent:
   refuses every call. `serve.py` therefore probes for the extractor and skips
   with a reason naming `3tears-agent-tools[fetch]`, because a pod that
   registers a tool it cannot serve is the exact failure the pattern exists to
-  prevent.
+  prevent. *Corrected below: the probe went into `serve.py` only, and
+  `register_builtins` needed the same one.*
+- **The two transports want opposite redirect defaults, and the split is the
+  reason why** (added in the correction pass). `build_fetch_transport` took
+  the leaf's `DEFAULT_MAX_REDIRECTS` of 0, which is right for the half it was
+  named after and wrong for the half it serves. A search upstream is a
+  deployment-configured host answering its own API: a healthy one does not
+  redirect, so refusing to follow is a signal. A fetch is a candidate-derived
+  URL, where http->https, `www` and trailing-slash canonicalisation are how a
+  large share of the real web answers -- so refusing turned ordinary pages
+  into `extraction_status: failed`, and, because robots is read through the
+  same transport, a `robots.txt` that had merely moved refused its page
+  outright. `DEFAULT_FETCH_MAX_REDIRECTS` names the fetch stance at 5, which
+  is what the hand-rolled body this replaced allowed; every hop stays
+  re-guarded. This is the *second* time Gate A's one-adapter expectation cost
+  something: the first was the transport split itself, and this is the same
+  assumption surviving in a default.
+
+**The correction pass, and the test gap that made it necessary.** A review of
+this item found seven defects, the redirect default above being the one that
+would have shipped as a widespread `web_fetch` failure. The others: the
+whole-run refusal reached the border with `failure: null` (built through
+`from_candidate_set`, which has no slot for a record, where `from_failure`
+exists for exactly this); a per-call bound bounded each *attempt* rather than
+the call, so a caller with 0.3s remaining could fund three attempts plus
+backoff, which is not what SR-G2 says the argument carries and not what
+`StandaloneTransport._perform` already does with it; `register_builtins` still
+skipped only on `ImportError`; a `max_chars` under the truncation marker's own
+length made the slice index negative and returned the *tail* of the page; a
+caller-supplied `http_transport` was closed by the per-call client; and
+`FetchTransport`'s docstring still named `TracedHttpClient` as an implementer
+of the union this item declared it could not be.
+
+They share one cause, which is the finding worth keeping. The tool and the
+transport were each tested alone and the seam between them was not tested at
+all: every `WebFetchTool` test injected a stub that hardcodes 200 and cannot
+answer a 3xx, and every `build_fetch_transport` test asserted conformance and
+refusals without ever serving a response. So `WebFetchTool()` with no injected
+transport -- the shape a pod runs -- had no test, and the suite proved values
+were *passed* rather than that behaviour *held*. `test_standalone.py`
+compounded it by pinning `max_redirects=0` as correct, which it is, for
+search. The seam now has its own class driving a real socket through the
+transport the tool builds for itself, and `LocalHttpServer` moved from
+`packages/search/tests` into `threetears.search.testing` to make that possible
+-- a published addition, justified by that module's existing rationale that a
+host injecting its own transport must be able to pin its own wiring.
 
 **Two user-visible behaviour changes, and the rollout they need.** Both are
 `web_fetch`'s, both were foreseen in kind, and neither needs a second release

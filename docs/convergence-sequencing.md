@@ -107,18 +107,33 @@ sending it to an older server is *rejected*, not degraded. Only the
 accepting half shipped. It is the one item in this phase needing two
 release cycles, which is why it should not have been last.
 
-**Item 5 landed 2026-08-11.** Both builtins run on the leaf, `serve.py`
-wires them, and check 8 is pinned end-to-end — a real pod dispatch, read back
-from the published bytes, on the failure path as well as the success one.
-Two things came out of the build that reach past this phase. Gate A's
-expectation that one host adapter would satisfy **both** transport protocols
-was wrong: `TracedHttpClient` is per-upstream and buffers bodies, so the
-search half is a thin adapter over it and the fetch half is
+**Item 5 landed 2026-08-11**, and took a correction pass before merging
+([#321](https://github.com/pacepace/3tears/pull/321)). Both builtins run on
+the leaf, `serve.py` wires them, and check 8 is pinned end-to-end — a real
+pod dispatch, read back from the published bytes, on the failure path as well
+as the success one. Two things came out of the build that reach past this
+phase. Gate A's expectation that one host adapter would satisfy **both**
+transport protocols was wrong: `TracedHttpClient` is per-upstream and buffers
+bodies, so the search half is a thin adapter over it and the fetch half is
 `StandaloneTransport` — the split is ruled and explained in the spec. And the
 phase's user-visible change is **two** changes, not one: robots became
 binding (foreseen), and extraction now refuses rather than falling back to
 stripping tags with a regex, so a consumer driving `web_fetch` must declare
 `3tears-agent-tools[fetch]` or get nothing back.
+
+*What the correction pass adds, because it generalises past this item.* Review
+found seven defects, the worst of which would have shipped as a widespread
+`web_fetch` failure: the host's fetch transport inherited the leaf's
+zero-redirect default, so every URL that canonicalises via a 301 came back
+empty. All seven shared one cause — the tool and the transport were each
+tested alone and the seam between them was not tested at all, so the
+configuration production actually runs had no test and the suite proved values
+were *passed* rather than that behaviour *held*. The generalisable lesson for
+the phases still to come: **a host's choice of configuration needs its own
+test, driven end-to-end, separate from the tests for the thing being
+configured**. Phase 3's `aggregate`/`select` and the Phase 5 consumer
+migrations each stand up new wiring of exactly this kind. Detail and rulings
+in [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing).
 
 **What remains here:** the rest of item 6 (`page_finder` structure, the
 context-save node). See
