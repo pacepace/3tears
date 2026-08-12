@@ -276,6 +276,19 @@ class TracedSearchTransport:
             )
 
         started = time.monotonic()
+        # Resolved once, because the whole-call ceiling and the per-attempt
+        # bound must come from the same number. A per-call ``None`` means
+        # "use this transport's configured bound" -- it does not mean
+        # "unbounded", which is what ``asyncio.timeout(None)`` would make it,
+        # and which would leave the ceiling off for exactly the call that
+        # stated no deadline of its own. ``StandaloneTransport._perform``
+        # resolves the same fallback for the same reason, and the two
+        # implementations of this protocol have to agree here.
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else (self._timeout_seconds if self._timeout_seconds is not None else DEFAULT_HTTP_TIMEOUT_SECONDS)
+        )
         client = TracedHttpClient(
             upstream_base_url=self._base_url,
             circuit_breaker=self._circuit_breaker,
@@ -286,7 +299,7 @@ class TracedSearchTransport:
             # the caller's transport is shielded from this per-call client's
             # own close; see _UnclosableTransport.
             transport=_UnclosableTransport(self._http_transport) if self._http_transport is not None else None,
-            timeout=self._timeout_seconds if self._timeout_seconds is not None else DEFAULT_HTTP_TIMEOUT_SECONDS,
+            timeout=effective_timeout,
         )
         try:
             # The bound is the whole call's, not one attempt's. Retry lives
@@ -300,14 +313,14 @@ class TracedSearchTransport:
             # over the retry schedule because the ceiling then holds whatever
             # the client does internally, and the ``TimeoutError`` it raises is
             # what adapters already map onto ``TimedOut``.
-            async with asyncio.timeout(timeout_seconds):
+            async with asyncio.timeout(effective_timeout):
                 response = await client.request(
                     method,
                     url,
                     headers=headers,
                     params=params,
                     json=dict(json_body) if json_body is not None else None,
-                    timeout=timeout_seconds,
+                    timeout=effective_timeout,
                 )
         finally:
             await client.aclose()

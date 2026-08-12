@@ -406,6 +406,34 @@ class TestACallerBoundBoundsTheCallNotOneAttempt:
         assert response.status_code == 200
         assert seen[0].extensions["timeout"]["read"] == pytest.approx(7.0)
 
+    @pytest.mark.asyncio
+    async def test_an_unstated_bound_bounds_the_whole_call_not_each_attempt(self) -> None:
+        """A call that states no bound gets a ceiling, not an absence of one.
+
+        The sibling above pins the *per-attempt* bound, which the retry loop
+        applies three times over. This pins the ceiling around all three.
+        ``asyncio.timeout(None)`` imposes no limit at all, so forwarding an
+        unstated bound straight through left the one call that named no
+        deadline as the only one that could run ``max_attempts`` deep --
+        while ``StandaloneTransport`` resolves the same None to its own
+        configured bound and holds the whole call to it. Same protocol, same
+        argument, so the same meaning.
+        """
+        async with LocalHttpServer((Reply(status=200, body=b"{}", delay=2.0),)) as server:
+            transport = TracedSearchTransport(
+                base_url=server.base_url,
+                max_attempts=3,
+                initial_backoff=0.01,
+                timeout_seconds=0.3,
+            )
+
+            with pytest.raises(TimeoutError):
+                await transport.request("GET", f"{server.base_url}/search")
+
+        assert len(server.requests) == 1, (
+            f"the configured bound funded {len(server.requests)} attempts; it must bound the whole call"
+        )
+
 
 class TestAnInjectedTransportIsNotConsumedByOneCall:
     """The DI seam the constructor advertises must survive being used twice.
