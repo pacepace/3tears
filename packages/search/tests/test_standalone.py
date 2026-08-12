@@ -273,20 +273,45 @@ async def test_the_per_call_timeout_overrides_the_configured_one() -> None:
 
 
 async def test_the_bound_the_caller_stated_bounds_the_whole_call() -> None:
-    """Three attempts under a 0.3s bound cost 0.3s, not three times 0.3s plus backoff.
+    """Three attempts under a 0.5s bound cost 0.5s, not three times 0.5s plus backoff.
 
     Real time on purpose: this is the promise a caller under its own deadline
     is relying on, and a driven clock cannot prove the shipped path keeps it.
-    """
-    async with LocalHttpServer((Reply(delay=2.0),)) as server:
-        transport = _transport(max_attempts=3, timeout_seconds=30.0)
-        started = time.monotonic()
-        with pytest.raises(TimedOut) as raised:
-            await transport.request("GET", f"{server.base_url}/search", timeout_seconds=0.3)
-        elapsed = time.monotonic() - started
 
-    assert elapsed < 0.9, "the attempts and the backoffs come out of the one bound, not one copy each"
-    assert len(server.requests) == 1, "the bound was gone after the first attempt, so there was no second"
+    **The warm-up call and the scope are load-bearing, not tidying.** Outside a
+    scope every attempt builds its own client with ``keepalive=0``, so the
+    connect handshake lands *inside* the caller's bound -- and on a contended
+    CI runner the handshake alone outruns it. The attempt then dies as a
+    ``ConnectTimeout`` having never reached the server, and this test stops
+    measuring the thing it names: the bound is spent on connecting rather than
+    on the reply it was supposed to wait for. Both ways that can fail were
+    observed on one branch within the hour: ``len(server.requests) == 0``
+    because no request was ever served, and ``elapsed == 1.12`` against a 0.9
+    threshold. Warming a pooled connection first takes the handshake out of the
+    measurement, which leaves the read -- the phase the bound is about.
+
+    **The bound is 0.5s for headroom, not for the behaviour.** The defect costs
+    three attempts (``FAST_BACKOFF``'s pauses are milliseconds), so the
+    threshold has to sit under ``3 x bound`` and correct behaviour costs one
+    bound: the slack is ``2 x bound``, and the whole reason to state it larger
+    is that the failure above lost ~0.8s to scheduling alone, which 0.3s could
+    not absorb. The discrimination stays exact either way -- three 0.5s reads
+    cannot come in under 1.5s -- so this buys robustness without buying
+    tolerance for the bug.
+    """
+    async with LocalHttpServer((Reply(body=TWO_RESULTS_BODY), Reply(delay=2.0))) as server:
+        transport = _transport(max_attempts=3, timeout_seconds=30.0)
+        async with transport.connection_scope():
+            await transport.request("GET", f"{server.base_url}/search")
+
+            started = time.monotonic()
+            with pytest.raises(TimedOut) as raised:
+                await transport.request("GET", f"{server.base_url}/search", timeout_seconds=0.5)
+            elapsed = time.monotonic() - started
+
+    assert elapsed < 1.5, "the attempts and the backoffs come out of the one bound, not one copy each"
+    assert server.connections == 1, "the timed call reused the warm connection, so it paid no handshake"
+    assert len(server.requests) == 2, "the warm-up, then one timed attempt -- the bound funded no second"
     assert "1 attempt(s)" in raised.value.message, "the accounting says what it actually did"
 
 
