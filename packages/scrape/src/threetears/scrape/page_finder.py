@@ -297,6 +297,23 @@ def _first_failure(projections: list[SearchResultsMetadata]) -> str | None:
     return None
 
 
+def _every_search_failed(projections: list[SearchResultsMetadata]) -> bool:
+    """Whether every search turn failed, as opposed to merely one of them.
+
+    The distinction decides what a fruitless run is *told* it was. A run whose
+    first turn was rate-limited and whose next four searched fine did not fail
+    for want of searching -- it failed to converge -- and blaming the provider
+    would send an operator after a quota problem that had already cleared. The
+    first failure is still reported on its own field either way.
+
+    :param projections: one projection per search turn
+    :ptype projections: list[SearchResultsMetadata]
+    :return: True only when there was at least one turn and all of them failed
+    :rtype: bool
+    """
+    return bool(projections) and all(projection.failure is not None for projection in projections)
+
+
 def _all_notices(projections: list[SearchResultsMetadata]) -> tuple[str, ...]:
     """Gather provider-reported degradations across turns, order-preserved.
 
@@ -314,6 +331,37 @@ def _all_notices(projections: list[SearchResultsMetadata]) -> tuple[str, ...]:
             seen.add(notice)
             ordered.append(notice)
     return tuple(ordered)
+
+
+def _decode(raw: bytes, declared_charset: str | None) -> str:
+    """Decode a fetched body, tolerating a charset Python has never heard of.
+
+    ``httpx`` hands back the ``charset=`` parameter verbatim; it never checks it
+    against the codec registry. A server declaring ``charset=utf8mb4`` -- a real
+    MySQL-ism that appears in the wild -- or any typo makes :meth:`bytes.decode`
+    raise :class:`LookupError`, which is **not** a :class:`ValueError` and so
+    would sail past the fetch's own guard and out of ``find_target_page``, whose
+    contract is that it never raises. The header comes off a page an LLM picked
+    out of search results, so it is third-party input on the strength of a
+    string match.
+
+    An unknown charset falls back to UTF-8 rather than refusing: the caller
+    wants to know whether the page has a table, and every marker that answers
+    that is ASCII.
+
+    :param raw: the body bytes, already capped
+    :ptype raw: bytes
+    :param declared_charset: the charset the response declared, if any
+    :ptype declared_charset: str | None
+    :return: the decoded text, never raising
+    :rtype: str
+    """
+    if declared_charset:
+        try:
+            return raw.decode(declared_charset, errors="replace")
+        except LookupError:
+            log.warning("page-finder ignoring unknown declared charset %r; decoding as utf-8", declared_charset)
+    return raw.decode("utf-8", errors="replace")
 
 
 async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None = None) -> tuple[bool, str, str]:
@@ -393,7 +441,7 @@ async def _verify_candidate_page(url: str, *, client: httpx.AsyncClient | None =
     # that got cut mid-character at the cap) must still be inspectable for
     # structure. It always is, because every marker below -- <table>, <tr>, href
     # -- is ASCII, so structure detection survives text this cannot decode.
-    text = raw.decode(declared_charset or "utf-8", errors="replace")
+    text = _decode(raw, declared_charset)
     soup = BeautifulSoup(text, "html.parser")
 
     # Table checked before document link: a real page can carry an incidental PDF link
@@ -479,8 +527,8 @@ async def find_target_page(
             wait_for=None,
             verified=False,
             verification_note=(
-                f"search refused before the loop could converge ({search_failure})"
-                if search_failure is not None
+                f"every search turn was refused ({search_failure})"
+                if _every_search_failed(projections)
                 else "search loop exhausted its turn budget with no usable answer"
             ),
             reasoning=f"page-finder gave up after {loop_result.rounds_used} turns: {loop_result.error}",
