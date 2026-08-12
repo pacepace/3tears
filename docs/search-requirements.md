@@ -769,7 +769,7 @@ provider's own identifiers, retrieval time. C2's grounding gate answers a
 per-result question — "does this claim appear on the page it was cited from"
 (`research/web_search.py:105-110`) — that no aggregate can answer.
 
-**SR-A4 (RULED 2026-08-12, P7 — G2).** How many score dimensions, and whose?
+**SR-A4 (DECISION, P7 — G2 — RULED 2026-08-12).** How many score dimensions, and whose?
 Tavily returns relevance ∈ [0,1] and C2's cull ranks on it
 (`research/web_search.py:27-44`). SearXNG returns an engine-fusion weight on a
 different scale. C6 needs three orthogonal judgments.
@@ -817,10 +817,13 @@ message already names.
 
 *What is still owed:* multi-engine fusion was not observed live — only one
 engine responded before the instance's engines were rate-limited — so the
-`> 1.0` claim rests on the formula rather than on a capture. Gate B's SR-A4
-line should be discharged against an instance with healthy engines, with
+`> 1.0` claim rests on the formula rather than on a capture. The formula's
+arithmetic is pinned offline (`test_the_fixture_formula_is_searxngs_formula`);
+what is missing is a live instance producing one of those numbers. Gate B's
+SR-A4 line should be discharged against an instance with healthy engines, with
 `SEARXNG_REQUIRE_RESULTS=1` set so an empty run fails instead of passing
-silently.
+silently; the live test emits every weight it saw as a warning, so the run
+itself is the capture.
 *Recommendation:* a set of named, provenanced scores. Provider scores marked
 non-comparable across providers; a comparable relevance exists only if Select
 produced one.
