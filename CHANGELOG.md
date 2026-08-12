@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.24.1 -- 2026-08-12
 
 ### Added
 
@@ -20,23 +20,6 @@ packages (bumped in lock-step).
   `structuredContent` (§4.8). Optional and defaulted, so a server sending
   only text produces exactly what it did before; a non-object in that field
   is ignored rather than handed to a caller that assumes a mapping.
-
-### Fixed
-
-- `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).
-  It invoked with the call's *arguments* and stringified whatever came
-  back, so a tool registered `response_format="content_and_artifact"` had
-  its `(content, artifact)` tuple flattened into prose and its structure
-  never reached the caller. It now invokes with the whole tool call, which
-  is what makes LangChain build the `ToolMessage` and populate `artifact`
-  -- the way the in-process `langchain_adapter` already did it. This is
-  `page_finder`'s actual execution path, so check 4 could not pass without
-  it. Tools that answer with a plain value are unaffected. The existing
-  test asserted the args-only call shape, which encoded the defect; it now
-  pins the fixed one.
-
-### Added
-
 - `agent-tools`: `ToolCallFailure` carries structure out of the exception
   path (§10.9, D18). A tool that *returned* a `ToolResult` always had its
   `metadata` forwarded onto `CallResponse`; a tool that raised got a
@@ -122,6 +105,32 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- `core`: `DurableStoreCollection.save_to_store` forwards the transaction
+  handle instead of discarding it. `flush_pending`'s atomic-batch path opens
+  `async with backend.transaction() as conn` and threads that handle down
+  through `persist_to_store`, but the structured collection dropped it, so a
+  `DurableStore` implementing `transaction()` as a batch accumulator never
+  received anything: the accumulator stayed empty, every write executed on
+  its own, and a batched flush silently produced one durable write per
+  entity. It was silent because degrading to the per-entity loop is the
+  designed fallback, so a batch that never batched looked exactly like a
+  batch that worked -- only the write grouping distinguishes them.
+  `DurableStore.upsert` has always declared `conn`, so a backend with no use
+  for it ignores it, which is what the protocol already asks of a
+  non-transactional store; the SQL backend and scriob's `GitL3Backend`
+  already accept it. Two in-repo test fakes had drifted from that signature
+  and are brought back to it.
+- `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).
+  It invoked with the call's *arguments* and stringified whatever came
+  back, so a tool registered `response_format="content_and_artifact"` had
+  its `(content, artifact)` tuple flattened into prose and its structure
+  never reached the caller. It now invokes with the whole tool call, which
+  is what makes LangChain build the `ToolMessage` and populate `artifact`
+  -- the way the in-process `langchain_adapter` already did it. This is
+  `page_finder`'s actual execution path, so check 4 could not pass without
+  it. Tools that answer with a plain value are unaffected. The existing
+  test asserted the args-only call shape, which encoded the defect; it now
+  pins the fixed one.
 - `media-contracts`: the runtime `__version__` is derived from package
   metadata like every other package in the family, instead of a hardcoded
   literal. It read `0.10.6` while the package shipped at 0.24.0 --

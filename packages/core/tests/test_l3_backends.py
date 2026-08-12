@@ -263,6 +263,7 @@ class _InMemoryDurableStore:
         pk: Sequence[str],
         on_conflict: str = "update",
         cas: datetime | None = None,
+        conn: Any = None,
     ) -> int:
         t = self.tables.setdefault(table, {})
         key = tuple(row[c] for c in sorted(pk))
