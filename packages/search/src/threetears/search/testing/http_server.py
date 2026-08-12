@@ -9,6 +9,14 @@ are not the obligations.
 Deliberately hand-rolled rather than a framework: it must be able to answer
 *badly* -- close mid-response, stall past a deadline, send a body with no
 declared length -- and a well-behaved server framework is built not to.
+
+Shipped in ``src`` for the reason the package docstring gives: a *host* that
+chooses its own transport configuration has to be able to pin what that
+configuration does with a socket, and :class:`StandaloneTransport` has no
+client-injection seam to mock. It moved here from ``packages/search/tests``
+after ``agent-tools`` shipped a fetch transport whose redirect policy no test
+could reach -- the tool's own tests injected a stub that could not answer 3xx,
+and the transport's tests never served a response at all.
 """
 
 from __future__ import annotations

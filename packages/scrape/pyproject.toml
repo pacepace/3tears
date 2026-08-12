@@ -46,10 +46,14 @@ classifiers = [
 ]
 dependencies = [
     "3tears>=0.24.0,<0.25.0",
-    # drivers/document.py's DocumentDriver reuses parse_document to feed
-    # PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
+    # [document]: drivers/document.py's DocumentDriver reuses parse_document to
+    # feed PDF/DOCX/XLSX/CSV targets through the same AI eval loop HTML-page
     # targets already use.
-    "3tears-agent-tools[document]>=0.24.0,<0.25.0",
+    # [fetch]: page_finder.py drives web_fetch, which now extracts through the
+    # search leaf. That path REFUSES without an extractor rather than falling
+    # back to stripping tags with a regex, so the extra stopped being optional
+    # for a package whose whole job is reading pages.
+    "3tears-agent-tools[document,fetch]>=0.24.0,<0.25.0",
     "3tears-models>=0.24.0,<0.25.0",
     "3tears-observe>=0.24.0,<0.25.0",
     "httpx[socks]>=0.27",

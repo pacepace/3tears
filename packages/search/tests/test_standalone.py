@@ -44,7 +44,7 @@ from threetears.search.standalone import (
     RESPONSE_BYTES_SCOPE,
     StandaloneTransport,
 )
-from _http_server import LocalHttpServer, Reply
+from threetears.search.testing import LocalHttpServer, Reply
 from _searxng_payloads import TWO_RESULTS_BODY
 
 #: backoff small enough that a retry pin costs milliseconds rather than seconds.

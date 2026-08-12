@@ -34,9 +34,23 @@ if TYPE_CHECKING:
 
     from threetears.core.egress import EgressDriver
 
-__all__ = ["CircuitBreakerLike", "TracedHttpClient", "UpstreamHttpError"]
+__all__ = ["ATTEMPTS_EXTENSION", "CircuitBreakerLike", "TracedHttpClient", "UpstreamHttpError"]
 
 _SPAN_NAME = "threetears.core.http_client.request"
+
+#: key on :attr:`httpx.Response.extensions` carrying how many attempts this
+#: client spent to obtain the response, the successful one included.
+#:
+#: Retry lives inside :meth:`TracedHttpClient.request`, so every caller above
+#: it sees one response and cannot tell whether it cost one exchange or three.
+#: That is fine for a caller that only wants the body, and wrong for a caller
+#: that has to account for what was spent: a transport wrapping this client
+#: reports the count as its own per-attempt accounting, and a spend model that
+#: bills per exchange under-bills by exactly the retries when it cannot see
+#: them. Surfaced through ``extensions`` -- httpx's own channel for
+#: transport-level facts about a response -- rather than by changing the
+#: return type, so no existing caller has to learn a new shape to ignore it.
+ATTEMPTS_EXTENSION = "threetears_attempts"
 
 
 @runtime_checkable
@@ -241,6 +255,7 @@ class TracedHttpClient:
         params: Mapping[str, Any] | None = None,
         content: bytes | None = None,
         json: Any = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """perform one upstream request with tracing, retry, and breaking.
 
@@ -266,8 +281,14 @@ class TracedHttpClient:
         :ptype content: bytes | None
         :param json: optional JSON request body
         :ptype json: Any
+        :param timeout: per-call override of the client's configured timeout,
+            in seconds, so a caller holding a deadline can bound this call to
+            what remains of it. ``None`` uses the configured value. Bounds each
+            attempt; the retry schedule is unchanged
+        :ptype timeout: float | None
         :return: full upstream response (caller inspects any non-2xx; not
-            raised on 4xx/5xx except retry exhaustion)
+            raised on 4xx/5xx except retry exhaustion). carries the attempt
+            count under :data:`ATTEMPTS_EXTENSION` in ``extensions``
         :rtype: httpx.Response
         :raises CircuitOpenError: when the injected breaker is OPEN
         :raises UpstreamHttpError: when every attempt fails (5xx /
@@ -279,9 +300,11 @@ class TracedHttpClient:
             self._circuit_breaker.check()
 
         captured: httpx.Response | None = None
+        attempts = 0
 
         async def _attempt_once() -> None:
-            nonlocal captured
+            nonlocal captured, attempts
+            attempts += 1
             try:
                 response = await self._client.request(
                     method,
@@ -290,6 +313,10 @@ class TracedHttpClient:
                     params=dict(params) if params else None,
                     content=content,
                     json=json,
+                    # httpx's own sentinel, not None: None is a MEANINGFUL value there
+                    # (wait forever), so passing it through for "caller said nothing"
+                    # would turn an unstated timeout into no timeout at all.
+                    timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
                 )
             except httpx.ConnectError, httpx.TimeoutException:
                 if self._circuit_breaker is not None:
@@ -327,6 +354,7 @@ class TracedHttpClient:
                 body=body,
             )
 
+        captured.extensions[ATTEMPTS_EXTENSION] = attempts
         result = captured
         return result
 
@@ -336,6 +364,7 @@ class TracedHttpClient:
         *,
         headers: Mapping[str, str] | None = None,
         params: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """GET ``path`` (delegates to :meth:`request`).
 
@@ -345,10 +374,13 @@ class TracedHttpClient:
         :ptype headers: Mapping[str, str] | None
         :param params: optional query-string parameters
         :ptype params: Mapping[str, Any] | None
+        :param timeout: per-call timeout override in seconds; None uses the
+            configured value
+        :ptype timeout: float | None
         :return: full upstream response
         :rtype: httpx.Response
         """
-        return await self.request("GET", path, headers=headers, params=params)
+        return await self.request("GET", path, headers=headers, params=params, timeout=timeout)
 
     async def post(
         self,
@@ -358,6 +390,7 @@ class TracedHttpClient:
         params: Mapping[str, Any] | None = None,
         content: bytes | None = None,
         json: Any = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """POST ``path`` (delegates to :meth:`request`).
 
@@ -371,6 +404,9 @@ class TracedHttpClient:
         :ptype content: bytes | None
         :param json: optional JSON request body
         :ptype json: Any
+        :param timeout: per-call timeout override in seconds; None uses the
+            configured value
+        :ptype timeout: float | None
         :return: full upstream response
         :rtype: httpx.Response
         """
@@ -381,6 +417,7 @@ class TracedHttpClient:
             params=params,
             content=content,
             json=json,
+            timeout=timeout,
         )
 
     def _record_span_attributes(self, *, method: str, status_code: int | None) -> None:

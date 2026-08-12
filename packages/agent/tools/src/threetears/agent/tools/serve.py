@@ -7,6 +7,7 @@ and serves them via NATS. intended for use as tool pod main process.
 from __future__ import annotations
 
 import os
+from importlib.util import find_spec
 
 from threetears.agent.tools.bootstrap import ToolPodConfigError, ToolServerBootstrap
 from threetears.agent.tools.server import ToolServer
@@ -81,33 +82,44 @@ def _register_builtin_tools(server: ToolServer) -> None:
             extra={"extra_data": {"tool": "threetears.timezone_converter"}},
         )
 
-    try:
+    # web_fetch reaches the extractor through the search leaf's Extract path, which
+    # imports trafilatura lazily so importing the package never pays for it. That
+    # laziness moves the failure: without the extra the tool CONSTRUCTS fine and
+    # refuses every call. A pod that registers a tool it cannot serve is exactly
+    # what the skip-with-reason pattern exists to prevent, so the availability is
+    # probed here -- at registration, where a reason still reaches an operator.
+    if find_spec("trafilatura") is not None:
         from threetears.agent.tools.builtin.web_fetch import WebFetchTool
 
         server.register(WebFetchTool())
         registered_count += 1
-    except ImportError:
+    else:
         skipped_count += 1
-        skipped_reasons.append("web_fetch: missing trafilatura dependency")
+        skipped_reasons.append("web_fetch: 3tears-agent-tools[fetch] not installed (no HTML extractor)")
         _logger.warning(
-            "skipping web_fetch (missing trafilatura dependency)",
-            extra={"extra_data": {"tool": "threetears.web_fetch"}},
+            "skipping web_fetch (no HTML extractor installed)",
+            extra={
+                "extra_data": {
+                    "tool": "threetears.web_fetch",
+                    "hint": (
+                        "install 3tears-agent-tools[fetch] (which pulls 3tears-search[extract]) "
+                        "to serve web_fetch from this pod"
+                    ),
+                }
+            },
         )
 
     searxng_url = os.environ.get("THREETEARS_SEARXNG_URL")
     if searxng_url:
-        try:
-            from threetears.agent.tools.builtin.web_search import WebSearchTool
+        # The tool builds its own TracedSearchTransport for this base URL: the
+        # traced client's bounded retry, circuit breaking, egress selection and
+        # spans, injected into the leaf, which opens no client of its own. A pod
+        # wanting a shared breaker or a named egress constructs the transport and
+        # passes it -- the base URL stays deployment config either way (D21).
+        from threetears.agent.tools.builtin.web_search import WebSearchTool
 
-            server.register(WebSearchTool(base_url=searxng_url))
-            registered_count += 1
-        except ImportError:
-            skipped_count += 1
-            skipped_reasons.append("web_search: missing dependency")
-            _logger.warning(
-                "skipping web_search (missing dependency)",
-                extra={"extra_data": {"tool": "threetears.web_search"}},
-            )
+        server.register(WebSearchTool(base_url=searxng_url))
+        registered_count += 1
     else:
         # ACCOUNTED FOR, not silently absent. Without this branch an unset
         # THREETEARS_SEARXNG_URL dropped web_search with no counter, no reason and no

@@ -7,6 +7,7 @@ missing, that tool is skipped with a warning log.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
 from threetears.observe import get_logger
@@ -122,11 +123,31 @@ def make_standard_builtins(
     return [STANDARD_BUILTIN_FACTORIES[name]() for name in selected]
 
 
+#: builtins whose dependency cannot be detected by importing their module,
+#: mapped to ``(module to probe for, remediation hint)``.
+#:
+#: The ``except ImportError`` below only skips a tool whose *own module*
+#: fails to import. ``web_fetch`` reaches its extractor through Extract,
+#: which imports trafilatura **lazily** so that importing the package never
+#: pays for it -- so without the extra the module imports cleanly, the tool
+#: constructs, and every call refuses. Registering a tool that cannot serve
+#: a single request is the exact condition the skip-with-reason pattern
+#: exists to prevent, so the availability is probed instead of inferred.
+#: ``serve.py`` does the same for the pod path; this is the registry path.
+_PROBED_BUILTINS: dict[str, tuple[str, str]] = {
+    "web_fetch": (
+        "trafilatura",
+        "install 3tears-agent-tools[fetch] (which pulls 3tears-search[extract]) to register web_fetch",
+    ),
+}
+
+
 def register_builtins(registry: ToolRegistry) -> None:
     """Register all available built-in tools on *registry*.
 
     Missing optional dependencies cause individual tools to be skipped,
-    not a crash.
+    not a crash -- whether the absence shows up as an ``ImportError`` or has
+    to be probed for (:data:`_PROBED_BUILTINS`).
     """
     # Each entry: (tool_type, module_path, factory_name)
     _builtins: list[tuple[str, str, str]] = [
@@ -144,6 +165,12 @@ def register_builtins(registry: ToolRegistry) -> None:
     import importlib
 
     for tool_type, module_path, factory_name in _builtins:
+        if tool_type in _PROBED_BUILTINS and find_spec(_PROBED_BUILTINS[tool_type][0]) is None:
+            log.warning(
+                "Skipping built-in tool (missing dependency)",
+                extra={"extra_data": {"tool_type": tool_type, "hint": _PROBED_BUILTINS[tool_type][1]}},
+            )
+            continue
         try:
             mod = importlib.import_module(module_path)
             factory = getattr(mod, factory_name)

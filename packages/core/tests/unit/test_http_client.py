@@ -16,6 +16,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from threetears.core.http_client import (
+    ATTEMPTS_EXTENSION,
     CircuitBreakerLike,
     TracedHttpClient,
     UpstreamHttpError,
@@ -73,6 +74,25 @@ def _sequenced_transport(statuses: list[int]) -> tuple[httpx.MockTransport, list
         return httpx.Response(status, text=f"body-{status}")
 
     return httpx.MockTransport(handler), calls
+
+
+def _recording_transport() -> tuple[httpx.MockTransport, list[httpx.Request]]:
+    """build a transport that answers 200 and keeps every request it was handed.
+
+    Used where the assertion is about what reached the wire rather than what
+    came back -- the per-call timeout lands on ``Request.extensions``, which
+    only the request object carries.
+
+    :return: the transport plus the list it appends each request to
+    :rtype: tuple[httpx.MockTransport, list[httpx.Request]]
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="body-200")
+
+    return httpx.MockTransport(handler), seen
 
 
 def _raising_transport(exc: Exception) -> tuple[httpx.MockTransport, list[int]]:
@@ -330,3 +350,74 @@ class TestEgressWiring:
         assert TracedHttpClient(upstream_base_url="https://upstream.example").egress_name is None
         chosen = TracedHttpClient(upstream_base_url="https://upstream.example", egress=DirectEgress())
         assert chosen.egress_name == "direct"
+
+
+class TestACallerHoldingADeadlineCanBoundTheCall:
+    """A per-call timeout, because retry lives inside this client.
+
+    The client's configured timeout is a deployment fact and stays one. What
+    a caller may additionally hold is a *deadline* -- a tool envelope's
+    ``deadline_seconds``, a transport's remaining budget -- and before this
+    override existed the only way to honour one was to construct a fresh
+    client per call, which throws away the pool and the breaker to change a
+    single number.
+    """
+
+    async def test_a_per_call_bound_reaches_the_request(self) -> None:
+        transport, seen = _recording_transport()
+        async with _client(transport, timeout=30.0) as client:
+            await client.request("GET", "/thing", timeout=0.25)
+        assert seen[0].extensions["timeout"]["read"] == pytest.approx(0.25)
+
+    async def test_saying_nothing_leaves_the_configured_timeout_in_place(self) -> None:
+        """The override is an override.
+
+        httpx reads ``timeout=None`` as *wait forever*, so forwarding None for
+        "the caller said nothing" would silently convert every unstated call
+        into an unbounded one -- the opposite of what a timeout parameter is
+        for.
+        """
+        transport, seen = _recording_transport()
+        async with _client(transport, timeout=9.0) as client:
+            await client.request("GET", "/thing")
+        assert seen[0].extensions["timeout"]["read"] == pytest.approx(9.0)
+
+    async def test_get_and_post_forward_it_too(self) -> None:
+        """The convenience methods are the ones most call sites actually use."""
+        transport, seen = _recording_transport()
+        async with _client(transport, timeout=30.0) as client:
+            await client.get("/thing", timeout=1.5)
+            await client.post("/thing", json={"a": 1}, timeout=2.5)
+        assert seen[0].extensions["timeout"]["read"] == pytest.approx(1.5)
+        assert seen[1].extensions["timeout"]["read"] == pytest.approx(2.5)
+
+
+class TestTheAttemptCountIsVisibleToACallerThatMustAccountForIt:
+    """Retry is invisible from outside, and for a billing caller that is a bug.
+
+    This client retries 5xx and connect failures internally and returns one
+    response, so a caller that bills per exchange sees one where there were
+    three. The count rides ``extensions`` -- httpx's own channel for
+    transport-level facts -- so no existing caller has to learn a new return
+    shape to ignore it.
+    """
+
+    async def test_a_clean_call_reports_one_attempt(self) -> None:
+        transport, _calls = _sequenced_transport([200])
+        async with _client(transport) as client:
+            response = await client.request("GET", "/thing")
+        assert response.extensions[ATTEMPTS_EXTENSION] == 1
+
+    async def test_a_retried_call_reports_every_attempt(self) -> None:
+        transport, calls = _sequenced_transport([500, 500, 200])
+        async with _client(transport, max_attempts=3) as client:
+            response = await client.request("GET", "/thing")
+        assert calls[0] == 3
+        assert response.extensions[ATTEMPTS_EXTENSION] == 3
+
+    async def test_the_count_matches_what_the_upstream_actually_saw(self) -> None:
+        """Non-vacuous: the number is counted, not copied from ``max_attempts``."""
+        transport, calls = _sequenced_transport([500, 200])
+        async with _client(transport, max_attempts=5) as client:
+            response = await client.request("GET", "/thing")
+        assert response.extensions[ATTEMPTS_EXTENSION] == calls[0] == 2
