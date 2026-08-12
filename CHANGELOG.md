@@ -23,6 +23,21 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- `core`: `DurableStoreCollection.save_to_store` forwards the transaction
+  handle instead of discarding it. `flush_pending`'s atomic-batch path opens
+  `async with backend.transaction() as conn` and threads that handle down
+  through `persist_to_store`, but the structured collection dropped it, so a
+  `DurableStore` implementing `transaction()` as a batch accumulator never
+  received anything: the accumulator stayed empty, every write executed on
+  its own, and a batched flush silently produced one durable write per
+  entity. It was silent because degrading to the per-entity loop is the
+  designed fallback, so a batch that never batched looked exactly like a
+  batch that worked -- only the write grouping distinguishes them.
+  `DurableStore.upsert` has always declared `conn`, so a backend with no use
+  for it ignores it, which is what the protocol already asks of a
+  non-transactional store; the SQL backend and scriob's `GitL3Backend`
+  already accept it. Two in-repo test fakes had drifted from that signature
+  and are brought back to it.
 - `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).
   It invoked with the call's *arguments* and stringified whatever came
   back, so a tool registered `response_format="content_and_artifact"` had
