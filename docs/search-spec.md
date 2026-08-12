@@ -43,7 +43,7 @@ here.
 
 | # | Ruling | Build consequence |
 |---|---|---|
-| D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries -- name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. |
+| D1 (SR-A4) | Named, provenanced scores; **no single `score` field, ever** | Result core carries a set of score entries -- name, value, scale semantics, source (provider or stage), cross-provider comparability flag. A comparable relevance exists only if Select produced one. *Evidence-backed 2026-08-12:* SearXNG's weight is unbounded above (two agreeing engines score 4.0, three 9.0) while Tavily's relevance is `[0,1]`, so one shared field would corrupt a mixed-corpus ranking silently. Select's cull MUST NOT read `score > 0` as "relevant" -- a `priority: low` engine scores everything 0. |
 | D2 (SR-A5) | Call returns a candidate set; the corpus is Aggregate's named type | Two types, two dedup/merge stories; Call never accumulates. |
 | D3 (SR-B5, OQ21) | Model-mediated search is out of Adapter and Call, in at **Aggregate** as a candidate producer | Provenance carries a `producer` distinction from day one; the producer seam is designed in Phase 3, implemented when samsung pulls. Its token cost is owned by the models usage tracker -- the producer seam records a *reference* to that spend and MUST NOT re-price it into search spend (no double counting). |
 | D4 (SR-D4) | Budget follows the bill | The budget increment and the transport retry sit on the same side of the seam: a retried attempt that never billed never counts. C2's fail-closed retry bound moves into the transport's bounded-retry config in the same change. |
@@ -71,6 +71,7 @@ here.
 | D26 (replay durability, 2026-08-04) | Recordings outlive the stack that made them: replay records the **typed result** and keys on the **canonical caller request** | Three rules, detailed in §3.10: the key hashes explicitly-set caller parameters (never resolved defaults) plus a key-derivation version; replay short-circuits at the Call boundary and never touches an adapter, so removing a provider strands no recordings; payload readability is promised within a family major, refused loudly across, matching the cascade-delete lifetime recordings actually have (SR-F5). |
 | D27 (replay spend, 2026-08-04) | Replay reports **both** spends, never one field: the recording's original spend rides inside the replayed payload; the replay's own execution spend rides where spend always rides | Budgets bind on execution spend; cost-model analyses read recorded spend, so a replayed baseline never looks free. P7 applied to spend. Detail in §3.10. |
 | D28 (recorder composition, 2026-08-04) | Multiple freezing seams coexist under one rule: **the outermost active recorder wins** | Search replay is the innermost seam and the only one reaching non-Tool callers; character/agent evals freeze coarser (discodon's action- and delivery-seam cassettes), correctly. **No replay engine enters the `TearsTool` base class.** Detail in §3.10. |
+| D29 (freeze window, 2026-08-11) | Publication does not freeze the contracts. They stay **re-cuttable until the first consumer release pins a version carrying search** | 0.24.0 shipped `3tears-search` to PyPI after Phase 1, not at Phase 4 (§7). What makes a re-cut cheap was never "unpublished" -- it is that nobody has bound: no consumer pins it, and exact-version family pinning (the D13 rider) means a changed shape cannot reach an installed reader. So Phases 2-3 may still re-cut contract types. The window closes at the first consumer *release* naming a version that carries search; past that, a change to a wire-read payload type is a compatibility event, not an edit. Two counters therefore begin at 0.24.0 rather than "first release": `SEARCH_RESULTS_SCHEMA_VERSION` and `CANONICAL_FORM_VERSION` both stay 1 while changes remain additive, and any non-additive change now MUST be spelled as a bump rather than absorbed. **The consumers this window is measured against are ours** -- metallm and discodon, the two the sequencing tracks. A third party can `pip install 3tears-search==0.24.0` today and is outside that definition entirely; what covers them is the alpha policy the root README states, that the public API may shift between minor versions until 1.0.0, and a re-cut here lands in 0.25.0. That is the whole of their protection and it is deliberate: a package published three phases before its consumers exist has no installed base to protect, and pretending otherwise would freeze a contract nobody is holding. Past 1.0.0 this row does not apply -- the freeze is then whatever semver promises, and "nobody has bound" stops being knowable. |
 
 Two §13 rows are *not* ruled here because nothing in Phases 1-4 needs them:
 **one NATS bus or two** (gates only how much distributed pacing the client side
@@ -183,9 +184,14 @@ them):
   span, egress selection -- SR-N1, SR-G1, SR-G4, SR-D3), `FetchTransport`
   (the streamed, byte-capped, content-type-gated read Extract requires --
   declared as a *second* protocol at Gate A, 2026-08-10, so Phase-1
-  `SearchTransport` implementers are never retroactively non-conformant;
-  the standalone transport and the host adapter implement the union from
-  Phase 2), `SearchProvider` (the provider seam Call consumes and the
+  `SearchTransport` implementers are never retroactively non-conformant.
+  *Corrected 2026-08-11 (Phase 2 item 5):* Gate A expected the standalone
+  transport **and the host adapter** to implement the union. Only the
+  standalone one does, and cannot be otherwise -- `TracedHttpClient` is
+  constructed per upstream and buffers whole bodies, while a fetch is an
+  arbitrary candidate URL read under a per-call cap. A host injects the
+  traced adapter for search and the standalone transport for fetch; the
+  ruling is in §7 Phase 2), `SearchProvider` (the provider seam Call consumes and the
   conformance suite parametrizes over -- named here at Gate A; it is the
   one seam-vocabulary addition §3.1's original field list did not carry),
   `BudgetPort` (`check(estimate)` / `record(spend)` with plural scopes --
@@ -279,6 +285,109 @@ be able to take search with no extraction at all. Requirements:
   escalation multiplies cost (shared_search OQ3, resolved conservative).
 - MAY add a Wayback fallback tier later (prior art: `TadMSTR/searxng-mcp`);
   not in v1.
+
+#### Rulings taken before the build -- 2026-08-11
+
+Recorded ahead of the build rather than after it, per the Gate A precedent
+and for the reason that precedent exists: a ruling that lives only in the
+session that took it is a ruling the next session re-litigates. Each is
+vetoable; a veto lands here and in `search-requirements.md` §13.
+
+- **Robots is fetched through the same `FetchTransport`**, parsed with
+  stdlib `urllib.robotparser`, and memoized for the life of one Extract
+  call and no longer. Fetching it through the injected seam means it
+  inherits the guards, the byte cap, the pacing and the egress provenance
+  rather than acquiring a second, weaker path to the same hosts. It costs
+  one extra fetch per host per call; the alternative is honoring robots
+  without reading it, which is not honoring it. **This is not a response
+  cache and D14 is untouched** -- D14 governs *search responses*, and the
+  memo dies with the call rather than outliving it.
+- **A missing `[extract]` extra is a typed refusal naming the extra**, never
+  a silently degraded extraction. A caller handed prose has to be able to
+  tell whether a real extractor produced it; a crude tag-strip fallback
+  would be indistinguishable at the call site and wrong in a way that only
+  shows up in a model's output.
+- **The `extraction_status` vocabulary gets named constants in
+  `media-contracts` first.** Today it is a bare `str | None` with a comment
+  listing `"pending"` / `"complete"` -- no constants, and no value for
+  *refused* (robots said no) or *failed* (the fetch died), both of which
+  Extract produces. Additive constants land beside the facet vocabulary,
+  in the package that owns the neighbourhood, rather than a second status
+  vocabulary being invented in the search leaf (SR-C3's rule applied to
+  status rather than to facets).
+- **The shipped DDL is that vocabulary's canonical statement, not the
+  contract's comment** -- the two already disagree, and the constants have
+  to land on one side of it. `MediaInfo.extraction_status` documents
+  `"pending"` / `"complete"` / `None`; migration v021 declares the column
+  `TEXT NOT NULL DEFAULT 'none'` and names `'none'` / `'pending'` /
+  `'complete'` / `'failed'`, and v022 builds a partial index
+  `WHERE extraction_status = 'pending'`. The DDL wins because it is the
+  side with rows in it: a spelling in a column default and an index
+  predicate is changed by a migration and an index rebuild, not by an
+  edit. Two consequences. **`failed` already exists** -- of the two values
+  the ruling above says Extract produces, only `refused` is new, so the
+  constants are `none` / `pending` / `complete` / `failed` / `refused`.
+  And **the field stays `str | None`** -- no `Literal`, no `StrEnum`.
+  Narrowing it would break consumers that assign a bare `str`
+  (`analyze_media.py` compares against these values today) and would force
+  a ruling on the dataclass default `None` versus the column default
+  `'none'`, which is a data question wearing a typing costume. That split
+  is **recorded, not fixed**: both spellings mean *no extraction
+  attempted*, every consumer today falls through both branches
+  identically, and reconciling them is a migration, not a side effect of
+  adding a string constant.
+- **Escalation to `HeavyFetcher` is a caller choice**, never automatic --
+  the conservative resolution `shared_search` OQ3 already reached, restated
+  here because "SHOULD" above left it open and silent escalation multiplies
+  cost by a factor nobody sees until the bill.
+
+**Not Extract's to open: the transport's connection scope.** The
+`StandaloneTransport` gained `connection_scope()` with the fetch seam (§3.8),
+and Extract deliberately opens none of its own: a transport is an injected
+port, and how long its connections live belongs to the deployment that
+constructed it. A host that wants pooling wraps its own work in the scope.
+
+#### Built 2026-08-11 -- what the web path ruled
+
+The five rulings above held; four more were forced by writing it, recorded
+here for the same reason.
+
+- **Per-candidate outcomes are recorded on the candidate, not raised.** A
+  404, a cap refusal, a robots file saying no: each returns a candidate
+  whose `extraction_status` facet says what happened. One unreadable page
+  must never take down the extraction of a set -- SR-H3's rule for
+  fan-out siblings, applied to carriers. The single exception is the
+  missing `[extract]` extra, which raises because it would refuse *every*
+  candidate identically, and marking a hundred `refused` one at a time
+  hides one fixable fault behind a hundred plausible ones.
+- **The missing extra raises `LocalCapExceeded` with scope
+  `extractor-unavailable`.** It is a local refusal the provider never saw,
+  which is that class's definition, and `scope` already doubles as refusal
+  identity here (`query-length`, `response-bytes`, `content-type`). **This
+  is the ruling most worth a veto**: the honest alternative is an eighth
+  taxonomy class, `CapabilityUnavailable`, and it was not taken mid-build
+  because a taxonomy change should be somebody's deliberate decision
+  rather than a side effect of writing this module. D29's window makes the
+  re-cut cheap for now.
+- **Robots follows RFC 9309 on its own failures.** A 4xx for `robots.txt`
+  means no rules exist and the fetch proceeds; a 5xx or a transport failure
+  means the rules are unknown, and unknown rules are honored as *deny*.
+  Reading "allowed" out of a server error is how a polite fetcher turns
+  impolite for exactly as long as the origin is having a bad day.
+- **Escalation is a parameter, not a fallback.** Passing `heavy_fetcher`
+  says *use it for this candidate*; Extract never reaches for it after an
+  ordinary fetch fails, so "a caller choice" means the caller wrote the
+  policy. `HeavyFetcher` is declared beside `FetchTransport` in §3.1 with
+  a deliberately distinct method name (`fetch_rendered`), so an ordinary
+  transport cannot satisfy it by accident and be used as one.
+
+Two smaller dispositions, so they stop being open: the robots memo is
+**not** offered as a batch-scoped parameter -- a memo outliving one call is
+a wider scope than the ruling sanctions, and it belongs with Phase 3's
+carrier dispatch where something owns the set; and `extraction_method` is
+recorded under a **search-owned** facet key, because `media-contracts`
+names the status vocabulary but not the method one, and promoting the key
+belongs with the second producer that needs it rather than the first.
 
 ### 3.6 `select.py` *(Phase 3)*
 
@@ -411,8 +520,11 @@ must pass -- contract shape, spend-on-failure, error taxonomy, criterion
 disposition honesty, zero-results-is-success -- plus parity-declared fakes for
 the transport, the store port, and the limiter (`test_fake_protocol_parity`
 compliance). A live tier per provider, env-gated: SearXNG against a
-self-hosted instance (also settles SR-A4's unverified score-semantics
-assumption), Tavily behind explicit credentials.
+self-hosted instance (which settled SR-A4's score-semantics assumption on
+2026-08-12), Tavily behind explicit credentials. The SearXNG live test
+tolerates zero results, because zero results is a success (SR-J2) -- so it
+takes `SEARXNG_REQUIRE_RESULTS=1` to make an empty run fail, without which
+every per-candidate assertion sits in a loop that ran zero times.
 
 ---
 
@@ -438,7 +550,10 @@ load-bearing for a success check.
 4. **`agent-tools` -- `serve.py` wiring**: hosts build the leaf's transport
    from `TracedHttpClient` via a thin adapter (lives here, where core is
    already a hard dep); the skip-with-reason pattern extends to the new
-   configuration.
+   configuration. *As built (item 5):* the adapter serves **search** only --
+   the fetch half is `StandaloneTransport`, for the structural reason ruled
+   in §7 Phase 2 -- and the skip-with-reason had to become a probe rather
+   than a caught `ImportError`, because Extract imports its extractor lazily.
 5. **`agent-tools` -- context-save node** (C8): fix the name-grain defect
    (match bound names), read structure off `metadata`, and state the retention
    posture in the module docstring *before* wiring it anywhere (§10 defect
@@ -536,6 +651,10 @@ tag is not a release).
 
 ### Phase 1 -- the leaf (branch `feature/search-leaf`, stacked PRs into develop)
 
+**Landed 2026-08-11 in [#303](https://github.com/pacepace/3tears/pull/303)**
+-- all three items plus the Gate A findings, which the branch absorbed the
+same night the review returned them.
+
 1. **Keystone slice** *(the first chunk of the prawduct build plan; prove the
    architecture before widening)*: `contracts/` core (request, candidate,
    criteria + disposition, spend, errors, transport protocol, metadata key)
@@ -601,7 +720,10 @@ Dispositions on the build's carried questions, so they stop being open:
 - **`SEARCH_RESULTS_SCHEMA_VERSION` stays 1** despite the additive
   `published_at`/`notices`/`failure` fields -- nothing is released, so there
   is no older reader to protect; the version starts counting at first
-  release.
+  release. *Superseded 2026-08-11:* first release happened early (0.24.0,
+  §7 Phase 4), so the counting has started. What the disposition was
+  actually resting on -- no bound reader -- still holds and is now ruled
+  explicitly as **D29**, which is what governs a re-cut from here.
 - **`SearchProvider` is accepted contract vocabulary** (now named in
   §3.1) -- Call's dependency and the conformance suite's parametrization
   axis; it is a seam name, not a layer name, so the §2 naming rule holds.
@@ -655,13 +777,181 @@ recorded here per the Gate A precedent:
 
 ### Phase 2 -- in-family consumers (branches stacked on Phase 1)
 
+*Status 2026-08-11 -- most of this phase has landed.* The ground first:
+[#307](https://github.com/pacepace/3tears/pull/307) implemented
+`FetchTransport` on `StandaloneTransport` and settled §3.8's
+per-request-client condition with an opt-in `connection_scope()`;
+[#310](https://github.com/pacepace/3tears/pull/310) recorded §3.5's five
+Extract rulings before the build; and
+[#315](https://github.com/pacepace/3tears/pull/315) landed the
+`extraction_status` constants Extract records into, ruled off the shipped
+DDL rather than proposed.
+
+Then the phase itself:
+
+| Item | State |
+|---|---|
+| 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
+| 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below, plus a correction pass ([#321](https://github.com/pacepace/3tears/pull/321)) that fixed seven review findings and the seam gap that hid them |
+| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
+| 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
+| §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
+| §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
+
+What remains before Gate B is the rest of item 6 and Phase 3's
+`aggregate`/`select`.
+
+#### Phase 2 item 5 -- built 2026-08-11
+
+Both builtins now run on the leaf, `serve.py` wires them, and check 8 is
+pinned end-to-end: a real `ToolServer` dispatch of the real `WebSearchTool`
+publishes a `CallResponse` whose bytes a consumer rebuilds with
+`SearchResultsMetadata.from_metadata` -- on the failure path as well as the
+success one, which is the half a success-only carry would have left on prose.
+The defects the gutting was scheduled to retire are gone with the bodies that
+held them: the 15-second hardcode and the sync client inside `async execute`
+(§10 defect 2), `time.sleep` and unbounded `resp.text` (§10 defects 6, 7), and
+`[TOOL ERROR]` string-prefix error detection on both tools (§10 defect 8).
+
+Rulings taken during the build, recorded here per the Gate A precedent:
+
+- **The two transport protocols get two implementations, and §3.8's
+  expectation that one host adapter would satisfy the union was wrong.**
+  Gate A declared `FetchTransport` beside `SearchTransport` and predicted the
+  `TracedHttpClient` adapter would implement both. It cannot, for a reason
+  that is structural rather than unfinished: `TracedHttpClient` is
+  constructed **per upstream** -- one `upstream_base_url` that request paths
+  join onto, one circuit breaker guarding it -- and it buffers whole bodies.
+  A search call is one configured upstream and a small buffered response, so
+  the adapter fits it exactly. Extract fetches a *candidate-derived* URL: a
+  different host every call, under a per-call byte cap, refused on content
+  type before the body. There is no upstream to construct a client for, no
+  breaker whose state would mean anything, and no way to cap a buffered read.
+  So `agent-tools` injects `TracedSearchTransport` for search and
+  `StandaloneTransport` for fetch. This does not reopen D19: what that norm
+  forbids is a host hand-rolling a client, and `standalone` is the sanctioned
+  single-purpose transport module it explicitly widened to admit. The
+  module's own docstring, which said hosts with core would not need it, has
+  been corrected rather than left to contradict the code.
+- **The traced client gained a per-call timeout and a visible attempt
+  count**, both additive, both required for the adapter to be a conformant
+  transport rather than one that quietly ignores its obligations. SR-G1/G2
+  make the per-call bound the mechanism a caller's deadline travels through,
+  and item 7's `deadline_seconds` has nowhere to land without it. D4 needs
+  the attempts: retry lives *inside* the client, so a caller billing per
+  exchange sees one where there were three, which is the SR-E4 under-billing
+  class this package exists to retire. The count rides `Response.extensions`
+  -- httpx's own channel for transport-level facts -- so no existing caller
+  learns a new shape to ignore. §4.11's "core: nothing moves" is unaffected:
+  nothing moved, and the two additions are this workstream's, not core's
+  separate backlog.
+- **A search transport refuses a URL off its configured base** (D21). The
+  guard is cheap and it is the only seam that can enforce "base URLs come
+  from deployment config" for a per-upstream client; it keys on
+  scheme/host/**port**, because same-host-different-port is exactly what a
+  host-only check waves through.
+- **`web_fetch` projects its one candidate under the search-results key**
+  rather than inventing a second border vocabulary (D22). A consumer reading
+  structure off a tool result reads one shape whether the tool searched or
+  fetched, and learns *why* an empty fetch was empty from the typed
+  `extraction_status` facet. The projection's `query` slot carries the URL
+  asked for, since a direct fetch has no query behind it and inventing one
+  would be worse than naming what was actually requested.
+- **`credential_resolver` was dropped, not ported.** Its only path in was a
+  `_credential_resolver` key in the tool's config dict that nothing in the
+  family ever set; carrying an unexercised credential-injection seam through
+  the rewrite would have meant re-deriving its failure semantics for no
+  caller.
+- **The skip-with-reason pattern had to be extended by probing, not by
+  catching.** Extract imports trafilatura lazily, so the extra's absence no
+  longer raises `ImportError` at registration -- the tool constructs fine and
+  refuses every call. `serve.py` therefore probes for the extractor and skips
+  with a reason naming `3tears-agent-tools[fetch]`, because a pod that
+  registers a tool it cannot serve is the exact failure the pattern exists to
+  prevent. *Corrected below: the probe went into `serve.py` only, and
+  `register_builtins` needed the same one.*
+- **The two transports want opposite redirect defaults, and the split is the
+  reason why** (added in the correction pass). `build_fetch_transport` took
+  the leaf's `DEFAULT_MAX_REDIRECTS` of 0, which is right for the half it was
+  named after and wrong for the half it serves. A search upstream is a
+  deployment-configured host answering its own API: a healthy one does not
+  redirect, so refusing to follow is a signal. A fetch is a candidate-derived
+  URL, where http->https, `www` and trailing-slash canonicalisation are how a
+  large share of the real web answers -- so refusing turned ordinary pages
+  into `extraction_status: failed`, and, because robots is read through the
+  same transport, a `robots.txt` that had merely moved refused its page
+  outright. `DEFAULT_FETCH_MAX_REDIRECTS` names the fetch stance at 5, which
+  is what the hand-rolled body this replaced allowed; every hop stays
+  re-guarded. This is the *second* time Gate A's one-adapter expectation cost
+  something: the first was the transport split itself, and this is the same
+  assumption surviving in a default.
+
+**The correction pass, and the test gap that made it necessary.** A review of
+this item found seven defects, the redirect default above being the one that
+would have shipped as a widespread `web_fetch` failure. The others: the
+whole-run refusal reached the border with `failure: null` (built through
+`from_candidate_set`, which has no slot for a record, where `from_failure`
+exists for exactly this); a per-call bound bounded each *attempt* rather than
+the call, so a caller with 0.3s remaining could fund three attempts plus
+backoff, which is not what SR-G2 says the argument carries and not what
+`StandaloneTransport._perform` already does with it; `register_builtins` still
+skipped only on `ImportError`; a `max_chars` under the truncation marker's own
+length made the slice index negative and returned the *tail* of the page; a
+caller-supplied `http_transport` was closed by the per-call client; and
+`FetchTransport`'s docstring still named `TracedHttpClient` as an implementer
+of the union this item declared it could not be.
+
+They share one cause, which is the finding worth keeping. The tool and the
+transport were each tested alone and the seam between them was not tested at
+all: every `WebFetchTool` test injected a stub that hardcodes 200 and cannot
+answer a 3xx, and every `build_fetch_transport` test asserted conformance and
+refusals without ever serving a response. So `WebFetchTool()` with no injected
+transport -- the shape a pod runs -- had no test, and the suite proved values
+were *passed* rather than that behaviour *held*. `test_standalone.py`
+compounded it by pinning `max_redirects=0` as correct, which it is, for
+search. The seam now has its own class driving a real socket through the
+transport the tool builds for itself, and `LocalHttpServer` moved from
+`packages/search/tests` into `threetears.search.testing` to make that possible
+-- a published addition, justified by that module's existing rationale that a
+host injecting its own transport must be able to pin its own wiring.
+
+**Two user-visible behaviour changes, and the rollout they need.** Both are
+`web_fetch`'s, both were foreseen in kind, and neither needs a second release
+cycle -- they need *saying*, because a caller cannot discover either from a
+signature:
+
+1. **Robots became binding** for callers it was never binding for (D12). A
+   page whose rules refuse `3tears-search` now returns a refusal instead of
+   content. The stance is deployment config, not a per-call parameter, so a
+   deployment with its own agreement with a site sets `respect_robots=False`
+   where it constructs the tool.
+2. **Extraction refuses instead of degrading.** The old body fell back to
+   stripping tags with a regex when trafilatura was absent; Extract refuses
+   with a typed `LocalCapExceeded` naming the extra. Regex tag-stripping is
+   not extraction, and returning it as though it were is how a caller ends up
+   reasoning over navigation chrome -- but the consequence is that an install
+   without the extra stops returning *anything*. `3tears-scrape` declares
+   `3tears-agent-tools[document,fetch]` as a result; any other consumer
+   driving `web_fetch` owes itself the same line.
+
 4. Extract's web path (streamed, capped, robots stance, no-op on
-   provider-supplied content).
+   provider-supplied content). **Done 2026-08-11** -- `extract.py` plus the
+   `HeavyFetcher` slot in §3.1; rulings in §3.5.
 5. Gut `WebSearchTool` + `WebFetchTool`; serve.py wiring; metadata key
    end-to-end test over NATS (check 8).
 6. `page_finder` structure (check 4); context-save node fix + retention
    posture (§4.5).
 7. Envelope asks, as their own PRs with the rollout-order note (D18).
+   **Done 2026-08-11, pulled forward.** Both landed early for a reason the
+   phase ordering hid: they are additive in *different* directions. §10.9
+   populates `CallResponse.metadata`, a field that already existed, so it
+   has no ordering constraint at all. §10.10 adds
+   `CallRequest.deadline_seconds` to a model with `extra="forbid"`, where a
+   client that sends it to an older server gets its call **rejected**, not
+   degraded -- so only the accepting half shipped, and a caller may not be
+   taught to populate it until a release carrying this one is deployed.
+   That is the only item in Phase 2 that needs two release cycles, which is
+   why it stopped being last.
 
 ### Phase 3 -- pull-driven depth (may start parallel to Phase 2 after Gate A)
 
@@ -674,14 +964,44 @@ recorded here per the Gate A precedent:
    application, cull, ranker slot, degradation marks).
 
 **Gate B (pre-release):** all §3 success checks that can be verified in-repo
-are; SR-A4's SearXNG score semantics confirmed against a live instance;
-requirements doc's §13 updated with any vetoes taken during build.
+are; SR-A4's SearXNG score semantics confirmed against a live instance
+(**done 2026-08-12** -- the formula, its four consequences and the one residue
+are recorded at SR-A4 in the requirements doc; discharging the last of it wants
+an instance whose engines are not rate-limited, run with
+`SEARXNG_REQUIRE_RESULTS=1`); requirements doc's §13 updated with any vetoes
+taken during build. *Rider
+2026-08-11:* a release overtook this gate (below), so Gate B now gates the
+**next** release -- the one carrying Phase 2-3 -- not the leaf's first
+appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
 
 ### Phase 4 -- release
 
 10. Family minor bump (lockstep -- the bounds test names every edge), PR into
     develop, PR develop→main, tag pushed from main. `3tears-search` appears
     on PyPI with the rest of the family.
+
+#### Taken early -- v0.24.0, 2026-08-11
+
+The family shipped its lockstep minor with Phase 1 complete and Phases 2-3
+not started, so the release step ran three phases ahead of where this
+section puts it. Bump in
+[#304](https://github.com/pacepace/3tears/pull/304), develop→main in
+[#305](https://github.com/pacepace/3tears/pull/305), D29 ruled in
+[#306](https://github.com/pacepace/3tears/pull/306). Verified: tag `v0.24.0`
+on origin, the GitHub Release exists, and all 30 packages --
+`3tears-search` among them -- are on PyPI at 0.24.0. Three consequences,
+none of which reorder the remaining build:
+
+- **The contracts are published but not bound.** Ruled as D29: Phases 2-3
+  may still re-cut them; the freeze is the first consumer *release* that
+  pins a version carrying search, not this publication.
+- **0.24.0 is not the version Phase 5 migrations pin.** It carries the leaf
+  but not Extract, not the gutted builtins, not replay. A consumer release
+  containing migration work still gates on a later tag -- the one Gate B
+  clears. Consumer *development* is unaffected: it tracks develop (Phase 5
+  preamble).
+- **Gate B did not move to the past.** It kept its content and changed which
+  release it guards (rider above).
 
 ### Phase 5 -- consumer migrations (parallel, per repo; each pins the whole family to the one released version)
 
@@ -783,6 +1103,6 @@ wire. **Medium** for Phase 3: SR-F5's "a wiring line per consumer" is
 estimated, not measured -- the cheapest raise is wiring a `RecordingStore`
 over discodon's existing store as a spike before the record schema is cut --
 and Aggregate/Select depth depends on samsung's phase-2 requirements holding
-as written. **Open assumptions carried:** SR-A4's SearXNG score semantics
-(settled at Gate B); the six-layer cut is proposed vocabulary, not ratified
-type structure (mitigated by D23's naming rule); OQ1.
+as written. **Open assumptions carried:** ~~SR-A4's SearXNG score semantics~~
+(**settled 2026-08-12**, ahead of Gate B); the six-layer cut is proposed
+vocabulary, not ratified type structure (mitigated by D23's naming rule); OQ1.

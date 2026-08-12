@@ -82,6 +82,53 @@ async def test_invoke_tool_success():
     assert result.success is True
     assert result.content == "Hello \nWorld"
     assert result.error is None
+    # a server that sends only text produces exactly what it did before
+    assert result.metadata is None
+
+
+async def test_invoke_tool_keeps_structured_content():
+    """§4.8: ``structuredContent`` reaches the caller instead of being dropped.
+
+    Before this field existed, a structured result arrived as prose in
+    ``content`` and the caller had to re-parse the rendering to recover a
+    shape the server already knew.
+    """
+    post = AsyncMock(
+        return_value=_mock_response(
+            {
+                "content": [{"type": "text", "text": '{"status": "ok"}'}],
+                "structuredContent": {"status": "ok", "count": 3},
+                "isError": False,
+            }
+        )
+    )
+    client = _client_with_post(post)
+
+    result = await client.invoke_tool("probe", {})
+    assert result.metadata == {"status": "ok", "count": 3}
+    assert result.content == '{"status": "ok"}'
+
+
+async def test_invoke_tool_ignores_a_non_object_structured_field():
+    """A server sending a non-object there is refused the field, not trusted.
+
+    ``structuredContent`` is an object per the spec; taking anything else
+    would hand the caller a ``metadata`` that is not a mapping, which every
+    reader of that field assumes it is.
+    """
+    post = AsyncMock(
+        return_value=_mock_response(
+            {
+                "content": [{"type": "text", "text": "[1, 2]"}],
+                "structuredContent": [1, 2],
+                "isError": False,
+            }
+        )
+    )
+    client = _client_with_post(post)
+
+    result = await client.invoke_tool("probe", {})
+    assert result.metadata is None
 
 
 async def test_invoke_tool_error_flag():

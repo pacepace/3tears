@@ -14,6 +14,11 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "EXTRACTION_STATUS_COMPLETE",
+    "EXTRACTION_STATUS_FAILED",
+    "EXTRACTION_STATUS_NONE",
+    "EXTRACTION_STATUS_PENDING",
+    "EXTRACTION_STATUS_REFUSED",
     "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
@@ -26,6 +31,44 @@ __all__ = [
     "TranscriptionProvider",
     "VisionProvider",
 ]
+
+# ``MediaInfo.extraction_status``: the spellings below are the ones already
+# in the database, and that is deliberately where this vocabulary is
+# defined from. ``agent-memory``'s v021 migration declares the column
+# ``TEXT NOT NULL DEFAULT 'none'`` and v022 builds a partial index on
+# ``WHERE extraction_status = 'pending'`` -- a spelling sitting in a column
+# default and an index predicate is changed by a migration and an index
+# rebuild, not by editing a constant. So these constants name what is
+# stored; they do not propose it (docs/search-spec.md §3.5).
+#
+# The field stays ``str | None``. It is not narrowed to a ``Literal`` or a
+# ``StrEnum``: consumers assign and compare bare ``str`` today, and the
+# column carries no CHECK constraint, so a producer may legitimately store
+# a value this list has not caught up with. Read an unrecognised status the
+# way :mod:`threetears.media.contracts.facets` reads an unrecognised facet
+# -- ignore it, do not reject it.
+
+#: No extraction has been attempted. The column's server default, and the
+#: value a row carries until something asks for extraction.
+EXTRACTION_STATUS_NONE = "none"
+
+#: Extraction has been requested and has not finished. The value v022's
+#: partial index is built on, which is what makes it a work queue.
+EXTRACTION_STATUS_PENDING = "pending"
+
+#: Extraction finished and the content is available.
+EXTRACTION_STATUS_COMPLETE = "complete"
+
+#: Extraction was attempted and did not produce content -- the fetch died,
+#: the carrier was unreadable, the extractor gave up. Distinct from
+#: :data:`EXTRACTION_STATUS_REFUSED`: something tried and failed.
+EXTRACTION_STATUS_FAILED = "failed"
+
+#: Extraction was declined before it was attempted -- ``robots.txt``
+#: disallowed the fetch, a required extra was absent, a cap refused the
+#: read. Distinct from :data:`EXTRACTION_STATUS_FAILED`: nothing tried, and
+#: retrying under the same rules will decline again.
+EXTRACTION_STATUS_REFUSED = "refused"
 
 
 @dataclass
@@ -41,12 +84,23 @@ class GeneratedImage:
 
 @dataclass
 class MediaInfo:
-    """Metadata about a media item, returned by :meth:`MediaStorage.get_media`."""
+    """Metadata about a media item, returned by :meth:`MediaStorage.get_media`.
+
+    ``extraction_status`` carries one of the ``EXTRACTION_STATUS_*``
+    constants in this module, or ``None``. ``None`` and
+    :data:`EXTRACTION_STATUS_NONE` both mean *no extraction attempted*:
+    the dataclass defaults to ``None`` while the database column is
+    ``NOT NULL DEFAULT 'none'``, so which one a reader sees depends on
+    whether the value came from a constructor or a row. That split is
+    recorded rather than reconciled -- collapsing it is a migration, not a
+    contract edit -- so a consumer testing for "nothing has happened yet"
+    must accept both.
+    """
 
     media_id: UUID
     media_category: str  # "image", "audio", "video", "document"
     mime_type: str
-    extraction_status: str | None = None  # "pending", "complete", None
+    extraction_status: str | None = None
     has_downloadable_data: bool = True
 
 

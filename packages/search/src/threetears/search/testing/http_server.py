@@ -9,6 +9,14 @@ are not the obligations.
 Deliberately hand-rolled rather than a framework: it must be able to answer
 *badly* -- close mid-response, stall past a deadline, send a body with no
 declared length -- and a well-behaved server framework is built not to.
+
+Shipped in ``src`` for the reason the package docstring gives: a *host* that
+chooses its own transport configuration has to be able to pin what that
+configuration does with a socket, and :class:`StandaloneTransport` has no
+client-injection seam to mock. It moved here from ``packages/search/tests``
+after ``agent-tools`` shipped a fetch transport whose redirect policy no test
+could reach -- the tool's own tests injected a stub that could not answer 3xx,
+and the transport's tests never served a response at all.
 """
 
 from __future__ import annotations
@@ -59,6 +67,11 @@ class LocalHttpServer:
         self._server: asyncio.Server | None = None
         self._port = 0
         self.requests: list[str] = []
+        #: connections accepted, as distinct from requests served. The two
+        #: numbers are the same until something reuses a connection, which
+        #: makes this the only observable that can tell a shared client from
+        #: a fresh one per call.
+        self.connections = 0
 
     @property
     def base_url(self) -> str:
@@ -103,36 +116,48 @@ class LocalHttpServer:
             self._server = None
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Serve one connection with the next scripted reply.
+        """Serve one connection, answering requests until the client stops.
+
+        Keeps the connection open between requests rather than closing after
+        one, so that a client holding a pool can be *observed* holding it:
+        connection reuse is invisible to a server that hangs up first, and
+        invisible reuse cannot be pinned. The scripted sequence advances per
+        request, not per connection.
 
         :param reader: the connection's reader
         :ptype reader: asyncio.StreamReader
         :param writer: the connection's writer
         :ptype writer: asyncio.StreamWriter
         """
+        self.connections += 1
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
-        # NOSILENT: a client that hung up mid-request has nothing to serve
-        except asyncio.IncompleteReadError, ConnectionError:
+            while True:
+                try:
+                    head = await reader.readuntil(b"\r\n\r\n")
+                # NOSILENT: a client that hung up between requests is done
+                except asyncio.IncompleteReadError, ConnectionError:
+                    return
+                self.requests.append(head.decode("latin-1"))
+                reply = self._replies.popleft() if self._replies else self._last
+                if reply.delay:
+                    await asyncio.sleep(reply.delay)
+                if reply.close_early:
+                    return
+                headers = {"Content-Type": "application/json", **reply.headers}
+                if reply.undeclared_length:
+                    headers["Connection"] = "close"
+                else:
+                    headers.setdefault("Content-Length", str(len(reply.body)))
+                rendered = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+                writer.write(f"HTTP/1.1 {reply.status} SCRIPTED\r\n{rendered}\r\n".encode("latin-1") + reply.body)
+                try:
+                    await writer.drain()
+                # NOSILENT: a byte-cap pin aborts the read by design, closing this socket
+                except ConnectionError:
+                    return
+                if reply.undeclared_length:
+                    # the body's end is signalled by the close, so there is
+                    # no next request to wait for on this connection.
+                    return
+        finally:
             writer.close()
-            return
-        self.requests.append(head.decode("latin-1"))
-        reply = self._replies.popleft() if self._replies else self._last
-        if reply.delay:
-            await asyncio.sleep(reply.delay)
-        if reply.close_early:
-            writer.close()
-            return
-        headers = {"Content-Type": "application/json", **reply.headers}
-        if reply.undeclared_length:
-            headers["Connection"] = "close"
-        else:
-            headers.setdefault("Content-Length", str(len(reply.body)))
-        rendered = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
-        writer.write(f"HTTP/1.1 {reply.status} SCRIPTED\r\n{rendered}\r\n".encode("latin-1") + reply.body)
-        try:
-            await writer.drain()
-        # NOSILENT: a byte-cap pin aborts the read by design, closing this socket
-        except ConnectionError:
-            pass
-        writer.close()

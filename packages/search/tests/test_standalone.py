@@ -31,6 +31,7 @@ from threetears.search.adapters.searxng import SearxngAdapter
 from threetears.search.bind import bind_search
 from threetears.search.contracts import (
     EGRESS_DIRECT,
+    FetchTransport,
     LocalCapExceeded,
     SearchRequest,
     SearchTransport,
@@ -38,11 +39,12 @@ from threetears.search.contracts import (
     TransportFailed,
 )
 from threetears.search.standalone import (
+    CONTENT_TYPE_SCOPE,
     DEFAULT_MAX_RESPONSE_BYTES,
     RESPONSE_BYTES_SCOPE,
     StandaloneTransport,
 )
-from _http_server import LocalHttpServer, Reply
+from threetears.search.testing import LocalHttpServer, Reply
 from _searxng_payloads import TWO_RESULTS_BODY
 
 #: backoff small enough that a retry pin costs milliseconds rather than seconds.
@@ -503,6 +505,288 @@ async def test_the_redirect_budget_is_finite() -> None:
 
     assert response.status_code == 302
     assert len(server.requests) == 3
+
+
+# --- the fetch seam (FetchTransport, §3.5) --------------------------------
+
+
+def test_the_transport_satisfies_the_fetch_seam_too() -> None:
+    """Gate A predicted the union; this is the module that has to satisfy it."""
+    assert isinstance(_transport(), FetchTransport)
+
+
+async def test_a_fetch_states_its_own_cap() -> None:
+    """Extract's cap is the caller's memory budget, not a transport constant."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096),)) as server:
+        with pytest.raises(LocalCapExceeded, match="this read's"):
+            await _transport(max_attempts=1).fetch("GET", f"{server.base_url}/page", max_bytes=64)
+
+
+async def test_a_per_call_cap_tightens_the_deployment_cap_and_cannot_loosen_it() -> None:
+    """A host that declared its memory does not lose that because a caller asked."""
+    body = b"x" * 4096
+    async with LocalHttpServer((Reply(body=body), Reply(body=body))) as server:
+        transport = _transport(max_response_bytes=64, max_attempts=1)
+        with pytest.raises(LocalCapExceeded, match="this transport's 64-byte cap"):
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=1_000_000)
+        # ... and the tighter of the two still binds when it is the caller's.
+        with pytest.raises(LocalCapExceeded, match="this read's 32-byte cap"):
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=32)
+
+
+@pytest.mark.parametrize(("size", "refused"), [(64, False), (65, True)])
+async def test_the_cap_is_exact_at_its_own_boundary(size: int, refused: bool) -> None:
+    """A cap that is off by one is a cap nobody can reason about.
+
+    Coarse pins -- 4096 bytes against a 64-byte cap -- pass whether the
+    comparison is ``>`` or ``>=``, so they prove the cap exists without
+    proving where it sits. Exactly-at and one-past are the only two sizes
+    that tell those two implementations apart, and the answer has to be the
+    same on the declared-length path and the streaming one, which is why
+    both run here.
+    """
+    replies = (Reply(body=b"x" * size), Reply(body=b"x" * size, undeclared_length=True))
+    async with LocalHttpServer(replies) as server:
+        transport = _transport(max_attempts=1)
+        for _ in range(2):
+            if refused:
+                with pytest.raises(LocalCapExceeded):
+                    await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+            else:
+                response = await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+                assert len(response.body) == size
+
+
+async def test_an_undeclared_length_past_the_fetch_cap_is_caught_while_streaming() -> None:
+    """The lying-length path, on the seam that reads arbitrary web content."""
+    async with LocalHttpServer((Reply(body=b"y" * 8192, undeclared_length=True),)) as server:
+        with pytest.raises(LocalCapExceeded, match="this read's"):
+            await _transport(max_attempts=1).fetch("GET", f"{server.base_url}/page", max_bytes=64)
+
+
+async def test_a_body_inside_the_fetch_cap_comes_back_whole() -> None:
+    """The cap bounds; it does not truncate. Same promise request makes."""
+    page = b"<html><body>capybara</body></html>"
+    async with LocalHttpServer((Reply(body=page, headers={"Content-Type": "text/html"}),)) as server:
+        response = await _transport().fetch("GET", f"{server.base_url}/page", max_bytes=len(page))
+
+    assert response.body == page
+    assert response.egress == EGRESS_DIRECT
+
+
+@pytest.mark.parametrize("max_bytes", [0, -1])
+def test_a_fetch_cap_that_cannot_bind_is_refused_where_it_is_written(max_bytes: int) -> None:
+    """A zero-byte read is a caller defect, not a request worth making."""
+
+    async def _fetch() -> None:
+        await _transport().fetch("GET", "http://example.org/page", max_bytes=max_bytes)
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        asyncio.run(_fetch())
+
+
+async def test_the_content_type_gate_refuses_without_reading_the_body() -> None:
+    """The point of the gate: a wrong media type costs nothing to discover."""
+    async with LocalHttpServer((Reply(body=b"m" * 4096, headers={"Content-Type": "video/mp4"}),)) as server:
+        with pytest.raises(LocalCapExceeded) as raised:
+            await _transport(max_attempts=1).fetch(
+                "GET",
+                f"{server.base_url}/clip",
+                max_bytes=1_000_000,
+                allowed_content_types=("text/html",),
+            )
+
+    assert raised.value.scope == CONTENT_TYPE_SCOPE
+    # the refusal's own spend is the proof that no body was pulled: the bytes
+    # were on the wire and available, and the cap would have allowed them.
+    assert raised.value.spend.bytes_transferred == 0
+
+
+async def test_the_gate_matches_on_the_media_type_not_the_header() -> None:
+    """``text/html; charset=utf-8`` is text/html, and parameters are not it."""
+    page = b"<html>capybara</html>"
+    replies = (Reply(body=page, headers={"Content-Type": "text/html; charset=utf-8"}),)
+    async with LocalHttpServer(replies) as server:
+        response = await _transport().fetch(
+            "GET",
+            f"{server.base_url}/page",
+            max_bytes=1_000_000,
+            allowed_content_types=("text/html", "application/xhtml+xml"),
+        )
+
+    assert response.body == page
+
+
+async def test_a_response_declaring_no_media_type_is_refused_by_the_gate() -> None:
+    """Unknown content can be arbitrarily expensive; unknown is not 'what I hoped'."""
+    async with LocalHttpServer((Reply(body=b"?" * 512, headers={"Content-Type": ""}),)) as server:
+        with pytest.raises(LocalCapExceeded, match="declared no content type"):
+            await _transport(max_attempts=1).fetch(
+                "GET",
+                f"{server.base_url}/mystery",
+                max_bytes=1_000_000,
+                allowed_content_types=("text/html",),
+            )
+
+
+async def test_the_gate_leaves_an_error_status_visible() -> None:
+    """A 404 the caller asked for beats a cap refusal that hides it."""
+    replies = (Reply(status=404, body=b"gone", headers={"Content-Type": "text/plain"}),)
+    async with LocalHttpServer(replies) as server:
+        response = await _transport(max_attempts=1).fetch(
+            "GET",
+            f"{server.base_url}/missing",
+            max_bytes=1_000_000,
+            allowed_content_types=("text/html",),
+        )
+
+    assert response.status_code == 404
+
+
+async def test_the_gate_judges_the_response_that_answers_not_the_hops() -> None:
+    """A redirect hop's own media type is not the content the caller asked for."""
+    page = b"<html>capybara</html>"
+    replies = (
+        Reply(status=302, body=b"", headers={"Location": "/moved"}),
+        Reply(body=page, headers={"Content-Type": "text/html"}),
+    )
+    async with LocalHttpServer(replies) as server:
+        response = await _transport(max_redirects=1).fetch(
+            "GET",
+            f"{server.base_url}/page",
+            max_bytes=1_000_000,
+            allowed_content_types=("text/html",),
+        )
+
+    assert response.body == page
+    assert len(server.requests) == 2
+
+
+async def test_no_gate_accepts_whatever_the_cap_allows() -> None:
+    """The gate is opt-in: a caller that wants bytes says nothing about type."""
+    async with LocalHttpServer((Reply(body=b"m" * 512, headers={"Content-Type": "video/mp4"}),)) as server:
+        response = await _transport().fetch("GET", f"{server.base_url}/clip", max_bytes=1_000_000)
+
+    assert response.status_code == 200
+
+
+async def test_the_fetch_seam_inherits_the_address_guard() -> None:
+    """A fetched URL is candidate-derived, which is where D21 binds hardest."""
+    async with LocalHttpServer((Reply(),)) as server:
+        with pytest.raises(TransportFailed, match="non-public address"):
+            await StandaloneTransport(max_attempts=1).fetch("GET", f"{server.base_url}/page", max_bytes=1024)
+
+
+async def test_the_fetch_seam_inherits_the_retry_loop_and_its_accounting() -> None:
+    """One loop, two protocols: the attempt count D4 reads is the same number."""
+    replies = (Reply(status=503, body=b"nope"), Reply(body=b"ok", headers={"Content-Type": "text/html"}))
+    async with LocalHttpServer(replies) as server:
+        response = await _transport(max_attempts=2).fetch("GET", f"{server.base_url}/page", max_bytes=1024)
+
+    assert response.status_code == 200
+    assert response.attempts == 2
+
+
+async def test_a_fetch_failure_leaves_stamped_like_any_other() -> None:
+    """D8's (provider instance, egress) key is rebuildable from a fetch failure too."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096),)) as server:
+        with pytest.raises(LocalCapExceeded) as raised:
+            await _transport(max_attempts=1).fetch("GET", f"{server.base_url}/page", max_bytes=64)
+
+    assert raised.value.egress == EGRESS_DIRECT
+    assert raised.value.occurred_at is not None
+
+
+# --- the connection scope (spec section 3.8) ------------------------------
+
+
+async def test_calls_in_a_scope_share_one_connection() -> None:
+    """Extract's many-fetch path pays a handshake per host, not per document."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            for _ in range(3):
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert len(server.requests) == 3
+    assert server.connections == 1
+
+
+async def test_calls_outside_a_scope_stand_alone() -> None:
+    """SR-L5 stays the default: no scope, no pool, nothing left to close."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        for _ in range(3):
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert server.connections == 3
+
+
+async def test_a_scope_closes_what_it_opened() -> None:
+    """A pool that outlived its block would be the lifecycle SR-L5 refuses."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+        # outside the block the transport is what it was before it: the next
+        # call opens its own connection rather than reaching for a closed one.
+        await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+    assert server.connections == 2
+
+
+async def test_a_scope_survives_a_failure_inside_it() -> None:
+    """The pool is released by the block ending, however it ends."""
+    async with LocalHttpServer((Reply(body=b"x" * 4096),)) as server:
+        transport = _transport(max_attempts=1)
+        with pytest.raises(LocalCapExceeded):
+            async with transport.connection_scope():
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=64)
+        # a scope that leaked its client would hand this call a closed one.
+        response = await transport.fetch("GET", f"{server.base_url}/page", max_bytes=1_000_000)
+
+    assert response.status_code == 200
+
+
+async def test_concurrent_scopes_over_one_transport_do_not_share_a_pool() -> None:
+    """A transport is a deployment fact; two callers are not one caller."""
+    page = Reply(body=b"<html>capybara</html>", headers={"Content-Type": "text/html"})
+    async with LocalHttpServer((page,)) as server:
+        transport = _transport()
+
+        async def _scoped() -> None:
+            async with transport.connection_scope():
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096)
+
+        await asyncio.gather(_scoped(), _scoped())
+
+    assert len(server.requests) == 2
+    assert server.connections == 2
+
+
+async def test_the_deadline_still_bounds_calls_made_inside_a_scope() -> None:
+    """A shared client outlives one call's bound; the bound still binds."""
+    clock = _ManualClock()
+    async with LocalHttpServer((Reply(close_early=True),)) as server:
+        transport = _transport(max_attempts=3, clock=clock.read, sleep=clock.sleep)
+        async with transport.connection_scope():
+            with pytest.raises((TimedOut, TransportFailed)):
+                await transport.fetch("GET", f"{server.base_url}/page", max_bytes=4096, timeout_seconds=5.0)
+
+
+async def test_a_search_call_shares_the_scope_too() -> None:
+    """One loop, one lifecycle: the scope is not a fetch-only affordance."""
+    async with LocalHttpServer((Reply(body=TWO_RESULTS_BODY),)) as server:
+        transport = _transport()
+        async with transport.connection_scope():
+            await transport.request("GET", f"{server.base_url}/search")
+            await transport.request("GET", f"{server.base_url}/search")
+
+    assert len(server.requests) == 2
+    assert server.connections == 1
 
 
 # --- composed with the adapter -------------------------------------------

@@ -57,6 +57,17 @@ All items independent; all can start today.
 **Checkpoint:** search-leaf **Gate A** passed (contract review); discodon on
 3.14 with port-shaped storage and budgets; metallm current.
 
+*Status 2026-08-11:* the two **3tears** items are done — the leaf shipped
+(both adapters, budgets, pacing, wiring) and Gate A passed with its findings
+landed the same night; the `media-contracts` facets rode the keystone
+commits. Both landed in
+[#303](https://github.com/pacepace/3tears/pull/303), Gate A findings
+included. The discodon and metallm items are outstanding and owned outside
+this repo: discodon still declares `>=3.12`, and metallm's lock resolves the
+family at 0.10.6. Because the phase gate is a coordination convention rather
+than a build dependency, 3tears carried on into Phase 2 work that does not
+consume either — see the Phase 2 note.
+
 ## Phase 2 — In-family integration (3tears)
 
 - **3tears:** search Phase 2 — Extract's web path; gut
@@ -76,6 +87,69 @@ All items independent; all can start today.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
 
+*Status 2026-08-11 — most of this phase has landed.* Extract's web path is
+built ([#316](https://github.com/pacepace/3tears/pull/316)), on ground laid
+by [#307](https://github.com/pacepace/3tears/pull/307) (the `FetchTransport`
+implementation and the connection lifecycle it needs),
+[#310](https://github.com/pacepace/3tears/pull/310) (five rulings recorded
+before the build) and [#315](https://github.com/pacepace/3tears/pull/315)
+(the `extraction_status` constants it records into). Alongside it: the
+`ToolExecutor` artifact fix ([#318](https://github.com/pacepace/3tears/pull/318),
+which check 4 needed) and the MCP `structuredContent` face
+([#319](https://github.com/pacepace/3tears/pull/319)).
+
+**Item 7 was pulled forward out of last place**
+([#317](https://github.com/pacepace/3tears/pull/317)), because the two
+envelope asks turn out to be additive in different directions. §10.9
+populates a field that already existed, so it has no rollout constraint at
+all; §10.10 adds one to a model with `extra="forbid"`, where a client
+sending it to an older server is *rejected*, not degraded. Only the
+accepting half shipped. It is the one item in this phase needing two
+release cycles, which is why it should not have been last.
+
+**Item 5 landed 2026-08-11**, and took a correction pass before merging
+([#321](https://github.com/pacepace/3tears/pull/321)). Both builtins run on
+the leaf, `serve.py` wires them, and check 8 is pinned end-to-end — a real
+pod dispatch, read back from the published bytes, on the failure path as well
+as the success one. Two things came out of the build that reach past this
+phase. Gate A's expectation that one host adapter would satisfy **both**
+transport protocols was wrong: `TracedHttpClient` is per-upstream and buffers
+bodies, so the search half is a thin adapter over it and the fetch half is
+`StandaloneTransport` — the split is ruled and explained in the spec. And the
+phase's user-visible change is **two** changes, not one: robots became
+binding (foreseen), and extraction now refuses rather than falling back to
+stripping tags with a regex, so a consumer driving `web_fetch` must declare
+`3tears-agent-tools[fetch]` or get nothing back.
+
+*What the correction pass adds, because it generalises past this item.* Review
+found seven defects, the worst of which would have shipped as a widespread
+`web_fetch` failure: the host's fetch transport inherited the leaf's
+zero-redirect default, so every URL that canonicalises via a 301 came back
+empty. All seven shared one cause — the tool and the transport were each
+tested alone and the seam between them was not tested at all, so the
+configuration production actually runs had no test and the suite proved values
+were *passed* rather than that behaviour *held*. The generalisable lesson for
+the phases still to come: **a host's choice of configuration needs its own
+test, driven end-to-end, separate from the tests for the thing being
+configured**. Phase 3's `aggregate`/`select` and the Phase 5 consumer
+migrations each stand up new wiring of exactly this kind. Detail and rulings
+in [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing).
+
+**What remains here:** the rest of item 6 (`page_finder` structure, the
+context-save node). See
+[`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
+table and the item 5 rulings.
+
+*Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
+one thing here consumes them: the **replay record schema** (search Phase 3
+item 8) is elicited against discodon's carved storage port and its
+pipeline-eval needs, which is the whole reason "Why this order" puts Phase 1
+first. Cutting that schema before the port exists would be cutting it
+against an imagined consumer. Everything else in this phase — the Extract
+web path, gutting the builtins, the serve wiring, the envelope asks, and
+Phase 3's `aggregate`/`select` — depends on nothing outside this repo and
+proceeds.
+
 **Checkpoint:** **Gate B** — success checks verified in-repo, SearXNG score
 semantics confirmed against a live instance, decisions/vetoes propagated
 back into
@@ -92,6 +166,21 @@ back into
 
 **Checkpoint:** `3tears-search` and the bumped family on PyPI; tag verified
 via `git ls-remote --tags origin`.
+
+**Ran early — v0.24.0, 2026-08-11, with Phase 2 not started.** Bump in
+[#304](https://github.com/pacepace/3tears/pull/304), develop→main in
+[#305](https://github.com/pacepace/3tears/pull/305), tag `v0.24.0` pushed
+from main; the ruling it forced is
+[#306](https://github.com/pacepace/3tears/pull/306) (D29). The
+checkpoint is met on its own terms: tag on origin, Release present, all 30
+packages at 0.24.0 including `3tears-search`. But it published the leaf
+*alone*, so it does not open Phase 4 — the consumer migrations below need
+the Phase 2 surface (metallm the gutted `WebSearchTool`, discodon the Phase
+3 replay piece), and a consumer release carrying migration work must pin a
+version that has it. Phase 2 still closes at Gate B, which now guards the
+**next** release rather than the first. The contracts stay re-cuttable
+meanwhile: nobody has bound them
+([`search-spec.md` D29](search-spec.md#1-decisions-taken)).
 
 ## Phase 4 — Consumer search migrations (parallel per repo)
 

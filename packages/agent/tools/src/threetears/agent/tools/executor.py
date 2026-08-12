@@ -112,16 +112,32 @@ class ToolExecutor:
                     )
                     continue
 
+                # Invoke with the whole tool call rather than just its args, so
+                # LangChain builds the ToolMessage itself and a tool registered
+                # ``response_format="content_and_artifact"`` keeps its artifact.
+                # Passing ``tc_args`` returned the raw ``(content, artifact)``
+                # tuple, and ``str()`` of that flattened the structure into
+                # prose -- which is this executor's actual path for
+                # ``page_finder``, so the structure never reached its caller
+                # (§4.7). The in-process ``langchain_adapter`` already invokes
+                # this way; this matches it.
                 try:
-                    result = str(await tool.ainvoke(tc_args))
+                    invoked = await tool.ainvoke({"name": tc_name, "args": tc_args, "id": tc_id, "type": "tool_call"})
                 except Exception as exc:
                     log.error(
                         "Tool execution failed",
                         extra={"extra_data": {"tool_name": tc_name, "error": str(exc)}},
                     )
-                    result = f"Error executing {tc_name}: {exc}"
+                    messages.append(ToolMessage(content=f"Error executing {tc_name}: {exc}", tool_call_id=tc_id))
+                    continue
 
-                messages.append(ToolMessage(content=result, tool_call_id=tc_id))
+                # A tool that answers with a ToolMessage is appended as it is,
+                # artifact included. Anything else is a plain value and becomes
+                # the content, exactly as before.
+                if isinstance(invoked, ToolMessage):
+                    messages.append(invoked)
+                else:
+                    messages.append(ToolMessage(content=str(invoked), tool_call_id=tc_id))
 
         # Max rounds exhausted — do one final invocation to get text
         response = await chat_model.ainvoke(messages)

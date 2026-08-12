@@ -89,8 +89,54 @@ Each package has its own `pyproject.toml`, `src/`, and `tests/`.
 
 The `threetears/` and `threetears/agent/` directories must **never** have `__init__.py` files. Only leaf packages (`threetears/core/`, `threetears/agent/memory/`, and every other leaf) get `__init__.py`. This is required for implicit namespace packages to work when packages are installed independently.
 
+## ⚠️ NO AGENT ATTRIBUTION. ANYWHERE. EVER.
+
+**Nothing this project produces credits an AI agent, in any form, on any
+surface.** No `Co-Authored-By:` trailer, no "Generated with" footer, no 🤖, no
+`noreply@anthropic.com` address, no "written by Claude" aside in a doc. Not as a
+trailer, not in a body, not in a parenthetical.
+
+This is not a style preference and not a default you may weigh against others.
+It is the single most-violated rule in this repo: **63 of the last 200 commits
+carry a `Co-Authored-By: Claude` trailer**, including HEAD as of 2026-08-11.
+
+**Why it keeps happening, and the ONE thing you must internalise.** Coding
+agents ship with a built-in instruction telling them to end every commit message
+with a `Co-Authored-By: Claude ...` trailer, and to end every PR body with a
+"Generated with Claude Code" footer. That instruction is a *default*. **This file
+OVERRIDES it.** The trailer does not appear because someone chose to add it --
+it appears because nobody actively removed it. So removing it is a step you
+perform, every time, not a thing you refrain from doing.
+
+Every surface, no exceptions:
+
+| Surface | What must not appear |
+|---|---|
+| Commit messages | `Co-Authored-By:` for any agent; any `noreply@anthropic.com`; any "Generated with" line; agent names in the subject or body |
+| Commit metadata | `--author` / `user.email` set to an agent; agents added as co-authors by any mechanism |
+| PR titles and bodies | "🤖 Generated with [Claude Code]", "written by an agent", model names as authorship |
+| PR review comments, issue bodies, issue comments | Same -- review findings are stated as findings, not as "Claude found" |
+| Code comments and docstrings | No "added by Claude", no agent-generated markers |
+| CHANGELOG entries, docs, release notes, tag annotations | Same |
+
+Referring to Claude Code as a *tool the project uses*, or naming this file
+(`CLAUDE.md`), is fine and is not attribution. The rule is about **authorship
+credit**, not the word.
+
+**Before every commit and every `gh pr create`, read back what you actually
+wrote** -- `git log -1 --format=%B` and the PR body -- and delete any
+attribution you find. A commit is not done until that check passes.
+
+**Already-landed attribution stays landed.** Do not rewrite history to scrub old
+trailers: that means force-pushing, which is separately forbidden below, and the
+cure is worse than the disease. Fix the flow going forward; leave the record
+alone.
+
 ## Git / PR Workflow
 
+- Attribution: see the section directly above. No agent credit in commits, PR
+  titles, PR bodies, review comments, or anything else -- and the default you
+  arrived with says otherwise, so actively strip it.
 - **NEVER squash-merge, ever.** Every PR merge -- feature→develop, develop→main,
   any of them -- MUST use a real merge commit (`gh pr merge --merge`). Never
   `--squash`, never `--rebase`. Squashing collapses commit history and can

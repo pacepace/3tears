@@ -287,10 +287,22 @@ class McpServer:
         if isinstance(result, mcp_types.TextContent):
             return [result]
         if isinstance(result, str):
-            text = result
-        else:
-            text = json.dumps(result, default=str, indent=2)
-        return [mcp_types.TextContent(type="text", text=text)]
+            return [mcp_types.TextContent(type="text", text=result)]
+
+        # a structured handler result rides BOTH faces: the prose a model
+        # reads, and the spec's ``structuredContent`` a program reads. it
+        # used to ride only the first -- json.dumps into a text block --
+        # which meant every structured payload reached its consumer as
+        # prose it had to re-parse, or not at all. returning the full
+        # CallToolResult rather than a content list is what lets the
+        # structured field be set; the SDK's list wrapper has nowhere to
+        # put it (search-spec.md §4.8).
+        text = json.dumps(result, default=str, indent=2)
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=text)],
+            structuredContent=result if isinstance(result, dict) else {"result": result},
+            isError=False,
+        )
 
     @staticmethod
     def _error_result(

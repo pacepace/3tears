@@ -4,6 +4,167 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.1 -- 2026-08-12
+
+### Added
+
+- `mcp`: a structured handler result now rides **both** faces (§4.8) --
+  the pretty JSON a model reads, and the spec's `structuredContent` a
+  program reads. It used to ride only the text one, so every structured
+  payload reached its consumer as prose it had to re-parse out of its own
+  rendering, or lost the structure entirely. A non-object result is wrapped
+  under a `result` key rather than dropped, so the field's presence does
+  not depend on the handler's top-level type. String and `TextContent`
+  handlers are untouched.
+- `agent-tools`: `McpToolResult.metadata` carries the server's
+  `structuredContent` (§4.8). Optional and defaulted, so a server sending
+  only text produces exactly what it did before; a non-object in that field
+  is ignored rather than handed to a caller that assumes a mapping.
+- `agent-tools`: `ToolCallFailure` carries structure out of the exception
+  path (§10.9, D18). A tool that *returned* a `ToolResult` always had its
+  `metadata` forwarded onto `CallResponse`; a tool that raised got a
+  string, so any failure with a shape -- which provider refused, which cap
+  fired, what may be retried -- had to choose between raising and being
+  understood. Opt-in by exception type, not by duck-typed attribute: every
+  other exception behaves exactly as before. No rollout ordering, because
+  `CallResponse.metadata` already existed and the exception path simply
+  stopped leaving it empty.
+- `agent-tools`: `CallRequest.deadline_seconds` -- the CALLER's remaining
+  budget (§10.10, SR-G2), distinct from `ToolManifestEntry.timeout_seconds`
+  (the tool's declared ceiling) and `max_call_seconds` (the pod's
+  backstop). The effective bound is the minimum of whichever are set: a
+  caller cannot buy more time than the pod allows, and the pod does not
+  spend time on an answer the caller stopped waiting for. `0.0` means no
+  time left and is honoured as a budget rather than treated as absent.
+  **This release ACCEPTS the field and nothing sends it.** `CallRequest` is
+  `extra="forbid"`, so a client that sends it to a server predating it gets
+  its call *rejected*, not degraded -- the server side ships and deploys a
+  release before any caller is taught to populate it, the same order
+  `result_subject` went out under.
+- `search`: `extract.py` -- Extract's web path (§3.5, Phase 2 item 4). One
+  candidate in, the same candidate out with its content slot filled, its
+  fidelity at `content`, and `extraction_status` / `extraction_method`
+  recorded as facets. A candidate that already carries provider-supplied
+  content is returned untouched and costs nothing (SR-A2), checked before
+  robots -- a fetch that will not happen needs no permission. Everything
+  reaches the network through the injected `FetchTransport`, `robots.txt`
+  included, so the D21 guards, the cap, the pacing and the egress are the
+  ones the deployment configured rather than a second, weaker set. Robots
+  is honored by default with a config override (D12, still proposed
+  pending cross-repo ratification), and RFC 9309's failure posture:
+  4xx means no rules exist, 5xx or a transport failure means unknown
+  rules, honored as deny.
+- `search`: `HeavyFetcher` joins `FetchTransport` in `contracts/transport`
+  -- the escalation slot `3tears-scrape` implements for carriers an
+  ordinary fetch cannot read. Its method is named `fetch_rendered` rather
+  than `fetch` so an ordinary transport cannot satisfy the protocol by
+  accident and be used as one: escalation is a caller's explicit choice
+  per candidate, never a fallback Extract reaches for after a failure.
+- `media-contracts`: `EXTRACTION_STATUS_NONE` / `_PENDING` / `_COMPLETE` /
+  `_FAILED` / `_REFUSED` name the `MediaInfo.extraction_status` vocabulary,
+  which until now was a comment listing two of the five. The spellings are
+  taken from the shipped DDL rather than proposed: `agent-memory`'s v021
+  declares the column `TEXT NOT NULL DEFAULT 'none'` and v022 indexes
+  `WHERE extraction_status = 'pending'`, so four of the five already exist
+  in databases and only `refused` is new (docs/search-spec.md §3.5). The
+  field stays `str | None` -- no `Literal`, no `StrEnum` -- because the
+  column carries no CHECK constraint and consumers compare bare `str`;
+  an unrecognised status is ignored, not rejected, the way an unrecognised
+  facet is. Purely additive: nothing reads these yet, and `MediaInfo`'s
+  shape is unchanged.
+- `enforcement`: `test_extraction_status_vocabulary` -- every status
+  spelling reaching SQL must be one `media-contracts` names, and v022's
+  partial-index predicate must still equal `EXTRACTION_STATUS_PENDING`.
+  That pair is the one whose disagreement is silent: the index still
+  builds, the writes still succeed, and the extraction work queue simply
+  reports no work, which looks exactly like a quiet day. Verified
+  discriminating -- re-spelling the constant fails both checks.
+- `enforcement`: `test_runtime_version_is_not_hardcoded` -- a package's
+  `__version__` must be read from installed metadata, never written as a
+  literal. The lockstep bump touches ~30 `pyproject.toml` files
+  mechanically and walks straight past a literal in a different file,
+  which is exactly how the drift below survived. Verified to flag the old
+  file and pass the fixed one.
+
+### Changed
+
+- `search`: `StandaloneTransport.connection_scope()` documents that its
+  block bounds the client. A task started inside the scope inherits the
+  context and therefore the client, so one left running past the
+  `async with` keeps a client the exiting scope has already closed --
+  verified, not theorised. Awaiting inside the block, `gather` included,
+  is unaffected. The docstring previously said "concurrency-safe"
+  unqualified, which is true of overlapping scopes and reads as a promise
+  about escaping tasks.
+- `search`: D29 records which consumers its freeze window is measured
+  against. It is ours -- metallm and discodon -- and a third party can
+  install the published leaf today and sits outside that definition. What
+  covers them is the alpha policy the root README already states; the
+  ruling now says so rather than leaving it inferred, and notes the row
+  stops applying at 1.0.0.
+
+### Fixed
+
+- `core`: `DurableStoreCollection.save_to_store` forwards the transaction
+  handle instead of discarding it. `flush_pending`'s atomic-batch path opens
+  `async with backend.transaction() as conn` and threads that handle down
+  through `persist_to_store`, but the structured collection dropped it, so a
+  `DurableStore` implementing `transaction()` as a batch accumulator never
+  received anything: the accumulator stayed empty, every write executed on
+  its own, and a batched flush silently produced one durable write per
+  entity. It was silent because degrading to the per-entity loop is the
+  designed fallback, so a batch that never batched looked exactly like a
+  batch that worked -- only the write grouping distinguishes them.
+  `DurableStore.upsert` has always declared `conn`, so a backend with no use
+  for it ignores it, which is what the protocol already asks of a
+  non-transactional store; the SQL backend and scriob's `GitL3Backend`
+  already accept it. Two in-repo test fakes had drifted from that signature
+  and are brought back to it.
+- `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).
+  It invoked with the call's *arguments* and stringified whatever came
+  back, so a tool registered `response_format="content_and_artifact"` had
+  its `(content, artifact)` tuple flattened into prose and its structure
+  never reached the caller. It now invokes with the whole tool call, which
+  is what makes LangChain build the `ToolMessage` and populate `artifact`
+  -- the way the in-process `langchain_adapter` already did it. This is
+  `page_finder`'s actual execution path, so check 4 could not pass without
+  it. Tools that answer with a plain value are unaffected. The existing
+  test asserted the args-only call shape, which encoded the defect; it now
+  pins the fixed one.
+- `media-contracts`: the runtime `__version__` is derived from package
+  metadata like every other package in the family, instead of a hardcoded
+  literal. It read `0.10.6` while the package shipped at 0.24.0 --
+  fourteen minor releases of drift, published each time, reporting a
+  version this package had not been for months. Nothing failed, which is
+  the point: a hardcoded version is wrong silently.
+
+### Notes
+
+- `search`: the `extraction_status` vocabulary is ruled canonical **in the
+  shipped DDL, not in the contract's comment**, before the constants that
+  Extract needs are written. The two disagree today:
+  `MediaInfo.extraction_status` documents `"pending"` / `"complete"` /
+  `None`, while migration v021 declares the column `TEXT NOT NULL DEFAULT
+  'none'` over `'none'` / `'pending'` / `'complete'` / `'failed'` and v022
+  indexes `WHERE extraction_status = 'pending'`. The DDL wins because a
+  spelling in a column default and an index predicate costs a migration to
+  change. So `failed` already exists, only `refused` is new, and the field
+  stays `str | None` -- narrowing it to a `Literal` would break bare-`str`
+  consumers and force a data ruling on `None` versus `'none'`, which is
+  recorded rather than fixed. Recorded in docs/search-spec.md §3.5.
+- `search`: the 0.24.0 release published `3tears-search` three phases ahead
+  of where the spec sequences the release step, which retired the premise
+  under one Gate A disposition ("nothing is released, so there is no older
+  reader to protect"). Ruled as **D29**: publication does not freeze the
+  contracts -- *binding* does, and nobody has bound. Phases 2-3 may still
+  re-cut contract types; the window closes at the first consumer release
+  pinning a version that carries search. `SEARCH_RESULTS_SCHEMA_VERSION` and
+  `CANONICAL_FORM_VERSION` now count from 0.24.0, so a non-additive change
+  must be spelled as a bump instead of absorbed. Gate B kept its content and
+  changed which release it guards -- the next one, carrying Phase 2-3, not
+  the leaf's first appearance on PyPI. Recorded in docs/search-spec.md §1
+  (D29) and §7, and in docs/convergence-sequencing.md.
+
 ## v0.24.0 -- 2026-08-11
 
 ### Added

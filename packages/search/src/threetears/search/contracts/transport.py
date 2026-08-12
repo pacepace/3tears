@@ -39,8 +39,16 @@ before the body is pulled (SR-G5, §3.5). Those are different obligations,
 so they are different protocols: widening :class:`SearchTransport` later
 would retroactively invalidate every implementation written against the
 Phase-1 shape, while a second protocol lets an implementation satisfy the
-union (the standalone transport and the host-side ``TracedHttpClient``
-adapter will) and leaves search-only implementers conformant forever.
+union and leaves search-only implementers conformant forever.
+
+*Corrected 2026-08-11 (Phase 2 item 5).* Gate A expected the union's
+implementers to be the standalone transport **and** the host-side
+``TracedHttpClient`` adapter. Only the standalone transport implements both,
+and the adapter structurally cannot: ``TracedHttpClient`` is constructed per
+upstream -- one base URL that paths join onto, one breaker guarding it -- and
+buffers whole bodies, while a fetch is a different host every call read
+against a per-call cap. Hosts therefore inject *two* objects, and the split
+is the reason declaring two protocols was right rather than merely cautious.
 """
 
 from __future__ import annotations
@@ -51,7 +59,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue
 
-__all__ = ["FetchTransport", "SearchTransport", "TransportResponse"]
+__all__ = ["FetchTransport", "HeavyFetcher", "SearchTransport", "TransportResponse"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,8 +160,10 @@ class FetchTransport(Protocol):
     2), so no Phase-1 :class:`SearchTransport` implementer is ever
     retroactively non-conformant: an implementation that also serves
     Extract satisfies both protocols; one that only serves search never
-    has to. Expected implementers of the union: this package's
-    ``standalone`` module and the host-side ``TracedHttpClient`` adapter.
+    has to. The one implementer of the union is this package's ``standalone``
+    module -- Gate A also expected the host-side ``TracedHttpClient``
+    adapter, which the module docstring's 2026-08-11 correction records as
+    structurally impossible.
 
     What :meth:`fetch` owes beyond :meth:`SearchTransport.request`'s
     obligations (which all still apply -- bounded retry, configurable
@@ -222,5 +232,51 @@ class FetchTransport(Protocol):
             taxonomy: cap and gate refusals as ``LocalCapExceeded`` with
             the refusing scope named); Extract maps everything else onto
             the taxonomy (SR-J1)
+        """
+        ...
+
+
+@runtime_checkable
+class HeavyFetcher(Protocol):
+    """The escalation slot for carriers an ordinary fetch cannot read.
+
+    A page behind a renderer, a bot wall, or a session is not a
+    :class:`FetchTransport` problem -- it needs a browser, which is
+    ``3tears-scrape``'s business and never this package's (§3.5: the leaf
+    MUST NOT import scrape). So the seam is a slot: scrape implements this
+    shape, a host constructs one, and a caller hands it to Extract for the
+    candidate it decided was worth the cost.
+
+    **Escalation is never automatic** (§3.5, ruled 2026-08-11). The method
+    is deliberately named apart from :meth:`FetchTransport.fetch` so an
+    ordinary transport cannot satisfy this protocol by accident and get
+    used as one -- a heavy fetch can cost orders of magnitude more than a
+    plain one, and silent escalation multiplies that by a factor nobody
+    sees until the bill.
+    """
+
+    async def fetch_rendered(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        timeout_seconds: float | None = None,
+    ) -> TransportResponse:
+        """Fetch a carrier that needs rendering, and return it as bytes.
+
+        The byte cap binds exactly as it does on :meth:`FetchTransport.fetch`:
+        an implementation MUST NOT hold more than ``max_bytes`` of body.
+
+        :param url: absolute URL to render and read
+        :ptype url: str
+        :param max_bytes: hard cap on the returned body (SR-G5)
+        :ptype max_bytes: int
+        :param timeout_seconds: per-call bound; None uses the
+            implementation's configured value (SR-G1)
+        :ptype timeout_seconds: float | None
+        :return: the rendered document, with ``body`` within the cap
+        :rtype: TransportResponse
+        :raises Exception: implementations surface failures however they
+            choose; Extract maps them onto the taxonomy (SR-J1)
         """
         ...
