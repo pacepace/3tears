@@ -793,13 +793,88 @@ Then the phase itself:
 |---|---|
 | 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
 | 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below, plus a correction pass ([#321](https://github.com/pacepace/3tears/pull/321)) that fixed seven review findings and the seam gap that hid them |
-| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` and the context-save node outstanding |
+| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` reads structure (check 4, below); the context-save node outstanding |
 | 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
 | §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
 | §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
 
-What remains before Gate B is the rest of item 6 and Phase 3's
-`aggregate`/`select`.
+What remains before Gate B is the context-save node (the last of item 6) and
+Phase 3's `aggregate`/`select`.
+
+#### Phase 2 item 6, `page_finder` -- built 2026-08-12
+
+Check 4 is discharged, and its "without its callers changing" clause is the
+literal shape of the change: every new fact arrives as a defaulted
+`PageFinderResult` field, so existing construction and existing readers are
+untouched. `page_finder` reads the typed projection off `ToolMessage.artifact`
+-- the artifact item 7 stopped the executor from stringifying -- rather than
+re-parsing the prose the LLM read.
+
+Three things structure buys that prose could not, and one it deliberately does
+not:
+
+- **A URL the search never returned is now visible as such.** The coercion step
+  can name a page the loop reached by following a fetched link, or one it
+  invented outright; `url_was_a_search_result` tells those from a real find.
+  The URL is still the LLM's choice -- structure qualifies the answer, it does
+  not replace it.
+- **A refused search stops reading as a fruitless one.** Every empty run used
+  to report "exhausted its turn budget"; a typed `rate-limited` now says so,
+  class first, because that is the fact an operator acts on.
+- **Provider degradations survive** (SR-L2, P8) -- a page found over a search
+  that lost two engines is still a finding, just one whose thinness has a
+  stated cause.
+- **No ranking is implied.** `candidates_seen` is provider order across turns,
+  deduplicated by identity; ordering them is Select's business, not this
+  module's.
+
+Two seam facts worth keeping, because both are the kind that pass a unit test
+and fail in production. `web_fetch` writes its projection under the *same*
+metadata key as `web_search`, so the reader filters by bound tool name --
+`threetears.web_search`, never the bare string, the identical name-grain bug
+`_extract_search_queries` already carries a regression test for. And
+`from_metadata` refuses a newer `schema_version` loudly (D13), which is right
+for a reader that may fail and wrong inside a function that promises never to
+raise, so here that refusal degrades to a warning and the prose path.
+
+`scrape` now declares `3tears-search` directly. It had been arriving only
+transitively through `agent-tools[fetch]`, which is not a dependency a package
+may lean on for its own imports.
+
+**One adjacent defect, found by testing the module rather than the change.**
+`_verify_candidate_page` fetched unbounded: `client.get` buffered the whole
+body and BeautifulSoup then built a parse tree from it, measured at **77x** the
+served size -- 19 MiB of HTML peaked at ~1.5 GiB of heap. It fetches a URL an
+LLM picked out of search results, so that size was never this process's to
+choose. This is the same defect class as §10 defect 7, which the gutting
+removed from `web_fetch`; it survived because this is scrape's own fetch rather
+than the leaf's. Now streamed under a 2 MiB cap matching `extract.py`'s
+`DEFAULT_MAX_BYTES` (SR-G5), same peak measurement down to 157 MiB, and the
+"nothing found" note distinguishes *nothing in what I read* from *nothing on
+the page* -- a note that conflated them would send the next reader hunting a
+structure bug that is really a size cap.
+
+Encoding behaviour is pinned rather than assumed, because the decode moved from
+`response.text` to an explicit one: declared Shift-JIS, windows-1256 and UTF-16
+all decode; an undeclared or self-contradicting charset degrades with
+`errors="replace"` instead of raising; and a body sliced mid-multibyte at the
+cap does the same. Structure detection survives all of it for a reason worth
+stating -- every marker it looks for (`<table>`, `<tr>`, `href`) is ASCII, so
+finding structure never depended on rendering the text correctly. A bidi
+override that makes a link *render* as `.pdf` is also pinned as not verifying,
+since the extension check reads the real characters.
+
+**Conditional requests: nothing, deliberately here and untracked elsewhere.**
+No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape,
+or core's traced client. For everything this spec governs that is correct and
+already ruled: conditional requests revalidate a copy the caller holds, D14
+forbids holding one in v1, and SR-O3 owns the revisit. `_verify_candidate_page`
+likewise runs once per candidate at discovery and would have nothing to inspect
+on a 304. The gap that is *not* covered by that reasoning is scrape's own
+repeat-fetching of already-onboarded targets, where a validator would skip a
+render and an LLM extraction on unchanged pages; no target stores one today.
+Recorded here rather than fixed, because it is the scrape pipeline's decision
+and not this workstream's.
 
 #### Phase 2 item 5 -- built 2026-08-11
 
