@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `mcp`: a structured handler result now rides **both** faces (§4.8) --
+  the pretty JSON a model reads, and the spec's `structuredContent` a
+  program reads. It used to ride only the text one, so every structured
+  payload reached its consumer as prose it had to re-parse out of its own
+  rendering, or lost the structure entirely. A non-object result is wrapped
+  under a `result` key rather than dropped, so the field's presence does
+  not depend on the handler's top-level type. String and `TextContent`
+  handlers are untouched.
+- `agent-tools`: `McpToolResult.metadata` carries the server's
+  `structuredContent` (§4.8). Optional and defaulted, so a server sending
+  only text produces exactly what it did before; a non-object in that field
+  is ignored rather than handed to a caller that assumes a mapping.
+
 ### Fixed
 
 - `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).

@@ -110,8 +110,14 @@ class TestDispatchHappyPath:
         assert "called with {'foo': 'bar'}" in _content_text(result)
 
     @pytest.mark.asyncio
-    async def test_dict_handler_result_is_json_serialised(self) -> None:
-        """dict result is rendered as pretty JSON in the text content."""
+    async def test_dict_handler_result_rides_both_faces(self) -> None:
+        """dict result is pretty JSON for a model AND structuredContent for a program.
+
+        It used to be the text face only. A structured payload that reaches
+        its consumer as prose has to be re-parsed out of its own rendering,
+        which is a reader guessing at a shape the producer already knew
+        (search-spec.md §4.8).
+        """
 
         async def handler(**_kwargs: Any) -> dict[str, Any]:
             return {"status": "ok", "count": 3}
@@ -125,8 +131,53 @@ class TestDispatchHappyPath:
             registry=_registry_with(tool),
         )
         result = await server._dispatch("probe", {})  # noqa: SLF001
+        assert isinstance(result, mcp_types.CallToolResult)
+        assert result.isError is False
+        assert json.loads(_content_text(result.content)) == {"status": "ok", "count": 3}
+        assert result.structuredContent == {"status": "ok", "count": 3}
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_structured_result_is_wrapped_under_a_key(self) -> None:
+        """``structuredContent`` is an object per the spec, so a list gets a key.
+
+        Dropping the structure rather than wrapping it would make the field's
+        presence depend on the handler's top-level type, which is exactly the
+        kind of conditional a consumer cannot see from the schema.
+        """
+
+        async def handler(**_kwargs: Any) -> list[int]:
+            return [1, 2, 3]
+
+        tool = _make_tool(handler=handler)
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=identity),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(tool),
+        )
+        result = await server._dispatch("probe", {})  # noqa: SLF001
+        assert isinstance(result, mcp_types.CallToolResult)
+        assert result.structuredContent == {"result": [1, 2, 3]}
+
+    @pytest.mark.asyncio
+    async def test_a_string_handler_result_still_returns_a_content_list(self) -> None:
+        """Text-only handlers are untouched: no structured face, no shape change."""
+
+        async def handler(**_kwargs: Any) -> str:
+            return "plain prose"
+
+        tool = _make_tool(handler=handler)
+        identity = Identity(principal_type="user", principal_id=uuid4())
+        server = McpServer(
+            name="test",
+            identity_provider=_identity_provider(identity=identity),
+            authorizer=_authorizer(allows=True),
+            registry=_registry_with(tool),
+        )
+        result = await server._dispatch("probe", {})  # noqa: SLF001
         assert isinstance(result, list)
-        assert json.loads(_content_text(result)) == {"status": "ok", "count": 3}
+        assert _content_text(result) == "plain prose"
 
     @pytest.mark.asyncio
     async def test_handler_returning_text_content_list_passes_through(self) -> None:
