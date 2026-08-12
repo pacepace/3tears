@@ -87,19 +87,33 @@ consume either — see the Phase 2 note.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
 
-*Status 2026-08-11 — what has landed toward this phase.* Nothing here is
-finished; two pieces of the ground under item 4 are.
-[#307](https://github.com/pacepace/3tears/pull/307) gave `FetchTransport`
-the implementation Gate A deferred, so Extract is no longer due to be
-written against a protocol nothing satisfies — and settled the connection
-lifecycle that path depends on.
-[#310](https://github.com/pacepace/3tears/pull/310) (open) records the five
-Extract rulings in [`search-spec.md` §3.5](search-spec.md#35-extractpy-web-path-phase-2-carrier-dispatch-phase-3)
-ahead of the build, per the Gate A precedent. `extract.py` itself does not
-exist yet, and neither do any of items 5–7: `WebSearchTool` and
-`WebFetchTool` are un-gutted, `serve.py` has no leaf wiring, the
-`ToolExecutor` artifact fix is unlanded, and the MCP face still flattens
-everything to `TextContent`.
+*Status 2026-08-11 — most of this phase has landed.* Extract's web path is
+built ([#316](https://github.com/pacepace/3tears/pull/316)), on ground laid
+by [#307](https://github.com/pacepace/3tears/pull/307) (the `FetchTransport`
+implementation and the connection lifecycle it needs),
+[#310](https://github.com/pacepace/3tears/pull/310) (five rulings recorded
+before the build) and [#315](https://github.com/pacepace/3tears/pull/315)
+(the `extraction_status` constants it records into). Alongside it: the
+`ToolExecutor` artifact fix ([#318](https://github.com/pacepace/3tears/pull/318),
+which check 4 needed) and the MCP `structuredContent` face
+([#319](https://github.com/pacepace/3tears/pull/319)).
+
+**Item 7 was pulled forward out of last place**
+([#317](https://github.com/pacepace/3tears/pull/317)), because the two
+envelope asks turn out to be additive in different directions. §10.9
+populates a field that already existed, so it has no rollout constraint at
+all; §10.10 adds one to a model with `extra="forbid"`, where a client
+sending it to an older server is *rejected*, not degraded. Only the
+accepting half shipped. It is the one item in this phase needing two
+release cycles, which is why it should not have been last.
+
+**What remains here:** item 5 (gut both builtins, serve wiring, the NATS
+metadata end-to-end test) and the rest of item 6 (`page_finder` structure,
+the context-save node). Item 5 carries the phase's only user-visible
+behavior change — an Extract-backed `WebFetchTool` makes robots binding for
+callers it was never binding for — so it owes a stated rollout of its own.
+See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the
+per-item table.
 
 *Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
 one thing here consumes them: the **replay record schema** (search Phase 3
