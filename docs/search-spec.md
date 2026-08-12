@@ -794,13 +794,13 @@ Then the phase itself:
 |---|---|
 | 4 -- Extract's web path | **Done** -- [#316](https://github.com/pacepace/3tears/pull/316), with four more rulings in §3.5 |
 | 5 -- gut the two builtins; serve wiring; NATS metadata test | **Done** -- with the transport-split ruling below, plus a correction pass ([#321](https://github.com/pacepace/3tears/pull/321)) that fixed seven review findings and the seam gap that hid them |
-| 6 -- `page_finder` structure; context-save node | `ToolExecutor` half done ([#318](https://github.com/pacepace/3tears/pull/318)); `page_finder` reads structure (check 4, below); the context-save node outstanding |
+| 6 -- `page_finder` structure; context-save node | **Done** -- `ToolExecutor` in [#318](https://github.com/pacepace/3tears/pull/318); `page_finder` reads structure (check 4) and the context-save node's C8 fix, both below |
 | 7 -- envelope asks | **Done, pulled forward** -- [#317](https://github.com/pacepace/3tears/pull/317) |
 | §4.7 executor artifact | **Done** -- [#318](https://github.com/pacepace/3tears/pull/318) |
 | §4.8 MCP `structuredContent` | **Done** -- [#319](https://github.com/pacepace/3tears/pull/319) |
 
-What remains before Gate B is the context-save node (the last of item 6) and
-Phase 3's `aggregate`/`select`.
+**Phase 2 is complete.** What remains before Gate B is Phase 3's
+`aggregate`/`select`, plus the gate's own sweep of the in-repo success checks.
 
 #### Phase 2 item 6, `page_finder` -- built 2026-08-12
 
@@ -864,6 +864,62 @@ stating -- every marker it looks for (`<table>`, `<tr>`, `href`) is ASCII, so
 finding structure never depended on rendering the text correctly. A bidi
 override that makes a link *render* as `.pdf` is also pinned as not verifying,
 since the extension check reads the real characters.
+
+#### Phase 2 item 6, the context-save node (C8) -- built 2026-08-12
+
+The last of Phase 2. Three deliverables, and the third is the one with a
+deadline attached.
+
+**The name-grain defect is fixed, and the fix is not the interesting part.**
+`_DEFAULT_SAVEABLE_TOOLS` held bare `web_search` / `web_fetch` matched by exact
+equality against `ToolMessage.name`, while the adapter binds every tool under
+`mcp_name()` -- so the default set matched nothing and the node was inert in
+production. The interesting part is *why the suite could not see it*: every
+test passed its own bare names explicitly, so the node's logic was asserted
+against names the tests chose rather than the name production binds. The
+regression pin therefore reads the real tools' real `mcp_name()` values rather
+than restating a string, and a seam test drives the real adapter end to end and
+lets it pick the name.
+
+**The node binds on result type before tool name**, which is what C8 actually
+asked for: *"it binds on the tool name as a string, not on the result type --
+and the failure class this predicts has already fired."* A message carrying
+search structure is saved whatever the tool is called, so renaming or splitting
+a tool per carrier can no longer silently change what is retained. The name set
+remains, for tools with no structure to recognise.
+
+**Structure is retained beside the prose**, making this the consumer C8 said
+should *"get better rather than merely unbroken."* The stored row previously
+held a flattened 4000-character truncation with no provenance -- a claim nobody
+could trace back. It now carries the query, candidate identities and titles,
+notices, and any typed failure class, so SR-A3's re-checkability survives the
+truncation. The query also becomes the dedup fingerprint, so asking the same
+thing twice refreshes a row instead of stacking a second copy. A failed search
+is recorded *as* a failure, which prose alone could not distinguish from a thin
+answer.
+
+**The retention posture is stated in the module docstring, before any wiring**
+-- the ordering C8 required and the reason it was still available: the node has
+been shipped-but-inert since it was written, so the posture could still precede
+the first retained byte. It records what is kept and the rules that govern it
+(D11/SR-K2 queries are user content, redaction is the host's; D7/D12 retention
+follows the consumer's policy; SR-K4 fetched page text is third-party content),
+and it states that none of those are this module's to decide. Wiring remains
+deliberately undone.
+
+Two adjacent corrections, both the same defect class one layer over:
+
+- **`chunker.py` registered its only default strategy under the bare
+  `web_fetch`.** The save node passes a message's tool name as the strategy
+  hint, so fixing the node's names alone would have silently downgraded header
+  chunking to line chunking. `chunk_content` now falls back from a namespaced
+  hint to its bare tail, which fixes it for every namespaced tool rather than
+  just this one.
+- **An empty `saveable_tools` set meant its own opposite.** `saveable_tools or
+  _DEFAULT_SAVEABLE_TOOLS` made `frozenset()` falsy and fell back to the
+  defaults, so a caller asking for "no tools by name" got the defaults instead.
+  Now `None` means defaults and empty means empty, which also makes
+  "structure only" expressible.
 
 **Conditional requests: nothing today, and the question it raised is now ruled.**
 No `If-None-Match` or `If-Modified-Since` exists anywhere in the leaf, scrape, or
