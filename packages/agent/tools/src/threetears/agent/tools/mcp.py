@@ -54,11 +54,20 @@ class McpTool:
 
 @dataclass
 class McpToolResult:
-    """Result of an MCP tool invocation."""
+    """Result of an MCP tool invocation.
+
+    ``metadata`` carries the spec's ``structuredContent`` when the server
+    sent one. It was missing, so a structured result reached this client as
+    prose in ``content`` and its structure had to be re-parsed out of the
+    rendering -- or, more often, was simply lost. Optional and defaulted, so
+    a server that sends only text produces exactly what it did before
+    (search-spec.md §4.8).
+    """
 
     success: bool
     content: str
     error: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class McpClient:
@@ -135,7 +144,12 @@ class McpClient:
             data = resp.json()
             content_parts = data.get("content", [])
             text_content = "\n".join(part.get("text", "") for part in content_parts if part.get("type") == "text")
-            return McpToolResult(success=not data.get("isError", False), content=text_content)
+            structured = data.get("structuredContent")
+            return McpToolResult(
+                success=not data.get("isError", False),
+                content=text_content,
+                metadata=structured if isinstance(structured, dict) else None,
+            )
         except httpx.TimeoutException:
             return McpToolResult(success=False, content="", error="MCP tool invocation timed out")
         except Exception as exc:
