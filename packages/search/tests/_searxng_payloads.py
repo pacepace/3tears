@@ -14,6 +14,8 @@ envelope carries ``unresponsive_engines`` for engines that did not answer.
 from __future__ import annotations
 
 import json
+import math
+from collections.abc import Sequence
 from typing import Any
 
 __all__ = [
@@ -24,7 +26,43 @@ __all__ = [
     "WEB_RESULT",
     "ZERO_RESULTS_BODY",
     "body",
+    "searx_score",
 ]
+
+
+def searx_score(positions: Sequence[int], engine_weights: Sequence[float] | None = None) -> float:
+    """SearXNG's own ``searx/results.py:calculate_score``, for the default case.
+
+    Every fixture score below is computed by this rather than written as a
+    literal, because a literal is a second place for the value to drift from
+    the formula it claims to follow -- and it did: ``WEB_RESULT`` read 2.5
+    against positions ``[1, 3]`` (the formula gives 2.667) and
+    ``IMAGE_RESULT`` read 1.0 against ``[2]`` (gives 0.5) until SR-A4 was
+    settled against a live instance on 2026-08-12. The adapter only passes
+    the field through, so nothing failed -- but a fixture whose docstring
+    says it mirrors what SearXNG reports is where the next person goes to
+    learn the formula, and that one taught a wrong one.
+
+    Models default-priority engines only. A ``priority: high`` engine
+    contributes ``weight`` per position instead of ``weight / position``, and
+    ``priority: low`` contributes nothing at all; no fixture needs either
+    yet, and adding one means extending this rather than hand-computing it.
+
+    :param positions: the rank each contributing engine gave the result, 1-based
+    :ptype positions: Sequence[int]
+    :param engine_weights: each contributing engine's configured weight;
+        defaults to 1.0 per position, which is SearXNG's own default
+    :ptype engine_weights: Sequence[float] | None
+    :return: the fused score, unbounded above (SR-A4)
+    :rtype: float
+    """
+    weights = tuple(engine_weights) if engine_weights is not None else (1.0,) * len(positions)
+    weight = math.prod(weights) * len(positions)
+    return sum(weight / position for position in positions)
+
+
+#: the ranks two default-weight engines gave the web result.
+_WEB_POSITIONS = [1, 3]
 
 #: an ordinary web result, with a naive published date (which is what
 #: SearXNG's engines commonly report).
@@ -34,12 +72,15 @@ WEB_RESULT: dict[str, Any] = {
     "content": "The capybara is the largest living rodent.",
     "engine": "duckduckgo",
     "engines": ["duckduckgo", "brave"],
-    "positions": [1, 3],
-    "score": 2.5,
+    "positions": _WEB_POSITIONS,
+    "score": searx_score(_WEB_POSITIONS),
     "category": "general",
     "template": "default.html",
     "publishedDate": "2026-02-01T00:00:00",
 }
+
+#: the rank the single image engine gave the image result.
+_IMAGE_POSITIONS = [2]
 
 #: an image result: the page is the canonical locator, the file is a
 #: direct-file locator, and the provider reports a resolution and a licence.
@@ -49,8 +90,8 @@ IMAGE_RESULT: dict[str, Any] = {
     "content": "",
     "engine": "bing images",
     "engines": ["bing images"],
-    "positions": [2],
-    "score": 1.0,
+    "positions": _IMAGE_POSITIONS,
+    "score": searx_score(_IMAGE_POSITIONS),
     "category": "images",
     "template": "images.html",
     "img_src": "https://cdn.example.net/capy.jpg",
