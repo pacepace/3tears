@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Fixed
+
+- `agent-tools`: `ToolExecutor` keeps a tool's structured artifact (§4.7).
+  It invoked with the call's *arguments* and stringified whatever came
+  back, so a tool registered `response_format="content_and_artifact"` had
+  its `(content, artifact)` tuple flattened into prose and its structure
+  never reached the caller. It now invokes with the whole tool call, which
+  is what makes LangChain build the `ToolMessage` and populate `artifact`
+  -- the way the in-process `langchain_adapter` already did it. This is
+  `page_finder`'s actual execution path, so check 4 could not pass without
+  it. Tools that answer with a plain value are unaffected. The existing
+  test asserted the args-only call shape, which encoded the defect; it now
+  pins the fixed one.
+
 ### Added
 
 - `agent-tools`: `ToolCallFailure` carries structure out of the exception
