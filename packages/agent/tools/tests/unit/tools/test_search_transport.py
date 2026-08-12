@@ -34,8 +34,33 @@ from threetears.search.contracts import (
     SearchTransport,
     TransportFailed,
 )
+from threetears.search.testing import LocalHttpServer, Reply
 
 _BASE_URL = "http://searxng.internal:8080"
+
+_ARTICLE = b"<html><body><article><p>%s</p></article></body></html>" % (b"the extractable body " * 20)
+
+
+class _FakeClosingTransport(httpx.AsyncBaseTransport):
+    """An httpx transport that actually minds being closed.
+
+    ``httpx.MockTransport`` no-ops on ``aclose()``, so a test built on it
+    cannot see a caller-supplied transport being closed out from under the
+    caller. This one refuses to serve after close, which is what a real
+    pooled transport does.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+        self.closed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.closed:
+            raise RuntimeError("transport was closed by a previous call")
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def _responder(
@@ -251,3 +276,157 @@ class TestTheFetchHalfIsTheOtherTransport:
 
     def test_the_egress_is_named(self) -> None:
         assert build_fetch_transport().egress_name == EGRESS_DIRECT
+
+
+class TestTheFetchHalfMeetsTheWebAsItIs:
+    """What this builder CHOOSES, driven against a socket rather than read off the object.
+
+    The tests above prove the returned object satisfies the protocol and
+    refuses what D21 says it must. None of them ever served it a response, so
+    none of them could see that it was built with the leaf's ``max_redirects``
+    default of 0 -- right for a search upstream, which is a configured host
+    that does not redirect, and wrong for a candidate-derived URL, where
+    http->https and www and trailing-slash canonicalisation are most of the
+    real web. ``test_standalone.py`` pins the 0 default as correct *for
+    search*; the obligation for arbitrary-web fetch is the opposite one, and
+    it belongs here, where the host makes the choice.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_canonicalising_redirect_is_followed(self) -> None:
+        """The regression these tests exist for: a 301 must not read as "no content"."""
+        async with LocalHttpServer(
+            (
+                Reply(status=301, headers={"Location": "/article", "Content-Length": "0"}, body=b""),
+                Reply(status=200, body=_ARTICLE, headers={"Content-Type": "text/html"}),
+            )
+        ) as server:
+            transport = build_fetch_transport(allow_private_addresses=True)
+
+            response = await transport.fetch(
+                "GET",
+                f"{server.base_url}/",
+                max_bytes=65536,
+                allowed_content_types=("text/html",),
+            )
+
+        assert response.status_code == 200
+        assert response.body == _ARTICLE
+        assert response.final_url.endswith("/article")
+
+    @pytest.mark.asyncio
+    async def test_a_redirecting_robots_txt_does_not_refuse_the_page(self) -> None:
+        """``extract`` reads robots through this same transport (extract.py).
+
+        A 3xx there is not a 2xx, so a robots file that merely moved read as
+        "refused" and the page was never fetched -- the same defect arriving
+        by a second route, which is why it gets its own pin.
+        """
+        async with LocalHttpServer(
+            (
+                Reply(status=301, headers={"Location": "/robots.txt", "Content-Length": "0"}, body=b""),
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+            )
+        ) as server:
+            transport = build_fetch_transport(allow_private_addresses=True)
+
+            response = await transport.fetch(
+                "GET",
+                f"{server.base_url}/robots.txt",
+                max_bytes=4096,
+                allowed_content_types=("text/plain",),
+            )
+
+        assert response.status_code == 200
+        assert b"Allow" in response.body
+
+    @pytest.mark.asyncio
+    async def test_a_deployment_can_still_refuse_to_follow(self) -> None:
+        """Non-vacuous: following is the host's configured default, not a hard-coded one."""
+        async with LocalHttpServer(
+            (Reply(status=301, headers={"Location": "/article", "Content-Length": "0"}, body=b""),)
+        ) as server:
+            transport = build_fetch_transport(allow_private_addresses=True, max_redirects=0)
+
+            response = await transport.fetch("GET", f"{server.base_url}/", max_bytes=65536)
+
+        assert response.status_code == 301
+
+    @pytest.mark.asyncio
+    async def test_the_redirect_budget_stays_finite(self) -> None:
+        """A loop ends with a response rather than with the process."""
+        async with LocalHttpServer(
+            (Reply(status=301, headers={"Location": "/loop", "Content-Length": "0"}, body=b""),)
+        ) as server:
+            transport = build_fetch_transport(allow_private_addresses=True)
+
+            response = await transport.fetch("GET", f"{server.base_url}/loop", max_bytes=65536)
+
+        assert response.status_code == 301
+
+
+class TestACallerBoundBoundsTheCallNotOneAttempt:
+    """SR-G2: the override carries the caller's *remaining deadline*.
+
+    Forwarding it to ``TracedHttpClient.request(timeout=...)`` bounds each
+    attempt, and retry lives inside the client -- so a 0.3s deadline could
+    fund three 0.3s attempts plus backoff. ``StandaloneTransport._perform``
+    bounds the whole call against a deadline, and two implementations of one
+    protocol may not mean different things by the same argument.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_stalling_upstream_gets_one_attempt_not_three(self) -> None:
+        """Counted rather than timed: only one attempt can fit inside the bound."""
+        async with LocalHttpServer((Reply(status=200, body=b"{}", delay=2.0),)) as server:
+            transport = TracedSearchTransport(
+                base_url=server.base_url,
+                max_attempts=3,
+                initial_backoff=0.01,
+                timeout_seconds=30.0,
+            )
+
+            # TimeoutError specifically, because that is the type the adapters
+            # already map onto ``TimedOut`` (searxng.py, tavily.py) -- a bound
+            # that expired must not reach a consumer as a generic transport
+            # fault.
+            with pytest.raises(TimeoutError):
+                await transport.request("GET", f"{server.base_url}/search", timeout_seconds=0.3)
+
+        assert len(server.requests) == 1, f"the bound funded {len(server.requests)} attempts"
+
+    @pytest.mark.asyncio
+    async def test_an_unstated_bound_still_leaves_the_configured_one_in_place(self) -> None:
+        """Non-vacuous: the whole-call ceiling is the override's doing, not an unconditional one."""
+        mock, seen = _responder()
+        transport = TracedSearchTransport(base_url=_BASE_URL, http_transport=mock, timeout_seconds=7.0)
+
+        response = await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert response.status_code == 200
+        assert seen[0].extensions["timeout"]["read"] == pytest.approx(7.0)
+
+
+class TestAnInjectedTransportIsNotConsumedByOneCall:
+    """The DI seam the constructor advertises must survive being used twice.
+
+    A fresh ``TracedHttpClient`` per call is deliberate (SR-L5), but
+    ``AsyncClient.aclose()`` closes the transport it was handed -- so a
+    caller-supplied one was closed after call one. ``httpx.MockTransport``
+    happens to no-op on close, which is exactly why every existing test
+    passed through this.
+    """
+
+    @pytest.mark.asyncio
+    async def test_two_calls_through_one_injected_transport_both_answer(self) -> None:
+        mock, seen = _responder()
+        closable = _FakeClosingTransport(mock)
+        transport = TracedSearchTransport(base_url=_BASE_URL, http_transport=closable)
+
+        first = await transport.request("GET", f"{_BASE_URL}/search")
+        second = await transport.request("GET", f"{_BASE_URL}/search")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(seen) == 2
+        assert not closable.closed, "a caller-supplied transport is the caller's to close"

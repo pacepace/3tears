@@ -42,6 +42,7 @@ here rather than at a call site so no call site can skip it.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Final
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
     from threetears.core.egress import EgressDriver
 
 __all__ = [
+    "DEFAULT_FETCH_MAX_REDIRECTS",
     "OFF_BASE_SCOPE",
     "TracedSearchTransport",
     "build_fetch_transport",
@@ -72,6 +74,63 @@ __all__ = [
 #: own configured upstream. Named, because "the URL is not on this
 #: transport's base" is the D21 guard doing its job, not a transport fault.
 OFF_BASE_SCOPE: Final[str] = "off-base-url"
+
+#: Redirect hops a *fetch* may follow, and deliberately not the leaf's own
+#: :data:`~threetears.search.standalone.DEFAULT_MAX_REDIRECTS` of 0.
+#:
+#: The two halves want opposite defaults, for the same reason they want
+#: different transports. A search upstream is a deployment-configured host
+#: answering its own API: a healthy one does not redirect, so refusing to
+#: follow is a signal rather than a limitation. A fetch is a
+#: candidate-derived URL, where http->https, ``www``, and trailing-slash
+#: canonicalisation are how a large share of the real web answers -- refusing
+#: to follow turns an ordinary page into "no readable content".
+#:
+#: Every hop is re-guarded (the SSRF check and the https-downgrade refusal run
+#: per hop in :meth:`StandaloneTransport._exchange`), so following is bounded
+#: rather than trusting. 5 matches what the hand-rolled body this replaced
+#: allowed, which is the behaviour callers are already built around.
+DEFAULT_FETCH_MAX_REDIRECTS: Final[int] = 5
+
+
+class _UnclosableTransport(httpx.AsyncBaseTransport):
+    """Shields a caller-supplied transport from the per-call client's ``aclose()``.
+
+    A fresh :class:`TracedHttpClient` per call is deliberate (SR-L5), and
+    closing it is what keeps a one-shot ``asyncio.run()`` leaving nothing
+    open. But ``AsyncClient.aclose()`` closes the transport it was handed,
+    and an injected one belongs to the caller -- so a second call through the
+    same transport found it closed. Wrapping delegates every request and
+    swallows only the close, which leaves the client's own lifecycle intact.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        """Wrap *inner*.
+
+        :param inner: the caller's transport, which this must not close
+        :ptype inner: httpx.AsyncBaseTransport
+        :return: nothing
+        :rtype: None
+        """
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        """Delegate one exchange unchanged.
+
+        :param request: the request to perform
+        :ptype request: httpx.Request
+        :return: the wrapped transport's response
+        :rtype: httpx.Response
+        """
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        """Deliberately nothing: the wrapped transport is the caller's to close.
+
+        :return: nothing
+        :rtype: None
+        """
+        return None
 
 
 def _origin(url: str) -> tuple[str, str, int | None]:
@@ -196,8 +255,9 @@ class TracedSearchTransport:
         :ptype params: Mapping[str, str] | None
         :param json_body: JSON request body, if any
         :ptype json_body: Mapping[str, JsonValue] | None
-        :param timeout_seconds: per-call bound (SR-G2); None uses the
-            configured default
+        :param timeout_seconds: per-call bound (SR-G2), applying to the whole
+            call including retries and backoff -- not to each attempt; None
+            uses the configured default per attempt
         :ptype timeout_seconds: float | None
         :return: the completed exchange, with the client's attempt count
         :rtype: TransportResponse
@@ -223,18 +283,32 @@ class TracedSearchTransport:
             initial_backoff=self._initial_backoff,
             max_backoff=self._max_backoff,
             egress=self._egress,
-            transport=self._http_transport,
+            # the caller's transport is shielded from this per-call client's
+            # own close; see _UnclosableTransport.
+            transport=_UnclosableTransport(self._http_transport) if self._http_transport is not None else None,
             timeout=self._timeout_seconds if self._timeout_seconds is not None else DEFAULT_HTTP_TIMEOUT_SECONDS,
         )
         try:
-            response = await client.request(
-                method,
-                url,
-                headers=headers,
-                params=params,
-                json=dict(json_body) if json_body is not None else None,
-                timeout=timeout_seconds,
-            )
+            # The bound is the whole call's, not one attempt's. Retry lives
+            # *inside* the client, so forwarding ``timeout`` alone bounds each
+            # attempt and a deadline-derived bound funds ``max_attempts`` of
+            # them plus backoff -- a caller with 0.3s left waiting 1s+. SR-G2
+            # says this argument carries the caller's remaining deadline, and
+            # ``StandaloneTransport._perform`` already reads it that way; two
+            # implementations of one protocol may not disagree about what an
+            # argument means. Kept as ``asyncio.timeout`` rather than arithmetic
+            # over the retry schedule because the ceiling then holds whatever
+            # the client does internally, and the ``TimeoutError`` it raises is
+            # what adapters already map onto ``TimedOut``.
+            async with asyncio.timeout(timeout_seconds):
+                response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json=dict(json_body) if json_body is not None else None,
+                    timeout=timeout_seconds,
+                )
         finally:
             await client.aclose()
 
@@ -256,6 +330,7 @@ def build_fetch_transport(
     max_response_bytes: int | None = None,
     egress_name: str = EGRESS_DIRECT,
     allow_private_addresses: bool = False,
+    max_redirects: int = DEFAULT_FETCH_MAX_REDIRECTS,
 ) -> StandaloneTransport:
     """The :class:`~threetears.search.contracts.transport.FetchTransport` this host injects.
 
@@ -277,6 +352,11 @@ def build_fetch_transport(
         be fetched. False by default -- these URLs come from search results,
         which is precisely the case the SSRF guard exists for (D21)
     :ptype allow_private_addresses: bool
+    :param max_redirects: redirect hops a fetch may follow; the default is
+        :data:`DEFAULT_FETCH_MAX_REDIRECTS` rather than the leaf's own 0,
+        for the reason stated there. 0 restores the strict stance for a
+        deployment that wants it
+    :ptype max_redirects: int
     :return: the configured fetch transport
     :rtype: StandaloneTransport
     """
@@ -285,4 +365,5 @@ def build_fetch_transport(
         max_response_bytes=max_response_bytes if max_response_bytes is not None else DEFAULT_MAX_RESPONSE_BYTES,
         egress_name=egress_name,
         allow_private_addresses=allow_private_addresses,
+        max_redirects=max_redirects,
     )

@@ -12,9 +12,17 @@ everything the old hand-rolled bodies got wrong is gone. Specifically --
 * the transport is injected, so nothing here opens a client, reads an
   environment variable, or hardcodes a timeout (§10 defect 2).
 
-The transports are stubs rather than a live server: what is under test is the
-tools' own wiring onto the leaf, and the leaf's own conformance suites already
-hold the adapters and Extract to their contracts.
+Most transports here are stubs rather than a live server: what is under test
+is the tools' own wiring onto the leaf, and the leaf's own conformance suites
+already hold the adapters and Extract to their contracts.
+
+**But a stub cannot test the transport the tool builds when nobody injects
+one**, and that is the shape production actually runs -- ``WebFetchTool()``
+with ``transport=None``. Stubbing it everywhere is how this suite shipped a
+tool whose default transport refused to follow redirects: the tool's tests
+passed because the stub always answered 200, and the transport's tests passed
+because they never served a response. ``TestTheDefaultWiringMeetsARealServer``
+closes that seam by injecting nothing and answering over a socket.
 """
 
 from __future__ import annotations
@@ -28,14 +36,20 @@ from pydantic import JsonValue
 
 from threetears.agent.tools.builtin.web_fetch import WebFetchTool, create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import WebSearchTool, create_web_search_tool
-from threetears.media.contracts import EXTRACTION_STATUS_REFUSED
+from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_REFUSED
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     EGRESS_DIRECT,
+    LocalCapExceeded,
     SearchResultsMetadata,
+    Spend,
     TransportResponse,
 )
-from threetears.search.extract import EXTRACTION_STATUS_FACET
+from threetears.search.extract import (
+    EXTRACTION_STATUS_FACET,
+    EXTRACTOR_UNAVAILABLE_SCOPE,
+)
+from threetears.search.testing import LocalHttpServer, Reply
 
 _BASE_URL = "http://searxng.internal:8080"
 _PAGE_URL = "https://example.test/article"
@@ -140,6 +154,20 @@ class _StubFetchTransport:
             elapsed_seconds=0.01,
             headers={"content-type": "text/plain" if is_robots else "text/html"},
         )
+
+
+def _no_extractor_installed() -> Any:
+    """stand in for ``_load_extractor`` on a host without the ``[fetch]`` extra.
+
+    Raises exactly what the real loader raises there, so the refusal under
+    test is the shipped one rather than a test's idea of it.
+    """
+    raise LocalCapExceeded(
+        "no HTML extractor is installed",
+        spend=Spend(),
+        remediation="install 3tears-agent-tools[fetch] to extract page content",
+        scope=EXTRACTOR_UNAVAILABLE_SCOPE,
+    )
 
 
 def _projection(result: Any) -> SearchResultsMetadata:
@@ -399,3 +427,239 @@ class TestWebFetchFailsTyped:
         )
 
         assert tool.name == "threetears.web_fetch"
+
+    @pytest.mark.asyncio
+    async def test_a_whole_run_refusal_carries_the_typed_record_not_just_prose(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal this tool's own docstring is about, read as a consumer reads it.
+
+        ``extract`` raises for a refusal that applies to the whole run --
+        today, a missing ``[fetch]`` extra. That is precisely the case a
+        structure-reading consumer must not have to parse prose for, and it
+        was the one path with no test: the projection was built from an empty
+        candidate set, which never populates ``failure``.
+        """
+        monkeypatch.setattr(
+            "threetears.search.extract._load_extractor",
+            _no_extractor_installed,
+        )
+        tool = WebFetchTool(transport=_StubFetchTransport())
+
+        result = await tool.execute(url=_PAGE_URL)
+
+        assert result.success is False
+        projection = _projection(result)
+        assert projection.failure is not None, "a refusal must reach the border as a record"
+        assert projection.failure.failure_class
+        assert projection.failure.scope == EXTRACTOR_UNAVAILABLE_SCOPE
+        assert "fetch" in (projection.failure.remediation or "")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_url_also_answers_with_a_readable_projection(self) -> None:
+        """The other prose-only path: an argument fault is still a shape a consumer can read."""
+        tool = WebFetchTool(transport=_StubFetchTransport())
+
+        result = await tool.execute()
+
+        projection = _projection(result)
+        assert projection.query == ""
+        assert not projection.candidates
+
+
+class TestTheCharacterBoundHoldsAtItsEdges:
+    """``max_chars`` is deployment config, so it must hold for the values a deployment can set.
+
+    The existing pin uses 60, comfortably past the truncation marker's own
+    length. Under it the arithmetic goes negative and the slice runs from the
+    *end* of the string, returning more than the bound rather than less.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_chars", [1, 10, 21, 22, 23, 200])
+    async def test_the_result_never_exceeds_the_bound(self, max_chars: int) -> None:
+        tool = WebFetchTool(max_chars=max_chars, transport=_StubFetchTransport())
+
+        result = await tool.execute(url=_PAGE_URL)
+
+        assert len(result.content) <= max_chars, f"max_chars={max_chars} returned {len(result.content)} chars"
+
+    @pytest.mark.asyncio
+    async def test_a_bound_under_the_marker_does_not_return_the_tail_of_the_page(self) -> None:
+        """The specific corruption: a negative slice keeps the END of the text."""
+        tool = WebFetchTool(max_chars=10, transport=_StubFetchTransport())
+
+        result = await tool.execute(url=_PAGE_URL)
+
+        assert "social animals" not in result.content
+
+
+class TestTheDefaultWiringMeetsARealServer:
+    """``WebFetchTool()`` -- no injected transport, a real socket, real bytes.
+
+    This is the configuration a pod runs and the one no other test in this
+    file exercises. Every assertion here is about the *host's choice* of
+    transport configuration rather than about the tool's branching, so a
+    change to ``build_fetch_transport``'s defaults has to come through here.
+
+    Loopback needs ``allow_private_addresses``, which is deployment config a
+    test is entitled to set (D21) -- so the tool is constructed with a
+    transport built the way the default builds it, plus that one flag. The
+    redirect policy, the byte cap and the content-type gate all remain the
+    builder's own.
+    """
+
+    @staticmethod
+    def _tool(**kwargs: Any) -> WebFetchTool:
+        """the production default, with only the loopback guard relaxed."""
+        from threetears.agent.tools.search_transport import build_fetch_transport
+
+        return WebFetchTool(transport=build_fetch_transport(allow_private_addresses=True), **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_a_page_behind_a_canonicalising_redirect_still_extracts(self) -> None:
+        """http->https, www, trailing slash: most of the real web arrives via a 301."""
+        async with LocalHttpServer(
+            (
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+                Reply(status=301, headers={"Location": "/article", "Content-Length": "0"}, body=b""),
+                Reply(status=200, body=_ARTICLE_HTML, headers={"Content-Type": "text/html"}),
+            )
+        ) as server:
+            result = await self._tool().execute(url=f"{server.base_url}/")
+
+        assert result.success is True, result.content
+        assert "semiaquatic" in result.content
+        assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_COMPLETE
+
+    @pytest.mark.asyncio
+    async def test_a_plain_page_extracts_without_any_redirect(self) -> None:
+        """Non-vacuous baseline: the seam works at all, so the redirect pin means something."""
+        async with LocalHttpServer(
+            (
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+                Reply(status=200, body=_ARTICLE_HTML, headers={"Content-Type": "text/html"}),
+            )
+        ) as server:
+            result = await self._tool().execute(url=f"{server.base_url}/article")
+
+        assert result.success is True, result.content
+        assert "semiaquatic" in result.content
+
+    @pytest.mark.asyncio
+    async def test_a_robots_file_that_merely_moved_does_not_refuse_the_page(self) -> None:
+        """The second route to the same defect: robots is fetched through this transport too."""
+        async with LocalHttpServer(
+            (
+                Reply(status=301, headers={"Location": "/robots.txt", "Content-Length": "0"}, body=b""),
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+                Reply(status=200, body=_ARTICLE_HTML, headers={"Content-Type": "text/html"}),
+            )
+        ) as server:
+            result = await self._tool().execute(url=f"{server.base_url}/article")
+
+        assert result.success is True, result.content
+
+    @pytest.mark.asyncio
+    async def test_a_robots_file_that_refuses_is_still_binding_over_a_real_socket(self) -> None:
+        """D12 holds on the real transport, not only against the stub."""
+        async with LocalHttpServer(
+            (Reply(status=200, body=b"User-agent: *\nDisallow: /\n", headers={"Content-Type": "text/plain"}),)
+        ) as server:
+            result = await self._tool().execute(url=f"{server.base_url}/article")
+
+        assert result.success is False
+        assert _projection(result).candidates[0].facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_REFUSED
+
+    @pytest.mark.asyncio
+    async def test_a_carrier_the_gate_refuses_never_reaches_the_extractor(self) -> None:
+        """The content-type gate is the builder's obligation, and it fires before the body."""
+        async with LocalHttpServer(
+            (
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+                Reply(status=200, body=b"\x00\x01\x02binary", headers={"Content-Type": "application/octet-stream"}),
+            )
+        ) as server:
+            result = await self._tool().execute(url=f"{server.base_url}/blob")
+
+        assert result.success is False
+        assert not result.content.startswith("[TOOL ERROR]")
+
+    @pytest.mark.asyncio
+    async def test_a_body_past_the_cap_is_refused_rather_than_held(self) -> None:
+        """SR-G5 on the real path: the cap the host configured is the cap that fires."""
+        async with LocalHttpServer(
+            (
+                Reply(status=200, body=b"User-agent: *\nAllow: /\n", headers={"Content-Type": "text/plain"}),
+                Reply(status=200, body=b"x" * 40000, headers={"Content-Type": "text/html"}),
+            )
+        ) as server:
+            result = await self._tool(max_bytes=1024).execute(url=f"{server.base_url}/huge")
+
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_a_loopback_url_is_refused_by_the_untouched_default(self) -> None:
+        """The one flag these tests relax is genuinely load-bearing when it is not set."""
+        tool = WebFetchTool()
+
+        result = await tool.execute(url="http://127.0.0.1:9/article")
+
+        assert result.success is False
+
+
+class TestRegistrationSkipsAToolItCannotServe:
+    """The skip-with-reason pattern, on the registry path as well as the pod path.
+
+    ``serve.py`` probes for the extractor because Extract imports it lazily:
+    without the extra the tool constructs fine and refuses every call, so an
+    ``ImportError`` never arrives to be caught. ``register_builtins`` was left
+    catching only that ``ImportError``, which means it registered a
+    ``web_fetch`` that fails every request -- the exact condition the probe
+    was added to prevent, reached by the other door.
+    """
+
+    @staticmethod
+    def _registry_without_an_extractor(monkeypatch: pytest.MonkeyPatch) -> Any:
+        """register onto a fresh registry with ``trafilatura`` reported absent."""
+        import threetears.agent.tools.builtin as builtin_pkg
+        from threetears.agent.tools.registry import ToolRegistry
+
+        real_find_spec = builtin_pkg.find_spec
+
+        def _absent(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "trafilatura":
+                return None
+            return real_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtin_pkg, "find_spec", _absent)
+        registry = ToolRegistry()
+        builtin_pkg.register_builtins(registry)
+        return registry
+
+    def test_web_fetch_is_skipped_when_no_extractor_is_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        registry = self._registry_without_an_extractor(monkeypatch)
+
+        assert "web_fetch" not in registry.list_types()
+
+    def test_the_other_builtins_still_register(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-vacuous: the probe skips one tool, it does not break registration."""
+        registry = self._registry_without_an_extractor(monkeypatch)
+
+        assert "calculator" in registry.list_types()
+        assert "web_search" in registry.list_types()
+
+    def test_web_fetch_registers_when_the_extractor_is_present(self) -> None:
+        """The other direction: with the extra installed the tool is served as before."""
+        from importlib.util import find_spec
+
+        from threetears.agent.tools.builtin import register_builtins
+        from threetears.agent.tools.registry import ToolRegistry
+
+        if find_spec("trafilatura") is None:
+            pytest.skip("this direction needs 3tears-agent-tools[fetch] installed")
+        registry = ToolRegistry()
+
+        register_builtins(registry)
+
+        assert "web_fetch" in registry.list_types()

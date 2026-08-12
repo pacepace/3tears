@@ -52,6 +52,7 @@ from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     Candidate,
     CandidateSet,
+    FailureRecord,
     Locator,
     Provenance,
     SearchFailure,
@@ -222,7 +223,10 @@ class WebFetchTool(TearsTool):
             return ToolResult(
                 success=False,
                 content=message,
-                metadata=_metadata(url, CandidateSet(spend=record.spend)),
+                # the typed record, not just its spend: a refusal is exactly
+                # the case a consumer must not have to parse prose for, and
+                # ``from_candidate_set`` has no slot for one (D10, SR-E3).
+                metadata=_refusal_metadata(url, record),
                 error=message,
             )
 
@@ -239,7 +243,13 @@ class WebFetchTool(TearsTool):
 
         text = fetched.content.text
         if len(text) > self._max_chars:
-            text = text[: self._max_chars - len(_TRUNCATION_MARK)] + _TRUNCATION_MARK
+            # ``max(0, ...)``: a bound below the marker's own length made this
+            # index negative, and a negative slice keeps the *end* of the
+            # string -- returning the tail of the page, longer than the bound
+            # that was asked for. Under the marker's length the honest answer
+            # is the marker alone, cut to the bound.
+            keep = max(0, self._max_chars - len(_TRUNCATION_MARK))
+            text = (text[:keep] + _TRUNCATION_MARK)[: self._max_chars]
         return ToolResult(
             success=True,
             content=text,
@@ -329,4 +339,18 @@ def _metadata(url: str, candidate_set: CandidateSet) -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     projection = SearchResultsMetadata.from_candidate_set(query=url, candidate_set=candidate_set)
+    return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}
+
+
+def _refusal_metadata(url: str, record: FailureRecord) -> dict[str, Any]:
+    """Project a whole-run refusal onto the same border key, as a record.
+
+    :param url: the URL asked for, which stands as the projection's query
+    :ptype url: str
+    :param record: the typed failure's wire record, spend included
+    :ptype record: FailureRecord
+    :return: ``{SEARCH_RESULTS_METADATA_KEY: ...}``
+    :rtype: dict[str, Any]
+    """
+    projection = SearchResultsMetadata.from_failure(query=url, failure=record)
     return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}

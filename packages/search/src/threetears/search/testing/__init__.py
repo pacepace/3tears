@@ -25,12 +25,15 @@ from threetears.search.testing.fakes import (
     ScriptedTransport,
     TransportScript,
 )
+from threetears.search.testing.http_server import LocalHttpServer, Reply
 
 __all__ = [
     "FakeBudgetPort",
     "FakeRateLimiterPort",
+    "LocalHttpServer",
     "ProviderConformanceCase",
     "ProviderConformanceSuite",
+    "Reply",
     "ScriptedTransport",
     "TransportScript",
 ]

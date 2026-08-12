@@ -43,7 +43,7 @@ from threetears.search.contracts import (
     get_capabilities,
 )
 from threetears.search.standalone import StandaloneTransport
-from _http_server import LocalHttpServer, Reply
+from threetears.search.testing import LocalHttpServer, Reply
 from _searxng_payloads import TWO_RESULTS_BODY
 
 #: the host-supplied base URL for the live tier. Read by the TEST, never by

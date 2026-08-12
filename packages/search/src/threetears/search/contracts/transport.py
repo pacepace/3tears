@@ -160,8 +160,10 @@ class FetchTransport(Protocol):
     2), so no Phase-1 :class:`SearchTransport` implementer is ever
     retroactively non-conformant: an implementation that also serves
     Extract satisfies both protocols; one that only serves search never
-    has to. Expected implementers of the union: this package's
-    ``standalone`` module and the host-side ``TracedHttpClient`` adapter.
+    has to. The one implementer of the union is this package's ``standalone``
+    module -- Gate A also expected the host-side ``TracedHttpClient``
+    adapter, which the module docstring's 2026-08-11 correction records as
+    structurally impossible.
 
     What :meth:`fetch` owes beyond :meth:`SearchTransport.request`'s
     obligations (which all still apply -- bounded retry, configurable
