@@ -4,6 +4,34 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Added
+
+- `core`: `searxng_container` joins the canonical testcontainer fixtures.
+  Readiness polls a JSON search rather than matching a log line -- the
+  image prints its listening banner before it will serve, so a log-match
+  wait hands the first request a reset connection. Engines failing to
+  register on init deliberately does not block readiness: an instance
+  with half its engines suspended still scores correctly.
+- `search`: `test_searxng_live_scoring.py` checks SR-A4's formula against
+  SearXNG rather than against a fixture restating it. It asserts the
+  invariant that survives throttling -- every scored result equals
+  `searx_score` of its own positions -- and records in the test what a
+  pass cannot prove: on single-position results the `len(positions)`
+  factor is invisible, so the multiplier is pinned by a sibling that
+  skips rather than passes when the data cannot settle it.
+
+### Changed
+
+- `docs`: SR-A4's residue is discharged. Multi-engine fusion is observed,
+  not derived: a live instance returned `4.642857142857142` for
+  `positions=[1, 21, 2]` across two engines, matching `3/1 + 3/21 + 3/2`.
+  It also settled that `len(positions)` drives the weight rather than
+  `len(engines)` -- two engines produced three positions, so a reading
+  based on engine count would have been wrong and would have looked right
+  on every single-engine result.
+
 ## v0.24.1 -- 2026-08-12
 
 ### Added
