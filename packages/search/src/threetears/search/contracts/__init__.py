@@ -89,6 +89,8 @@ from threetears.search.contracts.provenance import (
     PRODUCER_MODEL_MEDIATED,
     Provenance,
 )
+from threetears.search.contracts.ranker import Ranker
+from threetears.search.contracts.shortlist import Shortlist
 from threetears.search.contracts.provider import SearchProvider
 from threetears.search.contracts.request import SearchRequest
 from threetears.search.contracts.scores import (
@@ -150,12 +152,14 @@ __all__ = [
     "Locator",
     "MalformedResponse",
     "Provenance",
+    "Ranker",
     "ProviderCapabilities",
     "QuotaExhausted",
     "RateLimitDecision",
     "RateLimited",
     "RateLimiterPort",
     "ScoreEntry",
+    "Shortlist",
     "SearchFailure",
     "SearchProvider",
     "SearchRequest",

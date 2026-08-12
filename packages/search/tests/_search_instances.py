@@ -36,6 +36,7 @@ from threetears.search.contracts import (
     ScoreEntry,
     SearchRequest,
     SearchResultsMetadata,
+    Shortlist,
     Spend,
 )
 
@@ -136,6 +137,15 @@ CORPUS = Corpus(
     notices=("call failed (rate-limited): provider returned 429",),
 )
 
+SHORTLIST = Shortlist(
+    entries=(CORPUS_ENTRY,),
+    ranked=True,
+    ranker="cross-encoder-ms-marco",
+    dispositions=(DISPOSITION,),
+    spend=SPEND,
+    notices=("time-range: 2 candidate(s) lacked the data to be judged",),
+)
+
 CAPABILITIES = ProviderCapabilities(
     provider="searxng",
     pushdown_criteria=("language", "carrier"),
@@ -193,6 +203,7 @@ ALL_INSTANCES = [
     CANDIDATE_SET,
     CORPUS_ENTRY,
     CORPUS,
+    SHORTLIST,
     REQUEST,
     FAILURE_RECORD,
     METADATA,
