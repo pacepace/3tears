@@ -8,7 +8,7 @@ proactive re-auth loop; these tests pin the SAME contract on the tool pod:
 
 1. the schedule forces a reconnect BEFORE expiry (and never busy-spins on a tiny TTL);
 2. an unknown / non-positive TTL re-checks on a cadence WITHOUT reconnecting on a guess;
-3. the TTL comes from the pod's own config (``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS``, default 150);
+3. the TTL comes from the pod's own config (``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS``);
 4. ``_reauth_nats_once`` drives the wrapper's ``reconnect()`` (which re-mints a fresh JWT);
 5. the re-auth loop is UNKILLABLE -- a raise in the reconnect path is logged + retried, never fatal;
 6. the loop does NOT reconnect while the TTL is unknown;
@@ -26,6 +26,7 @@ import pytest
 from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.config import get_nats_user_jwt_ttl_seconds
 from threetears.agent.tools.server import ToolServer
+from threetears.nats import SYNC_REPLY_BUDGET_SECONDS
 
 _TTL_ENV = "FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS"
 
@@ -43,7 +44,7 @@ class TestSecondsUntilReauth:
         assert delay == pytest.approx(expected)
 
     def test_default_ttl_schedules_a_positive_margin(self) -> None:
-        """the platform-default TTL (150) reconnects at 60s -- comfortably before expiry."""
+        """a 150s TTL reconnects at 60s -- comfortably before expiry."""
         delay = nats_reauth.seconds_until_reauth(150)
         assert delay == pytest.approx(60.0)
 
@@ -76,14 +77,28 @@ class TestNatsUserJwtTtlConfig:
     """the pod sources the TTL from its own env (the hub default value + env-var name)."""
 
     def test_defaults_to_platform_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """unset -> the platform default of 150 (mirrors the hub auth-callout responder default)."""
+        """unset -> the platform default the minting side also defaults to."""
         monkeypatch.delenv(_TTL_ENV, raising=False)
-        assert get_nats_user_jwt_ttl_seconds() == 150
+        assert get_nats_user_jwt_ttl_seconds() == 300
+
+    def test_default_schedules_reauth_beyond_the_synchronous_reply_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the default must leave a re-auth interval that can carry a short call to its reply.
+
+        Pins the DIRECTION of the asymmetry rather than re-asserting the number. A default that sits
+        below the minted TTL only costs churn, but one whose interval falls inside the synchronous
+        reply budget recycles the connection out from under calls still owed an answer on the inbox.
+        """
+        monkeypatch.delenv(_TTL_ENV, raising=False)
+        ttl = get_nats_user_jwt_ttl_seconds()
+        assert ttl is not None
+        assert nats_reauth.seconds_until_reauth(ttl) > SYNC_REPLY_BUDGET_SECONDS
 
     def test_env_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """a valid positive override is honored."""
-        monkeypatch.setenv(_TTL_ENV, "300")
-        assert get_nats_user_jwt_ttl_seconds() == 300
+        """a valid positive override is honored; distinct from the default so it proves the override."""
+        monkeypatch.setenv(_TTL_ENV, "600")
+        assert get_nats_user_jwt_ttl_seconds() == 600
 
     def test_non_positive_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a <= 0 value is treated as unknown (None) so the loop re-checks rather than churns."""
