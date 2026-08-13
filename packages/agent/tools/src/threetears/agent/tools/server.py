@@ -2333,6 +2333,17 @@ class ToolServer:
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
 
+            # The pod's arrival record. Every branch below can explain ITSELF, but none of them
+            # answers the question an outage actually asks first -- did the call get here at all?
+            # Without this line a pod that never received the call and a pod that received it and
+            # refused it produce the same empty log, so the search moves to another service on a
+            # guess. One line at the border makes that difference readable in the pod's own log,
+            # and is the anchor the audit event (emitted only once the outcome is known) cannot be.
+            log.info(
+                "tool call received",
+                extra={"extra_data": {"tool_key": tool_key, "pod_id": self._pod_id}},
+            )
+
             # Where this call's answer goes, decided BEFORE any work starts. The caller sets
             # ``result_subject`` when the call is too long to be answered on the reply inbox, and the
             # acknowledgement below is what lets it tell "running your 20-minute tool" from "this pod

@@ -1081,6 +1081,25 @@ class CallProxy:
             remaining = [ep for ep in entry.endpoints if ep.pod_id not in attempted_pod_ids]
             next_endpoint = self._routing_strategy.select(remaining)
             if next_endpoint is None:
+                # NOSILENT: the failover warning below fires only when a SIBLING pod exists, so
+                # the single-endpoint case -- the common one, and the total outage -- was the one
+                # shape that exited here saying nothing. The call never reached a pod, yet the
+                # only account of it was a TOOL_UNAVAILABLE the caller then had to explain. Say
+                # which pod did not answer, so "the call never arrived" is distinguishable from
+                # "the pod ran it and refused" without correlating two services by timestamp.
+                log.warning(
+                    "tool endpoint unreachable and no other endpoint to fail over to; "
+                    "the call never reached a pod",
+                    extra={
+                        "extra_data": {
+                            "full_name": full_name,
+                            "failed_pod_id": endpoint.pod_id,
+                            "endpoint_count": len(entry.endpoints),
+                            "agent_id": agent_id_log,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
                 break
             log.warning(
                 "tool endpoint unreachable; failing over to another pod",
