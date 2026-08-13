@@ -1024,6 +1024,47 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
 
     @classmethod
+    def hub_channel_engagement_default_resolve(cls) -> Subject:
+        """request/reply subject for resolving a channel's default engagement.
+
+        A consuming AGENT RUNTIME asks the hub, at the tool-call stamp seam,
+        which engagement a conversation's channel is bound to, so a scan
+        authorizes against an explicitly-selected engagement rather than the
+        customer's unattributed default scope. The agent forwards its
+        ``identity_token``; the hub verifies it, derives the owning customer,
+        and returns the bound engagement id (or none) for that channel.
+        The read side of :meth:`hub_channel_engagement_default_set`.
+
+        :return: subject ``{ns}.hub.channel.engagement.default.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.channel.engagement.default.resolve", kind="point")
+
+    @classmethod
+    def hub_channel_engagement_default_set(cls) -> Subject:
+        """request/reply subject for binding a channel to a default engagement.
+
+        The write twin of :meth:`hub_channel_engagement_default_resolve`: an
+        operator binds a channel ONCE so every scan in it authorizes against
+        that engagement without re-selecting per conversation.
+
+        :return: subject ``{ns}.hub.channel.engagement.default.set``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.channel.engagement.default.set", kind="point")
+
+    @classmethod
+    def hub_channel_engagement_default_clear(cls) -> Subject:
+        """request/reply subject for removing a channel's default engagement.
+
+        Idempotent counterpart to :meth:`hub_channel_engagement_default_set`.
+
+        :return: subject ``{ns}.hub.channel.engagement.default.clear``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.channel.engagement.default.clear", kind="point")
+
+    @classmethod
     def hub_approval_record(cls) -> Subject:
         """request/reply subject for recording a pending human-approval marker.
 

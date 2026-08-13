@@ -193,6 +193,17 @@ class TestIdentityIsolation:
         a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
         assert f"{_NS}.audit.tool.call" in a.publish
 
+    def test_agent_pod_may_publish_the_channel_default_engagement_rail(self) -> None:
+        # the runtime resolves the conversation channel's default engagement at the tool-call stamp
+        # seam, and an operator binds/clears that default over the same rail. the resolve SOFT-FAILS
+        # to "unbound" on any transport error, so a missing grant does not surface as a refused
+        # publish -- it surfaces later, and elsewhere, as a scan refused for a missing engagement
+        # that was in fact configured. that silence is why the grant is pinned here.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.hub.channel.engagement.default.resolve" in a.publish
+        assert f"{_NS}.hub.channel.engagement.default.set" in a.publish
+        assert f"{_NS}.hub.channel.engagement.default.clear" in a.publish
+
     def test_agent_pod_holds_proxy_assertion_nonce_bucket(self) -> None:
         # the in-process tool server verifies the proxy's body-bound assertion under enforce
         # and records single-use nonces in this KV bucket (mirrors ``_tool_pod``); without the

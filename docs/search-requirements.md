@@ -1884,9 +1884,11 @@ plus a transport seam the sketch does not have.
 - ~~**SR-A4** — SearXNG's score semantics are stated from general knowledge,
   not measured.~~ **Closed 2026-08-12**: measured against a live instance and
   read off `searx/results.py:calculate_score`; the ruling and its four
-  consequences are recorded at SR-A4 in §9. One residue, not an assumption:
-  multi-engine fusion was not *observed* (the instance's engines were
-  rate-limited), so the unbounded claim rests on the formula.
+  consequences are recorded at SR-A4 in §9. The residue closed the same day:
+  multi-engine fusion was observed against a containerised instance (a fused
+  score above 1.0 matching the formula to floating point — the discharge note
+  at SR-A4 in §9 carries the capture), so nothing here rests on the formula
+  alone.
 - The layer cut in §6 is proposed here, not derived from any owner's recorded
   position. Every requirement is attributed to it, so re-cutting it ripples.
   *This is also the document's one violation of convergence principle 2*
@@ -1932,34 +1934,46 @@ carries most of SR-C3's facets — §6).
 vetoable ruling, adopting this table's recommendation unless noted there. This
 table remains the evidence record; a veto lands there and propagates here.
 
-| ID | Decision | Recommendation |
-|----|----------|----------------|
-| SR-A4 | How many score dimensions, whose | **RULED 2026-08-12** — named provenanced scores; never one `score`. Confirmed against a live instance and SearXNG's own `calculate_score`: the weight is unbounded above, deployment-dependent, and `0` means "a low-priority engine scored it", not "irrelevant" |
-| SR-A5 | Candidate set vs corpus | Call returns a set; corpus is Aggregate's named type |
-| SR-B5 | Model-mediated search in or out (OQ21) | Out of Adapter/Call; in at Aggregate |
-| SR-D4 | Does a failed search consume budget | Follow the bill; move the retry bound in the same change |
-| SR-D5 | Local vs provider refusal authority | Both, distinct roles — two recorded positions conflict |
-| SR-E6 | Self-hosted cost: zero or amortised | Zero, plus a separate rate/quota dimension |
-| SR-F5 | Who stores a replay recording | A store port the consumer supplies; the bundle is one implementation, not the primitive |
-| SR-H4 | Rate limiting: pace or react | Pace per `(provider instance, egress)`; `TokenBucket` where a bus exists, an in-process limiter where none does |
-| SR-I4 | Emit telemetry or return records | Return records |
-| SR-J3 | Errors as values or exceptions | Typed exceptions carrying spend; prose at Bind; **Bind converts before the wire** |
-| SR-K2 | Are queries sensitive | User content; capability exposes, consumer redacts |
-| SR-K4 | robots.txt / provider terms | A family stance, enforced per adapter |
-| SR-M1 | Versioning and compatibility promise | Lockstep already covers the in-family Python API; rule the **wire** contract before the first pod-resident deployment |
-| SR-M2 | Response caching | Decide replay first, cache in its light — and note it has two legal shapes (SR-O3) |
-| SR-M4 | Revalidating a copy the consumer holds | Carry caller-supplied validators on the **fetch** path and report *not modified*; D14 does not reach it, because nothing is stored |
-| SR-M3 | Ratification home (OQ13) | This file, per-repo acceptance |
-| §5.4 | Where the wire boundary falls in the layer stack | Not answered here; SR-L4 makes any answer survivable |
-| §5.4 | One NATS bus for discodon and metallm, or two | Gates how much of SR-H4's pacing the client side can carry |
-| §10.9 | Exception-path metadata on the tool-call envelope | An ask on `agent-tools`; search routes around it via SR-J3, other pod tools cannot |
-| §10.10 | A per-call deadline on the tool-call envelope | An ask on `agent-tools`; blocks SR-G2 pod-resident |
-| **SR-N1** | Does `test_no_bespoke_reuse` recognise a declared transport protocol as sanctioned | **Yes — a norm widening, asked of 3tears.** Otherwise the leaf needs a filed exemption, which success check 11 exists to prevent |
-| **SR-N2** | Is egress per-upstream configuration on this capability | Yes; and the exit is provenance on the result, `direct` included |
-| **SR-K3/N3** | Where the SSRF ruling binds | At the transport seam, not per call site |
-| **§6** | Select owning ranking was drift from §4.14; corrected to "composes a ranker through a slot" | Ratify the correction, or amend §4.14 — one of the two, not neither |
-| **§5.5** | `skill_eligible`, and whether search stays in the `web` group alias | Both are ACL-visible surface; decide before a per-carrier tool split makes `web` mean something new |
-| **§10.12** | A named key for search results on `ToolResult.metadata` | Yes — follow `OBJECT_HANDLE_METADATA_KEY`; an unkeyed shared dict is a collision waiting for a second payload |
+**2026-08-13 — Gate B propagation.** The gate requires this section to be brought
+up to date with what the builds actually settled, so the **Status** column below
+is new. It records whether a row is still a live decision or has been discharged
+by shipped code, because a table where a ruled item and an open one look
+identical is a table that gets re-litigated. **No vetoes were taken** during
+Phases 1–3: every recommendation below was adopted as written, and the two
+corrections that did occur (Gate A's canonical-form re-cut, and the transport
+split) were to the *spec's* predictions rather than to this table's rulings.
+Three rows remain genuinely open, all for stated reasons, and one of them —
+`§5.5` — is now the last thing between the build and a clean Gate B. Full sweep
+at [`search-spec.md` §7 Gate B sweep](search-spec.md#7-sequencing).
+
+| ID | Decision | Recommendation | Status (2026-08-13) |
+|----|----------|----------------|---------------------|
+| SR-A4 | How many score dimensions, whose | **RULED 2026-08-12** — named provenanced scores; never one `score`. Confirmed against a live instance and SearXNG's own `calculate_score`: the weight is unbounded above, deployment-dependent, and `0` means "a low-priority engine scored it", not "irrelevant" | **Discharged** — `ScoreEntry` ships `name`/`value`/`scale`/`source`/`comparable`; live-instance residue closed by #328 |
+| SR-A5 | Candidate set vs corpus | Call returns a set; corpus is Aggregate's named type | **Discharged** — `CandidateSet` (Phase 1) and `Corpus`/`CorpusEntry` (#333) are two types, and R1 keeps contributions whole |
+| SR-B5 | Model-mediated search in or out (OQ21) | Out of Adapter/Call; in at Aggregate | **Adopted; ingestion path deferred** — `Provenance.producer` and both constants shipped Phase 1, `aggregate(extra_candidates=…)` accepts produced candidates; the fuller seam is sketched, unbuilt, pending a consumer |
+| SR-D4 | Does a failed search consume budget | Follow the bill; move the retry bound in the same change | **Discharged** — `record` fires exactly once per *attempted* call, never for a refusal; retry lives inside the client with a visible attempt count |
+| SR-D5 | Local vs provider refusal authority | Both, distinct roles — two recorded positions conflict | **Discharged** — `BudgetPort.check` returns a `BudgetDecision`; Call raises `LocalCapExceeded` from it, so a local refusal can never be spelled `QuotaExhausted` |
+| SR-E6 | Self-hosted cost: zero or amortised | Zero, plus a separate rate/quota dimension | **Discharged** — `PRICING_FREE_SELF_HOSTED`, with pacing as the separate dimension |
+| SR-F5 | Who stores a replay recording | A store port the consumer supplies; the bundle is one implementation, not the primitive | **OPEN — blocked, deliberately.** Replay is Phase 3 item 8, elicited against discodon's carved storage port, which is an outstanding Phase 1 item outside this repo |
+| SR-H4 | Rate limiting: pace or react | Pace per `(provider instance, egress)`; `TokenBucket` where a bus exists, an in-process limiter where none does | **Discharged** — in-process limiter shipped Phase 1; the two-exit pacing separation is pinned as of the Gate B sweep |
+| SR-I4 | Emit telemetry or return records | Return records | **Discharged** — `Spend`, `FailureRecord`, notices and dispositions all ride the result |
+| SR-J3 | Errors as values or exceptions | Typed exceptions carrying spend; prose at Bind; **Bind converts before the wire** | **Discharged** — the taxonomy ships, every failure carries spend, Bind renders a refusal as a failed result like any other |
+| SR-K2 | Are queries sensitive | User content; capability exposes, consumer redacts | **Discharged as a posture** — stated in the context-save node's module docstring before the first retained byte, alongside D11/D7/D12/SR-K4 |
+| SR-K4 | robots.txt / provider terms | A family stance, enforced per adapter | **Discharged** — robots became binding in Phase 2 item 5, and is one of that phase's two user-visible changes |
+| SR-M1 | Versioning and compatibility promise | Lockstep already covers the in-family Python API; rule the **wire** contract before the first pod-resident deployment | **OPEN, and correctly so** — it is Gate C's, which fires when the first pod-resident search deploys. D13's ignore-unknown flip is the piece it must carry |
+| SR-M2 | Response caching | Decide replay first, cache in its light — and note it has two legal shapes (SR-O3) | **OPEN — ordered behind SR-F5** by its own recommendation |
+| SR-M4 | Revalidating a copy the consumer holds | Carry caller-supplied validators on the **fetch** path and report *not modified*; D14 does not reach it, because nothing is stored | **RULED 2026-08-12 as D30** — build sequence is [`search-task-01-conditional-revalidation.md`](search-task-01-conditional-revalidation.md); not started, blocks nothing, blocked by nothing |
+| SR-M3 | Ratification home (OQ13) | This file, per-repo acceptance | **Adopted; awaits its first entries** — the acceptances are Phase 4's, one per migrating repo |
+| §5.4 | Where the wire boundary falls in the layer stack | Not answered here; SR-L4 makes any answer survivable | **Open by design** — not a decision this capability owes |
+| §5.4 | One NATS bus for discodon and metallm, or two | Gates how much of SR-H4's pacing the client side can carry | **OPEN, outside this repo** — discodon's NATS convergence |
+| §10.9 | Exception-path metadata on the tool-call envelope | An ask on `agent-tools`; search routes around it via SR-J3, other pod tools cannot | **Discharged** — [#317](https://github.com/pacepace/3tears/pull/317); it populates a field that already existed, so it carried no rollout constraint |
+| §10.10 | A per-call deadline on the tool-call envelope | An ask on `agent-tools`; blocks SR-G2 pod-resident | **Half discharged, by design** — [#317](https://github.com/pacepace/3tears/pull/317) shipped the *accepting* half only. The field is added to a model with `extra="forbid"`, so a client sending it to an older server is rejected rather than degraded; the sending half needs a second release cycle |
+| **SR-N1** | Does `test_no_bespoke_reuse` recognise a declared transport protocol as sanctioned | **Yes — a norm widening, asked of 3tears.** Otherwise the leaf needs a filed exemption, which success check 11 exists to prevent | **Discharged** — `standalone.py` sits in `_SANCTIONED_HTTPX_SITES` in the walker and files no exemption; check 11 passes on its own terms |
+| **SR-N2** | Is egress per-upstream configuration on this capability | Yes; and the exit is provenance on the result, `direct` included | **Discharged 2026-08-13** — `test_egress_independence.py` drives both real adapters through two exits in one process. One gap stays carried and stated: the result's exit comes from the transport while Call's `egress=` keys pacing, and nothing reconciles them |
+| **SR-K3/N3** | Where the SSRF ruling binds | At the transport seam, not per call site | **Discharged** — private-address refusal, host allowlist and a non-following redirect policy live in `standalone.py`, which is why it earns its sanctioned listing |
+| **§6** | Select owning ranking was drift from §4.14; corrected to "composes a ranker through a slot" | Ratify the correction, or amend §4.14 — one of the two, not neither | **Ratified by the build** — R5 gives Select a ranker slot it never fills, and a test pins that there is *no code path* in which a default fills it |
+| **§5.5** | `skill_eligible`, and whether search stays in the `web` group alias | Both are ACL-visible surface; decide before a per-carrier tool split makes `web` mean something new | **OPEN — and now gating.** `WebSearchTool`/`WebFetchTool` leave `face_api` and `face_mcp` at `False`, so success check 14 has two of three faces unreachable and cannot be verified. This is the one decision between the build and a clean Gate B |
+| **§10.12** | A named key for search results on `ToolResult.metadata` | Yes — follow `OBJECT_HANDLE_METADATA_KEY`; an unkeyed shared dict is a collision waiting for a second payload | **Discharged** — `SearchResultsMetadata` under a named key, pinned across the NATS hop by check 8's test |
 
 Closed by the second pass, recorded so they are not reopened: **SR-G4** (retries)
 — the family ruled it and shipped it in `core.http_client`, so it is REQUIRED by

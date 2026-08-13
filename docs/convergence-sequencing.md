@@ -87,7 +87,8 @@ consume either — see the Phase 2 note.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
 
-*Status 2026-08-11 — most of this phase has landed.* Extract's web path is
+*Status 2026-08-12 — this phase is complete; the entries below run in build
+order, and the closing one is item 6.* Extract's web path is
 built ([#316](https://github.com/pacepace/3tears/pull/316)), on ground laid
 by [#307](https://github.com/pacepace/3tears/pull/307) (the `FetchTransport`
 implementation and the connection lifecycle it needs),
@@ -135,9 +136,31 @@ configured**. Phase 3's `aggregate`/`select` and the Phase 5 consumer
 migrations each stand up new wiring of exactly this kind. Detail and rulings
 in [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing).
 
-**What remains here:** the rest of item 6 (`page_finder` structure, the
-context-save node). See
-[`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
+**Item 6 closed 2026-08-12, and with it the phase.** `page_finder` reads the
+typed projection off `ToolMessage.artifact`
+([#326](https://github.com/pacepace/3tears/pull/326)) rather than re-parsing the
+prose the LLM read; every new fact arrives as a defaulted field, so check 4's
+"without its callers changing" clause is the literal shape of the change. The
+context-save node ([#327](https://github.com/pacepace/3tears/pull/327)) had been
+inert in production — its default tool set held bare names while the adapter
+binds every tool under `mcp_name()` — and now binds on result *type* before tool
+name, which is what C8 asked for, retaining structure beside the prose so
+SR-A3's re-checkability survives the truncation.
+
+Both builds turned up an adjacent defect one layer over, and the pattern is the
+same one item 5 recorded: a unit test that asserts a value was *passed* rather
+than that behaviour *held*. `_verify_candidate_page` fetched unbounded (19 MiB
+of HTML peaking at ~1.5 GiB of heap), and `chunker.py` registered its only
+default strategy under the same bare name the node was being fixed for.
+
+**Phase 2 is complete.** One item spun *out* rather than
+in: asking why nothing in the stack sends a conditional request produced
+**SR-M4 / D30**, ruled 2026-08-12, whose build sequence is
+[`search-task-01-conditional-revalidation.md`](search-task-01-conditional-revalidation.md).
+It blocks nothing and is blocked by nothing, and its step 1 is a
+`media-contracts` change, so it moves the family bound when it lands.
+
+See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
 
 *Note 2026-08-11 — what Phase 1's outstanding items actually hold up.* Only
@@ -155,6 +178,42 @@ semantics confirmed against a live instance, decisions/vetoes propagated
 back into
 [`search-requirements.md` §13](search-requirements.md#13-decisions-needing-an-owner).
 → [`search-spec.md` §7](search-spec.md#7-sequencing)
+
+*Status 2026-08-12:* the SearXNG half is discharged — the formula and its four
+consequences are recorded at SR-A4
+([#322](https://github.com/pacepace/3tears/pull/322)), and
+[#328](https://github.com/pacepace/3tears/pull/328) gave it a container to check
+itself against **and closed the residue**: multi-engine fusion was observed
+live (a fused score of 4.64 across two engines, matching the formula to
+floating point), so the unbounded claim no longer rests on the formula alone.
+
+*Status 2026-08-13 — the other two parts ran, and Gate B is one decision from
+closing.* Search Phase 3 item 9 (`aggregate`/`select`) landed
+([#333](https://github.com/pacepace/3tears/pull/333),
+[#335](https://github.com/pacepace/3tears/pull/335)), so the sweep the gate asks
+for became possible and was done. **Eight of the nine in-repo success checks
+pass**; the other five checks are consumer-repo and excluded by the gate's own
+wording. §13 is propagated — every row now carries a status, and no vetoes were
+taken during Phases 1–3.
+
+Two things came out of it that reach past the gate. **Check 12 did not pass
+until the sweep wrote the test it was missing**: egress was pinned in several
+places but *independence* nowhere, so the requirement's own hard case — SearXNG
+and Tavily on different exits in the same process — had never been driven. That
+is the fourth appearance of the pattern this program keeps recording, and the
+first draft of the new test reproduced it exactly, comparing each side against
+the constant it was configured from until the pins were rewritten to compare the
+two sides to each other.
+
+**Check 14 does not pass, and it is a decision rather than a build.** The two
+builtins leave `face_api` and `face_mcp` at their `False` defaults, so two of the
+three faces are unreachable and "no second result shape per face" has nothing to
+hold against. The mechanism is built; the reach is off. Because it is ACL-visible
+surface, and because §13 already lists the adjacent `skill_eligible` / `web`
+alias question as needing an owner, the sweep recorded it rather than flipping
+the flags. **Gate B closes when that decision is taken** — flags on and a pin
+written, or the check amended with the reason. Detail at
+[`search-spec.md` §7 Gate B sweep](search-spec.md#7-sequencing).
 
 ## Phase 3 — Release
 
