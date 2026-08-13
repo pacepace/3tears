@@ -349,9 +349,16 @@ means taking the framework, samsung's dependency argument bites again and the
 answer will be the same one it was in July. Verified for steps 1-3 —
 `threetears.search.aggregate` and `threetears.search.select` load only
 `threetears.media` and `threetears.search`, no core, no agent, no httpx, no
-torch. That is currently a fact somebody checked rather than a test that holds
-it; `test_import_cost.py` probes `threetears.search.contracts` only, and
-extending it to the stage modules is owed.
+torch.
+
+*Discharged 2026-08-12.* That was a fact somebody checked rather than a test
+that held it. `test_import_cost.py` now probes the stage modules as well as the
+contracts, as an allowlist over everything a fresh interpreter loads, and asserts
+separately that no other working layer rides along — which also catches Aggregate
+and Select becoming a unit by importing each other. Both halves were confirmed to
+fail on real cases before being relied on: the allowlist trips on
+`threetears.observe` via `call` and on `click` via `standalone`, and the
+rides-along check trips on `bind`, which pulls `call`.
 
 samsung is also the consumer that has **already recorded package rejections**
 for `3tears-core` and `3tears-models` on `MemoryMax` grounds — seven
@@ -381,7 +388,8 @@ same way, on the same evidence, after it is built."*
 - Two contributors disagreeing on one criterion → corpus disposition is the
   weaker, and `detail` names the divergence (R8).
 - Import cost: `test_import_cost.py` already exists — the new modules must not
-  pull anything new into the default install (success check 5).
+  pull anything new into the default install (success check 5). **Done** — see
+  the note at the end of §5.
 
 ## 7. Explicitly out of scope
 

@@ -105,12 +105,21 @@ def select(
     entries = list(corpus.entries)
     notices = list(corpus.notices)
     dispositions: list[CriterionDisposition] = []
+    # A restated key takes its LAST statement, because that is what the rest
+    # of the family already does: Call reads `stated[-1]` for max-results and
+    # every adapter's plan overwrites on re-statement. Select answering the
+    # FIRST statement would give one request two different caps depending on
+    # which layer applied it -- the two-implementations-one-meaning rule
+    # (SR-G2's argument, applied to criteria). Insertion order is kept, so
+    # dispositions still come back in the order the caller first raised each
+    # key.
+    stated: dict[str, Criterion] = {}
+    for criterion in criteria:
+        stated[criterion.key] = criterion
     answered: set[str] = set()
 
     cap: int | None = None
-    for criterion in criteria:
-        if criterion.key in answered:
-            continue
+    for criterion in stated.values():
         answered.add(criterion.key)
         if criterion.key == CRITERION_MAX_RESULTS:
             # deliberately NOT short-circuited by pushdown. Every provider
