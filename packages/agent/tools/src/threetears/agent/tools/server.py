@@ -2304,6 +2304,20 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
+            # NOSILENT: this branch refuses the call at the border and, until now, wrote
+            # nothing anywhere -- the reason travelled only in the reply, to a caller that
+            # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
+            # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
+            # field this version does not know: an envelope-compatibility failure that
+            # rejects every call identically and is invisible in the pod's own log. That is
+            # the shape most worth naming, because nothing else about the pod looks wrong
+            # while it happens -- it registers, heartbeats, and answers probes throughout.
+            log.warning(
+                "refusing a call whose envelope this pod cannot parse; a caller newer than "
+                "this pod sending an unknown field is the usual cause (CallRequest forbids "
+                "extras), and it refuses every call the same way",
+                extra={"extra_data": {"pod_id": self._pod_id, "error": str(exc)}},
+            )
             await self._respond(msg, error_response)
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
