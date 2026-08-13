@@ -1559,7 +1559,24 @@ def _build_internal_payload(
         proxy_assertion=proxy_assertion,
         result_subject=result_subject,
     )
-    result = internal_request.model_dump_json().encode("utf-8")
+    # Dropping unset TOP-LEVEL optionals is what makes a newer registry safe against an older
+    # pod, and it is load-bearing rather than tidiness. :class:`CallRequest` is
+    # ``extra="forbid"``, so a pod predating a field refuses the WHOLE call rather than ignoring
+    # the field -- and since every declared field is serialized, an optional nobody set still
+    # reaches the wire as an explicit null. A field can therefore break every lagging pod in the
+    # fleet without a single caller populating it, which is exactly the trap the "ship the
+    # accepting server first" rollout note is written to avoid: that note assumes absence follows
+    # from not setting it, and only this makes it true. An absent key and a null key parse
+    # identically on a pod new enough to declare the field, so nothing is lost.
+    #
+    # Scoped to the top level ON PURPOSE, rather than a recursive ``exclude_none``. The nesting
+    # that matters here is ``context``, and :class:`CallContext` does NOT forbid extras -- an
+    # unknown dimension there is ignored, never fatal -- so it needs no such protection. Pruning
+    # it anyway would strip identity dimensions the proxy deliberately stamps as null, including
+    # the verified-``user_id``-is-None case that must override a claimed user; those travel as
+    # explicit nulls and the tests around them read the wire.
+    payload = internal_request.model_dump(mode="json")
+    result = json.dumps({key: value for key, value in payload.items() if value is not None}).encode("utf-8")
     return result
 
 
