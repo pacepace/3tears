@@ -31,13 +31,26 @@ from threetears.scrape.page_finder import (
     _all_notices,
     _candidate_urls,
     _CandidatePage,
-    _dedupe_candidates,
+    _corpus,
+    _first_seen,
     _extract_search_queries,
     _first_failure,
     _read_search_structure,
     _verify_candidate_page,
     find_target_page,
 )
+
+
+def _seen_candidates(projections: list[SearchResultsMetadata]) -> tuple[Candidate, ...]:
+    """What ``_dedupe_candidates`` used to return, now composed from the corpus.
+
+    Every assertion below was written against the hand-rolled version, so they
+    hold unchanged only if the migration onto ``aggregate`` preserved the
+    behaviour -- which is the point of retargeting them rather than rewriting
+    them.
+    """
+    return _first_seen(_corpus(projections))
+
 
 _SEARCH_TOOL = "threetears.web_search"
 _FETCH_TOOL = "threetears.web_fetch"
@@ -415,7 +428,7 @@ class TestDedupeCandidates:
             candidate_set=CandidateSet(candidates=(_candidate("https://b.gov"), _candidate("https://c.gov"))),
         )
 
-        assert [c.identity for c in _dedupe_candidates([turn_one, turn_two])] == [
+        assert [c.identity for c in _seen_candidates([turn_one, turn_two])] == [
             "https://a.gov",
             "https://b.gov",
             "https://c.gov",
@@ -698,7 +711,7 @@ class TestTheStructureSeamAgainstARealSocket:
 
         projections = _read_search_structure(messages, search_tool.name)
         assert len(projections) == 1
-        assert [c.identity for c in _dedupe_candidates(projections)] == ["https://example.gov/warn"]
+        assert [c.identity for c in _seen_candidates(projections)] == ["https://example.gov/warn"]
 
 
 # ===========================================================================
@@ -740,13 +753,13 @@ class TestCandidateUrls:
 
 class TestDedupeCandidatesEdges:
     def test_no_projections_yields_nothing(self):
-        assert _dedupe_candidates([]) == ()
+        assert _seen_candidates([]) == ()
 
     def test_a_zero_result_turn_contributes_nothing(self):
         # SR-J2: zero results is a success, and must not become a phantom candidate.
         empty = SearchResultsMetadata.from_candidate_set(query="q", candidate_set=CandidateSet())
 
-        assert _dedupe_candidates([empty]) == ()
+        assert _seen_candidates([empty]) == ()
 
     def test_first_occurrence_wins_so_the_earlier_turns_locators_survive(self):
         first = SearchResultsMetadata.from_candidate_set(
@@ -758,7 +771,7 @@ class TestDedupeCandidatesEdges:
             candidate_set=CandidateSet(candidates=(_candidate_with_locators("same-id", "https://second.gov"),)),
         )
 
-        deduped = _dedupe_candidates([first, second])
+        deduped = _seen_candidates([first, second])
 
         assert len(deduped) == 1
         assert [loc.url for loc in deduped[0].locators] == ["https://first.gov"]
@@ -1050,7 +1063,7 @@ class TestFindTargetPageStructureEdges:
 
         projections = _read_search_structure(messages, search_tool.name)
         assert len(projections) == 1
-        assert _dedupe_candidates(projections) == ()
+        assert _seen_candidates(projections) == ()
         assert _first_failure(projections) is None
 
     async def test_a_provider_error_over_a_real_socket_arrives_as_a_typed_failure(self):
@@ -1076,7 +1089,7 @@ class TestFindTargetPageStructureEdges:
         # not carry. Three attempts happened underneath -- the transport's own
         # bounded retry -- and the border still reports one typed outcome.
         assert _first_failure(projections).startswith("transport-failed: ")
-        assert _dedupe_candidates(projections) == ()
+        assert _seen_candidates(projections) == ()
 
     def test_a_structurally_invalid_payload_degrades_the_same_way(self):
         # from_metadata validates as well as version-checks, and pydantic's
@@ -1296,7 +1309,7 @@ class TestStructureCarriesExoticText:
         # url_was_a_search_result is a string comparison, so an IDN or a
         # percent-encoded path must match the form the candidate carries.
         url = "https://例え.jp/通知/warn%20notices.html"
-        candidates = _dedupe_candidates(_read_search_structure([_search_tool_message(_candidate(url))], _SEARCH_TOOL))
+        candidates = _seen_candidates(_read_search_structure([_search_tool_message(_candidate(url))], _SEARCH_TOOL))
 
         assert url in _candidate_urls(candidates)
 
@@ -1306,7 +1319,7 @@ class TestStructureCarriesExoticText:
         # about a URL the search did not return. Recorded as a pin so the choice is
         # visible if someone later wants normalisation -- it belongs upstream, at the
         # adapter that mints identity, not in a membership check.
-        candidates = _dedupe_candidates(
+        candidates = _seen_candidates(
             _read_search_structure(
                 [_search_tool_message(_candidate("https://example.gov/warn%20notices"))], _SEARCH_TOOL
             )
@@ -1434,3 +1447,67 @@ class TestEverySearchFailed:
         assert "refused" not in result.verification_note
         # still carried as a fact, just not as the verdict
         assert result.search_failure == "rate-limited: slow down"
+
+
+class TestTheCorpusKeepsWhatTheFlatTupleDropped:
+    """The migration's actual gain: corroboration across differently-worded turns."""
+
+    def _turn(self, query: str, url: str) -> SearchResultsMetadata:
+        """One search turn, with its own query on the candidate's provenance."""
+        candidate = Candidate(
+            identity=url,
+            locators=(Locator(url=url),),
+            provenance=Provenance(
+                query=query,
+                provider_instance="searxng-local",
+                retrieved_at=datetime(2026, 8, 12, tzinfo=UTC),
+            ),
+        )
+        return SearchResultsMetadata.from_candidate_set(
+            query=query, candidate_set=CandidateSet(candidates=(candidate,))
+        )
+
+    def test_two_queries_finding_one_url_keep_both_provenances(self):
+        turns = [
+            self._turn("Ohio WARN notices", "https://example.gov/warn"),
+            self._turn("Ohio layoff filings", "https://example.gov/warn"),
+        ]
+
+        corpus = _corpus(turns)
+
+        assert len(corpus.entries) == 1
+        entry = corpus.entries[0]
+        assert len(entry.contributions) == 2
+        assert [p.query for p in entry.provenances] == ["Ohio WARN notices", "Ohio layoff filings"]
+
+    def test_the_flat_projection_still_shows_one_candidate_per_identity(self):
+        turns = [
+            self._turn("Ohio WARN notices", "https://example.gov/warn"),
+            self._turn("Ohio layoff filings", "https://example.gov/warn"),
+        ]
+
+        seen = _first_seen(_corpus(turns))
+
+        assert [c.identity for c in seen] == ["https://example.gov/warn"]
+        assert seen[0].provenance.query == "Ohio WARN notices", "first turn wins, as it always has"
+
+    def test_a_failed_turn_contributes_no_corpus_notice(self):
+        """`search_failure` already reports it; the corpus must not double-report."""
+        failed = SearchResultsMetadata(
+            query="Ohio WARN notices",
+            failure=FailureRecord(failure_class="rate-limited", message="429", spend=Spend()),
+        )
+
+        corpus = _corpus([failed, self._turn("Ohio layoff filings", "https://example.gov/warn")])
+
+        assert corpus.notices == ()
+        assert len(corpus.entries) == 1
+
+    def test_spend_rolls_up_across_turns(self):
+        """A loop that searched six times now has one number for what that cost."""
+        turns = [
+            SearchResultsMetadata.from_candidate_set(query="q1", candidate_set=CandidateSet(spend=Spend(calls=1))),
+            SearchResultsMetadata.from_candidate_set(query="q2", candidate_set=CandidateSet(spend=Spend(calls=1))),
+        ]
+
+        assert _corpus(turns).spend.calls == 2

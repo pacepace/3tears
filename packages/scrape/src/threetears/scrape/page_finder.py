@@ -46,9 +46,12 @@ from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import create_web_search_tool
 from threetears.models import LlmPurpose, create_chat_model
 from threetears.observe import get_logger
+from threetears.search.aggregate import aggregate
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     Candidate,
+    CandidateSet,
+    Corpus,
     SearchResultsMetadata,
 )
 
@@ -127,8 +130,16 @@ class PageFinderResult:
     search_queries_tried: list[str] = field(default_factory=list)
     #: every candidate the search turns actually returned, in provider order,
     #: deduplicated by identity across turns. Typed, off ``metadata`` -- never
-    #: re-parsed out of the prose the LLM read (check 4).
+    #: re-parsed out of the prose the LLM read (check 4). Where several turns
+    #: returned one identity, the first turn's candidate is the one here; every
+    #: contribution is on :attr:`candidate_corpus`.
     candidates_seen: tuple[Candidate, ...] = ()
+    #: the same candidates before that projection, one entry per identity with
+    #: every contributing turn intact. Each turn searched a different query and
+    #: provenance records which, so an entry with two contributions is a URL
+    #: two differently-worded searches both found -- corroboration the flat
+    #: tuple cannot express. ``None`` only on a result built without a search.
+    candidate_corpus: Corpus | None = None
     #: whether :attr:`url` was among :attr:`candidates_seen`. ``False`` on a
     #: real finding means the coercion step produced a URL no search returned
     #: -- the page may still be correct (the loop can reach it by following a
@@ -236,27 +247,56 @@ def _read_search_structure(messages: list[Any], search_tool_name: str) -> list[S
     return found
 
 
-def _dedupe_candidates(projections: list[SearchResultsMetadata]) -> tuple[Candidate, ...]:
-    """Flatten every turn's candidates into one identity-deduplicated tuple.
+def _corpus(projections: list[SearchResultsMetadata]) -> Corpus:
+    """Accumulate every turn's candidates into one corpus.
 
-    Provider order within a turn is preserved and turns are concatenated in
-    the order the loop ran them -- this is emphatically not a ranking, which
-    is Select's business (SR-L2), just the honest record of what came back.
+    This module used to hand-roll the accumulation -- flatten the turns, drop
+    any identity already seen -- which is what ``aggregate`` now owns, and
+    which lost something in the dropping. Each turn searches a *different
+    query*, recorded on every candidate's provenance, so the second turn to
+    return a URL was carrying the fact that a differently-worded search also
+    found it. That is corroboration a page-finding loop should weigh, and
+    discarding the later contribution threw it away silently.
+
+    Only successful turns are aggregated. A failed turn's projection carries a
+    ``FailureRecord`` rather than a live exception, and its failure is already
+    reported by :func:`_first_failure` and :func:`_every_search_failed`;
+    passing it through here as well would double-report it in the corpus
+    notices, which ``search_notices`` is not for.
+
+    Turn order is preserved and is emphatically not a ranking (SR-L2) -- just
+    the honest record of what came back, in the order it came.
 
     :param projections: one projection per search turn
     :ptype projections: list[SearchResultsMetadata]
+    :return: the accumulated corpus, one entry per distinct identity
+    :rtype: Corpus
+    """
+    return aggregate(
+        CandidateSet(
+            candidates=projection.candidates,
+            dispositions=projection.dispositions,
+            spend=projection.spend,
+        )
+        for projection in projections
+        if projection.failure is None
+    )
+
+
+def _first_seen(corpus: Corpus) -> tuple[Candidate, ...]:
+    """Project the corpus back to one candidate per identity, first turn winning.
+
+    Preserves exactly what :attr:`PageFinderResult.candidates_seen` has always
+    meant, so no caller changes. The contributions the projection drops are
+    still on :attr:`PageFinderResult.candidate_corpus` for anything that wants
+    them.
+
+    :param corpus: the accumulated corpus
+    :ptype corpus: Corpus
     :return: the candidates, first occurrence of each identity winning
     :rtype: tuple[Candidate, ...]
     """
-    seen: set[str] = set()
-    ordered: list[Candidate] = []
-    for projection in projections:
-        for candidate in projection.candidates:
-            if candidate.identity in seen:
-                continue
-            seen.add(candidate.identity)
-            ordered.append(candidate)
-    return tuple(ordered)
+    return tuple(entry.contributions[0] for entry in corpus.entries)
 
 
 def _candidate_urls(candidates: tuple[Candidate, ...]) -> set[str]:
@@ -516,7 +556,8 @@ async def find_target_page(
     # including the failure exits, which is the point: a run that ends with
     # nothing now says whether the search *refused* or merely came up empty.
     projections = _read_search_structure(messages, web_search_lc.name)
-    candidates_seen = _dedupe_candidates(projections)
+    candidate_corpus = _corpus(projections)
+    candidates_seen = _first_seen(candidate_corpus)
     search_notices = _all_notices(projections)
     search_failure = _first_failure(projections)
 
@@ -535,6 +576,7 @@ async def find_target_page(
             turns_used=loop_result.rounds_used,
             search_queries_tried=queries_tried,
             candidates_seen=candidates_seen,
+            candidate_corpus=candidate_corpus,
             search_notices=search_notices,
             search_failure=search_failure,
         )
@@ -568,6 +610,7 @@ async def find_target_page(
             turns_used=loop_result.rounds_used,
             search_queries_tried=queries_tried,
             candidates_seen=candidates_seen,
+            candidate_corpus=candidate_corpus,
             search_notices=search_notices,
             search_failure=search_failure,
         )
@@ -590,6 +633,7 @@ async def find_target_page(
         turns_used=loop_result.rounds_used,
         search_queries_tried=queries_tried,
         candidates_seen=candidates_seen,
+        candidate_corpus=candidate_corpus,
         url_was_a_search_result=candidate.url in _candidate_urls(candidates_seen),
         search_notices=search_notices,
         search_failure=search_failure,
