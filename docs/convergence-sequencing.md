@@ -180,15 +180,16 @@ back into
 [`search-requirements.md` §13](search-requirements.md#13-decisions-needing-an-owner).
 → [`search-spec.md` §7](search-spec.md#7-sequencing)
 
-*Status 2026-08-12:* the SearXNG half is substantially discharged — the formula,
-its four consequences and the one residue are recorded at SR-A4
+*Status 2026-08-12:* the SearXNG half is discharged — the formula and its four
+consequences are recorded at SR-A4
 ([#322](https://github.com/pacepace/3tears/pull/322)), and
 [#328](https://github.com/pacepace/3tears/pull/328) gave it a container to check
-itself against. The residue wants an instance whose engines are not
-rate-limited, run with `SEARXNG_REQUIRE_RESULTS=1`. The in-repo success-check
-sweep and the §13 propagation are untouched, and both wait on search Phase 3
-(`aggregate`/`select`) — not on this document's Phase 3, which is the release
-Gate B gates.
+itself against **and closed the residue**: multi-engine fusion was observed
+live (a fused score of 4.64 across two engines, matching the formula to
+floating point), so the unbounded claim no longer rests on the formula alone.
+The in-repo success-check sweep and the §13 propagation are untouched, and both
+wait on search Phase 3 (`aggregate`/`select`) — not on this document's Phase 3,
+which is the release Gate B gates.
 
 ## Phase 3 — Release
 
