@@ -36,6 +36,7 @@ from threetears.search.contracts.candidate import (
     ContentSlot,
     Locator,
 )
+from threetears.search.contracts.corpus import Corpus, CorpusEntry
 from threetears.search.contracts.criteria import (
     CRITERION_CARRIER,
     CRITERION_DOMAINS_EXCLUDE,
@@ -88,6 +89,8 @@ from threetears.search.contracts.provenance import (
     PRODUCER_MODEL_MEDIATED,
     Provenance,
 )
+from threetears.search.contracts.ranker import Ranker
+from threetears.search.contracts.shortlist import Shortlist
 from threetears.search.contracts.provider import SearchProvider
 from threetears.search.contracts.request import SearchRequest
 from threetears.search.contracts.scores import (
@@ -138,6 +141,8 @@ __all__ = [
     "Candidate",
     "CandidateSet",
     "ContentSlot",
+    "Corpus",
+    "CorpusEntry",
     "Criterion",
     "CriterionDisposition",
     "Disposition",
@@ -147,12 +152,14 @@ __all__ = [
     "Locator",
     "MalformedResponse",
     "Provenance",
+    "Ranker",
     "ProviderCapabilities",
     "QuotaExhausted",
     "RateLimitDecision",
     "RateLimited",
     "RateLimiterPort",
     "ScoreEntry",
+    "Shortlist",
     "SearchFailure",
     "SearchProvider",
     "SearchRequest",

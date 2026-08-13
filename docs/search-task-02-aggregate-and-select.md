@@ -104,9 +104,24 @@ real false-merge risk — `?page=2` is not tracking chaff, and two hosts serving
 different content at case-differing paths exist. If a consumer wants it, it
 belongs where the identity is *minted* (the adapter, which knows the provider's
 conventions) or in a caller-supplied key function, not baked into the corpus.
-Recorded as an accepted limitation rather than a gap: a corpus that under-merges
-is honest and costs a duplicate; one that over-merges silently destroys a
-distinct result.
+Recorded as an accepted limitation rather than a gap, and the asymmetry that
+justifies it is **recoverability**: over-merging destroys a candidate
+unrecoverably, and no downstream stage can un-merge it; under-merging leaves a
+duplicate whose halves the consumer still holds and can collapse itself.
+
+*Amended 2026-08-12, after checking it against samsung.* The first draft of this
+ruling made a stronger claim — that under-merging is *self-correcting* — and
+cited samsung's `discovery/dedup.py`, which reaches the same conclusion by
+measurement against 128 proposals from 22 real runs. samsung's own session
+declined the citation, correctly: their asymmetry rests on a curator's rejection
+being **durable**, so an over-merge permanently withholds a work nobody declined
+and an under-merge is caught by a human asked the same question twice. This
+corpus is per-query and has no durable suppression (§7), so neither half
+transfers — a duplicate here is silently consumed by the cull, with nobody to
+notice it. The direction of the ruling survives on recoverability alone, which
+this structure earns on its own. If a corpus ever persists across runs, the
+stronger argument becomes available and should be re-derived deliberately rather
+than inherited.
 
 ### R3 — Merged scores are never combined into a value
 
@@ -184,6 +199,100 @@ contributors diverged.
 Reporting the strongest would read as a filtered corpus that is not filtered,
 which is the exact defect P8 exists to prevent.
 
+## 3a. What building steps 1-2 corrected — 2026-08-12
+
+Three, all of the class that only appears once code exists. Recorded here for
+the same reason the rulings above were: so the next session inherits them rather
+than rediscovering them.
+
+**Fusion cannot run over a built corpus, and had to move into accumulation.**
+R4 as written has RRF operating on a `Corpus`. It cannot: a rank is a
+candidate's position within its *own* call, and grouping by identity destroys
+that order. Two calls returning the same two results in opposite orders leave
+nothing in the grouped structure to recover which was first where — and the
+reconstruction silently assigns the second call the first call's ordering. It
+reads correct and is wrong. Ranks are now read while the `CandidateSet`s are
+still intact, and `test_fusion_reads_the_rank_a_candidate_held_in_its_own_call`
+drives exactly that shape. Consequence for the producer seam: a producer
+candidate holds no rank in any call and so contributes nothing to a fusion,
+which is the honest answer rather than a fabricated last place.
+
+**A stage's judgment is entry-level, not provider-level.** The fused score was
+going to ride `contributions[0]`, which would have a provider reporting
+something it never said. `CorpusEntry.derived_scores` holds stage-produced
+judgments instead, and is the only place a `comparable=True` score may appear —
+which is precisely what SR-A4 restricts to "a pipeline stage that normalised
+across providers."
+
+**One validator was written and removed.** It checked that every contribution's
+own `identity` equals the entry's. That holds under the default key and fails
+under a normalising one, so the rule would have forbidden the very lever R2
+offers. `CorpusEntry.identity` is the **dedup key**; its docstring now says so
+rather than implying the two are always the same.
+
+## 3b. What samsung answered — 2026-08-12, for step 4
+
+Elicited from the samsung session against its real code, not assumed. These bind
+the producer seam when it is built.
+
+- **A C5 candidate carries zero locators.** `ProposedWork` is
+  `title` / `rationale` / `artist`; nothing in phase 1 produces a URL, and
+  locators arrive when phase 2 resolves images. `Candidate.locators` already
+  *permits* an empty tuple but its docstring says "at least the canonical
+  locator" — the docstring is wrong for this case and is corrected with the
+  seam, so a producer candidate is contract-legal rather than
+  technically-passing.
+- **Identity is samsung's `work_dedup_key`, adopted rather than re-minted.**
+  Two identities for one work are free to disagree, and the disagreement is
+  invisible. This is a **stated coupling**: the key is derived under an
+  opinionated normalisation contract (accent folding; iterative stripping of
+  trailing dates, catalogue clauses and alternate titles; a deliberate refusal
+  to collapse `Untitled (…)`), and a change there moves our identities.
+- **`rationale` is mandatory for the producer and ignorable by consumers.**
+  Those are separable and the first draft conflated them. It is required on
+  `ProposedWork`, required on the stored row, and rendered on a live review
+  card — so a producer omitting it is a producer defect, not a thin result. It
+  rides a **namespaced** facet key (`curation:match_rationale`, following
+  `Criterion.namespaced`'s house style), because that repo already has a second,
+  different sentence called `selection_rationale` at a later hop and a bare
+  `rationale` would eventually be rendered in the wrong place. The namespace
+  names the **producing component**, not the consuming product: `curation` is
+  the package that reads an intent and proposes works, and would produce the
+  same sentence if the pictures ended up on a projector. `samsung` names the
+  display plane the facet never travels to.
+- **Spend is referenced by opaque `SpendRecord.id`, never by `EngineSpend`'s
+  shape.** `EngineSpend` is pre-persistence: no id, no timestamp, two instances
+  indistinguishable. `SpendRecord` is the priced ledger row. Holding a pointer
+  satisfies D3's "records a reference and MUST NOT re-price" structurally rather
+  than by discipline. No totals re-derived from tokens — samsung's
+  `SpendCategory` grows, and its members carry attribution rules that are not
+  derivable from the shape (`CONVERSATION_TOKENS` is deliberately not attributed
+  to the run a conversation seeds, so a naive roll-up double-counts).
+
+### An unresolved tension for step 4: rank as trusted, versus rank as preserved
+
+Worth settling before the seam sketch decides whether producer candidates carry
+a position, because the two repos have reached opposite rules from the same
+observation.
+
+**This package's rule (3a above):** a rank is only *recoverable* inside the call
+that produced it, so capture it before grouping destroys it.
+
+**samsung's rule (`discovery/browse.py`):** a rank is only *meaningful* inside
+the call that produced it, so do not export it. Measured rather than assumed —
+the Art Institute's relevance survives a filter-only query, where one Ellsworth
+Kelly painting returns at 13,535 against its siblings' 6 to 8. A caller handed
+that order gets a ranking that looks meaningful and is not, which is D1's
+concern arriving from the provider side.
+
+Same observation, opposite remedies. They do not conflict today (samsung's phase
+2 has one search provider, so there is no second ordering to fuse), but if the
+producer seam ever carries samsung's candidates, this package would be asking
+for exactly the thing that repo refuses to hand its own callers. The likely
+resolution is that a producer candidate carries **no** position and therefore no
+fused score — which is already what 3a rules for candidates that ranked nowhere
+— but it should be decided rather than inherited from an implementation detail.
+
 ## 4. What is missing (the build)
 
 - `contracts/corpus.py` — `CorpusEntry` and `Corpus` per R1, with the
@@ -201,21 +310,63 @@ which is the exact defect P8 exists to prevent.
 4. Producer seam driven by **samsung C5** as a real second producer.
 5. Carrier dispatch driven by **samsung C6** (image, deep) — §3.5's Phase 3 half.
 
-Steps 1-3 start now. Steps 4-5 are why samsung is being pulled forward: a seam
-with one implementer and a dispatch with one carrier are the shape this repo has
+Steps 1-3 start now. Steps 4-5 are why samsung was pulled forward: a seam with
+one implementer and a dispatch with one carrier are the shape this repo has
 shipped inert three times in a fortnight (the context-save node's default set,
 `chunker.py`'s bare-name strategy, and item 5's untested tool/transport seam).
-D3 deferred the seam to "when samsung pulls" on the same reasoning that
-correctly blocks item 8 on discodon's storage port — but discodon's port does
-not exist yet and samsung is available, so the deferral inherited a constraint
-that does not apply to it.
+
+**Corrected 2026-08-12, and it splits step 4 in two.** The claim above — that
+samsung is available, so D3's deferral inherited a constraint that does not
+apply — is half right, and the wrong half matters. samsung's session reports
+that its active build plan is an eleven-chunk curation surface with nothing in
+it a search producer, and that `3tears-core` is deliberately absent from that
+repo: its durable tier matches the `DurableStore` contract *structurally*, with
+no framework import, and the only declared 3tears package is `3tears-models`,
+pinned inside an opt-in `eval` group a default install never touches. So:
+
+- samsung is available for **contract elicitation**, and that has already paid —
+  every finding in §3b came from its real code rather than an imagined consumer,
+  and two of them (zero locators; spend by opaque ledger id) contradict what
+  this document would otherwise have specified.
+- samsung is **not** available to *consume* the seam soon. Building step 4 now
+  would therefore still produce a seam nothing drives, which is the exact
+  failure the paragraph above invokes to justify building it. The argument, run
+  honestly, now points the other way.
+
+**So step 4 splits: sketch and review it now, build it when samsung can consume
+it.** Reviewing a contract costs nothing and catching a boundary mismatch on
+paper is the whole point of doing it early; writing an implementation whose only
+caller is a test is not.
+
+**Success check 2 is designable now and not satisfiable now**, and that
+distinction should not be inherited by anything downstream. It does *not* block
+Gate B: the gate's wording is "all §3 success checks **that can be verified
+in-repo**", and check 2 lives in samsung's repo. Gate B was never waiting on it.
+
+**One constraint the seam must hold to stay cheap when the time comes: it must
+be importable without pulling `3tears-core`.** If consuming the producer seam
+means taking the framework, samsung's dependency argument bites again and the
+answer will be the same one it was in July. Verified for steps 1-3 —
+`threetears.search.aggregate` and `threetears.search.select` load only
+`threetears.media` and `threetears.search`, no core, no agent, no httpx, no
+torch.
+
+*Discharged 2026-08-12.* That was a fact somebody checked rather than a test
+that held it. `test_import_cost.py` now probes the stage modules as well as the
+contracts, as an allowlist over everything a fresh interpreter loads, and asserts
+separately that no other working layer rides along — which also catches Aggregate
+and Select becoming a unit by importing each other. Both halves were confirmed to
+fail on real cases before being relied on: the allowlist trips on
+`threetears.observe` via `call` and on `click` via `standalone`, and the
+rides-along check trips on `bind`, which pulls `call`.
 
 samsung is also the consumer that has **already recorded package rejections**
-for `3tears-core` and `3tears-models` on `MemoryMax` grounds. Success checks 5
-and 9 (no torch; a synchronous one-shot `asyncio.run()`) are its constraints,
-and the requirements doc's warning is that *"a capability that does not state
-its deployment constraints gets refused the same way, on the same evidence,
-after it is built."*
+for `3tears-core` and `3tears-models` on `MemoryMax` grounds — seven
+dependencies into the default install of a plane that runs on a Pi beside the
+display process. Success checks 5 and 9 (no torch; a synchronous one-shot
+`asyncio.run()`) are its constraints, and the requirements doc's warning is that
+*"a capability that does not state its deployment constraints gets refused the
+same way, on the same evidence, after it is built."*
 
 ## 6. Tests the build owes
 
@@ -237,7 +388,8 @@ after it is built."*
 - Two contributors disagreeing on one criterion → corpus disposition is the
   weaker, and `detail` names the divergence (R8).
 - Import cost: `test_import_cost.py` already exists — the new modules must not
-  pull anything new into the default install (success check 5).
+  pull anything new into the default install (success check 5). **Done** — see
+  the note at the end of §5.
 
 ## 7. Explicitly out of scope
 
