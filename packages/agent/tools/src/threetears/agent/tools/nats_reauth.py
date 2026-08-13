@@ -20,8 +20,9 @@ is carried as a parallel copy with matching values.
 
 Unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake reply -- a standalone
 tool pod receives no such handshake, so the TTL DURATION is sourced from the pod's own config
-(:func:`threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds`, the platform default 150s,
-env-overridable). The schedule is anchored at the most recent (re)connect: the loop sleeps
+(:func:`threetears.agent.tools.config.get_nats_user_jwt_ttl_seconds`, env-overridable, defaulting to
+the same value the minting side defaults to). The schedule is anchored at the most recent
+(re)connect: the loop sleeps
 ``ttl - margin`` and then reconnects, which re-anchors the next cycle.
 """
 

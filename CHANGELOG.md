@@ -4,6 +4,50 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.3 -- 2026-08-13
+
+### Fixed
+
+- `registry`: the registry→pod envelope no longer sends unset top-level
+  optionals as explicit nulls. `CallRequest` is `extra="forbid"`, so a pod
+  predating a field refuses the WHOLE call rather than ignoring it -- and
+  because every declared field was serialized, a new optional reached the wire
+  as `null` even when no caller populated it. A field could therefore break
+  every lagging pod in the fleet without a single caller using it, defeating
+  the receiver-first rollout order those fields are added under. Found live: a
+  0.23.11 tool pod refused every call from a 0.24.1 registry on
+  `deadline_seconds` for three days. Scoped to the TOP level deliberately --
+  `CallContext` does not forbid extras and needs no such protection, and
+  pruning it would strip identity dimensions the proxy stamps as null on
+  purpose, including the verified-`user_id`-is-None case that must override a
+  claimed user.
+- `nats`: the `AGENT_POD` publish allow-list was missing the channel-default
+  engagement rail (`hub.channel.engagement.default.{resolve,set,clear}`), so
+  the runtime's resolve at the tool-call stamp seam was refused at the
+  connection. That resolve soft-fails to "unbound", so the refusal surfaced
+  later and elsewhere -- as a scan refused for a missing engagement that was in
+  fact configured. The three paths are now canonical `Subjects` helpers, so the
+  hub responder and agent client stop hand-mirroring raw strings under a
+  "change it there too" comment.
+- `agent-tools`: the standalone tool pod's assumed NATS user JWT TTL mirrored
+  the minting side's default by hand and was left behind when that default
+  moved, so the pod recycled a still-valid credential far more often than
+  required. Aligned, with the governing invariant recorded inline: assuming
+  less than the minted TTL costs churn, assuming more is a terminal close the
+  forever-reconnect path does not cover.
+
+### Changed
+
+- Three silences on the tool-call path now speak, so one call is readable
+  across the hop rather than inferred from two services' timestamps.
+  `agent-tools`: the pod logs a call's ARRIVAL, and logs the malformed-envelope
+  refusal it previously answered without recording anywhere -- the
+  version-mismatch shape above is otherwise invisible in the pod's own log,
+  because the pod registers, heartbeats and answers reachability probes
+  throughout while refusing every call. `registry`: the proxy's failover loop
+  warned only when a SIBLING pod existed, so the single-endpoint case -- the
+  common deployment, and the total outage -- broke out saying nothing.
+
 ## v0.24.2 -- 2026-08-12
 
 ### Added

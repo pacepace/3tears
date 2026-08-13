@@ -2304,6 +2304,20 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
+            # NOSILENT: this branch refuses the call at the border and, until now, wrote
+            # nothing anywhere -- the reason travelled only in the reply, to a caller that
+            # is usually a model. :attr:`CallRequest.model_config` is ``extra="forbid"``,
+            # so the ordinary way to arrive here is a CALLER NEWER THAN THIS POD sending a
+            # field this version does not know: an envelope-compatibility failure that
+            # rejects every call identically and is invisible in the pod's own log. That is
+            # the shape most worth naming, because nothing else about the pod looks wrong
+            # while it happens -- it registers, heartbeats, and answers probes throughout.
+            log.warning(
+                "refusing a call whose envelope this pod cannot parse; a caller newer than "
+                "this pod sending an unknown field is the usual cause (CallRequest forbids "
+                "extras), and it refuses every call the same way",
+                extra={"extra_data": {"pod_id": self._pod_id, "error": str(exc)}},
+            )
             await self._respond(msg, error_response)
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -2332,6 +2346,17 @@ class ToolServer:
             tool_name = request.tool_name
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
+
+            # The pod's arrival record. Every branch below can explain ITSELF, but none of them
+            # answers the question an outage actually asks first -- did the call get here at all?
+            # Without this line a pod that never received the call and a pod that received it and
+            # refused it produce the same empty log, so the search moves to another service on a
+            # guess. One line at the border makes that difference readable in the pod's own log,
+            # and is the anchor the audit event (emitted only once the outcome is known) cannot be.
+            log.info(
+                "tool call received",
+                extra={"extra_data": {"tool_key": tool_key, "pod_id": self._pod_id}},
+            )
 
             # Where this call's answer goes, decided BEFORE any work starts. The caller sets
             # ``result_subject`` when the call is too long to be answered on the reply inbox, and the
@@ -2857,7 +2882,7 @@ class ToolServer:
 
         unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
         standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
-        from :func:`get_nats_user_jwt_ttl_seconds` (the platform default 150, env-overridable). read
+        from :func:`get_nats_user_jwt_ttl_seconds` (env-overridable, with a platform default). read
         every cycle so an operator env change reschedules correctly; ``None`` when the config value is
         non-positive / malformed (unknown -> the loop re-checks rather than churning).
 
