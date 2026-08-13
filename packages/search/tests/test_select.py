@@ -107,6 +107,23 @@ def test_the_cull_applies_max_results() -> None:
     assert shortlist.dispositions[0].disposition == "local"
 
 
+def test_a_restated_criterion_takes_its_last_statement_like_call_does() -> None:
+    """One request, one meaning: Call reads ``stated[-1]`` and so must Select.
+
+    First-wins here would give the same criteria list two different caps
+    depending on which layer applied them -- the argument-meaning parity rule
+    the transports already carry, applied to criteria.
+    """
+    corpus = Corpus(entries=(_entry("https://a"), _entry("https://b"), _entry("https://c")))
+
+    shortlist = select(corpus, criteria=[Criterion.max_results(5), Criterion.max_results(2)])
+
+    assert len(shortlist.entries) == 2, "the last stated cap is the one applied"
+    assert sum(1 for d in shortlist.dispositions if d.criterion_key == "max-results") == 1, (
+        "one key, one answer, however many times it was stated"
+    )
+
+
 def test_a_consumer_wanting_the_cull_pays_for_no_ranker() -> None:
     """P4's acceptance test, first half."""
     corpus = Corpus(entries=(_entry("https://a"), _entry("https://b"), _entry("https://c")))
