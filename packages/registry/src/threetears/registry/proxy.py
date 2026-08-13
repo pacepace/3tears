@@ -1088,8 +1088,7 @@ class CallProxy:
                 # which pod did not answer, so "the call never arrived" is distinguishable from
                 # "the pod ran it and refused" without correlating two services by timestamp.
                 log.warning(
-                    "tool endpoint unreachable and no other endpoint to fail over to; "
-                    "the call never reached a pod",
+                    "tool endpoint unreachable and no other endpoint to fail over to; the call never reached a pod",
                     extra={
                         "extra_data": {
                             "full_name": full_name,
