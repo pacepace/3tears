@@ -199,13 +199,28 @@ jobs:
         run: ./scripts/verify-dist-complete.sh dist/
 
       - name: Upload distributions
-        # v5, not v4: v4 targets the Node 20 runtime, which GitHub deprecated and
-        # now force-runs on Node 24 with a warning on every release. Pinned ahead
-        # of the forced migration rather than after it, because this workflow only
-        # runs on a tag push -- a breakage here surfaces during a release, which is
-        # the worst moment to discover it. Usage is a plain single-artifact
-        # upload/download pair, unchanged between the two majors.
-        uses: actions/upload-artifact@v5
+        # v7, because it is the first major of BOTH artifact actions that actually
+        # runs on Node 24. GitHub deprecated the Node 20 runtime and force-runs
+        # those actions on 24 with a warning on every release; this workflow only
+        # runs on a tag push, so a breakage here surfaces during a release, which
+        # is the worst moment to discover it -- hence moving ahead of the forced
+        # migration rather than after it.
+        #
+        # CHECK `runs.using` IN THE ACTION'S OWN action.yml, do not infer it from
+        # the major being newer. That is what went wrong here before: v5 was taken
+        # for the Node 24 major and it is `node20`, so the bump off v4 silenced
+        # nothing and the warning survived it. The same trap is still live one
+        # major up and asymmetric between the pair -- upload v6 is `node24` but
+        # download v6 is `node20`, which its v7 notes say outright ("v6 had
+        # preliminary support for Node 24, however this action was by default
+        # still running on Node.js 20"). v7 is the first major where both agree.
+        #
+        # Usage is a plain single-artifact upload/download pair, unchanged across
+        # these majors: v7's new `archive` input is opt-in and defaults to the
+        # existing zip behaviour. v7 requires Actions Runner >= 2.327.1, which the
+        # GitHub-hosted runners below satisfy; a self-hosted runner would need
+        # checking first.
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -228,7 +243,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
@@ -261,7 +276,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
