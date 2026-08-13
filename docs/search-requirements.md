@@ -1884,9 +1884,11 @@ plus a transport seam the sketch does not have.
 - ~~**SR-A4** — SearXNG's score semantics are stated from general knowledge,
   not measured.~~ **Closed 2026-08-12**: measured against a live instance and
   read off `searx/results.py:calculate_score`; the ruling and its four
-  consequences are recorded at SR-A4 in §9. One residue, not an assumption:
-  multi-engine fusion was not *observed* (the instance's engines were
-  rate-limited), so the unbounded claim rests on the formula.
+  consequences are recorded at SR-A4 in §9. The residue closed the same day:
+  multi-engine fusion was observed against a containerised instance (a fused
+  score above 1.0 matching the formula to floating point — the discharge note
+  at SR-A4 in §9 carries the capture), so nothing here rests on the formula
+  alone.
 - The layer cut in §6 is proposed here, not derived from any owner's recorded
   position. Every requirement is attributed to it, so re-cutting it ripples.
   *This is also the document's one violation of convergence principle 2*
