@@ -1129,6 +1129,43 @@ signature:
 9. `aggregate.py` (corpus, dedup, producer seam) and `select.py` (criteria
    application, cull, ranker slot, degradation marks).
 
+| Item | State |
+|---|---|
+| 8 -- `replay.py` + `RecordingStore` + record schema | **Not started, deliberately** -- the record format is elicited against discodon's carved storage port, which is a Phase 1 item still outstanding outside this repo. Cutting it now would be cutting it against an imagined consumer |
+| 9 -- `aggregate.py` / `select.py` | **Done** -- steps 1-3 of the task doc in [#333](https://github.com/pacepace/3tears/pull/333) and [#335](https://github.com/pacepace/3tears/pull/335); the producer seam (step 4) is sketched and deliberately unbuilt, below |
+
+#### Phase 3 item 9 -- built 2026-08-12
+
+Rulings, tests owed and build sequence are
+[`search-task-02-aggregate-and-select.md`](search-task-02-aggregate-and-select.md);
+what belongs here is the state and the two things that reached past the item.
+
+`contracts/corpus.py`, `contracts/ranker.py`, `contracts/shortlist.py`,
+`aggregate.py` and `select.py` shipped with the tests §6 of that document owes.
+The ruling worth re-reading is **R1**: the corpus is a set of *groups*, not a bag
+of merged candidates, because `Candidate.provenance` is singular and a dedup that
+collapses two providers' hits into one candidate must discard one origin --
+destroying exactly the per-result grounding SR-A3 exists to keep. Contributions
+stay whole.
+
+**Step 4 -- the producer seam -- split off rather than built**, and the argument
+that split it is worth keeping because it reversed itself under checking. The
+case for building now was that samsung is available as a second producer, so D3's
+deferral no longer applied. samsung's session then reported that its active build
+plan contains no search producer and that `3tears-core` is deliberately absent
+from that repo. So samsung is available for **contract elicitation** -- which
+already paid, two of its answers contradicting what the document would otherwise
+have specified -- and *not* available to consume a seam. Building it now would
+produce a seam whose only caller is a test, which is the exact failure the
+argument invoked to justify building it. The sketch is
+[`search-task-03-producer-seam-sketch.md`](search-task-03-producer-seam-sketch.md)
+([#334](https://github.com/pacepace/3tears/pull/334)), reviewable now and
+approved to build when a consumer can drive it.
+
+**Success check 2 is designable now and not satisfiable now**, and it does not
+block Gate B -- the gate's wording is *"success checks that can be verified
+in-repo"*, and check 2 lives in samsung's repo. It was never waiting on this.
+
 **Gate B (pre-release):** all §3 success checks that can be verified in-repo
 are; SR-A4's SearXNG score semantics confirmed against a live instance
 (**done 2026-08-12** -- the formula, its four consequences and the one residue
@@ -1139,6 +1176,79 @@ taken during build. *Rider
 2026-08-11:* a release overtook this gate (below), so Gate B now gates the
 **next** release -- the one carrying Phase 2-3 -- not the leaf's first
 appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
+
+#### Gate B sweep -- 2026-08-13
+
+The gate has three parts. The SearXNG half was discharged 2026-08-12
+([#322](https://github.com/pacepace/3tears/pull/322),
+[#328](https://github.com/pacepace/3tears/pull/328)). This is the other two: the
+in-repo success-check sweep, and the §13 propagation.
+
+**Which checks are in-repo.** Nine of the fourteen: 4, 5, 6, 7, 8, 11, 12, 13,
+14. The other five are consumer-repo by construction -- 1 (metallm's side-steps),
+2 (samsung's image search), 3 (discodon's cost cap and replay), 9 (samsung's
+one-shot `asyncio.run()`), 10 (discodon before and after NATS). The gate's
+wording excludes them and always did; they belong to Phase 5 and Gate C.
+
+| Check | Verdict | Evidence |
+|---|---|---|
+| 4 -- `page_finder` structured, callers unchanged | **PASS** | [#326](https://github.com/pacepace/3tears/pull/326), [#335](https://github.com/pacepace/3tears/pull/335). Every new fact is a defaulted `PageFinderResult` field, so the "without its callers changing" clause is the literal shape of the change |
+| 5 -- installs without torch | **PASS** | `test_import_cost.py` -- an *allowlist* over everything a fresh interpreter loads, covering the stage modules as well as the contracts, with both halves confirmed to fail on real cases before being relied on |
+| 6 -- a new provider without touching a consumer | **PASS, with its limit stated** | `SearchProvider` + one conformance suite run against both adapters; no consumer names a concrete provider. The limit: both providers are ours. A third-party adapter is the check's real proof and arrives with a third-party author |
+| 7 -- a new carrier without a coordinated release | **PASS in-repo; its wire half is Gate C's** | `Candidate` carries no carrier union, `facets` is an open mapping, `Criterion.carrier` takes an open `media_category`. A new carrier is facet *values*, not a schema change. A reader on an older version is D13's `extra="forbid"` stance, deliberately deferred to Gate C |
+| 8 -- builtin keeps its name and shape | **PASS, end-to-end** | `test_search_metadata_over_nats.py`: named key on the wire, a consumer rebuilding the projection from the published bytes, typed details not flattened, schema version riding along, and the failure path carried as well as the success one |
+| 11 -- `test_no_bespoke_reuse` without an exemption | **PASS, and the exemptions file does not contradict it** | `standalone.py` is in `_SANCTIONED_HTTPX_SITES` in the walker -- the D19 *widening* SR-N1 asked for, not a waiver -- and files no exemption. Worth stating because a reader who greps `_no_bespoke_reuse_exemptions.txt` finds a search line and would reasonably conclude otherwise: that line is `LocalHttpServer`, a scripted test HTTP server, not the Adapter and not a transport |
+| 12 -- egress routed independently, result names its exit | **PASS as of this sweep** -- it did not before | See below |
+| 13 -- facets found in `media-contracts`, not added here | **PASS, structurally** | `contracts/facets.py` keys are `MediaInfo`'s and `MediaFacets`' own field names, checked **at import**, so a drift fails loudly rather than the two vocabularies diverging silently. The three genuinely new facets landed in `media-contracts` itself -- check 13 passing is the observable fact that they did |
+| 14 -- three faces, one contract | **NOT VERIFIED** | See below |
+
+**Check 12 was the sweep's find, and it is the pattern this document keeps
+recording.** Egress was pinned in several places and *independence* was pinned
+nowhere: every existing test drove one provider through one exit, asserting that
+a value was carried. The requirement names its own hard case -- *"the self-hosted
+SearXNG and the Tavily API can take different exits in the same process"* -- and
+nothing drove two. `test_egress_independence.py` now does, through both real
+adapters, and asserts the exits stay disjoint on the results, in the pacing
+buckets, and after Aggregate has merged them.
+
+The first draft of that file was itself the bug it was written to catch: its
+assertions compared each side against the constant it had been configured from,
+so collapsing the two exits to one value left all four tests green. A deployment
+routing both providers through one exit would have been reported as passing check
+12. The pins now compare the two sides *to each other* -- `!=`, `isdisjoint` --
+with a guard test on the fixture itself, and the collapse was confirmed to fail
+four of the five before the file was relied on.
+
+Two facts about egress that the sweep surfaced and that belong in the record.
+A result's exit comes from the **transport** (`TransportResponse.egress`, stamped
+onto `Provenance` by the adapter), while Call's `egress=` parameter keys pacing
+and stamps refusals. They are two independent sources of one fact, and nothing
+reconciles them -- a deployment that passes one and injects a transport reporting
+another gets pacing keyed on a value its own results contradict. This is not a
+new defect: it is the gap Phase 1 item 2 already recorded (*"nothing on
+`SearchProvider` carries the transport's egress today... if contracts later let a
+provider declare its egress, the parameter becomes derivable; that is a contracts
+change, not taken here"*). It stays not-taken, now with a test standing on the
+side of it that a consumer can observe.
+
+**Check 14 does not pass, and it is a decision rather than a build.**
+`WebSearchTool` and `WebFetchTool` leave `face_api` and `face_mcp` at their
+`False` defaults, so two of the three faces are unreachable and the property the
+check is actually about -- *no second result shape per face* -- has nothing to
+hold against. The mechanism is built and tested (Bind renders; `agent-tools`'
+`mcp.py` carries `structuredContent`); the reach is not turned on. Turning it on
+is two class attributes, but it is **ACL-visible surface** and §13 already lists
+the adjacent question as needing an owner (`skill_eligible`, and whether search
+stays in the `web` group alias). So this sweep records the gap rather than
+closing it by fiat, and the decision is now the one thing between here and a
+clean Gate B.
+
+**Gate B status: two of three parts discharged.** SearXNG done; the sweep done
+with eight of nine in-repo checks passing and check 14 held on a decision; §13
+propagated (see the requirements doc's §13, updated the same day). Gate B closes
+when check 14's face decision is taken -- either the flags go on and the pin is
+written, or the check is amended with the reason, which is what §13's
+"decisions needing an owner" is for.
 
 ### Phase 4 -- release
 

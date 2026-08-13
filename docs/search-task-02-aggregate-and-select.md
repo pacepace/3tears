@@ -1,8 +1,14 @@
 # search-task-02 — Aggregate and Select (Phase 3 item 9)
 
-**Status:** rulings recorded, not started. **Blocks:** Gate B.
-**Blocked by:** nothing for §5 steps 1-2; steps 3-4 want samsung (C5/C6), which
-is being pulled forward rather than waited on.
+**Status (2026-08-13):** **steps 1-3 built** — [#333](https://github.com/pacepace/3tears/pull/333),
+[#335](https://github.com/pacepace/3tears/pull/335). Step 4 is **sketched, not
+built** ([`search-task-03-producer-seam-sketch.md`](search-task-03-producer-seam-sketch.md),
+[#334](https://github.com/pacepace/3tears/pull/334)); step 5 is not started.
+**Blocks:** nothing — Gate B's sweep ran with this item done, and the two
+remaining steps are outside its wording (see §5).
+**Blocked by:** steps 4-5 wait on samsung being able to *consume* a seam, which
+is a different thing from being available to elicit against — the correction in
+§5 is the reasoning.
 
 Read `search-spec.md` §3.4 and §3.6 for *what these modules are*, and D1/D2/D3
 for the rulings they inherit. This document is *what to build*, and the rulings
