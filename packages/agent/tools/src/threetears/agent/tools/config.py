@@ -41,11 +41,20 @@ _PLATFORM_DEFAULT_ENGAGEMENT_SCOPE_REQUEST_TIMEOUT = 5.0
 _PLATFORM_DEFAULT_CONNECT_RETRY_BUDGET = 180.0
 _PLATFORM_DEFAULT_CONNECT_RETRY_BACKOFF_CAP = 15.0
 # TTL (seconds) a standalone tool pod ASSUMES its auth-callout-minted NATS user JWT carries, so its
-# proactive re-auth loop can schedule a reconnect BEFORE expiry. mirrors the hub auth-callout
-# responder's ``DEFAULT_NATS_USER_JWT_TTL_SECONDS`` (150) + its ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS``
-# env var: the pod receives no handshake reporting the minted TTL, so it reads the SAME canonical value
-# from its own env. the library must not import the hub, hence the parallel default here.
-_PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS = 150
+# proactive re-auth loop can schedule a reconnect BEFORE expiry. the pod receives no handshake
+# reporting the minted TTL, so it reads the SAME ``FOURTEENAIBOTS_NATS_USER_JWT_TTL_SECONDS`` env var
+# the minting side reads; this constant is only the fallback for a pod where that var is unset. the
+# library must not import the minting service, hence the parallel default here.
+#
+# The error is not symmetric, so the two directions are worth naming. Assuming LESS than the minted
+# TTL costs only churn: the pod recycles a still-valid credential, and every reconnect re-registers
+# its whole tool manifest. Assuming MORE is fatal: the JWT expires first and nats-py routes the auth
+# ``-ERR`` straight to a terminal close that the forever-reconnect path does not cover. So this value
+# must never exceed the platform's minted TTL -- and it must not be left behind when that TTL moves,
+# which is exactly how it drifted before, having kept a superseded value after the mint was raised.
+#
+# A deployment that tunes the minted TTL MUST set the env var on the tool pod as well.
+_PLATFORM_DEFAULT_NATS_USER_JWT_TTL_SECONDS = 300
 
 
 def _env_float(name: str, fallback: float) -> float:

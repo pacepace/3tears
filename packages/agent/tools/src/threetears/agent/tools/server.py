@@ -2857,7 +2857,7 @@ class ToolServer:
 
         unlike the agent runtime -- which learns its NATS-JWT TTL from the Hub handshake -- a
         standalone tool pod receives no handshake reporting the minted TTL, so the value is sourced
-        from :func:`get_nats_user_jwt_ttl_seconds` (the platform default 150, env-overridable). read
+        from :func:`get_nats_user_jwt_ttl_seconds` (env-overridable, with a platform default). read
         every cycle so an operator env change reschedules correctly; ``None`` when the config value is
         non-positive / malformed (unknown -> the loop re-checks rather than churning).
 
