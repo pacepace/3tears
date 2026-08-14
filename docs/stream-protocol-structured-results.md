@@ -80,6 +80,36 @@ version, not dumped at the call site where the shape would drift per caller"*.
 MCP: prose in `content`, structure in `structuredContent`, **one message, two
 registers** (`mcp/server.py:292-305`).
 
+**A summary-plus-handle idiom already exists, one layer up.** The model's own
+context window has the identical size problem D-S3 is solving for the wire, and
+the family already shipped an answer: `threetears.langgraph.offload` defines
+the contract (`packages/langgraph/src/threetears/langgraph/offload.py`), a tool
+result over `DEFAULT_OFFLOAD_THRESHOLD_CHARS` (8192 chars, `offload.py:38`) is
+stored whole in the three-tier `ContextItemCollection` via `save_tool_result`
+(`packages/agent/tools/src/threetears/agent/tools/context.py:290`), and the
+model sees `summary + [ctx:<id>]` instead of the dump. `context_recall`
+(`packages/agent/tools/src/threetears/agent/tools/builtin/context_recall.py`)
+is the paired tool that pulls the full content back on demand, same turn. This
+is a *different* layer than D-S3 — it bounds what reaches the model, not what
+reaches the client, and the `[ctx:<id>]` handle never crosses to the frontend
+today (verified: no `ctx:` or `context_recall` reference anywhere in metallm's
+frontend). But it is the family's own working precedent for rule 3's shape —
+small reference in-band, full content one call away — and D-S3 should be read
+as choosing the *wire* analogue of a pattern already proven at the *model*
+layer, not inventing the pattern itself.
+
+**A client-fetchable handle already has a live implementation, not just a
+contract.** `ObjectHandle` (`packages/media-contracts/src/threetears/media/contracts/protocols.py:290`)
+is D22's named-key precedent, but it is more than that: metallm already
+resolves one to bytes for a real browser client today.
+`GET /api/v1/media/{id}/url` (`metallm/api/src/api/v1/media.py:1267`,
+`get_media_url`) takes a small id, looks up its `s3_key`, and returns a
+presigned S3 URL the frontend fetches directly — no bytes ever cross the
+websocket. **This is D-S3(b)'s "endpoint and object-store reach," built and in
+production**, for every image and attachment metallm renders. It is not a cost
+the design would be introducing; it is a cost already paid by an existing
+consumer. See D-S3 below — this changes that option's calculus.
+
 ## 3. Rules any answer must obey
 
 1. **One contract, N faces** — success check 14, closed
@@ -152,16 +182,28 @@ summary is not re-checkable (rule 3).
 
 | Option | For | Against |
 |---|---|---|
-| **(a) The full projection, bounded, with an explicit truncation mark** | Re-checkable in the common case; one shape; nothing new to build | A large result is still truncated, and the client cannot get the rest |
-| (b) Always a handle (`ObjectHandle`-style) the client fetches | Unbounded results work; reuses a family primitive D22 already follows | Needs an endpoint and object-store reach the client may not have; a round-trip before anything renders |
-| (c) Inline when small, handle when large | Best of both | Two paths, and the client must implement both to be correct |
+| (a) The full projection, bounded, with an explicit truncation mark | Re-checkable in the common case; one shape; nothing new to build | A large result is still truncated, and the client cannot get the rest |
+| (b) Always a handle (`ObjectHandle`-style) the client fetches | Unbounded results work; reuses a family primitive D22 already follows, and — for metallm — an *implementation* it already runs (§2) | A round-trip before anything renders, even for a three-candidate result that would have fit inline |
+| **(c) Inline when small, handle when large** | Best of both | Two paths — but for metallm this is not two paths to *build*: the inline path is (a) below the bound, and the handle path is the existing `ObjectHandle` + presigned-URL primitive (§2), which the frontend already implements for media |
 
-**Recommendation: (a) for v1, with (c) recorded as the escalation.** The
-program's own rule against building a seam whose only caller is a test
-([`search-task-03`](search-task-03-producer-seam-sketch.md), where the producer
-seam was split off for exactly this reason) applies: no client exists yet that
-has proven it needs unbounded results in a stream frame. Ship the bounded form,
-and let the first consumer that hits the bound justify the handle.
+**Recommendation, revised: (c) from v1, not deferred to an escalation.** §2 was
+added after this section was first drafted, and it changes the answer. The
+original reasoning for (a)-only leaned on the `search-task-03` rule against
+building a seam whose only caller is a test
+([`search-task-03`](search-task-03-producer-seam-sketch.md)) — correct in
+general, but it assumed the handle side of (c) was new infrastructure with no
+proven caller. It is not: `ObjectHandle` + `GET .../url`-style resolution is
+already built, already in production, and metallm is already its caller — for
+media today, for a large search projection tomorrow is the same primitive, not
+a new one. Deferring (c) behind "let the first consumer that hits the bound
+justify the handle" makes sense when the handle is speculative cost. It does
+not make sense when the handle is a `git grep` away from already shipping.
+Ship (a)'s bounded projection under the frame's normal size, and fall back to a
+small `ObjectHandle`-shaped reference (id + summary, no bytes) plus the same
+resolve-by-id call metallm's frontend already makes for media, once the
+projection exceeds it. The exact bound is still metallm's number to pick (open
+question 1) — what changes is that picking it wrong no longer strands a large
+result with no way to get the rest.
 
 **The bound must be explicit in the payload, not implicit in the sender.** A
 truncated payload that does not say it was truncated is the silent-partial-
@@ -230,14 +272,25 @@ Three properties fall out, and they are the reasons to prefer it:
 - **`bind` remains the only construction site.** Nothing in the stream path
   assembles a payload; it forwards one.
 
+The sketch above is the inline branch (D-S3 under the bound). Over the bound,
+`structured` carries an `ObjectHandle.to_metadata()`-shaped dict (id + summary,
+no bytes, §2) instead of the projection — a shape that already exists and needs
+no new pydantic model, only a discriminator (e.g. a `structured_kind: Literal["inline", "handle"]`
+sibling field) so the client knows which one it got without probing the shape.
+
 ## 6. Open questions — these need stakeholders, not this document
 
-1. **What is the frontend's actual payload budget per frame?** D-S3's bound is a
-   number this repo cannot pick. metallm's answer decides whether (a) is
-   sufficient or (c) is needed immediately.
-2. **Will chat-kit clients have object-store reach?** If not, D-S3(b) and (c)
-   are off the table for browser clients regardless of size, and the bound in
-   (a) becomes a hard ceiling rather than a default.
+1. **What is the practical size bound for the inline path?** Narrower than
+   originally framed: with D-S3 now recommending (c) from v1, this number no
+   longer decides *whether* a large result is reachable at all (it always is,
+   via the handle) — it only sizes where inline stops and the handle starts.
+   Still metallm's number to pick.
+2. **Do chat-kit's other planned clients (scriob, samsung) have the same
+   object-store reach metallm already does?** Answered for metallm: yes —
+   `GET /api/v1/media/{id}/url` (§2). Open for the others. Where a future
+   client lacks it, D-S3(c)'s handle branch is off the table *for that
+   client*, and its inline bound becomes a hard ceiling rather than a
+   default — a per-client capability, not a protocol-wide one.
 3. **Does any product need structure from a tool other than search?**
    `page_finder` and `web_fetch` already produce it. If the answer is "many",
    the `structured` field wants a per-tool schema story rather than search's one
