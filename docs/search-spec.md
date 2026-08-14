@@ -1256,7 +1256,7 @@ wording excludes them and always did; they belong to Phase 5 and Gate C.
 | 11 -- `test_no_bespoke_reuse` without an exemption | **PASS, and the exemptions file does not contradict it** | `standalone.py` is in `_SANCTIONED_HTTPX_SITES` in the walker -- the D19 *widening* SR-N1 asked for, not a waiver -- and files no exemption. Worth stating because a reader who greps `_no_bespoke_reuse_exemptions.txt` finds a search line and would reasonably conclude otherwise: that line is `LocalHttpServer`, a scripted test HTTP server, not the Adapter and not a transport |
 | 12 -- egress routed independently, result names its exit | **PASS as of this sweep** -- it did not before | See below |
 | 13 -- facets found in `media-contracts`, not added here | **PASS, structurally** | `contracts/facets.py` keys are `MediaInfo`'s and `MediaFacets`' own field names, checked **at import**, so a drift fails loudly rather than the two vocabularies diverging silently. The three genuinely new facets landed in `media-contracts` itself -- check 13 passing is the observable fact that they did |
-| 14 -- three faces, one contract | **NOT VERIFIED** | See below |
+| 14 -- three faces, one contract | **SPLIT, and the in-repo half PASSES** (2026-08-14) | `test_three_faces_one_contract.py` drives one candidate set through both renderings that exist here and compares them *to each other*; `tests/enforcement/test_one_search_result_shape.py` holds the shape at its source. The API face renders in the hub and is verified there, with checks 1, 2, 3, 9 and 10. See below |
 
 **Check 12 was the sweep's find, and it is the pattern this document keeps
 recording.** Egress was pinned in several places and *independence* was pinned
@@ -1305,6 +1305,71 @@ propagated (see the requirements doc's §13, updated the same day). Gate B close
 when check 14's face decision is taken -- either the flags go on and the pin is
 written, or the check is amended with the reason, which is what §13's
 "decisions needing an owner" is for.
+
+#### Check 14, resolved by splitting it -- 2026-08-14
+
+**The decision was framed as flip-or-amend, and both options were wrong**,
+because both assumed the check needs the reach turned on. It does not. The face
+flags govern reach and **nothing in this repository reads them**: verified by
+search -- `mcp.py` never consults them, no in-repo HTTP surface consults them,
+and the only in-repo consumer is `publish_registration`, which copies them onto
+`ToolManifestEntry`. From there they land in the ACL `namespaces` table, whose
+own comment names the surfaces that act on them: the API namespace stamp
+(gu-task-24), the MCP export (gu-task-25) and the face-flip re-stamp
+(gu-task-26). All hub-side.
+
+So flipping the flags would change **what the hub is told**, not what this
+repository renders -- and check 14 is about rendering. Its parts divide the way
+the other five out-of-repo checks already do:
+
+| Face | Renders | Verified |
+|---|---|---|
+| platform tool | here (`TearsTool.execute` → `ToolResult`) | in-repo, this sweep |
+| MCP | here (`threetears.mcp.server`, prose `content` + `structuredContent`) | in-repo, this sweep |
+| HTTP API | in the hub (`map_tool_result_to_http` over `metadata["http"]`) | where it is exposed, with checks 1, 2, 3, 9, 10 |
+
+**What was built.** `test_three_faces_one_contract.py` renders one candidate set
+through both in-repo faces and asserts they agree -- comparing the faces **to
+each other**, never to the constant they were built from, which is the
+`test_egress_independence.py` lesson applied before rather than after. It
+carries guard tests that reproduce a reshaped face and a truncated one and
+confirm the comparison notices, plus a pin that no rendering module reads a face
+flag: if one ever does, the faces can disagree, this split stops being honest,
+and the pin says so in its failure message.
+
+`tests/enforcement/test_one_search_result_shape.py` holds the other half, which
+the unit test structurally cannot: a comparison between known faces cannot see a
+face nobody added yet. So the shape is protected at its source -- the border key
+may be read anywhere and **constructed in exactly one place**, `bind`, which
+owns the schema version and the field names. A second guard forbids spelling the
+key as a literal, without which the first is defeated by anyone who did not know
+the constant existed.
+
+**Two findings from building it, both pre-existing.**
+
+`web_fetch` was already a second construction site: it reimplemented the
+projection -- `SearchResultsMetadata.from_candidate_set(...)` then
+`{SEARCH_RESULTS_METADATA_KEY: ...}` -- once for success and once for refusals.
+Output identical to `bind`'s, which is exactly why nothing failed, and identical
+only until somebody edited one copy. Both now call `project_metadata` /
+`project_failure_metadata`; the latter is new, exported so `bind_failure` and
+`web_fetch` share one owner rather than one shape twice.
+
+The context-save node writes a **deliberately narrowed** record under the same
+key -- candidate identity and title only, plus `candidate_count` and
+`candidates_truncated`, because a context row must not become a second copy of
+the corpus. That is intended and documented at the site, so it is exempted with
+a rationale rather than closed. It does leave an asymmetry worth naming: the
+narrowed record carries `schema_version` from the full projection, so a reader
+that finds this key on a context row and hands it to
+`SearchResultsMetadata.from_metadata` gets something that parses while
+under-reporting. Not a defect today -- nothing does that -- but it is the shape
+of one, and it is now written down where the next reader will find it.
+
+**Gate B closes on this.** Nine of nine in-repo checks pass; the reach half of
+14 joins the five consumer-repo checks that were always Gate C's and Phase 5's.
+§5.5's `skill_eligible` / `web`-alias question stays open in §13 on its own
+merits -- it is a reach decision, and this check never depended on it.
 
 ### Phase 4 -- release
 
