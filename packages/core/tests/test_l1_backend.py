@@ -147,6 +147,106 @@ class TestSelectBatch:
         assert results == []
 
 
+class TestProjectedReads:
+    """Test select_by_id and select_batch column projection."""
+
+    def test_select_by_id_columns_returns_only_requested(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        result = backend.select_by_id("test_entities", row["id"], columns=["name", "age"])
+
+        assert result is not None
+        assert set(result.keys()) == {"name", "age"}
+        assert result["name"] == "Alice"
+        assert result["age"] == 30
+
+    def test_select_by_id_columns_deserializes_requested(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        result = backend.select_by_id("test_entities", row["id"], columns=["data", "active"])
+
+        assert result is not None
+        assert result["data"] == {"role": "admin", "tags": ["a", "b"]}
+        assert result["active"] is True
+
+    def test_select_by_id_columns_missing_row_returns_none(self, backend: L1Backend) -> None:
+        result = backend.select_by_id("test_entities", str(uuid.uuid4()), columns=["name"])
+        assert result is None
+
+    def test_select_by_id_columns_default_returns_all(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        result = backend.select_by_id("test_entities", row["id"])
+
+        assert result is not None
+        assert set(result.keys()) == set(row.keys())
+
+    def test_select_by_id_columns_unknown_column_raises(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        with pytest.raises(ValueError, match="no_such_column"):
+            backend.select_by_id("test_entities", row["id"], columns=["no_such_column"])
+
+    def test_select_by_id_columns_empty_raises(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        with pytest.raises(ValueError, match="columns"):
+            backend.select_by_id("test_entities", row["id"], columns=[])
+
+    def test_select_by_id_columns_duplicates_collapse(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        result = backend.select_by_id("test_entities", row["id"], columns=["name", "name"])
+
+        assert result is not None
+        assert set(result.keys()) == {"name"}
+        assert result["name"] == "Alice"
+
+    def test_select_batch_columns_returns_only_requested(self, backend: L1Backend) -> None:
+        ids = [str(uuid.uuid4()) for _ in range(3)]
+        for i, eid in enumerate(ids):
+            row = _sample_row(eid)
+            row["name"] = f"User{i}"
+            backend.upsert("test_entities", row)
+
+        results = backend.select_batch("test_entities", ids[:2], columns=["id", "name"])
+
+        assert len(results) == 2
+        for result in results:
+            assert set(result.keys()) == {"id", "name"}
+        names = {r["name"] for r in results}
+        assert names == {"User0", "User1"}
+
+    def test_select_batch_columns_deserializes_requested(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        results = backend.select_batch("test_entities", [row["id"]], columns=["data"])
+
+        assert len(results) == 1
+        assert results[0]["data"] == {"role": "admin", "tags": ["a", "b"]}
+
+    def test_select_batch_columns_unknown_column_raises(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        with pytest.raises(ValueError, match="no_such_column"):
+            backend.select_batch("test_entities", [row["id"]], columns=["no_such_column"])
+
+    def test_select_batch_columns_empty_raises(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+
+        with pytest.raises(ValueError, match="columns"):
+            backend.select_batch("test_entities", [row["id"]], columns=[])
+
+
 class TestDelete:
     """Test delete_by_id removes entry."""
 
