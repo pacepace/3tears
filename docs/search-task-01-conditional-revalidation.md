@@ -1,6 +1,17 @@
 # search-task-01 — conditional revalidation on the fetch path
 
-**Ruling:** SR-M4 / D30, 2026-08-12. **Status:** specified, not started.
+**Ruling:** SR-M4 / D30, 2026-08-12. **Status:** steps 1-4 BUILT 2026-08-14;
+step 5 (scrape) remains a separate decision with a separate owner.
+
+*What the build changed against this document.* One correction, in §3.1's
+"additive with a default, so the existing scrape-side implementer stays
+conformant". A default keeps an implementer conformant only if the caller does
+not pass the argument: an implementer written before the parameter exists has no
+such parameter, so passing it is a ``TypeError``, not a graceful ignore. The
+published ``ScriptedHeavyFetcher`` proved it by failing. Extract therefore passes
+``headers`` **only when there is something to send**, which is the opt-in path
+and nothing else -- so an implementer grows the parameter when somebody actually
+asks it to revalidate, not when this lands.
 **Blocks:** nothing. **Blocked by:** nothing — Phase 2's remaining item (the
 context-save node) and Phase 3 are independent of this.
 

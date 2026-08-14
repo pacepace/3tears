@@ -60,13 +60,31 @@ class ContentSlot(ContractModel):
 
     #: extracted text content.
     text: str
-    #: where the content came from: with the search response, or from a
-    #: subsequent fetch.
-    origin: Literal["provider-response", "later-fetch"]
+    #: where the content came from: with the search response, from a
+    #: subsequent fetch, or -- for content the caller already held and
+    #: upstream confirmed still current -- from a revalidation (D30).
+    #: ``revalidated`` keeps SR-A2's "where did this content come from"
+    #: question answerable rather than letting a confirmed copy pass as a
+    #: fresh fetch.
+    origin: Literal["provider-response", "later-fetch", "revalidated"]
     #: MIME type of the source the text was extracted from, when known.
     mime_type: str | None = None
     #: size of the fetched source in bytes, when a fetch happened.
     size_bytes: int | None = None
+    #: the ``ETag`` the content arrived with, when upstream gave one, to be
+    #: echoed back in ``If-None-Match`` on a later conditional read (D30 /
+    #: SR-M4). A first-class field rather than a facet, by the argument
+    #: :attr:`Candidate.published_at` already makes: facets are the
+    #: carrier-specific escape hatch (SR-C2/C3), and an HTTP validator is
+    #: not carrier-specific.
+    etag: str | None = None
+    #: the ``Last-Modified`` header **as its own string**, deliberately not
+    #: a datetime. It is an opaque token to be echoed back verbatim in
+    #: ``If-Modified-Since``; parsing and re-rendering it risks changing the
+    #: bytes and failing the match, and buys nothing -- nobody compares it,
+    #: they only return it. This is the one place a date stays a string, and
+    #: the reason is that it is not being read as a date.
+    last_modified: str | None = None
 
 
 class Candidate(ContractModel):

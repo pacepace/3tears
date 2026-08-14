@@ -261,11 +261,22 @@ class HeavyFetcher(Protocol):
         *,
         max_bytes: int,
         timeout_seconds: float | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> TransportResponse:
         """Fetch a carrier that needs rendering, and return it as bytes.
 
         The byte cap binds exactly as it does on :meth:`FetchTransport.fetch`:
         an implementation MUST NOT hold more than ``max_bytes`` of body.
+
+        **An implementation that IGNORES ``headers`` MUST NOT report 304.**
+        This is the one rule on this method that is a correctness rule rather
+        than a cost rule. A caller sends ``If-None-Match`` because it holds a
+        copy it will keep if told nothing changed; an implementation that
+        drops the header, fetches unconditionally, and then reports ``304``
+        for any other reason hands that caller stale bytes under a validator
+        it supplied. Ignoring the parameter entirely is fine and is the
+        conformant default -- answering ``200`` with the body is always a
+        correct answer to a conditional request.
 
         :param url: absolute URL to render and read
         :ptype url: str
@@ -274,6 +285,12 @@ class HeavyFetcher(Protocol):
         :param timeout_seconds: per-call bound; None uses the
             implementation's configured value (SR-G1)
         :ptype timeout_seconds: float | None
+        :param headers: request headers to send, carrying the caller's
+            conditional validators (``If-None-Match`` / ``If-Modified-Since``)
+            when it holds a copy worth revalidating (D30 / SR-M4). Additive
+            with a default, so an existing implementer stays conformant until
+            it chooses to honour it
+        :ptype headers: Mapping[str, str] | None
         :return: the rendered document, with ``body`` within the cap
         :rtype: TransportResponse
         :raises Exception: implementations surface failures however they

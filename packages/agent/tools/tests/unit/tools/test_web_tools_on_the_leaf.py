@@ -663,3 +663,74 @@ class TestRegistrationSkipsAToolItCannotServe:
         register_builtins(registry)
 
         assert "web_fetch" in registry.list_types()
+
+
+def _socket_transport() -> Any:
+    """A real transport pointed at the loopback test server.
+
+    The conditional headers are the thing under test, so they must cross a real
+    socket -- a stub that records its arguments would prove the parameter was
+    passed, not that the request was conditional.
+    """
+    from threetears.search.standalone import StandaloneTransport
+
+    return StandaloneTransport(allowed_hosts=("127.0.0.1",), allow_private_addresses=True)
+
+
+class TestConditionalRevalidationAtTheToolBorder:
+    """D30 at the tool face: validators in, ``unchanged`` out.
+
+    The caller holds the bytes, so it sends the VALIDATORS without its copy of
+    the text -- sending the body back to revalidate it would spend exactly the
+    bytes the conditional request exists to save.
+    """
+
+    async def test_validators_make_the_fetch_conditional(self) -> None:
+        from threetears.search.testing.http_server import LocalHttpServer, Reply
+
+        async with LocalHttpServer((Reply(status=304, body=b""),)) as server:
+            tool = WebFetchTool(transport=_socket_transport(), respect_robots=False)
+            await tool.execute(url=f"{server.base_url}/page", etag='"v1"')
+            requests = list(server.requests)
+
+        assert any("if-none-match" in request.lower() for request in requests), requests
+
+    async def test_unchanged_is_a_success_not_a_failure(self) -> None:
+        """The reader fix: 'no content' is the one outcome that means good."""
+        from threetears.search.testing.http_server import LocalHttpServer, Reply
+
+        async with LocalHttpServer((Reply(status=304, body=b""),)) as server:
+            tool = WebFetchTool(transport=_socket_transport(), respect_robots=False)
+            result = await tool.execute(url=f"{server.base_url}/page", etag='"v1"')
+
+        assert result.success is True
+        assert "unchanged" in result.content.lower()
+
+    async def test_the_typed_status_says_unchanged(self) -> None:
+        from threetears.media.contracts import EXTRACTION_STATUS_UNCHANGED
+        from threetears.search.contracts import SEARCH_RESULTS_METADATA_KEY
+        from threetears.search.extract import EXTRACTION_STATUS_FACET
+        from threetears.search.testing.http_server import LocalHttpServer, Reply
+
+        async with LocalHttpServer((Reply(status=304, body=b""),)) as server:
+            tool = WebFetchTool(transport=_socket_transport(), respect_robots=False)
+            result = await tool.execute(url=f"{server.base_url}/page", etag='"v1"')
+
+        assert result.metadata is not None
+        payload = result.metadata[SEARCH_RESULTS_METADATA_KEY]
+        facets = payload["candidates"][0]["facets"]
+        assert facets[EXTRACTION_STATUS_FACET] == EXTRACTION_STATUS_UNCHANGED
+
+    async def test_no_validators_means_no_conditional_headers(self) -> None:
+        from threetears.search.testing.http_server import LocalHttpServer, Reply
+
+        page = b"<html><body><article><p>" + b"Readable body text here. " * 20 + b"</p></article></body></html>"
+        reply = Reply(status=200, body=page, headers={"Content-Type": "text/html"})
+        async with LocalHttpServer((reply,)) as server:
+            tool = WebFetchTool(transport=_socket_transport(), respect_robots=False)
+            await tool.execute(url=f"{server.base_url}/page")
+            requests = list(server.requests)
+
+        joined = " ".join(requests).lower()
+        assert "if-none-match" not in joined, requests
+        assert "if-modified-since" not in joined, requests
