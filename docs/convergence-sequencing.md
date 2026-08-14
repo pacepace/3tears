@@ -85,7 +85,10 @@ consume either — see the Phase 2 note.
   structured tool results — chat-kit workstream input; it gates metallm's
   *frontend* convergence later, not this sequence's next phase, but deciding
   it while attention is on structure is the point.
-  → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
+  → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member);
+  **designed 2026-08-14**, two days after this phase was declared complete
+  without it — [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md),
+  awaiting review by metallm and the chat-kit workstream
 
 *Status 2026-08-12 — this phase is complete; the entries below run in build
 order, and the closing one is item 6.* Extract's web path is
@@ -175,6 +178,23 @@ in: asking why nothing in the stack sends a conditional request produced
 [`search-task-01-conditional-revalidation.md`](search-task-01-conditional-revalidation.md).
 It blocks nothing and is blocked by nothing, and its step 1 is a
 `media-contracts` change, so it moves the family bound when it lands.
+
+***Correction 2026-08-14 — it was not complete, and the way it was wrong is
+worth more than the item.*** This phase lists **three** items. The status notes
+above close out the search build (items 4-9) and the note declaring the phase
+complete was written against those. The third bullet — *decide the
+stream-protocol channel for structured tool results* — **was never taken**, and
+nothing anywhere recorded a decision. It went unnoticed for two days because it
+is the only item here that gates nothing in the search sequence: everything that
+consumes it is in the chat-kit workstream and metallm's *frontend*, neither of
+which was waiting on this phase's checkpoint.
+
+That is the general shape to watch for. **A phase closes on its gating items and
+then reads as closed for its non-gating ones too** — the very items most likely
+to be forgotten, because nothing downstream complains. The design is now written
+([`stream-protocol-structured-results.md`](stream-protocol-structured-results.md)),
+and it is design-only as the bullet always said, so nothing that shipped is
+wrong; the record was.
 
 See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
