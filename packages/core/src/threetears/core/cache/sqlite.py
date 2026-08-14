@@ -13,10 +13,12 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.cache.base import build_select_clause
 from threetears.observe import get_logger
 
 __all__ = [
@@ -310,6 +312,7 @@ class SQLiteBackend:
         table: str,
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
 
@@ -321,13 +324,20 @@ class SQLiteBackend:
         :param primary_key: pk column name (single-PK) or tuple of pk
             column names in declared order (composite-PK)
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added.
+        :ptype columns: Sequence[str] | None
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
+        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT * FROM {table} WHERE {where_clause}"
+        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
@@ -341,6 +351,7 @@ class SQLiteBackend:
         table: str,
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
 
@@ -354,22 +365,29 @@ class SQLiteBackend:
         :param primary_key: pk column name (single-PK) or tuple of pk
             column names in declared order (composite-PK)
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added.
+        :ptype columns: Sequence[str] | None
         :return: list of row dicts; empty list when ``entity_ids`` is empty
         :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         if not entity_ids:
             return []
+        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT * FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
             params: tuple[Any, ...] = tuple(
                 self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols))[0] for eid in entity_ids
             )
         else:
             per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT * FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
             flat: list[Any] = []
             for eid in entity_ids:
                 flat.extend(self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
