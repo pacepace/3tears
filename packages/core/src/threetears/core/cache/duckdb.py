@@ -10,10 +10,12 @@ import enum
 import json
 import threading
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.cache.base import build_select_clause
 from threetears.observe import get_logger
 
 __all__ = [
@@ -158,6 +160,7 @@ class DuckDBBackend:
         table: str,
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
 
@@ -167,19 +170,26 @@ class DuckDBBackend:
         :ptype entity_id: Any
         :param primary_key: pk column name or tuple of pk column names
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added.
+        :ptype columns: Sequence[str] | None
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._pk_values(entity_id, pk_cols)
+        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
-        sql = f"SELECT * FROM {table} WHERE {where_clause}"
+        sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
         with self._db_lock:
             result = self._db.execute(sql, list(pk_vals))
-            columns = [desc[0] for desc in result.description]
+            result_columns = [desc[0] for desc in result.description]
             row = result.fetchone()
         if row is not None:
-            row_dict = dict(zip(columns, row))
+            row_dict = dict(zip(result_columns, row))
             return self._deserialize_row(table, row_dict)
         return None
 
@@ -188,6 +198,7 @@ class DuckDBBackend:
         table: str,
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
 
@@ -197,28 +208,35 @@ class DuckDBBackend:
         :ptype entity_ids: list[Any]
         :param primary_key: pk column name or tuple of pk column names
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added.
+        :ptype columns: Sequence[str] | None
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         if not entity_ids:
             return []
+        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
-            sql = f"SELECT * FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            sql = f"SELECT {select_clause} FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
             params: list[Any] = list(entity_ids)
         else:
             per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
-            sql = f"SELECT * FROM {table} WHERE {disjunct}"
+            sql = f"SELECT {select_clause} FROM {table} WHERE {disjunct}"
             params = []
             for eid in entity_ids:
                 params.extend(self._pk_values(eid, pk_cols))
         with self._db_lock:
             result = self._db.execute(sql, params)
-            columns = [desc[0] for desc in result.description]
+            result_columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
-        return [self._deserialize_row(table, dict(zip(columns, row))) for row in rows]
+        return [self._deserialize_row(table, dict(zip(result_columns, row))) for row in rows]
 
     def delete_by_id(
         self,

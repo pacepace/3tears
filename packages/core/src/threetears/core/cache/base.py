@@ -2,15 +2,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "L1Backend",
     "MISSING",
+    "build_select_clause",
 ]
 
 MISSING = object()
 """Sentinel for cache miss. Distinct from None (which is a valid cached value)."""
+
+
+def build_select_clause(
+    schema: dict[str, str] | None,
+    table: str,
+    columns: Sequence[str] | None,
+) -> str:
+    """Build a validated SELECT column list, ``*`` when unprojected.
+
+    Shared by every backend so projection validation cannot drift
+    between them.
+
+    :param schema: the table's registered column-to-type mapping, or
+        ``None``/empty when the table is not registered; validation is
+        skipped then and the engine reports unknown columns itself
+    :ptype schema: dict[str, str] | None
+    :param table: target table name, used in error messages
+    :ptype table: str
+    :param columns: requested projection, or ``None`` for all columns;
+        duplicates collapse, first occurrence wins
+    :ptype columns: Sequence[str] | None
+    :return: the SELECT clause column list
+    :rtype: str
+    :raises ValueError: if ``columns`` is empty, or names a column the
+        registered schema does not have
+    """
+    if columns is None:
+        return "*"
+    deduped = list(dict.fromkeys(columns))
+    if not deduped:
+        raise ValueError("columns must be None or a non-empty sequence")
+    if schema:
+        unknown = [c for c in deduped if c not in schema]
+        if unknown:
+            raise ValueError(f"unknown columns for table {table}: {unknown}")
+    return ", ".join(deduped)
 
 
 @runtime_checkable
@@ -50,6 +88,7 @@ class L1Backend(Protocol):
         table: str,
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key, returning None on miss.
 
@@ -62,8 +101,17 @@ class L1Backend(Protocol):
         :param primary_key: pk column name (single-PK) or tuple of pk
             column names in declared order (composite-PK)
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added. Projection skips
+            deserialization of every unselected column, which is the
+            point: a wide row with one large JSON column costs its full
+            parse on every unprojected read.
+        :ptype columns: Sequence[str] | None
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         ...
 
@@ -72,6 +120,7 @@ class L1Backend(Protocol):
         table: str,
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
+        columns: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key.
 
@@ -84,8 +133,14 @@ class L1Backend(Protocol):
         :param primary_key: pk column name (single-PK) or tuple of pk
             column names in declared order (composite-PK)
         :ptype primary_key: str | tuple[str, ...]
+        :param columns: columns to select and deserialize; ``None``
+            selects every column. Exactly the named columns come back --
+            pk columns are NOT implicitly added.
+        :ptype columns: Sequence[str] | None
         :return: list of matching row dicts; empty list when ``entity_ids`` is empty
         :rtype: list[dict[str, Any]]
+        :raises ValueError: if ``columns`` is empty, or names a column
+            the table's registered schema does not have
         """
         ...
 
