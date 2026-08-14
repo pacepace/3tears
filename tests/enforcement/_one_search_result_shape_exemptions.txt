@@ -1,0 +1,17 @@
+# exemptions for tests/enforcement/test_one_search_result_shape.py (success check 14).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py
+#
+# The sanctioned construction site -- threetears/search/bind.py, which owns the
+# projection's schema version and field names -- is ALLOWLISTED in the test
+# itself, not here. It is not an exception to the rule; it is the rule.
+#
+# Adding an entry here is a design decision, not a formality: it declares that a
+# second payload rides the search-results border key, and a reader that finds
+# that key somewhere new can no longer assume SearchResultsMetadata.from_metadata
+# will round-trip it. Prefer calling bind.project_metadata.
+
+# rationale: the context-save node stores a deliberately NARROWED record beside the prose -- candidate identity and title only, plus candidate_count and candidates_truncated, because a context row must not become a second copy of the corpus (SR-A3, D22). It reuses the border key on purpose: a literal would be a second NAME for one payload, free to drift from the reader. Recorded as an exemption rather than closed because narrowing is the intent; see the note in docs/search-spec.md Gate B sweep about the round-trip asymmetry this leaves.
+packages/agent/tools/src/threetears/agent/tools/graph_nodes.py

@@ -215,6 +215,28 @@ the flags. **Gate B closes when that decision is taken** — flags on and a pin
 written, or the check amended with the reason. Detail at
 [`search-spec.md` §7 Gate B sweep](search-spec.md#7-sequencing).
 
+**GATE B IS CLOSED — 2026-08-14, and the decision above turned out to be a
+false choice.** Both options assumed check 14 needs the reach turned on. It does
+not. The face flags govern reach, and **nothing in 3tears reads them** — the
+surfaces that act on them (the API namespace stamp, the MCP export, the face-flip
+re-stamp) are all hub-side. Check 14 is about *rendering*, and two of the three
+renderings happen here: the platform tool face and the MCP face. The third, the
+HTTP API face, renders in the hub and is verified there, alongside the five
+consumer-repo checks the gate's own wording already excluded.
+
+So the check was **split rather than flipped or amended**, and its in-repo half
+now passes: one candidate set driven through both renderings and compared *to
+each other*, plus an enforcement guard holding the projection to a single
+construction site — because a comparison between known faces cannot see a face
+nobody has added yet. Building it surfaced two pre-existing second-shape sites,
+one closed (`web_fetch` reimplemented the projection instead of calling it) and
+one exempted with a rationale (the context-save node narrows on purpose).
+**Nine of nine in-repo checks pass.** Detail and the two findings at
+[`search-spec.md` §7, "Check 14, resolved by splitting it"](search-spec.md#7-sequencing).
+
+§5.5's `skill_eligible` / `web`-alias question stays open in §13, on its own
+merits as a reach decision. It never gated this.
+
 ## Phase 3 — Release
 
 - **3tears:** lockstep family release — bump → PR into develop → PR

@@ -48,15 +48,14 @@ from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE
+from threetears.search.bind import project_failure_metadata, project_metadata
 from threetears.search.contracts import (
-    SEARCH_RESULTS_METADATA_KEY,
     Candidate,
     CandidateSet,
     FailureRecord,
     Locator,
     Provenance,
     SearchFailure,
-    SearchResultsMetadata,
     Spend,
 )
 from threetears.search.extract import EXTRACTION_STATUS_FACET, extract
@@ -338,8 +337,7 @@ def _metadata(url: str, candidate_set: CandidateSet) -> dict[str, Any]:
     :return: ``{SEARCH_RESULTS_METADATA_KEY: ...}``
     :rtype: dict[str, Any]
     """
-    projection = SearchResultsMetadata.from_candidate_set(query=url, candidate_set=candidate_set)
-    return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}
+    return project_metadata(url, candidate_set)
 
 
 def _refusal_metadata(url: str, record: FailureRecord) -> dict[str, Any]:
@@ -352,5 +350,4 @@ def _refusal_metadata(url: str, record: FailureRecord) -> dict[str, Any]:
     :return: ``{SEARCH_RESULTS_METADATA_KEY: ...}``
     :rtype: dict[str, Any]
     """
-    projection = SearchResultsMetadata.from_failure(query=url, failure=record)
-    return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}
+    return project_failure_metadata(url, record)
