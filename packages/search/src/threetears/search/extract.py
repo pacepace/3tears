@@ -59,7 +59,7 @@ Rulings taken in this build, recorded here per the Gate A precedent:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
@@ -68,8 +68,8 @@ from threetears.media.contracts import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_FAILED,
     EXTRACTION_STATUS_REFUSED,
+    EXTRACTION_STATUS_UNCHANGED,
 )
-
 from threetears.search.contracts.candidate import Candidate, ContentSlot
 from threetears.search.contracts.errors import LocalCapExceeded, SearchFailure
 from threetears.search.contracts.fidelity import FIDELITY_CONTENT
@@ -111,6 +111,10 @@ HTML_CONTENT_TYPES: Final[tuple[str, ...]] = (
 #: carrying the ``media-contracts`` ``EXTRACTION_STATUS_*`` vocabulary.
 EXTRACTION_STATUS_FACET: Final[str] = "extraction_status"
 
+#: HTTP's "your copy is still current". Named rather than spelled inline so the
+#: one place that reads it says what it is reading (D30).
+_STATUS_NOT_MODIFIED: Final[int] = 304
+
 #: :attr:`~threetears.search.contracts.candidate.Candidate.facets` key
 #: carrying *how* the text was produced (SR-B6 -- fidelity achieved is only
 #: half the answer; a consumer comparing two extractions needs to know
@@ -148,11 +152,26 @@ async def extract(
     respect_robots: bool = True,
     user_agent: str = DEFAULT_USER_AGENT,
     heavy_fetcher: HeavyFetcher | None = None,
+    revalidate: bool = False,
 ) -> Candidate:
     """Fill one candidate's content slot from its carrier.
 
+    **Conditional revalidation (D30 / SR-M4) is opt-in and must not be
+    inferred.** SR-A2's existing rule is "candidate has content -> do not
+    fetch". Revalidation is "candidate has content -> fetch anyway,
+    conditionally". Those are opposite behaviours triggered by the same
+    state, so the caller says which it wants. Inferring it from the presence
+    of an ``etag`` would silently turn every content-carrying candidate into
+    a network call -- including Tavily's, whose content arrived with the
+    search response and has nothing to revalidate against.
+
+    Nothing is stored here, by anyone, ever. D14 stands: the caller holds the
+    bytes (D7) and owns retention (D12), which is precisely why it is the
+    caller that holds the validators too.
+
     :param candidate: the candidate to extract. Returned untouched when it
-        already carries content (SR-A2)
+        already carries content (SR-A2), unless ``revalidate`` is set and it
+        carries a validator to revalidate with
     :ptype candidate: Candidate
     :param transport: the injected byte-capped fetch seam; used for the
         carrier and for ``robots.txt``
@@ -173,6 +192,12 @@ async def extract(
         instead of through ``transport`` -- the caller's explicit choice for
         this candidate, never an automatic fallback
     :ptype heavy_fetcher: HeavyFetcher | None
+    :param revalidate: when True and the candidate carries content AND a
+        validator, send a conditional request instead of returning early. A
+        ``304`` returns the caller's copy untouched marked ``unchanged``; a
+        ``200`` replaces it. Defaults to False, which is byte-for-byte
+        today's behaviour
+    :ptype revalidate: bool
     :return: the candidate with content, fidelity and extraction facets
         recorded; on a per-candidate failure, the candidate with its status
         facet saying so and no content
@@ -181,7 +206,14 @@ async def extract(
         ``[extract]`` extra is not installed, so no candidate in this run
         can be extracted at all
     """
-    if candidate.content is not None:
+    conditional = _conditional_headers(candidate) if revalidate else {}
+    if candidate.content is not None and not conditional:
+        # SR-A2 unchanged: content already in hand and nothing to revalidate
+        # against -- either the caller did not ask, or it holds no validator.
+        # A revalidate=True with no validator is deliberately a no-op rather
+        # than an unconditional re-fetch: the caller asked to CHECK its copy,
+        # not to replace it, and refetching would spend the very bytes the
+        # request exists to avoid.
         return candidate
 
     url = _carrier_url(candidate)
@@ -204,6 +236,7 @@ async def extract(
             heavy_fetcher=heavy_fetcher,
             max_bytes=max_bytes,
             timeout_seconds=timeout_seconds,
+            headers=conditional or None,
         )
     except LocalCapExceeded:
         # A cap declined the read under rules that will decline it again --
@@ -212,6 +245,26 @@ async def extract(
         return _marked(candidate, EXTRACTION_STATUS_REFUSED)
     except SearchFailure:
         return _marked(candidate, EXTRACTION_STATUS_FAILED)
+
+    if conditional and response.status_code == _STATUS_NOT_MODIFIED:
+        # Upstream confirmed the copy the caller already holds. Return the
+        # candidate UNTOUCHED apart from the two marks that say so -- the
+        # content slot is not rebuilt, because rebuilding it from a body we
+        # deliberately did not receive is the one way this path could lose
+        # data. Only checked when the request WAS conditional: a 304 to an
+        # unconditional read is a server bug, and treating it as success
+        # would hand the caller a candidate with no content and no failure.
+        return candidate.model_copy(
+            update={
+                "content": candidate.content.model_copy(update={"origin": "revalidated"})
+                if candidate.content is not None
+                else None,
+                "facets": {
+                    **candidate.facets,
+                    EXTRACTION_STATUS_FACET: EXTRACTION_STATUS_UNCHANGED,
+                },
+            }
+        )
 
     if not 200 <= response.status_code < 300:
         return _marked(candidate, EXTRACTION_STATUS_FAILED)
@@ -228,6 +281,8 @@ async def extract(
                 origin="later-fetch",
                 mime_type=_declared_type(response),
                 size_bytes=len(response.body),
+                etag=_validator_header(response, "etag"),
+                last_modified=_validator_header(response, "last-modified"),
             ),
             "fidelity_achieved": FIDELITY_CONTENT,
             "facets": {
@@ -283,6 +338,52 @@ def _load_extractor() -> _Extractor:
     return _trafilatura_extract
 
 
+def _conditional_headers(candidate: Candidate) -> dict[str, str]:
+    """The validators to send for this candidate, if it has any.
+
+    Empty when there is nothing to revalidate with, which is what makes
+    ``revalidate=True`` safe to pass unconditionally: a caller can set it
+    for a whole batch and the candidates that hold no validator simply keep
+    SR-A2's early return.
+
+    :param candidate: the candidate whose stored validators to spend
+    :ptype candidate: Candidate
+    :return: conditional request headers, possibly empty
+    :rtype: dict[str, str]
+    """
+    slot = candidate.content
+    if slot is None:
+        return {}
+    headers: dict[str, str] = {}
+    if slot.etag:
+        headers["If-None-Match"] = slot.etag
+    if slot.last_modified:
+        headers["If-Modified-Since"] = slot.last_modified
+    return headers
+
+
+def _validator_header(response: TransportResponse, name: str) -> str | None:
+    """Read one validator off a response, treating blank as absent.
+
+    An empty validator is worse than no validator: echoed back it matches
+    nothing, so every subsequent request stays unconditional AND pays to say
+    so. ``None`` is the honest record of "upstream gave us nothing to
+    revalidate with".
+
+    :param response: the fetched carrier
+    :ptype response: TransportResponse
+    :param name: the header name, lower-cased per the transport contract
+    :ptype name: str
+    :return: the header's value, or None when absent or blank
+    :rtype: str | None
+    """
+    raw = response.headers.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None
+
+
 async def _fetch_carrier(
     url: str,
     *,
@@ -290,6 +391,7 @@ async def _fetch_carrier(
     heavy_fetcher: HeavyFetcher | None,
     max_bytes: int,
     timeout_seconds: float | None,
+    headers: Mapping[str, str] | None = None,
 ) -> TransportResponse:
     """Read the carrier through whichever fetcher the caller chose.
 
@@ -303,6 +405,11 @@ async def _fetch_carrier(
     :ptype max_bytes: int
     :param timeout_seconds: per-fetch bound
     :ptype timeout_seconds: float | None
+    :param headers: conditional validators to send, or ``None`` for an
+        unconditional read. ``None`` and ``{}`` are passed through as-is
+        rather than normalised: a transport that receives no headers must
+        make the same request it made before this parameter existed
+    :ptype headers: Mapping[str, str] | None
     :return: the fetched carrier
     :rtype: TransportResponse
     """
@@ -310,6 +417,22 @@ async def _fetch_carrier(
         # No content-type gate on the heavy path: a renderer is asked for a
         # rendered document and answers with one, so there is no cheap
         # declaration to refuse on before paying.
+        #
+        # ``headers`` is passed ONLY when there is something to send. The
+        # parameter is additive with a default, but an implementer written
+        # before it exists has no such parameter at all, and passing it would
+        # be a TypeError rather than a graceful ignore. Omitting it on the
+        # unconditional path -- which is every caller that has not opted into
+        # revalidation -- is what makes "stays conformant until it chooses to
+        # honour it" true rather than merely intended. An implementer only has
+        # to grow the parameter once somebody actually asks it to revalidate.
+        if headers:
+            return await heavy_fetcher.fetch_rendered(
+                url,
+                max_bytes=max_bytes,
+                timeout_seconds=timeout_seconds,
+                headers=headers,
+            )
         return await heavy_fetcher.fetch_rendered(url, max_bytes=max_bytes, timeout_seconds=timeout_seconds)
     return await transport.fetch(
         "GET",
@@ -317,6 +440,7 @@ async def _fetch_carrier(
         max_bytes=max_bytes,
         allowed_content_types=HTML_CONTENT_TYPES,
         timeout_seconds=timeout_seconds,
+        headers=headers,
     )
 
 

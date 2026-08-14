@@ -47,11 +47,12 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE
+from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     Candidate,
     CandidateSet,
+    ContentSlot,
     FailureRecord,
     Locator,
     Provenance,
@@ -88,6 +89,20 @@ class WebFetchInput(BaseModel):
     """Input for the web fetch tool."""
 
     url: str = Field(description="URL to fetch and extract content from")
+    etag: str | None = Field(
+        default=None,
+        description=(
+            "ETag from a previous fetch of this URL. When given, the fetch is conditional: "
+            "if the page is unchanged the result says so instead of returning the body again."
+        ),
+    )
+    last_modified: str | None = Field(
+        default=None,
+        description=(
+            "Last-Modified value from a previous fetch of this URL, echoed back verbatim. "
+            "Used with or instead of etag to make the fetch conditional."
+        ),
+    )
 
 
 def create_web_fetch_tool(config: dict[str, Any], description: str) -> StructuredTool:
@@ -143,6 +158,21 @@ class WebFetchTool(TearsTool):
             "url": {
                 "type": "string",
                 "description": "URL to fetch and extract content from",
+            },
+            "etag": {
+                "type": "string",
+                "description": (
+                    "ETag from a previous fetch of this URL. When given, the fetch is "
+                    "conditional: if the page is unchanged the result says so instead of "
+                    "returning the body again."
+                ),
+            },
+            "last_modified": {
+                "type": "string",
+                "description": (
+                    "Last-Modified value from a previous fetch of this URL, echoed back "
+                    "verbatim. Used with or instead of etag to make the fetch conditional."
+                ),
             },
         },
         "required": ["url"],
@@ -204,9 +234,30 @@ class WebFetchTool(TearsTool):
         if self._max_bytes is not None:
             extra["max_bytes"] = self._max_bytes
 
+        # The caller holds the bytes (D7) and therefore holds the validators. It
+        # sends them WITHOUT its copy of the text -- sending the body back to
+        # revalidate it would spend the very bytes the conditional request exists
+        # to save. So the slot carries an empty text: this tool genuinely has no
+        # content until upstream either confirms the caller's or replaces it.
+        caller_etag = kwargs.get("etag") or None
+        caller_last_modified = kwargs.get("last_modified") or None
+        candidate = _candidate_for(url)
+        if caller_etag or caller_last_modified:
+            candidate = candidate.model_copy(
+                update={
+                    "content": ContentSlot(
+                        text="",
+                        origin="later-fetch",
+                        etag=caller_etag,
+                        last_modified=caller_last_modified,
+                    )
+                }
+            )
+            extra["revalidate"] = True
+
         try:
             fetched = await extract(
-                _candidate_for(url),
+                candidate,
                 transport=self._transport,
                 timeout_seconds=self._timeout_seconds,
                 respect_robots=self._respect_robots,
@@ -232,13 +283,32 @@ class WebFetchTool(TearsTool):
 
         status = fetched.facets.get(EXTRACTION_STATUS_FACET)
         candidate_set = CandidateSet(candidates=(fetched,))
-        if fetched.content is None or status != EXTRACTION_STATUS_COMPLETE:
+        # ``unchanged`` is a SUCCESS that produced no new content (D30): upstream
+        # confirmed the caller's copy, and the content slot the caller passed in
+        # comes back untouched. Reading it as failure would report "no readable
+        # content" for the one outcome that means the content is definitively
+        # good -- the misreading the constant's own docstring warns about, and
+        # the reason this reader was named in the task doc before it was written.
+        readable = {EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED}
+        if fetched.content is None or status not in readable:
             message = f"no readable content extracted from {url} (extraction_status: {status})"
             return ToolResult(
                 success=False,
                 content=message,
                 metadata=_metadata(url, candidate_set),
                 error=message,
+            )
+
+        if status == EXTRACTION_STATUS_UNCHANGED:
+            # Prose for the model, structure for the program -- the ordinary Bind
+            # split (SR-A1). The model must not be handed an empty string, which
+            # reads as "the page was blank" rather than "your copy is current",
+            # and the caller reads the typed status off metadata either way.
+            return ToolResult(
+                success=True,
+                content=f"{url} is unchanged since your copy; upstream confirmed it. Use the copy you hold.",
+                metadata=_metadata(url, candidate_set),
+                error=None,
             )
 
         text = fetched.content.text
