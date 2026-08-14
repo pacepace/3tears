@@ -4,6 +4,21 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.4 -- 2026-08-13
+
+### Added
+
+- `core`: L1 `select_by_id` and `select_batch` take a `columns` parameter
+  on both backends (SQLite and DuckDB). `None` keeps the select-everything
+  behavior; a sequence projects the SELECT and deserializes only the named
+  columns, so a wide row with a large JSON column no longer pays its full
+  parse for a read that wants a few scalars -- profiled downstream at 12.3
+  percent of all GIL time under 256-user steady load. Exactly the named
+  columns return; pk columns are not implicitly added. Validation lives in
+  one shared `build_select_clause` helper: empty projections raise, unknown
+  columns raise when the table schema is registered, duplicates collapse
+  first-occurrence-wins.
+
 ## v0.24.3 -- 2026-08-13
 
 ### Fixed
