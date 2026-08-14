@@ -41,6 +41,7 @@ from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     BudgetPort,
     CandidateSet,
+    FailureRecord,
     RateLimiterPort,
     SearchFailure,
     SearchProvider,
@@ -57,6 +58,7 @@ __all__ = [
     "bind_candidate_set",
     "bind_failure",
     "bind_search",
+    "project_failure_metadata",
     "project_metadata",
     "render_prose",
 ]
@@ -169,6 +171,29 @@ def project_metadata(query: str, candidate_set: CandidateSet) -> dict[str, Any]:
     return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}
 
 
+def project_failure_metadata(query: str, record: FailureRecord) -> dict[str, Any]:
+    """Project a typed failure under the same named key (D22, D10).
+
+    The failure twin of :func:`project_metadata`, exported for the same
+    reason it exists: success check 14 is "three faces, one contract", and a
+    contract with two construction sites has already grown its second shape
+    whether or not the two currently agree. A caller that has a
+    :class:`FailureRecord` rather than a live
+    :class:`~threetears.search.contracts.SearchFailure` -- a refusal decided
+    before any provider was called, say -- projects it through here instead
+    of assembling the border key itself.
+
+    :param query: the query the failed run was answering
+    :ptype query: str
+    :param record: the failure's wire record, spend included
+    :ptype record: FailureRecord
+    :return: a one-key mapping ready to merge into ``ToolResult.metadata``
+    :rtype: dict[str, Any]
+    """
+    projection = SearchResultsMetadata.from_failure(query=query, failure=record)
+    return {SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()}
+
+
 def bind_candidate_set(
     query: str, candidate_set: CandidateSet, *, max_candidates: int = PROSE_MAX_CANDIDATES
 ) -> RenderedSearch:
@@ -212,12 +237,11 @@ def bind_failure(query: str, failure: SearchFailure) -> RenderedSearch:
     message = f"search failed ({record.failure_class}): {record.message}"
     if record.remediation:
         message = f"{message}\n{record.remediation}"
-    projection = SearchResultsMetadata.from_failure(query=query, failure=record)
     return RenderedSearch(
         success=False,
         content=message,
         error=message,
-        metadata={SEARCH_RESULTS_METADATA_KEY: projection.to_metadata()},
+        metadata=project_failure_metadata(query, record),
     )
 
 
