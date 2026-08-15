@@ -444,7 +444,19 @@ class CallRequest(BaseModel):
         this to a server predating it gets its whole call rejected -- not a
         degraded call, a refused one. The server side therefore ships and
         deploys a release before any caller is taught to populate it, which is
-        the same order ``result_subject`` went out under
+        the same order ``result_subject`` went out under.
+
+        **That order is necessary and was not sufficient, and this note used
+        to say otherwise.** Not populating a field does not keep it off the
+        wire: every DECLARED field is serialized, so this one crossed as an
+        explicit ``null`` from the moment it was added, and a receiver that
+        forbids extras refuses an unknown null exactly as it refuses an
+        unknown value. A 0.23.11 pod refused every call from a 0.24.1 registry
+        for three days on this field, before any caller sent it. What makes the
+        rollout order true is the registry proxy pruning unset top-level
+        optionals from the envelope (0.24.3) -- so any OTHER sender of this
+        model must prune likewise, and adding a field here is not safe on the
+        strength of this paragraph alone
     :ptype deadline_seconds: float | None
     """
 

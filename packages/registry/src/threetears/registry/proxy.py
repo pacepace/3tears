@@ -123,6 +123,25 @@ class ProxyCallRequest(BaseModel):
         is what keeps its two-token wildcard publish grant from being a
         way to redirect one agent's result onto another's in-flight call
     :ptype result_subject: str | None
+    :param deadline_seconds: how much time the AGENT has left for this
+        call (§10.10, SR-G2). The one quantity in the chain no other
+        party can compute: the tool's declared ``timeout_seconds`` and
+        the pod's ``max_call_seconds`` are both static and already known
+        downstream, while this is *this* caller's remaining patience.
+        The proxy forwards it onto :attr:`CallRequest.deadline_seconds`
+        clamped to its own wait, so a caller can shorten a call but never
+        buy itself more time than the tool allows.
+
+        **Rollout: this release ACCEPTS the field; no agent sends it
+        yet.** :attr:`model_config` is ``extra="forbid"``, so an agent
+        sending it to a registry predating this release gets its whole
+        call rejected. The receiver ships first -- and, as of 0.24.3,
+        that order is *made* true rather than merely asserted: an unset
+        optional is pruned from the forwarded envelope rather than
+        crossing as an explicit ``null``. An agent-side sender must
+        prune likewise, which is the lesson that cost three days of
+        refusals on the hop below this one
+    :ptype deadline_seconds: float | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -133,6 +152,7 @@ class ProxyCallRequest(BaseModel):
     context: CallContext | None = None
     pop: str | None = None
     result_subject: str | None = None
+    deadline_seconds: float | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1239,7 +1259,11 @@ class CallProxy:
         if requires_async_result(effective_timeout):
             return await self._forward_call_durable(request, pod_id, effective_timeout)
         internal_subject = Subjects.tools_internal(pod_id)
-        internal_payload = _build_internal_payload(request, self._mint_proxy_assertion(request, pod_id))
+        internal_payload = _build_internal_payload(
+            request,
+            self._mint_proxy_assertion(request, pod_id),
+            effective_timeout=effective_timeout,
+        )
         correlation_id_log = _correlation_id_str(request)
 
         try:
@@ -1319,6 +1343,7 @@ class CallProxy:
             request,
             self._mint_proxy_assertion(request, pod_id),
             result_subject=result_subject.path,
+            effective_timeout=effective_timeout,
         )
         waiter = await self._nc.jetstream_result_waiter(
             subject=result_subject,
@@ -1519,11 +1544,45 @@ def _correlation_id_str(request: ProxyCallRequest) -> str:
     return result
 
 
+def _forwarded_deadline(caller_deadline: float | None, effective_timeout: float | None) -> float | None:
+    """Clamp the caller's remaining budget to what this proxy will actually wait.
+
+    Three properties, in the order they matter.
+
+    **A caller that says nothing keeps today's wire exactly.** ``None`` in,
+    ``None`` out, pruned from the envelope by the caller below -- so every pod
+    in the fleet, at any version, sees the bytes it saw before this field
+    existed. That is what makes adding this safe to deploy without a fleet
+    sweep, and it is deliberate rather than incidental.
+
+    **A caller cannot buy more time than the tool allows.** The proxy stops
+    waiting at ``effective_timeout`` whatever the agent hoped for; telling the
+    pod otherwise would license work whose answer nobody will read.
+
+    **A caller CAN ask for less**, and that is the whole point of the field
+    (SR-G2): an agent with four seconds of patience left should not have a pod
+    spend thirty on its behalf.
+
+    :param caller_deadline: the agent's remaining budget, when it declared one
+    :ptype caller_deadline: float | None
+    :param effective_timeout: this proxy's own wait for the pod
+    :ptype effective_timeout: float | None
+    :return: the deadline to forward, or ``None`` to send no deadline at all
+    :rtype: float | None
+    """
+    if caller_deadline is None:
+        return None
+    if effective_timeout is None:
+        return caller_deadline
+    return min(caller_deadline, effective_timeout)
+
+
 def _build_internal_payload(
     request: ProxyCallRequest,
     proxy_assertion: str | None = None,
     *,
     result_subject: str | None = None,
+    effective_timeout: float | None = None,
 ) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
@@ -1545,6 +1604,10 @@ def _build_internal_payload(
     :param result_subject: the pod-owned subject to deliver the answer on, or ``None`` to keep the
         synchronous reply-inbox path
     :ptype result_subject: str | None
+    :param effective_timeout: how long THIS proxy will wait for the pod, used as the ceiling the
+        caller's deadline is clamped to. ``None`` forwards the caller's deadline unclamped, which
+        is only correct where no wait has been resolved yet
+    :ptype effective_timeout: float | None
     :return: serialized internal call request bytes
     :rtype: bytes
     """
@@ -1557,6 +1620,7 @@ def _build_internal_payload(
         context=request.context,
         proxy_assertion=proxy_assertion,
         result_subject=result_subject,
+        deadline_seconds=_forwarded_deadline(request.deadline_seconds, effective_timeout),
     )
     # Dropping unset TOP-LEVEL optionals is what makes a newer registry safe against an older
     # pod, and it is load-bearing rather than tidiness. :class:`CallRequest` is

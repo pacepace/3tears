@@ -19,6 +19,7 @@ __all__ = [
     "EXTRACTION_STATUS_NONE",
     "EXTRACTION_STATUS_PENDING",
     "EXTRACTION_STATUS_REFUSED",
+    "EXTRACTION_STATUS_UNCHANGED",
     "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
@@ -69,6 +70,18 @@ EXTRACTION_STATUS_FAILED = "failed"
 #: read. Distinct from :data:`EXTRACTION_STATUS_FAILED`: nothing tried, and
 #: retrying under the same rules will decline again.
 EXTRACTION_STATUS_REFUSED = "refused"
+
+#: Upstream confirmed the caller's existing copy is still current, so no
+#: content was produced and none was needed -- an HTTP ``304`` answering a
+#: conditional request (D30 / SR-M4). Distinct from every status above it:
+#: it is a **success**, unlike :data:`EXTRACTION_STATUS_FAILED`; something
+#: did try, unlike :data:`EXTRACTION_STATUS_REFUSED`; and it produced no new
+#: content, unlike :data:`EXTRACTION_STATUS_COMPLETE`.
+#:
+#: A reader that treats "no content" as failure will misread this. The
+#: correct reading is that the caller's own copy is the content, and it has
+#: just been re-confirmed.
+EXTRACTION_STATUS_UNCHANGED = "unchanged"
 
 
 @dataclass

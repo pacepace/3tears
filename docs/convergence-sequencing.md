@@ -85,7 +85,10 @@ consume either — see the Phase 2 note.
   structured tool results — chat-kit workstream input; it gates metallm's
   *frontend* convergence later, not this sequence's next phase, but deciding
   it while attention is on structure is the point.
-  → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member)
+  → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member);
+  **designed 2026-08-14**, two days after this phase was declared complete
+  without it — [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md),
+  awaiting review by metallm and the chat-kit workstream
 
 *Status 2026-08-12 — this phase is complete; the entries below run in build
 order, and the closing one is item 6.* Extract's web path is
@@ -107,6 +110,22 @@ all; §10.10 adds one to a model with `extra="forbid"`, where a client
 sending it to an older server is *rejected*, not degraded. Only the
 accepting half shipped. It is the one item in this phase needing two
 release cycles, which is why it should not have been last.
+
+*Correction 2026-08-14 — the conclusion held, the premise did not.* Shipping
+only the accepting half does **not** keep the field off the wire: every
+declared field is serialized, so an optional nobody set still crosses as an
+explicit `null`, and `extra="forbid"` refuses an unknown null exactly as it
+refuses an unknown value. A 0.23.11 tool pod refused every call from a 0.24.1
+registry for three days on `deadline_seconds`, a field no caller populated,
+while registering and heartbeating normally throughout. Fixed in 0.24.3 by
+pruning unset top-level optionals from the registry→pod envelope, and by making
+the pod say why it was refusing. This is the same pattern this program keeps
+recording — item 5's untested host configuration, the sweep's untested
+independence — now between two *versions*: both sides correct alone, a prose
+rollout note asserting a wire fact, and no test parsing real forwarded bytes
+with a model predating the newest field. Detail at
+[`search-spec.md` §7 Phase 2 item 7](search-spec.md#7-sequencing); §13 rows
+`§10.10` and `SR-M1` updated.
 
 **Item 5 landed 2026-08-11**, and took a correction pass before merging
 ([#321](https://github.com/pacepace/3tears/pull/321)). Both builtins run on
@@ -159,6 +178,23 @@ in: asking why nothing in the stack sends a conditional request produced
 [`search-task-01-conditional-revalidation.md`](search-task-01-conditional-revalidation.md).
 It blocks nothing and is blocked by nothing, and its step 1 is a
 `media-contracts` change, so it moves the family bound when it lands.
+
+***Correction 2026-08-14 — it was not complete, and the way it was wrong is
+worth more than the item.*** This phase lists **three** items. The status notes
+above close out the search build (items 4-9) and the note declaring the phase
+complete was written against those. The third bullet — *decide the
+stream-protocol channel for structured tool results* — **was never taken**, and
+nothing anywhere recorded a decision. It went unnoticed for two days because it
+is the only item here that gates nothing in the search sequence: everything that
+consumes it is in the chat-kit workstream and metallm's *frontend*, neither of
+which was waiting on this phase's checkpoint.
+
+That is the general shape to watch for. **A phase closes on its gating items and
+then reads as closed for its non-gating ones too** — the very items most likely
+to be forgotten, because nothing downstream complains. The design is now written
+([`stream-protocol-structured-results.md`](stream-protocol-structured-results.md)),
+and it is design-only as the bullet always said, so nothing that shipped is
+wrong; the record was.
 
 See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
@@ -215,6 +251,28 @@ the flags. **Gate B closes when that decision is taken** — flags on and a pin
 written, or the check amended with the reason. Detail at
 [`search-spec.md` §7 Gate B sweep](search-spec.md#7-sequencing).
 
+**GATE B IS CLOSED — 2026-08-14, and the decision above turned out to be a
+false choice.** Both options assumed check 14 needs the reach turned on. It does
+not. The face flags govern reach, and **nothing in 3tears reads them** — the
+surfaces that act on them (the API namespace stamp, the MCP export, the face-flip
+re-stamp) are all hub-side. Check 14 is about *rendering*, and two of the three
+renderings happen here: the platform tool face and the MCP face. The third, the
+HTTP API face, renders in the hub and is verified there, alongside the five
+consumer-repo checks the gate's own wording already excluded.
+
+So the check was **split rather than flipped or amended**, and its in-repo half
+now passes: one candidate set driven through both renderings and compared *to
+each other*, plus an enforcement guard holding the projection to a single
+construction site — because a comparison between known faces cannot see a face
+nobody has added yet. Building it surfaced two pre-existing second-shape sites,
+one closed (`web_fetch` reimplemented the projection instead of calling it) and
+one exempted with a rationale (the context-save node narrows on purpose).
+**Nine of nine in-repo checks pass.** Detail and the two findings at
+[`search-spec.md` §7, "Check 14, resolved by splitting it"](search-spec.md#7-sequencing).
+
+§5.5's `skill_eligible` / `web`-alias question stays open in §13, on its own
+merits as a reach decision. It never gated this.
+
 ## Phase 3 — Release
 
 - **3tears:** lockstep family release — bump → PR into develop → PR
@@ -241,6 +299,31 @@ version that has it. Phase 2 still closes at Gate B, which now guards the
 meanwhile: nobody has bound them
 ([`search-spec.md` D29](search-spec.md#1-decisions-taken)).
 
+**Correction 2026-08-14: "the next release" was the wrong object, and four
+releases have since walked past it.** v0.24.1 through v0.24.4 all shipped with
+Gate B open, and they carry the surface it was said to guard — **0.24.1**
+Extract's web path, the gutted builtins and both envelope asks; **0.24.2** the
+rest of Phase 2 (`page_finder`, the context-save node), making it the first tag
+carrying Phase 2 whole; **0.24.3** `aggregate`/`select` plus the Gate B sweep
+itself; **0.24.4** nothing search-side. None of that was a bypass. The family
+releases on its own cadence for unrelated reasons — 0.24.3 went out to fix the
+envelope outage above — so a gate phrased as "the next release" was always
+going to be overtaken by the next unrelated fix.
+
+What Gate B actually protects is what D29 already named: **the first consumer
+release that pins a version carrying search.** Publication does not bind the
+contracts, and a tag does not bind them; a consumer's pin does. The gate stands
+in front of Phase 4, not in front of the release button.
+
+**One consequence for Phase 4, which the phase's single "the released version"
+hides: its two consumers are no longer symmetric.** metallm needs the gutted
+`WebSearchTool`, which is *released* — 0.24.2 and later — so its migration has
+a pin it could name today and waits only on Gate B and its own version lag.
+discodon needs the replay piece (search Phase 3 item 8), which is **not built
+at all**, and which is elicited against discodon's own carved storage port, an
+outstanding Phase 1 item. No 3tears release will unblock discodon; a build
+will, and that build waits on discodon.
+
 ## Phase 4 — Consumer search migrations (parallel per repo)
 
 - **metallm:** `feature/new-search` — pin the released family, delete both
@@ -255,6 +338,10 @@ meanwhile: nobody has bound them
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing)
 - **all migrating repos:** record acceptance of what binds them.
   → [`search-requirements.md` SR-M3](search-requirements.md#m-lifecycle)
+
+*2026-08-14:* the first two are **not** blocked on the same thing — metallm's
+surface is released (0.24.2+), discodon's replay piece is unbuilt and waits on
+its own Phase 1 storage port. See the correction under Phase 3.
 
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
