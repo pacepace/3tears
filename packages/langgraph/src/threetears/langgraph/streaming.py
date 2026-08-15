@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
 from uuid import UUID
 
@@ -41,6 +42,8 @@ from pydantic import BaseModel, Field, TypeAdapter
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "CANCELLED_ERROR_CODE",
+    "DEFAULT_ERROR_CODE",
     "NOSTREAM_TAG",
     "NO_INTERRUPT",
     "StreamStartEvent",
@@ -84,6 +87,28 @@ _NO_INTERRUPT: Any = object()
 #: truth, no second sentinel to drift. :func:`detect_interrupt` returns this when the graph
 #: completed normally; identity (``is NO_INTERRUPT``) is the test, never equality.
 NO_INTERRUPT: Any = _NO_INTERRUPT
+
+#: terminal error code for a fault nothing has classified more precisely.
+#:
+#: The RESIDUAL case, not the usual one. Every non-cancellation failure used to
+#: terminate as this single code -- a model timeout, a dead dependency, a tool
+#: fault and an outright bug arrived at every consumer wearing the same label,
+#: so telling them apart meant parsing prose out of ``message``. That is the
+#: failure mode ``threetears.nats.NoRespondersError`` was split out of
+#: ``RequestError`` to avoid, and it is worth avoiding here too.
+#:
+#: A ``StreamingResponse`` given an ``error_classifier`` narrows what it can;
+#: whatever the classifier cannot name still lands here, honestly. Exported so
+#: a classifier can return it for the residual case rather than re-spelling the
+#: literal and drifting from it.
+DEFAULT_ERROR_CODE = "AGENT_FAILED"
+
+#: terminal error code for an orderly cancellation.
+#:
+#: Deliberately NOT routed through the classifier: shutdown is not a fault to
+#: attribute, and letting a caller relabel it would turn an orderly stop into a
+#: reported error.
+CANCELLED_ERROR_CODE = "AGENT_CANCELLED"
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +494,7 @@ class StreamingResponse:
         correlation_id: UUID,
         conversation_id: UUID,
         start_time_monotonic: float | None = None,
+        error_classifier: Callable[[BaseException], str] | None = None,
     ) -> None:
         """initialize a streaming response bound to one transport target.
 
@@ -485,10 +511,19 @@ class StreamingResponse:
             on the terminal envelope. defaults to ``None`` which falls
             back to the moment :meth:`start` is called
         :ptype start_time_monotonic: float | None
+        :param error_classifier: optional mapping from a failing
+            exception to the terminal error code naming what failed.
+            defaults to ``None``, which terminates every fault as
+            :data:`DEFAULT_ERROR_CODE`. injected rather than implemented
+            here because the typed exceptions worth telling apart belong
+            to the caller's own layers -- this package deliberately does
+            not depend on them to name an error
+        :ptype error_classifier: collections.abc.Callable[[BaseException], str] | None
         """
         self._transport = transport
         self._correlation_id = correlation_id
         self._conversation_id = conversation_id
+        self._error_classifier = error_classifier
         self._explicit_start_monotonic = start_time_monotonic
         self._effective_start_monotonic: float | None = None
         self._accumulated_content: str = ""
@@ -826,10 +861,13 @@ class StreamingResponse:
         first event and the appropriate terminal afterward. tokens
         (``on_chat_model_stream``) accumulate via :meth:`emit_token`;
         chain output (``on_chain_end``) merges into the returned final
-        state. on exception, fires :meth:`error` with code
-        ``AGENT_FAILED`` (per design DQ-F2 -- no empty-end on failure)
-        and re-raises so the caller can surface the failure on
-        non-stream paths (logging, metrics).
+        state. on exception, fires :meth:`error` (per design DQ-F2 -- no
+        empty-end on failure) and re-raises so the caller can surface the
+        failure on non-stream paths (logging, metrics). the terminal's code
+        comes from the constructor's ``error_classifier`` when one was given
+        and :data:`DEFAULT_ERROR_CODE` otherwise; the message always carries
+        the cause. cancellation is exempt and terminates as
+        :data:`CANCELLED_ERROR_CODE`.
 
         ``state`` is any LangGraph entry payload: a state ``dict`` for a
         fresh run, OR a resume directive (e.g. ``langgraph.types.Command``)
@@ -887,7 +925,7 @@ class StreamingResponse:
             # consumer sees a terminal, then re-raise so the surrounding
             # task tree shuts down. no logging here -- cancellation is
             # not an error condition.
-            await self.error(code="AGENT_CANCELLED", message="agent run cancelled")
+            await self.error(code=CANCELLED_ERROR_CODE, message="agent run cancelled")
             raise
         except Exception as exc:
             log.error(
@@ -901,7 +939,7 @@ class StreamingResponse:
                 },
                 exc_info=True,
             )
-            await self.error(code="AGENT_FAILED", message=str(exc))
+            await self.error(code=self._classified_code(exc), message=str(exc))
             raise
         else:
             try:
@@ -919,7 +957,7 @@ class StreamingResponse:
                     },
                     exc_info=True,
                 )
-                await self.error(code="AGENT_FAILED", message=str(exc))
+                await self.error(code=self._classified_code(exc), message=str(exc))
                 raise
             if interrupt_payload is not _NO_INTERRUPT:
                 # the graph PAUSED on a human-in-the-loop interrupt rather than completing: stash the
@@ -930,6 +968,41 @@ class StreamingResponse:
             else:
                 await self.end()
         return final_state
+
+    def _classified_code(self, exc: BaseException) -> str:
+        """name the terminal error code for one failing exception.
+
+        Runs on the FAILURE path, where acquiring a second way to fail is
+        unacceptable: a caller-supplied classifier that raises must not cost
+        the terminal event or replace the exception the caller is about to
+        see. A broken classifier therefore degrades to
+        :data:`DEFAULT_ERROR_CODE` and is logged, and the original failure
+        continues to propagate untouched.
+
+        :param exc: the exception that ended the run
+        :ptype exc: BaseException
+        :return: terminal error code, defaulting to :data:`DEFAULT_ERROR_CODE`
+        :rtype: str
+        """
+        code = DEFAULT_ERROR_CODE
+        if self._error_classifier is not None:
+            try:
+                code = self._error_classifier(exc)
+            # prawduct:allow prawduct/broad-except -- caller-supplied classifier on the failure
+            # path; any fault in it degrades to the default code rather than displacing the
+            # original exception, which is logged here and still propagates to the caller.
+            except Exception:
+                log.exception(
+                    "stream error classifier failed; falling back to the default code",
+                    extra={
+                        "extra_data": {
+                            "correlation_id": str(self._correlation_id),
+                            "default_code": DEFAULT_ERROR_CODE,
+                        }
+                    },
+                )
+                code = DEFAULT_ERROR_CODE
+        return code
 
     def _compute_duration_ms(self) -> int:
         """compute milliseconds elapsed since the recorded start time.

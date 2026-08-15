@@ -1154,3 +1154,148 @@ class TestRenderInterruptPrompt:
         assert "pentest.zap" in out
         assert "pentest.sqlmap" in out
         assert "action_requests" not in out
+
+
+class TestRunGraphErrorClassification:
+    """a failing graph terminates with a code naming WHAT failed.
+
+    ``run_graph`` has always carried the cause in ``message`` (``str(exc)``),
+    but every non-cancellation failure terminated as ``AGENT_FAILED`` -- one
+    code for a model timeout, a dead dependency, a tool fault, and a bug.
+    Consumers that need to tell those apart were left parsing prose, which is
+    the failure mode ``NoRespondersError`` was split out of ``RequestError``
+    to avoid.
+
+    The classifier is INJECTED rather than implemented here on purpose: the
+    typed exceptions worth distinguishing (``RequestTimeoutError``,
+    ``NoRespondersError``) live in ``threetears.nats``, which this package
+    does not depend on and should not grow a dependency on to name an error.
+    The caller that owns those types supplies the mapping.
+    """
+
+    async def test_default_classification_is_agent_failed(self) -> None:
+        """with no classifier the code is unchanged -- the default is the contract."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+
+        with pytest.raises(RuntimeError):
+            await stream.run_graph(_StubGraph(RuntimeError("boom")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1
+        assert err[0].code == "AGENT_FAILED"
+
+    async def test_injected_classifier_sets_the_code(self) -> None:
+        """the classifier's verdict becomes the terminal code."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            error_classifier=lambda exc: "AGENT_TIMEOUT" if isinstance(exc, TimeoutError) else "AGENT_FAILED",
+        )
+
+        with pytest.raises(TimeoutError):
+            await stream.run_graph(_StubGraph(TimeoutError("gateway did not answer")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1
+        assert err[0].code == "AGENT_TIMEOUT"
+
+    async def test_the_cause_still_rides_the_message(self) -> None:
+        """classifying the code must not cost the detail the message already carried."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            error_classifier=lambda exc: "AGENT_TIMEOUT",
+        )
+
+        with pytest.raises(TimeoutError):
+            await stream.run_graph(_StubGraph(TimeoutError("gateway did not answer")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert "gateway did not answer" in err[0].message
+
+    async def test_classifier_receives_the_original_exception(self) -> None:
+        """the classifier is handed the exception itself, not a rendering of it."""
+        seen: list[BaseException] = []
+        raised = RuntimeError("the original")
+        transport = _RecordingTransport()
+
+        def _classify(exc: BaseException) -> str:
+            seen.append(exc)
+            return "AGENT_FAILED"
+
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            error_classifier=_classify,
+        )
+
+        with pytest.raises(RuntimeError):
+            await stream.run_graph(_StubGraph(raised), {}, {})
+
+        assert seen == [raised]
+
+    async def test_a_broken_classifier_does_not_swallow_the_failure(self) -> None:
+        """a classifier that raises must not replace or hide the real failure.
+
+        The classifier is caller-supplied code running on the failure path --
+        the one path that must never acquire a second way to fail. A raising
+        classifier degrades to the default code; the ORIGINAL exception is
+        what propagates, and a terminal still fires.
+        """
+
+        def _broken(exc: BaseException) -> str:
+            raise ValueError("classifier itself is broken")
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            error_classifier=_broken,
+        )
+
+        with pytest.raises(RuntimeError, match="the real failure"):
+            await stream.run_graph(_StubGraph(RuntimeError("the real failure")), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert len(err) == 1, "a broken classifier must not cost the terminal event"
+        assert err[0].code == "AGENT_FAILED"
+        assert "the real failure" in err[0].message
+
+    async def test_cancellation_is_not_classified(self) -> None:
+        """cancellation is not a fault and keeps its own terminal code.
+
+        ``AGENT_CANCELLED`` already names the condition exactly, and shutdown
+        is not a failure to attribute. Routing it through the classifier would
+        let a caller relabel an orderly stop as an error.
+        """
+        consulted: list[BaseException] = []
+
+        def _classify(exc: BaseException) -> str:
+            consulted.append(exc)
+            return "AGENT_TIMEOUT"
+
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+            error_classifier=_classify,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await stream.run_graph(_StubGraph(asyncio.CancelledError()), {}, {})
+
+        err = [e for e in transport.events if isinstance(e, StreamErrorEvent)]
+        assert err[0].code == "AGENT_CANCELLED"
+        assert consulted == []
