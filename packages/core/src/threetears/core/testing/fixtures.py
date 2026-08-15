@@ -36,8 +36,20 @@ __all__ = [
     "db_image",
     "nats_container",
     "nats_jetstream",
+    "s3_container",
+    "s3_credentials",
     "searxng_container",
 ]
+
+#: object-store fixtures use fixed throwaway credentials.
+#:
+#: The container is created, used and destroyed inside one session and is
+#: reachable only on an ephemeral localhost port, so these authenticate nothing
+#: worth authenticating. They are named constants rather than string literals
+#: so a reader can see at a glance that no real credential was ever meant to
+#: appear here, and so a secret scanner has one obvious place to look.
+S3_TEST_ACCESS_KEY = "testcontainer-access-key"
+S3_TEST_SECRET_KEY = "testcontainer-secret-key"
 
 
 @pytest.fixture(scope="session")
@@ -148,6 +160,99 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
 
     with NatsContainer(jetstream=nats_jetstream) as container:
         yield container.nats_uri()
+
+
+@pytest.fixture(scope="session")
+def s3_credentials() -> tuple[str, str]:
+    """the throwaway access/secret pair the S3 testcontainer accepts.
+
+    :return: access key and secret key
+    :rtype: tuple[str, str]
+    """
+    return (S3_TEST_ACCESS_KEY, S3_TEST_SECRET_KEY)
+
+
+@pytest.fixture(scope="session")
+def s3_container(s3_credentials: tuple[str, str]) -> Iterator[tuple[str, str]]:
+    """session-scoped S3-compatible testcontainer, yielding (endpoint, bucket).
+
+    **The container is the point.** These tests previously addressed a MinIO
+    assumed to be already running at ``localhost:9000`` with a bucket someone
+    had created by hand. On any machine where that was not true -- which is
+    every fresh checkout, and CI -- they did not skip, they FAILED, with
+    ``NoSuchBucket``. A test that reddens because of the room it is standing in
+    teaches its readers to ignore red, which costs more than the coverage it
+    was offering.
+
+    **Why not MinIO.** Nothing here needs an object store that is also a
+    product; it needs something that answers the S3 API honestly and gets out
+    of the way. ``motoserver/moto`` is Apache-2.0, is the reference AWS mock in
+    the Python ecosystem, needs no auth token, and adds no Python dependency --
+    the generic container runs the image and ``aiobotocore`` talks to it
+    exactly as it talks to S3. (LocalStack, the other obvious candidate, was
+    archived as an OSS project in March 2026 and now requires a token to
+    start, which is precisely the kind of weather a test dependency should not
+    have.)
+
+    The bucket is created HERE rather than left to each test, because a bucket
+    is part of "an S3 exists", not part of what any single test is asserting.
+
+    :param s3_credentials: access/secret pair the container will accept
+    :ptype s3_credentials: tuple[str, str]
+    :yield: the container's endpoint URL and the created bucket name
+    :rtype: Iterator[tuple[str, str]]
+    """
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    import time  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    import boto3  # noqa: PLC0415
+    from testcontainers.core.container import DockerContainer  # noqa: PLC0415
+
+    access_key, secret_key = s3_credentials
+    bucket = "threetears-test-objects"
+
+    with DockerContainer("motoserver/moto:latest").with_exposed_ports(5000) as container:
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(5000)
+        endpoint = f"http://{host}:{port}"
+
+        # Readiness is "answers an S3 call", not "the port accepts a socket".
+        # The listener binds before the app is ready to route, so a bare
+        # connect check hands the first real request a 502.
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                with urllib.request.urlopen(endpoint, timeout=5) as probe:  # noqa: S310
+                    if probe.status < 500:
+                        break
+            except urllib.error.HTTPError as exc:
+                # An HTTP error IS a served response: the app is up and simply
+                # dislikes a bare GET at the root, which is all this probe
+                # needed to learn.
+                if exc.code < 500:
+                    break
+            except urllib.error.URLError, OSError:
+                # NOSILENT: a refused or reset connection IS the not-ready
+                # signal this loop polls for. Never becoming ready is the
+                # failure that matters, and it is raised at the deadline.
+                pass
+            if time.monotonic() > deadline:
+                pytest.fail(f"S3 testcontainer at {endpoint} never answered")
+            time.sleep(0.5)
+
+        boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+        ).create_bucket(Bucket=bucket)
+
+        yield endpoint, bucket
 
 
 @pytest.fixture(scope="session")
