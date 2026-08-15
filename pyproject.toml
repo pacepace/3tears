@@ -516,6 +516,11 @@ module = [
     "jsonpath_ng.*",
     "testcontainers",
     "testcontainers.*",
+    # boto3 ships no py.typed marker. used only by the S3 testcontainer
+    # fixture to create the bucket; the production object store talks to S3
+    # through aiobotocore, which is typed.
+    "boto3",
+    "boto3.*",
     "apscheduler",
     "apscheduler.*",
     "freezegun",

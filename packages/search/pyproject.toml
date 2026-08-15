@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-search"
-version = "0.24.4"
+version = "0.24.5"
 description = "Provider-agnostic web and media search for the 3tears family: contracts, adapters, and the staged pipeline"
 readme = "README.md"
 requires-python = ">=3.14"

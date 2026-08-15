@@ -60,7 +60,7 @@ here.
 | D15 (SR-M3, OQ13) | Ratification home is `search-requirements.md` | discodon, metallm, samsung each record acceptance of what binds them, in their own repos, pointing at it. |
 | D16 (§5.4) | The v1 wire hop is the existing `TearsTool` envelope, at Bind | No new wire protocol. Every contract type still JSON-round-trips (SR-L4) so a future intra-stack hop stays open -- paid in design discipline, not in v1 machinery. |
 | D17 (§5.5) | One tool, one contract, all faces; search stays in the `web` alias; `skill_eligible = False` initially | Image/carrier scoping is a *criteria* parameter of the one tool, not a second tool -- so an agent granted `web` gets exactly what it got before. Samsung's image search is embedded and never enters the tool surface. |
-| D18 (§10.9, §10.10) | Both envelope asks are accepted as in-repo work | (a) exception-path metadata carry; (b) an optional per-call deadline field. Sequenced in Phase 2 with an explicit rollout order -- the server must accept the field a release before any client sends it, because `extra="forbid"` on an old server rejects unknown fields. *Re-verified 2026-08-10 (0.23.11):* both asks still open; the envelope meanwhile gained `result_subject` additively -- live precedent for exactly this rollout -- and a manifest-level `timeout_seconds` the deadline field must compose with (§4.6). |
+| D18 (§10.9, §10.10) | Both envelope asks are accepted as in-repo work | (a) exception-path metadata carry; (b) an optional per-call deadline field. Sequenced in Phase 2 with an explicit rollout order -- the server must accept the field a release before any client sends it, because `extra="forbid"` on an old server rejects unknown fields. *Re-verified 2026-08-10 (0.23.11):* both asks still open; the envelope meanwhile gained `result_subject` additively -- live precedent for exactly this rollout -- and a manifest-level `timeout_seconds` the deadline field must compose with (§4.6). ***Corrected 2026-08-13, by production rather than by review:*** the rollout order is necessary and was **not sufficient**. Pydantic serializes every *declared* field, so `deadline_seconds` reached the wire as an explicit `null` from the moment it was declared -- "no client sends it yet" was never true on the wire, whatever the callers did. A 0.23.11 pod refused **every** call from a 0.24.1 registry for three days on a field no caller populated. The order only became true in 0.24.3, when the registry proxy started pruning unset top-level optionals; see §7 Phase 2 item 7. |
 | D19 (SR-N1) | The no-bespoke-client norm **widens**; no exemption is filed | Verified mechanism: `_SANCTIONED_HTTPX_SITES` is a path frozenset, and the walker only flags raw httpx clients stored on `self` -- a protocol-typed transport field never trips it. The widening = add the leaf's standalone-transport module path to the sanctioned set + restate the norm prose. Lands in the same PR as that module (check 11). |
 | D20 (SR-N2) | Egress is per-upstream input at Adapter and provenance on every result; `direct` is a named value | Rate/ban budgets key on it (D8); replay comparability depends on it. |
 | D21 (SR-K3, SR-N3) | The SSRF ruling binds at the transport seam | Provider base URLs come from deployment config only -- MUST NOT accept a caller-supplied base URL. Redirect policy and private-address guards live in the transport implementations, not per call site. |
@@ -1119,6 +1119,43 @@ signature:
    That is the only item in Phase 2 that needs two release cycles, which is
    why it stopped being last.
 
+   **What production then found, 2026-08-13 (0.24.3).** The conclusion above
+   was right and its premise was wrong, which is the more useful half. Shipping
+   only the accepting side does not keep the field off the wire: Pydantic
+   serializes every *declared* field, so an optional nobody set still crosses
+   as an explicit `null`, and `extra="forbid"` on the receiver treats a null it
+   does not know exactly like a value it does not know -- the WHOLE call is
+   refused. A field can therefore break every lagging pod in the fleet without
+   a single caller ever populating it. Observed on cobalt-dev: a 0.23.11 tool
+   pod refused every call from a 0.24.1 registry for three days on
+   `deadline_seconds`. The receiving half had shipped exactly as this item
+   specified; the pod registered, heartbeated and answered reachability probes
+   throughout, so nothing about it looked unhealthy while it refused
+   everything.
+
+   Fixed in 0.24.3 by pruning unset **top-level** optionals from the
+   registry→pod envelope -- the registry proxy is the only sender of
+   `CallRequest` -- with the scope deliberately not recursive: `CallContext`
+   does not forbid extras and needs no protection, and pruning it would strip
+   identity dimensions the proxy stamps as null on purpose, including the
+   verified-`user_id`-is-None case that must override a claimed user. The same
+   release named the refusal in the pod's own log (it had been silent, the
+   reason travelling only in a reply read by a model) and gave the pod an
+   arrival record, so "did the call get here" stops being an inference from two
+   timestamps.
+
+   **The generalisable lesson, and it is this document's recurring one in a new
+   costume.** Phase 2 item 5 recorded that a host's *configuration* needs its
+   own end-to-end test; the Gate B sweep recorded that *independence* was
+   pinned nowhere because every test drove one provider. Here the untested seam
+   was between two **versions**: both sides were correct alone, the rollout note
+   asserted a wire fact, and nothing ever parsed real forwarded bytes with a
+   model predating the newest field. `test_forward_is_version_tolerant.py` now
+   does. A prose rollout note is not a compatibility mechanism, and any future
+   additive field on an `extra="forbid"` envelope should be read as needing a
+   test that a *lagging* reader accepts the bytes, not a sentence promising no
+   one sends it.
+
 ### Phase 3 -- pull-driven depth (may start parallel to Phase 2 after Gate A)
 
 8. `replay.py` + `RecordingStore` port + record schema (versioned envelope),
@@ -1177,6 +1214,25 @@ taken during build. *Rider
 **next** release -- the one carrying Phase 2-3 -- not the leaf's first
 appearance on PyPI. Nothing in it is discharged by 0.24.0 having shipped.
 
+***Rider 2026-08-14 -- the rider above is retired, because it describes a
+brake that does not exist.*** Four further releases shipped while Gate B stayed
+open, and they carry the surface it was said to guard: **0.24.1** has Extract's
+web path, the gutted builtins and both envelope asks; **0.24.2** completes
+Phase 2 with `page_finder` and the context-save node; **0.24.3** adds
+`aggregate`/`select` and the Gate B sweep itself. None of this was a bypass.
+The family releases on its own cadence for reasons that have nothing to do with
+search -- 0.24.3 went out to fix the envelope-null outage above -- and a gate
+phrased as "the next release" was always going to be overtaken by the next
+unrelated fix.
+
+So state what Gate B actually protects, which D29 already named and this rider
+merely stops contradicting: **the first consumer release that pins a version
+carrying search**. That is the moment the contracts freeze and re-cutting them
+stops being free. Publication does not bind them; a tag does not bind them; a
+consumer's pin binds them. Gate B is the check standing in front of Phase 5,
+not in front of the release button, and nothing about it is discharged by
+0.24.1-0.24.4 having shipped.
+
 #### Gate B sweep -- 2026-08-13
 
 The gate has three parts. The SearXNG half was discharged 2026-08-12
@@ -1200,7 +1256,7 @@ wording excludes them and always did; they belong to Phase 5 and Gate C.
 | 11 -- `test_no_bespoke_reuse` without an exemption | **PASS, and the exemptions file does not contradict it** | `standalone.py` is in `_SANCTIONED_HTTPX_SITES` in the walker -- the D19 *widening* SR-N1 asked for, not a waiver -- and files no exemption. Worth stating because a reader who greps `_no_bespoke_reuse_exemptions.txt` finds a search line and would reasonably conclude otherwise: that line is `LocalHttpServer`, a scripted test HTTP server, not the Adapter and not a transport |
 | 12 -- egress routed independently, result names its exit | **PASS as of this sweep** -- it did not before | See below |
 | 13 -- facets found in `media-contracts`, not added here | **PASS, structurally** | `contracts/facets.py` keys are `MediaInfo`'s and `MediaFacets`' own field names, checked **at import**, so a drift fails loudly rather than the two vocabularies diverging silently. The three genuinely new facets landed in `media-contracts` itself -- check 13 passing is the observable fact that they did |
-| 14 -- three faces, one contract | **NOT VERIFIED** | See below |
+| 14 -- three faces, one contract | **SPLIT, and the in-repo half PASSES** (2026-08-14) | `test_three_faces_one_contract.py` drives one candidate set through both renderings that exist here and compares them *to each other*; `tests/enforcement/test_one_search_result_shape.py` holds the shape at its source. The API face renders in the hub and is verified there, with checks 1, 2, 3, 9 and 10. See below |
 
 **Check 12 was the sweep's find, and it is the pattern this document keeps
 recording.** Egress was pinned in several places and *independence* was pinned
@@ -1250,6 +1306,71 @@ when check 14's face decision is taken -- either the flags go on and the pin is
 written, or the check is amended with the reason, which is what §13's
 "decisions needing an owner" is for.
 
+#### Check 14, resolved by splitting it -- 2026-08-14
+
+**The decision was framed as flip-or-amend, and both options were wrong**,
+because both assumed the check needs the reach turned on. It does not. The face
+flags govern reach and **nothing in this repository reads them**: verified by
+search -- `mcp.py` never consults them, no in-repo HTTP surface consults them,
+and the only in-repo consumer is `publish_registration`, which copies them onto
+`ToolManifestEntry`. From there they land in the ACL `namespaces` table, whose
+own comment names the surfaces that act on them: the API namespace stamp
+(gu-task-24), the MCP export (gu-task-25) and the face-flip re-stamp
+(gu-task-26). All hub-side.
+
+So flipping the flags would change **what the hub is told**, not what this
+repository renders -- and check 14 is about rendering. Its parts divide the way
+the other five out-of-repo checks already do:
+
+| Face | Renders | Verified |
+|---|---|---|
+| platform tool | here (`TearsTool.execute` → `ToolResult`) | in-repo, this sweep |
+| MCP | here (`threetears.mcp.server`, prose `content` + `structuredContent`) | in-repo, this sweep |
+| HTTP API | in the hub (`map_tool_result_to_http` over `metadata["http"]`) | where it is exposed, with checks 1, 2, 3, 9, 10 |
+
+**What was built.** `test_three_faces_one_contract.py` renders one candidate set
+through both in-repo faces and asserts they agree -- comparing the faces **to
+each other**, never to the constant they were built from, which is the
+`test_egress_independence.py` lesson applied before rather than after. It
+carries guard tests that reproduce a reshaped face and a truncated one and
+confirm the comparison notices, plus a pin that no rendering module reads a face
+flag: if one ever does, the faces can disagree, this split stops being honest,
+and the pin says so in its failure message.
+
+`tests/enforcement/test_one_search_result_shape.py` holds the other half, which
+the unit test structurally cannot: a comparison between known faces cannot see a
+face nobody added yet. So the shape is protected at its source -- the border key
+may be read anywhere and **constructed in exactly one place**, `bind`, which
+owns the schema version and the field names. A second guard forbids spelling the
+key as a literal, without which the first is defeated by anyone who did not know
+the constant existed.
+
+**Two findings from building it, both pre-existing.**
+
+`web_fetch` was already a second construction site: it reimplemented the
+projection -- `SearchResultsMetadata.from_candidate_set(...)` then
+`{SEARCH_RESULTS_METADATA_KEY: ...}` -- once for success and once for refusals.
+Output identical to `bind`'s, which is exactly why nothing failed, and identical
+only until somebody edited one copy. Both now call `project_metadata` /
+`project_failure_metadata`; the latter is new, exported so `bind_failure` and
+`web_fetch` share one owner rather than one shape twice.
+
+The context-save node writes a **deliberately narrowed** record under the same
+key -- candidate identity and title only, plus `candidate_count` and
+`candidates_truncated`, because a context row must not become a second copy of
+the corpus. That is intended and documented at the site, so it is exempted with
+a rationale rather than closed. It does leave an asymmetry worth naming: the
+narrowed record carries `schema_version` from the full projection, so a reader
+that finds this key on a context row and hands it to
+`SearchResultsMetadata.from_metadata` gets something that parses while
+under-reporting. Not a defect today -- nothing does that -- but it is the shape
+of one, and it is now written down where the next reader will find it.
+
+**Gate B closes on this.** Nine of nine in-repo checks pass; the reach half of
+14 joins the five consumer-repo checks that were always Gate C's and Phase 5's.
+§5.5's `skill_eligible` / `web`-alias question stays open in §13 on its own
+merits -- it is a reach decision, and this check never depended on it.
+
 ### Phase 4 -- release
 
 10. Family minor bump (lockstep -- the bounds test names every edge), PR into
@@ -1278,6 +1399,26 @@ none of which reorder the remaining build:
   preamble).
 - **Gate B did not move to the past.** It kept its content and changed which
   release it guards (rider above).
+
+**Which tag carries what -- recorded 2026-08-14, because the bullets above go
+stale silently and a consumer pinning the wrong one gets a build that compiles.**
+
+| Tag | First carries |
+|---|---|
+| v0.24.0 | the leaf alone -- contracts, both adapters, Call, Bind, standalone transport, limiter |
+| v0.24.1 | Extract's web path ([#316](https://github.com/pacepace/3tears/pull/316)), both envelope asks ([#317](https://github.com/pacepace/3tears/pull/317)), the `ToolExecutor` artifact fix ([#318](https://github.com/pacepace/3tears/pull/318)), MCP `structuredContent` ([#319](https://github.com/pacepace/3tears/pull/319)), the gutted builtins and their correction pass ([#321](https://github.com/pacepace/3tears/pull/321)), SR-A4 ([#322](https://github.com/pacepace/3tears/pull/322)) |
+| v0.24.2 | `page_finder` structure ([#326](https://github.com/pacepace/3tears/pull/326)) and the context-save node ([#327](https://github.com/pacepace/3tears/pull/327)) -- **the first tag carrying all of Phase 2** |
+| v0.24.3 | `aggregate`/`select` ([#333](https://github.com/pacepace/3tears/pull/333), [#335](https://github.com/pacepace/3tears/pull/335)), the Gate B sweep and `test_egress_independence.py`, and the envelope-null fix |
+| v0.24.4 | nothing search-side (L1 column projection) |
+
+**The two consumers are no longer symmetric, and the Phase 5 preamble's single
+"the released version" hides it.** metallm needs the gutted `WebSearchTool`
+(Phase 2 item 5): that is **released, in 0.24.2 and later**, so its migration
+has a pin it could name today and is held only by Gate B and its own version
+lag. discodon needs the replay piece (Phase 3 item 8), which is **not built at
+all** -- no tag can carry it -- and is itself elicited against discodon's own
+carved storage port, an outstanding Phase 1 item. No release will unblock
+discodon; a build will, and that build waits on discodon.
 
 ### Phase 5 -- consumer migrations (parallel, per repo; each pins the whole family to the one released version)
 
@@ -1353,6 +1494,19 @@ context-save) already landed in Phase 2.
 compatibility promise ruled formally; envelope asks (D18) released; identity
 scope carried for search calls pod-side (the "stateless tool" classification
 is invalidated by budgets/replay -- §5.4).
+
+*2026-08-14 -- D13 now has a price tag.* The `extra="forbid"` stance was
+deferred here as a considered trade, on the reading that a mixed-version fleet
+is a deployment concern rather than a contract one. It has since been paid
+once, in production and not by search: three days of total refusal on
+cobalt-dev, from a field no caller populated, diagnosed only after the pod was
+made to say why it was refusing (D18's correction). The 0.24.3 pruning closes
+the *sender* half for the one sender there is, which is a mitigation and not
+the ruling -- an ignore-unknown receiver would have degraded instead of
+refusing, and that is the choice Gate C still owes. **Envelope asks "released"
+also remains half true:** `deadline_seconds` is accepted everywhere and sent
+by nobody, so a caller may now safely be taught to populate it against a fleet
+at 0.24.3+, and Gate C should confirm that floor rather than assume it.
 
 ---
 

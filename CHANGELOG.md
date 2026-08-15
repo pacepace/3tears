@@ -4,6 +4,54 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.5 -- 2026-08-15
+
+### Added
+
+- `langgraph`: `StreamingResponse` accepts an optional `error_classifier`, and
+  `run_graph` uses its verdict as the terminal error code. Every
+  non-cancellation failure previously terminated as `AGENT_FAILED` -- one code
+  for a model timeout, a dead dependency, a tool fault and a bug alike -- so a
+  consumer wanting to tell them apart had to parse prose out of `message`,
+  which is the failure mode `NoRespondersError` was split out of
+  `RequestError` to avoid. The classifier is INJECTED rather than implemented
+  here because the types worth distinguishing live in `threetears.nats`, which
+  this package does not depend on and should not grow a dependency on merely
+  to name an error. `DEFAULT_ERROR_CODE` and `CANCELLED_ERROR_CODE` are
+  exported so a classifier can return the residual case without re-spelling a
+  literal. Nothing changes for callers that pass no classifier.
+
+  The classifier runs on the failure path and so is not permitted to add a
+  second way to fail: one that raises degrades to `DEFAULT_ERROR_CODE`, is
+  logged, and never displaces the exception the caller is about to see.
+  Cancellation is exempt from classification entirely -- an orderly stop is
+  not a fault to attribute, and routing it through a caller-supplied mapping
+  would let a shutdown be relabelled as an error.
+
+- `search` / `media-contracts`: a re-read can spend the ETag and
+  `Last-Modified` its bytes arrived with, so an unchanged page no longer pays
+  a fetch -- and on the scrape path a render and an LLM extraction on top.
+  This is not caching: nothing is stored anywhere in the capability, and the
+  validators live where the bytes live, with the caller. `ContentSlot` carries
+  them as first-class fields rather than facets, by the argument
+  `published_at` already makes. `EXTRACTION_STATUS_UNCHANGED` is a status
+  unlike the others present -- a success, unlike failed; something did try,
+  unlike refused; and it produced no new content, unlike complete -- so a
+  reader treating "no content" as failure misreads it.
+
+- `registry`: `ProxyCallRequest` carries `deadline_seconds` and the proxy
+  forwards it to the pod, clamped to the wait it actually intends. The
+  pod-side accepting half shipped in 0.24.1 and nothing ever sent one. The
+  deadline is the only quantity in the chain nobody downstream can compute:
+  the tool's declared ceiling and the pod's backstop are both static and both
+  already known where they are used, while how much patience THIS caller has
+  left is known only to the caller. A caller may ask for less than the tool
+  allows, which is the point; it may not ask for more, because forwarding the
+  larger number would license work past the moment its answer becomes
+  unreadable. Teaching agents to populate it is deliberately not in this
+  release -- that needs the fleet carrying a registry that accepts the field
+  first.
+
 ## v0.24.4 -- 2026-08-13
 
 ### Added
