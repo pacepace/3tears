@@ -50,6 +50,7 @@ from threetears.models.defaults import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_FAST_MODEL,
     DEFAULT_LARGE_MODEL,
+    DEFAULT_MAX_TOKENS,
 )
 from threetears.models.chunk_merging import merge_chunks
 from threetears.models.chunk_parsing import ChunkParsed, parse_chunk
@@ -120,6 +121,7 @@ __all__ = [
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_FAST_MODEL",
     "DEFAULT_LARGE_MODEL",
+    "DEFAULT_MAX_TOKENS",
     "CapabilityOverride",
     "ChunkParsed",
     "CircuitBreaker",

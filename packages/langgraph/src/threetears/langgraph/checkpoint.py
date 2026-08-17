@@ -14,10 +14,20 @@ read caches in front of the L3 database tier:
 - L2 (distributed cache): optional hot cache (e.g. NATS KV, Redis).
 - L1 (local cache): optional in-memory/local cache (e.g. SQLite).
 
-all L1 and L2 operations degrade gracefully on failure — cache
+all L1 and L2 operations degrade gracefully on failure -- cache
 misses fall through to the next tier, and cache write failures are
 logged and swallowed so the graph never crashes due to cache
 infrastructure issues.
+
+L3 does NOT degrade in general: it is the source of truth, and a
+failed read or checkpoint write must reach the caller. The single
+exception is the crash-recovery half of
+:meth:`ThreeTierCheckpointSaver.aput_writes`, which LangGraph calls
+from executor teardown where a raise kills a turn that has already
+answered. That carve-out is scoped by channel, not by tier -- the
+control-channel writes arriving at the same method still raise,
+because losing one changes what the run does. See that method for
+the full rule.
 
 namespace-task-01 phase 8.5l-4 merged the former
 ``ProxyCheckpointSaver`` into this class after Pace's pushback
@@ -254,11 +264,21 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception:
             log.warning("L2 checkpoint write failed", exc_info=True)
 
-    async def l2_delete(self, thread_id: str) -> None:
-        """delete a thread's L2 entry, swallowing errors.
+    async def l2_delete(self, thread_id: str, checkpoint_ns: str) -> None:
+        """delete one thread+namespace L2 entry, swallowing errors.
+
+        Takes ``checkpoint_ns`` because L2 is keyed on it and the protocol offers
+        only exact-key deletes -- no prefix sweep, no listing. This used to
+        hardcode ``""`` and so cleared only the root-namespace key, which meant a
+        caller invalidating a namespaced thread silently left the stale bundle in
+        place. The parameter makes the caller name the key it wrote, and turns
+        "every namespace" from a thing the signature implied into a thing a caller
+        has to loop for.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
+        :param checkpoint_ns: checkpoint namespace whose entry to drop
+        :ptype checkpoint_ns: str
         :return: nothing
         :rtype: None
         """
@@ -267,7 +287,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             await self._l2.delete(
                 self._l2_bucket,
-                self.l2_key(thread_id, ""),
+                self.l2_key(thread_id, checkpoint_ns),
             )
         except Exception:
             log.warning("L2 checkpoint delete failed", exc_info=True)
@@ -737,7 +757,52 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        """store intermediate writes for crash recovery.
+        """store intermediate writes, degrading only where degrading is safe.
+
+        Two kinds of row arrive here and they get OPPOSITE treatment, because the
+        cost of losing them differs in kind:
+
+        - **crash-recovery rows** (ordinary channel writes) let a CRASHED run
+          resume. Losing one costs resumability of a turn that has already
+          answered, so a failure DEGRADES with a warning.
+        - **control-channel writes** (the members of
+          :data:`~langgraph.checkpoint.base.WRITES_IDX_MAP` --
+          ``__error__``, ``__scheduled__``, ``__interrupt__``, ``__resume__``)
+          carry the run's control flow, not merely its resumability. A failure
+          RAISES.
+
+        Why the split is not cosmetic: pregel builds a state snapshot's
+        interrupts out of the very rows this method writes
+        (``saved.pending_writes``), and
+        :func:`~threetears.langgraph.streaming.detect_interrupt` derives "the
+        graph PAUSED" solely from that snapshot. So swallowing a failed
+        ``__interrupt__`` write leaves a snapshot with no interrupt in it, the
+        turn ends as an ordinary ``StreamEndEvent``, and a human-approval gate is
+        silently skipped with its payload lost. ``detect_interrupt`` already
+        refuses to swallow a failing ``aget_state`` for exactly this reason; a
+        blanket guard here would reintroduce that bug one layer down.
+
+        LangGraph calls this from its executor teardown, so anything raised here
+        propagates out of ``run_graph`` and terminates the whole turn. For a
+        crash-recovery row that trade is inverted -- it discards an answer that
+        already exists to protect the ability to recover an answer nobody needs
+        any more. Observed on a cluster: two identical L3 timeouts on the same
+        NATS subject inside one log window. The first hit memory retrieval, which
+        guards its call, and soft-failed -- that turn answered normally. The
+        second hit this method, which guarded nothing, and the turn died as
+        ``AGENT_FAILED``. For a control-channel write the trade runs the other
+        way: a turn that dies loudly is recoverable, an approval gate that
+        vanishes is not.
+
+        The write set is persisted in ONE statement (see :meth:`_write_pending`),
+        so a failure leaves NO rows behind. What that costs is a REPLAY, not a
+        lost turn: pregel treats a task with any writes as already run, so a task
+        with none looks not-run and its node RE-EXECUTES when the run resumes,
+        repeating whatever side effects it already performed. The reason to
+        prefer that over a truncated set is that pregel also applies a task's
+        pending writes to channels, so half a set resumes by SKIPPING the node
+        with partially updated channels -- silent divergence, which is worse than
+        doing the work twice.
 
         :param config: runnable config with ``thread_id`` and
             ``checkpoint_id``
@@ -750,22 +815,182 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype task_path: str
         :return: nothing
         :rtype: None
+        :raises Exception: whatever the write raises, when the set contains a
+            control-channel write
         """
-        thread_id = config["configurable"]["thread_id"]
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
-        checkpoint_id = config["configurable"]["checkpoint_id"]
+        control_channels = sorted({channel for channel, _ in writes if channel in WRITES_IDX_MAP})
 
+        # ``or {}`` rather than a .get default: a config carrying an explicit
+        # ``configurable: None`` would still raise AttributeError on the next
+        # lookup, which is the shape a malformed config most often takes.
+        configurable = config.get("configurable") or {}
+        thread_id = configurable.get("thread_id")
+        checkpoint_ns = configurable.get("checkpoint_ns", "")
+        checkpoint_id = configurable.get("checkpoint_id")
+
+        # Serialization happens OUTSIDE the guard below. An unserializable
+        # channel value is a programming error, not a transport fault: it fails
+        # identically on every retry, so degrading it would hide a permanent bug
+        # behind one warning per turn. Only the write itself is guarded.
+        rows = self._build_write_rows(
+            writes,
+            task_id,
+            thread_id=thread_id,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            task_path=task_path,
+        )
+
+        try:
+            await self._write_pending(rows)
+        except Exception:  # prawduct:allow prawduct/broad-except -- teardown path: a crash-recovery row must degrade, never terminate the turn; control-channel writes re-raise below
+            if control_channels:
+                # Losing these changes what the run DOES. Fail the turn loudly
+                # rather than let it resolve to a wrong control flow. Logged
+                # before re-raising because the channel names are the whole
+                # diagnosis and the traceback does not carry them.
+                log.warning(
+                    "Failed to store control-channel writes; re-raising rather than skipping the control flow",
+                    extra={
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": checkpoint_id,
+                        "task_id": task_id,
+                        "control_channels": control_channels,
+                    },
+                    exc_info=True,
+                )
+                raise
+            # WARNING, not debug: a silent replay is worth one line, and the
+            # cluster incident that motivated this guard was invisible until
+            # someone read a traceback.
+            log.warning(
+                "Failed to store crash-recovery writes; this task will re-execute if the run resumes",
+                extra={
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": checkpoint_id,
+                    "task_id": task_id,
+                    "write_count": len(writes),
+                },
+                exc_info=True,
+            )
+        else:
+            # isinstance rather than a cast: thread_id comes from the config
+            # unvalidated, and a write that succeeded without one has nothing
+            # cacheable to invalidate.
+            if control_channels and isinstance(thread_id, str):
+                # The cached bundle is written by :meth:`aput` with
+                # ``pending_writes=[]``, and :meth:`aget_tuple` serves it
+                # verbatim when no ``checkpoint_id`` is pinned -- which is
+                # exactly how ``detect_interrupt`` reads state. Without this
+                # invalidation a wired L1/L2 would hide the interrupt row we
+                # just persisted, and the approval gate would vanish anyway.
+                #
+                # Deliberately NOT via l1_delete / l2_delete: those swallow their
+                # own failures by design, and a silently-failed invalidation here
+                # leaves the cache serving the pre-interrupt bundle -- the same end
+                # state as never writing the row, which is the failure the re-raise
+                # above exists to prevent. This invalidation is load-bearing, so it
+                # fails the way the write does.
+                await self._invalidate_for_control_write(
+                    thread_id,
+                    checkpoint_ns if isinstance(checkpoint_ns, str) else "",
+                )
+
+    async def _invalidate_for_control_write(self, thread_id: str, checkpoint_ns: str) -> None:
+        """drop the cached bundle for a control-channel write, RAISING on failure.
+
+        The read caches hold a bundle :meth:`aput` wrote with
+        ``pending_writes=[]``, and :meth:`aget_tuple` serves it verbatim when no
+        ``checkpoint_id`` is pinned -- which is exactly how interrupt detection
+        reads state. So a control-channel row that reached L3 is still invisible
+        until the cache is dropped, and an invalidation that fails quietly leaves
+        the run in the same place as one that never happened: no interrupt in the
+        snapshot, an ordinary end of turn, a human-approval gate skipped.
+
+        That is why this bypasses :meth:`l1_delete` / :meth:`l2_delete`. Those
+        degrade on purpose, which is right for opportunistic cache warming and
+        wrong here -- losing this invalidation changes what the run does, so it
+        gets the same treatment as losing the write itself.
+
+        L1 is dropped across every namespace by its protocol; L2 is exact-key, so
+        only the namespace just written is cleared.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: str
+        :param checkpoint_ns: the namespace whose cached bundle is now stale
+        :ptype checkpoint_ns: str
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the cache raises; the caller does not degrade
+        """
+        if self._l1 is not None:
+            await self._l1.delete(thread_id)
+        if self._l2 is not None:
+            await self._l2.delete(self._l2_bucket, self.l2_key(thread_id, checkpoint_ns))
+
+    def _build_write_rows(
+        self,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        *,
+        thread_id: Any,
+        checkpoint_ns: Any,
+        checkpoint_id: Any,
+        task_path: str,
+    ) -> list[tuple[Any, ...]]:
+        """serialize a write set into per-row parameter tuples, deduplicated.
+
+        Deduplication mirrors the reference saver's ``put_writes`` exactly, and
+        the two halves differ: an ordinary channel (``idx >= 0``) is FIRST-wins,
+        a control channel (negative index, from
+        :data:`~langgraph.checkpoint.base.WRITES_IDX_MAP`) is LAST-wins. Getting
+        that backwards drops a second ``Command(resume=...)`` against the same
+        checkpoint and task, so the graph resumes on the STALE earlier approve or
+        deny -- a wrong human decision applied silently, which is the failure the
+        control-channel guard exists to prevent.
+
+        Deduplicating here rather than in SQL is forced: the statement upserts
+        control rows with ``DO UPDATE``, and Postgres refuses a command whose own
+        ``VALUES`` list hits one conflict key twice ("cannot affect row a second
+        time"). Two writes on one control channel collapse to that channel's
+        single index, so the collision is reachable, not theoretical.
+
+        Splitting this out of the write also puts serialization OUTSIDE the
+        caller's degrade guard, so an unserializable value surfaces as the
+        programming error it is instead of degrading identically forever.
+
+        The ids are typed :class:`~typing.Any` because they arrive out of
+        ``config["configurable"]`` unvalidated; they ride as bound parameters, so
+        a missing one fails the statement rather than corrupting a row. They are
+        keyword-only for the same reason they are all ``Any``: three
+        interchangeable ids in a row is a transposition that no type checker
+        would catch.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: Any
+        :param checkpoint_ns: checkpoint namespace
+        :ptype checkpoint_ns: Any
+        :param checkpoint_id: checkpoint identifier
+        :ptype checkpoint_id: Any
+        :param writes: list of (channel, value) tuples
+        :ptype writes: Sequence[tuple[str, Any]]
+        :param task_id: task identifier for crash recovery
+        :ptype task_id: str
+        :param task_path: task path
+        :ptype task_path: str
+        :return: one parameter tuple per surviving write, in insertion order
+        :rtype: list[tuple[Any, ...]]
+        """
+        by_idx: dict[int, tuple[Any, ...]] = {}
         for idx, (channel, value) in enumerate(writes):
             write_idx = WRITES_IDX_MAP.get(channel, idx)
+            if write_idx >= 0 and write_idx in by_idx:
+                # ordinary channel: the first write for an index wins
+                continue
             w_type, w_blob = self.serde.dumps_typed(value)
-
-            await self._exec.execute(
-                "INSERT INTO checkpoint_writes "
-                "(thread_id, checkpoint_ns, checkpoint_id, task_id, "
-                "task_path, idx, channel, type, blob) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
-                "ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) "
-                "DO NOTHING",
+            by_idx[write_idx] = (
                 thread_id,
                 checkpoint_ns,
                 checkpoint_id,
@@ -776,6 +1001,71 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 w_type,
                 w_blob,
             )
+        return list(by_idx.values())
+
+    async def _write_pending(self, rows: Sequence[tuple[Any, ...]]) -> None:
+        """persist prepared write rows as ONE statement, raising on failure.
+
+        The whole set goes in a single multi-row ``INSERT`` so it is
+        all-or-nothing: a failure leaves no rows at all, never a truncated set. A
+        statement-per-write cannot promise that, because the
+        :class:`~threetears.langgraph.protocols.AsyncQueryExecutor` protocol
+        declares no transaction. A batch API was the alternative and was
+        rejected: ``NatsProxyL3Backend`` does expose
+        ``execute_batch(..., transaction=True)``, but the protocol does not
+        declare it and the direct-pool adapter does not implement it, so taking
+        that route means widening the protocol and teaching the adapter
+        transactions to buy an atomicity that one statement already has.
+
+        The upsert is asymmetric on purpose, matching the reference saver: an
+        ordinary channel keeps the row already stored, a control channel
+        overwrites it. ``DO UPDATE ... WHERE checkpoint_writes.idx < 0`` says
+        exactly that in one clause -- for a non-negative index the predicate is
+        false and the statement leaves the existing row alone.
+
+        Verified against the engine rather than assumed: a mid-statement failure
+        commits zero rows, a control row is overwritten while an ordinary row is
+        not, and a conflict key repeated inside one statement is rejected outright
+        (hence the caller's deduplication).
+
+        One statement means one parameter list, so a set is ultimately bounded by
+        what the transport accepts -- the bind-parameter ceiling on a direct pool,
+        ``max_payload`` on the NATS proxy. Real write sets are a handful of
+        channels; a set large enough to hit either limit fails the statement and
+        takes the caller's degrade path.
+
+        :param rows: parameter tuples from :meth:`_build_write_rows`
+        :ptype rows: Sequence[tuple[Any, ...]]
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the executor raises; the caller decides
+            whether to degrade
+        """
+        if not rows:
+            return
+
+        row_placeholders: list[str] = []
+        params: list[Any] = []
+        for row in rows:
+            # placeholder count derives from the row itself, so adding a column
+            # cannot desynchronise the SQL from the parameter list
+            row_placeholders.append("(" + ", ".join(f"${len(params) + n}" for n in range(1, len(row) + 1)) + ")")
+            params.extend(row)
+
+        await self._exec.execute(
+            "INSERT INTO checkpoint_writes "
+            "(thread_id, checkpoint_ns, checkpoint_id, task_id, "
+            "task_path, idx, channel, type, blob) "
+            f"VALUES {', '.join(row_placeholders)} "
+            "ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) "
+            "DO UPDATE SET "
+            "task_path = EXCLUDED.task_path, "
+            "channel = EXCLUDED.channel, "
+            "type = EXCLUDED.type, "
+            "blob = EXCLUDED.blob "
+            "WHERE checkpoint_writes.idx < 0",
+            *params,
+        )
 
     async def adelete_thread(self, thread_id: str) -> None:
         """delete all checkpoints and writes for a thread from all tiers.
@@ -794,7 +1084,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             thread_id,
         )
 
-        await self.l2_delete(thread_id)
+        # L1 drops the thread across namespaces; L2 is exact-key, so this clears
+        # the root-namespace entry only. A bundle cached under a non-empty
+        # checkpoint_ns survives here -- pre-existing, and now visible at the call
+        # site rather than buried in l2_delete's body. Closing it means giving the
+        # L2 protocol a prefix sweep or a listing, which belongs with whoever first
+        # wires a cache (no construction site passes one today).
+        await self.l2_delete(thread_id, "")
         await self.l1_delete(thread_id)
 
     # ------------------------------------------------------------------

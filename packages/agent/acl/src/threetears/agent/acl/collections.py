@@ -154,14 +154,24 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     needs to delete the group row itself. CRUD comes from the
     declarative :class:`TableSchema`; the evaluator-loader / introspection
     helpers (``list_by_customer`` / ``list_all`` / ``get_many`` /
-    ``get_by_managed_key``) stay on the canonical class because every
+    ``get_by_name``) stay on the canonical class because every
     rbac-consuming app needs them.
 
-    a group's identity is ``group_id`` alone; ``name`` is a non-unique
-    human label and there is deliberately no ``get_by_name`` (a label is
-    not a key). a consuming app that auto-manages groups stamps a
-    nullable ``managed_key`` and resolves *the* managed group
-    deterministically via :meth:`get_by_managed_key`.
+    a group is addressable two ways, and both are exact: by ``group_id``,
+    and by ``name`` within its scope. the platform DDL makes ``name``
+    unique per customer, and unique across platform-scoped rows, so
+    :meth:`get_by_name` returns at most one row.
+
+    this class previously carried a nullable ``managed_key`` column and a
+    ``get_by_managed_key``, on the stated grounds that ``name`` was "a
+    non-unique human label" and so unusable as a handle. that was never
+    true: the uniqueness indexes have existed since the platform's first
+    migration, and they are exactly the uniqueness ``managed_key``
+    re-declared. the duplicate handle cost more than it bought -- its name
+    read as something an operator had to mint, and a customer-scoped key
+    resolved relative to the ASKER, so it could not express "that specific
+    customer's group" at all. removed in groups-task-01; ``name`` and
+    ``group_id`` are the handles.
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
@@ -170,7 +180,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "list_by_customer",
             "list_all",
             "get_many",
-            "get_by_managed_key",
+            "get_by_name",
             "delete_from_store",
             "save_entity",
             "create",
@@ -198,12 +208,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             Column("row_scope", STRING_TYPE, partition=True),
             Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            # unique per scope: the platform DDL owns a partial unique index
+            # per customer and another across platform-scoped rows, which is
+            # what makes get_by_name an exact lookup rather than a search.
             Column("name", STRING_TYPE),
-            # nullable deterministic find-or-create handle: set only on a
-            # consuming app's auto-managed groups, NULL for user-created
-            # ones. unique-per-scope when present -- the platform DDL owns
-            # the partial-unique index (3tears carries the column only).
-            Column("managed_key", STRING_TYPE, nullable=True),
             Column("description", STRING_TYPE, nullable=True),
             Column(
                 "date_created",
@@ -289,30 +297,28 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 
-    async def get_by_managed_key(
+    async def get_by_name(
         self,
-        managed_key: str,
+        name: str,
         customer_id: UUID | None,
     ) -> GroupEntity | None:
-        """resolve the auto-managed group for ``(managed_key, customer_id)``.
+        """resolve the group named ``name`` within ``customer_id``'s scope.
 
-        the deterministic find-or-create lookup a consuming app uses
-        for the groups it auto-manages. ``managed_key`` is unique per
-        scope (per ``customer_id``; platform groups are
-        ``customer_id IS NULL``), so this returns at most one row.
-        user-created groups carry ``managed_key IS NULL`` and are never
-        resolved here. the resolved row is promoted into L1/L2 caches.
+        ``name`` is unique per scope -- the platform DDL owns a partial
+        unique index per customer and another across platform-scoped
+        rows -- so this returns at most one row. the resolved row is
+        promoted into L1/L2 caches.
 
         the ``customer_id`` predicate uses ``IS NOT DISTINCT FROM`` so a
         ``None`` scope matches the platform partition's NULL exactly
         (mirrors :meth:`get_by_owner_and_customer`).
 
-        :param managed_key: the deterministic handle to resolve
-        :ptype managed_key: str
+        :param name: the group name to resolve
+        :ptype name: str
         :param customer_id: owning customer UUID, or ``None`` for a
-            platform-scoped managed group
+            platform-scoped group
         :ptype customer_id: UUID | None
-        :return: group entity or ``None`` when no managed group matches
+        :return: group entity or ``None`` when no group matches
         :rtype: GroupEntity | None
         """
         result: GroupEntity | None = None
@@ -320,10 +326,10 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             row = await self.l3_pool.fetchrow(
                 """
                 SELECT * FROM groups
-                 WHERE managed_key = $1
+                 WHERE name = $1
                    AND customer_id IS NOT DISTINCT FROM $2
                 """,
-                managed_key,
+                name,
                 customer_id,
             )
             if row is not None:
@@ -1835,7 +1841,7 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
     with parameterized SQL rather than routing through the generic
     :meth:`~threetears.core.collections.base.BaseCollection.save_entity`
     three-tier CAS path -- mirrors :meth:`GroupCollection.find_by_id`'s /
-    :meth:`GroupCollection.get_by_managed_key`'s existing style (direct
+    :meth:`GroupCollection.get_by_name`'s existing style (direct
     ``l3_pool.fetchrow`` + :meth:`_coerce_row`) rather than inventing a new
     persistence pattern. A security gate this is deliberately read live on
     every check (no L1/L2 caching layer for gate reads) -- identity-core's

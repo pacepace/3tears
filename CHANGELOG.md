@@ -4,6 +4,140 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.6 -- 2026-08-17
+
+### Fixed
+
+- `core`: `authored_yaml.safe_load_authored` refuses a duplicated mapping key, and
+  the two loaders reading human-authored files now use it -- dataset definitions
+  (`datasources`) and scrape target configs (`scrape`).
+
+  `yaml.safe_load` resolves a duplicated key by last-wins, silently. For a
+  hand-edited file that is the worst available behaviour: the botched edit parses,
+  every validation surface downstream reports success, and the value the author
+  wrote is gone with nothing left to notice it by. The same failure was found and
+  closed in the SDK's authored knowledge files; these two sites still had it.
+
+  One copy in `core` rather than three: the two packages share only `core`, and a
+  security-relevant parser guard duplicated across a monorepo rots. `core` gains a
+  `pyyaml` dependency, a deliberate narrowing of the "each format lives in its own
+  package" rule -- this is a parser guard, not a format handler.
+
+- `langgraph`: the cache invalidation after a control-channel write no longer
+  degrades. It ran through `l1_delete` / `l2_delete`, which swallow their own
+  failures by design -- correct for opportunistic cache warming, wrong here: a
+  quietly-failed invalidation leaves the cache serving the pre-interrupt bundle,
+  so `detect_interrupt` finds nothing and the approval gate is skipped. That is
+  the same end state as never writing the row, which is the failure the
+  control-channel re-raise exists to prevent. It now fails the way the write does.
+
+- `langgraph`: `ThreeTierCheckpointSaver.l2_delete` takes the `checkpoint_ns` whose
+  entry it should drop. **BREAKING** for a direct caller.
+
+  It hardcoded the root namespace, so invalidating a namespaced thread cleared the
+  wrong key and left the stale bundle in place. That silently defeated the
+  control-channel invalidation shipped alongside it: the interrupt row lands in L3,
+  the cache still answers with the pre-interrupt bundle, and the approval gate
+  vanishes anyway. L1 is unaffected -- its protocol drops a thread across all
+  namespaces. `adelete_thread` still clears only the root entry, which now says so
+  at the call site rather than inheriting it silently; closing that needs a prefix
+  sweep the L2 protocol does not have.
+
+### Changed
+
+- `agent-acl`: **BREAKING.** `GroupCollection.get_by_managed_key` is replaced by
+  `get_by_name(name, customer_id)`, and the `managed_key` column is removed from
+  the group schema, entity and `Group` type.
+
+  `managed_key` was introduced on a premise that was never true. The collection
+  docstring said "`name` is a non-unique human label and there is deliberately no
+  `get_by_name` (a label is not a key)" -- but the platform DDL has made `name`
+  unique per customer, and unique across platform-scoped rows, since its first
+  migration. That is exactly the uniqueness `managed_key` re-declared, so the
+  column duplicated a guarantee `name` already carried.
+
+  The duplicate cost more than it bought. Its name read as something an operator
+  had to mint, which sent a consuming team to file a bug asking for an endpoint to
+  set one. Worse, a customer-scoped key resolved relative to the ASKER, so it could
+  express "my own company's group" but never "that specific customer's group" --
+  the exact question a per-customer product gate needs to ask.
+
+  Callers move to `get_by_name`, or to the group id. Per the standing no-shim rule
+  the column is dropped rather than deprecated; the platform migration that drops
+  it lives in the hub, which owns the DDL.
+
+### Added
+
+- `models`: `DEFAULT_MAX_TOKENS` in `threetears.models.defaults`, the per-response
+  output-token cap, alongside the existing model pins.
+
+  A cap is a ceiling, not a target: room left unused costs nothing, while a cap
+  set too low truncates the answer itself. It existed as five separate literals
+  across the hub and the SDK, and consumers were holding two of them equal by a
+  comment asking a human to. It is now one value that every "output cap" default
+  reads, matching what this module already does for model ids.
+
+  The transport and chat-model classes deliberately keep NO default: every
+  producer of a completion request sets the field explicitly, so a second number
+  there could only ever drift out of step with this one.
+
+### Fixed
+
+- `langgraph`: `ThreeTierCheckpointSaver.aput_writes` no longer lets a lost
+  crash-recovery write kill a live turn, and now writes each set atomically.
+
+  LangGraph calls the method from executor teardown, and it ran an unguarded
+  `execute()` per write, so one L3 failure there propagated out of `run_graph`
+  and terminated the whole turn as an agent failure. For a row whose only job is
+  to let a CRASHED run resume, that inverts the priority: it discards an answer
+  that already exists to protect the ability to recover an answer nobody needs
+  any more. The evidence was unusually clean -- two identical L3 timeouts on the
+  same NATS subject inside one log window, the first hitting memory retrieval,
+  which guards its call and soft-failed, the second hitting `aput_writes`, which
+  guarded nothing. Same infrastructure event, opposite outcomes, decided only by
+  the try/except.
+
+  The guard is scoped BY CHANNEL, not by method. `WRITES_IDX_MAP`'s members
+  (`__error__`, `__scheduled__`, `__interrupt__`, `__resume__`) arrive at this
+  same method and carry the run's control flow rather than its resumability:
+  pregel builds a state snapshot's interrupts out of these rows, and
+  `detect_interrupt` reads the pause from nothing else, so degrading a failed
+  `__interrupt__` write would end the turn as an ordinary stream end -- a
+  human-approval gate silently skipped and its payload lost. Those writes still
+  raise; only ordinary channel writes degrade.
+
+  Each write set is now persisted as ONE multi-row `INSERT` instead of a
+  statement per write, making it all-or-nothing. This is a correctness fix in its
+  own right: pregel applies a task's pending writes to channels and treats a task
+  with ANY writes as already run, so a set truncated by a mid-loop failure would
+  resume by SKIPPING that node with partially updated channels -- silent
+  divergence. With no rows at all the task simply looks not-run and its node
+  re-executes instead.
+
+  The upsert is now asymmetric, matching the reference saver's `put_writes`: an
+  ordinary channel is first-wins, a control channel is LAST-wins. The previous
+  `ON CONFLICT DO NOTHING` applied first-wins to both, which dropped a second
+  `Command(resume=...)` against the same checkpoint and task, so a graph resumed
+  on the stale earlier approve or deny. Duplicate control-channel writes are
+  deduplicated in Python before the statement, because Postgres rejects a
+  command whose own `VALUES` list hits one conflict key twice.
+
+  A control-channel write now also invalidates the cached checkpoint bundle:
+  L1 for the thread across namespaces, L2 for the thread's root-namespace key.
+  `aput` caches a bundle with `pending_writes=[]` and `aget_tuple` serves it
+  verbatim when no `checkpoint_id` is pinned, which is exactly how interrupt
+  detection reads state -- so with a cache wired, the interrupt row would have
+  been invisible however successfully it was written. A bundle cached under a
+  non-empty `checkpoint_ns` still survives in L2, matching the existing
+  limitation in `adelete_thread`; no construction site wires a cache today, and
+  closing it means widening the cache protocols.
+
+  **Behaviour change for callers:** a failed crash-recovery write no longer
+  surfaces as an exception. It logs a WARNING carrying the thread, checkpoint
+  namespace, checkpoint, task and write count. The cost is a REPLAY, not a lost
+  turn: that task looks not-run, so its node re-executes if the run resumes,
+  repeating any side effects it already performed.
+
 ## v0.24.5 -- 2026-08-15
 
 ### Added

@@ -69,6 +69,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from threetears.core.authored_yaml import safe_load_authored
 from threetears.observe import get_logger
 
 from threetears.datasources.definition.dataset import DatasetDefinition
@@ -312,7 +313,11 @@ def load_dataset_file(file_path: Path) -> DatasetFile:
         # into a string first and every syntax error is reported against
         # "<unicode string>", which is useless in a directory of files.
         with file_path.open(encoding="utf-8") as handle:
-            raw = yaml.safe_load(handle)
+            # safe_load_authored, not yaml.safe_load: a dataset file is HAND-EDITED,
+            # and PyYAML resolves a duplicated key by last-wins in silence. A botched
+            # edit that duplicates one would parse cleanly here, validate against the
+            # definition model, import as a success, and drop what the author wrote.
+            raw = safe_load_authored(handle)
     except Exception as error:
         raise DatasetFileError(f"failed to read dataset file {file_path}: {error}") from error
 
