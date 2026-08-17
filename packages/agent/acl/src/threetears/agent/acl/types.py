@@ -152,27 +152,20 @@ class Group:
     managed; members may span customers); otherwise the group is
     customer-scoped and every member's customer must match.
 
-    identity is ``id`` (the group UUID) alone — the evaluator and every
-    loader key on ``id``, never on ``name``. ``name`` is a human label
-    (NOT unique); ``managed_key`` is the deterministic find-or-create
-    handle a consuming app sets only on the groups it auto-manages.
+    the evaluator and every loader key on ``id``. ``name`` is also an
+    exact handle: the platform DDL makes it unique per customer, and
+    unique across platform-scoped rows, which is what lets a consuming
+    app ask about a group by the name a human typed.
 
-    :ivar id: group UUID — the only identity
-    :ivar name: human-readable label (NOT unique; what a UI shows)
+    :ivar id: group UUID — exact, and stable across a rename
+    :ivar name: group name; unique within the group's scope
     :ivar customer_id: owning customer UUID, or ``None`` for platform
         scope
-    :ivar managed_key: optional deterministic handle a consuming app
-        stamps on the groups it auto-manages (find-or-create key);
-        ``None`` for user-created groups. unique-per-scope when present
-        (per ``customer_id``); never shown to humans. the platform DDL
-        owns the partial-unique index — agent-acl carries the column
-        only
     """
 
     id: UUID
     name: str
     customer_id: UUID | None
-    managed_key: str | None = None
 
 
 @dataclass(frozen=True)

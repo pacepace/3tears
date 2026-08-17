@@ -22,7 +22,14 @@ infrastructure to get right on its own.
 
 Cache layers degrade gracefully on failure, matching `core`'s tiering
 philosophy: losing L1 or L2 is a performance event, not a correctness
-event. One `AsyncQueryExecutor` protocol serves both trusted services
+event. L3 is a correctness event and reaches the caller -- except that
+`aput_writes` runs in LangGraph's executor teardown, where raising ends a
+turn that has already answered, so a lost *crash-recovery* write degrades
+with a warning. That carve-out is scoped by channel and not by tier: a
+write on a control channel (`__interrupt__`, `__resume__`, `__error__`,
+`__scheduled__`) still raises, because degrading one would turn a
+human-approval pause into an ordinary end of turn.
+One `AsyncQueryExecutor` protocol serves both trusted services
 (direct asyncpg) and sandboxed agents (NATS-proxied L3) -- the same saver
 works in both topologies without a fork. Offload and catalog features are
 strictly opt-in: no offloader configured means byte-for-byte no-op, and
