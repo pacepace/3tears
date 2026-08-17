@@ -23,6 +23,14 @@ packages (bumped in lock-step).
   `pyyaml` dependency, a deliberate narrowing of the "each format lives in its own
   package" rule -- this is a parser guard, not a format handler.
 
+- `langgraph`: the cache invalidation after a control-channel write no longer
+  degrades. It ran through `l1_delete` / `l2_delete`, which swallow their own
+  failures by design -- correct for opportunistic cache warming, wrong here: a
+  quietly-failed invalidation leaves the cache serving the pre-interrupt bundle,
+  so `detect_interrupt` finds nothing and the approval gate is skipped. That is
+  the same end state as never writing the row, which is the failure the
+  control-channel re-raise exists to prevent. It now fails the way the write does.
+
 - `langgraph`: `ThreeTierCheckpointSaver.l2_delete` takes the `checkpoint_ns` whose
   entry it should drop. **BREAKING** for a direct caller.
 

@@ -887,18 +887,48 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 # invalidation a wired L1/L2 would hide the interrupt row we
                 # just persisted, and the approval gate would vanish anyway.
                 #
-                # Scope, stated exactly rather than as "the thread":
-                # :meth:`l1_delete` drops the thread across namespaces, while
-                # :meth:`l2_delete` drops only the root-namespace key, so a
-                # bundle cached under a non-empty ``checkpoint_ns`` survives in
-                # L2 (the same limitation :meth:`adelete_thread` already has).
-                # Both helpers also swallow their own failures, so a failed
-                # invalidation is silent. Neither gap is reachable today --
-                # no construction site wires a cache -- and closing them means
-                # widening the two cache protocols, which belongs with whoever
-                # first wires one.
-                await self.l1_delete(thread_id)
-                await self.l2_delete(thread_id, checkpoint_ns if isinstance(checkpoint_ns, str) else "")
+                # Deliberately NOT via l1_delete / l2_delete: those swallow their
+                # own failures by design, and a silently-failed invalidation here
+                # leaves the cache serving the pre-interrupt bundle -- the same end
+                # state as never writing the row, which is the failure the re-raise
+                # above exists to prevent. This invalidation is load-bearing, so it
+                # fails the way the write does.
+                await self._invalidate_for_control_write(
+                    thread_id,
+                    checkpoint_ns if isinstance(checkpoint_ns, str) else "",
+                )
+
+    async def _invalidate_for_control_write(self, thread_id: str, checkpoint_ns: str) -> None:
+        """drop the cached bundle for a control-channel write, RAISING on failure.
+
+        The read caches hold a bundle :meth:`aput` wrote with
+        ``pending_writes=[]``, and :meth:`aget_tuple` serves it verbatim when no
+        ``checkpoint_id`` is pinned -- which is exactly how interrupt detection
+        reads state. So a control-channel row that reached L3 is still invisible
+        until the cache is dropped, and an invalidation that fails quietly leaves
+        the run in the same place as one that never happened: no interrupt in the
+        snapshot, an ordinary end of turn, a human-approval gate skipped.
+
+        That is why this bypasses :meth:`l1_delete` / :meth:`l2_delete`. Those
+        degrade on purpose, which is right for opportunistic cache warming and
+        wrong here -- losing this invalidation changes what the run does, so it
+        gets the same treatment as losing the write itself.
+
+        L1 is dropped across every namespace by its protocol; L2 is exact-key, so
+        only the namespace just written is cleared.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: str
+        :param checkpoint_ns: the namespace whose cached bundle is now stale
+        :ptype checkpoint_ns: str
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the cache raises; the caller does not degrade
+        """
+        if self._l1 is not None:
+            await self._l1.delete(thread_id)
+        if self._l2 is not None:
+            await self._l2.delete(self._l2_bucket, self.l2_key(thread_id, checkpoint_ns))
 
     def _build_write_rows(
         self,
