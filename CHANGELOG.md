@@ -4,7 +4,22 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.24.6 -- 2026-08-17
+
+### Added
+
+- `models`: `DEFAULT_MAX_TOKENS` in `threetears.models.defaults`, the per-response
+  output-token cap, alongside the existing model pins.
+
+  A cap is a ceiling, not a target: room left unused costs nothing, while a cap
+  set too low truncates the answer itself. It existed as five separate literals
+  across the hub and the SDK, and consumers were holding two of them equal by a
+  comment asking a human to. It is now one value that every "output cap" default
+  reads, matching what this module already does for model ids.
+
+  The transport and chat-model classes deliberately keep NO default: every
+  producer of a completion request sets the field explicitly, so a second number
+  there could only ever drift out of step with this one.
 
 ### Fixed
 
