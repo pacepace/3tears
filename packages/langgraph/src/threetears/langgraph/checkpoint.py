@@ -14,17 +14,17 @@ read caches in front of the L3 database tier:
 - L2 (distributed cache): optional hot cache (e.g. NATS KV, Redis).
 - L1 (local cache): optional in-memory/local cache (e.g. SQLite).
 
-all L1 and L2 operations degrade gracefully on failure — cache
+all L1 and L2 operations degrade gracefully on failure -- cache
 misses fall through to the next tier, and cache write failures are
 logged and swallowed so the graph never crashes due to cache
 infrastructure issues.
 
 L3 does NOT degrade in general: it is the source of truth, and a
 failed read or checkpoint write must reach the caller. The single
-exception is the crash-recovery half of :meth:`
-ThreeTierCheckpointSaver.aput_writes`, which LangGraph calls from
-executor teardown where a raise kills a turn that has already
-answered. That carve-out is scoped by channel, not by tier — the
+exception is the crash-recovery half of
+:meth:`ThreeTierCheckpointSaver.aput_writes`, which LangGraph calls
+from executor teardown where a raise kills a turn that has already
+answered. That carve-out is scoped by channel, not by tier -- the
 control-channel writes arriving at the same method still raise,
 because losing one changes what the run does. See that method for
 the full rule.
@@ -785,12 +785,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         vanishes is not.
 
         The write set is persisted in ONE statement (see :meth:`_write_pending`),
-        so a failure leaves NO rows behind. That matters for the degrade path:
-        pregel applies a task's pending writes to channels and treats a task with
-        ANY writes as already run, so a half-written set would resume by skipping
-        the node with partial channel updates -- divergence, which is far worse
-        than losing resumability. All-or-nothing is what makes "this turn is not
-        resumable" the true and complete cost.
+        so a failure leaves NO rows behind. What that costs is a REPLAY, not a
+        lost turn: pregel treats a task with any writes as already run, so a task
+        with none looks not-run and its node RE-EXECUTES when the run resumes,
+        repeating whatever side effects it already performed. The reason to
+        prefer that over a truncated set is that pregel also applies a task's
+        pending writes to channels, so half a set resumes by SKIPPING the node
+        with partially updated channels -- silent divergence, which is worse than
+        doing the work twice.
 
         :param config: runnable config with ``thread_id`` and
             ``checkpoint_id``
@@ -808,73 +810,109 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         control_channels = sorted({channel for channel, _ in writes if channel in WRITES_IDX_MAP})
 
-        # .get() rather than subscripting: a malformed config must not raise past
-        # the guard below, or "degrades" would be false for the very shape most
-        # likely to be malformed. A missing id fails the write instead, and the
-        # warning carries what we did have.
-        configurable = config.get("configurable", {})
+        # ``or {}`` rather than a .get default: a config carrying an explicit
+        # ``configurable: None`` would still raise AttributeError on the next
+        # lookup, which is the shape a malformed config most often takes.
+        configurable = config.get("configurable") or {}
         thread_id = configurable.get("thread_id")
         checkpoint_ns = configurable.get("checkpoint_ns", "")
         checkpoint_id = configurable.get("checkpoint_id")
 
+        # Serialization happens OUTSIDE the guard below. An unserializable
+        # channel value is a programming error, not a transport fault: it fails
+        # identically on every retry, so degrading it would hide a permanent bug
+        # behind one warning per turn. Only the write itself is guarded.
+        rows = self._build_write_rows(
+            thread_id,
+            checkpoint_ns,
+            checkpoint_id,
+            writes,
+            task_id,
+            task_path=task_path,
+        )
+
         try:
-            await self._write_pending(thread_id, checkpoint_ns, checkpoint_id, writes, task_id, task_path)
+            await self._write_pending(rows)
         except Exception:  # prawduct:allow prawduct/broad-except -- teardown path: a crash-recovery row must degrade, never terminate the turn; control-channel writes re-raise below
             if control_channels:
-                # Losing these changes what the run DOES. Let the turn fail
-                # loudly rather than resolve to a wrong control flow.
+                # Losing these changes what the run DOES. Fail the turn loudly
+                # rather than let it resolve to a wrong control flow. Logged
+                # before re-raising because the channel names are the whole
+                # diagnosis and the traceback does not carry them.
+                log.warning(
+                    "Failed to store control-channel writes; re-raising rather than skipping the control flow",
+                    extra={
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": checkpoint_id,
+                        "task_id": task_id,
+                        "control_channels": control_channels,
+                    },
+                    exc_info=True,
+                )
                 raise
-            # WARNING, not debug: losing resumability is worth one line, and the
+            # WARNING, not debug: a silent replay is worth one line, and the
             # cluster incident that motivated this guard was invisible until
             # someone read a traceback.
             log.warning(
-                "Failed to store crash-recovery writes; this turn is not resumable",
+                "Failed to store crash-recovery writes; this task will re-execute if the run resumes",
                 extra={
                     "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
                     "checkpoint_id": checkpoint_id,
                     "task_id": task_id,
                     "write_count": len(writes),
                 },
                 exc_info=True,
             )
+        else:
+            # isinstance rather than a cast: thread_id comes from the config
+            # unvalidated, and a write that succeeded without one has nothing
+            # cacheable to invalidate.
+            if control_channels and isinstance(thread_id, str):
+                # The cached bundle is written by :meth:`aput` with
+                # ``pending_writes=[]``, and :meth:`aget_tuple` serves it
+                # verbatim when no ``checkpoint_id`` is pinned -- which is
+                # exactly how ``detect_interrupt`` reads state. Without this
+                # invalidation a wired L1/L2 would hide the interrupt row we
+                # just persisted, and the approval gate would vanish anyway.
+                await self.l1_delete(thread_id)
+                await self.l2_delete(thread_id)
 
-    async def _write_pending(
+    def _build_write_rows(
         self,
         thread_id: Any,
         checkpoint_ns: Any,
         checkpoint_id: Any,
         writes: Sequence[tuple[str, Any]],
         task_id: str,
+        *,
         task_path: str,
-    ) -> None:
-        """persist a write set as ONE statement, raising on failure.
+    ) -> list[tuple[Any, ...]]:
+        """serialize a write set into per-row parameter tuples, deduplicated.
 
-        The whole set goes in a single multi-row ``INSERT`` so it is
-        all-or-nothing: a failure leaves no rows at all, never a truncated set.
-        A per-write loop cannot promise that -- the
-        :class:`~threetears.langgraph.protocols.AsyncQueryExecutor` protocol has
-        no transaction, and cannot grow one cheaply because the NATS L3 proxy
-        sends each call as its own request -- and a truncated set is not merely
-        less recoverable but actively wrong: pregel applies a task's pending
-        writes to channels and skips any task that has writes, so resume would
-        continue from partially-updated channels.
+        Deduplication mirrors the reference saver's ``put_writes`` exactly, and
+        the two halves differ: an ordinary channel (``idx >= 0``) is FIRST-wins,
+        a control channel (negative index, from
+        :data:`~langgraph.checkpoint.base.WRITES_IDX_MAP`) is LAST-wins. Getting
+        that backwards drops a second ``Command(resume=...)`` against the same
+        checkpoint and task, so the graph resumes on the STALE earlier approve or
+        deny -- a wrong human decision applied silently, which is the failure the
+        control-channel guard exists to prevent.
 
-        Verified against the engine rather than assumed: a mid-statement failure
-        commits zero rows, and a key repeated within one statement is absorbed by
-        ``ON CONFLICT DO NOTHING`` (first value wins, no error) -- which matters
-        because two writes on the same control channel both map to that channel's
-        single :data:`~langgraph.checkpoint.base.WRITES_IDX_MAP` index.
+        Deduplicating here rather than in SQL is forced: the statement upserts
+        control rows with ``DO UPDATE``, and Postgres refuses a command whose own
+        ``VALUES`` list hits one conflict key twice ("cannot affect row a second
+        time"). Two writes on one control channel collapse to that channel's
+        single index, so the collision is reachable, not theoretical.
+
+        Splitting this out of the write also puts serialization OUTSIDE the
+        caller's degrade guard, so an unserializable value surfaces as the
+        programming error it is instead of degrading identically forever.
 
         The ids are typed :class:`~typing.Any` because they arrive out of
-        ``config["configurable"]`` unvalidated; they are passed as bound
-        parameters, and a missing one fails the statement rather than corrupting
-        a row.
-
-        One statement means one parameter list, so the set is bounded by the
-        wire protocol's parameter ceiling (65535, i.e. 7281 writes at nine
-        columns each). Real write sets are a handful of channels; a set large
-        enough to hit that ceiling fails the statement and takes the caller's
-        degrade path.
+        ``config["configurable"]`` unvalidated; they ride as bound parameters, so
+        a missing one fails the statement rather than corrupting a row.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: Any
@@ -886,31 +924,75 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype writes: Sequence[tuple[str, Any]]
         :param task_id: task identifier for crash recovery
         :ptype task_id: str
-        :param task_path: optional task path
+        :param task_path: task path
         :ptype task_path: str
-        :return: nothing
-        :rtype: None
-        :raises Exception: whatever the executor raises; the caller decides
-            whether to degrade
+        :return: one parameter tuple per surviving write, in insertion order
+        :rtype: list[tuple[Any, ...]]
         """
-        if not writes:
-            return
-
-        row_placeholders: list[str] = []
-        params: list[Any] = []
+        by_idx: dict[int, tuple[Any, ...]] = {}
         for idx, (channel, value) in enumerate(writes):
+            write_idx = WRITES_IDX_MAP.get(channel, idx)
+            if write_idx >= 0 and write_idx in by_idx:
+                # ordinary channel: the first write for an index wins
+                continue
             w_type, w_blob = self.serde.dumps_typed(value)
-            row = (
+            by_idx[write_idx] = (
                 thread_id,
                 checkpoint_ns,
                 checkpoint_id,
                 task_id,
                 task_path,
-                WRITES_IDX_MAP.get(channel, idx),
+                write_idx,
                 channel,
                 w_type,
                 w_blob,
             )
+        return list(by_idx.values())
+
+    async def _write_pending(self, rows: Sequence[tuple[Any, ...]]) -> None:
+        """persist prepared write rows as ONE statement, raising on failure.
+
+        The whole set goes in a single multi-row ``INSERT`` so it is
+        all-or-nothing: a failure leaves no rows at all, never a truncated set. A
+        statement-per-write cannot promise that, because the
+        :class:`~threetears.langgraph.protocols.AsyncQueryExecutor` protocol
+        declares no transaction. A batch API was the alternative and was
+        rejected: ``NatsProxyL3Backend`` does expose
+        ``execute_batch(..., transaction=True)``, but the protocol does not
+        declare it and the direct-pool adapter does not implement it, so taking
+        that route means widening the protocol and teaching the adapter
+        transactions to buy an atomicity that one statement already has.
+
+        The upsert is asymmetric on purpose, matching the reference saver: an
+        ordinary channel keeps the row already stored, a control channel
+        overwrites it. ``DO UPDATE ... WHERE checkpoint_writes.idx < 0`` says
+        exactly that in one clause -- for a non-negative index the predicate is
+        false and the statement leaves the existing row alone.
+
+        Verified against the engine rather than assumed: a mid-statement failure
+        commits zero rows, a control row is overwritten while an ordinary row is
+        not, and a conflict key repeated inside one statement is rejected outright
+        (hence the caller's deduplication).
+
+        One statement means one parameter list, so a set is ultimately bounded by
+        what the transport accepts -- the bind-parameter ceiling on a direct pool,
+        ``max_payload`` on the NATS proxy. Real write sets are a handful of
+        channels; a set large enough to hit either limit fails the statement and
+        takes the caller's degrade path.
+
+        :param rows: parameter tuples from :meth:`_build_write_rows`
+        :ptype rows: Sequence[tuple[Any, ...]]
+        :return: nothing
+        :rtype: None
+        :raises Exception: whatever the executor raises; the caller decides
+            whether to degrade
+        """
+        if not rows:
+            return
+
+        row_placeholders: list[str] = []
+        params: list[Any] = []
+        for row in rows:
             # placeholder count derives from the row itself, so adding a column
             # cannot desynchronise the SQL from the parameter list
             row_placeholders.append("(" + ", ".join(f"${len(params) + n}" for n in range(1, len(row) + 1)) + ")")
@@ -922,7 +1004,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "task_path, idx, channel, type, blob) "
             f"VALUES {', '.join(row_placeholders)} "
             "ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) "
-            "DO NOTHING",
+            "DO UPDATE SET "
+            "task_path = EXCLUDED.task_path, "
+            "channel = EXCLUDED.channel, "
+            "type = EXCLUDED.type, "
+            "blob = EXCLUDED.blob "
+            "WHERE checkpoint_writes.idx < 0",
             *params,
         )
 

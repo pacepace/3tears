@@ -35,13 +35,29 @@ packages (bumped in lock-step).
   statement per write, making it all-or-nothing. This is a correctness fix in its
   own right: pregel applies a task's pending writes to channels and treats a task
   with ANY writes as already run, so a set truncated by a mid-loop failure would
-  resume by skipping that node with partially updated channels -- divergence,
-  not merely lost resumability.
+  resume by SKIPPING that node with partially updated channels -- silent
+  divergence. With no rows at all the task simply looks not-run and its node
+  re-executes instead.
+
+  The upsert is now asymmetric, matching the reference saver's `put_writes`: an
+  ordinary channel is first-wins, a control channel is LAST-wins. The previous
+  `ON CONFLICT DO NOTHING` applied first-wins to both, which dropped a second
+  `Command(resume=...)` against the same checkpoint and task, so a graph resumed
+  on the stale earlier approve or deny. Duplicate control-channel writes are
+  deduplicated in Python before the statement, because Postgres rejects a
+  command whose own `VALUES` list hits one conflict key twice.
+
+  A control-channel write now also invalidates L1/L2 for the thread. `aput`
+  caches a bundle with `pending_writes=[]` and `aget_tuple` serves it verbatim
+  when no `checkpoint_id` is pinned, which is exactly how interrupt detection
+  reads state -- so with a cache wired, the interrupt row would have been
+  invisible however successfully it was written.
 
   **Behaviour change for callers:** a failed crash-recovery write no longer
-  surfaces as an exception. It logs a WARNING carrying the thread, checkpoint,
-  task and write count, and that turn is not resumable after a crash -- the
-  bounded, local cost of not losing the turn.
+  surfaces as an exception. It logs a WARNING carrying the thread, checkpoint
+  namespace, checkpoint, task and write count. The cost is a REPLAY, not a lost
+  turn: that task looks not-run, so its node re-executes if the run resumes,
+  repeating any side effects it already performed.
 
 ## v0.24.5 -- 2026-08-15
 

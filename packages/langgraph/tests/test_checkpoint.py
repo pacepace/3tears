@@ -170,11 +170,12 @@ class TestCrashRecoveryWritesDegrade:
         with caplog.at_level(logging.WARNING, logger=self._LOGGER):
             await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
 
-        records = [r for r in caplog.records if "not resumable" in r.getMessage()]
+        records = [r for r in caplog.records if "re-execute" in r.getMessage()]
         assert len(records) == 1
         record = records[0]
         assert record.levelno == logging.WARNING
         assert record.thread_id == "t-1"
+        assert record.checkpoint_ns == ""
         assert record.checkpoint_id == "c-1"
         assert record.task_id == "task-1"
         assert record.write_count == 1
@@ -182,15 +183,21 @@ class TestCrashRecoveryWritesDegrade:
         assert record.exc_info is not None
 
     @pytest.mark.parametrize("channel", sorted(WRITES_IDX_MAP))
-    async def testaput_writes_reraises_for_a_control_channel(self, channel):
+    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog):
         """losing a control write silently changes what the run DOES."""
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
 
         saver = ThreeTierCheckpointSaver(executor=executor)
 
-        with pytest.raises(RuntimeError, match="timeout"):
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER), pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes(self._CONFIG, [(channel, "value")], "task-1")
+
+        # the channel names ARE the diagnosis, and a traceback does not carry
+        # them -- so the re-raise branch logs before it re-raises
+        records = [r for r in caplog.records if "control-channel" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].control_channels == [channel]
 
     async def testaput_writes_reraises_when_a_control_write_shares_the_set(self):
         """a set cannot be half-degraded, so one control write makes it must-persist."""
@@ -206,15 +213,132 @@ class TestCrashRecoveryWritesDegrade:
                 "task-1",
             )
 
-    async def testaput_writes_does_not_raise_on_a_malformed_config(self):
-        """the ids are read with .get, so the guard covers the likeliest bad shape.
+    @pytest.mark.parametrize("config", [{}, {"configurable": None}, {"configurable": {}}])
+    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config):
+        """the ids are read defensively, so the guard covers the likeliest bad shapes.
 
         Subscripting them ahead of the ``try`` made "degrades, never raises"
-        false for exactly the input most likely to be malformed.
+        false for exactly the input most likely to be malformed. An explicit
+        ``configurable: None`` is included because a ``.get`` default does not
+        cover it -- the next lookup still raises AttributeError.
         """
         saver = ThreeTierCheckpointSaver(executor=_make_executor())
 
-        await saver.aput_writes({}, [("channel-a", "value-a")], "task-1")
+        await saver.aput_writes(config, [("channel-a", "value-a")], "task-1")
+
+    async def testaput_writes_degrades_when_a_malformed_config_reaches_the_write(self, caplog):
+        """a malformed config must take the DEGRADE path, not just avoid raising.
+
+        The no-raise test above runs against a succeeding executor, so it never
+        enters the guard it is named for; this one does.
+        """
+        executor = _make_executor()
+        executor.execute.side_effect = RuntimeError("null value in column violates not-null constraint")
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+            await saver.aput_writes({"configurable": {}}, [("channel-a", "value-a")], "task-1")
+
+        assert any("re-execute" in r.getMessage() for r in caplog.records)
+
+    async def testcontrol_channel_writes_are_last_wins(self):
+        """a second Command(resume=...) must REPLACE the first, not be dropped.
+
+        The reference saver skips a duplicate only when ``idx >= 0``; a control
+        channel has a negative index and overwrites. Getting this backwards
+        resumes a paused graph on the stale earlier approve/deny -- a wrong human
+        decision applied silently.
+        """
+        executor = _make_executor()
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        await saver.aput_writes(
+            self._CONFIG,
+            [("__resume__", "first-answer"), ("__resume__", "second-answer")],
+            "task-1",
+        )
+
+        query, *params = executor.execute.await_args.args
+        # deduplicated to one row, keeping the LAST value
+        assert params.count("__resume__") == 1
+        assert "second-answer" in str(params)
+        assert "first-answer" not in str(params)
+        # and the statement lets a control row overwrite one already stored,
+        # while leaving an ordinary row alone
+        assert "DO UPDATE" in query
+        assert "WHERE checkpoint_writes.idx < 0" in query
+
+    async def testordinary_channel_writes_are_first_wins(self):
+        """an ordinary channel keeps the row already stored, per the reference saver."""
+        executor = _make_executor()
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
+
+        query, *_ = executor.execute.await_args.args
+        # the predicate is what makes the upsert asymmetric: false for idx >= 0
+        assert "WHERE checkpoint_writes.idx < 0" in query
+
+    async def testcontrol_channels_map_to_their_reserved_index(self):
+        """the reserved negative index is what makes a control row upsertable."""
+        executor = _make_executor()
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
+
+        _, *params = executor.execute.await_args.args
+        assert WRITES_IDX_MAP["__interrupt__"] in params
+
+    async def testcontrol_channel_write_invalidates_the_caches(self):
+        """a cached bundle carries pending_writes=[] and would hide the interrupt.
+
+        ``aput`` warms L1/L2 with an empty pending-writes list and
+        ``aget_tuple`` serves that verbatim when no checkpoint_id is pinned --
+        which is how interrupt detection reads state. Without invalidation the
+        approval gate vanishes however successfully the row was written.
+        """
+        l1, l2 = AsyncMock(), AsyncMock()
+
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+
+        await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
+
+        l1.delete.assert_awaited_once_with("t-1")
+        assert l2.delete.await_count == 1
+
+    async def testordinary_write_does_not_invalidate_the_caches(self):
+        """invalidation is scoped to control channels, not every write."""
+        l1, l2 = AsyncMock(), AsyncMock()
+
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+
+        await saver.aput_writes(self._CONFIG, [("channel-a", "value-a")], "task-1")
+
+        assert l1.delete.await_count == 0
+        assert l2.delete.await_count == 0
+
+    async def testan_unserializable_value_surfaces_rather_than_degrading(self):
+        """a programming error must not hide behind the transport guard.
+
+        Serialization is deterministic: degrading it would log one warning per
+        turn forever instead of surfacing a permanent bug.
+        """
+        executor = _make_executor()
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        class _Unserializable:
+            def __reduce__(self):
+                raise TypeError("cannot serialize this")
+
+        with pytest.raises(TypeError, match="not msgpack serializable"):
+            await saver.aput_writes(self._CONFIG, [("channel-a", _Unserializable())], "task-1")
+
+        assert executor.execute.await_count == 0
 
     async def testaput_writes_persists_the_set_in_one_statement(self):
         """all-or-nothing, because a truncated set is worse than a lost one.
