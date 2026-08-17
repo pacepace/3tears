@@ -348,6 +348,32 @@ class TestCrashRecoveryWritesDegrade:
         # l2_key("t-1", "inner") -- the key aput actually wrote
         assert l2.delete.await_args.args[1] == "t-1.inner"
 
+    async def testa_failed_invalidation_after_a_control_write_raises(self):
+        """a silently-failed invalidation is the original bug wearing a hat.
+
+        The row reaches L3, the cache keeps serving the pre-interrupt bundle,
+        detect_interrupt finds nothing, and the approval gate is skipped -- the
+        same end state as never writing the row. So this invalidation does NOT go
+        through l1_delete/l2_delete, which degrade by design.
+        """
+        l1, l2 = AsyncMock(), AsyncMock()
+        l2.delete.side_effect = RuntimeError("NATS request failed: nats: timeout")
+
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+
+        with pytest.raises(RuntimeError, match="timeout"):
+            await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
+
+    async def testa_failed_l1_invalidation_after_a_control_write_also_raises(self):
+        """both tiers can hide the interrupt, so neither may fail quietly."""
+        l1, l2 = AsyncMock(), AsyncMock()
+        l1.delete.side_effect = RuntimeError("L1 down")
+
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+
+        with pytest.raises(RuntimeError, match="L1 down"):
+            await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
+
     async def testordinary_write_does_not_invalidate_the_caches(self):
         """invalidation is scoped to control channels, not every write."""
         l1, l2 = AsyncMock(), AsyncMock()
