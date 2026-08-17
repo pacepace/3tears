@@ -28,6 +28,11 @@ dev-dependencies = [
     # structured-output schema through it. Stubs here rather than a blanket
     # ignore_missing_imports, so the validator calls stay checked.
     "types-jsonschema>=4.26",
+    # Same reasoning as jsonschema above: PyYAML ships no inline types, and
+    # core.authored_yaml subclasses SafeLoader / ConstructorError. Stubs here
+    # rather than a `# type: ignore[misc]` on each base, so the loader override
+    # (the whole guard) stays checked instead of resolving to Any.
+    "types-PyYAML>=6.0",
     "ruff>=0.15.18",
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",
