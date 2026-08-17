@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## v0.24.6 -- 2026-08-17
 
+### Changed
+
+- `agent-acl`: **BREAKING.** `GroupCollection.get_by_managed_key` is replaced by
+  `get_by_name(name, customer_id)`, and the `managed_key` column is removed from
+  the group schema, entity and `Group` type.
+
+  `managed_key` was introduced on a premise that was never true. The collection
+  docstring said "`name` is a non-unique human label and there is deliberately no
+  `get_by_name` (a label is not a key)" -- but the platform DDL has made `name`
+  unique per customer, and unique across platform-scoped rows, since its first
+  migration. That is exactly the uniqueness `managed_key` re-declared, so the
+  column duplicated a guarantee `name` already carried.
+
+  The duplicate cost more than it bought. Its name read as something an operator
+  had to mint, which sent a consuming team to file a bug asking for an endpoint to
+  set one. Worse, a customer-scoped key resolved relative to the ASKER, so it could
+  express "my own company's group" but never "that specific customer's group" --
+  the exact question a per-customer product gate needs to ask.
+
+  Callers move to `get_by_name`, or to the group id. Per the standing no-shim rule
+  the column is dropped rather than deprecated; the platform migration that drops
+  it lives in the hub, which owns the DDL.
+
 ### Added
 
 - `models`: `DEFAULT_MAX_TOKENS` in `threetears.models.defaults`, the per-response
