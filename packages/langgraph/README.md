@@ -4,6 +4,8 @@ Three-tier LangGraph checkpoint saver: L1 (SQLite) -> L2 (NATS KV) -> L3 (Postgr
 
 L1 and L2 are optional cache layers that degrade gracefully on failure. L3 (PostgreSQL) is the source of truth, reached through the `AsyncQueryExecutor` protocol so the same saver serves trusted services (direct asyncpg pool) and sandboxed agents (NATS L3 proxy).
 
+L3 failures reach the caller, with one channel-scoped carve-out: `aput_writes` is called from LangGraph's executor teardown, where raising kills a turn that has already answered, so a failed *crash-recovery* write is logged and degraded. Writes on LangGraph's control channels (`__interrupt__`, `__resume__`, `__error__`, `__scheduled__`) still raise — losing one changes what the run does, and a lost `__interrupt__` would silently skip a human-approval gate.
+
 ## Installation
 
 ```bash

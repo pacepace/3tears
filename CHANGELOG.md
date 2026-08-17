@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Fixed
+
+- `langgraph`: `ThreeTierCheckpointSaver.aput_writes` no longer lets a lost
+  crash-recovery write kill a live turn, and now writes each set atomically.
+
+  LangGraph calls the method from executor teardown, and it ran an unguarded
+  `execute()` per write, so one L3 failure there propagated out of `run_graph`
+  and terminated the whole turn as an agent failure. For a row whose only job is
+  to let a CRASHED run resume, that inverts the priority: it discards an answer
+  that already exists to protect the ability to recover an answer nobody needs
+  any more. The evidence was unusually clean -- two identical L3 timeouts on the
+  same NATS subject inside one log window, the first hitting memory retrieval,
+  which guards its call and soft-failed, the second hitting `aput_writes`, which
+  guarded nothing. Same infrastructure event, opposite outcomes, decided only by
+  the try/except.
+
+  The guard is scoped BY CHANNEL, not by method. `WRITES_IDX_MAP`'s members
+  (`__error__`, `__scheduled__`, `__interrupt__`, `__resume__`) arrive at this
+  same method and carry the run's control flow rather than its resumability:
+  pregel builds a state snapshot's interrupts out of these rows, and
+  `detect_interrupt` reads the pause from nothing else, so degrading a failed
+  `__interrupt__` write would end the turn as an ordinary stream end -- a
+  human-approval gate silently skipped and its payload lost. Those writes still
+  raise; only ordinary channel writes degrade.
+
+  Each write set is now persisted as ONE multi-row `INSERT` instead of a
+  statement per write, making it all-or-nothing. This is a correctness fix in its
+  own right: pregel applies a task's pending writes to channels and treats a task
+  with ANY writes as already run, so a set truncated by a mid-loop failure would
+  resume by skipping that node with partially updated channels -- divergence,
+  not merely lost resumability.
+
+  **Behaviour change for callers:** a failed crash-recovery write no longer
+  surfaces as an exception. It logs a WARNING carrying the thread, checkpoint,
+  task and write count, and that turn is not resumable after a crash -- the
+  bounded, local cost of not losing the turn.
+
 ## v0.24.5 -- 2026-08-15
 
 ### Added
