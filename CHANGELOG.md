@@ -47,11 +47,15 @@ packages (bumped in lock-step).
   deduplicated in Python before the statement, because Postgres rejects a
   command whose own `VALUES` list hits one conflict key twice.
 
-  A control-channel write now also invalidates L1/L2 for the thread. `aput`
-  caches a bundle with `pending_writes=[]` and `aget_tuple` serves it verbatim
-  when no `checkpoint_id` is pinned, which is exactly how interrupt detection
-  reads state -- so with a cache wired, the interrupt row would have been
-  invisible however successfully it was written.
+  A control-channel write now also invalidates the cached checkpoint bundle:
+  L1 for the thread across namespaces, L2 for the thread's root-namespace key.
+  `aput` caches a bundle with `pending_writes=[]` and `aget_tuple` serves it
+  verbatim when no `checkpoint_id` is pinned, which is exactly how interrupt
+  detection reads state -- so with a cache wired, the interrupt row would have
+  been invisible however successfully it was written. A bundle cached under a
+  non-empty `checkpoint_ns` still survives in L2, matching the existing
+  limitation in `adelete_thread`; no construction site wires a cache today, and
+  closing it means widening the cache protocols.
 
   **Behaviour change for callers:** a failed crash-recovery write no longer
   surfaces as an exception. It logs a WARNING carrying the thread, checkpoint

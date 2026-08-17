@@ -242,6 +242,20 @@ class TestCrashRecoveryWritesDegrade:
 
         assert any("re-execute" in r.getMessage() for r in caplog.records)
 
+    async def testa_malformed_config_still_raises_for_a_control_channel(self):
+        """the degrade carve-out is scoped by CHANNEL, never by config shape.
+
+        Every other re-raise test uses a well-formed config, which would let a
+        guard that keyed off the config instead of the channel pass.
+        """
+        executor = _make_executor()
+        executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
+
+        saver = ThreeTierCheckpointSaver(executor=executor)
+
+        with pytest.raises(RuntimeError, match="timeout"):
+            await saver.aput_writes({"configurable": {}}, [("__interrupt__", "approve?")], "task-1")
+
     async def testcontrol_channel_writes_are_last_wins(self):
         """a second Command(resume=...) must REPLACE the first, not be dropped.
 

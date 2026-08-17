@@ -823,11 +823,11 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # identically on every retry, so degrading it would hide a permanent bug
         # behind one warning per turn. Only the write itself is guarded.
         rows = self._build_write_rows(
-            thread_id,
-            checkpoint_ns,
-            checkpoint_id,
             writes,
             task_id,
+            thread_id=thread_id,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
             task_path=task_path,
         )
 
@@ -876,17 +876,28 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 # exactly how ``detect_interrupt`` reads state. Without this
                 # invalidation a wired L1/L2 would hide the interrupt row we
                 # just persisted, and the approval gate would vanish anyway.
+                #
+                # Scope, stated exactly rather than as "the thread":
+                # :meth:`l1_delete` drops the thread across namespaces, while
+                # :meth:`l2_delete` drops only the root-namespace key, so a
+                # bundle cached under a non-empty ``checkpoint_ns`` survives in
+                # L2 (the same limitation :meth:`adelete_thread` already has).
+                # Both helpers also swallow their own failures, so a failed
+                # invalidation is silent. Neither gap is reachable today --
+                # no construction site wires a cache -- and closing them means
+                # widening the two cache protocols, which belongs with whoever
+                # first wires one.
                 await self.l1_delete(thread_id)
                 await self.l2_delete(thread_id)
 
     def _build_write_rows(
         self,
-        thread_id: Any,
-        checkpoint_ns: Any,
-        checkpoint_id: Any,
         writes: Sequence[tuple[str, Any]],
         task_id: str,
         *,
+        thread_id: Any,
+        checkpoint_ns: Any,
+        checkpoint_id: Any,
         task_path: str,
     ) -> list[tuple[Any, ...]]:
         """serialize a write set into per-row parameter tuples, deduplicated.
@@ -912,7 +923,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         The ids are typed :class:`~typing.Any` because they arrive out of
         ``config["configurable"]`` unvalidated; they ride as bound parameters, so
-        a missing one fails the statement rather than corrupting a row.
+        a missing one fails the statement rather than corrupting a row. They are
+        keyword-only for the same reason they are all ``Any``: three
+        interchangeable ids in a row is a transposition that no type checker
+        would catch.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: Any
