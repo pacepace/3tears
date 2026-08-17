@@ -323,6 +323,30 @@ class TestCrashRecoveryWritesDegrade:
 
         l1.delete.assert_awaited_once_with("t-1")
         assert l2.delete.await_count == 1
+        # the namespace we WROTE, not a hardcoded root: l2 is exact-key, so
+        # invalidating "" would leave a namespaced bundle stale
+        assert l2.delete.await_args.args[1] == "t-1"
+
+    async def testinvalidation_clears_the_namespaced_key_not_the_root(self):
+        """L2 is exact-key, so invalidating "" leaves a namespaced bundle stale.
+
+        ``l2_delete`` used to hardcode the root namespace, which made this exact
+        case a silent miss: the interrupt row lands, the cache still answers with
+        the pre-interrupt bundle, and the approval gate vanishes anyway -- the
+        failure the invalidation exists to prevent.
+        """
+        l1, l2 = AsyncMock(), AsyncMock()
+
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, l2_cache=l2)
+
+        await saver.aput_writes(
+            {"configurable": {"thread_id": "t-1", "checkpoint_ns": "inner", "checkpoint_id": "c-1"}},
+            [("__interrupt__", "approve?")],
+            "task-1",
+        )
+
+        # l2_key("t-1", "inner") -- the key aput actually wrote
+        assert l2.delete.await_args.args[1] == "t-1.inner"
 
     async def testordinary_write_does_not_invalidate_the_caches(self):
         """invalidation is scoped to control channels, not every write."""
@@ -424,7 +448,7 @@ class TestNoCacheProvided:
 
         assert await saver.l2_get("t", "") is None
         await saver.l2_put("t", "", b"data")  # no-op
-        await saver.l2_delete("t")  # no-op
+        await saver.l2_delete("t", "")  # no-op
 
 
 class TestSyncMethodsRaise:

@@ -7,40 +7,40 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-08-03T19:23:11.146156Z"
+exclude-newer = "2026-08-03T21:27:18.131773Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears-agent-identity = { timestamp = "2026-08-17T19:23:11.146171Z", span = "PT0S" }
-3tears-agent-workspace = { timestamp = "2026-08-17T19:23:11.146172Z", span = "PT0S" }
-3tears-nats = { timestamp = "2026-08-17T19:23:11.146175Z", span = "PT0S" }
-3tears-models = { timestamp = "2026-08-17T19:23:11.146174Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "2026-08-17T19:23:11.146172Z", span = "PT0S" }
-3tears-object-store = { timestamp = "2026-08-17T19:23:11.146175Z", span = "PT0S" }
-3tears-conversations = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-registry = { timestamp = "2026-08-17T19:23:11.146175Z", span = "PT0S" }
-3tears-search = { timestamp = "2026-08-17T19:23:11.146176Z", span = "PT0S" }
-3tears-mcp = { timestamp = "2026-08-17T19:23:11.146174Z", span = "PT0S" }
-3tears = { timestamp = "2026-08-17T19:23:11.146165Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "2026-08-17T19:23:11.146172Z", span = "PT0S" }
-3tears-agent-skills = { timestamp = "2026-08-17T19:23:11.146172Z", span = "PT0S" }
-3tears-channels = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-enforcement = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-epoch = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "2026-08-17T19:23:11.14617Z", span = "PT0S" }
-3tears-geo = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "2026-08-17T19:23:11.146171Z", span = "PT0S" }
-3tears-iam = { timestamp = "2026-08-17T19:23:11.146174Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "2026-08-17T19:23:11.146175Z", span = "PT0S" }
-3tears-observe = { timestamp = "2026-08-17T19:23:11.146175Z", span = "PT0S" }
-3tears-langgraph = { timestamp = "2026-08-17T19:23:11.146174Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "2026-08-17T19:23:11.146171Z", span = "PT0S" }
-3tears-backup = { timestamp = "2026-08-17T19:23:11.146172Z", span = "PT0S" }
-3tears-media-contracts = { timestamp = "2026-08-17T19:23:11.146174Z", span = "PT0S" }
-3tears-scrape = { timestamp = "2026-08-17T19:23:11.146176Z", span = "PT0S" }
-3tears-datasources = { timestamp = "2026-08-17T19:23:11.146173Z", span = "PT0S" }
-3tears-agent-audit = { timestamp = "2026-08-17T19:23:11.146171Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "2026-08-17T19:23:11.146171Z", span = "PT0S" }
+3tears-agent-identity = { timestamp = "2026-08-17T21:27:18.13179Z", span = "PT0S" }
+3tears-agent-workspace = { timestamp = "2026-08-17T21:27:18.131791Z", span = "PT0S" }
+3tears-nats = { timestamp = "2026-08-17T21:27:18.131794Z", span = "PT0S" }
+3tears-models = { timestamp = "2026-08-17T21:27:18.131794Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "2026-08-17T21:27:18.131791Z", span = "PT0S" }
+3tears-object-store = { timestamp = "2026-08-17T21:27:18.131794Z", span = "PT0S" }
+3tears-conversations = { timestamp = "2026-08-17T21:27:18.131792Z", span = "PT0S" }
+3tears-registry = { timestamp = "2026-08-17T21:27:18.131795Z", span = "PT0S" }
+3tears-search = { timestamp = "2026-08-17T21:27:18.131796Z", span = "PT0S" }
+3tears-mcp = { timestamp = "2026-08-17T21:27:18.131793Z", span = "PT0S" }
+3tears = { timestamp = "2026-08-17T21:27:18.131784Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "2026-08-17T21:27:18.131791Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "2026-08-17T21:27:18.131791Z", span = "PT0S" }
+3tears-channels = { timestamp = "2026-08-17T21:27:18.131792Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "2026-08-17T21:27:18.131792Z", span = "PT0S" }
+3tears-epoch = { timestamp = "2026-08-17T21:27:18.131793Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "2026-08-17T21:27:18.131789Z", span = "PT0S" }
+3tears-geo = { timestamp = "2026-08-17T21:27:18.131793Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "2026-08-17T21:27:18.13179Z", span = "PT0S" }
+3tears-iam = { timestamp = "2026-08-17T21:27:18.131793Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "2026-08-17T21:27:18.131795Z", span = "PT0S" }
+3tears-observe = { timestamp = "2026-08-17T21:27:18.131794Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "2026-08-17T21:27:18.131793Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "2026-08-17T21:27:18.13179Z", span = "PT0S" }
+3tears-backup = { timestamp = "2026-08-17T21:27:18.131791Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "2026-08-17T21:27:18.131794Z", span = "PT0S" }
+3tears-scrape = { timestamp = "2026-08-17T21:27:18.131795Z", span = "PT0S" }
+3tears-datasources = { timestamp = "2026-08-17T21:27:18.131792Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "2026-08-17T21:27:18.13179Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "2026-08-17T21:27:18.13179Z", span = "PT0S" }
 
 [manifest]
 members = [
@@ -114,6 +114,7 @@ dev = [
     { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0" },
     { name = "trafilatura", specifier = ">=2.0.0" },
     { name = "types-jsonschema", specifier = ">=4.26" },
+    { name = "types-pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
@@ -129,6 +130,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "uuid-utils" },
 ]
@@ -168,6 +170,7 @@ requires-dist = [
     { name = "pydantic" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },
     { name = "uuid-utils" },
@@ -4474,6 +4477,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/dd/46/73b6a5d61a61015c4248030a8cb07e5bdddb4041430fae9e585a68692578/types_jsonschema-4.26.0.20260518.tar.gz", hash = "sha256:e1dd53dc97a64f5eccdd6fa9839666e09bb500a8ebba2db6fdaf1789faea81a6", size = 16638, upload-time = "2026-05-18T06:06:44.106Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/d5/134f8a147dcecda10db7f60cfc6af0578a25a5c53c87b3907a64385e0184/types_jsonschema-4.26.0.20260518-py3-none-any.whl", hash = "sha256:30b30a518c7fe335df85c919fcbcc631b69c03d4a4b5b632fa916bea03065307", size = 16072, upload-time = "2026-05-18T06:06:43.264Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20260724"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/6f/a28f44bcd56bebed42b028a2894c79853e2f5e6b5279e633cb3f287a05e7/types_pyyaml-6.0.12.20260724.tar.gz", hash = "sha256:3c1ce1bb73cd5ec02e90390c2b1f00e810d241d8825fd73ff359696839271b6b", size = 17893, upload-time = "2026-07-24T04:58:43.453Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/42/0337fefc615e20ee55d1c8f71b774a9b2b734a04669139c20753b27a2a3a/types_pyyaml-6.0.12.20260724-py3-none-any.whl", hash = "sha256:d57db930a4b2efbc57cf430ec8882765d246929432fa253092f383902329a453", size = 20312, upload-time = "2026-07-24T04:58:42.486Z" },
 ]
 
 [[package]]

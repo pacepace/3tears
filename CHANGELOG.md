@@ -6,6 +6,35 @@ packages (bumped in lock-step).
 
 ## v0.24.6 -- 2026-08-17
 
+### Fixed
+
+- `core`: `authored_yaml.safe_load_authored` refuses a duplicated mapping key, and
+  the two loaders reading human-authored files now use it -- dataset definitions
+  (`datasources`) and scrape target configs (`scrape`).
+
+  `yaml.safe_load` resolves a duplicated key by last-wins, silently. For a
+  hand-edited file that is the worst available behaviour: the botched edit parses,
+  every validation surface downstream reports success, and the value the author
+  wrote is gone with nothing left to notice it by. The same failure was found and
+  closed in the SDK's authored knowledge files; these two sites still had it.
+
+  One copy in `core` rather than three: the two packages share only `core`, and a
+  security-relevant parser guard duplicated across a monorepo rots. `core` gains a
+  `pyyaml` dependency, a deliberate narrowing of the "each format lives in its own
+  package" rule -- this is a parser guard, not a format handler.
+
+- `langgraph`: `ThreeTierCheckpointSaver.l2_delete` takes the `checkpoint_ns` whose
+  entry it should drop. **BREAKING** for a direct caller.
+
+  It hardcoded the root namespace, so invalidating a namespaced thread cleared the
+  wrong key and left the stale bundle in place. That silently defeated the
+  control-channel invalidation shipped alongside it: the interrupt row lands in L3,
+  the cache still answers with the pre-interrupt bundle, and the approval gate
+  vanishes anyway. L1 is unaffected -- its protocol drops a thread across all
+  namespaces. `adelete_thread` still clears only the root entry, which now says so
+  at the call site rather than inheriting it silently; closing that needs a prefix
+  sweep the L2 protocol does not have.
+
 ### Changed
 
 - `agent-acl`: **BREAKING.** `GroupCollection.get_by_managed_key` is replaced by

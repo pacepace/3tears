@@ -264,11 +264,21 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception:
             log.warning("L2 checkpoint write failed", exc_info=True)
 
-    async def l2_delete(self, thread_id: str) -> None:
-        """delete a thread's L2 entry, swallowing errors.
+    async def l2_delete(self, thread_id: str, checkpoint_ns: str) -> None:
+        """delete one thread+namespace L2 entry, swallowing errors.
+
+        Takes ``checkpoint_ns`` because L2 is keyed on it and the protocol offers
+        only exact-key deletes -- no prefix sweep, no listing. This used to
+        hardcode ``""`` and so cleared only the root-namespace key, which meant a
+        caller invalidating a namespaced thread silently left the stale bundle in
+        place. The parameter makes the caller name the key it wrote, and turns
+        "every namespace" from a thing the signature implied into a thing a caller
+        has to loop for.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
+        :param checkpoint_ns: checkpoint namespace whose entry to drop
+        :ptype checkpoint_ns: str
         :return: nothing
         :rtype: None
         """
@@ -277,7 +287,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         try:
             await self._l2.delete(
                 self._l2_bucket,
-                self.l2_key(thread_id, ""),
+                self.l2_key(thread_id, checkpoint_ns),
             )
         except Exception:
             log.warning("L2 checkpoint delete failed", exc_info=True)
@@ -888,7 +898,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 # widening the two cache protocols, which belongs with whoever
                 # first wires one.
                 await self.l1_delete(thread_id)
-                await self.l2_delete(thread_id)
+                await self.l2_delete(thread_id, checkpoint_ns if isinstance(checkpoint_ns, str) else "")
 
     def _build_write_rows(
         self,
@@ -1044,7 +1054,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             thread_id,
         )
 
-        await self.l2_delete(thread_id)
+        # L1 drops the thread across namespaces; L2 is exact-key, so this clears
+        # the root-namespace entry only. A bundle cached under a non-empty
+        # checkpoint_ns survives here -- pre-existing, and now visible at the call
+        # site rather than buried in l2_delete's body. Closing it means giving the
+        # L2 protocol a prefix sweep or a listing, which belongs with whoever first
+        # wires a cache (no construction site passes one today).
+        await self.l2_delete(thread_id, "")
         await self.l1_delete(thread_id)
 
     # ------------------------------------------------------------------

@@ -32,6 +32,7 @@ dependencies = [
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
     "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
     "httpx",  # traced outbound HTTP transport (core.http_client)
+    "pyyaml>=6.0",  # duplicate-key-refusing loader for human-authored files (core.authored_yaml)
 ]
 
 [project.optional-dependencies]

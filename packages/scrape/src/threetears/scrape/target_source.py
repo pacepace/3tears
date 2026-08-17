@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-import yaml
+from threetears.core.authored_yaml import safe_load_authored
 from threetears.observe import get_logger
 
 from .collections import ScrapeTarget, ScrapeTargetCollection
@@ -122,7 +122,10 @@ def read_yaml_targets(path: str | Path) -> dict[str, ScrapeTarget]:
     :raises FileNotFoundError: if *path* does not exist
     :raises yaml.YAMLError: if the file is not valid YAML
     """
-    raw: dict[str, Any] = yaml.safe_load(Path(path).read_text()) or {}
+    # safe_load_authored, not yaml.safe_load: this file is hand-maintained, and a
+    # duplicated target id under PyYAML's silent last-wins drops a target that the
+    # author added and every surface here reports success.
+    raw: dict[str, Any] = safe_load_authored(Path(path).read_text()) or {}
     targets: dict[str, ScrapeTarget] = {}
     for target_id, fields in raw.items():
         data = dict(fields)
