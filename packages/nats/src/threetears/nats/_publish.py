@@ -54,9 +54,10 @@ from typing import Any, Final
 
 from threetears.observe import get_logger
 
-from threetears.nats.errors import PublishError, PublishTimeoutError
+from nats.errors import MaxPayloadError as _NatsMaxPayloadError
+from threetears.nats.errors import PayloadTooLargeError, PublishError, PublishTimeoutError
 
-__all__ = ["publish_bounded", "raise_as_publish_error"]
+__all__ = ["as_payload_too_large", "publish_bounded", "raise_as_publish_error"]
 
 log = get_logger(__name__)
 
@@ -147,19 +148,86 @@ async def publish_bounded(
     )
 
 
-def raise_as_publish_error(subject: str, exc: Exception) -> PublishError:
+def as_payload_too_large(
+    *,
+    subject: str,
+    size_bytes: int,
+    max_payload: int | None,
+    exc: Exception,
+) -> PayloadTooLargeError | None:
+    """recognise nats-py's oversized-publish refusal, or return ``None``.
+
+    **Catch-and-retype, never a pre-check.** The limit has exactly one source of
+    truth -- the ``max_payload`` the connected server advertised -- and it is
+    already enforced client-side, before any bytes leave the process. Measuring
+    the payload again above ``nats-py`` would put a second copy of the number
+    where the two can disagree, and they would disagree at precisely the moment
+    that matters: a broker tuned away from the 1 MB default, or a reconnect onto
+    a differently-configured server. So this reads the refusal rather than
+    predicting it, and ``max_payload`` is carried only to *report* the limit.
+
+    Detected by type and by message text, mirroring
+    :func:`threetears.nats.client._is_outbound_overflow`, so a future
+    ``nats-py`` that wraps or re-routes the error still lands on the specific
+    type rather than silently falling back to a generic
+    :class:`~threetears.nats.errors.PublishError`.
+
+    :param subject: subject the publish targeted
+    :ptype subject: str
+    :param size_bytes: size of the payload that was refused
+    :ptype size_bytes: int
+    :param max_payload: the broker's advertised limit, when known
+    :ptype max_payload: int | None
+    :param exc: the exception the underlying publish raised
+    :ptype exc: Exception
+    :return: the typed error to raise, or ``None`` when this was some other failure
+    :rtype: PayloadTooLargeError | None
+    """
+    if not isinstance(exc, _NatsMaxPayloadError) and "maximum payload exceeded" not in str(exc).lower():
+        return None
+    return PayloadTooLargeError(subject=subject, size_bytes=size_bytes, max_payload=max_payload)
+
+
+def raise_as_publish_error(
+    subject: str,
+    exc: Exception,
+    *,
+    size_bytes: int | None = None,
+    max_payload: int | None = None,
+) -> PublishError:
     """wrap a broker-side publish failure, preserving a timeout as a timeout.
 
     One place, so a caller adding its own ``except`` cannot accidentally
     reclassify the unknown-outcome case as a known failure.
 
+    An oversized publish is refused before the ack wait, so this path sees it
+    too and hands back the same type the core publish path raises -- a caller
+    branching on :class:`~threetears.nats.errors.PayloadTooLargeError` should
+    not have to know which publish path produced it. Pass ``size_bytes`` to
+    make that classification available; without it the failure stays a generic
+    :class:`~threetears.nats.errors.PublishError`, because an error that cannot
+    say how big the payload was is worse than one that does not claim to know.
+
     :param subject: subject the publish targeted
     :ptype subject: str
     :param exc: the underlying exception
     :ptype exc: Exception
+    :param size_bytes: size of the payload that was published, when the caller holds it
+    :ptype size_bytes: int | None
+    :param max_payload: the broker's advertised limit, when known
+    :ptype max_payload: int | None
     :return: the error to raise
     :rtype: PublishError
     """
     if isinstance(exc, PublishTimeoutError):
         return exc
+    if size_bytes is not None:
+        too_large = as_payload_too_large(
+            subject=subject,
+            size_bytes=size_bytes,
+            max_payload=max_payload,
+            exc=exc,
+        )
+        if too_large is not None:
+            return too_large
     return PublishError(f"jetstream publish to {subject!r} failed: {exc}")
