@@ -1,25 +1,33 @@
 # Structured results: let the client say what it wants
 
-**Status:** proposal, for input — 2026-08-18. Nothing here is built.
-**Input wanted from:** metallm, scriob, the chat-kit workstream (§4.11), discodon
-(whose research flow is the case that produced §2.1 and half of §4).
-**Context:** the channel that carries a tool's structure to a client is
+**Status:** proposal, 2026-08-18. Nothing built.
+**Input wanted from:** metallm, scriob, the chat-kit workstream (§4.11), and
+discodon — whose research flow produced §2.1 and half of §4.
+**Background:** the channel that carries a tool's structure to a client is
 [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md),
-built in [#355](https://github.com/pacepace/3tears/pull/355) with consumer
+built in [#355](https://github.com/pacepace/3tears/pull/355), with consumer
 halves in [scriob#180](https://github.com/pacepace/scriob/pull/180) and
-[metallm#287](https://github.com/pacepace/metallm/pull/287). This proposal is
-about the one case that channel leaves unanswered: what happens when the
-structure is too big for the frame.
+[metallm#287](https://github.com/pacepace/metallm/pull/287).
 
----
+## Summary
+
+Structure reaches clients now. When it doesn't fit the frame we drop all of it
+and say so — because nobody told us what mattered, and choosing fields ourselves
+would invent a second result shape.
+
+So let the client say. It declares a **tier** once per connection: `citations`
+or `full`, with an optional `max_body_chars` on `full`. Two tiers is enough
+because content bodies are the only unbounded thing in a projection. And when
+something is still too large, we hand back a **handle** rather than dropping it
+— by that point we've already paid for the content, so throwing it away refunds
+nothing.
 
 ## 1. The problem
 
-Structure now reaches clients. A tool's typed result — candidates, provenance,
-scores, dispositions — rides its completion event, and a frontend can draw a
-citation card instead of regexing the model's prose.
-
-Until it can't. Real measurements, against real projections:
+A tool's typed result — candidates, provenance, scores, dispositions — rides its
+completion event, and a frontend can draw a citation card instead of regexing
+the model's prose. That works until the result gets big. Measured against real
+projections:
 
 | Result | JSON size |
 |---|---|
@@ -29,78 +37,69 @@ Until it can't. Real measurements, against real projections:
 | 1 result carrying 20 KB of extracted page text | 21,264 chars |
 | 1 result carrying 100 KB of extracted page text | 103,184 chars |
 
-**The distribution is bimodal, not continuous.** A `web_search` turn is a few
-hundred bytes per candidate and fits comfortably. Anything carrying extracted
-page text — `web_fetch`, `page_finder`, a Tavily call configured for raw
-content — is one or two orders of magnitude larger, and no plausible frame
-budget accommodates it.
+The sizes are bimodal. A `web_search` turn runs a few hundred bytes per
+candidate and fits fine; anything carrying extracted page text — `web_fetch`,
+`page_finder`, Tavily configured for raw content — is one or two orders of
+magnitude larger, and no sane frame budget covers it.
 
-Today, over the bound, the event carries an honest `omitted` record: the reason,
-the size, the bound it missed. Nothing is lost silently. But nothing is
-delivered either, and **the platform drops everything because nobody told it
-what mattered.** Dropping is the only safe move available: a platform that
-decides for itself which fields to keep has invented a second result shape, and
-a narrowed payload wearing the full projection's key is a payload that *parses
-while under-reporting* — the defect the family already refuses (D-S4).
+Today we send an `omitted` record over the bound: the reason, the size, the
+bound it missed. Nothing is lost silently, but nothing is delivered either. The
+platform drops everything because it's the only safe move available — deciding
+for ourselves which fields to keep invents a second result shape, and a narrowed
+payload wearing the full projection's key parses while under-reporting, which is
+the defect D-S4 already refuses.
 
-Two facts make this solvable rather than fundamental:
+Two things make this fixable rather than fundamental:
 
-- **Which mode you are in is knowable before the call.** It is a property of the
-  tool and its configuration, not a surprise: the SearXNG adapter sets
-  `content=None` unconditionally; Tavily fills content only when the plan asked
-  (`include_raw_content`); `web_fetch` and Extract carry it by definition.
+- **Which mode you're in is knowable before the call.** It's a property of the
+  tool and its config: the SearXNG adapter sets `content=None` unconditionally,
+  Tavily fills content only when the plan asked (`include_raw_content`), and
+  `web_fetch` and Extract carry it by definition.
 - **What the client wants is knowable even earlier.** A chat surface wants
   citations on every turn of every conversation. It does not want 100 KB of
-  extracted document text in a websocket frame, on any turn, ever.
+  extracted document text in a websocket frame, ever.
 
-## 2. What we propose
+## 2. The proposal
 
-**The client declares what it wants, once, and the platform honours it.** Not a
-byte budget — an intent.
-
-Two tiers to start:
+The client declares what it wants, once, and we honor it. Two tiers:
 
 | Tier | Carries | Typical size |
 |---|---|---|
-| `citations` | the projection **minus content bodies** — every candidate, every score, every facet, every disposition, with `content` marked as withheld | ~650 chars per candidate |
+| `citations` | the projection **minus content bodies** — every candidate, score, facet and disposition, with `content` marked withheld | ~650 chars per candidate |
 | `full` | the projection, bodies included | unbounded |
 
 Declared once per connection or subscription — not per tool call, which no
-client can predict. A client that declares nothing gets today's behaviour
-exactly.
+client can predict. A client that declares nothing gets today's behavior.
 
-**The tier is defined by one axis — bodies in or out — and not by a list of
-fields to keep.** That distinction matters more than it looks. A field
-allowlist would already be wrong for the second consumer: samsung's image search
-carries its answer in `Candidate.facets` (rights status, pixel dimensions,
-direct-file versus containing-page), and a `citations` tier enumerated as
-"url, title, snippet, scores, provenance" silently drops exactly the payload.
-Defined subtractively, facets ride in both tiers for free, and so does every
-field nobody has added yet.
+The tier is defined by one axis, **bodies in or out**, and not by a list of
+fields to keep. That distinction earns its keep immediately: samsung's image
+search carries its answer in `Candidate.facets` (rights status, pixel
+dimensions, direct-file versus containing-page), and a `citations` tier
+enumerated as "url, title, snippet, scores, provenance" would silently drop
+exactly the payload. Defined subtractively, facets ride in both tiers for free,
+and so does every field nobody has added yet.
 
-It also explains why two tiers is the right number rather than a compromise:
-**content bodies are the only unbounded thing in the projection.** Everything
-else is a few hundred bytes per candidate and stays that way. There is no third
-tier to find, because there is no second unbounded field.
+It also settles how many tiers we need. Content bodies are the only unbounded
+thing in the projection — everything else is a few hundred bytes per candidate
+and stays that way — so there's no third tier to find.
 
-### 2.1 An amount, on the tier that has one
+### An amount, on the tier that has one
 
-`full` takes an optional `max_body_chars`. This is the answer to "what about a
-middle tier that carries content for the top few results" — that idea is not
-bounded (three pages at 100 KB is still 300 KB), while a body cap is, and it is
-a *parameter* rather than a tier because the client is asking for the same
-shape in a different amount.
+`full` takes an optional `max_body_chars`. This is the honest version of "a
+middle tier with content for the top few results," which isn't actually bounded
+(three pages at 100 KB is still 300 KB) while a body cap is. It's a parameter
+rather than a tier because it's the same shape in a different amount.
 
-It is honest for the same reason the tiers are: the client named the budget, so
-the platform is not guessing what to drop. And it must say so, per body:
+It stays honest for the same reason the tiers do: the client named the budget,
+so we're not guessing what to drop. Each body says what happened to it:
 
 ```json
 "content": {"text": "Counts rose 12% across …", "truncated": true,
             "size_chars": 102400, "delivered_chars": 4000}
 ```
 
-Practically, this is what keeps handles rare: a preview renders inline, and the
-handle is fetched only when a reader expands one.
+Practically, this is what keeps handles rare — a preview renders inline, and the
+handle only gets fetched when a reader expands one.
 
 ### On the wire
 
@@ -131,11 +130,11 @@ A chat client that declared `citations`, after a `web_fetch` that pulled a
 }
 ```
 
-Note `content` — **present and marked, not absent.** A reader can tell "no
-content was extracted" from "content was extracted and withheld". That
+`content` is present and marked, never simply absent — a reader has to be able
+to tell "nothing was extracted" from "it was extracted and withheld." That
 distinction is the whole reason this is a tier and not a trim.
 
-Same turn, a client that declared `full`:
+Same turn, a client that declared `full`, where the body didn't fit:
 
 ```json
 {
@@ -150,174 +149,165 @@ Same turn, a client that declared `full`:
 ```
 
 It gets the citations tier immediately — always renderable, never a spinner
-waiting on a fetch — plus a handle for the part that did not fit.
+waiting on a fetch — plus a handle for the part that didn't fit.
 
-### 2.2 Where a tier applies — and where it must not
+### Three rules
 
-**Only at the client boundary.** A tier is a statement about what to put on a
-wire to a renderer. It is never a statement about what a tool produces, and an
-**in-process consumer always gets everything.**
+1. **The payload MUST name its own tier.** A narrowing that doesn't say it
+   narrowed is the defect, not the fix.
+2. **The `citations` tier MUST be complete in itself.** Every path delivers
+   something renderable; no path delivers nothing.
+3. **An unknown tier or kind MUST be skipped, never rejected.** The vocabulary
+   is open on purpose, so a client meeting a third tier degrades instead of
+   failing.
 
-This is a rule rather than an obvious truth because the failure it prevents is
-silent. discodon's research tool runs an inner agent whose findings are checked
-by a grounding gate that matches every finding name and field value against the
-retrieved page text — `CorpusEntry.text`, accumulated per URL across the
-invocation's searches. When that inner search moves onto the 3tears leaf, that
-corpus *is* `Candidate.content.text` in the projection. A `citations` tier
+### 2.1 Where a tier applies, and where it must not
+
+**Only at the client boundary.** A tier says what to put on a wire to a
+renderer. It says nothing about what a tool produces, and an in-process consumer
+always gets everything.
+
+That's a rule rather than an obvious truth because the failure is silent.
+discodon's research tool runs an inner agent whose findings are checked by a
+grounding gate, matching every finding name and field value against the
+retrieved page text it accumulates per URL. When that inner search moves onto
+the 3tears leaf, that corpus *is* `Candidate.content.text`. A `citations` tier
 applied at Call or Aggregate — one layer too early — would strip exactly the
-text the grounding gate verifies against, and grounding would keep returning
-answers. Not a rendering regression: a verification one, failing quietly.
+text the gate verifies against, and grounding would go on returning answers.
+Not a rendering regression; a verification one, failing quietly.
 
-So the tier is read where the frame is built, and nowhere else.
+So we read the tier where the frame is built, and nowhere else.
 
-### Three rules that keep it honest
+## 3. What this means for clients
 
-1. **The payload names its own tier.** A narrowing that does not say it narrowed
-   is the defect, not the fix.
-2. **The citations tier is complete in itself.** Every path delivers something
-   renderable; no path delivers nothing.
-3. **An unknown tier or kind is skipped, never rejected.** The vocabulary is
-   open on purpose — a client meeting a third tier must degrade, not fail.
+**Do nothing and nothing changes.** This is additive, and a client that never
+declares a tier keeps today's behavior.
 
-## 3. Implications for clients
-
-**If you do nothing:** nothing changes. This is additive, and the current
-default is preserved for every client that never declares a tier.
-
-**If you declare:** one field, at connect or subscribe. In exchange, a
+**Declare, and it's one field** at connect or subscribe. In exchange, a
 content-bearing tool stops blowing your frame budget and starts rendering.
 
-**If you want `full`:** you need a way to resolve a handle — an HTTP GET, the
-same shape metallm's frontend already runs for media
-(`GET /api/v1/media/{id}/url`). A client without that reach should declare
-`citations`, where the inline bound becomes a ceiling rather than a fallback.
+**Want `full`?** You need a way to resolve a handle — an HTTP GET, the shape
+metallm's frontend already runs for media (`GET /api/v1/media/{id}/url`). A
+client without that reach should declare `citations`, where the inline bound
+becomes a ceiling rather than a fallback.
 
-**Broadcast rooms need one decision, and the mechanism is worth stating
-plainly.** The declaration is per connection; the frame is built once per turn
-and fanned out to every viewer of the room. So two viewers who connected with
-different declarations are asking one payload to be two things — not because
-they searched differently (nobody searched; a turn produced a result and the
-room watched) but because they declared at different times, in different
-clients.
+**Broadcast rooms need one decision.** The declaration is per connection, but
+the frame is built once per turn and fanned out to every viewer of the room. Two
+viewers who connected with different declarations are asking one payload to be
+two things — not because they searched differently (nobody searched; a turn
+produced a result and the room watched) but because they declared at different
+times, in different clients.
 
-It is latent rather than live: scriob and metallm each have one frontend today,
+It's latent rather than live: scriob and metallm each have one frontend today,
 which would declare one value product-wide, so every viewer agrees by
 construction. It stops being latent the first time a second client exists — a
-phone alongside a desktop, or an embedded read-only view.
+phone beside a desktop, or an embedded read-only view.
 
-**Proposal, and it is cheap to settle now: on a broadcast channel the tier
+Proposal, and it's cheap to settle now: **on a broadcast channel the tier
 belongs to the room, not the viewer.** The frame carries `citations` plus a
-handle, and a viewer wanting more resolves it. Per-viewer appetite is served by
-the handle rather than by per-viewer frames — which is one of the better
+handle, and a viewer wanting more resolves it. Per-viewer appetite gets served
+by the handle instead of by per-viewer frames — which is one of the better
 arguments for having a handle at all.
 
-## 4. When it is too large anyway — and the fact that we already bought it
+## 4. When it's too large anyway
 
-At the moment a projection is too big, **the expensive part is already paid
-for.** The provider call was made, the bytes were fetched, and on the scrape
-path an LLM extraction already ran. Dropping the result refunds nothing. It is
-pure waste — and the store that would keep it costs a rounding error against
-what was already spent to produce it.
+By the time a projection is too big, the expensive part is already bought. The
+provider call was made, the bytes were fetched, and on the scrape path an LLM
+extraction already ran. Dropping the result refunds nothing, and the store that
+would keep it costs a rounding error against what we spent producing it.
 
-But it is only waste **if the client wanted it**, and that is exactly what the
-declaration tells us. This is the argument for tiers stated in cost terms:
+It's only waste if the client wanted it, which is exactly what the declaration
+tells us:
 
-- A `citations` client never wanted the body. Not sending it is not waste; it is
-  correctness, and the money was spent for the model's benefit, not the
-  client's.
-- A `full` client did want it. For that client, `omitted` is the wrong default —
-  we are throwing away something bought, in hand, and asked for.
+- A `citations` client never wanted the body. Not sending it isn't waste — the
+  money was spent for the model's benefit, not the client's.
+- A `full` client did want it. For that client, `omitted` is the wrong default:
+  we'd be throwing away something bought, in hand, and asked for.
 
-**So: for a client that asked for `full`, over the bound is a handle, never an
-omission.** Storing what we already have converts waste into a cache hit.
+**So for a client that asked for `full`, over the bound MUST be a handle, never
+an omission.** Storing what we already have turns waste into a cache hit.
 
-**And there are two reasons to keep what we bought, not one.** The argument
-above is *too big to send*. The other is *expensive to produce, cheap to keep* —
-and it stands on its own, without a frame anywhere in sight. discodon's research
-tool is the clean case: it buys full page text for up to eight results across
-three searches (Tavily `include_raw_content="text"`), accumulates roughly half a
-megabyte to two megabytes of corpus, uses it once for a grounding pass, and
-drops it. Nothing was ever too large for a frame, because none of it was ever
-going to a frame — and a follow-up question on a later turn buys it again.
+There are two reasons to keep what we bought, and only one of them is about
+size. The other is *expensive to produce, cheap to keep*, and it stands on its
+own. discodon's research tool is the clean case: it buys full page text for up
+to eight results across three searches, accumulates half a megabyte to two
+megabytes of corpus, grounds against it once, and drops it. Nothing was ever too
+large for a frame, because none of it was ever going to a frame — and a
+follow-up question on a later turn buys it again. A handle is worth having for
+that alone; it's what lets a later turn re-check a claim against the pages the
+answer was grounded in, rather than re-searching and hoping the corpus comes
+back the same.
 
-A handle is worth having for that alone. It is what lets a later turn re-check a
-claim against the pages the answer was actually grounded in, rather than
-re-searching and hoping the corpus comes back the same.
-
-Worth noting how short that step is: the offload seam
-(`threetears.langgraph.offload`) *already* moves a tool result over 8,192 chars
-out of band, into the three-tier store, for the model's context window — so on
-exactly the turns this proposal is about, the content is usually **already
-stored**. What is not stored is the structured projection, and storing it is an
-increment on a path that exists rather than new infrastructure. The gap is the
-client-facing resolve surface: the `[ctx:<id>]` handle has never crossed to a
-frontend.
+The step is shorter than it looks. The offload seam
+(`threetears.langgraph.offload`) already moves a tool result over 8,192 chars
+out of band into the three-tier store for the model's context window — so on
+exactly these turns, the content is usually already stored. What isn't stored is
+the structured projection, and storing that is an increment on a path that
+exists. The real gap is the client-facing resolve surface: the `[ctx:<id>]`
+handle has never crossed to a frontend.
 
 ### Do we need pagination?
 
-**Not on the stream. Possibly on the resolve endpoint, later.**
+Not on the stream. Possibly on the resolve endpoint, later.
 
-There are two different "too big", and only one of them is a paging problem:
-
-- **Many candidates.** A 500-result corpus is a natural fit for offset/limit —
-  the client shows twenty and fetches more as the user scrolls.
-- **One huge body.** A 100 KB document does not usefully page into frames. The
-  client wants it when the user expands the citation, and not before.
+There are two different "too big," and only one is a paging problem. **Many
+candidates** fits offset/limit naturally — show twenty, fetch more as the user
+scrolls. **One huge body** doesn't page usefully into frames; the client wants
+it when the user expands the citation, and not before.
 
 Paging the *stream* is the option to refuse. It puts reassembly state on a
-channel that is transient, broadcast, and reconnectable: a dropped frame leaves
-a half-built object, a late joiner gets a fragment, and a reconnect starts over.
-That is a store with extra steps and worse failure modes — and a stream that
-holds partial state has quietly become the store D14 says it is not.
+channel that's transient, broadcast, and reconnectable: a dropped frame leaves a
+half-built object, a late joiner gets a fragment, a reconnect starts over.
+That's a store with extra steps and worse failure modes — and a stream holding
+partial state has quietly become the store D14 says it isn't. A handle plus a
+request/response fetch gets retries, caching, conditional requests and ranges
+for free, from infrastructure we already run.
 
-A handle plus a request/response fetch gets retries, caching, conditional
-requests and ranges for free, from infrastructure that already exists.
-
-**One design constraint follows, and it is cheap to honour now:** make the
-handle address a *result set*, not an opaque blob, so `?offset=&limit=` can be
-added later without moving the wire. A handle that resolves to "the projection
-for tool call X" can grow paging. One that resolves to "blob 9f2c" cannot.
+One design constraint follows, and it's cheap to honor now: **a handle MUST
+address a result set, not an opaque blob**, so `?offset=&limit=` can be added
+later without moving the wire. "The projection for tool call X" can grow paging;
+"blob 9f2c" can't.
 
 ## 5. Out of scope: summaries
 
-**Summarization is deliberately not part of this proposal**, in any of its
-forms — not a platform-authored one at the delivery boundary, not one `bind`
-writes into the projection. It is a possible future enhancement *to search*,
-and it should be taken there or not at all.
+Summarization is deliberately not part of this proposal, in any form — not one
+the platform writes at the delivery boundary, not one `bind` writes into the
+projection. It's a possible future enhancement **to search**, and it should be
+taken there or not at all.
 
-Three things are worth carrying forward to whoever picks it up:
+Three things worth carrying forward to whoever picks it up:
 
-- **The cheap version already ships and costs nothing.** Both providers return
-  a per-result snippet and both adapters already map it to `Candidate.snippet`
-  (`tavily.py:1225`, `searxng.py:1275`). That is most of what a citation card
+- **The cheap version already ships and costs nothing.** Both providers return a
+  per-result snippet and both adapters already map it to `Candidate.snippet`
+  (`tavily.py:1225`, `searxng.py:1275`). That's most of what a citation card
   renders, and it rides both tiers today.
-- **Two query-level summaries exist and are dropped.** Tavily's `answer` is
+- **Two query-level summaries exist and get dropped.** Tavily's `answer` is
   never requested (`include_answer` appears nowhere in the plan body), and
   SearXNG's `answers` / `infoboxes` arrive unrequested and unmapped. Both
-  adapters refuse them for the same stated reason — they are a different shape
-  from a candidate — and SearXNG's note ends by leaving them "for a layer that
-  has somewhere honest to put them." Tavily's published credit table prices a
-  search by depth alone (basic 1, advanced 2) and says nothing about
-  `include_answer`, which suggests it is free; that is a documented absence
-  rather than a documented price, so it wants one empirical call before anyone
-  relies on it.
-- **Whatever is carried must be provenanced, and never presented as grounded.**
-  A provider synthesis and an instant-answer fact are different objects, only
-  one provider produces each, and neither can be checked against the corpus the
-  projection carries. Absence of the field would mean "this provider does not do
-  that", not "there was nothing to say" — which is precisely the kind of field
-  that gets misread.
+  adapters refuse them for the same stated reason — a different shape from a
+  candidate — and SearXNG's note leaves them "for a layer that has somewhere
+  honest to put them."
+- **Anything we carry must be provenanced, and never presented as grounded.** A
+  provider synthesis and an instant-answer fact are different objects, only one
+  provider produces each, and neither can be checked against the corpus the
+  projection carries. Absence would mean "this provider doesn't do that," not
+  "there was nothing to say."
+
+On cost: Tavily's published credit table prices a search by depth alone (basic
+1, advanced 2) and says nothing about `include_answer`, which suggests it's
+free. [not verified — that's a documented absence, not a documented price. One
+call with the eval key would settle it.]
 
 ## 6. Open questions
 
-1. **Where is the declaration made** in each product: a subscribe frame, a
-   connect parameter, or per turn in the request?
-2. **Who owns the resolve endpoint, and what is a handle's lifetime** — the
-   turn, the conversation, a TTL? One floor is already known: discodon's
-   research delivery is **asynchronous**, landing on a later turn than the one
-   that asked, so a turn-scoped handle would be dead before its first reader.
-   Conversation-scoped is the minimum that works for an existing consumer.
-3. **Does anything but chat consume this?** If a non-chat consumer wants
-   structure, the tier vocabulary may need a name that is not about citations.
-4. **scriob: is a room-level tier acceptable?** (§3) It is the only answer that
-   keeps one frame per event.
+- **Where is the declaration made** in each product — a subscribe frame, a
+  connect parameter, or per turn in the request?
+- **Who owns the resolve endpoint, and what is a handle's lifetime** — the turn,
+  the conversation, a TTL? One floor is known: discodon's research delivery is
+  asynchronous, landing on a later turn than the one that asked, so a
+  turn-scoped handle would be dead before its first reader. Conversation-scoped
+  is the minimum that works for a consumer we already have.
+- **Does anything but chat consume this?** If a non-chat consumer wants
+  structure, the tier vocabulary may need a name that isn't about citations.
+- **scriob: is a room-level tier acceptable?** (§3) It's the only answer that
+  keeps one frame per event.
