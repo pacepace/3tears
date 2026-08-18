@@ -789,3 +789,64 @@ class TestCamoufoxDriverLazyLaunch:
         await driver.close()
 
         assert exited == [True]
+
+
+class TestTheExitReachesTheBrowserLaunch:
+    """The half the driver contract cannot see: whether the launch actually carries the exit.
+
+    `test_driver_contract.py` pins that an exit given to this driver comes back on the
+    `RenderedPage`. That round trip passes against an INJECTED browser, so it says nothing
+    about whether a real launch would have been proxied -- which is the whole of what this
+    driver was missing. These read the launch options directly.
+    """
+
+    def test_a_proxy_exit_becomes_a_playwright_proxy_option(self) -> None:
+        """Camoufox is Firefox via Playwright, so the exit is `proxy={"server": ...}`.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.core.egress import ProxyEgress
+
+        driver = CamoufoxDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"))
+
+        assert driver._launch_proxy_options() == {"proxy": {"server": "socks5://127.0.0.1:9050"}}  # noqa: SLF001
+
+    def test_no_exit_expresses_no_opinion(self) -> None:
+        """`None` must leave the launch alone rather than inventing a proxy key.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert CamoufoxDriver()._launch_proxy_options() == {}  # noqa: SLF001
+
+    def test_a_direct_exit_does_not_become_a_proxy_server(self) -> None:
+        """`direct://` is Chromium's spelling and would be a bogus host to Firefox.
+
+        Forwarding it as a Playwright `server` would make Playwright try to resolve
+        `direct://` as a real proxy and fail every navigation -- an exit configured as
+        "explicitly no proxy" would break the driver outright rather than send it direct.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.core.egress import DirectEgress
+
+        driver = CamoufoxDriver(egress=DirectEgress())
+
+        assert driver._launch_proxy_options() == {}  # noqa: SLF001
+
+    def test_the_direct_sentinel_is_the_one_egress_actually_returns(self) -> None:
+        """Pins the two sides together rather than against a literal typed twice.
+
+        If `DirectEgress` ever changed its spelling, a hard-coded `"direct://"` in this
+        driver would silently start forwarding it as a real proxy server.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.core.egress import DirectEgress
+
+        from threetears.scrape.drivers.camoufox import _DIRECT_PROXY_ARG  # noqa: SLF001
+
+        assert DirectEgress().browser_proxy_arg() == _DIRECT_PROXY_ARG

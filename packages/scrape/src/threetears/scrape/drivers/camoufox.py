@@ -32,13 +32,20 @@ from typing import Any
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Response as PlaywrightResponse
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver
+from ..driver import NavStep, NetworkCall, RenderedPage, ScrapeDriver, egress_name
 
 __all__ = ["CamoufoxDriver", "CamoufoxDriverError"]
 
 log = get_logger(__name__)
+
+#: Chromium's spelling of "never use a proxy", which
+#: :meth:`~threetears.core.egress.DirectEgress.browser_proxy_arg` returns. Firefox has no
+#: equivalent URI, so this driver answers it by passing no proxy -- see
+#: :meth:`CamoufoxDriver._launch_proxy_options`.
+_DIRECT_PROXY_ARG = "direct://"
 
 #: Same bound and same resource-type filter as the nodriver sidecar's own
 #: capture_network implementation (services/nodriver-sidecar/main.py) --
@@ -109,7 +116,9 @@ class CamoufoxDriver(ScrapeDriver):
     call.
     """
 
-    def __init__(self, *, headless: bool = True, browser: Any | None = None) -> None:
+    def __init__(
+        self, *, headless: bool = True, browser: Any | None = None, egress: EgressDriver | None = None
+    ) -> None:
         """
         :param headless: launch Camoufox headless (default) or with a visible window.
         :ptype headless: bool
@@ -117,16 +126,31 @@ class CamoufoxDriver(ScrapeDriver):
             (test injection); a real Camoufox browser is launched lazily on the
             first :meth:`render` call when omitted.
         :ptype browser: Any | None
+        :param egress: which exit this driver's browser leaves by (see
+            :mod:`threetears.core.egress`). Applied at BROWSER LAUNCH, which is
+            the only granularity Camoufox offers -- ``proxy`` is a launch
+            option, so one browser means one exit. That is the right grain
+            here anyway: this driver launches its own browser and an exit is a
+            construction-time property of the driver. An injected *browser* is
+            used exactly as given, since its proxy was decided by whoever
+            launched it.
+        :ptype egress: EgressDriver | None
         """
         self._headless = headless
         self._browser = browser
         self._owns_browser = browser is None
         self._camoufox: Any | None = None
+        self._egress = egress
 
     @property
     def name(self) -> str:
         """Stable string key for this driver."""
         return "camoufox"
+
+    @property
+    def egress(self) -> EgressDriver | None:
+        """The exit this driver's browser leaves by, or ``None``."""
+        return self._egress
 
     async def render(
         self,
@@ -284,6 +308,10 @@ class CamoufoxDriver(ScrapeDriver):
                 timing_ms=(time.monotonic() - start) * 1000,
                 network_calls=network_calls,
                 eval_results=eval_results,
+                # Reported for the same reason every other exit-honouring driver reports it:
+                # an accepted-but-unreported exit leaves `last_egress` empty and collapses
+                # "walled" into "walled from this exit".
+                egress=egress_name(self._egress),
             )
         finally:
             await page.close()
@@ -362,6 +390,34 @@ class CamoufoxDriver(ScrapeDriver):
             self._camoufox = None
             self._browser = None
 
+    def _launch_proxy_options(self) -> dict[str, Any]:
+        """Camoufox launch options carrying this driver's exit, if it has one.
+
+        Camoufox is **Firefox**, reached through Playwright, so the exit arrives as
+        Playwright's ``proxy={"server": ...}`` launch option rather than Chromium's
+        ``--proxy-server`` argument. The two take the same URL grammar for a real proxy,
+        which is why :meth:`EgressDriver.browser_proxy_arg` serves both.
+
+        The one place they diverge is the "no proxy" spelling.
+        :meth:`~threetears.core.egress.DirectEgress.browser_proxy_arg` returns Chromium's
+        ``direct://`` precisely so an explicitly-direct request overrides an inherited
+        container-wide proxy. Firefox has no such URI, and handing ``direct://`` to
+        Playwright as a server would try to resolve it as a real proxy host and fail every
+        navigation. It is answered by passing no proxy at all, which is correct HERE and
+        would not be everywhere: this driver launches its own browser with Playwright's own
+        fresh profile, so there is no inherited proxy for a direct request to override. A
+        backend that reused a browser somebody else launched could not make that claim.
+
+        :return: ``{"proxy": {...}}``, or an empty dict for no opinion
+        :rtype: dict[str, Any]
+        """
+        if self._egress is None:
+            return {}
+        arg = self._egress.browser_proxy_arg()
+        if arg is None or arg == _DIRECT_PROXY_ARG:
+            return {}
+        return {"proxy": {"server": arg}}
+
     async def _ensure_browser(self) -> Any:
         """Lazily launch (once) and return the Playwright-shaped ``Browser``."""
         if self._browser is None:
@@ -369,6 +425,6 @@ class CamoufoxDriver(ScrapeDriver):
             # a real cost tests that always inject *browser* should never pay.
             from camoufox.async_api import AsyncCamoufox
 
-            self._camoufox = AsyncCamoufox(headless=self._headless)
+            self._camoufox = AsyncCamoufox(headless=self._headless, **self._launch_proxy_options())
             self._browser = await self._camoufox.__aenter__()
         return self._browser

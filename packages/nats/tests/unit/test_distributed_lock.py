@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
+from threetears.nats import distributed_lock as distributed_lock_module
 from threetears.nats import LockHeld, NatsKvBucket, nats_distributed_lock
 from threetears.nats.errors import KvError
 
@@ -73,14 +75,23 @@ class _FakeKv:
         self.store[key] = (value, self.next_revision)
         return self.next_revision
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str, last: int | None = None) -> None:
+        # `last` mirrors nats-py's own KeyValue.delete, which NatsKvBucket passes through for a
+        # CAS delete. Omitting it here let a revision-fenced release look untested: the fenced
+        # call raised TypeError before this fake recorded anything, so `delete_calls` stayed
+        # empty and the failure read as "release never happened".
         self.delete_calls.append(key)
         if self.fail_next_delete is not None:
             exc = self.fail_next_delete
             self.fail_next_delete = None
             raise exc
-        if key not in self.store:
+        existing = self.store.get(key)
+        if existing is None:
             raise KeyNotFoundError()
+        if last is not None and existing[1] != last:
+            # The fence refusing: this holder's revision is stale, so the entry now belongs to
+            # somebody else and must survive.
+            raise KeyWrongLastSequenceError()
         del self.store[key]
 
 
@@ -442,3 +453,119 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
     assert fake_kv.delete_calls == ["job"]
     # restore (defensive; the fake is per-test anyway)
     fake_kv.put = original_put  # type: ignore[method-assign]
+
+
+class TestALockAStuckHolderCannotKeepForever:
+    """One wedged pod must not starve a fleet, and a stale holder must not steal a lock.
+
+    A holder that DIES stops heartbeating and the TTL hands the lock on. A holder that
+    WEDGES keeps a perfectly healthy heartbeat task renewing a lock whose body makes no
+    progress -- which is how one stuck pod blocked every other pod's tick, with the lock
+    behaving exactly as designed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_renewal_stops_once_the_holder_has_held_too_long(self) -> None:
+        """Past the maximum hold the heartbeat stops renewing and lets the TTL take over.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        with patch.object(distributed_lock_module, "_MAX_HOLD", timedelta(seconds=0)):
+            async with nats_distributed_lock(
+                client, "wedged", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
+            ):
+                await asyncio.sleep(0.05)
+                renewals_while_wedged = len(fake_kv.put_calls)
+
+        assert renewals_while_wedged == 0, (
+            "the heartbeat renewed a lock whose holder was past its maximum hold, which is "
+            "what keeps a wedged pod's lock alive while every other pod waits"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_holder_still_gets_its_heartbeats(self) -> None:
+        """The negative half: the cap must not interrupt a healthy long body.
+
+        Losing a lock a running body still believes it holds is a worse failure than the
+        one the cap prevents, so this pins that the cap does not fire in normal use.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client, "healthy", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
+        ):
+            await asyncio.sleep(0.05)
+
+        assert fake_kv.put_calls, "a healthy holder inside the maximum hold stopped being renewed"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_holder_does_not_delete_its_successors_lock(self) -> None:
+        """The release is fenced on the revision this holder last wrote.
+
+        Whenever the lock did not survive the body -- heartbeat died, or renewal stopped at
+        the cap -- the TTL expires the key and another pod acquires it. An unconditional
+        delete then removes the SUCCESSOR's lock, handing the same key to a third holder
+        while the second still believes it owns it. That is a worse bug than the wedge, and
+        it is the one a self-release would have introduced without this fence.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(client, "handover", heartbeat=timedelta(seconds=30)):
+            # Simulate the TTL expiring and a successor taking the key: same key, new revision.
+            fake_kv.next_revision += 1
+            fake_kv.store["handover"] = (b"successor", fake_kv.next_revision)
+            successor_revision = fake_kv.next_revision
+
+        assert fake_kv.store.get("handover") == (b"successor", successor_revision), (
+            "the departing holder deleted a key that had already moved to another holder"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_holder_that_kept_its_lock_still_releases_it(self) -> None:
+        """The fence must not turn every ordinary release into a no-op.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(client, "ordinary", heartbeat=timedelta(seconds=30)):
+            pass
+
+        assert "ordinary" not in fake_kv.store
+
+    @pytest.mark.asyncio
+    async def test_the_fence_follows_the_heartbeats_revision(self) -> None:
+        """Each renewal writes a new revision, so the fence must track it, not the first one.
+
+        Fencing on the acquisition revision alone would make every release after the first
+        heartbeat a silent no-op -- the lock would then linger until its TTL on every run.
+
+        :return: nothing
+        :rtype: None
+        """
+        fake_kv = _FakeKv()
+        client = _FakeClient(fake_kv)
+
+        async with nats_distributed_lock(
+            client, "renewed", heartbeat=timedelta(seconds=0.01), ttl=timedelta(seconds=1)
+        ):
+            await asyncio.sleep(0.05)
+            assert fake_kv.put_calls, "precondition: at least one heartbeat renewed the entry"
+
+        assert "renewed" not in fake_kv.store, (
+            "the release was fenced on a stale revision, so a renewed lock was never cleaned up"
+        )
