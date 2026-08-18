@@ -42,6 +42,16 @@ candidate and fits fine; anything carrying extracted page text — `web_fetch`,
 `page_finder`, Tavily configured for raw content — is one or two orders of
 magnitude larger, and no sane frame budget covers it.
 
+The per-candidate figure is a function, not a constant, and the table above is
+its low end.
+[`scripts/measure-structured-result-sizes.py`](../scripts/measure-structured-result-sizes.py)
+re-measures all of this through the real projection, and a candidate with
+every field an adapter fills — facets, provider ids, a publication date, a
+provenanced score — runs nearer 950 chars, rising with snippet length alone to
+1,594 at an 800-char snippet. Which way the estimate should lean depends on
+the adapter; what matters here is that both ends of that range are small, and
+stay small, next to one content body.
+
 Today we send an `omitted` record over the bound: the reason, the size, the
 bound it missed. Nothing is lost silently, but nothing is delivered either. The
 platform drops everything because it's the only safe move available — deciding
@@ -209,6 +219,58 @@ handle, and a viewer wanting more resolves it. Per-viewer appetite gets served
 by the handle instead of by per-viewer frames — which is one of the better
 arguments for having a handle at all.
 
+### 3.1 What the bound is measured in, and what it cannot exceed
+
+A tier says what goes on the wire. How much fits is a separate question, and
+nobody has written the answer down. It has a hard part.
+
+**The bound and the wire are in different units.** `structure_for_stream`
+bounds the artifact's own JSON encoding — 16,384 chars, which #355 calls a
+placeholder metallm owns. What gets *published* is that JSON nested in an
+event, nested in a `Frame`, nested in a `RoomFrame`, each level escaping the
+quotes of the one below. Measured through the real types
+([`scripts/measure-structured-result-sizes.py`](../scripts/measure-structured-result-sizes.py)),
+the nesting costs 1.20× on a body-heavy payload and 1.34× on a
+metadata-heavy one. So a bound expressed in artifact characters is about a
+third smaller than the frame it produces.
+
+**And there's a ceiling above it that isn't a budget.** On a shared room the
+frame crosses NATS: `RoomFanout.broadcast` publishes it and every pod fans out
+on receive. nats-py refuses an oversized publish client-side, before anything
+leaves the process, against the server's advertised `max_payload` — 1 MB on a
+broker nobody has tuned, the same figure `threetears.nats.pipe` already sizes
+its chunks against. Working back through the nesting, that's about **780,000
+artifact characters**.
+
+| Payload | Artifact chars | Published bytes |
+|---|---|---|
+| 20 results, metadata only | 19,150 | 25,221 |
+| 1 result, 100 KB extracted text | 105,697 | 127,052 |
+| 8 results, 100 KB each | 843,616 | 1,010,599 |
+| 20 results, 100 KB each | 2,108,650 | 2,525,281 — refused |
+
+`citations` never comes near it: a 50-result projection is 47,500 chars, so
+the ceiling sits about 16× above the widest citation set anyone renders, and
+48× above the inline bound #355 ships with. `full` does come near it. Eight
+results carrying 100 KB each publishes at 1,010,599 bytes — under the limit,
+with less than 4% to spare — and §4's own research corpus is "half a megabyte
+to two megabytes," the top of which is refused outright.
+
+**The failure is quiet, and it is quiet on both consumers.** scriob delivers
+to the author's own socket first and fans out to the rest of the room after —
+that fanout is best-effort, and a failure there is caught and logged rather
+than raised, deliberately, so it can never be mistaken for the author's own
+connection dying. metallm's cross-worker fanout falls back to local-only
+delivery when a publish fails, with a warning. Either way: the person who ran
+the search sees their citations, everyone else watching sees nothing, and the
+only trace is a log line. Single-pod tests pass.
+
+So the inline bound has an upper limit that is not the client's to declare,
+and "raise it" stops working before `full` gets interesting. The answer for
+anything past it is the handle §4 already proposes — which is a second
+argument for the room-level tier above. On a broadcast channel, `citations`
+plus a handle is the only shape that always publishes.
+
 ## 4. When it's too large anyway
 
 By the time a projection is too big, the expensive part is already bought. The
@@ -279,7 +341,7 @@ Three things worth carrying forward to whoever picks it up:
 
 - **The cheap version already ships and costs nothing.** Both providers return a
   per-result snippet and both adapters already map it to `Candidate.snippet`
-  (`tavily.py:1225`, `searxng.py:1275`). That's most of what a citation card
+  (`adapters/tavily.py:1225`, `adapters/searxng.py:1275`). That's most of what a citation card
   renders, and it rides both tiers today.
 - **Two query-level summaries exist and get dropped.** Tavily's `answer` is
   never requested (`include_answer` appears nowhere in the plan body), and
@@ -307,6 +369,10 @@ call with the eval key would settle it.]
   asynchronous, landing on a later turn than the one that asked, so a
   turn-scoped handle would be dead before its first reader. Conversation-scoped
   is the minimum that works for a consumer we already have.
+- **Who owns the size guard, and where does it go?** (§3.1) Nothing on
+  either fanout path measures a frame before publishing it, so the ceiling
+  is discovered as a caught exception and a log line. `RoomFanout.broadcast`
+  is the one place both scriob's rooms and any future consumer pass through.
 - **Does anything but chat consume this?** If a non-chat consumer wants
   structure, the tier vocabulary may need a name that isn't about citations.
 - **scriob: is a room-level tier acceptable?** (§3) It's the only answer that
