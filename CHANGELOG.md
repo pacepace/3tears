@@ -4,13 +4,23 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## v0.25.1 -- 2026-08-18
+## v0.26.0 -- 2026-08-18
 
-Closes every known open defect in the repo. A patch, and verified as one: the
-public surface is unchanged, so `test_api_growth_requires_a_minor_bump.py`
-passes on this line rather than being worked around. Where a fix wanted a new
-knob, the knob is a module-private constant -- exposing it is a MINOR release's
-job.
+Closes every known open defect in the repo.
+
+**Intended as 0.25.1, and the guard shipped in 0.25.0 refused it.** Most of the
+fixes below kept the public surface unchanged deliberately -- where one wanted a
+knob, the knob is a module-private constant. One did not:
+`CamoufoxDriver.__init__` had to grow an `egress` parameter to accept an exit at
+all, and a consumer passing it to 0.25.0 gets a `TypeError`. That is exactly the
+growth `BLD-7QM3`'s ruling covers, so this is a minor. The alternative was
+weakening the guard to fit the version number, which is the inversion of "fix
+the code, never weaken the test".
+
+The guard itself was fixed in the process: it compared `git show HEAD:` against
+the last release tag, so it silently ignored uncommitted work and passed locally
+on a tree full of new API. It reads the working tree now, and answers the
+question actually being asked -- "did what I am about to ship grow the API".
 
 ### Fixed
 

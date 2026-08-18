@@ -138,6 +138,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     services:
+      # Postgres only. NATS needs a command argument and is started in a step below.
       postgres:
         # pgvector, not plain postgres: the shared fixture is vector-capable for
         # every consumer regardless of collection order (see `db_image`).
@@ -155,17 +156,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-      nats:
-        # JetStream must be ON: the fixture cannot enable it on a server it did
-        # not start, and the durable-circuit tests need it.
-        image: nats:2.11-alpine
-        ports:
-          - 4222:4222
-        options: >-
-          --health-cmd "wget -q -O- http://127.0.0.1:8222/healthz || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - uses: actions/checkout@v7
 
@@ -177,6 +167,27 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --all-extras --dev
+
+      # NATS is started here rather than as a `services:` entry, and the reason is a
+      # real limitation rather than a preference: a service container takes `image`,
+      # `env`, `ports` and `options`, but NO command -- and `nats:` needs `-js` as a
+      # command argument to enable JetStream. Declared as a service it comes up
+      # without JetStream and every durable test fails with `ServiceUnavailableError`,
+      # which is exactly how this job failed the first time it ran.
+      #
+      # This is not the testcontainers pattern that is ruled out here. It is one
+      # explicit container, started once, with no orchestration layer.
+      - name: Start NATS with JetStream
+        run: |
+          docker run -d --name ci-nats -p 4222:4222 -p 8222:8222 \
+            nats:2.11-alpine -js -m 8222
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8222/healthz >/dev/null; then
+              echo "nats is up with JetStream"; exit 0
+            fi
+            sleep 1
+          done
+          echo "nats did not become healthy"; docker logs ci-nats; exit 1
 
       - name: Test (integration, against the service containers)
         env:
