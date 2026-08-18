@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import os
+
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -98,6 +100,25 @@ def nats_jetstream() -> bool:
     return True
 
 
+#: Environment variables naming an ALREADY-RUNNING service to use instead of
+#: starting a testcontainer.
+#:
+#: CI cannot run testcontainers here -- they exhaust a GitHub-hosted runner --
+#: so the `integration` marker went unrun anywhere except on a developer's
+#: machine, and the whole durable-circuit surface sat outside the gate. The
+#: in-memory L3 fallback has no schema, so a missing DDL column passes every
+#: unit test in the suite; that is how the original `link_selector` bug shipped
+#: past a green run.
+#:
+#: A GitHub *service container* is the same Postgres reached a different way.
+#: Honouring these variables lets the workflow start one and point the existing
+#: fixtures at it, so **the assertions do not change at all** -- only where the
+#: connection comes from. Unset (a developer's machine), everything behaves
+#: exactly as before.
+_POSTGRES_URL_ENV = "THREETEARS_TEST_POSTGRES_URL"
+_NATS_URL_ENV = "THREETEARS_TEST_NATS_URL"
+
+
 @pytest.fixture(scope="session")
 def db_container(db_image: str) -> Iterator[str]:
     """session-scoped postgres testcontainer.
@@ -120,6 +141,13 @@ def db_container(db_image: str) -> Iterator[str]:
     :yield: asyncpg-compatible PostgreSQL connection URL
     :rtype: Iterator[str]
     """
+    provided = os.environ.get(_POSTGRES_URL_ENV)
+    if provided:
+        # An externally-managed Postgres (a CI service container). Yielded as-is: normalising
+        # is testcontainers' suffix problem, not this one's.
+        yield provided
+        return
+
     if not check_docker_available():
         pytest.skip("Docker not available")
 
@@ -153,6 +181,14 @@ def nats_container(nats_jetstream: bool) -> Iterator[str]:
     :yield: NATS connection URI
     :rtype: Iterator[str]
     """
+    provided = os.environ.get(_NATS_URL_ENV)
+    if provided:
+        # An externally-managed NATS (a CI service container). JetStream must already be
+        # enabled on it -- `nats_jetstream` cannot reconfigure a server it did not start, and
+        # silently ignoring that would hand a JetStream suite a server without it.
+        yield provided
+        return
+
     if not check_docker_available():
         pytest.skip("Docker not available")
 

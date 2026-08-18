@@ -4,6 +4,95 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.26.0 -- 2026-08-18
+
+Closes every known open defect in the repo.
+
+**Intended as 0.25.1, and the guard shipped in 0.25.0 refused it.** Most of the
+fixes below kept the public surface unchanged deliberately -- where one wanted a
+knob, the knob is a module-private constant. One did not:
+`CamoufoxDriver.__init__` had to grow an `egress` parameter to accept an exit at
+all, and a consumer passing it to 0.25.0 gets a `TypeError`. That is exactly the
+growth `BLD-7QM3`'s ruling covers, so this is a minor. The alternative was
+weakening the guard to fit the version number, which is the inversion of "fix
+the code, never weaken the test".
+
+The guard itself was fixed in the process: it compared `git show HEAD:` against
+the last release tag, so it silently ignored uncommitted work and passed locally
+on a tree full of new API. It reads the working tree now, and answers the
+question actually being asked -- "did what I am about to ship grow the API".
+
+### Fixed
+
+- `nats`: **KV operations are bounded, closing the publish wedge at its other
+  call site.** `KeyValue.put` is literally `await self._js.publish(...)` with no
+  timeout, and every KV write ends there -- so an unresponsive broker hung a KV
+  call exactly the way it hung `jetstream_publish` in 0.25.0, through the same
+  flush path that discards `CancelledError`. This was reported alongside that
+  wedge and described in 0.25.0's notes as "the same hazard class"; that was too
+  soft. It was the same defect.
+
+  Every operation funnels through one bounded runner, so reads and writes alike
+  now raise `PublishTimeoutError` rather than hanging. A wedge is deliberately
+  **not** retried through the bucket re-open path: re-opening runs another KV
+  call against the same unresponsive broker, which turns one deadline into two.
+
+- `nats`: **a wedged holder can no longer keep a distributed lock forever.**
+  A holder that *dies* stops heartbeating and the TTL hands the lock on. A
+  holder that *wedges* did not: its heartbeat task stayed healthy and went on
+  renewing a lock whose body made no progress, so one stuck pod blocked every
+  other pod's turn -- the multi-pod half of the same incident. Renewal now stops
+  after a maximum hold and lets the TTL take over, logged at ERROR.
+
+  The cap is sized far above any caller here, because losing a lock a running
+  body still believes it holds is a worse failure than the one it prevents.
+
+- `nats`: **the lock's release is fenced on the revision it last wrote.** Found
+  while building the above, and a bug in its own right: the cleanup deleted the
+  key unconditionally, so any time the lock did not survive the body -- heartbeat
+  died, TTL expired -- the departing holder deleted its *successor's* lock and
+  handed the same key to a third holder. A self-release without this fence would
+  have made it routine instead of rare.
+
+- `scrape`: **`CamoufoxDriver` honours a configured exit.** The last backend
+  that could not. It takes the exit at browser launch, which is the only
+  granularity Camoufox offers -- `proxy` is a Playwright launch option, so one
+  browser means one exit, which is the right grain for a driver that launches
+  its own. With this, every in-package backend can be pointed at an exit.
+
+  `DirectEgress`'s `direct://` is Chromium's spelling and Firefox has no
+  equivalent, so it is answered by passing no proxy rather than forwarded as a
+  server -- which would have made Playwright try to resolve `direct://` as a
+  real proxy host and fail every navigation.
+
+- `scrape` (sidecar): **one error shape for the whole service.** `/v1/render`
+  and `/v1/download` answered with `{"error": {"code", "message"}}` while every
+  `/v1/hitl/*` route answered with `{"error": "<free text>"}` -- three shapes
+  counting FastAPI's validation `{"detail": ...}`. A client could not write one
+  error handler, and the machine-readable half was missing from exactly the
+  routes that hand back a human's solved session. **BREAKING** for a client
+  parsing a HITL error as a string.
+
+### Added
+
+- **CI runs the `integration` marker.** 81 test files and 401 tests had never
+  run anywhere but a developer's machine, leaving the whole durable surface
+  outside the gate -- and the in-memory L3 fallback has no schema, so a missing
+  DDL column passes every unit test in the suite. That is how the original
+  `link_selector` bug shipped past a green run.
+
+  Testcontainers is ruled out here (it exhausts a GitHub-hosted runner), so a
+  new job uses **service containers** and the fixtures honour
+  `THREETEARS_TEST_POSTGRES_URL` / `THREETEARS_TEST_NATS_URL` to use an
+  already-running service. **No test assertion changes** -- only where the
+  connection comes from. Unset, a developer's machine still gets testcontainers.
+
+- `docs/sidecar-http-contract.md` -- the sidecar's versioning rule, error model
+  and access posture, none of which had ever been recorded. `/v1` bumps only on
+  a breaking change; unknown request fields are ignored and never rejected, but
+  only where the response can report what actually happened. The access posture
+  is recorded analysis with a recommendation, awaiting a ruling.
+
 ## v0.25.0 -- 2026-08-18
 
 A minor rather than a patch, and deliberately: v0.24.7 added public API on a

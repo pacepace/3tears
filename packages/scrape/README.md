@@ -412,14 +412,22 @@ tool = ScrapeTool(..., egress="tor", egress_registry=registry)
 
 **Worth knowing before reaching for it.**
 
-*Not every backend honours one.* `ApiDriver` and `NodriverSidecarDriver` accept an
-`EgressDriver`; `NetworkCaptureDriver` and `MultiDocumentDriver` inherit whichever driver they
-wrap. `CamoufoxDriver`, `DocumentDriver`, `ListingDetailDriver`, and `MultiDocumentDriver`'s own
-listing fetch reach the target on the container's default route regardless of what this tool is
-configured with. Configuring an exit and selecting one of those backends therefore proxies the
-`robots.txt` read and sends the page fetch direct. `ScrapeTool` names the offending drivers in a
-warning at construction rather than letting that happen quietly, so check your logs; there is no
-way for this package to route a backend that has no proxy support.
+*Every in-package backend now honours one.* `ApiDriver`, `DocumentDriver`,
+`ListingDetailDriver` and `NodriverSidecarDriver` accept an `EgressDriver` and report the exit
+back on `RenderedPage`. `CamoufoxDriver` takes one at **browser launch**, which is the only
+granularity Camoufox offers -- `proxy` is a launch option, so one browser means one exit.
+`NetworkCaptureDriver` inherits whichever driver it wraps.
+
+`MultiDocumentDriver` is the one to read carefully: it makes **two** kinds of request, its own
+listing fetch and whatever its inner document driver does per document, and they are configured
+separately. Give both the same exit. It reports an exit only when they agree, reports `None`
+when they do not -- the side that makes `ScrapeTool` warn -- and names the two halves at
+construction. Until it could be pointed at an exit at all it delegated the property to its inner
+driver, which meant it claimed a configured exit while its listing request left on the
+container's own address, and that claim suppressed the very warning that would have said so.
+
+`ScrapeTool` still names any unproxied driver in a warning at construction, which is what
+catches a consuming application's own backend that predates this seam.
 
 `NodriverDownloadDriver` is a third case. The warning names it -- it declares no exit, so it
 lands in the unproxied list like the others -- but the message understates it slightly. It posts

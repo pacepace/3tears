@@ -77,6 +77,27 @@ _DEFAULT_TTL: Final[timedelta] = timedelta(seconds=60)
 _DEFAULT_HEARTBEAT: Final[timedelta] = timedelta(seconds=20)
 _DEFAULT_BUCKET: Final[str] = "scheduler-locks"
 
+#: How long one holder may keep renewing before the heartbeat gives up.
+#:
+#: A holder that DIES stops heartbeating and the TTL hands the lock on within
+#: ``ttl``. A holder that WEDGES does not: its heartbeat task is healthy and
+#: goes on renewing while the body makes no progress, so the lock is held for
+#: as long as the process lives. That is how one stuck pod blocked every other
+#: pod's tick in the 2026-08 incident -- the lock behaved exactly as designed
+#: and the fleet starved anyway.
+#:
+#: Renewal therefore stops here, and the TTL takes over. Sized far above any
+#: caller in this workspace (scheduler ticks, a derived-collection rebuild, a
+#: backup) so a healthy long job is never interrupted: losing a lock a running
+#: body still believes it holds is a worse failure than the one this prevents.
+#:
+#: Module-private on purpose. Making it a parameter would grow this package's
+#: public API, which on a patch line is precisely what
+#: ``tests/enforcement/test_api_growth_requires_a_minor_bump.py`` refuses. A
+#: deployment that needs its own number is a reason to add the parameter in a
+#: MINOR release.
+_MAX_HOLD: Final[timedelta] = timedelta(hours=6)
+
 
 @asynccontextmanager
 async def nats_distributed_lock(
@@ -169,19 +190,48 @@ async def nats_distributed_lock(
         raise LockHeld(f"lock already held: {key}")
 
     heartbeat_seconds = heartbeat.total_seconds()
+    # The revision this holder last wrote. Every release is fenced on it, so a holder whose
+    # lock expired underneath it cannot delete the entry its successor now owns -- see the
+    # `finally` below.
+    held_revision = acquired
 
     async def _heartbeat() -> None:
-        """Refresh the KV entry until cancelled.
+        """Refresh the KV entry until cancelled, or until this holder has held too long.
 
-        ``CancelledError`` is the normal exit path (the contextmanager
-        cancels us on body completion). Any other exception is logged
-        at WARNING so the orphan-lock-after-heartbeat-death case is
-        diagnosable; the lock then auto-expires after ``ttl``.
+        ``CancelledError`` is the normal exit path (the contextmanager cancels us on body
+        completion). Any other exception is logged at WARNING so the
+        orphan-lock-after-heartbeat-death case is diagnosable; the lock then auto-expires
+        after ``ttl``.
+
+        **Renewal is not unconditional, and that is the point.** A holder that dies stops
+        heartbeating and the TTL hands the lock on. A holder that WEDGES keeps a perfectly
+        healthy heartbeat task renewing a lock whose body is making no progress, which is
+        how one stuck pod starved a whole fleet. Past :data:`_MAX_HOLD` this stops renewing
+        and lets the TTL do it -- loudly, at ERROR, because a lock released under a live
+        body is a real event a human needs to see.
         """
+        nonlocal held_revision
+        deadline = asyncio.get_running_loop().time() + _MAX_HOLD.total_seconds()
         try:
             while True:
                 await asyncio.sleep(heartbeat_seconds)
-                await bucket.put(key=key, value=b"1")
+                if asyncio.get_running_loop().time() >= deadline:
+                    log.error(
+                        "nats_distributed_lock: holder has kept this lock past the maximum hold "
+                        "and is still running; refusing to renew so the TTL can hand it on. The "
+                        "body is wedged or far slower than this lock was sized for -- another "
+                        "holder may now acquire it.",
+                        extra={
+                            "extra_data": {
+                                "key": key,
+                                "bucket": bucket_name,
+                                "max_hold_seconds": _MAX_HOLD.total_seconds(),
+                                "ttl_seconds": ttl.total_seconds(),
+                            }
+                        },
+                    )
+                    return
+                held_revision = await bucket.put(key=key, value=b"1")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - boundary: log + let TTL expire the lock
@@ -208,9 +258,16 @@ async def nats_distributed_lock(
         # manager protocol.
         await asyncio.gather(hb_task, return_exceptions=True)
         try:
-            await bucket.delete(key=key)
+            # FENCED on the revision this holder last wrote. An unconditional delete is a
+            # correctness bug whenever the lock did not survive the body: if the heartbeat
+            # died, or stopped at the maximum hold, the TTL expires the key and another pod
+            # acquires it -- and a plain delete then removes the SUCCESSOR's lock, handing
+            # the same key to a third holder while the second still believes it owns it.
+            # With the fence, a stale holder's cleanup no-ops instead.
+            await bucket.delete(key=key, revision=held_revision)
         except KvError as exc:
             log.debug(
-                "nats_distributed_lock: cleanup delete failed (key already gone?)",
+                "nats_distributed_lock: cleanup delete failed (key already gone, or the lock "
+                "moved to another holder and the revision fence refused)",
                 extra={"extra_data": {"key": key, "bucket": bucket_name, "error": str(exc)}},
             )
