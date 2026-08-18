@@ -374,12 +374,34 @@ free of everything.
   the conversation, a TTL? One floor is known: discodon's research delivery is
   asynchronous, landing on a later turn than the one that asked, so a
   turn-scoped handle would be dead before its first reader. Conversation-scoped
-  is the minimum that works for a consumer we already have.
+  is the minimum that works for a consumer we already have. *Task-02 takes
+  conversation scope as the ruling and adds the part this asked about but did
+  not name: resolve is an authorisation boundary the offload path never had.*
 - **Who owns the size guard, and where does it go?** (§3.1) Nothing on
   either fanout path measures a frame before publishing it, so the ceiling
   is discovered as a caught exception and a log line. `RoomFanout.broadcast`
   is the one place both scriob's rooms and any future consumer pass through.
+  *Answered in task-03: the guard is at the wire, the policy is at the frame,
+  and they meet at a typed error.*
 - **Does anything but chat consume this?** If a non-chat consumer wants
   structure, the tier vocabulary may need a name that isn't about citations.
 - **scriob: is a room-level tier acceptable?** (§3) It's the only answer that
   keeps one frame per event.
+
+## 7. The build
+
+Three tasks, written against the code as it stands on `develop` at `d27e3875`
+(which includes #355). Each is independently landable and each says what it
+refuses to do.
+
+| Task | What it settles |
+|---|---|
+| [task-01 — the declared tier reaches the wire](structured-result-tiers-task-01-tier-on-the-wire.md) | The vocabulary, `structured_tier` on both faces, and the rule that the tier is projected **before** the bound measures. The withholding is built in `search.bind`, which already owns the border payload; `langgraph` learns the tier through a port and never the schema. |
+| [task-02 — over the bound is a handle, never an omission](structured-result-tiers-task-02-handle-not-omission.md) | The `full` client's handle, on the store port the offload seam already established — a sibling protocol rather than a grown one, because growing a published Protocol breaks its implementers. Carries §4's forward constraint: a handle addresses a result set. |
+| [task-03 — the ceiling above the bound](structured-result-tiers-task-03-the-ceiling.md) | §3.1's ceiling gets a type (`PayloadTooLargeError`) at the one publish funnel, and `max_payload` becomes readable so a frame builder can pick a shape that fits instead of discovering the limit as an exception. Independent of the other two, and worth landing whether or not tiers ship. |
+
+**What stays with the consumers.** Where the declaration is made — a connect
+parameter, a subscribe frame, or a per-turn field — is each product's call, and
+this repo's work ends at a `tier=` argument the host fills in. So does the
+resolve endpoint: task-02 ships the handle and the obligations on whoever
+resolves it, and metallm already runs the shape it should follow.
