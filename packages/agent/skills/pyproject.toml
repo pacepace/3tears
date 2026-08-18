@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-skills"
-version = "0.25.0"
+version = "0.26.0"
 description = "Procedural memory for LLM agents -- skill definitions + invocation history"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,8 +22,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.25.0,<0.26.0",
-    "3tears-observe>=0.25.0,<0.26.0",
+    "3tears>=0.26.0,<0.27.0",
+    "3tears-observe>=0.26.0,<0.27.0",
     "langchain-core",
     "pydantic",
     "uuid-utils",

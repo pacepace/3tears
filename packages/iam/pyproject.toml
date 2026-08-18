@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-iam"
-version = "0.25.0"
+version = "0.26.0"
 description = "Identity and access primitives: OAuth2/OIDC, SAML, passwords, JWT sessions, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -27,19 +27,19 @@ dependencies = [
     # ReplayGuard/RevocationGuard/WindowedCounter (coordination), and
     # seal/open_secret (encryption) for TOTP seed material at rest. Forking
     # any of those would give the platform two answers to the same question.
-    "3tears>=0.25.0,<0.26.0",
-    "3tears-observe>=0.25.0,<0.26.0",
+    "3tears>=0.26.0,<0.27.0",
+    "3tears-observe>=0.26.0,<0.27.0",
     # the sensitive-action taxonomy. agent-acl's ImpersonationCategory and
     # identity-core's SensitiveActionCategory declared the same six strings
     # independently, each documenting that the copy existed only because no
     # import path connected them. This package is that path, so the enum is
     # imported here and the second declaration goes away.
-    "3tears-agent-acl>=0.25.0,<0.26.0",
+    "3tears-agent-acl>=0.26.0,<0.27.0",
     # the KV adapters in threetears.iam.stores.nats_kv. Every state this
     # package keeps (auth codes, OAuth state, single-use tickets, attempt
     # counters) is short-lived and TTL'd, which is a KV bucket's job, not a
     # table's -- and both first consumers already run NATS.
-    "3tears-nats[client]>=0.25.0,<0.26.0",
+    "3tears-nats[client]>=0.26.0,<0.27.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
     # migrated in from an older system. bcrypt is verify-only here: nothing in
     # this package ever WRITES a bcrypt hash.
