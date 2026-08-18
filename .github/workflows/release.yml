@@ -306,57 +306,72 @@ jobs:
   # Tag pushes only, for the reason `github-release` gives at length: a dispatched
   # republish must not rebuild an image that is already out.
   sidecar-image:
+    # `needs: pypi-publish` IS the gate, and there is deliberately no `environment:`
+    # here. An earlier version put this job in the `pypi` environment on the theory
+    # that one approval would cover the release; GitHub gates per JOB, not per run, so
+    # it asked a second time -- and asked under a name that has nothing to do with what
+    # was being published. A container push prompting for "pypi" approval is the kind of
+    # thing a reader clicks through without reading, which is worse than no prompt.
+    #
+    # The publishing decision was already made: this job cannot start unless
+    # `pypi-publish` succeeded, and that one is environment-gated on a human. A second
+    # approval on the same run adds a click and no control.
     needs: pypi-publish
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
+    # GHCR, and the reason it needs no configuration is the reason to use it: the
+    # token is already here. `packages: write` on the workflow's own GITHUB_TOKEN is
+    # the whole credential, so there is no registry secret to create, rotate, or leak,
+    # and the namespace derives from the repository owner rather than from a variable
+    # somebody has to remember to set.
+    #
+    # It also removes the hazard the first draft of this job carried. That version fell
+    # back to Docker Hub when its variables were unset, so a repo that had merely merged
+    # this file would push a container image to a PUBLIC registry on its next release.
+    # GHCR has no such default: a package lands under this repository's own owner, and
+    # its visibility follows what the owner sets, starting private.
+    #
+    # The AGPL boundary is unaffected and worth stating, since the sidecar exists to keep
+    # it. Publishing an AGPL-3.0 image obliges the corresponding source to be available;
+    # this repository is public and contains it, so the obligation is already met by the
+    # thing being built.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
-      # NO DEFAULT DESTINATION, deliberately. An earlier draft of this job fell back to
-      # `docker.io` + the bake file's `aibots` namespace when the repo vars were unset,
-      # which means a repo that had merely merged this file would push a container image
-      # to PUBLIC Docker Hub the next time anyone cut a release. A registry is a
-      # publishing decision, and a default is a decision made on somebody's behalf.
-      #
-      # Unset, the job says so and stops. That leaves the sidecar exactly where it was --
-      # unpublished -- which is the honest outcome for a destination nobody has named,
-      # and unlike the previous state it is now visible in the release run rather than
-      # silent.
-      - name: Require an explicitly configured registry
-        id: registry
-        env:
-          REGISTRY_HOST: ${{ vars.SIDECAR_REGISTRY_HOST }}
-          REGISTRY_NAMESPACE: ${{ vars.SIDECAR_REGISTRY }}
+      # The tag on a release, the dispatched version on a republish. `github.ref_name` is
+      # the tag for a push and the BRANCH NAME for a workflow_dispatch, so using it alone
+      # would tag an image `:main` on exactly the path CLAUDE.md documents for republishing
+      # a version whose artifacts went missing.
+      - name: Resolve the version to tag the image with
+        id: version
         run: |
-          if [ -z "${REGISTRY_HOST}" ] || [ -z "${REGISTRY_NAMESPACE}" ]; then
-            echo "::warning::sidecar image NOT published: set the SIDECAR_REGISTRY_HOST and" \
-                 "SIDECAR_REGISTRY repository variables (and REGISTRY_USERNAME /" \
-                 "REGISTRY_TOKEN secrets) to enable it. Nothing is pushed to a default."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
+          VERSION="${{ inputs.version || github.ref_name }}"
+          case "$VERSION" in
+            v*) ;;
+            *) VERSION="v${VERSION}" ;;
+          esac
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tagging the sidecar image ${VERSION}"
 
       - name: Set up buildx
-        if: steps.registry.outputs.configured == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to the registry
-        if: steps.registry.outputs.configured == 'true'
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ vars.SIDECAR_REGISTRY_HOST }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push the sidecar image
-        if: steps.registry.outputs.configured == 'true'
         env:
-          VERSION: ${{ github.ref_name }}
-          REGISTRY: ${{ vars.SIDECAR_REGISTRY }}
+          VERSION: ${{ steps.version.outputs.value }}
+          # Only this job's invocation. `docker-bake.hcl`'s REGISTRY default is shared by
+          # every other target in the file, so changing it there would silently repoint
+          # images this job has nothing to do with.
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
         run: |
-          # The bake file tags ${REGISTRY}/nodriver-sidecar:${VERSION} and :latest, and the
-          # release's own pre-flight has already verified VERSION matches the tag.
           docker buildx bake --file docker-bake.hcl nodriver-sidecar --push
+          echo "pushed ghcr.io/${{ github.repository_owner }}/nodriver-sidecar:${VERSION}"
