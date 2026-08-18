@@ -30,7 +30,8 @@ from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
-from threetears.nats.errors import KvError
+from threetears.nats._publish import run_bounded
+from threetears.nats.errors import KvError, PublishTimeoutError
 
 if TYPE_CHECKING:
     from nats.js.kv import KeyValue
@@ -41,6 +42,21 @@ __all__ = ["NatsKvBucket"]
 
 
 log = get_logger(__name__)
+
+#: Ceiling on one KV operation, ack included.
+#:
+#: Module-private, and that is deliberate rather than an oversight: exposing it
+#: (as a constant or as a per-call parameter) would grow this package's public
+#: surface, which on a patch line is the defect
+#: ``tests/enforcement/test_api_growth_requires_a_minor_bump.py`` exists to
+#: refuse. A deployment needing a different number is a reason to widen the
+#: surface in a MINOR release, not to widen it quietly here.
+#:
+#: Matches the JetStream publish ceiling because it bounds the same round trip:
+#: every KV write ends in ``js.publish`` (``KeyValue.put`` / ``_update`` /
+#: ``delete`` / ``purge`` all do), reached through the flush path that discards
+#: ``CancelledError``. Reads travel the same path and get the same bound.
+_KV_OP_TIMEOUT_SECONDS: float = 10.0
 
 
 class NatsKvBucket:
@@ -228,12 +244,39 @@ class NatsKvBucket:
         propagates to the caller's ``KvError`` wrap.
         """
         try:
-            return await op()
+            return await self._bounded(op)
         except passthrough:
+            raise
+        except PublishTimeoutError:
+            # A wedged operation is not a vanished bucket. Re-opening runs another KV call
+            # against the same unresponsive broker, so the retry wedges too -- one deadline
+            # becomes two, and the caller waits twice as long to learn the same thing.
             raise
         except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
             await self._reopen()
-            return await op()
+            return await self._bounded(op)
+
+    async def _bounded(self, op: Any) -> Any:
+        """Run one KV op under a deadline the operation cannot swallow.
+
+        **Every KV operation reaches the broker through the same path a JetStream publish
+        does**, and that path discards ``CancelledError`` (see
+        :mod:`threetears.nats._publish`). So an unresponsive broker hangs a KV call forever
+        and the caller's own ``asyncio.wait_for`` cannot break it -- the identical defect
+        that froze a downstream fleet through ``jetstream_publish``, at a different call
+        site. ``KeyValue.put`` is literally ``await self._js.publish(...)`` with no timeout.
+
+        This matters most for :func:`~threetears.nats.distributed_lock.nats_distributed_lock`,
+        which is KV-backed: a wedged heartbeat or release holds the lock for the length of
+        the wedge, so ONE stuck pod blocks every other pod's turn at it.
+
+        :param op: builds the KV coroutine to run
+        :ptype op: Any
+        :return: whatever the operation returned
+        :rtype: Any
+        :raises PublishTimeoutError: the operation blew its deadline or ignored cancellation
+        """
+        return await run_bounded(op, timeout=_KV_OP_TIMEOUT_SECONDS, what=f"kv operation on {self._full_name}")
 
     # ------------------------------------------------------------------
     # operations

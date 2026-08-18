@@ -628,10 +628,13 @@ disabled, since there is no second request to be split from. A warning rather th
 since a deployment may want exactly that, but it should have to be a decision.
 
 In the gate-proxied shape the warning names the unproxied drivers, which is how a backend that
-cannot honour an exit at all gets reported. Most backends cannot: `CamoufoxDriver` launches a
-browser with no proxy support, and `DocumentDriver`, `ListingDetailDriver` and
-`MultiDocumentDriver`'s listing fetch each build a bare `httpx.AsyncClient`. Threading an exit
-through them is tracked in the backlog; until then the bypass is loud rather than closed.
+cannot honour an exit at all gets reported. **When this was written most backends could not**,
+and the bypass was loud rather than closed: `CamoufoxDriver` launched a browser with no proxy
+argument, and `DocumentDriver`, `ListingDetailDriver` and `MultiDocumentDriver`'s listing fetch
+each built a bare `httpx.AsyncClient`. All four now take an exit -- the httpx ones through the
+client they already construct, Camoufox through Playwright's `proxy` launch option -- so the
+warning's remaining job is a consuming application's own backend, not this package's. The
+history is kept because the asymmetry it explains below is unchanged.
 
 Note the asymmetry, because it bounds what this warning is worth. In the drivers-proxied shape
 the message names the PROXIED drivers, so a deployment that proxied what it could and left the
