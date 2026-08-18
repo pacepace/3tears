@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.24.7 -- 2026-08-18
 
 ### Added
 
