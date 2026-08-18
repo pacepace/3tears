@@ -45,6 +45,18 @@ services:
     environment:
       SCREEN_GEOM: "1920x1080x24"
       PORT: "8088"
+      # The sidecar binds LOOPBACK by default (see entrypoint.sh). Compose gives each
+      # container its own network namespace, so a loopback bind would make 8088
+      # unreachable even through the published port above -- this widens it deliberately.
+      #
+      # Read what that costs, because it is the whole of SCR-1FK5 point 3: publishing to
+      # `127.0.0.1` narrows HOST-side access only. Any other container on this compose
+      # network reaches the sidecar by service name with nothing in the way, and 8088
+      # mints session tokens and returns raw cookie jars. On Kubernetes the pod boundary
+      # answers this and the loopback default applies untouched; under compose the
+      # assumption is "everything on this network is trusted", and it is now stated here
+      # instead of being inherited from a hard-coded 0.0.0.0 nobody could see.
+      BIND_HOST: "0.0.0.0"
       # Uncomment these two WITH the tor service at the bottom of this file to send this
       # container's browser out through TOR. They live inside this block deliberately: a second
       # `environment:` key on the same service is a YAML duplicate, and the later one wins

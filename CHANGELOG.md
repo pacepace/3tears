@@ -294,6 +294,78 @@ packages (bumped in lock-step).
   entity built against them addressed rows by the bare id. That went unnoticed
   while each entity carried its own `_id` override and surfaced the moment the
   overrides were deleted.
+## v0.26.1 -- 2026-08-18
+
+The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the
+API-growth guard confirms it on a working-tree read rather than a stale HEAD.
+
+### Fixed
+
+- **The sidecar image had no publish path at all.** `docker-bake.hcl` defined the
+  target and the release bumped its `VERSION`, but no workflow ever built it --
+  so every sidecar change reached `main`, got tagged, and shipped nowhere. The
+  0.26.0 error-model fix was sitting in exactly that state. `release.yml` now
+  builds and pushes `nodriver-sidecar` behind the same `pypi` environment gate,
+  so one approval covers the whole release.
+
+  A fix that cannot be deployed is not a shipped fix, and nothing said so.
+
+  **It publishes to GHCR**, at `ghcr.io/<owner>/nodriver-sidecar`. That needs no
+  configuration at all, which is the reason to use it: `packages: write` on the
+  workflow's own `GITHUB_TOKEN` is the whole credential, so there is no registry
+  secret to create, rotate or leak, and the namespace comes from the repository
+  owner rather than a variable somebody must remember to set. A package lands
+  under this repo's owner and its visibility starts private.
+
+  *Corrected 2026-08-18, after this version was tagged.* The job first shipped
+  with `SIDECAR_REGISTRY_HOST` / `SIDECAR_REGISTRY` variables and no default,
+  because the draft before THAT fell back to Docker Hub -- which would have pushed
+  a container image to a public registry on the next release of any repo that
+  merely merged the file. GHCR removes both the hazard and the configuration. The
+  v0.26.1 image was published by re-running the release against this workflow;
+  the tagged tree still carries the variables version.
+
+- **`scrape` (sidecar): 8088 binds loopback by default.** `entrypoint.sh` bound
+  `0.0.0.0` unconditionally, so "everything on this network is trusted" was an
+  assumption nothing stated and nothing enforced -- on a port that mints session
+  tokens and returns raw cookie jars and authenticates nobody by design.
+
+  `BIND_HOST` now defaults to `127.0.0.1`. On Kubernetes the front-door container
+  shares the pod's network namespace, so the default is exactly right and nothing
+  outside the pod reaches the port. Under compose each container has its own
+  namespace, so `docker-compose.yml` sets `BIND_HOST=0.0.0.0` explicitly, with a
+  comment naming what that admits. Binding loopback unconditionally was rejected:
+  it does not restrict compose, it breaks compose, and a default that cannot work
+  in one of two supported shapes is an outage with a security-shaped
+  justification. Closes `SCR-1FK5` point 3. **BREAKING** for a deployment that
+  reaches the sidecar cross-container without setting `BIND_HOST`.
+
+- `nats`: `OpLog.last_seq()` is bounded. A read on a live path -- a consumer clamps
+  its fence to it before appending -- so an unresponsive broker hanging here wedged
+  the caller mid-operation. Subscription-setup calls are deliberately left
+  unbounded and now say so: a hang while opening a stream stops the process from
+  starting, which an operator sees immediately. It is the calls that wedge a
+  *running* system while it still looks healthy that need a ceiling.
+
+- `core`: `NatsKvCache.ping()` is bounded. It is a raw `js.account_info()` rather
+  than a call routed through `NatsKvBucket`, so it did not inherit that class's
+  ceiling -- and an unbounded health check answers "is the broker reachable?" by
+  never answering, wedging whatever polls it. A timeout is now a definite `False`.
+
+### Changed
+
+- **The sidecar's own version is `0.2.0`** (from `0.1.0`), carrying 0.26.0's
+  error-shape break and this release's bind-address break. It sits outside the
+  family lockstep precisely so it can say "I broke something" without a framework
+  release.
+
+  `docs/sidecar-http-contract.md` now records **why the error-shape change did not
+  bump `/v1`**, rather than leaving a silent exception in the first document to
+  state the rule: there are no deployed consumers, `/v2/hitl` beside `/v1/render`
+  would fragment the surface permanently, and the service's own version is the
+  signal that moved. The exception is available exactly while the consumer count
+  is zero, and will not be twice.
+
 ## v0.26.0 -- 2026-08-18
 
 Closes every known open defect in the repo.

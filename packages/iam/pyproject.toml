@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-iam"
-version = "0.26.0"
+version = "0.26.1"
 description = "Identity and access primitives: OAuth2/OIDC, SAML, passwords, JWT sessions, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them"
 readme = "README.md"
 requires-python = ">=3.14"

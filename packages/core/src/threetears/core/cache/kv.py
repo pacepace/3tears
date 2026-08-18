@@ -37,6 +37,7 @@ from typing import Any
 
 from threetears.nats import NatsClient as _NatsTransport
 from threetears.nats import NatsKvBucket
+from threetears.nats._publish import run_bounded
 from threetears.observe import get_logger
 
 __all__ = [
@@ -45,6 +46,12 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: Ceiling on the JetStream reachability probe in :meth:`NatsKvCache.ping`.
+#:
+#: Shorter than an ordinary KV operation on purpose: a health check that takes ten
+#: seconds to say "unreachable" has already failed whatever was waiting on it.
+_PING_TIMEOUT_SECONDS: float = 3.0
 
 
 @dataclass
@@ -423,6 +430,17 @@ class NatsKvClient:
     async def ping(self) -> bool:
         """health check. returns ``True`` if JetStream is reachable.
 
+        **Bounded**, and a health check is the worst place to leave unbounded. This is a raw
+        ``nats-py`` call rather than one routed through :class:`NatsKvBucket`, so it does not
+        inherit that class's ceiling -- and every ``nats-py`` call reaches the broker through a
+        flush path that discards ``CancelledError``, which means an unresponsive broker hangs
+        it and the caller's own ``asyncio.wait_for`` cannot break it (see
+        ``threetears.nats._publish``).
+
+        Unbounded, this answers "is the broker reachable?" by never answering, which is the one
+        response a health check must not give: whatever polls it wedges, and the deployment
+        reports neither healthy nor unhealthy. A timeout here is a definite ``False``.
+
         :return: reachability indicator
         :rtype: bool
         """
@@ -430,7 +448,7 @@ class NatsKvClient:
             return False
         try:
             js = self._transport.jetstream_context()
-            await js.account_info()
+            await run_bounded(js.account_info, timeout=_PING_TIMEOUT_SECONDS, what="jetstream account_info")
             return True
         except Exception:
             return False

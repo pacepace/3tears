@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-geo"
-version = "0.26.0"
+version = "0.26.1"
 description = "Slippy-map tile geometry: WKB decoding, zoom bands, and MVT encoding in application code (no PostGIS)"
 readme = "README.md"
 requires-python = ">=3.14"

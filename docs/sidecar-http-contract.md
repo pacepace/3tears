@@ -1,13 +1,12 @@
 # The nodriver sidecar's HTTP contract
 
-**Status:** the error model and the versioning rule are **decided and built** (2026-08-18).
-The access posture below is **recorded analysis with a recommendation, awaiting Pace's
-ruling** — it is `SCR-1FK5` points 1–3, and this document exists so that ruling is a read
-rather than a cold start.
+**Status:** decided and built (2026-08-18). The error model, the versioning rule and the
+access posture are all settled — `SCR-1FK5` point 3 was ruled on the same day and is
+implemented below.
 
-**Closes:** `SCR-0HB4` (this contract had no recorded versioning or error-model decision).
-**Advances:** `SCR-1FK5` points 1, 2 and 3 — points 4, 5 and 6 were closed when `SCR-7VD2`
-shipped on 2026-07-27.
+**Closes:** `SCR-0HB4` (this contract had no recorded versioning or error-model decision)
+and `SCR-1FK5` points 1, 2 and 3 — points 4, 5 and 6 were closed when `SCR-7VD2` shipped on
+2026-07-27.
 
 **Scope.** Port 8088 on `packages/scrape/sidecar`. That service imports nothing from
 `threetears.*`, is AGPL-licensed separately from the rest of this repo, and carries its own
@@ -92,6 +91,28 @@ That last sentence is the load-bearing one. "Ignore unknown fields" is only safe
 response can be asked what actually happened; a field whose effect is unobservable must not be
 added under this rule.
 
+### The 2026-08-18 error-shape change did NOT bump `/v1`, and here is why
+
+Changing `error` from a string to an object on the HITL routes is, by the rule stated
+directly above, a **breaking change to a field's type**. It shipped inside `/v1` anyway.
+That is an exception, and it is written down rather than left as a silent inconsistency in
+the first document to state the rule.
+
+The reasons, in order of weight:
+
+1. **There are no deployed consumers.** The sidecar ships as a container image that no
+   automated pipeline had ever published, and no application uses it. A migration path
+   protects users who exist.
+2. **`/v2/hitl` alongside `/v1/render` would fragment the surface permanently** to fix an
+   inconsistency, which is a worse outcome than the inconsistency.
+3. **The service carries its own version, and that is the signal that moved.** The sidecar
+   went `0.1.0` → `0.2.0` in the same change. It is deliberately outside the family
+   lockstep precisely so it can say "I broke something" without a framework release.
+
+**This exception does not generalise.** Once anything depends on this API, a type change
+bumps `/v1` as the rule says. The exception is available exactly while the consumer count
+is zero, and that will not be true twice.
+
 **Version skew is expected to be small but real**: the sidecar ships as a container on its own
 cadence and is not part of the family lockstep, so a deployment can have a newer library
 against an older sidecar. The rules above are what make that survivable.
@@ -116,7 +137,7 @@ container on the same compose network reaches it by service name with nothing in
 Kubernetes the pod boundary answers this; under compose — which is what this repo ships — it
 does not. The session token only proves the caller holds something *this container minted*.
 
-### Point 1 — per-route posture. RECOMMENDED: three tiers, not one gate
+### Point 1 — per-route posture. DECIDED: three tiers, not one gate
 
 A single allow/deny over the port is the wrong shape, because these routes are not worth the
 same:
@@ -132,7 +153,7 @@ removing the last capability check from endpoints that return raw cookie jars is
 reduction. That decision belongs to this point and is hereby settled: **the token check stays
 on the sensitive tier regardless of what fronts the port.**
 
-### Point 2 — what a minted token entitles its holder to. RECOMMENDED contract
+### Point 2 — what a minted token entitles its holder to. DECIDED contract
 
 > A session token is a **capability over exactly one session**: it permits driving that
 > session's display, opening tabs within it, completing it (which discloses its cookie jar),
@@ -143,17 +164,26 @@ on the sensitive tier regardless of what fronts the port.**
 Stating it this way is what lets a platform gate against it: the platform decides *who* may be
 issued one, and the sidecar honours it as a bearer capability and nothing more.
 
-### Point 3 — the container-network path. RECOMMENDED: state the assumption, then close it
+### Point 3 — the container-network path. DECIDED 2026-08-18: safe by default, widened out loud
 
-Today "same network means trusted" is an **unstated** assumption. It should become either a
-stated one or a closed one. The recommendation is to close it under compose, cheaply: bind
-uvicorn to loopback inside the container and let the in-pod front door be the only thing that
-reaches it. Under Kubernetes the pod boundary already provides this; the compose path is the
-one shipping without it.
+`entrypoint.sh` bound `0.0.0.0` unconditionally, so "everything on this network is trusted"
+was an assumption nothing stated and nothing enforced.
 
-**This is the open ruling.** Binding to loopback is a one-line change to `entrypoint.sh` with
-a real blast radius — it breaks any deployment that reaches the sidecar cross-container
-today — so it is recorded here rather than made.
+**The bind address is now `BIND_HOST`, defaulting to `127.0.0.1`.**
+
+- **On Kubernetes** — the shipping shape since `SCR-7VD2` — the front-door container shares
+  the pod's network namespace, so the loopback default is exactly right and nothing outside
+  the pod can reach 8088 at all. A real reduction in exposure, taken by default.
+- **Under compose**, each container has its own namespace, so a loopback bind makes the port
+  unreachable even through a published port. `docker-compose.yml` therefore sets
+  `BIND_HOST=0.0.0.0` explicitly, with a comment naming what that admits: any other container
+  on the network reaches a port that mints session tokens and returns raw cookie jars.
+
+Binding loopback unconditionally was considered and rejected. It does not merely restrict
+compose, it breaks compose outright, and a default that cannot work in one of the two
+supported shapes is not a security improvement — it is an outage with a security-shaped
+justification. Making the wider bind **explicit and annotated** is what converts an inherited
+assumption into a stated one, which is what this point asked for.
 
 ## 5. What is deliberately not decided here
 
