@@ -4,6 +4,64 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.26.1 -- 2026-08-18
+
+The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the
+API-growth guard confirms it on a working-tree read rather than a stale HEAD.
+
+### Fixed
+
+- **The sidecar image had no publish path at all.** `docker-bake.hcl` defined the
+  target and the release bumped its `VERSION`, but no workflow ever built it --
+  so every sidecar change reached `main`, got tagged, and shipped nowhere. The
+  0.26.0 error-model fix was sitting in exactly that state. `release.yml` now
+  builds and pushes `nodriver-sidecar` behind the same `pypi` environment gate,
+  so one approval covers the whole release.
+
+  A fix that cannot be deployed is not a shipped fix, and nothing said so.
+
+  **The job has no default registry.** Set `SIDECAR_REGISTRY_HOST` and
+  `SIDECAR_REGISTRY` (plus the `REGISTRY_USERNAME` / `REGISTRY_TOKEN` secrets) to
+  enable it; unset, it warns in the run and publishes nothing. A first draft fell
+  back to Docker Hub, which would have pushed a container image to a public
+  registry on the next release of any repo that merely merged the file. A
+  registry is a publishing decision, and a default is that decision made on
+  somebody else's behalf.
+
+- **`scrape` (sidecar): 8088 binds loopback by default.** `entrypoint.sh` bound
+  `0.0.0.0` unconditionally, so "everything on this network is trusted" was an
+  assumption nothing stated and nothing enforced -- on a port that mints session
+  tokens and returns raw cookie jars and authenticates nobody by design.
+
+  `BIND_HOST` now defaults to `127.0.0.1`. On Kubernetes the front-door container
+  shares the pod's network namespace, so the default is exactly right and nothing
+  outside the pod reaches the port. Under compose each container has its own
+  namespace, so `docker-compose.yml` sets `BIND_HOST=0.0.0.0` explicitly, with a
+  comment naming what that admits. Binding loopback unconditionally was rejected:
+  it does not restrict compose, it breaks compose, and a default that cannot work
+  in one of two supported shapes is an outage with a security-shaped
+  justification. Closes `SCR-1FK5` point 3. **BREAKING** for a deployment that
+  reaches the sidecar cross-container without setting `BIND_HOST`.
+
+- `core`: `NatsKvCache.ping()` is bounded. It is a raw `js.account_info()` rather
+  than a call routed through `NatsKvBucket`, so it did not inherit that class's
+  ceiling -- and an unbounded health check answers "is the broker reachable?" by
+  never answering, wedging whatever polls it. A timeout is now a definite `False`.
+
+### Changed
+
+- **The sidecar's own version is `0.2.0`** (from `0.1.0`), carrying 0.26.0's
+  error-shape break and this release's bind-address break. It sits outside the
+  family lockstep precisely so it can say "I broke something" without a framework
+  release.
+
+  `docs/sidecar-http-contract.md` now records **why the error-shape change did not
+  bump `/v1`**, rather than leaving a silent exception in the first document to
+  state the rule: there are no deployed consumers, `/v2/hitl` beside `/v1/render`
+  would fragment the surface permanently, and the service's own version is the
+  signal that moved. The exception is available exactly while the consumer count
+  is zero, and will not be twice.
+
 ## v0.26.0 -- 2026-08-18
 
 Closes every known open defect in the repo.
