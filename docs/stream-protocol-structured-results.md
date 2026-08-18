@@ -1,9 +1,13 @@
 # Stream protocol: the channel for structured tool results
 
-**Status:** design, for review — 2026-08-14. Nothing here is built.
-**Ruling needed from:** 3tears (owns the contracts), metallm (first frontend
-consumer), chat-kit workstream (§4.11 — the design's actual client), scriob and
-samsung (planned chat surfaces).
+**Status:** **APPROVED 2026-08-18**, and the in-repo half is **built** — see
+§8. The five decisions below stand as written except **D-S2, which the
+consumers' own code reversed**: no new frame type is needed, and adding one
+would have broken the mapping scriob's transport already uses. The correction
+is recorded in place at D-S2 rather than by editing the recommendation away.
+**Still needed from outside this repo:** metallm's inline bound (open question
+1), and the handle branch's producer (§8, the one thing D-S3 asks for that
+nothing here can supply without becoming a store).
 **Why now:** this is
 [`convergence-sequencing.md` Phase 2's third item](convergence-sequencing.md),
 the design-only one. Phase 2 was declared complete on 2026-08-12 having closed
@@ -27,6 +31,13 @@ the second, and has nowhere to live at the third.
 | in-process | `ToolMessage.artifact` | **Yes** — the typed projection, since [#318](https://github.com/pacepace/3tears/pull/318) / [#326](https://github.com/pacepace/3tears/pull/326) |
 | agent runtime | `ToolCompletedEvent` (`langgraph/events.py:133`) | **No** — `tool_name`, `tool_status`, `tool_duration_ms` |
 | wire to client | `Frame` (`channels/frames.py:70`) | **No** — `payload: str \| None`, "opaque body broadcast verbatim" |
+
+**A fourth row, missing until 2026-08-18** (D-S2's correction): the agent-runtime
+line is *two* events, not one. `ToolCompletedEvent` is the in-process custom
+event metallm builds; `ToolCallEndEvent`
+(`packages/langgraph/src/threetears/langgraph/streaming.py`) is the NATS
+streaming envelope scriob rides, and it carried the same three fields and the
+same nothing. Both are fixed together below.
 
 So a search runs, produces a fully typed candidate set with provenance, scores
 and per-criterion dispositions, and a streaming client is told: *a tool named
@@ -173,6 +184,38 @@ projection is JSON-encoded into it either way, and the real question is **which
 cheapest correct answer, and it keeps `payload`'s opacity honest — the frame
 *type* is what says how to read the body, which is what a discriminator is for.
 
+**Overtaken 2026-08-18 — the answer is (c), "neither", and this decision should
+not have been framed as a choice between two frame types.** Both options assume
+this document's author gets to choose the frame. Neither consumer lets them,
+and they do not even disagree in the same direction:
+
+| Consumer | Runtime event it builds | What reaches the browser |
+|---|---|---|
+| metallm | `ToolCompletedEvent` (`api/src/services/tool_loop.py:1942`, `converged_tool_loop.py:245`) | its **own** ws dataclass — `ToolInvocationEndMessage`, `type: "tool_invocation_end"` (`api/src/ws/protocol.py:409`), broadcast at `api/src/ws/handler.py:2483`. It does not use `threetears.channels` for chat at all; its only channels import is the webhook receiver |
+| scriob | `ToolCallEndEvent` (`server/src/scriob_server/chat/turn.py:519`, from an `awrap_tool_call` middleware holding the `ToolMessage`) | `threetears.channels.Frame` — but minted generically: `WsStreamTransport.publish` forwards each serialized `StreamEvent` as one frame **whose `type` is the event's own discriminator** (`server/src/scriob_server/chat/streaming.py:17`) |
+
+So a `tool.result` frame type would have been a 3tears surface with **no
+caller** — metallm mints its own message types and scriob mints frame types
+from event discriminators, which means a hand-added type is one scriob would
+never produce. Worse, it would have needed the receiver-first rollout of rule
+5, and paid it for nothing.
+
+Widening the **event** instead makes the frame follow for free: scriob's
+existing `tool_call_end` frame carries the structure inside the payload it
+already forwards, no new type, no rollout order, no exhaustive-match hazard.
+Rule 5 does not engage at all.
+
+**What this costs elsewhere:** the design's three-layer table (§1) is missing a
+row. `ToolCallEndEvent` is not the same object as `ToolCompletedEvent` — it is
+the NATS streaming vocabulary in `threetears.langgraph.streaming`, which calls
+itself "the single source of truth for the wire envelopes any 3tears app sends
+or receives on a streaming token channel", and it is the face scriob rides.
+D-S1(a) applied to one event and not the other would have dropped the structure
+at precisely the hop it was meant to cross, for the consumer whose wire this
+document reasoned about. **Both faces grew the field, in one commit, held
+together by a shared mixin and a test that refuses a channel field declared
+anywhere but on that mixin.**
+
 ### D-S3 — How much structure, and what happens when it is large?
 
 This is the substantive decision and the one most needing outside input.
@@ -252,13 +295,16 @@ class ToolCompletedEvent(FrameworkEvent):
     structured: dict[str, Any] | None = None
 ```
 
-On the wire, one frame:
+On the wire, one frame — **and not a new one; see D-S2's correction.** What
+scriob's transport actually sends, given the widened `ToolCallEndEvent`, is the
+frame it already sent, with the structure inside the payload it already
+forwards:
 
 ```json
 {
-  "type": "tool.result",
-  "room": "acme:story:main:chat",
-  "payload": "{\"search_results\": { ... the projection ... }}"
+  "type": "tool_call_end",
+  "room": "acme:story:chat:{session}",
+  "payload": "{\"type\":\"tool_call_end\",\"tool_name\":\"threetears.web_search\",\"structured\":{\"search_results\":{ ... }},\"structured_kind\":\"inline\", ...}"
 }
 ```
 
@@ -308,3 +354,148 @@ sibling field) so the client knows which one it got without probing the shape.
 - **The search-side contracts.** They are built, released and unchanged by this.
 - **metallm's frontend work itself.** This decides the channel; consuming it is
   metallm's, after its `feature/new-search` migration.
+
+## 8. The build — 2026-08-18
+
+Approved as written, with D-S2 corrected by its own consumers. What shipped is
+the channel; what did not is the one branch that cannot be built here without
+this package becoming a store.
+
+**Shipped** (`packages/langgraph`):
+
+| Piece | Where | Why it is that shape |
+|---|---|---|
+| `structure_for_stream(artifact, *, max_chars)` | `tool_structure.py` | the whole decision — inline, omitted, or absent — in one function, so neither face makes it twice and the answer cannot differ per emitter |
+| `StructuredToolResultFields` mixin (`structured`, `structured_kind`) | `tool_structure.py` | the two faces inherit the pair rather than declaring it twice; a field added to the channel lands on both in the same commit, which is check 14's rule applied to the channel itself |
+| the pair on `ToolCompletedEvent` | `events.py` | D-S1(a) — metallm's face, one message and two registers |
+| the pair on `ToolCallEndEvent` | `streaming.py` | D-S1(a) applied to the hop §1's table missed — scriob's face |
+| `emit_tool_call_end(..., artifact=..., structured_max_chars=...)` | `streaming.py` | the caller already holds the `ToolMessage` when it stops the clock; it hands the artifact over and the emitter projects. A caller that passes nothing emits exactly what it emitted before |
+| 25 pins | `tests/test_tool_structure.py` | including the two the program's own scars demand, below |
+
+**An inline payload is the artifact verbatim.** Not a re-key, not a narrowing,
+not a projection this package builds: `bind` stays the only construction site
+(rule 2, `tests/enforcement/test_one_search_result_shape.py`), and the stream
+forwards what it was handed. That is also what generalises the channel past
+search for free — `page_finder` and `web_fetch` structure rides it with no
+per-tool code, which is open question 3 answered by construction rather than by
+a schema story.
+
+**Two pins earn their place beyond ordinary coverage.**
+
+*A reader that predates the field.* Both events grew a declared optional, and a
+declared optional **serializes** — `"structured":null` crosses the wire from the
+first emit, which is the exact shape that refused every call from a 0.24.1
+registry for three days on 2026-08-13. The argument that these models tolerate
+it is sound (neither sets `extra="forbid"`; `FrameworkEvent`'s docstring
+promises additive safety) and the outage was what an argument is worth. So the
+tests hand real emitted bytes to hand-written models that have never heard of
+`structured` — populated and null alike — rather than asserting the property in
+prose.
+
+*The drift pin holds where the fields are declared, and is itself driven.* The
+two faces do not have the same field set and never will, so equality is not the
+invariant — and comparing each face's intersection with the mixin to the
+other's cannot fail once both inherit it. What can fail is a channel field
+declared on a face rather than on the mixin, so that is what the pin refuses,
+and a companion test builds exactly that widening to show the pin names it.
+Driving the hard case is the Gate B sweep's finding about
+`test_egress_independence`, where two sides were each pinned against the value
+they were configured from and the requirement's own hard case had never been
+driven.
+
+**`structured_kind` is a `str`, not a `Literal`.** The design sketched
+`Literal["inline", "handle"]`. A closed vocabulary on a wire model means a
+reader predating a *fourth* kind rejects the event instead of ignoring the
+value — the 2026-08-13 lesson one level down, in the value rather than the
+field. The constants are the vocabulary; an unknown kind is a thing to skip.
+
+**Three kinds, not two.** `inline` and `handle` as designed, plus `omitted`:
+over the bound with no host store available, the event says so, in the payload,
+carrying its size and the bound it missed. D-S3's own rule — "the bound must be
+explicit in the payload, not implicit in the sender" — has to survive the case
+where the handle is unavailable, and silence there would be the
+silent-partial-answer defect wearing a null. The omission record is written
+under its own `omitted` key, never the projection's: D-S4's one hard *must not*
+applies to this payload as much as to a narrowed projection.
+
+### The consumers, and what building their halves found
+
+Both consumer halves are written and open, each against the code this design was
+elicited from:
+
+| Repo | PR | What it does |
+|---|---|---|
+| scriob | [scriob#180](https://github.com/pacepace/scriob/pull/180) | one argument — `ToolStreamMiddleware` hands `emit_tool_call_end` the `ToolMessage` artifact it is already holding. The frame follows for free |
+| metallm | [metallm#287](https://github.com/pacepace/metallm/pull/287) | the artifact is *lifted* (below), put on `ToolCompletedEvent` in both tool loops, and forwarded verbatim onto `ToolInvocationEndMessage` |
+
+Both are blocked only on a 3tears release carrying this channel; both were
+developed and tested against it through their `.3tears` path sources.
+
+**metallm's half was not the one-liner scriob's was, and the reason is the
+fourth appearance of one defect.** `_execute_service_tool` invoked
+`target.ainvoke(tool_args)` — bare args, not the tool call — so LangChain never
+built a `ToolMessage`, a `content_and_artifact` tool handed back the raw
+`(content, artifact)` **tuple**, and `str()` flattened it into prose. There was
+no artifact to forward because the artifact had never been separated. That is
+`ToolExecutor` before [#318](https://github.com/pacepace/3tears/pull/318) and
+`page_finder` before [#326](https://github.com/pacepace/3tears/pull/326),
+happening a fourth time — and this time on the **default** turn path of a
+production consumer, where the model has been reading stringified 2-tuples.
+
+Worth stating as a family lesson rather than a metallm bug: **invoking a tool by
+its args is the lossy call, and it is the one that looks obvious.** Four sites
+independently reached for it. The `agent-tools` surface could refuse to be
+called that way, or say so where the signature is read.
+
+### An adjacent finding, one layer over
+
+**The one in-repo emitter of `ToolCompletedEvent` cannot populate the channel,
+for the reason [#318](https://github.com/pacepace/3tears/pull/318) already
+fixed elsewhere.** The Claude-CLI provider
+(`packages/models/src/threetears/models/providers/_claude_cli.py:374-390`)
+invokes each wrapped tool as `tool.ainvoke(args)` — plain args, not the whole
+tool call — so LangChain never builds a `ToolMessage` and a
+`content_and_artifact` tool hands back the raw `(content, artifact)` tuple,
+which the wrapper then renders as `str(result)`. There is no artifact to read
+because the artifact was never separated, and the model sees a stringified
+tuple. That is the same defect `ToolExecutor` carried until #318 and
+`page_finder` carried until [#326](https://github.com/pacepace/3tears/pull/326)
+— the third of the four sites named above, and the only one still unfixed.
+
+Left unfixed here deliberately: it is a provider-path behaviour change (the
+tool text a running agent sees), it belongs with the two prior fixes rather
+than with a wire channel, and nothing about this design depends on it. Both
+consumers that will actually drive this channel invoke correctly today —
+metallm through its tool loops, scriob through an `awrap_tool_call` middleware
+that is handed the finished `ToolMessage`.
+
+### What is NOT built, and the decision it waits on
+
+**The handle branch has a discriminator and no producer.** D-S3(c) was approved
+from v1 on the strength of §2 — `ObjectHandle` + `GET /api/v1/media/{id}/url`
+is built, in production, and metallm is already its caller. That is true of
+*resolution*. It is not true of *production*: nothing anywhere stores a search
+projection and mints an id for it, and this package must not become the thing
+that does (D7 / D12 / D14, rule 4 — the stream is not a store).
+
+The family already owns the right-shaped port, and it is one line from this
+seam: `ToolResultOffloader`
+(`packages/langgraph/src/threetears/langgraph/offload.py`), injected on
+`config["configurable"]`, already moves oversized tool *content* out-of-band and
+returns a summary plus a handle. The open question is not how to build the
+producer; it is **which store the client resolves against**, and that is a
+consumer-side decision with two live answers:
+
+1. **Reuse the offload store.** Zero new infrastructure on the producing side —
+   the host that already injects an offloader gets the handle branch by
+   configuration. Cost: the `[ctx:<id>]` handle has **no client-facing resolve
+   surface** today (verified in §2: no `ctx:` reference anywhere in metallm's
+   frontend), so metallm or scriob owes an endpoint.
+2. **Mint an `ObjectHandle` into the object store.** Reuses the resolve path
+   metallm's frontend already implements for media — no new client work at all.
+   Cost: a producing-side store this seam does not have, and a lifetime
+   question the media path answers for images and does not answer for a
+   transient search projection.
+
+Until one is taken, an oversized projection is an honest `omitted` rather than
+a silent truncation, and the wire does not move when the answer arrives.

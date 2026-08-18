@@ -4,6 +4,57 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.24.7 -- 2026-08-18
+
+### Added
+
+- `langgraph`: a tool's structured result reaches the client. Both streaming
+  faces -- `ToolCompletedEvent` (the in-process custom event) and
+  `ToolCallEndEvent` (the NATS streaming envelope) -- carry a
+  `structured` / `structured_kind` pair, and `StreamingResponse.emit_tool_call_end`
+  accepts the `artifact` the caller already holds plus an optional
+  `structured_max_chars` bound.
+
+  A `response_format="content_and_artifact"` tool produces its typed projection
+  once, on `ToolMessage.artifact`. That reached the model's context and the MCP
+  face and died before the client: the streaming faces carried name, status and
+  duration, so a frontend wanting to draw citation cards had to re-parse the
+  prose the model read.
+
+  `threetears.langgraph.tool_structure.structure_for_stream` makes the decision
+  in one place. An inline payload is the artifact itself, so no second result
+  shape is born; over the bound with no host store the event says so in the
+  payload, with its size and the bound it missed, under a key nothing can
+  mistake for a projection -- a truncation that does not admit itself is the
+  silent-partial-answer defect. `structured_kind` is a `str` rather than a
+  `Literal` so a reader predating a later kind skips the value instead of
+  rejecting the event. The `handle` kind is declared with no producer here: the
+  stream is not a store, and which store a client resolves against is the
+  host's decision.
+
+  Additive for existing readers -- a caller passing no artifact emits what it
+  always did, plus two nulls -- and pinned that way by tests that hand real
+  emitted bytes to models that have never heard of the fields. Design:
+  `docs/stream-protocol-structured-results.md`.
+
+### Fixed
+
+- `core`: `NatsProxyL3Backend.acquire()` yields a connection that now has
+  `fetchval`, completing the asyncpg-Connection surface its own docstring claims.
+
+  It carried `execute` / `fetchrow` / `fetch` / `transaction` and omitted
+  `fetchval`, which the backend it proxies has had all along. A consumer writing
+  the obvious `async with pool.acquire() as conn: conn.fetchval(...)` got an
+  `AttributeError` -- and an AttributeError arriving from a database access layer
+  reads as a connectivity fault, so it sends the reader to the broker and the
+  network before the object surface. Reported from a downstream health check that
+  broke when its `.pool` started returning this proxy.
+
+  This is the same gap `NatsProxyL3Backend.fetchval` was itself added to close,
+  one layer down: a shape claiming conformance that a missing method quietly
+  denied. The new method delegates to `fetchrow`, so transaction routing and the
+  inside-transaction `namespace` refusal are inherited rather than duplicated.
+
 ## v0.24.6 -- 2026-08-17
 
 ### Fixed
