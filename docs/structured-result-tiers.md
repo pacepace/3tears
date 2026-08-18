@@ -1,7 +1,8 @@
 # Structured results: let the client say what it wants
 
 **Status:** proposal, for input — 2026-08-18. Nothing here is built.
-**Input wanted from:** metallm, scriob, the chat-kit workstream (§4.11).
+**Input wanted from:** metallm, scriob, the chat-kit workstream (§4.11), discodon
+(whose research flow is the case that produced §2.1 and half of §4).
 **Context:** the channel that carries a tool's structure to a client is
 [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md),
 built in [#355](https://github.com/pacepace/3tears/pull/355) with consumer
@@ -118,6 +119,24 @@ Same turn, a client that declared `full`:
 It gets the citations tier immediately — always renderable, never a spinner
 waiting on a fetch — plus a handle for the part that did not fit.
 
+### 2.1 Where a tier applies — and where it must not
+
+**Only at the client boundary.** A tier is a statement about what to put on a
+wire to a renderer. It is never a statement about what a tool produces, and an
+**in-process consumer always gets everything.**
+
+This is a rule rather than an obvious truth because the failure it prevents is
+silent. discodon's research tool runs an inner agent whose findings are checked
+by a grounding gate that matches every finding name and field value against the
+retrieved page text — `CorpusEntry.text`, accumulated per URL across the
+invocation's searches. When that inner search moves onto the 3tears leaf, that
+corpus *is* `Candidate.content.text` in the projection. A `citations` tier
+applied at Call or Aggregate — one layer too early — would strip exactly the
+text the grounding gate verifies against, and grounding would keep returning
+answers. Not a rendering regression: a verification one, failing quietly.
+
+So the tier is read where the frame is built, and nowhere else.
+
 ### Three rules that keep it honest
 
 1. **The payload names its own tier.** A narrowing that does not say it narrowed
@@ -169,6 +188,19 @@ declaration tells us. This is the argument for tiers stated in cost terms:
 **So: for a client that asked for `full`, over the bound is a handle, never an
 omission.** Storing what we already have converts waste into a cache hit.
 
+**And there are two reasons to keep what we bought, not one.** The argument
+above is *too big to send*. The other is *expensive to produce, cheap to keep* —
+and it stands on its own, without a frame anywhere in sight. discodon's research
+tool is the clean case: it buys full page text for up to eight results across
+three searches (Tavily `include_raw_content="text"`), accumulates roughly half a
+megabyte to two megabytes of corpus, uses it once for a grounding pass, and
+drops it. Nothing was ever too large for a frame, because none of it was ever
+going to a frame — and a follow-up question on a later turn buys it again.
+
+A handle is worth having for that alone. It is what lets a later turn re-check a
+claim against the pages the answer was actually grounded in, rather than
+re-searching and hoping the corpus comes back the same.
+
 Worth noting how short that step is: the offload seam
 (`threetears.langgraph.offload`) *already* moves a tool result over 8,192 chars
 out of band, into the three-tier store, for the model's context window — so on
@@ -211,7 +243,10 @@ for tool call X" can grow paging. One that resolves to "blob 9f2c" cannot.
 2. **Where is the declaration made** in each product: a subscribe frame, a
    connect parameter, or per turn in the request?
 3. **Who owns the resolve endpoint, and what is a handle's lifetime** — the
-   turn, the conversation, a TTL?
+   turn, the conversation, a TTL? One floor is already known: discodon's
+   research delivery is **asynchronous**, landing on a later turn than the one
+   that asked, so a turn-scoped handle would be dead before its first reader.
+   Conversation-scoped is the minimum that works for an existing consumer.
 4. **Does anything but chat consume this?** If a non-chat consumer wants
    structure, the tier vocabulary may need a name that is not about citations.
 5. **scriob: is a room-level tier acceptable?** (§3) It is the only answer that
