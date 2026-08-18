@@ -165,10 +165,16 @@ def structure_for_stream(
 ) -> StreamStructure:
     """decide what a streaming face carries for one tool result.
 
-    the artifact is forwarded, never rebuilt: an inline payload is
-    ``dict(artifact)`` and nothing else, so the streaming faces render the
-    same contract the in-process and MCP faces do and no new construction
-    site is born (success check 14 / D-S4).
+    the artifact is forwarded, never rebuilt: an inline payload is the
+    artifact's own JSON encoding decoded back, so the streaming faces render
+    the same contract the in-process and MCP faces do and no new construction
+    site is born (success check 14 / D-S4). the round trip is not a
+    re-shaping -- it is the encode this function already performs to measure
+    the bound, kept instead of thrown away, which buys two things a
+    ``dict(artifact)`` shallow copy does not: the payload is exactly the bytes
+    the size was measured against, and no nested container stays aliased to
+    the caller's artifact, so a tool mutating its own result after the
+    decision cannot rewrite what the wire already accounted for.
 
     a non-mapping artifact -- which is every content-format tool, i.e. most
     of them -- is not structure and is not reported as an omission; it is
@@ -186,15 +192,15 @@ def structure_for_stream(
     if not isinstance(artifact, Mapping) or not artifact:
         return NO_STREAM_STRUCTURE
 
-    payload: dict[str, Any] = dict(artifact)
     try:
-        encoded = json.dumps(payload, ensure_ascii=False)
+        encoded = json.dumps(dict(artifact), ensure_ascii=False)
     except TypeError, ValueError:
         return _omission(reason=OMISSION_REASON_UNSERIALIZABLE, size_chars=None, limit_chars=max_chars)
 
     if len(encoded) > max_chars:
         return _omission(reason=OMISSION_REASON_OVER_BOUND, size_chars=len(encoded), limit_chars=max_chars)
 
+    payload: dict[str, Any] = json.loads(encoded)
     return StreamStructure(structured=payload, structured_kind=STRUCTURED_KIND_INLINE)
 
 

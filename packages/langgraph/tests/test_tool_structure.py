@@ -11,10 +11,13 @@ is the thing success check 14 exists to refuse.
 **That the two faces cannot drift.** ``ToolCompletedEvent`` and
 ``ToolCallEndEvent`` are the same channel rendered for two consumers, and a
 field added to one and not the other is the defect this design is fixing,
-recreated. The pin compares the faces to *each other*, not each to a constant
--- the Gate B sweep's lesson, where egress independence was "pinned" by two
-tests that each compared a side to the value it was configured from and so
-could not have failed.
+recreated. The pin is that a channel field is declared **only on the shared
+mixin**, which makes symmetry structural rather than a property a test has to
+keep rechecking -- and a companion test builds the one-sided widening and
+holds that the pin names it, because a rule nothing has ever tripped is the
+Gate B sweep's lesson repeated (egress independence "pinned" by two tests that
+each compared a side to the value it was configured from, and so could not
+have failed).
 
 **That a reader predating the change still parses the bytes.** Both events
 grew a declared optional, and a declared optional is *serialized*, so it
@@ -30,6 +33,7 @@ never heard of ``structured``.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -61,6 +65,28 @@ _SEARCH_ARTIFACT: dict[str, Any] = {
     },
     "summary": "1 result",
 }
+
+#: every field of this channel is named for it, on the mixin and anywhere a
+#: face might be tempted to grow one of its own. that shared prefix is what
+#: lets a test tell a channel field apart from a face's own business.
+_CHANNEL_FIELD_PREFIX = "structured"
+
+
+def _channel_fields_declared_on(model: type[BaseModel]) -> set[str]:
+    """the channel fields this class declares itself, ignoring inherited ones.
+
+    ``model_fields`` flattens the MRO, so it cannot answer *where* a field was
+    declared -- and where is the whole question here. a class's own
+    ``__annotations__`` holds only what its own body wrote, which is exactly
+    the set that must be empty on both faces.
+
+    :param model: the pydantic model to inspect
+    :ptype model: type[BaseModel]
+    :return: names of locally-declared fields belonging to this channel
+    :rtype: set[str]
+    """
+    declared = model.__dict__.get("__annotations__", {})
+    return {name for name in declared if name.startswith(_CHANNEL_FIELD_PREFIX)}
 
 
 class _RecordingTransport:
@@ -136,15 +162,23 @@ class TestStructureForStream:
     def test_the_inline_payload_is_a_copy_not_the_caller_s_dict(self) -> None:
         """mutating the artifact after the decision cannot rewrite the wire.
 
+        the nested case is the one that bites: a projection is a dict of
+        dicts, so a shallow copy leaves every level below the first aliased
+        to the tool's own result, and the size the emitter measured stops
+        describing the payload it sends.
+
         :return: nothing
         :rtype: None
         """
-        artifact = dict(_SEARCH_ARTIFACT)
+        artifact: dict[str, Any] = deepcopy(_SEARCH_ARTIFACT)
         structure = structure_for_stream(artifact)
+
         artifact["summary"] = "mutated after the fact"
+        artifact["search_results"]["query"] = "mutated after the fact"
 
         assert structure.structured is not None
         assert structure.structured["summary"] == "1 result"
+        assert structure.structured["search_results"]["query"] == "otter population survey"
 
     def test_a_tool_with_no_artifact_carries_nothing(self) -> None:
         """the majority case costs two nulls and no omission record.
@@ -254,22 +288,48 @@ class TestStructureForStream:
 
 
 class TestTheTwoFacesAgree:
-    """one contract, two renderings -- compared to each other, not to a constant."""
+    """one contract, two renderings -- held together by where the fields live."""
 
-    def test_both_faces_carry_the_same_structure_fields(self) -> None:
-        """a field added to one face and not the other fails here.
+    def test_no_channel_field_is_declared_on_a_face_rather_than_the_mixin(self) -> None:
+        """a channel field that lands on one face and not the other fails here.
+
+        the faces do not have the same field set and never will --
+        ``correlation_id`` / ``success`` / ``elapsed_ms`` against
+        ``tool_status`` / ``tool_duration_ms`` -- so equality of field sets is
+        not the invariant and comparing the two *intersections with the mixin*
+        is not either: given both faces inherit the mixin, those intersections
+        are both the mixin and the comparison cannot fail. What can fail, and
+        is the actual contract, is that a field of this channel is declared
+        **only on the mixin**. Inheritance then makes symmetry structural
+        rather than something a test has to keep re-checking.
 
         :return: nothing
         :rtype: None
         """
         channel_fields = set(StructuredToolResultFields.model_fields)
 
-        completed = set(ToolCompletedEvent.model_fields)
-        call_end = set(ToolCallEndEvent.model_fields)
+        assert channel_fields <= set(ToolCompletedEvent.model_fields)
+        assert channel_fields <= set(ToolCallEndEvent.model_fields)
+        assert _channel_fields_declared_on(ToolCompletedEvent) == set()
+        assert _channel_fields_declared_on(ToolCallEndEvent) == set()
 
-        assert channel_fields <= completed
-        assert channel_fields <= call_end
-        assert completed & channel_fields == call_end & channel_fields
+    def test_the_drift_pin_rejects_a_face_that_grows_its_own_channel_field(self) -> None:
+        """the pin above can fail -- here is the shape that fails it.
+
+        a rule nothing has ever tripped is an assertion about the present, not
+        a guard on the future. This builds the one-sided widening the channel
+        exists to prevent and holds that the rule names it.
+
+        :return: nothing
+        :rtype: None
+        """
+
+        class _DriftedCallEnd(ToolCallEndEvent):
+            """one face growing a second structure field on its own."""
+
+            structured_citations: list[str] | None = None
+
+        assert _channel_fields_declared_on(_DriftedCallEnd) == {"structured_citations"}
 
     def test_both_faces_render_one_artifact_identically(self) -> None:
         """the same artifact produces the same payload on both faces.

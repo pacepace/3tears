@@ -213,7 +213,8 @@ or receives on a streaming token channel", and it is the face scriob rides.
 D-S1(a) applied to one event and not the other would have dropped the structure
 at precisely the hop it was meant to cross, for the consumer whose wire this
 document reasoned about. **Both faces grew the field, in one commit, held
-together by a shared mixin and a test that compares them to each other.**
+together by a shared mixin and a test that refuses a channel field declared
+anywhere but on that mixin.**
 
 ### D-S3 — How much structure, and what happens when it is large?
 
@@ -391,10 +392,16 @@ tests hand real emitted bytes to hand-written models that have never heard of
 `structured` — populated and null alike — rather than asserting the property in
 prose.
 
-*The faces compared to each other.* Not each to a constant. That is the Gate B
-sweep's finding about `test_egress_independence`, where two sides were each
-pinned against the value they were configured from and the requirement's own
-hard case had never been driven.
+*The drift pin holds where the fields are declared, and is itself driven.* The
+two faces do not have the same field set and never will, so equality is not the
+invariant — and comparing each face's intersection with the mixin to the
+other's cannot fail once both inherit it. What can fail is a channel field
+declared on a face rather than on the mixin, so that is what the pin refuses,
+and a companion test builds exactly that widening to show the pin names it.
+Driving the hard case is the Gate B sweep's finding about
+`test_egress_independence`, where two sides were each pinned against the value
+they were configured from and the requirement's own hard case had never been
+driven.
 
 **`structured_kind` is a `str`, not a `Literal`.** The design sketched
 `Literal["inline", "handle"]`. A closed vocabulary on a wire model means a
