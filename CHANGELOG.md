@@ -4,7 +4,141 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.25.0 -- 2026-08-18
+
+A minor rather than a patch, and deliberately: v0.24.7 added public API on a
+patch line, which is the hazard `BLD-7QM3` describes and this release both fixes
+and makes impossible to repeat. See **Added -- enforcement** below.
+
+### Fixed
+
+- `nats`: **a JetStream publish can no longer wedge its caller's event loop.**
+  `NatsClient.jetstream_publish` awaited the broker's `PubAck` with no bound at
+  all, so an ack that never arrived hung the calling task forever.
+
+  Reported from a downstream fleet that lost ten days to one. Dispatch there is
+  sequential, so a single wedged publish starved every other source, and a
+  backfill held a fixed cursor across 490 process restarts while the wedge sat
+  in an unrelated plugin. The diagnostic signature is what made it expensive:
+  0% CPU, no database connections, NATS read-loop and ping tasks alive and
+  healthy, not one error line, the process reporting itself up for days. Logs,
+  metrics and `py-spy` all said "idle"; naming the frame took walking the
+  coroutine chain's `cr_await` by hand.
+
+  **A caller could not close this from outside**, which is what makes it a
+  platform defect rather than a consumer's problem. `nats-py`'s
+  `Client._flush_pending` ends in `except asyncio.CancelledError: pass`, so a
+  cancellation delivered while a publish sits in the flush path is caught and
+  discarded: the task does not die, and the caller's own `asyncio.wait_for`
+  goes on waiting for a task it already cancelled.
+
+  The bound is therefore two layers, in one home
+  (`threetears.nats._publish.publish_bounded`). `nats-py`'s native `timeout`
+  bounds the ack wait inside its own request machinery and raises rather than
+  depending on cancellation; the publish additionally runs as its own task under
+  a slightly longer deadline whose expiry cancels and **abandons** it. Abandoning
+  leaks a task deliberately -- Python cannot kill a coroutine, so the choice is
+  leak it or block the caller, and blocking the caller is the defect.
+
+  New `PublishTimeoutError`. A timed-out publish has an **unknown** outcome, not
+  a failed one: the broker may have persisted the message, so a retry should
+  carry `Nats-Msg-Id` if duplication matters. Default ceiling
+  `DEFAULT_JETSTREAM_PUBLISH_TIMEOUT` (10s), overridable per call. The op-log
+  append had the same unbounded shape and now shares the mechanism.
+
+  Not covered, and named rather than implied: the KV operations and
+  `distributed_lock`'s self-release are the same hazard class and were not this
+  incident's cause.
+
+- `scrape`: **most driver backends no longer bypass a configured exit.** Only
+  `ApiDriver` and `NodriverSidecarDriver` accepted an `EgressDriver`, so
+  `ScrapeTool(egress="tor")` with a document, listing-detail or multi-document
+  backend proxied the `robots.txt` read and sent the page fetch direct. All
+  three now thread egress through the client they already construct, and report
+  the exit back on `RenderedPage` so a health row can distinguish "walled" from
+  "walled from this exit".
+
+  `MultiDocumentDriver` was actively misreporting. It delegated `egress` to its
+  inner document driver while making a listing request of its own that nothing
+  proxied -- so it claimed a configured exit for a render half of which left on
+  the container's own address, and `ScrapeTool`'s split check reads that
+  property, so the claim suppressed the one warning that would have said so. It
+  now answers for the whole render, reports `None` when the two halves disagree
+  (the side that warns), and names them at construction. Compared by exit name
+  rather than object identity, so two equivalently-configured exits are not a
+  split. **Behaviour change** for a caller reading that property.
+
+  `CamoufoxDriver` still cannot honour an exit -- it launches its own browser,
+  and whether Camoufox accepts a proxy per render or only per browser needs
+  research rather than a guess. It remains named by the split warning.
+
+- `scrape`: `BackoffPolicy` refuses a configuration that cannot suppress
+  anything. `base_delay_seconds` at or near zero booked a HALF_OPEN probe's
+  reservation in the past, so every poll admitted a fresh probe -- a circuit
+  that reports the right state, populates the right column, and never holds.
+
+  Refused at construction rather than floored at use: a silent floor would
+  substitute a number of unstated provenance for a caller who wrote `0` meaning
+  "no backoff". The error says to disable the circuit instead. `failure_threshold`
+  below 1 and a `max_delay_seconds` under the base are refused for the
+  neighbouring reasons. **BREAKING** for a caller constructing one of these.
+
+### Added
+
+- **enforcement**: `test_api_growth_requires_a_minor_bump.py` fails a patch
+  release whose public API grew. Every intra-family bound is pinned to a MINOR
+  line, so API added inside a minor leaves every earlier patch in the range
+  satisfying the bound and lacking the symbol -- pip resolves a family that
+  installs clean and `ImportError`s at runtime.
+
+  This closes `BLD-7QM3`, whose decision of 2026-07-26 was that an intra-family
+  API addition requires a minor bump, and which noted that
+  `test_intra_family_version_bounds.py` checks bound *shape* and structurally
+  cannot see this class. v0.24.7 is the instance: it shipped eleven new
+  `threetears.langgraph` exports and a new module on a patch line with every
+  gate green.
+
+  It compares `__all__` entries and the public methods of exported classes,
+  against the last release tag. It does **not** see a method added to a private
+  class that a public method returns -- v0.24.7's `fetchval` on `core`'s
+  `_ProxyConnection` is that shape and passes. The limit is recorded in the
+  guard rather than papered over.
+
+- `scrape`: `egress_name()` in `threetears.scrape.driver`, one home for the
+  conditional every driver reporting an exit had written inline.
+
+## v0.24.7 -- 2026-08-18
+
+### Added
+
+- `langgraph`: a tool's structured result reaches the client. Both streaming
+  faces -- `ToolCompletedEvent` (the in-process custom event) and
+  `ToolCallEndEvent` (the NATS streaming envelope) -- carry a
+  `structured` / `structured_kind` pair, and `StreamingResponse.emit_tool_call_end`
+  accepts the `artifact` the caller already holds plus an optional
+  `structured_max_chars` bound.
+
+  A `response_format="content_and_artifact"` tool produces its typed projection
+  once, on `ToolMessage.artifact`. That reached the model's context and the MCP
+  face and died before the client: the streaming faces carried name, status and
+  duration, so a frontend wanting to draw citation cards had to re-parse the
+  prose the model read.
+
+  `threetears.langgraph.tool_structure.structure_for_stream` makes the decision
+  in one place. An inline payload is the artifact itself, so no second result
+  shape is born; over the bound with no host store the event says so in the
+  payload, with its size and the bound it missed, under a key nothing can
+  mistake for a projection -- a truncation that does not admit itself is the
+  silent-partial-answer defect. `structured_kind` is a `str` rather than a
+  `Literal` so a reader predating a later kind skips the value instead of
+  rejecting the event. The `handle` kind is declared with no producer here: the
+  stream is not a store, and which store a client resolves against is the
+  host's decision.
+
+  Additive for existing readers -- a caller passing no artifact emits what it
+  always did, plus two nulls -- and pinned that way by tests that hand real
+  emitted bytes to models that have never heard of the fields. Design:
+  `docs/stream-protocol-structured-results.md`.
 
 ### Fixed
 

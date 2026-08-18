@@ -21,7 +21,32 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver"]
+__all__ = ["NavStep", "NetworkCall", "RenderedPage", "ScrapeDriver", "egress_name"]
+
+
+def egress_name(egress: object | None) -> str | None:
+    """Read an exit's reportable name, or ``None`` when there is no exit.
+
+    One home for the expression every driver reporting an exit needs. It was written inline at
+    each construction site, and a security-relevant conditional copied per driver is one that
+    drifts -- the ``None`` branch in particular, which is the branch that decides whether a
+    health row records "no exit chosen" or nothing at all.
+
+    Reads the attribute rather than requiring an
+    :class:`~threetears.core.egress.EgressDriver`, keeping this module's
+    zero-non-stdlib-import discipline (see :meth:`ScrapeDriver.egress`) and accepting the
+    structurally-satisfied exits a consuming application may supply.
+
+    :param egress: an exit driver, or ``None``
+    :ptype egress: object | None
+    :return: the exit's name, or ``None`` when no exit was configured
+    :rtype: str | None
+    """
+    if egress is None:
+        return None
+    name = getattr(egress, "name", None)
+    return name if isinstance(name, str) else None
+
 
 #: The closed set of browser actions a ``NavStep`` can describe. Kept small
 #: and generic on purpose -- a per-target sequence of these is enough to

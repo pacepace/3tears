@@ -9,6 +9,7 @@ the consuming application's own live suite (faidh repo).
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -445,31 +446,95 @@ class TestMultiDocumentSessionStateForwarding:
 
 
 class TestMultiDocumentEgressDelegation:
-    """The wrapper reports the exit its documents actually leave by, not the base class default.
+    """The wrapper reports an exit only when BOTH halves of a render leave by it.
 
     `ScrapeDriver.egress` returns `None` for backends with no concept of an exit, which is right
-    for them and wrong for a wrapper: this class performs no document fetch of its own, so
-    inheriting the default reports the truth about itself and a lie about the fetch. `ScrapeTool`
-    reads it to decide whether a configuration is split, and the lie lands on the safe-looking
-    side -- a proxied inner driver would read as unconfigured.
+    for them and wrong for a wrapper: `ScrapeTool` reads it to decide whether a configuration is
+    split, so a wrapper that reports nothing while its documents go through a chosen exit lands
+    the lie on the safe-looking side.
 
-    The asymmetric case relative to `NetworkCaptureDriver`: the inner driver is INJECTED here,
-    and this class also makes a listing request of its own that the property deliberately does
-    not cover.
+    CHANGED with the listing fetch's own `egress` parameter. Until it existed this property
+    delegated to the document driver alone, and the class docstring said the listing request was
+    "deliberately not covered" -- which meant the wrapper reported a configured exit while one of
+    its two requests went out on the container's own address, and suppressed the tool-level split
+    warning that would have said so. Both halves can now be pointed at an exit, so the property
+    answers for the render rather than for half of it, and disagreement reports `None` -- the
+    side that warns.
     """
 
-    def test_the_document_drivers_exit_is_reported(self) -> None:
+    def test_one_exit_on_both_halves_is_reported(self) -> None:
         from threetears.core.egress import ProxyEgress
         from threetears.scrape.drivers.api import ApiDriver
 
         tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
-        assert MultiDocumentDriver(document_driver=ApiDriver(egress=tor)).egress is tor
+        driver = MultiDocumentDriver(document_driver=ApiDriver(egress=tor), egress=tor)
 
-    def test_an_unproxied_document_driver_is_not_dressed_up(self) -> None:
-        """The negative half, so the delegation is not merely returning something truthy.
+        assert driver.egress is tor
+
+    def test_an_unproxied_pair_is_not_dressed_up(self) -> None:
+        """The negative half, so the property is not merely returning something truthy.
 
         Without it the assertion above passes against a property hard-coded to any object.
         """
         from threetears.scrape.drivers.api import ApiDriver
 
         assert MultiDocumentDriver(document_driver=ApiDriver()).egress is None
+
+    def test_a_proxied_document_driver_with_a_direct_listing_reports_nothing(self) -> None:
+        """The defect this parameter closed: half a render leaving by a chosen exit.
+
+        Reporting `tor` here is what let a listing request reach the target on the container's
+        own address with no warning anywhere -- the tool-level split check reads this property
+        and would have seen a fully-proxied driver.
+        """
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+
+        assert MultiDocumentDriver(document_driver=ApiDriver(egress=tor)).egress is None
+
+    def test_a_proxied_listing_with_a_direct_document_driver_reports_nothing(self) -> None:
+        """The mirror direction, which is the worse one.
+
+        The documents are the bulk of what a render fetches, so a proxied listing over direct
+        document fetches leaks the address on nearly every request while looking configured.
+        """
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+
+        assert MultiDocumentDriver(document_driver=ApiDriver(), egress=tor).egress is None
+
+    def test_two_equivalent_exits_are_one_exit(self) -> None:
+        """Compared by name, not identity: the same exit built twice is not a split.
+
+        Identity would call a perfectly-configured deployment split and emit a warning on
+        correct configuration, which is the kind readers learn to filter.
+        """
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        driver = MultiDocumentDriver(
+            document_driver=ApiDriver(egress=ProxyEgress("tor", "socks5://127.0.0.1:9050")),
+            egress=ProxyEgress("tor", "socks5://127.0.0.1:9050"),
+        )
+
+        assert driver.egress is not None
+
+    def test_a_split_pair_is_named_at_construction(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Reporting `None` is honest but mute; the operator needs the two halves by name.
+
+        The tool-level check can only see this driver as one thing, so without this the split
+        surfaces as "this driver is unproxied" and the reason is nowhere.
+        """
+        from threetears.core.egress import ProxyEgress
+        from threetears.scrape.drivers.api import ApiDriver
+
+        tor = ProxyEgress("tor", "socks5://127.0.0.1:9050")
+        with caplog.at_level(logging.WARNING):
+            MultiDocumentDriver(document_driver=ApiDriver(egress=tor))
+
+        assert "listing fetch" in caplog.text
+        assert "tor" in caplog.text

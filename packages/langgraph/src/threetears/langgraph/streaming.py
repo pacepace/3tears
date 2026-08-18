@@ -39,6 +39,11 @@ from uuid import UUID
 
 from langgraph.types import Command
 from pydantic import BaseModel, Field, TypeAdapter
+from threetears.langgraph.tool_structure import (
+    DEFAULT_STRUCTURED_INLINE_MAX_CHARS,
+    StructuredToolResultFields,
+    structure_for_stream,
+)
 from threetears.observe import get_logger, traced
 
 __all__ = [
@@ -307,8 +312,24 @@ class ToolCallStartEvent(BaseModel):
     arguments_summary: str
 
 
-class ToolCallEndEvent(BaseModel):
+class ToolCallEndEvent(StructuredToolResultFields):
     """observation event published when a tool call completes.
+
+    **the tool's structure rides here too** (D-S1 (a)), through the
+    ``structured`` / ``structured_kind`` pair inherited from
+    :class:`~threetears.langgraph.tool_structure.StructuredToolResultFields`.
+    the design's three-layer table did not name this event -- it reasoned
+    from the in-process ``ToolMessage.artifact`` to
+    :class:`~threetears.langgraph.events.ToolCompletedEvent` to the client
+    frame -- but this vocabulary is the wire for a consumer whose transport
+    forwards each :data:`StreamEvent` as one frame keyed by its own
+    discriminator, and a field only on the other face would drop the
+    structure exactly at the hop it was meant to cross.
+
+    it is also the reason this channel needs **no new frame type**: a
+    transport of that shape puts the structure inside the ``tool_call_end``
+    frame it already sends, so nothing ships receiver-first and no
+    exhaustive-match handler meets a type it has never seen.
 
     :param type: discriminator literal
     :ptype type: Literal["tool_call_end"]
@@ -660,8 +681,18 @@ class StreamingResponse:
         tool_name: str,
         success: bool,
         elapsed_ms: int,
+        artifact: Any = None,
+        structured_max_chars: int = DEFAULT_STRUCTURED_INLINE_MAX_CHARS,
     ) -> None:
-        """publish one :class:`ToolCallEndEvent`.
+        """publish one :class:`ToolCallEndEvent`, carrying the tool's structure.
+
+        the caller hands over the ``ToolMessage.artifact`` it already holds
+        -- the middleware that times a tool call is holding the result when
+        it calls this -- and the projection decision (inline / handle /
+        omitted) is made here by
+        :func:`~threetears.langgraph.tool_structure.structure_for_stream`,
+        once, rather than at each emitter. a caller that passes nothing emits
+        exactly what it emitted before, plus two nulls.
 
         :param tool_name: name of tool that was invoked
         :ptype tool_name: str
@@ -669,16 +700,26 @@ class StreamingResponse:
         :ptype success: bool
         :param elapsed_ms: tool execution time in milliseconds
         :ptype elapsed_ms: int
+        :param artifact: the completed tool's ``ToolMessage.artifact``, or
+            ``None`` for a tool that produces no structure (most of them).
+        :ptype artifact: Any
+        :param structured_max_chars: inline ceiling for this emit, in
+            characters of the artifact's JSON encoding. the default is the
+            family placeholder; a host with a real per-frame budget passes
+            its own.
+        :ptype structured_max_chars: int
         :return: nothing
         :rtype: None
         """
         if self._closed:
             return
+        structure = structure_for_stream(artifact, max_chars=structured_max_chars)
         event = ToolCallEndEvent(
             correlation_id=self._correlation_id,
             tool_name=tool_name,
             success=success,
             elapsed_ms=elapsed_ms,
+            **structure.as_fields(),
         )
         await self._publish(event)
 

@@ -83,9 +83,10 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 from ..extraction import NOTICE_DOCUMENT_CLASS
 from .api import ApiDriverError, _resolve_path
 
@@ -197,6 +198,7 @@ class MultiDocumentDriver(ScrapeDriver):
         document_driver: ScrapeDriver,
         client: httpx.AsyncClient | None = None,
         max_documents: int = _DEFAULT_MAX_DOCUMENTS,
+        egress: EgressDriver | None = None,
     ) -> None:
         """
         :param document_driver: fetches and parses one document URL into a
@@ -213,10 +215,18 @@ class MultiDocumentDriver(ScrapeDriver):
             fetch, newest-first (the same assumption every dated-listing
             target in this package already relies on)
         :ptype max_documents: int
+        :param egress: which exit the LISTING fetch leaves by (see
+            :mod:`threetears.core.egress`). Separate from *document_driver*'s
+            own exit because they are separately wired; give both the same one
+            unless a split is intended, and see :meth:`egress` for what this
+            class reports when they disagree.
+        :ptype egress: EgressDriver | None
         """
         self._document_driver = document_driver
         self._client = client
         self._max_documents = max_documents
+        self._egress = egress
+        self._warn_on_internal_split()
 
     @property
     def name(self) -> str:
@@ -225,19 +235,53 @@ class MultiDocumentDriver(ScrapeDriver):
 
     @property
     def egress(self) -> object | None:
-        """The document driver's exit.
+        """The exit this driver's whole render leaves by, or ``None``.
 
-        Delegated for the reason given on :meth:`NetworkCaptureDriver.egress`: a wrapper that
-        inherited the base class's ``None`` would report itself as unproxied while every
-        document it fetches went out through a configured exit, and ``ScrapeTool`` reads this
-        to decide whether a configuration is split.
+        A render makes TWO kinds of request that are wired separately: this class's own
+        listing fetch, and whatever ``document_driver`` does per document. This reports an
+        exit only when both leave by the same one.
 
-        The listing fetch is this class's own ``httpx`` client and is NOT covered -- see the
-        ``client`` parameter, which says the document driver's fetching is its own concern. A
-        deployment proxying documents is not thereby proxying the listing request, and this
-        property does not claim otherwise.
+        Delegating to the document driver alone -- what this did until the listing fetch could
+        be pointed at an exit at all -- reported a configured exit while the listing request
+        went out on the container's own address. ``ScrapeTool._warn_on_split_egress`` reads
+        this property, so a wrapper claiming an exit it half-honours suppressed the one warning
+        that would have said so. Disagreement now reports ``None``, which lands on the side
+        that warns rather than the side that stays quiet.
+
+        Compared by exit NAME rather than object identity: two equivalently-configured
+        :class:`~threetears.core.egress.EgressDriver` instances are the same exit to the target
+        and to the health row, and identity would call that pair a split.
         """
-        return self._document_driver.egress
+        if egress_name(self._document_driver.egress) != egress_name(self._egress):
+            return None
+        return self._egress
+
+    def _warn_on_internal_split(self) -> None:
+        """Say something when the listing fetch and the documents leave by different exits.
+
+        The tool-level check can only see this driver as one thing. Named here, at
+        construction, the operator gets the two halves by name instead of a wrapper that
+        reports no exit for reasons nothing states.
+
+        A warning rather than a refusal, matching ``ScrapeTool._warn_on_split_egress``: a
+        deployment may genuinely want the listing read from a different address than the
+        documents. But it should have to be a decision.
+
+        :return: nothing
+        :rtype: None
+        """
+        inner = egress_name(self._document_driver.egress)
+        own = egress_name(self._egress)
+        if inner == own:
+            return
+        log.warning(
+            "multi_document: the listing fetch leaves by %s but the documents leave by %s, so one "
+            "half of every render goes out on a different address than the other. Pass the same "
+            "egress driver to both unless that is intended.",
+            own or "the container's own address",
+            inner or "the container's own address",
+            extra={"extra_data": {"listing_egress": own, "document_egress": inner}},
+        )
 
     async def render(
         self,
@@ -314,7 +358,10 @@ class MultiDocumentDriver(ScrapeDriver):
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                transport=self._egress.httpx_transport() if self._egress is not None else None,
             )
         try:
             try:
@@ -396,4 +443,7 @@ class MultiDocumentDriver(ScrapeDriver):
             status=response.status_code,
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            # The property, not `self._egress`: a render whose two halves left by different
+            # exits has no single exit to report, and `egress` is where that is decided once.
+            egress=egress_name(self.egress),
         )

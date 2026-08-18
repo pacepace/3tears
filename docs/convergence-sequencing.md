@@ -87,8 +87,16 @@ consume either — see the Phase 2 note.
   it while attention is on structure is the point.
   → [`family-convergence.md` §5 (3tears obligations)](family-convergence.md#5-implications-per-family-member);
   **designed 2026-08-14**, two days after this phase was declared complete
-  without it — [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md),
-  awaiting review by metallm and the chat-kit workstream
+  without it — [`stream-protocol-structured-results.md`](stream-protocol-structured-results.md);
+  **approved and built 2026-08-18** (§8 there). The item said *design only*;
+  the build came with it because the decision the design could not take alone
+  turned out to be one of five, and the other four were answerable from the two
+  consumers' own code. **D-S2 was reversed by that code**: the new frame type it
+  recommended has no caller — metallm mints its own ws message types and scriob
+  mints frame types from event discriminators — so the structure rides the two
+  *events* instead, and scriob's existing `tool_call_end` frame carries it with
+  no rollout order to respect. One branch stays unbuilt on a consumer decision:
+  what store an over-the-bound handle resolves against.
 
 *Status 2026-08-12 — this phase is complete; the entries below run in build
 order, and the closing one is item 6.* Extract's web path is

@@ -31,6 +31,7 @@ from threetears.scrape.drivers.api import ApiDriver
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
 from threetears.scrape.drivers.document import DocumentDriver
 from threetears.scrape.drivers.listing_detail import ListingDetailDriver
+from threetears.scrape.drivers.multi_document import MultiDocumentDriver
 from threetears.scrape.drivers.nodriver_download import NodriverDownloadDriver
 from threetears.scrape.drivers.nodriver_sidecar import NodriverSidecarDriver
 
@@ -314,8 +315,61 @@ async def _render_sidecar_driver(egress):
     ).render("https://example.gov/x")
 
 
+async def _render_document_driver(egress):
+    return await DocumentDriver(
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda _r: httpx.Response(200, content=b"a plain text document", headers={"content-type": "text/plain"})
+            )
+        ),
+        egress=egress,
+    ).render("https://example.gov/notice.txt")
+
+
+async def _render_listing_detail_driver(egress):
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/listing"):
+            body = (
+                '<html><body><table><tbody><tr><td><a href="/detail/1">row</a></td></tr></tbody></table></body></html>'
+            )
+        else:
+            body = "<html><body><p>Employer: Acme</p></body></html>"
+        return httpx.Response(200, content=body.encode())
+
+    return await ListingDetailDriver(
+        row_selector="table tbody tr",
+        listing_field_columns={},
+        detail_link_column=0,
+        detail_field_labels={"employer": "Employer"},
+        client=httpx.AsyncClient(transport=httpx.MockTransport(_handler)),
+        pace_delay_seconds=0.0,
+        egress=egress,
+    ).render("https://example.gov/listing")
+
+
+async def _render_multi_document_driver(egress):
+    # BOTH halves get the same exit. The wrapper reports one only when the listing fetch and the
+    # documents agree, so handing it to one side alone would assert the split case here instead
+    # of the round trip this contract is about -- `test_driver_multi_document.py` owns the split.
+    class _InnerDocumentDriver(DocumentDriver):
+        @property
+        def egress(self):
+            return egress
+
+    return await MultiDocumentDriver(
+        document_driver=_InnerDocumentDriver(),
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"<html><body></body></html>"))
+        ),
+        egress=egress,
+    ).render("https://example.gov/listing", link_selector="a")
+
+
 _REPORTS_ITS_EXIT = {
     "api": _render_api_driver,
+    "document": _render_document_driver,
+    "listing_detail": _render_listing_detail_driver,
+    "multi_document": _render_multi_document_driver,
     "nodriver_sidecar": _render_sidecar_driver,
 }
 
