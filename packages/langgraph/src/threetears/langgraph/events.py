@@ -40,6 +40,8 @@ from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
+from threetears.langgraph.tool_structure import StructuredToolResultFields
+
 __all__ = [
     "FrameworkEvent",
     "FrameworkEventRegistry",
@@ -130,12 +132,22 @@ class ToolStartedEvent(FrameworkEvent):
     tool_args: dict[str, Any] = Field(default_factory=dict)
 
 
-class ToolCompletedEvent(FrameworkEvent):
+class ToolCompletedEvent(FrameworkEvent, StructuredToolResultFields):
     """fired when a tool function has finished executing.
 
     fires regardless of outcome -- ``tool_status`` carries the discriminator. ui consumers
     typically use this to render the tool's final-state indicator (a checkmark, an x, or a
     pending/paused affordance).
+
+    **carries the tool's structure too, when it produced any** (D-S1 (a)): the
+    ``structured`` / ``structured_kind`` pair inherited from
+    :class:`~threetears.langgraph.tool_structure.StructuredToolResultFields`.
+    one message, two registers -- the same answer the family gave for
+    ``ToolResult.metadata`` (D22) and for MCP's ``structuredContent``, and the
+    reason there is no second "tool structure" event for a consumer to
+    correlate against this one by name and ordering. build the pair with
+    :func:`~threetears.langgraph.tool_structure.structure_for_stream` off the
+    ``ToolMessage.artifact``; never assemble it at the call site.
 
     :ivar tool_name: name of the tool that ran
     :ivar tool_status: ``'completed'``, ``'failed'``, or ``'interrupted'`` (the tool raised a
