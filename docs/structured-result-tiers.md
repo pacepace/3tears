@@ -355,10 +355,16 @@ Three things worth carrying forward to whoever picks it up:
   projection carries. Absence would mean "this provider doesn't do that," not
   "there was nothing to say."
 
-On cost: Tavily's published credit table prices a search by depth alone (basic
-1, advanced 2) and says nothing about `include_answer`, which suggests it's
-free. [not verified — that's a documented absence, not a documented price. One
-call with the eval key would settle it.]
+On cost: `include_answer` is free, measured rather than inferred. Three
+`search_depth=basic` calls on the eval key — one plain, one
+`include_answer=true`, one `include_answer="advanced"` — moved `search_usage`
+from 2661 to 2664. Three calls, three credits: each paid what its depth prices
+and neither answer setting added a surcharge, which is what Tavily's published
+table implies (basic 1, advanced 2, no mention of the parameter) without ever
+saying so. Worth knowing if you re-run this: the usage counters are batched, not
+live. All four sat at baseline immediately after the calls and only moved hours
+later, so a reading taken right after the experiment looks like the calls were
+free of everything.
 
 ## 6. Open questions
 
