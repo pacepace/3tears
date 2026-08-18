@@ -205,6 +205,48 @@ class BackoffPolicy:
     base_delay_seconds: float = 900.0
     max_delay_seconds: float = 21600.0
 
+    def __post_init__(self) -> None:
+        """Refuse a policy whose numbers describe no backoff at all.
+
+        ``_admit_probe`` books a HALF_OPEN probe's reservation as
+        ``now + delay_for(...)``. With *base_delay_seconds* at or near zero that reservation
+        has already elapsed by the time it is written, so every poll admits a fresh probe --
+        the exact opposite of what a circuit is for, arrived at silently, through a
+        configuration that looks deliberate.
+
+        Rejected at construction rather than floored at use, and that is the substantive
+        half of the choice. A silent floor would quietly override a caller who wrote ``0``
+        meaning "no backoff", which is a legible intention to hold: the honest answer is
+        that this class cannot express it, said once, where it was written -- not a number
+        of unstated provenance substituted behind their back. A deployment that genuinely
+        wants no backoff disables the circuit rather than configuring one that never holds.
+
+        *failure_threshold* is checked for the neighbouring reason: at zero or below, the
+        circuit opens before a single failure and the target is suppressed from the start.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: any field describes a circuit that cannot suppress anything
+        """
+        if self.failure_threshold < 1:
+            raise ValueError(
+                f"failure_threshold must be >= 1, got {self.failure_threshold}: a circuit that "
+                f"opens before any failure suppresses a target that never misbehaved"
+            )
+        if self.base_delay_seconds <= 0:
+            raise ValueError(
+                f"base_delay_seconds must be > 0, got {self.base_delay_seconds}: a HALF_OPEN "
+                f"probe's reservation would be booked in the past, so every poll would admit a "
+                f"fresh probe and the circuit would never suppress anything. To run without "
+                f"backoff, disable the circuit rather than configuring one that cannot hold."
+            )
+        if self.max_delay_seconds < self.base_delay_seconds:
+            raise ValueError(
+                f"max_delay_seconds ({self.max_delay_seconds}) is below base_delay_seconds "
+                f"({self.base_delay_seconds}), so the ceiling would shorten the FIRST trip -- "
+                f"the curve would decay downwards as a target kept failing"
+            )
+
     def delay_for(self, consecutive_failures: int) -> float:
         """Seconds to suppress fetches for, after *consecutive_failures* failures.
 

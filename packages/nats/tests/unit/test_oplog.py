@@ -61,8 +61,14 @@ class _FakeJetStream:
         self._next_ack = ack
         self._raise_on_publish = error
 
-    async def publish(self, subject: str, payload: bytes, *, headers: dict[str, str], stream: str) -> Any:
-        self.publish_calls.append({"subject": subject, "payload": payload, "headers": headers, "stream": stream})
+    async def publish(
+        self, subject: str, payload: bytes, *, headers: dict[str, str], stream: str, timeout: float
+    ) -> Any:
+        # `timeout` is required rather than defaulted: the real call always carries one now, and a
+        # default here would let the append lose its bound without a single test noticing.
+        self.publish_calls.append(
+            {"subject": subject, "payload": payload, "headers": headers, "stream": stream, "timeout": timeout}
+        )
         if self._raise_on_publish is not None:
             raise self._raise_on_publish
         assert self._next_ack is not None

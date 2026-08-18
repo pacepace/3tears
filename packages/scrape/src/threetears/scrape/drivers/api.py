@@ -46,7 +46,7 @@ import httpx
 from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 
 __all__ = ["ApiDriver", "ApiDriverError"]
 
@@ -297,5 +297,5 @@ class ApiDriver(ScrapeDriver):
             #
             # `None` when nothing was configured, matching the convention `last_egress` keeps
             # everywhere: a name means somebody chose an exit.
-            egress=self._egress.name if self._egress is not None else None,
+            egress=egress_name(self._egress),
         )

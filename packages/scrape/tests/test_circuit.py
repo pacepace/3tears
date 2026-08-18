@@ -1188,3 +1188,74 @@ async def test_an_observation_with_no_exit_falls_back_to_the_circuits_own(
     row = await health.get(_T)
     assert row is not None
     assert row.last_egress == "tor"
+
+
+class TestABackoffPolicyThatCouldNotSuppressAnything:
+    """A policy is refused where it is written, not floored where it is used.
+
+    `_admit_probe` books a HALF_OPEN probe's reservation as `now + delay_for(...)`. A
+    base delay at or near zero makes that reservation already-elapsed, so every poll admits
+    a fresh probe -- a circuit that reads as configured, reports HALF_OPEN, and suppresses
+    nothing. Nothing in the fetch path could have told you: the state is right, the column
+    is populated, and the only symptom is a fetch rate that never drops.
+    """
+
+    def test_a_zero_base_delay_is_refused(self) -> None:
+        """The reported case: the reservation would be booked in the past.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="base_delay_seconds"):
+            BackoffPolicy(base_delay_seconds=0.0)
+
+    def test_a_negative_base_delay_is_refused(self) -> None:
+        """Past the boundary, not merely at it.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="base_delay_seconds"):
+            BackoffPolicy(base_delay_seconds=-1.0)
+
+    def test_the_refusal_says_what_to_do_instead(self) -> None:
+        """A caller who wrote 0 meaning "no backoff" needs the alternative, not just a no.
+
+        This is the whole reason the fix is a refusal rather than a silent floor: a floor
+        would substitute a number of unstated provenance for a legible intention.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError) as caught:
+            BackoffPolicy(base_delay_seconds=0.0)
+
+        assert "disable the circuit" in str(caught.value)
+
+    def test_a_threshold_below_one_is_refused(self) -> None:
+        """The neighbouring way to configure a circuit that suppresses a healthy target.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="failure_threshold"):
+            BackoffPolicy(failure_threshold=0)
+
+    def test_a_ceiling_under_the_base_is_refused(self) -> None:
+        """Otherwise the curve decays downwards: the first trip waits longest.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="max_delay_seconds"):
+            BackoffPolicy(base_delay_seconds=900.0, max_delay_seconds=60.0)
+
+    def test_an_ordinary_policy_is_untouched(self) -> None:
+        """The negative half, so the validation is not merely refusing everything.
+
+        :return: nothing
+        :rtype: None
+        """
+        policy = BackoffPolicy(failure_threshold=2, base_delay_seconds=60.0, max_delay_seconds=480.0)
+
+        assert policy.delay_for(2) == 60.0

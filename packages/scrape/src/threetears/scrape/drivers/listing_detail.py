@@ -68,9 +68,10 @@ from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup, Tag
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 from .api import _records_to_synthetic_table
 
 __all__ = ["ListingDetailDriver", "ListingDetailDriverError"]
@@ -170,6 +171,7 @@ class ListingDetailDriver(ScrapeDriver):
         client: httpx.AsyncClient | None = None,
         max_rows: int = _DEFAULT_MAX_ROWS,
         pace_delay_seconds: float = _DEFAULT_PACE_DELAY_SECONDS,
+        egress: EgressDriver | None = None,
     ) -> None:
         """
         :param row_selector: CSS selector for each listing row (e.g. ``"table tbody tr"``)
@@ -188,6 +190,13 @@ class ListingDetailDriver(ScrapeDriver):
         :param pace_delay_seconds: pause between detail-page fetches (see this
             module's own docstring, "Politeness, on by default")
         :ptype pace_delay_seconds: float
+        :param egress: which exit this driver's fetches leave by (see
+            :mod:`threetears.core.egress`). Covers the listing fetch AND every
+            detail-page fetch, because they share the one client -- a listing
+            read through a chosen exit whose detail pages went direct would
+            defeat the point of choosing. Applies only to the per-call client;
+            an injected *client* keeps whatever transport its owner gave it.
+        :ptype egress: EgressDriver | None
         """
         self._row_selector = row_selector
         self._listing_field_columns = listing_field_columns
@@ -196,11 +205,17 @@ class ListingDetailDriver(ScrapeDriver):
         self._client = client
         self._max_rows = max_rows
         self._pace_delay_seconds = pace_delay_seconds
+        self._egress = egress
 
     @property
     def name(self) -> str:
         """Stable string key for this driver."""
         return "listing_detail"
+
+    @property
+    def egress(self) -> EgressDriver | None:
+        """The exit this driver's own fetches leave by, or ``None``."""
+        return self._egress
 
     async def render(
         self,
@@ -252,7 +267,10 @@ class ListingDetailDriver(ScrapeDriver):
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                transport=self._egress.httpx_transport() if self._egress is not None else None,
             )
         try:
             try:
@@ -326,4 +344,7 @@ class ListingDetailDriver(ScrapeDriver):
             status=listing_response.status_code,
             final_url=str(listing_response.url),
             timing_ms=(time.monotonic() - start) * 1000,
+            # Reported for the same reason ApiDriver reports it: an accepted-but-unreported exit
+            # leaves `last_egress` empty, collapsing "walled" into "walled from this exit".
+            egress=egress_name(self._egress),
         )
