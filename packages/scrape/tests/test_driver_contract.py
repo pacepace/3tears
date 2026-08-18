@@ -365,8 +365,25 @@ async def _render_multi_document_driver(egress):
     ).render("https://example.gov/listing", link_selector="a")
 
 
+async def _render_camoufox_driver(egress):
+    # An INJECTED browser, because launching a real Camoufox here would be a browser download
+    # in a unit suite. That is honest for this contract: the round trip under test is
+    # "an exit given to the driver comes back on the RenderedPage", which does not depend on
+    # the launch. Whether the launch actually carries it is the separate concern that
+    # `test_driver_camoufox.py` pins against `_launch_proxy_options`.
+    # Reusing the camoufox suite's own browser/page doubles rather than growing a second
+    # pair here: two hand-written stand-ins for one Playwright surface drift, and this file
+    # already imports a sibling test helper the same way.
+    from test_driver_camoufox import _FakeCamoufoxBrowser, _FakeCamoufoxPage
+
+    return await CamoufoxDriver(browser=_FakeCamoufoxBrowser(_FakeCamoufoxPage()), egress=egress).render(
+        "https://example.gov/x"
+    )
+
+
 _REPORTS_ITS_EXIT = {
     "api": _render_api_driver,
+    "camoufox": _render_camoufox_driver,
     "document": _render_document_driver,
     "listing_detail": _render_listing_detail_driver,
     "multi_document": _render_multi_document_driver,

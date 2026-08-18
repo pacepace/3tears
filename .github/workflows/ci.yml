@@ -112,6 +112,78 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/typecheck.sh
 
-      - name: Test (unit + enforcement; integration excluded - no docker on the runner)
+      - name: Test (unit + enforcement; integration runs in its own job below)
         if: steps.scope.outputs.needed == 'true'
         run: uv run pytest packages/ tests/ -m "not integration" -v
+
+  # The `integration` marker, which nothing ran until 2026-08-18.
+  #
+  # Why a separate job with SERVICE CONTAINERS rather than testcontainers: the
+  # testcontainers route is ruled out here -- it exhausts a GitHub-hosted runner
+  # -- so for a long time these tests ran only on a developer's machine who
+  # remembered to. That left the whole durable surface outside the gate, and the
+  # in-memory L3 fallback has no schema, so a missing DDL column passes every
+  # unit test in the suite. That is exactly how the original `link_selector` bug
+  # shipped past a green run.
+  #
+  # A service container is the same Postgres reached a different way. The
+  # fixtures in `threetears.core.testing.fixtures` honour
+  # THREETEARS_TEST_POSTGRES_URL / THREETEARS_TEST_NATS_URL and use whatever is
+  # already running, so NO test assertion changes -- only where the connection
+  # comes from. Unset, a developer's machine still gets testcontainers.
+  #
+  # Kept a separate job, not extra steps on `check`: `check` is main's required
+  # status and gates the release PR, and these need services `check` does not.
+  # Folding them in would make every docs-only PR wait on a database.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector, not plain postgres: the shared fixture is vector-capable for
+        # every consumer regardless of collection order (see `db_image`).
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        # Without a health gate the suite starts before Postgres accepts
+        # connections and fails as though the code were broken.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      nats:
+        # JetStream must be ON: the fixture cannot enable it on a server it did
+        # not start, and the durable-circuit tests need it.
+        image: nats:2.11-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "wget -q -O- http://127.0.0.1:8222/healthz || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Test (integration, against the service containers)
+        env:
+          THREETEARS_TEST_POSTGRES_URL: postgresql://test:test@127.0.0.1:5432/test
+          THREETEARS_TEST_NATS_URL: nats://127.0.0.1:4222
+        # Only the packages whose integration tests need Postgres or NATS. The
+        # rest (S3/minio, SearXNG, a live Redshift) still start their own
+        # containers or want credentials this job does not have, and would skip
+        # noisily or hang; bringing them in is a follow-up with its own services.
+        run: uv run pytest packages/core packages/nats packages/epoch packages/scheduled-jobs -m integration -v

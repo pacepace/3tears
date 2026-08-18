@@ -218,3 +218,25 @@ __marimo__/
 # macOS folder metadata
 .DS_Store
 
+
+# Prawduct session files
+.claude/settings.local.json
+.prawduct/.bug-inbox
+.prawduct/.critic-active
+.prawduct/.critic-findings.json
+.prawduct/.critic-partials/
+.prawduct/.critic-partials-archive/
+.prawduct/.governance-ledger.jsonl
+.prawduct/.handoff-notes.md
+.prawduct/.test-evidence.json
+.prawduct/.pr-reviews/
+.prawduct/.session-base-tree
+.prawduct/.session-git-baseline
+.prawduct/.session-handoff.md
+.prawduct/.session-reflected
+.prawduct/.session-start
+.prawduct/.subagent-briefing.md
+.prawduct/.gates-waived
+.prawduct/.advisories.json
+.prawduct/.work-model-index.json
+.prawduct/reflections.md
