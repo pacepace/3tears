@@ -29,6 +29,15 @@ control-channel writes arriving at the same method still raise,
 because losing one changes what the run does. See that method for
 the full rule.
 
+a saver may optionally be bound to one customer (``customer_id``).
+when it is, the customer is folded into the stored ``thread_id`` and
+so into every key the saver addresses at all three tiers -- see
+:meth:`ThreeTierCheckpointSaver.storage_thread_id` for why the
+customer lives in the key rather than in a column, and
+:meth:`ThreeTierCheckpointSaver.adelete_customer_threads` for the
+purge that tenancy exists to make possible. an unbound saver is
+byte-for-byte what it was before tenancy existed.
+
 namespace-task-01 phase 8.5l-4 merged the former
 ``ProxyCheckpointSaver`` into this class after Pace's pushback
 on the "genuinely distinct deployment targets" claim. the split
@@ -43,6 +52,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any, cast
+from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 
@@ -61,6 +71,7 @@ from threetears.langgraph.protocols import (
     AsyncQueryExecutor,
     CheckpointL1Cache,
     CheckpointL2Cache,
+    CheckpointL2PrefixCache,
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -73,6 +84,18 @@ __all__ = [
 log = get_logger(__name__)
 
 _DEFAULT_L2_BUCKET = "checkpoints"
+
+#: separates the customer from the caller's own thread id inside a stored
+#: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
+#: unambiguous and a customer prefix can never be forged by a thread id.
+_CUSTOMER_SEPARATOR = "/"
+
+#: width of the ``thread_id`` column in
+#: :mod:`threetears.langgraph.migrations.v001_create_checkpoint_tables`.
+#: the customer prefix is checked against it here so an overflow surfaces as an
+#: arithmetic error naming both halves, rather than as a driver error or (on a
+#: database that truncates rather than rejects) as two customers sharing a row.
+_MAX_THREAD_ID_LENGTH = 255
 
 
 class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
@@ -96,6 +119,20 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
       which already implements the protocol natively, so they pass
       it straight through.
 
+    **Tenancy.** A saver MAY be bound to one customer via ``customer_id``. When
+    it is, the customer is folded into the stored thread id
+    (:meth:`storage_thread_id`) and therefore into every key the saver
+    addresses: the ``thread_id`` bound into L3 statements, the L2 bucket key,
+    and the L1 thread key. A saver bound to one customer cannot NAME another
+    customer's row, which is a structural property rather than a predicate a
+    later statement can forget. See :meth:`storage_thread_id` for why the
+    customer lives in the key rather than in a column.
+
+    ``customer_id`` defaults to ``None``, and an unbound saver produces byte-
+    identical keys and statements to one built before tenancy existed. That
+    default is load-bearing: :meth:`adelete_thread` has a live production
+    consumer that passes no customer.
+
     :param executor: async query executor for database operations
     :ptype executor: AsyncQueryExecutor
     :param l1_cache: optional L1 local cache (e.g. SQLite)
@@ -104,6 +141,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     :ptype l2_cache: CheckpointL2Cache | None
     :param l2_bucket: bucket/namespace for L2 cache keys
     :ptype l2_bucket: str
+    :param customer_id: optional customer this saver is bound to; ``None``
+        leaves every key un-scoped, exactly as before tenancy existed
+    :ptype customer_id: UUID | None
     :param flush_callback: optional async callback invoked after
         each checkpoint write to drain pending writes; returns the
         count of items flushed
@@ -117,6 +157,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         l1_cache: CheckpointL1Cache | None = None,
         l2_cache: CheckpointL2Cache | None = None,
         l2_bucket: str = _DEFAULT_L2_BUCKET,
+        customer_id: UUID | None = None,
         flush_callback: FlushCallback | None = None,
     ) -> None:
         """initialize checkpoint saver.
@@ -129,6 +170,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype l2_cache: CheckpointL2Cache | None
         :param l2_bucket: bucket name for L2 cache keys
         :ptype l2_bucket: str
+        :param customer_id: optional customer to scope every key to
+        :ptype customer_id: UUID | None
         :param flush_callback: optional post-write flush callback
         :ptype flush_callback: FlushCallback | None
         :return: nothing
@@ -140,7 +183,69 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._l1 = l1_cache
         self._l2 = l2_cache
         self._l2_bucket = l2_bucket
+        # rendered once at construction rather than per key: this is the only
+        # place a UUID becomes text, so the border is one line rather than one
+        # per statement.
+        self._customer_prefix: str | None = (
+            None
+            if customer_id is None
+            else f"{customer_id}{_CUSTOMER_SEPARATOR}"  # convert at border: storage key text
+        )
         self._flush_callback = flush_callback
+
+    # ------------------------------------------------------------------
+    # Tenancy helpers
+    # ------------------------------------------------------------------
+
+    def storage_thread_id(self, thread_id: str) -> str:
+        """map a caller's thread id to the one this saver stores it under.
+
+        Returns ``thread_id`` unchanged when the saver is unbound, and
+        ``"<customer_id>/<thread_id>"`` when it is bound.
+
+        **Why the customer lives in the key rather than in a column.** The
+        checkpoint tables are keyed ``(thread_id, checkpoint_ns,
+        checkpoint_id)``. A ``customer_id`` column only makes a row unique
+        THROUGH its customer if it joins that primary key, and altering the key
+        of a table that holds live rows in several deployments is a different
+        and much larger change than this one. Folding the customer into the
+        leading key column buys the same uniqueness with no DDL at all: two
+        customers using the same caller-chosen thread id occupy two rows, not
+        one. It also reaches tiers a column cannot -- the L2 bucket and the L1
+        cache are key-value stores with no columns to filter on, and tenanting
+        L3 while leaving the KV bucket shared would be the leak this exists to
+        close.
+
+        It also works over both deployment transports unchanged. The proxied
+        route cannot carry a customer: ``customer_scope`` exists only on the L3
+        backend's READ methods, not on ``execute``, and the hub broker consults
+        it only for its ``system.platform.rbac`` SELECT carve-out. A key scheme
+        needs nothing from the transport.
+
+        **What this is and is not.** It is defence in depth and a purge handle,
+        not an authorization system. A host still decides which customer a
+        request belongs to and builds the saver accordingly; what this adds is
+        that a saver built for the wrong customer reads nothing rather than
+        reading someone else's conversation.
+
+        :param thread_id: conversation/thread identifier as the caller knows it
+        :ptype thread_id: str
+        :return: the identifier this saver reads and writes under
+        :rtype: str
+        :raises ValueError: when the customer prefix would push the composite
+            past the width of the ``thread_id`` column
+        """
+        if self._customer_prefix is None:
+            return thread_id
+        composite = f"{self._customer_prefix}{thread_id}"
+        if len(composite) > _MAX_THREAD_ID_LENGTH:
+            raise ValueError(
+                f"customer-scoped thread id is {len(composite)} characters, over the "
+                f"{_MAX_THREAD_ID_LENGTH}-character thread_id column: the customer prefix costs "
+                f"{len(self._customer_prefix)}, leaving {_MAX_THREAD_ID_LENGTH - len(self._customer_prefix)} "
+                f"for a thread id of {len(thread_id)}",
+            )
+        return composite
 
     # ------------------------------------------------------------------
     # L1 helpers
@@ -158,8 +263,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         result: bytes | None = None
         if self._l1 is not None:
+            # scoped OUTSIDE the guard: an over-long composite is a caller error
+            # that fails identically every time, and reporting it as an L1 fault
+            # would degrade it into a warning the caller never acts on.
+            storage_thread_id = self.storage_thread_id(thread_id)
             try:
-                result = await self._l1.get(thread_id, checkpoint_ns)
+                result = await self._l1.get(storage_thread_id, checkpoint_ns)
             except Exception:
                 log.warning("L1 checkpoint read failed", exc_info=True)
                 result = None
@@ -179,8 +288,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         if self._l1 is None:
             return
+        storage_thread_id = self.storage_thread_id(thread_id)
         try:
-            await self._l1.put(thread_id, checkpoint_ns, data)
+            await self._l1.put(storage_thread_id, checkpoint_ns, data)
         except Exception:
             log.warning("L1 checkpoint write failed", exc_info=True)
 
@@ -194,8 +304,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         if self._l1 is None:
             return
+        storage_thread_id = self.storage_thread_id(thread_id)
         try:
-            await self._l1.delete(thread_id)
+            await self._l1.delete(storage_thread_id)
         except Exception:
             log.warning("L1 checkpoint delete failed", exc_info=True)
 
@@ -206,17 +317,22 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     def l2_key(self, thread_id: str, checkpoint_ns: str) -> str:
         """build L2 cache key from thread and namespace.
 
-        :param thread_id: conversation/thread identifier
+        Built on :meth:`storage_thread_id`, so a bound saver's keys carry its
+        customer and two customers sharing one bucket cannot read each other's
+        bundles even when they chose the same thread id.
+
+        :param thread_id: conversation/thread identifier as the caller knows it
         :ptype thread_id: str
         :param checkpoint_ns: checkpoint namespace
         :ptype checkpoint_ns: str
         :return: composite cache key
         :rtype: str
         """
+        storage_thread_id = self.storage_thread_id(thread_id)
         if checkpoint_ns == "":
-            result = thread_id
+            result = storage_thread_id
         else:
-            result = f"{thread_id}.{checkpoint_ns}"
+            result = f"{storage_thread_id}.{checkpoint_ns}"
         return result
 
     async def l2_get(self, thread_id: str, checkpoint_ns: str) -> bytes | None:
@@ -231,11 +347,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         result: bytes | None = None
         if self._l2 is not None:
+            # scoped OUTSIDE the guard, for the reason given in :meth:`l1_get`
+            key = self.l2_key(thread_id, checkpoint_ns)
             try:
-                result = await self._l2.get(
-                    self._l2_bucket,
-                    self.l2_key(thread_id, checkpoint_ns),
-                )
+                result = await self._l2.get(self._l2_bucket, key)
             except Exception:
                 log.warning("L2 checkpoint read failed", exc_info=True)
                 result = None
@@ -255,12 +370,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         if self._l2 is None:
             return
+        key = self.l2_key(thread_id, checkpoint_ns)
         try:
-            await self._l2.put(
-                self._l2_bucket,
-                self.l2_key(thread_id, checkpoint_ns),
-                data,
-            )
+            await self._l2.put(self._l2_bucket, key, data)
         except Exception:
             log.warning("L2 checkpoint write failed", exc_info=True)
 
@@ -284,13 +396,40 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         """
         if self._l2 is None:
             return
+        key = self.l2_key(thread_id, checkpoint_ns)
         try:
-            await self._l2.delete(
-                self._l2_bucket,
-                self.l2_key(thread_id, checkpoint_ns),
-            )
+            await self._l2.delete(self._l2_bucket, key)
         except Exception:
             log.warning("L2 checkpoint delete failed", exc_info=True)
+
+    async def l2_delete_prefix(self, prefix: str) -> bool:
+        """sweep every L2 key under ``prefix``, reporting whether it happened.
+
+        :meth:`l2_delete` is exact-key because :class:`CheckpointL2Cache` offers
+        nothing else, which is why a purge could clear a thread's root-namespace
+        bundle and leave every ``thread.checkpoint_ns`` bundle cached. A cache
+        that also satisfies :class:`CheckpointL2PrefixCache` closes that; one
+        that does not is not an error, so the caller learns which happened from
+        the return value and can say so rather than purging silently and
+        incompletely.
+
+        Failures degrade like every other L2 operation: a purge whose L3 half
+        already committed must not abort because a cache timed out. What the
+        caller loses is the sweep, which the ``False`` return reports.
+
+        :param prefix: key prefix to sweep, including any separator
+        :ptype prefix: str
+        :return: True when a prefix-capable cache completed the sweep
+        :rtype: bool
+        """
+        if not isinstance(self._l2, CheckpointL2PrefixCache):
+            return False
+        try:
+            await self._l2.delete_prefix(self._l2_bucket, prefix)
+        except Exception:
+            log.warning("L2 checkpoint prefix sweep failed", extra={"prefix": prefix}, exc_info=True)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Serialization helpers
@@ -471,6 +610,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :return: checkpoint tuple or None
         :rtype: CheckpointTuple | None
         """
+        # the statements address the customer-scoped keyspace; every config
+        # built below reports the caller's own thread id, because LangGraph
+        # feeds a returned config straight back into the next call and a leaked
+        # prefix would be scoped a second time.
+        storage_thread_id = self.storage_thread_id(thread_id)
+
         if checkpoint_id:
             row = await self._exec.fetchrow(
                 "SELECT checkpoint_id, parent_checkpoint_id, type, "
@@ -478,7 +623,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "FROM checkpoints "
                 "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                 "AND checkpoint_id = $3",
-                thread_id,
+                storage_thread_id,
                 checkpoint_ns,
                 checkpoint_id,
             )
@@ -489,7 +634,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "FROM checkpoints "
                 "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                 "ORDER BY checkpoint_id DESC LIMIT 1",
-                thread_id,
+                storage_thread_id,
                 checkpoint_ns,
             )
 
@@ -514,7 +659,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "WHERE thread_id = $1 AND checkpoint_ns = $2 "
             "AND checkpoint_id = $3 "
             "ORDER BY idx",
-            thread_id,
+            storage_thread_id,
             checkpoint_ns,
             cp_id,
         )
@@ -605,7 +750,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "FROM checkpoints "
             "WHERE thread_id = $1 AND checkpoint_ns = $2"
         )
-        params: list[Any] = [thread_id, checkpoint_ns]
+        params: list[Any] = [self.storage_thread_id(thread_id), checkpoint_ns]
 
         if before and (before_id := get_checkpoint_id(before)):
             query += f" AND checkpoint_id < ${len(params) + 1}"
@@ -703,7 +848,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "DO UPDATE SET parent_checkpoint_id = EXCLUDED.parent_checkpoint_id, "
             "type = EXCLUDED.type, checkpoint = EXCLUDED.checkpoint, "
             "metadata_ = EXCLUDED.metadata_",
-            thread_id,
+            self.storage_thread_id(thread_id),
             checkpoint_ns,
             checkpoint["id"],
             parent_checkpoint_id,
@@ -832,10 +977,16 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # channel value is a programming error, not a transport fault: it fails
         # identically on every retry, so degrading it would hide a permanent bug
         # behind one warning per turn. Only the write itself is guarded.
+        #
+        # The isinstance guard below, rather than an unconditional call:
+        # ``thread_id`` arrives out of the config unvalidated, and a non-str one
+        # has no scoped form. Passing it through unchanged keeps the existing
+        # behaviour -- the statement rejects it, so no row lands -- whereas
+        # coercing it would invent a thread id nobody asked for.
         rows = self._build_write_rows(
             writes,
             task_id,
-            thread_id=thread_id,
+            storage_thread_id=(self.storage_thread_id(thread_id) if isinstance(thread_id, str) else thread_id),
             checkpoint_ns=checkpoint_ns,
             checkpoint_id=checkpoint_id,
             task_path=task_path,
@@ -926,7 +1077,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :raises Exception: whatever the cache raises; the caller does not degrade
         """
         if self._l1 is not None:
-            await self._l1.delete(thread_id)
+            await self._l1.delete(self.storage_thread_id(thread_id))
         if self._l2 is not None:
             await self._l2.delete(self._l2_bucket, self.l2_key(thread_id, checkpoint_ns))
 
@@ -935,7 +1086,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         writes: Sequence[tuple[str, Any]],
         task_id: str,
         *,
-        thread_id: Any,
+        storage_thread_id: Any,
         checkpoint_ns: Any,
         checkpoint_id: Any,
         task_path: str,
@@ -968,8 +1119,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         interchangeable ids in a row is a transposition that no type checker
         would catch.
 
-        :param thread_id: conversation/thread identifier
-        :ptype thread_id: Any
+        :param storage_thread_id: the customer-scoped identifier the rows are
+            stored under, from :meth:`storage_thread_id`
+        :ptype storage_thread_id: Any
         :param checkpoint_ns: checkpoint namespace
         :ptype checkpoint_ns: Any
         :param checkpoint_id: checkpoint identifier
@@ -991,7 +1143,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 continue
             w_type, w_blob = self.serde.dumps_typed(value)
             by_idx[write_idx] = (
-                thread_id,
+                storage_thread_id,
                 checkpoint_ns,
                 checkpoint_id,
                 task_id,
@@ -1070,28 +1222,103 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     async def adelete_thread(self, thread_id: str) -> None:
         """delete all checkpoints and writes for a thread from all tiers.
 
-        :param thread_id: conversation/thread identifier
+        The signature is deliberately unchanged: this method has a live
+        production consumer that passes a bare thread id and no customer, so the
+        customer comes from the saver's own binding rather than from an
+        argument. An unbound saver issues exactly the statements it always did.
+
+        :param thread_id: conversation/thread identifier as the caller knows it
         :ptype thread_id: str
         :return: nothing
         :rtype: None
         """
+        storage_thread_id = self.storage_thread_id(thread_id)
+
         await self._exec.execute(
             "DELETE FROM checkpoint_writes WHERE thread_id = $1",
-            thread_id,
+            storage_thread_id,
         )
         await self._exec.execute(
             "DELETE FROM checkpoints WHERE thread_id = $1",
-            thread_id,
+            storage_thread_id,
         )
 
-        # L1 drops the thread across namespaces; L2 is exact-key, so this clears
-        # the root-namespace entry only. A bundle cached under a non-empty
-        # checkpoint_ns survives here -- pre-existing, and now visible at the call
-        # site rather than buried in l2_delete's body. Closing it means giving the
-        # L2 protocol a prefix sweep or a listing, which belongs with whoever first
-        # wires a cache (no construction site passes one today).
+        # L2 is exact-key, so the root-namespace entry needs its own delete and
+        # every ``thread.checkpoint_ns`` entry needs a sweep. A cache that
+        # cannot sweep leaves those namespaced bundles cached -- the gap this
+        # method carried as a comment until an L2 was actually wired in front of
+        # it. It is reported rather than assumed away: a purge that answers an
+        # erasure request has to say what it could not reach.
+        swept = await self.l2_delete_prefix(f"{storage_thread_id}.")
         await self.l2_delete(thread_id, "")
+        if not swept and self._l2 is not None:
+            log.warning(
+                "L2 cache cannot sweep by prefix; bundles cached under a non-empty checkpoint_ns "
+                "survive this purge. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
+                extra={"l2_bucket": self._l2_bucket},
+            )
+
+        # L1 drops the thread across every namespace by its own protocol.
         await self.l1_delete(thread_id)
+
+    async def adelete_customer_threads(self) -> None:
+        """delete every checkpoint and write belonging to this saver's customer.
+
+        The per-thread purge answers an erasure request aimed at one
+        conversation; this answers one aimed at a whole customer -- tenant
+        offboarding, or an erasure whose subject is the tenant rather than a
+        conversation within it. Tenancy without a purge path is why the column
+        would have been added in the first place, so the two ship together.
+
+        Takes no argument on purpose. The customer is the one this saver is
+        bound to, so there is no way to ask an instance to erase a customer it
+        was not built for, and no way to erase every customer by passing the
+        wrong value.
+
+        The L3 half matches on the customer's key prefix. A UUID's text form
+        contains neither ``%`` nor ``_``, so the pattern needs no ``ESCAPE``
+        clause and cannot widen beyond the one customer.
+
+        Caches are best-effort and say so. L2 is swept when it can be; L1's
+        protocol deletes one thread at a time with no way to enumerate a
+        customer's threads, so a wired L1 keeps its entries until they are
+        evicted. Both are reported at WARNING rather than passed over, because
+        a blob still served from cache after a purge is the failure the purge
+        exists to prevent.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when the saver is not bound to a customer, since the
+            pattern would then match every row in the table
+        """
+        if self._customer_prefix is None:
+            raise ValueError(
+                "adelete_customer_threads() needs a saver constructed with customer_id; "
+                "an unbound saver has no customer to scope the purge to and would match every thread",
+            )
+
+        pattern = f"{self._customer_prefix}%"
+
+        await self._exec.execute(
+            "DELETE FROM checkpoint_writes WHERE thread_id LIKE $1",
+            pattern,
+        )
+        await self._exec.execute(
+            "DELETE FROM checkpoints WHERE thread_id LIKE $1",
+            pattern,
+        )
+
+        if self._l2 is not None and not await self.l2_delete_prefix(self._customer_prefix):
+            log.warning(
+                "L2 cache cannot sweep by prefix; this customer's cached checkpoint bundles survive "
+                "the purge. Give the cache a delete_prefix (CheckpointL2PrefixCache) to close it.",
+                extra={"l2_bucket": self._l2_bucket},
+            )
+        if self._l1 is not None:
+            log.warning(
+                "L1 cache deletes one thread at a time and cannot enumerate a customer's threads; "
+                "this customer's cached checkpoint bundles survive the purge until they are evicted.",
+            )
 
     # ------------------------------------------------------------------
     # Sync methods -- not supported (async-only application)

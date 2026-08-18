@@ -23,6 +23,7 @@ __all__ = [
     "AsyncpgPoolAdapter",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
+    "CheckpointL2PrefixCache",
     "FlushCallback",
 ]
 
@@ -68,6 +69,34 @@ class CheckpointL2Cache(Protocol):
 
     async def delete(self, bucket: str, key: str) -> None:
         """Delete a key from the cache."""
+        ...
+
+
+@runtime_checkable
+class CheckpointL2PrefixCache(Protocol):
+    """Optional capability: sweep every L2 key under a prefix.
+
+    Deliberately a SEPARATE protocol rather than a fourth method on
+    :class:`CheckpointL2Cache`. Both are ``runtime_checkable``, so widening the
+    base protocol would stop every adapter already written against it from
+    satisfying an :func:`isinstance` check -- a breaking change to a published
+    seam in order to add a capability most callers never need. A caller tests
+    for this one and falls back when it is absent.
+
+    Why it exists: :meth:`CheckpointL2Cache.delete` is exact-key, and the
+    checkpoint saver's L2 keys are ``thread_id`` for the root namespace and
+    ``thread_id.checkpoint_ns`` for every other. So purging a thread could clear
+    only its root key and left every namespaced bundle cached -- a blob that
+    survives the purge that was supposed to erase it. Closing that needs either
+    a listing or a prefix sweep; this is the narrower of the two, because a
+    listing invites callers to enumerate a shared bucket.
+
+    Implementations degrade the same way the base protocol does: raise, and the
+    saver catches, warns, and continues.
+    """
+
+    async def delete_prefix(self, bucket: str, prefix: str) -> None:
+        """Delete every key in ``bucket`` whose name starts with ``prefix``."""
         ...
 
 

@@ -69,6 +69,7 @@ from threetears.langgraph.protocols import (
     AsyncQueryExecutor,
     CheckpointL1Cache,
     CheckpointL2Cache,
+    CheckpointL2PrefixCache,
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -113,6 +114,7 @@ __all__ = [
     "ChatModelCapabilities",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
+    "CheckpointL2PrefixCache",
     "ContextMergeMiddleware",
     "ConversationContextProvider",
     "DEFAULT_OFFLOAD_THRESHOLD_CHARS",
