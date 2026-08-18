@@ -43,6 +43,13 @@ API-growth guard confirms it on a working-tree read rather than a stale HEAD.
   justification. Closes `SCR-1FK5` point 3. **BREAKING** for a deployment that
   reaches the sidecar cross-container without setting `BIND_HOST`.
 
+- `nats`: `OpLog.last_seq()` is bounded. A read on a live path -- a consumer clamps
+  its fence to it before appending -- so an unresponsive broker hanging here wedged
+  the caller mid-operation. Subscription-setup calls are deliberately left
+  unbounded and now say so: a hang while opening a stream stops the process from
+  starting, which an operator sees immediately. It is the calls that wedge a
+  *running* system while it still looks healthy that need a ceiling.
+
 - `core`: `NatsKvCache.ping()` is bounded. It is a raw `js.account_info()` rather
   than a call routed through `NatsKvBucket`, so it did not inherit that class's
   ceiling -- and an unbounded health check answers "is the broker reachable?" by
