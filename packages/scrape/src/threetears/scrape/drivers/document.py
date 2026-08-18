@@ -33,9 +33,10 @@ from threetears.agent.tools.document import (
     parse_document,
     render_pdf_pages_to_images,
 )
+from threetears.core.egress import EgressDriver
 from threetears.observe import get_logger
 
-from ..driver import NavStep, RenderedPage, ScrapeDriver
+from ..driver import NavStep, RenderedPage, ScrapeDriver, egress_name
 from ..extraction import OCR_PAGE_IMAGE_CLASS
 
 __all__ = ["OCR_PAGE_IMAGE_CLASS", "DocumentDriver", "DocumentDriverError", "ParsedDocumentHtml"]
@@ -308,6 +309,7 @@ class DocumentDriver(ScrapeDriver):
         ocr_config: OcrConfig | None = None,
         force_images: bool = False,
         merge_wrapped_table_rows: bool = False,
+        egress: EgressDriver | None = None,
     ) -> None:
         """
         :param client: an already-constructed httpx client to reuse (test
@@ -326,16 +328,28 @@ class DocumentDriver(ScrapeDriver):
             :func:`parse_document_bytes_to_html`'s own docstring (Mississippi's
             real quarterly WARN PDF). Off by default.
         :ptype merge_wrapped_table_rows: bool
+        :param egress: which exit this driver's fetch leaves by (see
+            :mod:`threetears.core.egress`). Applies only to the per-call client
+            -- an injected *client* already carries whatever transport its
+            owner gave it, and silently rebinding that would be worse than not
+            offering the parameter.
+        :ptype egress: EgressDriver | None
         """
         self._client = client
         self._ocr_config = ocr_config
         self._force_images = force_images
         self._merge_wrapped_table_rows = merge_wrapped_table_rows
+        self._egress = egress
 
     @property
     def name(self) -> str:
         """Stable string key for this driver."""
         return "document"
+
+    @property
+    def egress(self) -> EgressDriver | None:
+        """The exit this driver's own fetches leave by, or ``None``."""
+        return self._egress
 
     async def render(
         self,
@@ -393,7 +407,10 @@ class DocumentDriver(ScrapeDriver):
         owns_client = client is None
         if client is None:
             client = httpx.AsyncClient(
-                timeout=timeout, follow_redirects=True, headers={"User-Agent": _DEFAULT_USER_AGENT}
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                transport=self._egress.httpx_transport() if self._egress is not None else None,
             )
         try:
             try:
@@ -424,4 +441,9 @@ class DocumentDriver(ScrapeDriver):
             final_url=str(response.url),
             timing_ms=(time.monotonic() - start) * 1000,
             was_ocr=parsed.was_ocr,
+            # Reported for the same reason ApiDriver reports it: a driver that honours an exit
+            # but never says which leaves `last_egress` empty, and "walled" stops being
+            # distinguishable from "walled from this exit" -- the distinction that column exists
+            # for. `None` when nothing was configured.
+            egress=egress_name(self._egress),
         )

@@ -76,6 +76,7 @@ from nats.errors import (
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
+from threetears.nats._publish import publish_bounded, raise_as_publish_error
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
     NatsClientError,
@@ -262,6 +263,18 @@ DEFAULT_REQUEST_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 
 #: default drain timeout for graceful shutdown.
 DEFAULT_DRAIN_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
+
+#: default ceiling on one JetStream publish, ack included.
+#:
+#: Longer than :data:`DEFAULT_REQUEST_TIMEOUT` because this round trip includes
+#: the broker persisting the message, and short enough that a wedged broker
+#: surfaces as an error on the next tick rather than as a process that looks
+#: healthy. **There was no ceiling here at all until 2026-08-18**, and the
+#: absence froze a downstream ingestion fleet for ten days behind a publish
+#: whose ack never arrived -- 0% CPU, no errors, no slow queries, the process
+#: reporting itself up. Nothing short of walking the coroutine chain named it.
+DEFAULT_JETSTREAM_PUBLISH_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
+
 
 #: dedup window for error-callback rate limiting.
 _ERROR_LOG_RATE_LIMIT_SECONDS: Final[float] = 10.0
@@ -2278,7 +2291,13 @@ class NatsClient:
         )
         return full_name
 
-    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+    async def jetstream_publish(
+        self,
+        *,
+        subject: Subject,
+        payload: bytes,
+        timeout: timedelta | float = DEFAULT_JETSTREAM_PUBLISH_TIMEOUT,
+    ) -> None:
         """publish raw bytes to a JetStream subject with persistence ack.
 
         unlike :meth:`publish_raw` (core NATS, fire-and-forget), this persists
@@ -2286,15 +2305,34 @@ class NatsClient:
         message published while no consumer is attached is retained and
         redelivered to a durable consumer when it connects.
 
+        **This call is bounded.** An unbounded one hung its caller's event loop
+        forever, and did so in a way no caller could defend against from
+        outside -- :mod:`threetears.nats._publish` holds the mechanism and the
+        full account of why one bound is not enough. A timed-out publish has an
+        **unknown** outcome, not a failed one: the broker may have persisted the
+        message anyway. Set ``Nats-Msg-Id`` upstream if a retry must not
+        duplicate.
+
         :param subject: target JetStream subject
         :ptype subject: Subject
         :param payload: serialized message bytes
         :ptype payload: bytes
+        :param timeout: ceiling on the whole publish including the ack; a bare
+            ``int``/``float`` is seconds
+        :ptype timeout: timedelta | float
         :return: nothing
         :rtype: None
+        :raises PublishTimeoutError: the publish did not complete in time, or
+            stopped responding to cancellation
+        :raises PublishError: the broker rejected the publish
         """
-        js = self.jetstream_context()
-        await js.publish(subject.path, payload)
+        seconds = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
+        try:
+            await publish_bounded(self.jetstream_context(), subject.path, payload, timeout=seconds)
+        except PublishError:
+            raise
+        except Exception as exc:
+            raise raise_as_publish_error(subject.path, exc) from exc
 
     async def jetstream_subscribe_durable(
         self,

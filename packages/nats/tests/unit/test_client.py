@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel
 
+from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -1323,12 +1324,150 @@ async def test_connect_requires_explicit_namespace() -> None:
 
 @pytest.mark.asyncio
 async def test_jetstream_publish_awaits_puback() -> None:
-    """jetstream_publish persists the payload via the JS context."""
+    """jetstream_publish persists the payload via the JS context, under a native bound."""
     client, js = _client_with_js()
     subject = Subjects.channels_deliver("slack")
     await client.jetstream_publish(subject=subject, payload=b"answer-bytes")
 
-    js.publish.assert_awaited_once_with(subject.path, b"answer-bytes")
+    js.publish.assert_awaited_once_with(
+        subject.path,
+        b"answer-bytes",
+        timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
+    )
+
+
+class TestAPublishThatNeverGetsItsAck:
+    """The ten-day wedge: an unacked publish used to hang its caller's loop forever.
+
+    Every ingestion stream in a downstream fleet froze behind one of these. The diagnostic
+    signature is why it earns this much test: 0% CPU, no DB connections, healthy NATS
+    read-loop and ping tasks, zero error lines, the process reporting itself up for days.
+    Nothing in logs, metrics, or py-spy named it -- it took walking `cr_await` by hand.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_publish_that_never_acks_raises_instead_of_hanging(self) -> None:
+        """The caller gets an error and its loop back, rather than blocking forever.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        client, js = _client_with_js()
+
+        async def _never_acks(*_args: Any, **_kwargs: Any) -> None:
+            await asyncio.sleep(3600)
+
+        js.publish = _never_acks
+
+        with pytest.raises(PublishTimeoutError):
+            await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=0.05)
+
+    @pytest.mark.asyncio
+    async def test_a_publish_that_swallows_cancellation_still_frees_its_caller(self) -> None:
+        """The half a caller cannot defend against, and the reason a plain wait_for is not enough.
+
+        `nats-py`'s `Client._flush_pending` ends in `except asyncio.CancelledError: pass`, so a
+        publish wedged in the flush path absorbs the cancellation and keeps running. An outer
+        `wait_for` then waits forever for a task it already cancelled -- which is exactly what
+        the downstream report observed at the 900s mark with a 300s guard. The fake here
+        reproduces that behaviour rather than describing it.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        client, js = _client_with_js()
+        entered = asyncio.Event()
+
+        async def _swallows_the_first_cancellation(*_args: Any, **_kwargs: Any) -> None:
+            entered.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # Precisely what `Client._flush_pending` does: catch, and carry on.
+                pass
+            # Bounded rather than a `while True`, so the loop can still close at teardown. One
+            # swallowed cancellation is all it takes to strand a caller's `wait_for`, which is
+            # the property under test; an unkillable task would additionally hang this suite's
+            # own shutdown -- true of the real defect, and not something to prove twice.
+            await asyncio.sleep(3600)
+
+        js.publish = _swallows_the_first_cancellation
+
+        with pytest.raises(PublishTimeoutError):
+            await asyncio.wait_for(
+                client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=0.05),
+                timeout=10,
+            )
+        assert entered.is_set()
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_publish_is_held_rather_than_dropped(self) -> None:
+        """A still-running orphan keeps a reference, so the loop cannot GC it mid-flight.
+
+        Dropping the last reference to a live task makes asyncio warn about a task that was
+        "destroyed but it is pending" -- noise in exactly the incident where the log matters.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        client, js = _client_with_js()
+
+        async def _swallows_the_first_cancellation(*_args: Any, **_kwargs: Any) -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(3600)
+
+        js.publish = _swallows_the_first_cancellation
+
+        with pytest.raises(PublishTimeoutError):
+            await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=0.05)
+
+        # The registry is module-private for a reason (see `_publish`), so this reads it
+        # there rather than asking the client for a handle on something nobody can act on.
+        from threetears.nats import _publish
+
+        assert len(_publish._abandoned) == 1  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_a_broker_rejection_is_still_a_plain_publish_error(self) -> None:
+        """Bounding the call must not reclassify an ordinary failure as a timeout.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishError, PublishTimeoutError
+
+        client, js = _client_with_js()
+        js.publish.side_effect = RuntimeError("stream not found")
+
+        with pytest.raises(PublishError) as caught:
+            await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x")
+
+        assert not isinstance(caught.value, PublishTimeoutError)
+
+    @pytest.mark.asyncio
+    async def test_the_native_bound_is_handed_to_nats_py(self) -> None:
+        """Layer 1: nats-py bounds the ack wait itself rather than us relying on cancellation.
+
+        The abandon path frees the caller but leaks a task, so it must stay the backstop and
+        never the ordinary route. That only holds if the native timeout is actually passed.
+
+        :return: nothing
+        :rtype: None
+        """
+        client, js = _client_with_js()
+
+        await client.jetstream_publish(subject=Subjects.channels_deliver("slack"), payload=b"x", timeout=2.5)
+
+        assert js.publish.await_args.kwargs["timeout"] == 2.5
 
 
 def _fake_js_msg(*, data: bytes = b"answer", num_delivered: int = 1) -> Any:
@@ -1522,7 +1661,7 @@ async def test_durable_cb_dead_letters_at_budget() -> None:
     msg = _fake_js_msg(data=b"poison", num_delivered=5)
     await wrapped(msg)
     # parked on the dead-letter subject, then acked so it leaves the live consumer.
-    js.publish.assert_awaited_once_with(dlq.path, b"poison")
+    js.publish.assert_awaited_once_with(dlq.path, b"poison", timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds())
     msg.ack.assert_awaited_once()
     msg.nak.assert_not_awaited()
 
@@ -1670,7 +1809,7 @@ async def test_pull_handler_raise_dead_letters_at_budget() -> None:
     )
     await consumer.fetch_and_process()
 
-    js.publish.assert_awaited_once_with(dlq.path, b"poison")
+    js.publish.assert_awaited_once_with(dlq.path, b"poison", timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds())
     msg.ack.assert_awaited_once()
 
 
