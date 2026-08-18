@@ -25,20 +25,76 @@ packages (bumped in lock-step).
   convention rather than a gate, which the old docstring conceded in as many
   words.
 
-  `CheckpointScope` has exactly two constructors and no public one:
+  `CheckpointScope` has exactly three constructors and no public one:
 
-  - `CheckpointScope.for_customer(customer_id)` — scoped. Also the only way to
-    reach `adelete_customer_threads()`, the whole-tenant purge, which now
-    refuses on an unscoped saver and names the scope decision in the refusal.
+  - `CheckpointScope.for_customer(customer_id)` — one customer for the saver's
+    whole life.
+  - `CheckpointScope.from_config(key="customer_id")` — many customers, one per
+    call, resolved out of `config["configurable"][key]`. See the multi-tenant
+    section below.
   - `CheckpointScope.unscoped(reason="...")` — an explicit opt-out. The reason
     is mandatory and non-empty, is logged at WARNING when the scope is built,
     and makes an unscoped deployment greppable estate-wide by its own
     constructor name.
 
-  `CheckpointScope()` raises, the value is immutable and slotted, and
-  `for_customer` refuses anything but a `uuid.UUID` — the customer is rendered
-  into a `LIKE` pattern by the purge, and that statement needs no `ESCAPE`
-  clause only because a UUID's text form contains no `%` and no `_`.
+  `CheckpointScope()` raises, the value is immutable and slotted, and every
+  constructor refuses anything but a `uuid.UUID` for the customer — the
+  customer is rendered into a `LIKE` pattern by the purge, and that statement
+  needs no `ESCAPE` clause only because a UUID's text form contains no `%` and
+  no `_`.
+
+- `langgraph`: **`CheckpointScope.from_config()` — the multi-tenant answer.**
+  A saver whose scope is config-resolved reads each call's customer out of
+  `config["configurable"]["customer_id"]` (the key is configurable) and folds it
+  into the stored key exactly as `for_customer` does, at all three tiers.
+
+  It exists because the other two answers both assume ONE customer per saver
+  INSTANCE, and a host that serves every customer from one process — one
+  compiled graph, one process-lifetime saver built in lifespan startup before
+  any request exists — can honestly say neither. It has no single customer to
+  name, and it is not un-tenanted: it has many customers who must not share a
+  keyspace. Under the two-answer API such a host had to pick `unscoped` and rely
+  on `thread_id` unguessability for isolation.
+
+  LangGraph already threads a `RunnableConfig` into every checkpoint call that
+  reads or writes (`aget_tuple`, `alist`, `aput`, `aput_writes`), so the
+  customer travels with the request that knows it. One saver, one compiled
+  graph, one keyspace per customer, no per-request construction.
+
+  **It fails CLOSED, and that is the whole property.** A missing key, a `None`,
+  or a value that is not a `uuid.UUID` RAISES, before any statement is issued
+  and before any cache is read. It never degrades to the un-tenanted keyspace: a
+  host that forgot the key would otherwise end up with every customer's
+  conversations sharing one keyspace while believing itself isolated, which is
+  strictly worse than never having tenanted at all. Each of those shapes is
+  asserted directly, together with the assertion that nothing reached the
+  executor, and the degradation is refused structurally as well — an enforcement
+  rule rejects a defaulted `.get(key, fallback)` inside the resolver, which is
+  the one-character diff that would turn "fail closed" into "fail open".
+
+  The other two scopes are untouched by this, including by the new key: a
+  `customer_id` sitting in a `configurable` does not re-scope a `for_customer`
+  saver and does not un-scope an unscoped one, because neither consults the
+  config at all.
+
+  **The two methods that receive no config.** `adelete_thread` and
+  `adelete_customer_threads` get no `RunnableConfig`, so they take the customer
+  as a KEYWORD-ONLY argument reconciled against the scope:
+
+  - `adelete_thread(thread_id)` keeps working unchanged under `for_customer` and
+    `unscoped` — scriob's delete-session route calls it positionally, and an
+    enforcement rule now pins `thread_id` as its only positional parameter.
+  - Under `from_config` both methods REFUSE without a customer. A delete that
+    cannot know its customer must not guess: purging under the bare thread id
+    would address the un-tenanted keyspace, and picking a customer would be a
+    guess about whose data to destroy.
+  - Restating the customer a `for_customer` saver already holds is accepted;
+    naming a different one is refused, so the argument is not a way to reach
+    outside a scope. An `unscoped` saver refuses any customer, and
+    `adelete_customer_threads` still refuses it outright.
+
+  Every refusal names the constructor the saver was built with, because that —
+  not the argument — is what the caller has to reconcile.
 
   **Upgrading: the minimum viable change is one argument.**
 
@@ -86,18 +142,79 @@ packages (bumped in lock-step).
   - `scriob` turn build (`chat/turn.py`, `_build_compiled`) — not in scope, two
     to three hops away. The same `identity.tenant_id` is already threaded down
     this chain for the summarization wiring, so the path exists.
-  - `metallm` (`api/src/graph/checkpoint.py`) — **could not determine a
-    customer.** The saver is a process-lifetime singleton built in lifespan
-    startup with no request context, and `customer_id` there is a
-    per-row/per-request column rather than a per-process identity, so nothing
-    in the reachable chain names one customer. Scoping it would require a
-    different construction lifetime, which is a design change rather than an
-    argument; unscoped, with that stated as the reason, is the honest answer
-    until then.
+  - `metallm` (`api/src/graph/checkpoint.py`) — **available, via
+    `from_config`.** See the worked migration below. An earlier revision of this
+    entry recorded metallm as "could not determine a customer" and pointed it at
+    `unscoped`; that is **superseded**. It was a limitation of the two-answer
+    API, not of metallm — the customer was always in scope at the call site, it
+    just had nowhere to go. `unscoped` is not metallm's path.
 
-  `adelete_thread(thread_id)` keeps its signature: it has a live production
-  consumer that passes a bare thread id, and the customer comes from the
-  saver's own scope rather than from an argument.
+  `adelete_thread(thread_id)` keeps its positional signature: it has a live
+  production consumer that passes a bare thread id, and under `for_customer` and
+  `unscoped` the customer comes from the saver's own scope rather than from an
+  argument.
+
+- `langgraph`: **metallm's migration, worked.** metallm is the multi-tenant case
+  above, and `from_config` is its answer. Two edits, neither changing a
+  construction lifetime.
+
+  1. **Build site** — `api/src/graph/checkpoint.py:292`, the
+     `return ThreeTierCheckpointSaver(...)` inside `build_checkpoint_saver`:
+
+     ```python
+     return ThreeTierCheckpointSaver(
+         AsyncpgPoolAdapter(postgres_pool),
+         scope=CheckpointScope.from_config(),
+         l1_cache=l1_cache,
+         l2_cache=l2_cache,
+         l2_bucket=BUCKET_CHECKPOINTS,
+         flush_callback=flush_callback,
+     )
+     ```
+
+     Nothing about the singleton changes. It is still built once in lifespan
+     startup at `api/src/main.py:906` and still baked into the compiled graph by
+     `get_graph(checkpointer=checkpointer)` at `api/src/main.py:915`.
+
+  2. **Call site** — `api/src/graph/metallm_graph.py:1707`, the
+     `config: RunnableConfig = {...}` literal in `run_conversation`. Add one key
+     beside the `thread_id` already set on line 1709:
+
+     ```python
+     config: RunnableConfig = {
+         "configurable": {
+             "thread_id": str(conversation_id),
+             "customer_id": user_id,
+             ...
+         },
+     }
+     ```
+
+     `user_id: UUID` is a parameter of `run_conversation` itself
+     (`api/src/graph/metallm_graph.py:925`) and is already in scope at that
+     literal. The customer is one dict key away; nothing needs threading.
+
+  **Why `user_id` is the customer.** metallm's tenant model maps
+  `customer_id -> user_id`, one customer per user, stated in
+  `api/src/services/metallm_memory_authorizer.py:449-467`
+  (`metallm_memory_namespace_for_user`, whose docstring says "each user is their
+  own customer" and whose body returns `METALLM_AGENT_ID, user_id`). metallm is
+  therefore not a single-tenant deployment missing a customer — it is a
+  multi-tenant one whose customer is per request. Its checkpoints are today
+  isolated only by `thread_id` unguessability; after this they are isolated by
+  the key itself, at L1, L2 and L3.
+
+  **Data caveat, not waived by `from_config`.** metallm's existing checkpoint
+  rows live under a bare `thread_id` and a config-resolved saver will not find
+  them. A cutover either re-keys them
+  (`UPDATE checkpoints SET thread_id = <customer> || '/' || thread_id`, the same
+  over `checkpoint_writes`, cached L2 bundles invalidated) or accepts that
+  in-flight conversations start a fresh checkpoint history. The
+  conversation-to-user mapping lives in metallm's own tables, so that statement
+  is metallm's to write; no script ships here.
+
+  No metallm code is changed by this release. This is the instruction, sited and
+  line-numbered, for the change metallm makes on its own side.
 
 - `core`: `BaseEntity` derives its tier-addressing `_id` from the owning
   collection's declared `primary_key_columns`, so a composite-primary-key
