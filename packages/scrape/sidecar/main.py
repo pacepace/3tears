@@ -950,6 +950,30 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(lifespan=_lifespan)
 
 
+def _error(status_code: int, code: str, message: str) -> JSONResponse:
+    """One error body shape for every route on this service.
+
+    The HITL routes answered with ``{"error": "<free text>"}`` while ``/v1/render`` and
+    ``/v1/download`` answered with ``{"error": {"code": ..., "message": ...}}``, and FastAPI's
+    own validation failures answer with ``{"detail": [...]}``. Three shapes on one ``/v1``
+    surface means a client cannot write one error handler, and the one machine-readable field
+    -- ``code`` -- was missing from exactly the routes that hand back a human's solved session.
+
+    ``code`` is the stable part and is what a client should branch on; ``message`` is for a
+    human and may be reworded without notice. See ``docs/sidecar-http-contract.md``.
+
+    :param status_code: HTTP status to answer with
+    :ptype status_code: int
+    :param code: stable machine-readable discriminator
+    :ptype code: str
+    :param message: human-readable detail
+    :ptype message: str
+    :return: the error response
+    :rtype: JSONResponse
+    """
+    return JSONResponse(status_code=status_code, content={"error": {"code": code, "message": message}})
+
+
 @app.post("/v1/render", response_model=RenderResponse)
 async def render(req: RenderRequest) -> RenderResponse | JSONResponse:
     """Render *req.url* through nodriver and return the page."""
@@ -1108,20 +1132,17 @@ async def hitl_vnc_start() -> dict[str, Any] | JSONResponse:
     ``x11vnc`` losing a race for the RFB port.
     """
     if _sessions.owns_display():
-        return JSONResponse(
-            status_code=409,
-            content={
-                "error": (
-                    "a HITL session owns the display; use POST /v1/hitl/session to open one, "
-                    "or DELETE it before driving the display directly"
-                )
-            },
+        return _error(
+            409,
+            "display_owned_by_session",
+            "a HITL session owns the display; use POST /v1/hitl/session to open one, "
+            "or DELETE it before driving the display directly",
         )
     try:
         session = await _vnc.start()
     except hitl.VncUnavailable as exc:
         log.warning("hitl: could not start the vnc path: %s", exc)
-        return JSONResponse(status_code=503, content={"error": str(exc)})
+        return _error(503, "unavailable", str(exc))
     return {"display": session.display}
 
 
@@ -1147,9 +1168,10 @@ async def hitl_vnc_stop() -> dict[str, Any] | JSONResponse:
     # reaper could ever release the display. This is the escape hatch for exactly that, so it
     # closes the session too rather than stopping the display out from under a tracked one.
     if _sessions.owns_display():
-        return JSONResponse(
-            status_code=409,
-            content={"error": "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead"},
+        return _error(
+            409,
+            "display_owned_by_session",
+            "a HITL session owns the display; DELETE /v1/hitl/session/{id} instead",
         )
     if _sessions.current() is not None:
         log.info("hitl: releasing the display held by an expired session")
@@ -1189,10 +1211,10 @@ async def hitl_session_open(req: HitlSessionRequest | None = None) -> dict[str, 
     try:
         session = await _sessions.open()
     except hitl.SessionUnavailable as exc:
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return _error(409, "conflict", str(exc))
     except hitl.VncUnavailable as exc:
         log.warning("hitl: session refused, no display: %s", exc)
-        return JSONResponse(status_code=503, content={"error": str(exc)})
+        return _error(503, "unavailable", str(exc))
     return {
         "session_id": session.session_id,
         "token": session.token,
@@ -1211,7 +1233,7 @@ async def hitl_session_get(
     try:
         session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return _error(404, "not_found", str(exc))
     return {
         "session_id": session.session_id,
         "expires_at": session.expires_at,
@@ -1235,7 +1257,7 @@ async def hitl_tab_open(
     try:
         session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return _error(404, "not_found", str(exc))
     try:
         tab = await _sessions.open_tab(
             session,
@@ -1245,16 +1267,16 @@ async def hitl_tab_open(
             session_state=req.session_state,
         )
     except hitl.SessionUnavailable as exc:
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return _error(409, "conflict", str(exc))
     except hitl.SessionNotFound as exc:
         # The session was closed or reaped while this navigation was in flight. An ordinary
         # race, not a fault: INFO and 409, where the broad handler below would call it a bad
         # gateway and log a traceback for something nobody needs to investigate.
         log.info("hitl: session closed while opening a tab for target %s", req.target_id)
-        return JSONResponse(status_code=409, content={"error": str(exc)})
+        return _error(409, "conflict", str(exc))
     except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- a nav-step replay or a CDP timing failure is this target's problem, not the session's; surfacing it as a ToolResult-shaped error keeps the operator's other tabs alive. Logged with its traceback below
         log.exception("hitl: could not open a tab for target %s", req.target_id)
-        return JSONResponse(status_code=502, content={"error": f"could not open the target: {exc}"})
+        return _error(502, "target_unreachable", f"could not open the target: {exc}")
     return {"tab_id": tab.tab_id, "target_id": tab.target_id, "url": tab.url, "free_slots": session.free_slots()}
 
 
@@ -1273,11 +1295,11 @@ async def hitl_tab_complete(
     try:
         session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return _error(404, "not_found", str(exc))
     try:
         tab = await _sessions.complete_tab(session, tab_id)
     except hitl.SessionNotFound as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return _error(404, "not_found", str(exc))
     # `session_state` is the human's work, raw and unsealed. It is returned exactly once, to
     # the caller that completed the tab, and never logged: the MIT side seals it before it
     # touches a database. A cookie jar for a cleared challenge is a credential.
@@ -1299,6 +1321,6 @@ async def hitl_session_close(
     try:
         session = _sessions.authorize(session_id, _token_from(authorization, x_hitl_token))
     except hitl.SessionNotFound as exc:
-        return JSONResponse(status_code=404, content={"error": str(exc)})
+        return _error(404, "not_found", str(exc))
     await _sessions.close(session)
     return {"closed": True, "session_id": session_id}

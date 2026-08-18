@@ -131,6 +131,46 @@ def _public_surface(tree: ast.Module) -> set[str]:
     return surface
 
 
+def _surface_now(package_dir: str) -> dict[str, set[str]]:
+    """every module's public surface under *package_dir* in the WORKING TREE.
+
+    Read from disk, not from ``git show HEAD:``. Reading HEAD made this guard useless
+    locally in the way that matters most: it silently ignored uncommitted work, so a
+    developer ran it against a tree full of new API and watched it pass, then pushed and
+    learned the truth from CI. It answered a question nobody asked -- "did the last commit
+    grow the API" -- rather than "did what I am about to ship grow it".
+
+    :param package_dir: repo-relative package directory
+    :ptype package_dir: str
+    :return: module path -> its public surface
+    :rtype: dict[str, set[str]]
+    """
+    surfaces: dict[str, set[str]] = {}
+    src_root = _REPO_ROOT / package_dir / "src"
+    if not src_root.is_dir():
+        return surfaces
+    for path in sorted(src_root.rglob("*.py")):
+        relative = path.relative_to(_REPO_ROOT)
+        if _is_private_module(relative):
+            continue
+        try:
+            surfaces[relative.as_posix()] = _public_surface(ast.parse(path.read_text()))
+        except SyntaxError:
+            continue
+    return surfaces
+
+
+def _is_private_module(path: Path) -> bool:
+    """whether *path* names an internal module a consumer may not import by name.
+
+    :param path: repo-relative module path
+    :ptype path: Path
+    :return: ``True`` when any path component is ``_``-prefixed
+    :rtype: bool
+    """
+    return any(part.startswith("_") and part != "__init__.py" for part in path.parts)
+
+
 def _surface_at(ref: str, package_dir: str) -> dict[str, set[str]]:
     """every module's public surface under *package_dir* at git ref *ref*.
 
@@ -150,8 +190,7 @@ def _surface_at(ref: str, package_dir: str) -> dict[str, set[str]]:
         # API a consumer is entitled to import and cannot create the mixed-resolve hazard. What
         # a private module exports to a PUBLIC one still shows up, in that public module's own
         # `__all__` -- so this narrows the noise without opening a way through.
-        parts = Path(path).parts
-        if any(part.startswith("_") and part != "__init__.py" for part in parts):
+        if _is_private_module(Path(path)):
             continue
         source = _git("show", f"{ref}:{path}")
         if not source:
@@ -201,7 +240,7 @@ class TestApiGrowthRequiresAMinorBump:
         grown: list[str] = []
         for package_dir in _package_dirs():
             before = _surface_at(tag_name, package_dir)
-            after = _surface_at("HEAD", package_dir)
+            after = _surface_now(package_dir)
             for module_path, names in sorted(after.items()):
                 added = names - before.get(module_path, set())
                 if added:

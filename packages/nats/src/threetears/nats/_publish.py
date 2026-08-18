@@ -49,14 +49,14 @@ duplicate, and set ``Nats-Msg-Id`` if that matters.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any, Final
 
 from threetears.observe import get_logger
 
 from threetears.nats.errors import PublishError, PublishTimeoutError
 
-__all__ = ["publish_bounded", "raise_as_publish_error"]
+__all__ = ["publish_bounded", "raise_as_publish_error", "run_bounded"]
 
 log = get_logger(__name__)
 
@@ -74,6 +74,58 @@ _ABANDON_GRACE_SECONDS: Final[float] = 5.0
 #: nothing reads it, and a caller reaching for it would be managing something it
 #: cannot influence.
 _abandoned: set[asyncio.Task[Any]] = set()
+
+
+async def run_bounded(
+    make_coro: Callable[[], Coroutine[Any, Any, Any]],
+    *,
+    timeout: float,
+    what: str,
+) -> Any:
+    """await an operation under a deadline the operation cannot swallow.
+
+    The mechanism this module exists for, with the JetStream specifics lifted
+    out so the KV path can share it rather than carry a second copy. Every
+    ``nats-py`` call that reaches a broker travels the same flush path, and that
+    path discards ``CancelledError`` -- so ``asyncio.wait_for`` is not a bound
+    anywhere in this library, only here.
+
+    Runs *make_coro* as its own task. If the deadline passes with the task still
+    alive, it is cancelled and **abandoned rather than awaited**: awaiting a
+    coroutine that has already refused cancellation is the wedge itself.
+
+    :param make_coro: builds the awaitable to run; called once
+    :ptype make_coro: Callable[[], Coroutine[Any, Any, Any]]
+    :param timeout: ceiling in seconds
+    :ptype timeout: float
+    :param what: short description for the error and the log line
+    :ptype what: str
+    :return: whatever the operation returned
+    :rtype: Any
+    :raises PublishTimeoutError: the deadline passed, or the operation stopped
+        responding to cancellation
+    """
+    task: asyncio.Task[Any] = asyncio.create_task(make_coro())
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+
+    if task in done:
+        return task.result()
+
+    task.cancel()
+    _abandoned.add(task)
+    task.add_done_callback(_abandoned.discard)
+    log.error(
+        "%s did not finish within %.1fs and did not respond to cancellation; abandoning the "
+        "in-flight task so the caller is not wedged behind it. This is nats-py swallowing "
+        "CancelledError in its flush path -- the broker is very likely unavailable, and the "
+        "operation may or may not have taken effect.",
+        what,
+        timeout,
+        extra={"extra_data": {"operation": what, "timeout_seconds": timeout}},
+    )
+    raise PublishTimeoutError(
+        f"{what} did not complete within {timeout}s and ignored cancellation; it may or may not have taken effect"
+    )
 
 
 async def publish_bounded(

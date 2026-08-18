@@ -103,7 +103,7 @@ async def test_an_unavailable_vnc_path_is_a_503_not_a_traceback(monkeypatch: pyt
     monkeypatch.setattr(main, "_vnc", _FakeLifecycle(explode=True))
     r = await _call("POST", "/v1/hitl/vnc")
     assert r.status_code == 503
-    assert "not installed" in r.json()["error"]
+    assert "not installed" in r.json()["error"]["message"]
 
 
 # --------------------------------------------------------------------------
@@ -315,7 +315,7 @@ async def test_the_bare_vnc_endpoints_refuse_while_a_session_owns_the_display(
     stopped = await _call("DELETE", "/v1/hitl/vnc")
 
     assert started.status_code == 409
-    assert "session" in started.json()["error"]
+    assert "session" in started.json()["error"]["message"]
     assert stopped.status_code == 409
     assert fake_sessions.vnc.health(), "a bare DELETE stopped the display under a live session"
 
@@ -418,3 +418,43 @@ async def test_the_tab_endpoint_forwards_the_session_state_it_accepts(fake_sessi
     assert fake_sessions.session_states == [state], (
         "the endpoint accepted a human's solve and dropped it, so the tab opens unauthenticated"
     )
+
+
+class TestOneErrorShapeForTheWholeService:
+    """Every error body on this service is ``{"error": {"code", "message"}}``.
+
+    It was not: ``/v1/render`` and ``/v1/download`` answered with the structured shape while
+    every ``/v1/hitl/*`` route answered with ``{"error": "<free text>"}``, so a client could
+    not write one error handler for one ``/v1`` surface -- and the machine-readable half was
+    missing from precisely the routes that hand back a human's solved session. Pinned as a
+    SWEEP over the app's own routes rather than a per-route assertion, because a per-route
+    list is a list somebody forgets to extend.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_error_response_carries_a_code_and_a_message(self) -> None:
+        """Drive each session-scoped route into a failure and check the shape it answers with.
+
+        An unknown session id is the cheapest way to make every one of them answer, and it
+        needs no fixture state.
+
+        :return: nothing
+        :rtype: None
+        """
+        failures = [
+            await _call("GET", "/v1/hitl/session/does-not-exist"),
+            await _call("DELETE", "/v1/hitl/session/does-not-exist"),
+        ]
+
+        for response in failures:
+            assert response.status_code >= 400, f"expected an error from {response.request.url}"
+            body = response.json()
+            assert "error" in body, f"{response.request.url} answered without an `error` key: {body}"
+            assert isinstance(body["error"], dict), (
+                f"{response.request.url} answered with the old free-text shape: {body['error']!r}. "
+                f"A client cannot branch on prose."
+            )
+            assert set(body["error"]) >= {"code", "message"}, (
+                f"{response.request.url} is missing code/message: {body['error']}"
+            )
+            assert isinstance(body["error"]["code"], str) and body["error"]["code"]
