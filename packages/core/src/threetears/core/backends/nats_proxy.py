@@ -814,6 +814,50 @@ class _ProxyConnection:
             return None
         return _deserialize_row(row)
 
+    async def fetchval(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+    ) -> Any:
+        """single scalar; routed through tx_id when inside a tx.
+
+        Mirrors asyncpg's :meth:`Connection.fetchval`: the first column of the
+        first row, or ``None`` when the result is empty.
+
+        This class calls itself "asyncpg-Connection-shaped" and was not: it
+        carried ``execute`` / ``fetchrow`` / ``fetch`` and omitted this one,
+        while the backend it proxies has had ``fetchval`` all along. A caller
+        that reasonably wrote ``async with pool.acquire() as conn:
+        conn.fetchval(...)`` got an ``AttributeError`` -- which, arriving from
+        a database access layer, reads as a connectivity fault and sends the
+        reader to the broker and the network before the object surface.
+
+        This is the SAME gap the backend's own :meth:`NatsProxyL3Backend.fetchval`
+        was added to close, one layer down: the shape claimed conformance that a
+        missing method quietly denied.
+
+        Delegates to :meth:`fetchrow` rather than re-implementing the round
+        trip, so transaction routing and the inside-tx ``namespace`` refusal are
+        inherited rather than duplicated -- there is one place that decides how a
+        read is routed.
+
+        :param query: parameterized SELECT
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Any
+        :param namespace: override namespace for outside-tx calls;
+            inside an open transaction a non-None value is REJECTED
+        :ptype namespace: str | None
+        :return: first column of first row, or None when no rows
+        :rtype: Any
+        :raises ValueError: when called with ``namespace`` inside an
+            open transaction
+        """
+        row = await self.fetchrow(query, *params, namespace=namespace)
+        result = next(iter(row.values())) if row else None
+        return result
+
     async def fetch(
         self,
         query: str,

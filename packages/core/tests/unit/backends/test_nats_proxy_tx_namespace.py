@@ -273,3 +273,86 @@ async def test_tx_namespace_unauthorized_surfaces_as_data_layer_error() -> None:
                 pass
 
     assert "TX_NAMESPACE_UNAUTHORIZED" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_the_acquired_connection_has_the_methods_it_claims_to() -> None:
+    """``_ProxyConnection`` says "asyncpg-Connection-shaped" -- so it must be.
+
+    It carried ``execute`` / ``fetchrow`` / ``fetch`` and omitted ``fetchval``,
+    which the backend it proxies has had all along. A caller writing the obvious
+    ``async with pool.acquire() as conn: conn.fetchval(...)`` got an
+    ``AttributeError`` from a database access layer, which reads as a
+    connectivity fault and sends the reader to the broker and the network before
+    the object surface.
+
+    Asserted as a SET rather than one method, so the next omission fails here
+    instead of in a consumer.
+    """
+    proxy = _make_proxy(MagicMock())
+
+    async with proxy.acquire() as conn:
+        missing = [
+            name for name in ("execute", "fetch", "fetchrow", "fetchval", "transaction") if not hasattr(conn, name)
+        ]
+
+    assert missing == []
+
+
+@pytest.mark.asyncio
+async def test_fetchval_outside_a_transaction_returns_the_first_column() -> None:
+    """the scalar read, routed like any other outside-tx call."""
+    plan = _ScriptedReplyPlan(
+        [("test.l3.query", {"success": True, "rows": [{"count": 7, "other": "ignored"}]})],
+    )
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        value = await conn.fetchval("SELECT count(*) FROM t")
+
+    assert value == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_fetchval_inside_a_transaction_routes_through_the_tx() -> None:
+    """the routing is inherited, not reimplemented.
+
+    ``fetchval`` delegates to ``fetchrow``, so a scalar read inside an open
+    transaction goes to ``tx.fetchrow`` with the session's ``tx_id`` -- never to
+    the outside-tx ``l3.query``, which would read outside the transaction it was
+    called in and silently miss the caller's own uncommitted writes.
+    """
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": TX_ID}),
+            ("test.l3.tx.fetchrow", {"success": True, "row": {"n": 42}}),
+            ("test.l3.tx.commit", {"success": True}),
+        ],
+    )
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        async with conn.transaction():
+            value = await conn.fetchval("SELECT n FROM t")
+
+    assert value == 42
+    assert [subject for subject, _ in plan.calls][1] == "test.l3.tx.fetchrow"
+
+
+@pytest.mark.asyncio
+async def test_fetchval_returns_none_on_an_empty_result() -> None:
+    """empty is None, matching asyncpg -- not an IndexError."""
+    plan = _ScriptedReplyPlan([("test.l3.query", {"success": True, "rows": []})])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        value = await conn.fetchval("SELECT nothing")
+
+    assert value is None
