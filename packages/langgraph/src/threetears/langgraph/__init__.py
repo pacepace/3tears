@@ -29,6 +29,7 @@ from threetears.langgraph.caching import (
 )
 from threetears.langgraph.catalog import ObjectCataloger
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.events import (
     FrameworkEvent,
     FrameworkEventRegistry,
@@ -115,6 +116,7 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
+    "CheckpointScope",
     "ContextMergeMiddleware",
     "ConversationContextProvider",
     "DEFAULT_OFFLOAD_THRESHOLD_CHARS",

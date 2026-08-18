@@ -1,10 +1,21 @@
-"""enforcement: no checkpoint statement binds the caller's raw ``thread_id``.
+"""enforcement: the checkpoint saver's scope cannot be skipped or bypassed.
 
-static AST check, well under a second. reads
-``src/threetears/langgraph/checkpoint.py`` and asserts that the name
-``thread_id`` never reaches the executor as a bound parameter -- only
-``storage_thread_id``, the value :meth:`ThreeTierCheckpointSaver.storage_thread_id`
-produces, may.
+static AST checks, well under a second, over
+``src/threetears/langgraph/checkpoint.py``. two rules, one design:
+
+1. the name ``thread_id`` never reaches the executor as a bound parameter --
+   only ``storage_thread_id``, the value
+   :meth:`ThreeTierCheckpointSaver.storage_thread_id` produces, may.
+2. ``__init__`` declares ``scope`` with NO default, and no ``customer_id``
+   parameter survives anywhere in the signature.
+
+rule 2 is here because the defect this design corrected was not the mechanism
+but the DEFAULT: an optional ``customer_id=None`` meant a caller who said
+nothing addressed every customer's keyspace, so tenancy was a convention. a
+default re-added later -- ``scope: CheckpointScope = _SOME_FALLBACK``, or a
+``customer_id`` parameter restored "for compatibility" -- would restore exactly
+that, and would do so without failing any behavioural test, because every such
+test constructs a saver by passing what it wants.
 
 rationale: the customer dimension on ``checkpoints`` / ``checkpoint_writes``
 lives INSIDE the ``thread_id`` value rather than in a separate column, because
@@ -35,6 +46,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _CHECKPOINT_MODULE = (
     Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "langgraph" / "checkpoint.py"
 )
@@ -42,6 +55,27 @@ _CHECKPOINT_MODULE = (
 _RAW_NAME = "thread_id"
 _PARAMS_NAME = "params"
 _SCOPING_CALL = "storage_thread_id"
+_SAVER_CLASS = "ThreeTierCheckpointSaver"
+_SCOPE_PARAM = "scope"
+_REMOVED_PARAM = "customer_id"
+
+
+def _saver_init(tree: ast.Module) -> ast.FunctionDef:
+    """locate ``ThreeTierCheckpointSaver.__init__`` in a parsed module.
+
+    :param tree: the parsed checkpoint module
+    :ptype tree: ast.Module
+    :return: the constructor's function node
+    :rtype: ast.FunctionDef
+    :raises AssertionError: when the class or its constructor is missing, since
+        a rule that silently found nothing would read as a pass
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == _SAVER_CLASS:
+            for member in node.body:
+                if isinstance(member, ast.FunctionDef) and member.name == "__init__":
+                    return member
+    raise AssertionError(f"{_SAVER_CLASS}.__init__ not found in {_CHECKPOINT_MODULE.name}")
 
 
 def _is_executor_call(node: ast.AST) -> bool:
@@ -172,3 +206,56 @@ class TestCheckpointSqlBindsTheScopedThreadId:
         source = "def bad(self, thread_id, checkpoint_ns):\n    params = [thread_id, checkpoint_ns]\n"
 
         assert _offending_lines(ast.parse(source)) == [2]
+
+
+class TestTheScopeDecisionHasNoDefault:
+    """the corrected defect was the default, so the absence of one is enforced."""
+
+    def test_scope_is_keyword_only_with_no_default(self) -> None:
+        """a default on ``scope`` would restore "say nothing, see everything".
+
+        checked structurally rather than by constructing a saver, because a
+        default that is itself an unscoped scope would construct perfectly
+        happily and pass every behavioural test in the suite.
+
+        :return: nothing
+        :rtype: None
+        """
+        init = _saver_init(ast.parse(_CHECKPOINT_MODULE.read_text(encoding="utf-8")))
+
+        names = [argument.arg for argument in init.args.kwonlyargs]
+        assert _SCOPE_PARAM in names, (
+            f"{_SAVER_CLASS}.__init__ must take `{_SCOPE_PARAM}` as a keyword-only parameter; "
+            "a second positional next to `executor` is a transposition no type checker would catch."
+        )
+        default = init.args.kw_defaults[names.index(_SCOPE_PARAM)]
+        assert default is None, (
+            f"{_SAVER_CLASS}.__init__ gives `{_SCOPE_PARAM}` a default. The default is the whole defect: "
+            "a caller who says nothing about tenancy would get a saver again, and the scope would be a "
+            "convention rather than a gate."
+        )
+
+    def test_the_removed_customer_id_parameter_stays_removed(self) -> None:
+        """re-adding it "for compatibility" re-opens the same door.
+
+        :return: nothing
+        :rtype: None
+        """
+        init = _saver_init(ast.parse(_CHECKPOINT_MODULE.read_text(encoding="utf-8")))
+
+        declared = [argument.arg for argument in [*init.args.posonlyargs, *init.args.args, *init.args.kwonlyargs]]
+
+        assert _REMOVED_PARAM not in declared, (
+            f"{_SAVER_CLASS}.__init__ declares `{_REMOVED_PARAM}` again. Tenancy is expressed by "
+            "`scope: CheckpointScope`; a parallel parameter reintroduces the optional, defaulted form "
+            "this replaced."
+        )
+
+    def test_the_locator_refuses_to_pass_on_a_missing_constructor(self) -> None:
+        """negative control: a rule that finds nothing must not read as clean.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(AssertionError, match="not found"):
+            _saver_init(ast.parse("class Unrelated:\n    pass\n"))

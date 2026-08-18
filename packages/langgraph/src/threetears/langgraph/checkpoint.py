@@ -29,14 +29,18 @@ control-channel writes arriving at the same method still raise,
 because losing one changes what the run does. See that method for
 the full rule.
 
-a saver may optionally be bound to one customer (``customer_id``).
-when it is, the customer is folded into the stored ``thread_id`` and
-so into every key the saver addresses at all three tiers -- see
+every saver states a tenancy decision at construction:
+``scope: CheckpointScope`` has no default, so a caller either names a
+customer or says in writing that it deliberately names none. when a
+customer is named it is folded into the stored ``thread_id`` and so
+into every key the saver addresses at all three tiers -- see
 :meth:`ThreeTierCheckpointSaver.storage_thread_id` for why the
 customer lives in the key rather than in a column, and
 :meth:`ThreeTierCheckpointSaver.adelete_customer_threads` for the
-purge that tenancy exists to make possible. an unbound saver is
-byte-for-byte what it was before tenancy existed.
+purge that tenancy exists to make possible. an unscoped saver is
+byte-for-byte what it was before tenancy existed, which is what makes
+the required parameter adoptable without moving a row -- see the class
+docstring for the per-consumer upgrade path.
 
 namespace-task-01 phase 8.5l-4 merged the former
 ``ProxyCheckpointSaver`` into this class after Pace's pushback
@@ -52,7 +56,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any, cast
-from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 
@@ -67,6 +70,7 @@ from langgraph.checkpoint.base import (
     get_checkpoint_metadata,
 )
 
+from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import (
     AsyncQueryExecutor,
     CheckpointL1Cache,
@@ -119,31 +123,90 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
       which already implements the protocol natively, so they pass
       it straight through.
 
-    **Tenancy.** A saver MAY be bound to one customer via ``customer_id``. When
-    it is, the customer is folded into the stored thread id
-    (:meth:`storage_thread_id`) and therefore into every key the saver
-    addresses: the ``thread_id`` bound into L3 statements, the L2 bucket key,
-    and the L1 thread key. A saver bound to one customer cannot NAME another
-    customer's row, which is a structural property rather than a predicate a
-    later statement can forget. See :meth:`storage_thread_id` for why the
-    customer lives in the key rather than in a column.
+    **Tenancy.** ``scope`` is REQUIRED and has no default, so building a saver
+    forces one of exactly two answers:
 
-    ``customer_id`` defaults to ``None``, and an unbound saver produces byte-
-    identical keys and statements to one built before tenancy existed. That
-    default is load-bearing: :meth:`adelete_thread` has a live production
-    consumer that passes no customer.
+    - ``CheckpointScope.for_customer(customer_id)`` -- the customer is folded
+      into the stored thread id (:meth:`storage_thread_id`) and therefore into
+      every key the saver addresses: the ``thread_id`` bound into L3 statements,
+      the L2 bucket key, and the L1 thread key. A saver scoped to one customer
+      cannot NAME another customer's row, which is a structural property rather
+      than a predicate a later statement can forget. See
+      :meth:`storage_thread_id` for why the customer lives in the key rather
+      than in a column.
+    - ``CheckpointScope.unscoped(reason="...")`` -- the saver addresses the
+      un-tenanted keyspace, deliberately, with the reason recorded and logged.
+
+    The parameter used to be ``customer_id: UUID | None = None``, and the
+    DEFAULT was the defect: saying nothing meant "address every customer's
+    keyspace", which is what every caller said, so tenancy was a convention
+    rather than a gate. Omitting ``scope`` is now a :class:`TypeError` at
+    construction.
+
+    **Upgrading an existing consumer.** The minimum viable change is one line::
+
+        saver = ThreeTierCheckpointSaver(
+            executor=executor,
+            scope=CheckpointScope.unscoped(reason="single-tenant deployment"),
+        )
+
+    That is a legitimate destination, not a placeholder. An unscoped saver
+    produces byte-identical keys and statements to one built before tenancy
+    existed, so it reads the rows that already exist and MIGRATES NOTHING.
+
+    Adopting a real customer later is a data change, not a code change:
+    existing rows live under a bare thread id and a scoped saver will not find
+    them, so they have to be re-keyed --
+    ``UPDATE checkpoints SET thread_id = $customer || '/' || thread_id ...``
+    plus the same over ``checkpoint_writes``, and the cached L2 bundles
+    invalidated. No such script ships here, and cannot: which customer owns
+    which thread lives in the HOST's own tables (a sessions table, a
+    conversations table), which this library has never seen. Each consumer
+    writes that mapping query itself.
+
+    Where the customer is available today, from a reading of each consumer:
+
+    - ``14-eng-ai-bot-agents`` bootstrap (``phases/backend.py``) -- available.
+      ``state.customer_id`` is a sibling attribute on the same
+      ``BootstrapState`` already in scope, checked non-None earlier in the same
+      function. The pod serves one customer for its whole life, so a
+      process-lifetime saver can be scoped to it directly.
+    - ``14-eng-ai-survey`` (``core/checkpointer_factory.py``) -- available, one
+      call away. ``get_platform_identity().customer_id`` is a process-wide
+      accessor over the same one-customer-per-pod environment; it is simply not
+      wired into the factory yet. Also a process-lifetime saver over a
+      single-tenant deployment, so scoping it is safe.
+    - ``scriob`` delete-session route (``chat/routes.py``) -- available.
+      ``identity.tenant_id`` is a local in the same handler, used two lines
+      above the construction. Per-request construction on a multi-tenant
+      server, which is the shape a scoped saver fits best.
+    - ``scriob`` history read (``chat/turn.py``, ``read_message_history``) --
+      NOT in scope, one hop away. The caller holds ``identity.tenant_id``; the
+      function takes only a pool and a conversation id, so adopting a customer
+      means threading one parameter through one call.
+    - ``scriob`` turn build (``chat/turn.py``, ``_build_compiled``) -- NOT in
+      scope, two to three hops away. The same ``identity.tenant_id`` is already
+      threaded down this chain for summarization wiring, so the path exists.
+    - ``metallm`` (``api/src/graph/checkpoint.py``) -- COULD NOT DETERMINE a
+      customer. The saver is a process-lifetime singleton built in lifespan
+      startup with no request context, and ``customer_id`` there is a
+      per-row/per-request column rather than a per-process identity, so nothing
+      in the reachable chain names one customer. A scoped saver would need a
+      different construction lifetime, which is a design change rather than an
+      argument. Unscoped, with that stated as the reason, is the honest answer
+      until then.
 
     :param executor: async query executor for database operations
     :ptype executor: AsyncQueryExecutor
+    :param scope: required tenancy decision -- a customer, or an explicit,
+        reasoned opt-out
+    :ptype scope: CheckpointScope
     :param l1_cache: optional L1 local cache (e.g. SQLite)
     :ptype l1_cache: CheckpointL1Cache | None
     :param l2_cache: optional L2 distributed cache (e.g. NATS KV)
     :ptype l2_cache: CheckpointL2Cache | None
     :param l2_bucket: bucket/namespace for L2 cache keys
     :ptype l2_bucket: str
-    :param customer_id: optional customer this saver is bound to; ``None``
-        leaves every key un-scoped, exactly as before tenancy existed
-    :ptype customer_id: UUID | None
     :param flush_callback: optional async callback invoked after
         each checkpoint write to drain pending writes; returns the
         count of items flushed
@@ -154,24 +217,30 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self,
         executor: AsyncQueryExecutor,
         *,
+        scope: CheckpointScope,
         l1_cache: CheckpointL1Cache | None = None,
         l2_cache: CheckpointL2Cache | None = None,
         l2_bucket: str = _DEFAULT_L2_BUCKET,
-        customer_id: UUID | None = None,
         flush_callback: FlushCallback | None = None,
     ) -> None:
         """initialize checkpoint saver.
 
+        ``scope`` is keyword-only and has no default. Keyword-only because a
+        second positional argument next to ``executor`` is a transposition
+        nothing would catch; no default because the default was the defect this
+        parameter replaces.
+
         :param executor: async query executor for database operations
         :ptype executor: AsyncQueryExecutor
+        :param scope: required tenancy decision for every key this saver
+            addresses
+        :ptype scope: CheckpointScope
         :param l1_cache: optional L1 local cache
         :ptype l1_cache: CheckpointL1Cache | None
         :param l2_cache: optional L2 distributed cache
         :ptype l2_cache: CheckpointL2Cache | None
         :param l2_bucket: bucket name for L2 cache keys
         :ptype l2_bucket: str
-        :param customer_id: optional customer to scope every key to
-        :ptype customer_id: UUID | None
         :param flush_callback: optional post-write flush callback
         :ptype flush_callback: FlushCallback | None
         :return: nothing
@@ -183,13 +252,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._l1 = l1_cache
         self._l2 = l2_cache
         self._l2_bucket = l2_bucket
+        self._scope = scope
         # rendered once at construction rather than per key: this is the only
         # place a UUID becomes text, so the border is one line rather than one
         # per statement.
         self._customer_prefix: str | None = (
             None
-            if customer_id is None
-            else f"{customer_id}{_CUSTOMER_SEPARATOR}"  # convert at border: storage key text
+            if scope.customer_id is None
+            else f"{scope.customer_id}{_CUSTOMER_SEPARATOR}"  # convert at border: storage key text
         )
         self._flush_callback = flush_callback
 
@@ -200,8 +270,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     def storage_thread_id(self, thread_id: str) -> str:
         """map a caller's thread id to the one this saver stores it under.
 
-        Returns ``thread_id`` unchanged when the saver is unbound, and
-        ``"<customer_id>/<thread_id>"`` when it is bound.
+        Returns ``thread_id`` unchanged when the saver's scope names no
+        customer, and ``"<customer_id>/<thread_id>"`` when it names one.
 
         **Why the customer lives in the key rather than in a column.** The
         checkpoint tables are keyed ``(thread_id, checkpoint_ns,
@@ -226,7 +296,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         not an authorization system. A host still decides which customer a
         request belongs to and builds the saver accordingly; what this adds is
         that a saver built for the wrong customer reads nothing rather than
-        reading someone else's conversation.
+        reading someone else's conversation. What the required ``scope``
+        parameter adds on top is that the decision cannot be skipped -- a
+        deployment addressing the un-tenanted keyspace did so on purpose and
+        said why.
+
+        The scheme fails CLOSED, which is the reason it beats a column: a bare
+        thread id under a scoped saver matches nothing, whereas a statement that
+        forgot a ``customer_id`` predicate would return every customer's rows.
 
         :param thread_id: conversation/thread identifier as the caller knows it
         :ptype thread_id: str
@@ -1224,8 +1301,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         The signature is deliberately unchanged: this method has a live
         production consumer that passes a bare thread id and no customer, so the
-        customer comes from the saver's own binding rather than from an
-        argument. An unbound saver issues exactly the statements it always did.
+        customer comes from the saver's own scope rather than from an argument.
+        An unscoped saver issues exactly the statements it always did.
 
         :param thread_id: conversation/thread identifier as the caller knows it
         :ptype thread_id: str
@@ -1270,10 +1347,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         conversation within it. Tenancy without a purge path is why the column
         would have been added in the first place, so the two ship together.
 
-        Takes no argument on purpose. The customer is the one this saver is
-        bound to, so there is no way to ask an instance to erase a customer it
-        was not built for, and no way to erase every customer by passing the
-        wrong value.
+        Takes no argument on purpose. The customer is the one this saver's scope
+        names, so there is no way to ask an instance to erase a customer it was
+        not built for, and no way to erase every customer by passing the wrong
+        value.
 
         The L3 half matches on the customer's key prefix. A UUID's text form
         contains neither ``%`` nor ``_``, so the pattern needs no ``ESCAPE``
@@ -1288,13 +1365,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when the saver is not bound to a customer, since the
+        :raises ValueError: when the saver's scope names no customer, since the
             pattern would then match every row in the table
         """
         if self._customer_prefix is None:
             raise ValueError(
-                "adelete_customer_threads() needs a saver constructed with customer_id; "
-                "an unbound saver has no customer to scope the purge to and would match every thread",
+                "adelete_customer_threads() needs a saver built with CheckpointScope.for_customer(...). "
+                f"This saver is unscoped (reason: {self._scope.reason}), so it has no customer to scope "
+                "the purge to and the pattern would match every thread in the table.",
             )
 
         pattern = f"{self._customer_prefix}%"

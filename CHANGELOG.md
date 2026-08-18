@@ -8,6 +8,97 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `langgraph`: **`ThreeTierCheckpointSaver` now requires a tenancy decision.**
+  `customer_id: UUID | None = None` is replaced by `scope: CheckpointScope`,
+  keyword-only, with no default. Omitting it is a `TypeError` at construction.
+
+  The mechanism is unchanged and was already right: the customer is folded into
+  the stored `thread_id` and so into every key the saver addresses at all three
+  tiers. It fails CLOSED — a bare thread id under a scoped saver matches
+  nothing, whereas a statement that forgot a `customer_id` predicate would
+  return every customer's rows — and it reaches L1 and L2, which are key-value
+  stores with no columns to filter on.
+
+  The DEFAULT was the defect. `customer_id=None` meant "address every
+  customer's keyspace", it is what a caller got by saying nothing, and it is
+  what all six construction sites in the estate said. That made tenancy a
+  convention rather than a gate, which the old docstring conceded in as many
+  words.
+
+  `CheckpointScope` has exactly two constructors and no public one:
+
+  - `CheckpointScope.for_customer(customer_id)` — scoped. Also the only way to
+    reach `adelete_customer_threads()`, the whole-tenant purge, which now
+    refuses on an unscoped saver and names the scope decision in the refusal.
+  - `CheckpointScope.unscoped(reason="...")` — an explicit opt-out. The reason
+    is mandatory and non-empty, is logged at WARNING when the scope is built,
+    and makes an unscoped deployment greppable estate-wide by its own
+    constructor name.
+
+  `CheckpointScope()` raises, the value is immutable and slotted, and
+  `for_customer` refuses anything but a `uuid.UUID` — the customer is rendered
+  into a `LIKE` pattern by the purge, and that statement needs no `ESCAPE`
+  clause only because a UUID's text form contains no `%` and no `_`.
+
+  **Upgrading: the minimum viable change is one argument.**
+
+  ```python
+  saver = ThreeTierCheckpointSaver(
+      executor=executor,
+      scope=CheckpointScope.unscoped(reason="single-tenant deployment"),
+  )
+  ```
+
+  That is a legitimate destination, not a placeholder. An unscoped saver emits
+  byte-identical statements and cache keys to a pre-tenancy one, so **it reads
+  the rows that already exist and migrates nothing.** The property is pinned by
+  a test rather than described.
+
+  **Adopting a real customer later is a data change, not a code change.**
+  Existing rows live under a bare thread id and a scoped saver will not find
+  them, so they must be re-keyed —
+  `UPDATE checkpoints SET thread_id = $customer || '/' || thread_id`, the same
+  over `checkpoint_writes`, and the cached L2 bundles invalidated. No re-key
+  script ships here and none can: which customer owns which thread lives in the
+  host's own tables (a sessions table, a conversations table), which this
+  library has never seen. Each consumer writes that mapping query itself.
+
+  **Where a customer is available today**, from reading each consumer:
+
+  - `14-eng-ai-bot-agents` bootstrap (`runtime/bootstrap/phases/backend.py`) —
+    available, no plumbing. `state.customer_id` is a sibling attribute on the
+    `BootstrapState` already in scope and already checked non-`None` earlier in
+    the same function. One customer per pod for the pod's whole life, so the
+    process-lifetime saver can hold a scope.
+  - `14-eng-ai-survey` (`core/checkpointer_factory.py`) — available, one call
+    away. `get_platform_identity().customer_id` is a process-wide accessor over
+    the same one-customer-per-pod environment; it is simply not wired into the
+    factory yet. Also single-tenant per process, so a scoped process-lifetime
+    saver is safe.
+  - `scriob` delete-session route (`chat/routes.py`) — available, no plumbing.
+    `identity.tenant_id` is a local in the same handler, used two lines above
+    the construction. Per-request construction on a multi-tenant server, which
+    is the shape a scoped saver fits best.
+  - `scriob` history read (`chat/turn.py`, `read_message_history`) — not in
+    scope, one hop away. The function takes only a pool and a conversation id;
+    its caller holds `identity.tenant_id`. Adopting a customer means threading
+    one parameter through one call.
+  - `scriob` turn build (`chat/turn.py`, `_build_compiled`) — not in scope, two
+    to three hops away. The same `identity.tenant_id` is already threaded down
+    this chain for the summarization wiring, so the path exists.
+  - `metallm` (`api/src/graph/checkpoint.py`) — **could not determine a
+    customer.** The saver is a process-lifetime singleton built in lifespan
+    startup with no request context, and `customer_id` there is a
+    per-row/per-request column rather than a per-process identity, so nothing
+    in the reachable chain names one customer. Scoping it would require a
+    different construction lifetime, which is a design change rather than an
+    argument; unscoped, with that stated as the reason, is the honest answer
+    until then.
+
+  `adelete_thread(thread_id)` keeps its signature: it has a live production
+  consumer that passes a bare thread id, and the customer comes from the
+  saver's own scope rather than from an argument.
+
 - `core`: `BaseEntity` derives its tier-addressing `_id` from the owning
   collection's declared `primary_key_columns`, so a composite-primary-key
   entity needs no constructor override. Twenty-three of them are deleted here.

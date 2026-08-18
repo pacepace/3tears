@@ -1,15 +1,20 @@
-"""Tests for the checkpoint saver's optional customer dimension.
+"""Tests for the checkpoint saver's required customer scope.
 
-``ThreeTierCheckpointSaver`` may be bound to one customer at construction. When
-it is, every key it addresses -- the ``thread_id`` bound into L3 SQL, the L2
-bucket key, the L1 thread key -- carries that customer, so a saver bound to one
-customer cannot name another customer's row at all. When it is not bound, every
-byte on the wire is what it was before: the whole point, because
-``adelete_thread`` has a live production caller (scriob) that passes no customer.
+``ThreeTierCheckpointSaver`` takes a :class:`CheckpointScope` at construction and
+has no default for it, so every caller states one of exactly two things: this
+saver belongs to one customer, or it deliberately belongs to none and here is
+why. When it names a customer, every key the saver addresses -- the ``thread_id``
+bound into L3 SQL, the L2 bucket key, the L1 thread key -- carries that customer,
+so a saver scoped to one customer cannot name another customer's row at all.
+
+The unscoped answer is not a degraded mode; it is the pre-tenancy behaviour
+preserved byte for byte, which is what makes the required-scope change adoptable
+without a data migration. That property is pinned by
+:class:`TestUnscopedIsByteIdenticalToThePreTenancySaver` rather than assumed.
 
 The suite is deliberately split from ``test_checkpoint.py``: that file pins the
-un-tenanted behaviour, and leaving it untouched is what proves the default path
-did not move.
+un-tenanted behaviour, and it now constructs every saver with a single shared
+unscoped scope, so it keeps proving that the unscoped path did not move.
 """
 
 from __future__ import annotations
@@ -22,12 +27,21 @@ from uuid import UUID
 import pytest
 
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.checkpoint_scope import CheckpointScope
 from threetears.langgraph.protocols import CheckpointL2Cache, CheckpointL2PrefixCache
 
 _LOGGER = "threetears.langgraph.checkpoint"
+_SCOPE_LOGGER = "threetears.langgraph.checkpoint_scope"
 
 _CUSTOMER_A = UUID("11111111-1111-1111-1111-111111111111")
 _CUSTOMER_B = UUID("22222222-2222-2222-2222-222222222222")
+
+_SCOPE_A = CheckpointScope.for_customer(_CUSTOMER_A)
+_SCOPE_B = CheckpointScope.for_customer(_CUSTOMER_B)
+
+#: built once at import so the warning it emits lands outside every ``caplog``
+#: block below. tests that assert on the warning build their own.
+_UNSCOPED = CheckpointScope.unscoped(reason="tests pin the un-tenanted keyspace")
 
 _CHECKPOINT: dict[str, Any] = {
     "id": "cp-1",
@@ -142,26 +156,201 @@ class _FailingSweepL2Cache(_DictL2Cache, CheckpointL2PrefixCache):
         raise RuntimeError("nats: timeout")
 
 
+class TestCheckpointScope:
+    """the scope decision is a value with exactly two legal answers."""
+
+    def test_for_customer_carries_the_customer(self) -> None:
+        """the ordinary answer names a customer and no reason.
+
+        :return: nothing
+        :rtype: None
+        """
+        scope = CheckpointScope.for_customer(_CUSTOMER_A)
+
+        assert scope.customer_id == _CUSTOMER_A
+        assert scope.reason is None
+
+    def test_for_customer_refuses_anything_but_a_uuid(self) -> None:
+        """a string customer would produce a plausible-looking, wrong prefix.
+
+        the prefix is interpolated into a ``LIKE`` pattern by the per-customer
+        purge, and the "no ESCAPE clause needed" property that purge relies on
+        holds because a UUID's text form contains no ``%`` and no ``_``. a
+        string identifier carries no such guarantee, so it is refused where it
+        enters rather than where it widens a DELETE.
+
+        :return: nothing
+        :rtype: None
+        """
+        # bound through Any rather than suppressed inline: the call is a type
+        # error, and the point is what happens at RUNTIME when a caller makes it
+        # anyway (an untyped host, a value off a JSON body).
+        customer_as_text: Any = "11111111-1111-1111-1111-111111111111"
+
+        with pytest.raises(TypeError, match="UUID"):
+            CheckpointScope.for_customer(customer_as_text)
+
+    def test_unscoped_carries_a_reason_and_no_customer(self) -> None:
+        """the opt-out records why, so it is answerable in review.
+
+        :return: nothing
+        :rtype: None
+        """
+        scope = CheckpointScope.unscoped(reason="single-tenant deployment")
+
+        assert scope.customer_id is None
+        assert scope.reason == "single-tenant deployment"
+
+    def test_unscoped_warns_and_names_the_reason(self, caplog: pytest.LogCaptureFixture) -> None:
+        """an unscoped deployment has to be visible in logs, not only in source.
+
+        greppability in source is the other half and comes free from the
+        constructor's name; this half is what an operator reading a running
+        system sees.
+
+        :param caplog: pytest log capture fixture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        with caplog.at_level(logging.WARNING, logger=_SCOPE_LOGGER):
+            CheckpointScope.unscoped(reason="no customer exists in this process")
+
+        messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "no customer exists in this process" in messages
+
+    def test_unscoped_refuses_an_empty_reason(self) -> None:
+        """``unscoped("")`` would be the falsy default this type exists to remove.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="reason"):
+            CheckpointScope.unscoped(reason="")
+
+    def test_unscoped_refuses_a_whitespace_reason(self) -> None:
+        """whitespace is an empty reason wearing a disguise.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(ValueError, match="reason"):
+            CheckpointScope.unscoped(reason="   ")
+
+    def test_there_is_no_public_constructor(self) -> None:
+        """``CheckpointScope()`` must not be a way to reach the unsafe answer.
+
+        a bare constructor would give the unscoped state back its default: build
+        one with nothing and get "sees everything" with no reason recorded and no
+        warning logged. the two named constructors are the only doors.
+
+        :return: nothing
+        :rtype: None
+        """
+        with pytest.raises(TypeError, match="for_customer"):
+            CheckpointScope()
+
+    def test_a_scope_cannot_be_rewritten_after_construction(self) -> None:
+        """a saver holds its scope for life; a mutable one would be a re-scoping.
+
+        :return: nothing
+        :rtype: None
+        """
+        scope: Any = CheckpointScope.for_customer(_CUSTOMER_A)
+
+        with pytest.raises(AttributeError):
+            scope.customer_id = _CUSTOMER_B
+        with pytest.raises(AttributeError):
+            scope.smuggled = _CUSTOMER_B
+        with pytest.raises(AttributeError):
+            del scope.customer_id
+
+    def test_a_scope_carries_no_instance_dict(self) -> None:
+        """slots, so there is no back door around the read-only attributes.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert not hasattr(CheckpointScope.for_customer(_CUSTOMER_A), "__dict__")
+
+    def test_scopes_compare_by_value(self) -> None:
+        """two scopes naming one customer are one scope.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert CheckpointScope.for_customer(_CUSTOMER_A) == CheckpointScope.for_customer(_CUSTOMER_A)
+        assert CheckpointScope.for_customer(_CUSTOMER_A) != CheckpointScope.for_customer(_CUSTOMER_B)
+        assert CheckpointScope.for_customer(_CUSTOMER_A) != _UNSCOPED
+        assert len({CheckpointScope.for_customer(_CUSTOMER_A), CheckpointScope.for_customer(_CUSTOMER_A)}) == 1
+
+    def test_the_repr_says_which_answer_was_given(self) -> None:
+        """a saver in a traceback should say which of the two it holds.
+
+        :return: nothing
+        :rtype: None
+        """
+        assert "for_customer" in repr(_SCOPE_A)
+        assert "unscoped" in repr(_UNSCOPED)
+
+
+class TestScopeIsRequired:
+    """the defect being fixed was the DEFAULT, so the absence of one is the test."""
+
+    def test_omitting_the_scope_is_a_type_error(self) -> None:
+        """saying nothing used to mean "see everything"; now it means nothing.
+
+        this is the whole change. a caller that has not thought about tenancy
+        cannot get a saver at all, which turns the feature from a convention
+        into a gate.
+
+        the class is bound through ``Any`` rather than suppressed inline: both
+        calls below are type errors, and the assertion is about what a RUNTIME
+        caller gets -- a type checker is the first gate, not the only one.
+
+        :return: nothing
+        :rtype: None
+        """
+        saver_class: Any = ThreeTierCheckpointSaver
+
+        with pytest.raises(TypeError, match="scope"):
+            saver_class(executor=_make_executor())
+
+    def test_there_is_no_customer_id_parameter_left(self) -> None:
+        """the old optional parameter is gone, not merely discouraged.
+
+        leaving it accepted alongside ``scope`` would keep the unsafe default
+        reachable for anyone who never read the changelog.
+
+        :return: nothing
+        :rtype: None
+        """
+        saver_class: Any = ThreeTierCheckpointSaver
+
+        with pytest.raises(TypeError, match="customer_id"):
+            saver_class(executor=_make_executor(), scope=_UNSCOPED, customer_id=_CUSTOMER_A)
+
+
 class TestStorageThreadId:
     """the customer lives inside the storage thread id, not in a new column."""
 
-    def test_unbound_saver_leaves_the_thread_id_alone(self) -> None:
+    def test_unscoped_saver_leaves_the_thread_id_alone(self) -> None:
         """no customer means byte-identical keys to the pre-tenancy saver.
 
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert saver.storage_thread_id("t-1") == "t-1"
 
-    def test_bound_saver_prefixes_with_the_customer(self) -> None:
+    def test_scoped_saver_prefixes_with_the_customer(self) -> None:
         """the composite is what lands in the ``thread_id`` column.
 
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
 
         assert saver.storage_thread_id("t-1") == f"{_CUSTOMER_A}/t-1"
 
@@ -176,8 +365,8 @@ class TestStorageThreadId:
         :return: nothing
         :rtype: None
         """
-        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
-        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_B)
+        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
+        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_B)
 
         assert saver_a.storage_thread_id("shared") != saver_b.storage_thread_id("shared")
 
@@ -192,18 +381,18 @@ class TestStorageThreadId:
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
 
         with pytest.raises(ValueError, match="255"):
             saver.storage_thread_id("t" * 255)
 
-    def test_an_overlong_id_still_passes_through_when_unbound(self) -> None:
+    def test_an_overlong_id_still_passes_through_when_unscoped(self) -> None:
         """without a customer nothing is added, so nothing new can overflow.
 
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert saver.storage_thread_id("t" * 300) == "t" * 300
 
@@ -215,7 +404,7 @@ class TestL2KeyIsScoped:
         """:return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
 
         assert saver.l2_key("t-1", "") == f"{_CUSTOMER_A}/t-1"
 
@@ -223,15 +412,15 @@ class TestL2KeyIsScoped:
         """:return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
 
         assert saver.l2_key("t-1", "inner") == f"{_CUSTOMER_A}/t-1.inner"
 
-    def test_unbound_key_is_unchanged(self) -> None:
+    def test_unscoped_key_is_unchanged(self) -> None:
         """:return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert saver.l2_key("t-1", "inner") == "t-1.inner"
 
@@ -246,8 +435,8 @@ class TestL2KeyIsScoped:
         :rtype: None
         """
         shared = _DictL2Cache()
-        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=shared, customer_id=_CUSTOMER_A)
-        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=shared, customer_id=_CUSTOMER_B)
+        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=shared, scope=_SCOPE_A)
+        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=shared, scope=_SCOPE_B)
 
         await saver_a.l2_put("t-1", "", b"customer-a-state")
 
@@ -261,7 +450,7 @@ class TestL2KeyIsScoped:
         :rtype: None
         """
         l1 = AsyncMock()
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1, scope=_SCOPE_A)
 
         await saver.l1_put("t-1", "", b"state")
         await saver.l1_get("t-1", "")
@@ -280,7 +469,7 @@ class TestL3StatementsAreScoped:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.aput({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}, _CHECKPOINT, {}, {})
 
@@ -296,7 +485,7 @@ class TestL3StatementsAreScoped:
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_SCOPE_A)
 
         result = await saver.aput({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}, _CHECKPOINT, {}, {})
 
@@ -307,7 +496,7 @@ class TestL3StatementsAreScoped:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
 
@@ -321,7 +510,7 @@ class TestL3StatementsAreScoped:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
         cp_type, cp_blob = saver.serde.dumps_typed(_CHECKPOINT)
         executor.fetchrow = AsyncMock(
             return_value={
@@ -343,7 +532,7 @@ class TestL3StatementsAreScoped:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         [item async for item in saver.alist({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})]
 
@@ -355,7 +544,7 @@ class TestL3StatementsAreScoped:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.aput_writes(
             {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "cp-1"}},
@@ -380,7 +569,7 @@ class TestL3StatementsAreScoped:
             executor=_make_executor(),
             l1_cache=l1,
             l2_cache=l2,
-            customer_id=_CUSTOMER_A,
+            scope=_SCOPE_A,
         )
 
         await saver.aput_writes(
@@ -392,54 +581,81 @@ class TestL3StatementsAreScoped:
         l1.delete.assert_awaited_once_with(f"{_CUSTOMER_A}/t-1")
         assert l2.delete.await_args.args[1] == f"{_CUSTOMER_A}/t-1.inner"
 
-    async def test_an_unbound_saver_issues_the_same_statements_as_before(self) -> None:
-        """resumability for a single-tenant deployment is unchanged.
 
-        the bound parameters are the whole contract with the existing rows: if
-        they still read exactly as they did, a deployment that never sets a
-        customer resumes from checkpoints written before this change.
+class TestUnscopedIsByteIdenticalToThePreTenancySaver:
+    """the migration story rests on this: opting out moves no row and no key.
+
+    an existing deployment upgrades by passing
+    ``scope=CheckpointScope.unscoped(reason=...)`` and nothing else. that is only
+    an honest instruction if the resulting saver addresses exactly the keyspace
+    its existing rows already live in, so the claim is asserted rather than
+    described.
+    """
+
+    async def test_every_statement_binds_the_bare_thread_id(self) -> None:
+        """read, write, list, and per-thread delete all address the un-prefixed row.
 
         :return: nothing
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
+        config: Any = {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "cp-1"}}
 
-        await saver.aput({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}}, _CHECKPOINT, {}, {})
-        await saver.aget_tuple({"configurable": {"thread_id": "t-1", "checkpoint_ns": ""}})
+        await saver.aput(config, _CHECKPOINT, {}, {})
+        await saver.aput_writes(config, [("channel-a", "value-a")], "task-1")
+        await saver.aget_tuple(config)
+        [item async for item in saver.alist(config)]
+        await saver.adelete_thread("t-1")
 
-        assert executor.execute.await_args.args[1] == "t-1"
-        assert executor.fetchrow.await_args.args[1] == "t-1"
+        bound = [call.args[1] for call in executor.execute.await_args_list]
+        bound += [call.args[1] for call in executor.fetchrow.await_args_list]
+        bound += [call.args[1] for call in executor.fetch.await_args_list]
+        assert set(bound) == {"t-1"}
+
+    async def test_every_cache_key_is_the_bare_thread_id(self) -> None:
+        """an existing L2 bucket keeps serving the bundles it already holds.
+
+        :return: nothing
+        :rtype: None
+        """
+        cache = _DictL2Cache()
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, scope=_UNSCOPED)
+
+        await saver.l2_put("t-1", "", b"root")
+        await saver.l2_put("t-1", "inner", b"namespaced")
+
+        assert set(cache.store) == {("checkpoints", "t-1"), ("checkpoints", "t-1.inner")}
 
 
 class TestPerThreadPurge:
     """``adelete_thread`` keeps its signature -- scriob calls it in production."""
 
-    async def test_unbound_delete_is_byte_identical_to_before(self) -> None:
+    async def test_unscoped_delete_is_byte_identical_to_before(self) -> None:
         """the live consumer passes no customer and must not change.
 
         scriob's delete-session route calls ``adelete_thread(str(session_id))``
-        (``scriob/server/src/scriob_server/chat/routes.py``). a required customer
-        argument, or a silently rewritten parameter, breaks it.
+        (``scriob/server/src/scriob_server/chat/routes.py``). a customer argument
+        on this method, or a silently rewritten parameter, breaks it.
 
         :return: nothing
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         await saver.adelete_thread("t-42")
 
         assert [call.args[1] for call in executor.execute.await_args_list] == ["t-42", "t-42"]
 
-    async def test_bound_delete_only_names_its_own_customer(self) -> None:
-        """a bound saver cannot address another customer's row, even to delete it.
+    async def test_scoped_delete_only_names_its_own_customer(self) -> None:
+        """a scoped saver cannot address another customer's row, even to delete it.
 
         :return: nothing
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.adelete_thread("t-42")
 
@@ -457,7 +673,7 @@ class TestPerThreadPurge:
         :rtype: None
         """
         cache = _PrefixSweepingL2Cache()
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, scope=_UNSCOPED)
         await saver.l2_put("t-1", "", b"root")
         await saver.l2_put("t-1", "inner", b"namespaced")
         await saver.l2_put("t-10", "", b"different-thread")
@@ -479,7 +695,7 @@ class TestPerThreadPurge:
         :rtype: None
         """
         cache = _DictL2Cache()
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache)
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, scope=_UNSCOPED)
         await saver.l2_put("t-1", "inner", b"namespaced")
 
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
@@ -495,7 +711,7 @@ class TestPerThreadPurge:
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
             await saver.adelete_thread("t-1")
@@ -506,16 +722,34 @@ class TestPerThreadPurge:
 class TestPerCustomerPurge:
     """erasure needs a handle that is not per-thread; tenant offboarding needs it too."""
 
-    async def test_purge_requires_a_bound_customer(self) -> None:
-        """an unbound saver would delete every row in the table.
+    async def test_purge_refuses_on_an_unscoped_saver(self) -> None:
+        """an unscoped saver would delete every row in the table.
+
+        the refusal names the scope decision, because that is what the caller
+        has to change -- not an argument to this method, which deliberately
+        takes none.
 
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
-        with pytest.raises(ValueError, match="customer_id"):
+        with pytest.raises(ValueError, match="unscoped"):
             await saver.adelete_customer_threads()
+
+    async def test_the_refusal_issues_no_statement(self) -> None:
+        """refusing after a DELETE would be no refusal at all.
+
+        :return: nothing
+        :rtype: None
+        """
+        executor = _make_executor()
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
+
+        with pytest.raises(ValueError):
+            await saver.adelete_customer_threads()
+
+        assert executor.execute.await_args_list == []
 
     async def test_purge_deletes_writes_before_checkpoints(self) -> None:
         """same order as the per-thread purge, for the same reason.
@@ -524,7 +758,7 @@ class TestPerCustomerPurge:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.adelete_customer_threads()
 
@@ -543,7 +777,7 @@ class TestPerCustomerPurge:
         :rtype: None
         """
         executor = _make_executor()
-        saver = ThreeTierCheckpointSaver(executor=executor, customer_id=_CUSTOMER_A)
+        saver = ThreeTierCheckpointSaver(executor=executor, scope=_SCOPE_A)
 
         await saver.adelete_customer_threads()
 
@@ -559,8 +793,8 @@ class TestPerCustomerPurge:
         :rtype: None
         """
         cache = _PrefixSweepingL2Cache()
-        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, customer_id=_CUSTOMER_A)
-        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, customer_id=_CUSTOMER_B)
+        saver_a = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, scope=_SCOPE_A)
+        saver_b = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=cache, scope=_SCOPE_B)
         await saver_a.l2_put("t-1", "", b"a-root")
         await saver_a.l2_put("t-1", "inner", b"a-namespaced")
         await saver_b.l2_put("t-1", "", b"b-root")
@@ -581,7 +815,7 @@ class TestPerCustomerPurge:
             executor=_make_executor(),
             l1_cache=AsyncMock(),
             l2_cache=_DictL2Cache(),
-            customer_id=_CUSTOMER_A,
+            scope=_SCOPE_A,
         )
 
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
@@ -622,6 +856,6 @@ class TestPrefixCacheCapability:
         :return: nothing
         :rtype: None
         """
-        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_FailingSweepL2Cache())
+        saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=_FailingSweepL2Cache(), scope=_UNSCOPED)
 
         assert await saver.l2_delete_prefix("t-1.") is False
