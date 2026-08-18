@@ -62,12 +62,45 @@ Two tiers to start:
 
 | Tier | Carries | Typical size |
 |---|---|---|
-| `citations` | per candidate: url, title, snippet, scores, provenance, disposition. **No content bodies.** | ~650 chars per candidate |
-| `full` | everything the tool produced, content included | unbounded |
+| `citations` | the projection **minus content bodies** — every candidate, every score, every facet, every disposition, with `content` marked as withheld | ~650 chars per candidate |
+| `full` | the projection, bodies included | unbounded |
 
 Declared once per connection or subscription — not per tool call, which no
 client can predict. A client that declares nothing gets today's behaviour
 exactly.
+
+**The tier is defined by one axis — bodies in or out — and not by a list of
+fields to keep.** That distinction matters more than it looks. A field
+allowlist would already be wrong for the second consumer: samsung's image search
+carries its answer in `Candidate.facets` (rights status, pixel dimensions,
+direct-file versus containing-page), and a `citations` tier enumerated as
+"url, title, snippet, scores, provenance" silently drops exactly the payload.
+Defined subtractively, facets ride in both tiers for free, and so does every
+field nobody has added yet.
+
+It also explains why two tiers is the right number rather than a compromise:
+**content bodies are the only unbounded thing in the projection.** Everything
+else is a few hundred bytes per candidate and stays that way. There is no third
+tier to find, because there is no second unbounded field.
+
+### 2.1 An amount, on the tier that has one
+
+`full` takes an optional `max_body_chars`. This is the answer to "what about a
+middle tier that carries content for the top few results" — that idea is not
+bounded (three pages at 100 KB is still 300 KB), while a body cap is, and it is
+a *parameter* rather than a tier because the client is asking for the same
+shape in a different amount.
+
+It is honest for the same reason the tiers are: the client named the budget, so
+the platform is not guessing what to drop. And it must say so, per body:
+
+```json
+"content": {"text": "Counts rose 12% across …", "truncated": true,
+            "size_chars": 102400, "delivered_chars": 4000}
+```
+
+Practically, this is what keeps handles rare: a preview renders inline, and the
+handle is fetched only when a reader expands one.
 
 ### On the wire
 
@@ -119,7 +152,7 @@ Same turn, a client that declared `full`:
 It gets the citations tier immediately — always renderable, never a spinner
 waiting on a fetch — plus a handle for the part that did not fit.
 
-### 2.1 Where a tier applies — and where it must not
+### 2.2 Where a tier applies — and where it must not
 
 **Only at the client boundary.** A tier is a statement about what to put on a
 wire to a renderer. It is never a statement about what a tool produces, and an
@@ -159,14 +192,24 @@ same shape metallm's frontend already runs for media
 (`GET /api/v1/media/{id}/url`). A client without that reach should declare
 `citations`, where the inline bound becomes a ceiling rather than a fallback.
 
-**Broadcast rooms need a decision, and it is not obvious.** scriob fans out one
-serialized event to every viewer in a chat room. If viewer A declared `full` and
-viewer B declared `citations`, one frame cannot be both. Rendering per viewer
-would mean per-viewer frames, which is the fanout model gone. **Proposal: on a
-broadcast channel the tier is a property of the room, not the viewer** — the
-frame carries `citations` plus a handle, and a viewer wanting more resolves it
-on its own. Per-viewer appetite is served by the handle, which is one of the
-better arguments for having one at all.
+**Broadcast rooms need one decision, and the mechanism is worth stating
+plainly.** The declaration is per connection; the frame is built once per turn
+and fanned out to every viewer of the room. So two viewers who connected with
+different declarations are asking one payload to be two things — not because
+they searched differently (nobody searched; a turn produced a result and the
+room watched) but because they declared at different times, in different
+clients.
+
+It is latent rather than live: scriob and metallm each have one frontend today,
+which would declare one value product-wide, so every viewer agrees by
+construction. It stops being latent the first time a second client exists — a
+phone alongside a desktop, or an embedded read-only view.
+
+**Proposal, and it is cheap to settle now: on a broadcast channel the tier
+belongs to the room, not the viewer.** The frame carries `citations` plus a
+handle, and a viewer wanting more resolves it. Per-viewer appetite is served by
+the handle rather than by per-viewer frames — which is one of the better
+arguments for having a handle at all.
 
 ## 4. When it is too large anyway — and the fact that we already bought it
 
@@ -237,9 +280,22 @@ for tool call X" can grow paging. One that resolves to "blob 9f2c" cannot.
 
 ## 5. Open questions
 
-1. **Two tiers, or three?** Is there a real middle — say, content for the top
-   *N* candidates only — or does that reinvent the byte budget this proposal
-   exists to avoid?
+1. **Should the wire ever carry a summary the platform wrote?** A cheap-model
+   summary of an oversized body is tempting and would render beautifully. The
+   recommendation here is **no, not at this boundary**, for three reasons that
+   are easier to state than to unpick later. It changes the payload from *the
+   same data, less of it* into *new content the platform authored*, which no
+   reader can check against anything the tool produced — the prose-instead-of-
+   structure defect this whole channel exists to end, reintroduced one layer up.
+   It puts a paid, latency-bearing model call on the delivery path, where search
+   has no budget owner and where "budget follows the bill" (SR-D4) has nothing
+   to bill. And it is better placed one layer down: the **producing tool** knows
+   its own content and its spend is already accounted, and the family already
+   has the slot — the offload seam lifts a tool-authored summary off
+   `artifact["summary"]` today. The search tools simply do not populate it yet.
+   So the question to take is the cheaper one: **should `bind` author a short
+   summary into the projection**, which both this channel and the offload seam
+   would then carry for free?
 2. **Where is the declaration made** in each product: a subscribe frame, a
    connect parameter, or per turn in the request?
 3. **Who owns the resolve endpoint, and what is a handle's lifetime** — the
