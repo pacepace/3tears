@@ -610,33 +610,33 @@ packages/scrape/tests/test_driver_api.py:326:_egress
 packages/scrape/tests/test_driver_api.py:343:_client
 
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:464:_warn_dropped_session_state
-# rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
 packages/scrape/tests/test_driver_contract.py:481:_warn_dropped_session_state
+# rationale: the per-origin dedupe of the dropped-solve warning is only observable by calling the emitter directly; driving it through render() would need five real fetches per driver to assert one log line, and the public surface deliberately exposes no way to ask "have you already warned about this origin"
+packages/scrape/tests/test_driver_contract.py:498:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:506:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:523:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:507:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:524:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:525:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:542:_warn_dropped_session_state
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:547:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:564:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:548:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:565:_warn_dropped_session_state
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:550:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:567:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:551:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:568:_MAX_WARNED_ORIGINS
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:551:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:568:_warned_dropped_origins
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:552:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:569:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:553:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:570:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:583:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:600:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:584:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:601:_warn_dropped_session_state
 
 # rationale: the pacing delay has no accessor and is itself the behaviour under test
 packages/scrape/tests/test_driver_listing_detail.py:409:_pace_delay_seconds

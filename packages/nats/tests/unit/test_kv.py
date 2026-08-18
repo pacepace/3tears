@@ -8,8 +8,10 @@ tests against a real JetStream KV bucket live in tests/integration/.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
@@ -350,3 +352,70 @@ async def test_bucket_name_property() -> None:
 async def test_ttl_property() -> None:
     bucket, _ = _make_bucket()
     assert bucket.ttl == timedelta(seconds=60)
+
+
+class TestAKvOperationThatNeverAnswers:
+    """The publish wedge at its other call site.
+
+    `KeyValue.put` is literally `await self._js.publish(...)` with no timeout, and every KV
+    write ends there. So an unresponsive broker hangs a KV call exactly the way it hung
+    `jetstream_publish`, through the same flush path that discards `CancelledError` -- which
+    means a caller's own `asyncio.wait_for` cannot break it either.
+
+    This is the path the distributed lock is built on, so a wedge here is what lets one stuck
+    pod hold a lock against a whole fleet.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_wedged_kv_operation_raises_instead_of_hanging(self) -> None:
+        """The caller gets an error and its loop back.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+        from threetears.nats.kv import _KV_OP_TIMEOUT_SECONDS  # noqa: SLF001
+
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="itest-b", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            assert _KV_OP_TIMEOUT_SECONDS > 0  # the real bound is a real number, not a sentinel
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+    @pytest.mark.asyncio
+    async def test_a_wedged_operation_is_not_retried_through_reopen(self) -> None:
+        """A wedge is not a vanished bucket, and retrying doubles the caller's wait.
+
+        `_run_with_reopen` self-heals a transport failure by re-opening and running the op
+        again. Treating a timeout as that kind of failure runs a second KV call against the
+        same unresponsive broker, so the retry wedges too and the caller waits twice as long
+        to learn the same thing.
+
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        kv = MagicMock()
+        attempts = 0
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="itest-b", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+        assert attempts == 1, f"the wedged operation was retried {attempts} times through reopen"
