@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Added
+
+- `langgraph`: a tool's structured result reaches the client. Both streaming
+  faces -- `ToolCompletedEvent` (the in-process custom event) and
+  `ToolCallEndEvent` (the NATS streaming envelope) -- carry a
+  `structured` / `structured_kind` pair, and `StreamingResponse.emit_tool_call_end`
+  accepts the `artifact` the caller already holds plus an optional
+  `structured_max_chars` bound.
+
+  A `response_format="content_and_artifact"` tool produces its typed projection
+  once, on `ToolMessage.artifact`. That reached the model's context and the MCP
+  face and died before the client: the streaming faces carried name, status and
+  duration, so a frontend wanting to draw citation cards had to re-parse the
+  prose the model read.
+
+  `threetears.langgraph.tool_structure.structure_for_stream` makes the decision
+  in one place. An inline payload is the artifact itself, so no second result
+  shape is born; over the bound with no host store the event says so in the
+  payload, with its size and the bound it missed, under a key nothing can
+  mistake for a projection -- a truncation that does not admit itself is the
+  silent-partial-answer defect. `structured_kind` is a `str` rather than a
+  `Literal` so a reader predating a later kind skips the value instead of
+  rejecting the event. The `handle` kind is declared with no producer here: the
+  stream is not a store, and which store a client resolves against is the
+  host's decision.
+
+  Additive for existing readers -- a caller passing no artifact emits what it
+  always did, plus two nulls -- and pinned that way by tests that hand real
+  emitted bytes to models that have never heard of the fields. Design:
+  `docs/stream-protocol-structured-results.md`.
+
 ### Fixed
 
 - `core`: `NatsProxyL3Backend.acquire()` yields a connection that now has
