@@ -306,10 +306,18 @@ jobs:
   # Tag pushes only, for the reason `github-release` gives at length: a dispatched
   # republish must not rebuild an image that is already out.
   sidecar-image:
+    # `needs: pypi-publish` IS the gate, and there is deliberately no `environment:`
+    # here. An earlier version put this job in the `pypi` environment on the theory
+    # that one approval would cover the release; GitHub gates per JOB, not per run, so
+    # it asked a second time -- and asked under a name that has nothing to do with what
+    # was being published. A container push prompting for "pypi" approval is the kind of
+    # thing a reader clicks through without reading, which is worse than no prompt.
+    #
+    # The publishing decision was already made: this job cannot start unless
+    # `pypi-publish` succeeded, and that one is environment-gated on a human. A second
+    # approval on the same run adds a click and no control.
     needs: pypi-publish
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
     # GHCR, and the reason it needs no configuration is the reason to use it: the
     # token is already here. `packages: write` on the workflow's own GITHUB_TOKEN is
     # the whole credential, so there is no registry secret to create, rotate, or leak,
