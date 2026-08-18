@@ -23,6 +23,7 @@ from uuid import UUID
 import pytest
 from uuid_utils import uuid7
 
+from threetears.core.testing import entity_collection_stub
 from threetears.agent.wake.entities import (
     WakeFireEntity,
     WakeScheduleEntity,
@@ -79,9 +80,10 @@ class TestWakeScheduleEntity:
         assert WakeScheduleEntity.primary_key_field == "schedule_id"
 
     def test_composite_id_set_when_both_columns_present(self) -> None:
-        """``id`` returns the ``(conversation_id, schedule_id)`` composite tuple."""
+        """the addressing key is the ``(conversation_id, schedule_id)`` tuple."""
         conversation_id = _new_uuid()
         schedule_id = _new_uuid()
+        coll, _cache = entity_collection_stub(("conversation_id", "schedule_id"))
         entity = WakeScheduleEntity(
             {
                 "conversation_id": conversation_id,
@@ -96,8 +98,10 @@ class TestWakeScheduleEntity:
                 "date_created": _now(),
                 "date_updated": _now(),
             },
+            collection=coll,
         )
-        assert entity.id == (conversation_id, schedule_id)
+        assert entity.addressing_id == (conversation_id, schedule_id)
+        assert entity.id == schedule_id
 
     def test_field_accessors_round_trip(self) -> None:
         """Property getters return the values stored at construction."""
@@ -218,9 +222,10 @@ class TestWakeFireEntity:
         assert WakeFireEntity.primary_key_field == "fire_id"
 
     def test_composite_id_set_when_both_columns_present(self) -> None:
-        """``id`` returns ``(conversation_id, fire_id)`` composite tuple."""
+        """the addressing key is the ``(conversation_id, fire_id)`` tuple."""
         conversation_id = _new_uuid()
         fire_id = _new_uuid()
+        coll, _cache = entity_collection_stub(("conversation_id", "fire_id"))
         entity = WakeFireEntity(
             {
                 "conversation_id": conversation_id,
@@ -230,8 +235,10 @@ class TestWakeFireEntity:
                 "status": "fired",
                 "display_suppressed": False,
             },
+            collection=coll,
         )
-        assert entity.id == (conversation_id, fire_id)
+        assert entity.addressing_id == (conversation_id, fire_id)
+        assert entity.id == fire_id
 
     def test_field_accessors_round_trip(self) -> None:
         """Property getters return the construction values."""
@@ -331,9 +338,10 @@ class TestWebhookSubscriptionEntity:
         assert WebhookSubscriptionEntity.primary_key_field == "subscription_id"
 
     def test_composite_id_set_when_both_columns_present(self) -> None:
-        """``id`` returns ``(conversation_id, subscription_id)`` tuple."""
+        """the addressing key is the ``(conversation_id, subscription_id)`` tuple."""
         conv = _new_uuid()
         sub = _new_uuid()
+        coll, _cache = entity_collection_stub(("conversation_id", "subscription_id"))
         entity = WebhookSubscriptionEntity(
             {
                 "conversation_id": conv,
@@ -347,8 +355,10 @@ class TestWebhookSubscriptionEntity:
                 "date_created": _now(),
                 "date_updated": _now(),
             },
+            collection=coll,
         )
-        assert entity.id == (conv, sub)
+        assert entity.addressing_id == (conv, sub)
+        assert entity.id == sub
 
     def test_field_accessors_round_trip(self) -> None:
         """Every getter returns the construction value."""

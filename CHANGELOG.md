@@ -140,6 +140,58 @@ and makes impossible to repeat. See **Added -- enforcement** below.
   emitted bytes to models that have never heard of the fields. Design:
   `docs/stream-protocol-structured-results.md`.
 
+### Changed
+
+- `core`: `BaseEntity` derives its tier-addressing `_id` from the owning
+  collection's declared `primary_key_columns`, so a composite-primary-key
+  entity needs no constructor override. Twenty-three of them are deleted here.
+
+  `_id` is the key `normalize_pk` / `l2_key` and every L1 / L2 / L3 path address
+  a row by. It was seeded from the scalar `primary_key_field`, which is correct
+  only on a single-pk table, so every composite entity hand-wrote
+  `object.__setattr__(self, "_id", (data["a"], data["b"]))` after calling
+  `super().__init__`. That copy is not a style problem: it is a second,
+  independent statement of the table's key shape sitting next to the
+  collection's declaration, free to disagree with it. When it does, the
+  disagreement is silent and asymmetric -- L3 keeps addressing the right row
+  because its SQL is generated from the declaration, while L1 and L2 address the
+  wrong one. A stale or cross-tenant read then returns from cache with no error
+  raised anywhere.
+
+  The rule applied is not new: `BaseCollection.save_entity` already rebuilt the
+  composite from the payload on the write path. It now runs at construction too,
+  so the read and write paths cannot disagree about which row an entity is.
+
+  Two identities are now distinguished, and they differ only on composite-pk
+  tables. `BaseEntity.addressing_id` (new) is the full key -- scalar for
+  single-pk, declared-order tuple for composite -- and is what
+  `save_entity` / `reload_entity` now use. `BaseEntity.id` is the entity's
+  scalar identity: the value of the column named by `primary_key_field`.
+
+  **Single-pk behaviour is unchanged**, which was the whole risk and is asserted
+  rather than assumed. **Composite-pk `.id` changes** in the packages whose
+  entities previously returned the tuple from `.id`: `conversations`
+  (`Conversation`, `Folder`), `scheduled-jobs`, `agent-memory`
+  (`MemoryRefEntity`, `MemoryConsolidationEntity`), `agent-tools`
+  (`ContextItemEntity`). These now return the bare row id and expose the tuple as
+  `addressing_id`; `primary_key_field` on them was retargeted from the partition
+  column to the bare-id column to match. That contract is what several of these
+  modules' own docstrings already claimed and their code contradicted.
+
+  `reload_entity` is fixed as a consequence: it read `entity.id`, which on the
+  composite entities that kept `.id` scalar named one column, so the fetch missed
+  and raised "not found in storage" for a row that was present.
+
+- `core`: `threetears.core.testing.entity_collection_stub` -- a collection
+  stand-in for entity unit tests, declaring a real `primary_key_columns` tuple.
+
+  Every package had grown its own `mock_collection` fixture: a bare `MagicMock`
+  with hand-written `side_effect` closures over a dict. All of those copies
+  shared one defect -- none declared `primary_key_columns` -- so a composite-pk
+  entity built against them addressed rows by the bare id. That went unnoticed
+  while each entity carried its own `_id` override and surfaced the moment the
+  overrides were deleted.
+
 ### Fixed
 
 - `core`: `NatsProxyL3Backend.acquire()` yields a connection that now has

@@ -8,6 +8,7 @@ import pytest
 
 from threetears.core.cache import MISSING
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing import entity_collection_stub
 
 
 @pytest.fixture
@@ -264,3 +265,94 @@ class TestBaseEntity:
 
         entity.mark_clean()
         assert repr(entity) == "<BaseEntity id=r1 dirty=False>"
+
+
+class TestAddressingIdDerivation:
+    """``_id`` is derived from the collection's declared pk columns.
+
+    the property the tenancy work depends on: a composite-pk entity
+    addresses its row by the full tuple at every tier with no
+    per-entity ``__init__`` override, and a single-pk entity is
+    untouched.
+    """
+
+    def test_single_pk_id_and_addressing_id_coincide(self) -> None:
+        """single-pk entity keeps the scalar shape on both accessors."""
+        coll, _cache = entity_collection_stub(("id",))
+        entity = BaseEntity({"id": "e1", "name": "Ada"}, is_new=True, collection=coll)
+
+        assert entity.id == "e1"
+        assert entity.addressing_id == "e1"
+
+    def test_composite_pk_addressing_id_is_declared_order_tuple(self) -> None:
+        """composite-pk entity addresses by the tuple, in declared order."""
+        coll, _cache = entity_collection_stub(("customer_id", "id"))
+        entity = BaseEntity(
+            {"customer_id": "cust-A", "id": "row-1", "name": "Ada"},
+            is_new=True,
+            collection=coll,
+        )
+
+        assert entity.addressing_id == ("cust-A", "row-1")
+
+    def test_composite_pk_id_stays_the_bare_row_id(self) -> None:
+        """``id`` names ``primary_key_field``, not the addressing tuple."""
+        coll, _cache = entity_collection_stub(("customer_id", "id"))
+        entity = BaseEntity(
+            {"customer_id": "cust-A", "id": "row-1"},
+            is_new=True,
+            collection=coll,
+        )
+
+        assert entity.id == "row-1"
+
+    def test_composite_pk_honours_declared_column_order(self) -> None:
+        """the tuple follows ``primary_key_columns``, not dict order."""
+        coll, _cache = entity_collection_stub(("agent_id", "conversation_id"))
+        entity = BaseEntity(
+            {"conversation_id": "conv-9", "agent_id": "agent-1"},
+            is_new=True,
+            collection=coll,
+        )
+
+        assert entity.addressing_id == ("agent-1", "conv-9")
+
+    def test_two_tenants_sharing_a_row_id_address_distinctly(self) -> None:
+        """same ``id`` under two customers yields two addressing keys.
+
+        the cross-tenant collision this derivation exists to prevent:
+        without it both rows address as ``"row-1"`` and the second read
+        answers from the first's cache entry.
+        """
+        coll, _cache = entity_collection_stub(("customer_id", "id"))
+        first = BaseEntity({"customer_id": "cust-A", "id": "row-1"}, collection=coll)
+        second = BaseEntity({"customer_id": "cust-B", "id": "row-1"}, collection=coll)
+
+        assert first.id == second.id
+        assert first.addressing_id != second.addressing_id
+
+    def test_no_collection_keeps_scalar_shape(self) -> None:
+        """a transient entity cannot know its table's key shape."""
+        entity = BaseEntity({"customer_id": "cust-A", "id": "row-1"})
+
+        assert entity.addressing_id == "row-1"
+
+    def test_missing_pk_column_falls_back_to_scalar(self) -> None:
+        """a payload short one pk column does not address a ``None``.
+
+        the miss surfaces later as ``normalize_pk``'s arity error, which
+        names the table and the expected columns; a tuple carrying
+        ``None`` would instead read and write a real, wrong row.
+        """
+        coll, _cache = entity_collection_stub(("customer_id", "id"))
+        entity = BaseEntity({"id": "row-1"}, is_new=True, collection=coll)
+
+        assert entity.addressing_id == "row-1"
+
+    def test_pk_columns_absent_from_collection_keeps_scalar_shape(self) -> None:
+        """a stand-in collection with no declared pk shape is tolerated."""
+        coll = MagicMock()
+        coll.write_to_cache_sync = MagicMock(return_value=False)
+        entity = BaseEntity({"id": "row-1"}, is_new=True, collection=coll)
+
+        assert entity.addressing_id == "row-1"

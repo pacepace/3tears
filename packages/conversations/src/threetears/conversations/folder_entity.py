@@ -66,46 +66,21 @@ class Folder(BaseEntity):
     scope.
 
     composite primary key on ``(agent_id, folder_id)`` so rows are
-    partitioned per agent; ``_id`` holds the ``(agent_id, folder_id)``
-    tuple after construction.
+    partitioned per agent. ``BaseEntity`` derives ``_id`` from the
+    collection's declared ``primary_key_columns``, so the addressing
+    tuple needs no override here; ``primary_key_field`` names the bare
+    row id so :attr:`BaseEntity.id` returns the folder UUID.
 
     app-specific presentation (color, sort order, icon) is intentionally
     NOT promoted to columns -- it lives in ``metadata`` so the canonical
     shape stays app-agnostic and a new consumer never has to migrate the
     table to carry its own bits.
 
-    :ivar primary_key_field: name of the first pk column on the table
+    :ivar primary_key_field: name of the bare row-id column on the table
     :ptype primary_key_field: str
     """
 
-    primary_key_field: str = "agent_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with tuple ``_id`` for composite-pk lookup.
-
-        :class:`BaseEntity.__init__` captures the first pk field by
-        name; composite-pk entities overwrite ``_id`` with the
-        declared-order tuple so :meth:`BaseCollection.normalize_pk`
-        and :meth:`BaseCollection.l2_key` address the row uniformly
-        across tiers.
-
-        :param data: row dict; must carry both ``agent_id`` and
-            ``folder_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_id", (data["agent_id"], data["folder_id"]))
+    primary_key_field: str = "folder_id"
 
     @property
     def agent_id(self) -> UUID:

@@ -41,7 +41,6 @@ bullet entry fails the suite.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
 from threetears.core.entities.base import BaseEntity
 
@@ -312,11 +311,13 @@ class DataSourceRelationEntity(BaseEntity):
 class TableTemplateEntity(BaseEntity):
     """reusable table-shape definition scoped to one customer.
 
-    extends :class:`BaseEntity` with composite-PK ``(customer_id, id)``
-    addressing so the hub's L1/L2/L3 lookup paths route correctly
-    through the shared cache primitives. fields match
-    ``platform.table_templates``: id, customer_id, name, description,
-    caveats, date_created, date_updated.
+    composite-PK ``(customer_id, id)`` addressing so the hub's L1/L2/L3
+    lookup paths route correctly through the shared cache primitives;
+    ``BaseEntity`` derives that tuple from the collection's declared
+    ``primary_key_columns``, so no override lives here and
+    :attr:`BaseEntity.id` keeps returning the scalar template UUID.
+    fields match ``platform.table_templates``: id, customer_id, name,
+    description, caveats, date_created, date_updated.
 
     customer-scoping is a hard invariant: every template belongs to
     exactly one customer, the unique index on ``(customer_id, name)``
@@ -333,34 +334,4 @@ class TableTemplateEntity(BaseEntity):
     :ptype collection: Any
     """
 
-    primary_key_field: str = "customer_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
-
-        :param data: row dict carrying both ``customer_id`` and ``id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (data["customer_id"], data["id"]))
-
-    @property
-    def id(self) -> Any:
-        """return the scalar template UUID.
-
-        :return: template UUID
-        :rtype: Any
-        """
-        return self._row_id
+    primary_key_field: str = "id"

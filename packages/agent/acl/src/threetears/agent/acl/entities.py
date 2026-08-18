@@ -62,7 +62,7 @@ class GroupEntity(BaseEntity):
     tables.
     """
 
-    primary_key_field: str = "row_scope"
+    primary_key_field: str = "group_id"
 
     def __init__(
         self,
@@ -70,7 +70,14 @@ class GroupEntity(BaseEntity):
         is_new: bool = True,
         collection: Any = None,
     ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
+        """default ``row_scope`` from ``customer_id`` when absent.
+
+        the composite ``_id`` needs no work here -- ``BaseEntity``
+        derives it from the collection's declared
+        ``primary_key_columns`` -- but it derives it from ``data``, so
+        the defaulted ``row_scope`` must be in ``data`` before the
+        ``super()`` call. that is the whole reason this override
+        survives.
 
         :param data: row dict carrying both ``row_scope`` and
             ``group_id``; ``row_scope`` is auto-derived from
@@ -84,22 +91,10 @@ class GroupEntity(BaseEntity):
         :return: nothing
         :rtype: None
         """
-        row_scope = data.get("row_scope")
-        if row_scope is None:
+        if data.get("row_scope") is None:
             row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["group_id"])
-        object.__setattr__(self, "_id", (row_scope, data["group_id"]))
-
-    @property
-    def id(self) -> Any:
-        """return scalar group UUID (pre-partition contract preserved).
-
-        :return: group UUID
-        :rtype: Any
-        """
-        return self._row_id
 
 
 class GroupMemberEntity(BaseEntity):
@@ -112,37 +107,7 @@ class GroupMemberEntity(BaseEntity):
     ``agent``) / ``member_id`` / ``customer_id`` / ``date_added``.
     """
 
-    primary_key_field: str = "group_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
-
-        :param data: row dict carrying both ``group_id`` and ``id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (data["group_id"], data["id"]))
-
-    @property
-    def id(self) -> Any:
-        """return scalar membership UUID (pre-partition contract preserved).
-
-        :return: membership UUID
-        :rtype: Any
-        """
-        return self._row_id
+    primary_key_field: str = "id"
 
 
 class RoleEntity(BaseEntity):
@@ -180,7 +145,7 @@ class RoleAssignmentEntity(BaseEntity):
     entity tables.
     """
 
-    primary_key_field: str = "row_scope"
+    primary_key_field: str = "assignment_id"
 
     def __init__(
         self,
@@ -188,7 +153,14 @@ class RoleAssignmentEntity(BaseEntity):
         is_new: bool = True,
         collection: Any = None,
     ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
+        """default ``row_scope`` from the scope shape when absent.
+
+        the composite ``_id`` needs no work here -- ``BaseEntity``
+        derives it from the collection's declared
+        ``primary_key_columns`` -- but it derives it from ``data``, so
+        the defaulted ``row_scope`` must be in ``data`` before the
+        ``super()`` call. that is the whole reason this override
+        survives.
 
         :param data: row dict carrying both ``row_scope`` and
             ``assignment_id``; ``row_scope`` is auto-derived from the
@@ -201,8 +173,7 @@ class RoleAssignmentEntity(BaseEntity):
         :return: nothing
         :rtype: None
         """
-        row_scope = data.get("row_scope")
-        if row_scope is None:
+        if data.get("row_scope") is None:
             scope_type = data.get("scope_type")
             scope_customer_id = data.get("scope_customer_id")
             if scope_type == "all":
@@ -213,17 +184,6 @@ class RoleAssignmentEntity(BaseEntity):
                 row_scope = "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["assignment_id"])
-        object.__setattr__(self, "_id", (row_scope, data["assignment_id"]))
-
-    @property
-    def id(self) -> Any:
-        """return scalar assignment UUID (pre-partition contract preserved).
-
-        :return: assignment UUID
-        :rtype: Any
-        """
-        return self._row_id
 
 
 class NamespaceEntity(BaseEntity):
@@ -245,7 +205,7 @@ class NamespaceEntity(BaseEntity):
     entity tables.
     """
 
-    primary_key_field: str = "row_scope"
+    primary_key_field: str = "namespace_id"
 
     def __init__(
         self,
@@ -253,7 +213,14 @@ class NamespaceEntity(BaseEntity):
         is_new: bool = True,
         collection: Any = None,
     ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
+        """default ``row_scope`` from ``customer_id`` when absent.
+
+        the composite ``_id`` needs no work here -- ``BaseEntity``
+        derives it from the collection's declared
+        ``primary_key_columns`` -- but it derives it from ``data``, so
+        the defaulted ``row_scope`` must be in ``data`` before the
+        ``super()`` call. that is the whole reason this override
+        survives.
 
         :param data: row dict carrying both ``row_scope`` and
             ``namespace_id``; ``row_scope`` is auto-derived from
@@ -266,22 +233,10 @@ class NamespaceEntity(BaseEntity):
         :return: nothing
         :rtype: None
         """
-        row_scope = data.get("row_scope")
-        if row_scope is None:
+        if data.get("row_scope") is None:
             row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["namespace_id"])
-        object.__setattr__(self, "_id", (row_scope, data["namespace_id"]))
-
-    @property
-    def id(self) -> Any:
-        """return scalar namespace UUID (pre-partition contract preserved).
-
-        :return: namespace UUID
-        :rtype: Any
-        """
-        return self._row_id
 
 
 class ImpersonationGateEntity(BaseEntity):

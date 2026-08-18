@@ -1015,16 +1015,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         # composite-PK collections (eg. ``datasources`` keyed on
         # ``(customer_id, id)`` after the v054 row_scope partition
         # split) need a tuple key for ``_save_to_l2`` /
-        # ``_publish_invalidation`` -- ``BaseEntity.id`` only carries
-        # the singular ``primary_key_field`` value, so the framework
-        # rebuilds the composite from the on-the-wire payload here.
-        # single-PK collections short-circuit to ``entity.id`` to
-        # match the behaviour every existing caller already relies on.
-        pk_cols = self.primary_key_columns
-        if len(pk_cols) > 1:
-            entity_id: Any = tuple(data[col] for col in pk_cols)
-        else:
-            entity_id = entity.id
+        # ``_publish_invalidation``; single-PK collections need the
+        # scalar. ``BaseEntity.addressing_id`` carries whichever the
+        # declared ``primary_key_columns`` call for -- it is derived
+        # from this same property at construction, so the write path
+        # and the read path cannot disagree about which row this is.
+        entity_id: Any = entity.addressing_id
         original_timestamp = getattr(entity, "original_date_updated", None)
 
         now = datetime.now(UTC)
@@ -1101,7 +1097,10 @@ class BaseCollection(ABC, Generic[EntityT]):
     async def reload_entity(self, entity: BaseEntity) -> None:
         """Reload entity from L3."""
         self._set_span_table()
-        entity_id = entity.id
+        # addressing_id, not id: on a composite-pk table the bare row id
+        # addresses nothing, and every tier below this line keys off the
+        # full tuple.
+        entity_id = entity.addressing_id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         data = await self.fetch_from_store(entity_id)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
@@ -10,40 +9,20 @@ from uuid import uuid7
 
 from threetears.agent.memory.collections import _build_user_scope_clause
 from threetears.agent.memory.entities import MemoryEntity
-from threetears.core.cache import MISSING
+from threetears.core.testing import entity_collection_stub
 
 
 @pytest.fixture()
 def mock_collection():
-    """Mock collection with in-memory L1 cache simulation."""
-    cache: dict[str, dict[str, object]] = {}
-    coll = MagicMock()
+    """Collection stub declaring the ``memories`` composite pk shape.
 
-    def write_to_cache(data: dict[str, object]) -> bool:
-        pk = data.get("memory_id", "")
-        cache[str(pk)] = dict(data)
-        return True
-
-    def get_field(entity_id: object, field: str) -> object:
-        row = cache.get(str(entity_id))
-        if row is None:
-            return MISSING
-        return row.get(field, MISSING)
-
-    def set_field(entity_id: object, field: str, value: object) -> None:
-        row = cache.get(str(entity_id))
-        if row is not None:
-            row[field] = value
-
-    def get_row(entity_id: object) -> dict[str, object] | None:
-        return cache.get(str(entity_id))
-
-    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll.get_field_sync = MagicMock(side_effect=get_field)
-    coll.set_field_sync = MagicMock(side_effect=set_field)
-    coll.get_row_sync = MagicMock(side_effect=get_row)
-
-    return coll, cache
+    ``memories`` is partitioned on ``agent_id`` with composite pk
+    ``(agent_id, memory_id)``, so the stub must declare that: the
+    entity derives its addressing ``_id`` from the collection, and a
+    stub omitting the shape makes every cache call address the bare
+    ``memory_id``.
+    """
+    return entity_collection_stub(("agent_id", "memory_id"))
 
 
 def _sample_data() -> dict:

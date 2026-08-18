@@ -36,6 +36,7 @@ from threetears.core.testing.containers import (
     skip_without_docker_marker,
     skip_without_nats_marker,
 )
+from threetears.core.testing.entities import entity_collection_stub
 from threetears.core.testing.sqla_parity import (
     assert_tables_equivalent,
     column_signature,
@@ -48,6 +49,7 @@ __all__ = [
     "assert_tables_equivalent",
     "check_docker_available",
     "column_signature",
+    "entity_collection_stub",
     "fk_constraint_signature",
     "index_signature",
     "inline_fk_signatures",

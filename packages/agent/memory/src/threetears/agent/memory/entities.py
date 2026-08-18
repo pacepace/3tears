@@ -54,8 +54,9 @@ class MemoryEntity(BaseEntity):
     """Cache proxy entity for the ``memories`` table.
 
     collections-task-04 partitioned ``memories`` on ``agent_id``;
-    the composite primary key is ``(agent_id, memory_id)``. the
-    constructor sets ``_id`` to that tuple so
+    the composite primary key is ``(agent_id, memory_id)``.
+    ``BaseEntity`` derives ``_id`` as that tuple from the collection's
+    declared ``primary_key_columns`` so
     :meth:`BaseCollection.normalize_pk` and :meth:`BaseCollection.l2_key`
     address the row uniformly across L1 / L2 / L3.
 
@@ -69,31 +70,6 @@ class MemoryEntity(BaseEntity):
     """
 
     primary_key_field: str = "memory_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite ``_id`` for composite-pk lookup.
-
-        :param data: row dict; must carry ``agent_id`` and ``memory_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "memory_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["memory_id"]),
-            )
 
     @property
     def memory_id(self) -> UUID:
@@ -325,34 +301,6 @@ class MediaEntity(BaseEntity):
 
     primary_key_field: str = "media_id"
 
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite ``_id`` for composite-pk lookup.
-
-        collections-task-04 partitioned ``media`` on ``agent_id``;
-        composite PK is ``(agent_id, media_id)``.
-
-        :param data: row dict; must carry ``agent_id`` and ``media_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "media_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["media_id"]),
-            )
-
     @property
     def media_id(self) -> UUID:
         """get the media ID.
@@ -528,34 +476,6 @@ class MediaContentEntity(BaseEntity):
     """
 
     primary_key_field: str = "content_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite ``_id`` for composite-pk lookup.
-
-        collections-task-04 partitioned ``media_content`` on
-        ``agent_id``; composite PK is ``(agent_id, content_id)``.
-
-        :param data: row dict; must carry ``agent_id`` and ``content_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "content_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["content_id"]),
-            )
 
     @property
     def content_id(self) -> UUID:
@@ -763,34 +683,6 @@ class MemoryChunkEntity(BaseEntity):
     """
 
     primary_key_field: str = "chunk_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite ``_id`` for composite-pk lookup.
-
-        collections-task-04 partitioned ``memory_chunks`` on
-        ``agent_id``; composite PK is ``(agent_id, chunk_id)``.
-
-        :param data: row dict; must carry ``agent_id`` and ``chunk_id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        if "agent_id" in data and "chunk_id" in data:
-            object.__setattr__(
-                self,
-                "_id",
-                (data["agent_id"], data["chunk_id"]),
-            )
 
     @property
     def chunk_id(self) -> UUID:
@@ -1059,9 +951,10 @@ class MemoryRefEntity(BaseEntity):
     that a memory / media-content / chunk row has been surfaced to the
     agent inside one conversation. composite primary key retires the
     bespoke :class:`MemoryLedger` wrapper on top of 8.5l-1's composite-
-    pk support: ``_id`` holds the ``(conversation_id, item_id)`` tuple
-    so :class:`BaseCollection`'s tuple-aware pk path addresses L1 / L2
-    / L3 uniformly.
+    pk support: ``BaseEntity`` derives ``_id`` as the
+    ``(conversation_id, item_id)`` tuple from the collection's declared
+    ``primary_key_columns`` so :class:`BaseCollection`'s tuple-aware pk
+    path addresses L1 / L2 / L3 uniformly.
 
     columns mirror the migration-v002 DDL with the v014 date-column
     rename: ``conversation_id`` UUID, ``item_id`` UUID, ``item_type``
@@ -1074,38 +967,7 @@ class MemoryRefEntity(BaseEntity):
     write at the L1 boundary.
     """
 
-    primary_key_field: str = "conversation_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with tuple ``_id`` for composite-pk lookup.
-
-        :class:`BaseEntity.__init__` captures the single-pk field by
-        name; composite-pk entities overwrite ``_id`` with the
-        declared-order tuple so :meth:`BaseCollection.normalize_pk`
-        and :meth:`BaseCollection.l2_key` address the row uniformly
-        across tiers.
-
-        :param data: row dict; must carry ``conversation_id`` and
-            ``item_id`` keys
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(
-            self,
-            "_id",
-            (data["conversation_id"], data["item_id"]),
-        )
+    primary_key_field: str = "item_id"
 
     @property
     def conversation_id(self) -> UUID:
@@ -1246,41 +1108,14 @@ class MemoryConsolidationEntity(BaseEntity):
     additive provenance — neither endpoint memory is mutated by it.
 
     Composite primary key ``(agent_id, consolidated_memory_id,
-    source_memory_id)`` mirrors :class:`MemoryRefEntity`: ``_id`` holds
-    the tuple so :class:`BaseCollection`'s tuple-aware pk path addresses
-    L1 / L2 / L3 uniformly. ``rationale`` is the nullable audit trail.
+    source_memory_id)`` mirrors :class:`MemoryRefEntity`: ``BaseEntity``
+    derives ``_id`` as that 3-tuple from the collection's declared
+    ``primary_key_columns`` so :class:`BaseCollection`'s tuple-aware pk
+    path addresses L1 / L2 / L3 uniformly. ``rationale`` is the nullable
+    audit trail.
     """
 
-    primary_key_field: str = "agent_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with the 3-tuple ``_id`` for composite-pk lookup.
-
-        :param data: row dict; must carry ``agent_id``,
-            ``consolidated_memory_id`` and ``source_memory_id`` keys
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(
-            self,
-            "_id",
-            (
-                data["agent_id"],
-                data["consolidated_memory_id"],
-                data["source_memory_id"],
-            ),
-        )
+    primary_key_field: str = "consolidated_memory_id"
 
     @property
     def agent_id(self) -> UUID:
