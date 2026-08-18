@@ -54,7 +54,7 @@ from nats.js.api import (
 from nats.js.errors import APIError
 from threetears.observe import get_logger
 
-from threetears.nats._publish import publish_bounded
+from threetears.nats._publish import publish_bounded, run_bounded
 from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
 from threetears.nats.errors import OpLogError, OpLogSequenceConflict
 from threetears.nats.subjects import Subjects
@@ -408,7 +408,20 @@ class OpLog:
         """
         js = self._client.jetstream_context()
         try:
-            info = await js.stream_info(self._stream)
+            # Bounded: this is a READ ON A LIVE PATH, not startup. A consumer clamps its fence
+            # to this value before appending, so an unresponsive broker hanging here wedges the
+            # caller mid-operation with nothing to show for it -- the same shape as the publish
+            # wedge, reached through the same flush path that discards CancelledError.
+            #
+            # The subscription-setup calls elsewhere in this package are deliberately NOT
+            # bounded: a hang while opening a stream or a durable consumer stops the process
+            # from starting, which an operator sees immediately. It is the calls that wedge a
+            # RUNNING system while it still looks healthy that need a ceiling.
+            info = await run_bounded(
+                lambda: js.stream_info(self._stream),
+                timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
+                what=f"op-log stream_info on {self._stream}",
+            )
         except Exception as exc:  # noqa: BLE001 -- transport boundary; re-raised as the typed OpLogError
             raise OpLogError(f"op-log last_seq failed (stream_info): stream={self._stream}: {exc!r}") from exc
         return int(info.state.last_seq)
