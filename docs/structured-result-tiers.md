@@ -278,32 +278,46 @@ handle address a *result set*, not an opaque blob, so `?offset=&limit=` can be
 added later without moving the wire. A handle that resolves to "the projection
 for tool call X" can grow paging. One that resolves to "blob 9f2c" cannot.
 
-## 5. Open questions
+## 5. Out of scope: summaries
 
-1. **Should the wire ever carry a summary the platform wrote?** A cheap-model
-   summary of an oversized body is tempting and would render beautifully. The
-   recommendation here is **no, not at this boundary**, for three reasons that
-   are easier to state than to unpick later. It changes the payload from *the
-   same data, less of it* into *new content the platform authored*, which no
-   reader can check against anything the tool produced — the prose-instead-of-
-   structure defect this whole channel exists to end, reintroduced one layer up.
-   It puts a paid, latency-bearing model call on the delivery path, where search
-   has no budget owner and where "budget follows the bill" (SR-D4) has nothing
-   to bill. And it is better placed one layer down: the **producing tool** knows
-   its own content and its spend is already accounted, and the family already
-   has the slot — the offload seam lifts a tool-authored summary off
-   `artifact["summary"]` today. The search tools simply do not populate it yet.
-   So the question to take is the cheaper one: **should `bind` author a short
-   summary into the projection**, which both this channel and the offload seam
-   would then carry for free?
-2. **Where is the declaration made** in each product: a subscribe frame, a
+**Summarization is deliberately not part of this proposal**, in any of its
+forms — not a platform-authored one at the delivery boundary, not one `bind`
+writes into the projection. It is a possible future enhancement *to search*,
+and it should be taken there or not at all.
+
+Three things are worth carrying forward to whoever picks it up:
+
+- **The cheap version already ships and costs nothing.** Both providers return
+  a per-result snippet and both adapters already map it to `Candidate.snippet`
+  (`tavily.py:1225`, `searxng.py:1275`). That is most of what a citation card
+  renders, and it rides both tiers today.
+- **Two query-level summaries exist and are dropped.** Tavily's `answer` is
+  never requested (`include_answer` appears nowhere in the plan body), and
+  SearXNG's `answers` / `infoboxes` arrive unrequested and unmapped. Both
+  adapters refuse them for the same stated reason — they are a different shape
+  from a candidate — and SearXNG's note ends by leaving them "for a layer that
+  has somewhere honest to put them." Tavily's published credit table prices a
+  search by depth alone (basic 1, advanced 2) and says nothing about
+  `include_answer`, which suggests it is free; that is a documented absence
+  rather than a documented price, so it wants one empirical call before anyone
+  relies on it.
+- **Whatever is carried must be provenanced, and never presented as grounded.**
+  A provider synthesis and an instant-answer fact are different objects, only
+  one provider produces each, and neither can be checked against the corpus the
+  projection carries. Absence of the field would mean "this provider does not do
+  that", not "there was nothing to say" — which is precisely the kind of field
+  that gets misread.
+
+## 6. Open questions
+
+1. **Where is the declaration made** in each product: a subscribe frame, a
    connect parameter, or per turn in the request?
-3. **Who owns the resolve endpoint, and what is a handle's lifetime** — the
+2. **Who owns the resolve endpoint, and what is a handle's lifetime** — the
    turn, the conversation, a TTL? One floor is already known: discodon's
    research delivery is **asynchronous**, landing on a later turn than the one
    that asked, so a turn-scoped handle would be dead before its first reader.
    Conversation-scoped is the minimum that works for an existing consumer.
-4. **Does anything but chat consume this?** If a non-chat consumer wants
+3. **Does anything but chat consume this?** If a non-chat consumer wants
    structure, the tier vocabulary may need a name that is not about citations.
-5. **scriob: is a room-level tier acceptable?** (§3) It is the only answer that
+4. **scriob: is a room-level tier acceptable?** (§3) It is the only answer that
    keeps one frame per event.
