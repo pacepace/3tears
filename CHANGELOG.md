@@ -4,6 +4,26 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Fixed
+
+- `core`: `NatsProxyL3Backend.acquire()` yields a connection that now has
+  `fetchval`, completing the asyncpg-Connection surface its own docstring claims.
+
+  It carried `execute` / `fetchrow` / `fetch` / `transaction` and omitted
+  `fetchval`, which the backend it proxies has had all along. A consumer writing
+  the obvious `async with pool.acquire() as conn: conn.fetchval(...)` got an
+  `AttributeError` -- and an AttributeError arriving from a database access layer
+  reads as a connectivity fault, so it sends the reader to the broker and the
+  network before the object surface. Reported from a downstream health check that
+  broke when its `.pool` started returning this proxy.
+
+  This is the same gap `NatsProxyL3Backend.fetchval` was itself added to close,
+  one layer down: a shape claiming conformance that a missing method quietly
+  denied. The new method delegates to `fetchrow`, so transaction routing and the
+  inside-transaction `namespace` refusal are inherited rather than duplicated.
+
 ## v0.24.6 -- 2026-08-17
 
 ### Fixed
