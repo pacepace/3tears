@@ -54,6 +54,8 @@ from nats.js.api import (
 from nats.js.errors import APIError
 from threetears.observe import get_logger
 
+from threetears.nats._publish import publish_bounded
+from threetears.nats.client import DEFAULT_JETSTREAM_PUBLISH_TIMEOUT
 from threetears.nats.errors import OpLogError, OpLogSequenceConflict
 from threetears.nats.subjects import Subjects
 
@@ -341,7 +343,18 @@ class OpLog:
             Header.MSG_ID: op_id,
         }
         try:
-            ack = await js.publish(self._subject, payload, headers=headers, stream=self._stream)
+            # Bounded for the reason `threetears.nats._publish` records: an unacked JetStream
+            # publish hangs its caller forever and survives the caller's own cancellation. An
+            # op-log append is the worst place to inherit that -- it holds whatever fence the
+            # caller is writing under.
+            ack = await publish_bounded(
+                js,
+                self._subject,
+                payload,
+                timeout=DEFAULT_JETSTREAM_PUBLISH_TIMEOUT.total_seconds(),
+                headers=headers,
+                stream=self._stream,
+            )
         except APIError as exc:
             if exc.err_code != _WRONG_LAST_SEQUENCE_ERR_CODE:
                 # Some other JetStream 4xx/5xx (bad stream, bad subject, ...): not a CAS

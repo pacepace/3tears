@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.24.7"
+version = "0.25.0"
 description = "Three-tier caching framework for Python -- L1 SQLite, L2 NATS KV, L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,8 +22,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe>=0.24.0,<0.25.0",
-    "3tears-nats>=0.24.0,<0.25.0",
+    "3tears-observe>=0.25.0,<0.26.0",
+    "3tears-nats>=0.25.0,<0.26.0",
     "sqlalchemy",
     "asyncpg",
     "aiosqlite",
@@ -42,7 +42,7 @@ dependencies = [
 # Anything using L2, DerivedCollection, or the invalidation listener wants it;
 # an L1-SQLite-only process does not, and `nkeys` ships no wheels, so not
 # installing it is the difference between a wheel install and a source build.
-nats = ["3tears-nats[client]>=0.24.0,<0.25.0"]
+nats = ["3tears-nats[client]>=0.25.0,<0.26.0"]
 tracing = ["opentelemetry-api>=1.20"]
 # needed by :func:`threetears.core.egress.SocksEgress` / :func:`WarpEgress`, which build
 # ``socks5://`` proxy URLs. httpx routes those through socksio and raises ImportError without

@@ -17,6 +17,7 @@ __all__ = [
     "OpLogError",
     "OpLogSequenceConflict",
     "PublishError",
+    "PublishTimeoutError",
     "RequestError",
     "RequestTimeoutError",
     "StreamSubjectsOverlapError",
@@ -67,6 +68,24 @@ class PublishError(NatsClientError):
 
     wraps any underlying nats-py exception. ``__cause__`` carries
     original exception for diagnostics.
+    """
+
+
+class PublishTimeoutError(PublishError):
+    """raised when a publish did not complete inside its deadline.
+
+    Distinct from :class:`PublishError` because the outcome is genuinely
+    unknown rather than failed: a JetStream publish that times out waiting for
+    its ``PubAck`` may still have been persisted by the broker. A caller
+    retrying must therefore treat the message as possibly-already-delivered --
+    use a deduplication header (``Nats-Msg-Id``) if exactly-once matters.
+
+    **The publish may also still be running.** ``nats-py``'s flush path
+    swallows ``asyncio.CancelledError``, so a publish that has stopped
+    responding to cancellation cannot be awaited to completion without
+    reproducing the wedge this error exists to break. When that happens the
+    wrapper abandons the in-flight task and says so in the log rather than
+    blocking its caller on a coroutine that has refused to stop.
     """
 
 
