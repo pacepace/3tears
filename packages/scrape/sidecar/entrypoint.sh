@@ -82,5 +82,23 @@ xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -q "window id" || {
     exit 1
 }
 
-echo "[entrypoint] starting nodriver sidecar on 0.0.0.0:${PORT}"
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT}"
+# BIND_HOST decides who can reach 8088, and it defaults to LOOPBACK.
+#
+# This port mints session tokens and returns raw cookie jars from a human's solved
+# session, and it authenticates nobody by design -- deciding who should hold a token
+# happens where identity lives. Until 2026-08-18 it bound 0.0.0.0 unconditionally, so
+# "anything sharing this network is trusted" was an assumption nothing stated and
+# nothing enforced (SCR-1FK5 point 3).
+#
+# The default is now the safe one. On Kubernetes -- the shipping shape since SCR-7VD2 --
+# the front-door container shares the pod's network namespace, so loopback is exactly
+# right and nothing else can reach the port at all.
+#
+# Under docker compose each container has its OWN namespace, so loopback would make the
+# port unreachable even through a published port. A compose deployment must therefore
+# widen this deliberately, which is the point: the assumption becomes stated rather than
+# inherited. See `docker-compose.yml`, which sets it and says why.
+BIND_HOST="${BIND_HOST:-127.0.0.1}"
+
+echo "[entrypoint] starting nodriver sidecar on ${BIND_HOST}:${PORT}"
+exec uvicorn main:app --host "${BIND_HOST}" --port "${PORT}"
