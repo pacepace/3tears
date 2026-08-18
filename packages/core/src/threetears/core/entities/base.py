@@ -16,7 +16,7 @@ from typing import Any
 from threetears.core.cache import MISSING
 from threetears.observe import get_logger
 
-__all__ = ["BaseEntity"]
+__all__ = ["BaseEntity", "derive_addressing_id"]
 
 log = get_logger(__name__)
 
@@ -40,7 +40,7 @@ _INTERNAL_ATTRS = frozenset(
 )
 
 
-def _derive_addressing_id(row_id: Any, data: dict[str, Any], collection: Any) -> Any:
+def derive_addressing_id(row_id: Any, data: dict[str, Any], collection: Any, *, strict: bool = False) -> Any:
     """derive the tier-addressing key for one entity's row.
 
     mirrors the rule :meth:`BaseCollection.save_entity` already applies
@@ -63,9 +63,15 @@ def _derive_addressing_id(row_id: Any, data: dict[str, Any], collection: Any) ->
     :param collection: owning collection, or ``None`` for a transient
         factory-created entity
     :ptype collection: Any
+    :param strict: when true, a composite-pk payload missing a declared
+        pk column raises instead of falling back to the scalar. the
+        write path sets this: a save that silently addressed the wrong
+        row would write L3 under one key and cache it under another
+    :ptype strict: bool
     :return: scalar pk value for single-pk tables, declared-order tuple
         for composite-pk tables
     :rtype: Any
+    :raises KeyError: when ``strict`` and a declared pk column is absent
     """
     if collection is None:
         return row_id
@@ -76,7 +82,11 @@ def _derive_addressing_id(row_id: Any, data: dict[str, Any], collection: Any) ->
     # cannot describe a key shape. those keep the scalar form.
     if not isinstance(pk_cols, tuple) or len(pk_cols) < 2:
         return row_id
-    if not all(col in data for col in pk_cols):
+    missing = [col for col in pk_cols if col not in data]
+    if missing:
+        if strict:
+            table = getattr(collection, "table_name", "<unknown>")
+            raise KeyError(f"{table}: cannot address row -- payload is missing pk column(s) {missing} of {pk_cols}")
         return row_id
     return tuple(data[col] for col in pk_cols)
 
@@ -146,7 +156,7 @@ class BaseEntity:
         pk_field = type(self).primary_key_field
         row_id = data.get(pk_field, data.get("id", ""))
         object.__setattr__(self, "_row_id", row_id)
-        object.__setattr__(self, "_id", _derive_addressing_id(row_id, data, collection))
+        object.__setattr__(self, "_id", derive_addressing_id(row_id, data, collection))
         object.__setattr__(self, "_collection", collection)
         object.__setattr__(self, "_is_new", is_new)
         object.__setattr__(self, "_dirty", is_new)
@@ -321,6 +331,17 @@ class BaseEntity:
             wrote = collection.write_to_cache_sync(data)
             if not wrote:
                 raise RuntimeError(f"L1 cache write failed in set_data() for {type(self).__name__} id={self._id}")
+        # Re-derive identity from the incoming row. Skipping this left
+        # the entity addressing its PREVIOUS row after a reload that
+        # returned a different one: the new row went into L1 under its
+        # own key while every read still went to the old one, silently
+        # and with no exception. Harmless while pk columns never change,
+        # and this is the method that makes them able to.
+        pk_field = type(self).primary_key_field
+        row_id = data.get(pk_field, data.get("id", ""))
+        collection = object.__getattribute__(self, "_collection")
+        object.__setattr__(self, "_row_id", row_id)
+        object.__setattr__(self, "_id", derive_addressing_id(row_id, data, collection))
         object.__setattr__(self, "_column_names", frozenset(data.keys()))
         object.__setattr__(self, "_changes", {})
         object.__setattr__(self, "_dirty", False)

@@ -28,7 +28,7 @@ from threetears.core.cache import MISSING
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.entities.base import BaseEntity
+from threetears.core.entities.base import BaseEntity, derive_addressing_id
 from threetears.core.exceptions import ConcurrentModificationError, CorruptCacheEntry
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
@@ -1012,15 +1012,18 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         self._set_span_table()
         data = entity.to_dict()
-        # composite-PK collections (eg. ``datasources`` keyed on
-        # ``(customer_id, id)`` after the v054 row_scope partition
-        # split) need a tuple key for ``_save_to_l2`` /
-        # ``_publish_invalidation``; single-PK collections need the
-        # scalar. ``BaseEntity.addressing_id`` carries whichever the
-        # declared ``primary_key_columns`` call for -- it is derived
-        # from this same property at construction, so the write path
-        # and the read path cannot disagree about which row this is.
-        entity_id: Any = entity.addressing_id
+        # The key is derived from the PAYLOAD, not from the entity's
+        # construction-time ``addressing_id``. Those agree whenever
+        # ``to_dict()`` reads the L1 row (that row is fetched BY the
+        # construction-time key), but diverge when ``to_dict()`` falls
+        # back to ``_changes`` -- no L1 backend wired, or the L1 row
+        # evicted -- and a pk column has since been written. Keying L2
+        # by the stale value while L3 takes the payload caches one
+        # partition's row under another's key, which is the exact
+        # cross-partition bleed the composite key exists to prevent.
+        # ``strict`` makes a payload missing a pk column raise here
+        # rather than silently addressing the scalar.
+        entity_id: Any = derive_addressing_id(entity.id, data, self, strict=True)
         original_timestamp = getattr(entity, "original_date_updated", None)
 
         now = datetime.now(UTC)

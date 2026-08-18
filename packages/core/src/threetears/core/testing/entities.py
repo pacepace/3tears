@@ -38,21 +38,34 @@ from threetears.core.cache import MISSING
 __all__ = ["entity_collection_stub"]
 
 
-def _normalize(entity_id: Any) -> tuple[Any, ...]:
+def _normalize(entity_id: Any, primary_key_columns: tuple[str, ...]) -> tuple[Any, ...]:
     """coerce an entity id to the tuple form the cache is keyed by.
 
-    mirrors :meth:`BaseCollection.normalize_pk` without its arity
-    validation -- a stub that raised on arity would fail tests for
-    reasons unrelated to what they assert.
+    mirrors :meth:`BaseCollection.normalize_pk`, arity validation
+    INCLUDED. an earlier version of this stub skipped the validation on
+    the grounds that raising would fail tests for reasons unrelated to
+    what they assert. that was backwards: a scalar reaching a
+    composite-pk collection is precisely the defect this whole area
+    exists to prevent, and a stub that answers it with ``MISSING``
+    instead of the real ``ValueError`` makes every test built on it
+    blind to that defect. one such test shipped green against a
+    collection whose declaration was wrong.
 
     :param entity_id: scalar pk value or tuple of pk values
     :ptype entity_id: Any
+    :param primary_key_columns: declared pk column names
+    :ptype primary_key_columns: tuple[str, ...]
     :return: tuple of pk values
     :rtype: tuple[Any, ...]
+    :raises ValueError: if arity does not match the declared columns
     """
-    if isinstance(entity_id, tuple):
-        return entity_id
-    return (entity_id,)
+    values = entity_id if isinstance(entity_id, tuple) else (entity_id,)
+    if len(values) != len(primary_key_columns):
+        raise ValueError(
+            f"primary key arity mismatch: got {len(values)} value(s) "
+            f"for {len(primary_key_columns)} column(s) {primary_key_columns}"
+        )
+    return values
 
 
 def entity_collection_stub(
@@ -86,20 +99,24 @@ def entity_collection_stub(
         return True
 
     def _get_field(entity_id: Any, field: str) -> Any:
-        row = cache.get(_normalize(entity_id))
+        row = cache.get(_normalize(entity_id, primary_key_columns))
         if row is None:
             return MISSING
         return row.get(field, MISSING)
 
     def _set_field(entity_id: Any, field: str, value: Any) -> bool:
-        row = cache.get(_normalize(entity_id))
+        row = cache.get(_normalize(entity_id, primary_key_columns))
         if row is None:
             return False
         row[field] = value
         return True
 
     def _get_row(entity_id: Any) -> dict[str, Any] | None:
-        return cache.get(_normalize(entity_id))
+        # a COPY, matching SQLiteBackend.select_by_id. returning the live
+        # dict let a caller mutate the "cache" through a read result,
+        # which no real backend permits.
+        row = cache.get(_normalize(entity_id, primary_key_columns))
+        return dict(row) if row is not None else None
 
     collection = MagicMock()
     # a genuine tuple, NOT an auto-created child mock: BaseEntity reads

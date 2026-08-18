@@ -35,14 +35,43 @@ packages (bumped in lock-step).
   scalar identity: the value of the column named by `primary_key_field`.
 
   **Single-pk behaviour is unchanged**, which was the whole risk and is asserted
-  rather than assumed. **Composite-pk `.id` changes** in the packages whose
-  entities previously returned the tuple from `.id`: `conversations`
-  (`Conversation`, `Folder`), `scheduled-jobs`, `agent-memory`
-  (`MemoryRefEntity`, `MemoryConsolidationEntity`), `agent-tools`
-  (`ContextItemEntity`). These now return the bare row id and expose the tuple as
-  `addressing_id`; `primary_key_field` on them was retargeted from the partition
-  column to the bare-id column to match. That contract is what several of these
-  modules' own docstrings already claimed and their code contradicted.
+  rather than assumed.
+
+  **Composite-pk `.id` changes on eighteen classes** — every one that previously
+  returned the tuple from `.id` (i.e. had no `id` property override). They now
+  return the bare row id and expose the tuple as `addressing_id`, and
+  `primary_key_field` was retargeted from the partition column to the bare-id
+  column to match. That contract is what several of these modules' own docstrings
+  already claimed while their code contradicted it.
+
+  - `conversations`: `Conversation`, `Folder`
+  - `scheduled-jobs`: `ScheduledJobEntity`, `JobFireEntity`
+  - `agent-memory`: `MemoryEntity`, `MediaEntity`, `MediaContentEntity`,
+    `MemoryChunkEntity`, `MemoryRefEntity`, `MemoryConsolidationEntity`
+  - `agent-skills`: `AgentSkillEntity`, `AgentSkillInvocationEntity`
+  - `agent-wake`: `WakeScheduleEntity`, `WakeFireEntity`,
+    `WebhookSubscriptionEntity`
+  - `agent-identity`: `IdentityVersionEntity`
+  - `agent-intention`: `IntentionEntity`
+  - `agent-tools`: `ContextItemEntity`
+
+  A sweep of every package's `src/` and `tests/` found no production reader of
+  `.id` on any of them, so the change is source-compatible in this repo; it is
+  not necessarily so downstream.
+
+  **Two of these `.id` values are not row-unique, and callers should read
+  `addressing_id` instead.** `MemoryConsolidationEntity.id` is
+  `consolidated_memory_id` on a three-part key — many source edges share one
+  consolidated id — and `MemoryRefEntity.id` is `item_id`, a polymorphic ref
+  unique only within a conversation. No component of a multi-part key is a row
+  identity on its own.
+
+  **`geo` changes too, and previously had no override to change.**
+  `FeatureEntity` and `TileEntity` sit under collections declaring 3- and 5-part
+  keys but never wrote an `_id`, so their `_id` was a scalar that addressed
+  nothing; it is now the correct tuple. `TileEntity.primary_key_field` moved from
+  `layer` to `z`, because a layer NAME identifies a whole layer rather than a row
+  and was the one component guaranteed to be wrong for `.id`.
 
   `reload_entity` is fixed as a consequence: it read `entity.id`, which on the
   composite entities that kept `.id` scalar named one column, so the fetch missed

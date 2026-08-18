@@ -253,3 +253,16 @@ class TestTableTemplateEntity:
         # through the collection's declared primary_key_columns.
         assert entity.primary_key_field == "id"
         assert entity.addressing_id == (customer_id, template_id)
+
+    def test_collection_declares_the_composite_key(self) -> None:
+        """the REAL collection declares ``(customer_id, id)``, not a stub.
+
+        the assertion above uses a stub told the key shape, so on its own
+        it proves nothing about the collection entities are actually
+        built by -- and the collection previously declared no
+        ``primary_key_column`` at all while its SQL unpacked a 2-tuple.
+        this pins the declaration itself.
+        """
+        from threetears.datasources.collections import TableTemplateCollection
+
+        assert TableTemplateCollection.primary_key_column == ("customer_id", "id")

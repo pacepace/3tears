@@ -16,14 +16,25 @@ so callers have a canonical place to read / write / cache rows via the
 standard three-tier collection api.
 
 four of the five tables use composite primary keys post-row_scope
-partitioning (``(row_scope, id)`` for ``groups`` /
-``role_assignments`` / ``namespaces``; ``(group_id, id)`` for
-``group_members``). every composite-pk entity overrides ``__init__`` to
-expose ``_id`` as the matching tuple so :meth:`BaseCollection.normalize_pk`
-+ :meth:`BaseCollection.l2_key` address the row uniformly across L1 /
-L2 / L3. ``entity.id`` keeps returning the scalar row id via a property
-override so callers (response models, audit trails, log lines) read the
-same value across pre/post partitioning.
+partitioning: ``(row_scope, group_id)`` for ``groups``,
+``(row_scope, assignment_id)`` for ``role_assignments``,
+``(row_scope, namespace_id)`` for ``namespaces``, and
+``(group_id, id)`` for ``group_members``.
+
+no entity overrides ``_id``. :class:`BaseEntity` derives it from the
+owning collection's declared ``primary_key_columns``, so
+:meth:`BaseCollection.normalize_pk` + :meth:`BaseCollection.l2_key`
+address the row uniformly across L1 / L2 / L3 with the declaration as
+the only statement of key shape. ``primary_key_field`` names the bare
+row id, so ``entity.id`` keeps returning the scalar value callers
+(response models, audit trails, log lines) read across pre/post
+partitioning -- via the base class rather than a per-entity property
+override.
+
+the three ``__init__`` overrides that remain do NOT touch identity: they
+default the derived ``row_scope`` column from ``customer_id`` (or, for
+``role_assignments``, from the scope shape) before delegating, because
+the derivation reads ``data`` and the default has to be in it first.
 """
 
 from __future__ import annotations

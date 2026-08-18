@@ -37,9 +37,25 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PACKAGE_GLOBS = ("packages/*/src", "packages/agent/*/src")
+#: shipped source AND tests. a test fixture reintroducing the override is
+#: not harmless: the two suites best placed to catch an addressing
+#: regression (``test_cache_coherence``, ``test_composite_pk_three_tier``)
+#: each carried one, so both were exercising the retired path rather than
+#: the derivation they existed to cover.
+_PACKAGE_GLOBS = (
+    "packages/*/src",
+    "packages/agent/*/src",
+    "packages/*/tests",
+    "packages/agent/*/tests",
+    "tests",
+)
 
-#: the one module allowed to assign ``_id``: it owns the derivation every
+#: the banned attribute names. ``_id`` is the addressing key; ``_row_id``
+#: backs ``.id``. both are statements of key shape and both are the
+#: framework's to set.
+_BANNED_ATTRS = frozenset({"_id", "_row_id"})
+
+#: the one module allowed to assign them: it owns the derivation every
 #: other entity inherits.
 _DERIVATION_OWNER = Path("packages/core/src/threetears/core/entities/base.py")
 
@@ -57,38 +73,70 @@ def _source_files() -> list[Path]:
     return found
 
 
-def _is_object_setattr(node: ast.Call) -> bool:
-    """report whether ``node`` is an ``object.__setattr__`` call.
+def _is_setattr_call(node: ast.Call) -> bool:
+    """report whether ``node`` is a ``setattr``-shaped call.
+
+    covers ``object.__setattr__(self, "_id", v)``, the builtin
+    ``setattr(self, "_id", v)``, and ``SomeBase.__setattr__(...)``. all
+    three reach the same attribute, and the first review of this guard
+    found it caught only the first.
 
     :param node: call node under inspection
     :ptype node: ast.Call
-    :return: whether the callee is ``object.__setattr__``
+    :return: whether the callee sets an attribute by name
     :rtype: bool
     """
     func = node.func
-    if not isinstance(func, ast.Attribute) or func.attr != "__setattr__":
-        return False
-    return isinstance(func.value, ast.Name) and func.value.id == "object"
+    if isinstance(func, ast.Name) and func.id == "setattr":
+        return True
+    return isinstance(func, ast.Attribute) and func.attr == "__setattr__"
 
 
 def _id_assignments(tree: ast.Module) -> list[int]:
-    """return the line numbers assigning ``_id`` via ``object.__setattr__``.
+    """return line numbers assigning a banned identity attribute.
+
+    four spellings reach the attribute and all of them work, because
+    ``_id`` / ``_row_id`` are in ``BaseEntity._INTERNAL_ATTRS`` and so
+    route straight to ``object.__setattr__``:
+
+    - ``object.__setattr__(self, "_id", v)`` / ``setattr(self, "_id", v)``
+    - ``self._id = v`` -- the most natural one, and the one the first
+      version of this guard missed entirely
+    - ``self.__dict__["_id"] = v``
+
+    a non-literal name (``key = "_id"; setattr(self, key, v)``) is not
+    caught and cannot be without dataflow analysis; it is also not a
+    spelling anyone reaches for by accident.
 
     :param tree: parsed module
     :ptype tree: ast.Module
-    :return: line numbers of offending calls
+    :return: line numbers of offending statements
     :rtype: list[int]
     """
     lines: list[int] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_object_setattr(node):
+        # setattr(self, "_id", ...) / object.__setattr__(self, "_id", ...)
+        if isinstance(node, ast.Call) and _is_setattr_call(node) and len(node.args) >= 2:
+            target = node.args[1]
+            if isinstance(target, ast.Constant) and target.value in _BANNED_ATTRS:
+                lines.append(node.lineno)
             continue
-        if len(node.args) < 2:
+        if not isinstance(node, ast.Assign):
             continue
-        target = node.args[1]
-        if isinstance(target, ast.Constant) and target.value == "_id":
-            lines.append(node.lineno)
-    return lines
+        for tgt in node.targets:
+            # self._id = ...
+            if isinstance(tgt, ast.Attribute) and tgt.attr in _BANNED_ATTRS:
+                lines.append(node.lineno)
+            # self.__dict__["_id"] = ...
+            elif (
+                isinstance(tgt, ast.Subscript)
+                and isinstance(tgt.value, ast.Attribute)
+                and tgt.value.attr == "__dict__"
+                and isinstance(tgt.slice, ast.Constant)
+                and tgt.slice.value in _BANNED_ATTRS
+            ):
+                lines.append(node.lineno)
+    return sorted(set(lines))
 
 
 @pytest.mark.parametrize("path", _source_files(), ids=lambda p: str(p.relative_to(_REPO_ROOT)))
@@ -108,7 +156,7 @@ def test_no_entity_writes_its_own_id(path: Path) -> None:
     offenders = _id_assignments(tree)
 
     assert not offenders, (
-        f"{relative} assigns ``_id`` at line(s) {offenders}. "
+        f"{relative} assigns a banned identity attribute (_id / _row_id) at line(s) {offenders}. "
         "``BaseEntity`` derives it from the collection's declared "
         "``primary_key_columns``; an override is a second statement of the "
         "key shape that can silently disagree with the declaration, giving "
