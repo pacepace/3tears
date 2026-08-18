@@ -20,13 +20,20 @@ API-growth guard confirms it on a working-tree read rather than a stale HEAD.
 
   A fix that cannot be deployed is not a shipped fix, and nothing said so.
 
-  **The job has no default registry.** Set `SIDECAR_REGISTRY_HOST` and
-  `SIDECAR_REGISTRY` (plus the `REGISTRY_USERNAME` / `REGISTRY_TOKEN` secrets) to
-  enable it; unset, it warns in the run and publishes nothing. A first draft fell
-  back to Docker Hub, which would have pushed a container image to a public
-  registry on the next release of any repo that merely merged the file. A
-  registry is a publishing decision, and a default is that decision made on
-  somebody else's behalf.
+  **It publishes to GHCR**, at `ghcr.io/<owner>/nodriver-sidecar`. That needs no
+  configuration at all, which is the reason to use it: `packages: write` on the
+  workflow's own `GITHUB_TOKEN` is the whole credential, so there is no registry
+  secret to create, rotate or leak, and the namespace comes from the repository
+  owner rather than a variable somebody must remember to set. A package lands
+  under this repo's owner and its visibility starts private.
+
+  *Corrected 2026-08-18, after this version was tagged.* The job first shipped
+  with `SIDECAR_REGISTRY_HOST` / `SIDECAR_REGISTRY` variables and no default,
+  because the draft before THAT fell back to Docker Hub -- which would have pushed
+  a container image to a public registry on the next release of any repo that
+  merely merged the file. GHCR removes both the hazard and the configuration. The
+  v0.26.1 image was published by re-running the release against this workflow;
+  the tagged tree still carries the variables version.
 
 - **`scrape` (sidecar): 8088 binds loopback by default.** `entrypoint.sh` bound
   `0.0.0.0` unconditionally, so "everything on this network is trusted" was an
