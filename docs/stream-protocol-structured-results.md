@@ -411,6 +411,35 @@ silent-partial-answer defect wearing a null. The omission record is written
 under its own `omitted` key, never the projection's: D-S4's one hard *must not*
 applies to this payload as much as to a narrowed projection.
 
+### The consumers, and what building their halves found
+
+Both consumer halves are written and open, each against the code this design was
+elicited from:
+
+| Repo | PR | What it does |
+|---|---|---|
+| scriob | [scriob#180](https://github.com/pacepace/scriob/pull/180) | one argument — `ToolStreamMiddleware` hands `emit_tool_call_end` the `ToolMessage` artifact it is already holding. The frame follows for free |
+| metallm | [metallm#287](https://github.com/pacepace/metallm/pull/287) | the artifact is *lifted* (below), put on `ToolCompletedEvent` in both tool loops, and forwarded verbatim onto `ToolInvocationEndMessage` |
+
+Both are blocked only on a 3tears release carrying this channel; both were
+developed and tested against it through their `.3tears` path sources.
+
+**metallm's half was not the one-liner scriob's was, and the reason is the
+fourth appearance of one defect.** `_execute_service_tool` invoked
+`target.ainvoke(tool_args)` — bare args, not the tool call — so LangChain never
+built a `ToolMessage`, a `content_and_artifact` tool handed back the raw
+`(content, artifact)` **tuple**, and `str()` flattened it into prose. There was
+no artifact to forward because the artifact had never been separated. That is
+`ToolExecutor` before [#318](https://github.com/pacepace/3tears/pull/318) and
+`page_finder` before [#326](https://github.com/pacepace/3tears/pull/326),
+happening a fourth time — and this time on the **default** turn path of a
+production consumer, where the model has been reading stringified 2-tuples.
+
+Worth stating as a family lesson rather than a metallm bug: **invoking a tool by
+its args is the lossy call, and it is the one that looks obvious.** Four sites
+independently reached for it. The `agent-tools` surface could refuse to be
+called that way, or say so where the signature is read.
+
 ### An adjacent finding, one layer over
 
 **The one in-repo emitter of `ToolCompletedEvent` cannot populate the channel,
@@ -424,7 +453,7 @@ which the wrapper then renders as `str(result)`. There is no artifact to read
 because the artifact was never separated, and the model sees a stringified
 tuple. That is the same defect `ToolExecutor` carried until #318 and
 `page_finder` carried until [#326](https://github.com/pacepace/3tears/pull/326)
-— its third appearance, in the third place that invokes a tool by args.
+— the third of the four sites named above, and the only one still unfixed.
 
 Left unfixed here deliberately: it is a provider-path behaviour change (the
 tool text a running agent sees), it belongs with the two prior fixes rather
