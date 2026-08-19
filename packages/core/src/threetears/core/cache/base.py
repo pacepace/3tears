@@ -15,6 +15,56 @@ MISSING = object()
 """Sentinel for cache miss. Distinct from None (which is a valid cached value)."""
 
 
+def _entry_is_fresh(
+    stored_at_monotonic: float | None,
+    *,
+    now_monotonic: float,
+    max_age_seconds: float,
+) -> bool:
+    """Whether a cached entry stamped at ``stored_at_monotonic`` is still within its max age.
+
+    Shared by the age-bounded cache tiers so the rule cannot drift
+    between them, the same reason :func:`build_select_clause` is shared.
+
+    Underscored, and therefore private to ``threetears.core``, on
+    purpose. A name is only as internal as its spelling makes it: absence
+    from ``__all__`` restricts no import, so a sibling package could
+    couple to it with nothing in the intra-family bounds recording that
+    it had. Nothing outside this package needs it, and declaring it
+    public would oblige the whole family to a minor bump to add a helper
+    that changes no consumer's API.
+
+    Both readings come from :func:`time.monotonic` in the *same*
+    process. That is what makes this safe where a wall-clock comparison
+    would not be: no clock is shared with another host, so there is no
+    skew to be wrong about, and a monotonic reading cannot step backwards
+    under an NTP correction. The corollary is a constraint on the
+    caller, not on this function -- an L1 tier whose storage outlives the
+    process cannot use it, because a reading taken by one process means
+    nothing to another.
+
+    Callers supply the clock reading rather than this function taking
+    one, so a test can exercise an hour-long window without sleeping.
+
+    :param stored_at_monotonic: the reading taken when the entry was
+        cached, or ``None`` when the entry carries no stamp
+    :ptype stored_at_monotonic: float | None
+    :param now_monotonic: caller-supplied monotonic clock reading
+    :ptype now_monotonic: float
+    :param max_age_seconds: how long an entry stays fresh
+    :ptype max_age_seconds: float
+    :return: ``True`` when the entry may still be served
+    :rtype: bool
+    """
+    # An unstamped entry has never been obtained from a lower tier: it
+    # holds a value this process authored and nothing else knows yet.
+    # Expiring it would discard a local write in favour of the older
+    # value a pull-through would return, so it is fresh by definition.
+    if stored_at_monotonic is None:
+        return True
+    return now_monotonic - stored_at_monotonic <= max_age_seconds
+
+
 def build_select_clause(
     schema: dict[str, str] | None,
     table: str,
