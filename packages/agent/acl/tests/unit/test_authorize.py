@@ -37,7 +37,7 @@ from threetears.agent.acl import (
     authorize_with_trail,
 )
 
-from tests.unit._fake_loaders import FakeStore
+from ._fake_loaders import FakeStore
 
 
 # ---------------------------------------------------------------------------

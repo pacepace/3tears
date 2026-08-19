@@ -41,7 +41,7 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 
-from tests.unit._fake_loaders import FakeStore, make_cache
+from ._fake_loaders import FakeStore, make_cache
 
 
 # ---------------------------------------------------------------------------
@@ -1130,3 +1130,138 @@ class TestLimitingSide:
         # user_actions = {read}; agent_actions = {read, write, delete}
         # user is the strict subset, so user is the cap.
         assert result.limiting_side == LimitingSide.USER
+
+
+# ---------------------------------------------------------------------------
+# 13. scope coverage of platform-shared namespaces (customer_id NULL)
+# ---------------------------------------------------------------------------
+
+
+class TestPlatformSharedNamespaceScopeCoverage:
+    """which assignment shapes reach a ``customer_id=NULL`` namespace.
+
+    platform built-in tools materialize as ``tool`` namespaces with
+    both owner columns NULL (``ToolServer._upsert_tool_namespace``), and
+    the evaluator does not special-case them -- coverage is decided
+    entirely by :meth:`RoleAssignment.covers`. these tests pin the
+    resulting matrix, because
+    :class:`~threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer`
+    documents it for admins seeding the first grant and a docstring
+    cannot be checked by the test suite.
+
+    the counter-intuitive entry is the last one: ``type_customer``
+    matches a NULL-customer row only when the assignment's own
+    ``scope_customer_id`` is NULL too, which makes it a platform-wide
+    grant rather than the per-customer one its name suggests.
+    """
+
+    def _platform_tool_namespace(self) -> Namespace:
+        """build a platform built-in tool namespace (both owners NULL).
+
+        :return: namespace record with ``customer_id`` and
+            ``owner_agent_id`` NULL
+        :rtype: Namespace
+        """
+        return Namespace(
+            id=uuid4(),
+            customer_id=None,
+            namespace_type="tool",
+            owner_agent_id=None,
+        )
+
+    def test_type_customer_bound_to_a_customer_never_covers(self) -> None:
+        """the shape an admin reaches for first, and it grants nothing."""
+        namespace = self._platform_tool_namespace()
+        role = _role(name="tool_user", permissions={"tool": ["tool.call"]})
+        group = _group(name="default tool access", customer_id=uuid4())
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.TYPE_CUSTOMER,
+            scope_namespace_type="tool",
+            scope_customer_id=uuid4(),
+        )
+
+        assert assignment.covers(namespace) is False
+
+    def test_type_customer_with_null_customer_covers(self) -> None:
+        """NULL scope_customer_id matches the row's NULL customer_id.
+
+        a platform-scope assignment: ``RoleAssignmentCollection``
+        derives ``row_scope='platform'`` for precisely this shape.
+        """
+        namespace = self._platform_tool_namespace()
+        role = _role(name="tool_user", permissions={"tool": ["tool.call"]})
+        group = _group(name="default tool access", customer_id=None)
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.TYPE_CUSTOMER,
+            scope_namespace_type="tool",
+            scope_customer_id=None,
+        )
+
+        assert assignment.covers(namespace) is True
+
+    def test_type_customer_with_null_customer_still_honours_the_type(self) -> None:
+        """the NULL-customer shape is not a backdoor past the type predicate."""
+        namespace = self._platform_tool_namespace()
+        role = _role(name="ws_user", permissions={"workspace": ["read"]})
+        group = _group(name="default workspace access", customer_id=None)
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.TYPE_CUSTOMER,
+            scope_namespace_type="workspace",
+            scope_customer_id=None,
+        )
+
+        assert assignment.covers(namespace) is False
+
+    def test_namespace_scope_covers(self) -> None:
+        """the per-tool grant, and the narrowest shape available."""
+        namespace = self._platform_tool_namespace()
+        role = _role(name="tool_user", permissions={"tool": ["tool.call"]})
+        group = _group(name="default tool access", customer_id=uuid4())
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=namespace.id,
+        )
+
+        assert assignment.covers(namespace) is True
+
+    def test_all_scope_covers(self) -> None:
+        """platform-admin universal grant reaches it unconditionally."""
+        namespace = self._platform_tool_namespace()
+        role = _role(name="super", permissions={WILDCARD_RESOURCE_TYPE: ["tool.call"]})
+        group = _group(name="platform admins", customer_id=None)
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.ALL,
+        )
+
+        assert assignment.covers(namespace) is True
+
+    def test_agent_spun_tool_is_reached_by_the_ordinary_customer_grant(self) -> None:
+        """the contrast: a real customer_id makes type_customer work normally."""
+        customer = uuid4()
+        namespace = Namespace(
+            id=uuid4(),
+            customer_id=customer,
+            namespace_type="tool",
+            owner_agent_id=uuid4(),
+        )
+        role = _role(name="tool_user", permissions={"tool": ["tool.call"]})
+        group = _group(name="default tool access", customer_id=customer)
+        assignment = _assignment(
+            role=role,
+            group=group,
+            scope_type=ScopeType.TYPE_CUSTOMER,
+            scope_namespace_type="tool",
+            scope_customer_id=customer,
+        )
+
+        assert assignment.covers(namespace) is True

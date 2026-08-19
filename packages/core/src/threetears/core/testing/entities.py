@@ -26,6 +26,28 @@ The stub is a real :class:`MagicMock` so ``assert_called_with`` on
 ``set_field_sync`` keeps working, but its ``primary_key_columns`` is a
 genuine tuple rather than an auto-created child mock -- which is the
 whole point.
+
+Where the stub answers differently from the collection it replaces, the
+difference is untestable: every test built on the stub agrees with the
+stub, and none of them notices the real behaviour. So each accessor
+matches ``BaseCollection``'s observable contract, including the two
+cases that are easy to get subtly wrong:
+
+* ``has_l1=False`` models a collection whose ``_l1`` is ``None``. the
+  four sync accessors the stub implements short-circuit, writes report
+  failure, and the entity's ``_changes`` fallback / ``set_data``
+  ``RuntimeError`` paths become reachable from a unit test. the
+  short-circuit precedes pk normalization, as it does on the real
+  collection, so a no-L1 stub skips the arity check exactly as the real
+  one skips it.
+* ``set_field_sync`` upserts a detached copy rather than mutating the
+  cached row, so writing a PRIMARY KEY column leaves the old row behind
+  and creates a second one -- what the real collection does, and what an
+  in-place rename hid.
+
+``packages/core/tests/test_entity_collection_stub.py`` runs the same
+assertions against this stub and against a real ``BaseCollection`` so
+the two cannot drift apart again unnoticed.
 """
 
 from __future__ import annotations
@@ -70,6 +92,8 @@ def _normalize(entity_id: Any, primary_key_columns: tuple[str, ...]) -> tuple[An
 
 def entity_collection_stub(
     primary_key_columns: tuple[str, ...] = ("id",),
+    *,
+    has_l1: bool = True,
 ) -> tuple[MagicMock, dict[tuple[Any, ...], dict[str, Any]]]:
     """build a collection stand-in backed by an in-memory row dict.
 
@@ -82,11 +106,27 @@ def entity_collection_stub(
     only if the pk is stringified before the tuple is formed, so the
     tuple key is both simpler and stricter.
 
+    ``has_l1=False`` models a collection constructed against a registry
+    with no L1 backend, where :attr:`BaseCollection._l1` is ``None`` and
+    every sync accessor short-circuits: reads answer ``MISSING`` /
+    ``None`` and writes answer ``False``. that is not a cosmetic
+    difference. :meth:`BaseEntity.__init__` reads the write's return
+    value to decide whether the row lives in L1 or in the in-memory
+    ``_changes`` buffer, and :meth:`BaseEntity.set_data` raises
+    ``RuntimeError`` on a refused write. a stub hard-coded to report
+    success cannot reach either branch, so both went unexercised by
+    every test built on it.
+
     :param primary_key_columns: declared pk column names in order; a
         1-tuple gives single-pk behaviour, longer gives composite
     :ptype primary_key_columns: tuple[str, ...]
+    :param has_l1: whether the stubbed collection has an L1 backend;
+        ``False`` refuses every cache read and write, as a collection
+        whose ``_l1`` is ``None`` does
+    :ptype has_l1: bool
     :return: the collection stub and the row dict backing it, so a test
-        may assert on cache contents directly
+        may assert on cache contents directly. with ``has_l1=False``
+        the dict stays empty, matching a collection that caches nothing
     :rtype: tuple[MagicMock, dict[tuple[Any, ...], dict[str, Any]]]
     """
     cache: dict[tuple[Any, ...], dict[str, Any]] = {}
@@ -95,26 +135,46 @@ def entity_collection_stub(
         return tuple(data.get(col) for col in primary_key_columns)
 
     def _write_to_cache(data: dict[str, Any]) -> bool:
+        if not has_l1:
+            return False
         cache[_key_from_row(data)] = dict(data)
         return True
 
     def _get_field(entity_id: Any, field: str) -> Any:
+        if not has_l1:
+            return MISSING
         row = cache.get(_normalize(entity_id, primary_key_columns))
         if row is None:
             return MISSING
         return row.get(field, MISSING)
 
     def _set_field(entity_id: Any, field: str, value: Any) -> bool:
+        # an upsert of a DETACHED copy, matching set_field_sync: the
+        # real one reads the row via select_by_id (which hands back a
+        # fresh dict), mutates that, and upserts it under whatever pk
+        # the mutated row now carries. mutating the cached row in place
+        # -- what this did before -- is indistinguishable for ordinary
+        # columns and WRONG for a pk column: the real write lands at the
+        # NEW key and leaves the old row sitting there, so the table
+        # ends up with two rows and the caller still addresses the old
+        # one. in-place mutation renamed the single row instead, which
+        # no backend does, and made that divergence unreproducible.
+        if not has_l1:
+            return False
         row = cache.get(_normalize(entity_id, primary_key_columns))
         if row is None:
             return False
-        row[field] = value
+        updated = dict(row)
+        updated[field] = value
+        cache[_key_from_row(updated)] = updated
         return True
 
     def _get_row(entity_id: Any) -> dict[str, Any] | None:
         # a COPY, matching SQLiteBackend.select_by_id. returning the live
         # dict let a caller mutate the "cache" through a read result,
         # which no real backend permits.
+        if not has_l1:
+            return None
         row = cache.get(_normalize(entity_id, primary_key_columns))
         return dict(row) if row is not None else None
 

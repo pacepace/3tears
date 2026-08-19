@@ -32,7 +32,7 @@ from threetears.agent.acl import (
     authorize_from_claims,
 )
 
-from tests.unit._fake_loaders import FakeStore
+from ._fake_loaders import FakeStore
 
 
 @dataclass

@@ -357,6 +357,104 @@ packages (bumped in lock-step).
   the identical actions on the identical subject with `tool_namespaces` supplied
   and the message genuinely arrives, so the credential is the only variable.
 
+- `core`: **`entity_collection_stub` told two lies about the collection it
+  stands in for, and each one made a real behaviour untestable.** The shared
+  stub in `threetears.core.testing.entities` backs entity unit tests across six
+  packages; where it disagrees with `BaseCollection`, every test built on it
+  agrees with the stub and none of them notices.
+
+  `write_to_cache_sync` returned `True` unconditionally. The real one returns
+  `False` when `self._l1 is None` (`collections/base.py:498`), and `BaseEntity`
+  reads that return value to make two decisions: `__init__` stores the row in
+  the in-memory `_changes` buffer instead of L1, and `set_data` raises
+  `RuntimeError`. Both branches exist precisely for the no-L1 case and neither
+  was reachable from a stub-based test. `entity_collection_stub(has_l1=False)`
+  now models a collection with no L1 backend — reads answer `MISSING` / `None`,
+  writes answer `False`, and the backing dict stays empty. The short-circuit is
+  checked BEFORE pk normalization, as the real accessors do, so a no-L1 stub
+  skips arity validation exactly as the real collection skips it.
+
+  `set_field_sync` mutated the cached row in place. The real one reads the row
+  through `select_by_id` — which hands back a DETACHED dict — mutates that, and
+  re-`upsert`s it under whatever primary key the mutated row now carries
+  (`collections/base.py:461-465`). For an ordinary column the two are
+  indistinguishable. For a PRIMARY KEY column they are not: the real write lands
+  at the NEW key and leaves the old row sitting there, so the table ends up with
+  TWO rows while the caller still addresses the old one. In-place mutation
+  renamed the single row instead, which no backend does, and made that
+  divergence impossible to reproduce in a unit test.
+
+  The stub is still a `MagicMock` and `assert_called_with` on its methods still
+  works — that property is load-bearing for its current callers, and is now
+  asserted rather than assumed. No existing test was modified, and the six
+  consuming packages (`core`, `datasources`, `agent/memory`, `agent/wake`,
+  `agent/skills`, `conversations`) pass in full. New parity tests run the SAME
+  assertions against the stub and against a real `BaseCollection`, so the two
+  cannot drift apart again silently.
+
+- `registry`: **`RbacEvaluatorAuthorizer`'s docstring described a grant the
+  evaluator refuses.** It told an admin to reach platform built-in tools by
+  binding a "default tool access" group to the caller's customer with a
+  `type_customer` assignment. `RoleAssignment.covers` admits a `type_customer`
+  scope only when `scope_customer_id == namespace.customer_id`
+  (`agent/acl/types.py:299-303`), and platform built-in tool namespaces are
+  written with `customer_id=NULL` (`agent/tools/server.py:1603-1605`), so an
+  assignment naming an actual customer never matches one. Following the
+  docstring produced a grant that silently authorized nothing.
+
+  The docstring now names the three shapes that DO cover such a namespace:
+  `scope=all`, a per-namespace assignment on the tool's own namespace id, and —
+  the counter-intuitive one — `type_customer` with `scope_namespace_type='tool'`
+  and `scope_customer_id` left NULL, where the NULL is what matches the row's
+  NULL `customer_id`. That last shape is a PLATFORM-scope assignment despite the
+  scope's name; `RoleAssignmentCollection` already derives `row_scope='platform'`
+  for exactly it (`agent/acl/collections.py:941-942`), and it grants the group
+  every `tool` namespace on the platform, so it is not the per-customer grant
+  the old text implied.
+
+  Documentation only — no authorization behaviour changed. The code was right
+  and internally consistent; only the instructions were wrong. The full coverage
+  matrix is now pinned by tests in `packages/agent/acl/tests/unit/`, including
+  the agent-spun contrast case where a real `customer_id` makes the ordinary
+  per-customer `type_customer` grant work, because a docstring cannot be checked
+  by the test suite.
+
+- **Test collection no longer depends on which package pytest reached first.**
+  `pytest packages/geo packages/agent/acl` produced 7 collection errors while
+  each package alone was clean — and the REVERSE argument order,
+  `pytest packages/agent/acl packages/geo`, was green. Pre-existing on
+  `develop`; not introduced by this branch.
+
+  Several packages ship a regular `tests` package (`agent/acl`, `geo`,
+  `datasources` and others each have `tests/__init__.py`). pytest walks up from
+  a test file only while `__init__.py` exists, so it stops at `packages/<pkg>`
+  and registers every one of those trees under the same top-level module name,
+  `tests`. `sys.modules` is first-writer-wins: the first package collected owns
+  `tests` and `tests.unit`, and every later package's helper import then
+  resolves inside the WINNER's directory and raises `ModuleNotFoundError`.
+
+  Relative imports are NOT a defence, which is what makes this worth fixing
+  rather than documenting. `datasources` already imports its helpers as
+  `from ._helpers.driver_shims import ...` and still fails
+  (`pytest packages/agent/acl packages/datasources` → 6 errors), because a
+  relative import resolves against the same shadowed `__package__`.
+
+  **CI was green by alphabetical accident.** Both CI and `scripts/test.sh` run
+  one cross-package invocation (`pytest packages/ tests/`), so they could see
+  this; `packages/agent/acl` simply sorts first in the `packages/` walk and won
+  the `tests` binding, which is precisely why `datasources` was safe there. A
+  package sorting ahead of it — `packages/admin` would — moves the breakage onto
+  acl and datasources at once, with nobody having touched either.
+
+  Fixed by setting `pythonpath = ["."]` in the root `[tool.pytest.ini_options]`,
+  which anchors every test module to a `packages.<pkg>.tests....` name and
+  removes the shared node entirely. The seven absolute `from tests.unit.
+  _fake_loaders import ...` statements in `agent/acl` become relative in the
+  same change — they are the only absolute `tests.`-rooted imports in the
+  workspace, and they must land together, since the `pythonpath` line alone
+  would break them. Verified order-independent across `geo` / `acl` /
+  `datasources` in both directions and all three together.
+
 ## v0.26.1 -- 2026-08-18
 
 The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the

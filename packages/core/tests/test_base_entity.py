@@ -356,3 +356,85 @@ class TestAddressingIdDerivation:
         entity = BaseEntity({"id": "row-1"}, is_new=True, collection=coll)
 
         assert entity.addressing_id == "row-1"
+
+
+class TestAttachedButWithoutL1:
+    """the branches that only run when a collection has no L1 backend.
+
+    an entity attached to a collection whose L1 is absent is NOT the
+    same as an entity with no collection at all: it still delegates
+    ``save`` / ``reload``, but every cache write is refused, so the
+    entity falls back to ``_changes`` for storage. these paths existed
+    unexercised because the shared stub always reported a successful
+    cache write; ``entity_collection_stub(has_l1=False)`` reaches them.
+    """
+
+    def test_init_falls_back_to_changes_when_l1_is_absent(self) -> None:
+        """a refused cache write moves the whole row into ``_changes``."""
+        coll, cache = entity_collection_stub(("id",), has_l1=False)
+        data = {"id": "e1", "name": "Bob", "score": 42}
+
+        entity = BaseEntity(data, is_new=True, collection=coll)
+
+        assert object.__getattribute__(entity, "_changes") == data
+        assert cache == {}
+
+    def test_reads_are_served_from_the_changes_fallback(self) -> None:
+        """attribute reads answer without ever consulting the absent L1."""
+        coll, _cache = entity_collection_stub(("id",), has_l1=False)
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=False, collection=coll)
+
+        assert entity.name == "Bob"
+        coll.get_field_sync.assert_not_called()
+
+    def test_writes_survive_a_refused_cache_write(self) -> None:
+        """``set_field_sync`` returning false still leaves the value readable."""
+        coll, cache = entity_collection_stub(("id",), has_l1=False)
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=False, collection=coll)
+
+        entity.name = "Robert"
+
+        assert coll.set_field_sync("e1", "name", "Robert") is False
+        assert entity.name == "Robert"
+        assert cache == {}
+
+    def test_to_dict_uses_the_changes_fallback(self) -> None:
+        """export works with no L1 row to read back."""
+        coll, _cache = entity_collection_stub(("id",), has_l1=False)
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=True, collection=coll)
+
+        assert entity.to_dict() == {"id": "e1", "name": "Bob"}
+        coll.get_row_sync.assert_called_with("e1")
+
+    def test_to_dict_raises_once_the_fallback_is_cleared(self) -> None:
+        """with L1 absent AND ``_changes`` emptied there is nowhere left to read.
+
+        ``mark_clean`` discards the fallback copy, so the entity holds
+        no data at all -- the invariant "entity data must be in L1"
+        is broken and ``to_dict`` says so rather than returning ``{}``.
+        """
+        coll, _cache = entity_collection_stub(("id",), has_l1=False)
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=True, collection=coll)
+
+        entity.mark_clean()
+
+        with pytest.raises(RuntimeError, match="L1 cache miss in to_dict"):
+            entity.to_dict()
+
+    def test_set_data_raises_when_the_cache_write_is_refused(self) -> None:
+        """``set_data`` has no fallback -- a refused write is fatal."""
+        coll, _cache = entity_collection_stub(("id",), has_l1=False)
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=True, collection=coll)
+
+        with pytest.raises(RuntimeError, match="L1 cache write failed in set_data"):
+            entity.set_data({"id": "e1", "name": "Robert"})
+
+    def test_set_data_succeeds_when_l1_is_present(self) -> None:
+        """the same call on an L1-backed stub is the contrasting case."""
+        coll, cache = entity_collection_stub(("id",))
+        entity = BaseEntity({"id": "e1", "name": "Bob"}, is_new=True, collection=coll)
+
+        entity.set_data({"id": "e1", "name": "Robert"})
+
+        assert cache[("e1",)]["name"] == "Robert"
+        assert entity.is_dirty is False
