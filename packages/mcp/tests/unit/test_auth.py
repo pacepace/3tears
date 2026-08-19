@@ -611,6 +611,15 @@ class TestStopDeregistersFromTheListener:
         listener.deregister.assert_called_once()
         assert listener.deregister.call_args.args[0] == Subjects.mcp_rbac_epoch()
 
+
+class TestStopIsReversible:
+    """A stopped authorizer must be startable again.
+
+    Separate from the reset-deregistration class above: that one is about a
+    shut-down consumer still being called, this one is about it being unable to
+    come back. They share a method and nothing else.
+    """
+
     @pytest.mark.asyncio
     async def test_stop_is_reversible_without_epoch_mode(self) -> None:
         """A single-process authorizer must be startable again after stop.

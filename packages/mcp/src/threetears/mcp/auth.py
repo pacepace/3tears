@@ -534,13 +534,17 @@ class LocalGrantAuthorizer:
         self._started = False
         if self._catchup_task is None:
             return
-        self._catchup_task.cancel()
+        # the handle is released BEFORE the await. clearing it afterwards means
+        # a raise during teardown leaves a cancelled task attached to an object
+        # that already reads as not-started, and the next start() overwrites it.
+        task = self._catchup_task
+        self._catchup_task = None
+        task.cancel()
         try:
-            await self._catchup_task
+            await task
         # NOSILENT: CancelledError here IS the cancellation we just requested
         except asyncio.CancelledError:
             pass
-        self._catchup_task = None
         if self._epoch_listener is not None:
             # the listener's registration outlives the task otherwise, so a
             # later reset would call back into a stopped authorizer and ask it

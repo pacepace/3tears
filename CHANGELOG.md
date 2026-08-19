@@ -125,6 +125,14 @@ packages (bumped in lock-step).
   path that repairs by pulling through, but read non-expiring, so it served a
   stale row indefinitely while `get()` beside it refreshed.
 
+- `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
+  below an early return taken whenever there was no catch-up task -- which is
+  every single-process authorizer, since that task exists only in epoch mode --
+  so a stopped authorizer stayed marked started and `start()`'s double-start
+  guard refused to bring it back up. It also now releases the task handle
+  before awaiting it, so a raise during teardown cannot strand a cancelled
+  task on an object that already reads as not-started.
+
 - `epoch`: `EpochListener.subscribe` records its registration only after the
   NATS subscribe succeeds. Registering first left an entry behind on failure,
   so a retry double-registered and every later reset fired that consumer twice.
