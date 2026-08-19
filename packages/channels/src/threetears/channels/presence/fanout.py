@@ -169,6 +169,30 @@ class RoomFanout:
         like every other pod. fanning here too would double-deliver to the
         sender pod's local members.
 
+        **a failed publish propagates, and that is deliberate.** this package
+        is not where the decision about a lost room frame is made: one caller
+        wants a fanout failure kept distinct from the author's own socket
+        dying, another falls back to local-only delivery with a warning, and
+        both of those are correct where they are. what this method owes them
+        is a failure they can tell apart.
+
+        :class:`~threetears.nats.errors.PayloadTooLargeError` is the one they
+        must not treat as transient. every other publish failure is a broker
+        or connection problem that a later attempt may well survive; that one
+        says the frame we built is bigger than this broker accepts, and
+        **retrying it is an infinite loop that logs** -- nothing about the next
+        attempt is smaller. it is also silent by construction: the publishing
+        pod's own sockets already hold the content, so the person who caused
+        the frame sees everything while the room sees nothing, and a
+        single-pod test never reaches the publish at all. a caller catching
+        here branches on it, or reports a room that has silently stopped
+        receiving. :attr:`threetears.nats.NatsClient.max_payload` is how a
+        frame builder asks *before* building.
+
+        per-socket delivery in :meth:`_deliver` is best-effort by design and
+        stays that way -- that is a different failure with a different
+        correctness story.
+
         :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
         :ptype room_id: str
         :param payload: opaque message body delivered verbatim to each
@@ -179,6 +203,9 @@ class RoomFanout:
         :ptype exclude: str | None
         :return: nothing
         :rtype: None
+        :raises threetears.nats.errors.PublishError: the frame did not reach
+            the broker; :class:`~threetears.nats.errors.PayloadTooLargeError`
+            when it was refused for size
         """
         frame = RoomFrame(
             room_id=room_id,
