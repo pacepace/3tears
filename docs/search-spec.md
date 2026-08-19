@@ -1497,14 +1497,20 @@ not a requirement.
 **discodon** -- embedded mode (it is pre-NATS-convergence; check 10 says the
 switch later costs no consumer rewrite).
 1. Any generalization it needs lands **upstream first** (convergence
-   principle 4) -- e.g. gaps found while porting its budget semantics onto
-   `BudgetPort`.
+   principle 4). *(The example that stood here -- gaps found while porting
+   its budget semantics onto `BudgetPort` -- is withdrawn with step 4.)*
 2. `git checkout -b feature/new-search`; pin the family version.
 3. Collapse `tools/web_search_tool.py` and `tools/research/web_search.py`
    onto the leaf: persona path = Call + prose Bind; research path = Call +
    Aggregate + both bindings (prose and corpus).
-4. Budget hooks move onto `BudgetPort` -- the 2× advanced under-billing dies
-   (SR-E4); timeouts get wired to config (SR-G1 defect 3).
+4. ***Withdrawn 2026-08-19, same ruling as step 6:*** budget hooks do **not**
+   move onto `BudgetPort`. What survives of this step is the pair of defects
+   it named, which were never about the port: the 2× advanced under-billing
+   dies (SR-E4), and timeouts get wired to config (SR-G1 defect 3). SR-E4's
+   fix is R5 of
+   [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md)
+   -- the caller reports what it consumed, so the code that knows the depth is
+   the code that counts the credits.
 5. Search-internal replay lands where the coarse seams cannot reach:
    research-*pipeline* evals (grounding gate and cull re-run against a
    frozen web), through a `RecordingStore` over its existing store.

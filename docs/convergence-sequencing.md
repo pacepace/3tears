@@ -405,9 +405,13 @@ will, and that build waits on discodon.
 - **metallm:** `feature/new-search` — pin the released family, delete both
   side-steps (check 1).
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing)
-- **discodon:** `feature/new-search` — collapse its two implementations, wire
-  the eval cost cap onto `BudgetPort` (check 3, D27), adopt pipeline-eval
-  replay over its own store, re-capture web_search cassettes.
+- **discodon:** `feature/new-search` — collapse its two implementations,
+  ~~wire the eval cost cap onto `BudgetPort`~~ (**withdrawn 2026-08-19** — the
+  eval budget contract is shaped from what discodon runs; check 3's spend half
+  is R5 of
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md)),
+  adopt pipeline-eval replay over its own store, re-capture web_search
+  cassettes.
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing)
 - **samsung (non-gating):** build phase-2 image search on the leaf when that
   work schedules (checks 2, 5, 9).
@@ -556,9 +560,11 @@ is delivered; the remaining §4 workstreams sequence on their own.
 
 Phase 1 front-loads everything that is independent *and* everything later
 phases are elicited against: the storage port and budget shapes must exist
-before search's replay record schema and `BudgetPort` wiring are cut against
-them, and 3.14 must land before discodon can consume anything the family
-ships. Phases 2–3 are single-repo and mechanical. Phase 4 deliberately
+before search's replay record schema is cut against them, and 3.14 must land
+before discodon can consume anything the family ships. (This sentence used to
+name `BudgetPort` wiring as the other thing elicited against those shapes;
+that wiring was withdrawn on 2026-08-19 and the eval budget contract is shaped
+from discodon's own instead.) Phases 2–3 are single-repo and mechanical. Phase 4 deliberately
 precedes the extraction so the eval seams (budget, replay identity) are
 extracted in their *post-migration* shape — extract-don't-invent applied to
 sequencing: lift proven code, never code that is about to change. Phase 6
