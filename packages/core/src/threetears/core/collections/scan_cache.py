@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Column, MetaData, String, Table, Text
 from threetears.observe import get_logger
 
+from threetears.core.cache.base import _entry_is_fresh
+
 if TYPE_CHECKING:
     from threetears.core.cache.base import L1Backend
 
@@ -129,8 +131,10 @@ class ScanCache:
         if self._l1 is not None:
             row = self._l1.select_by_id("collection_scan_cache", key.as_string(), "key")
             if row is not None:
+                # the column is NOT NULL and written as text, so the parse
+                # always succeeds and the shared predicate never sees None.
                 stored_at = float(row["stored_at_monotonic"])
-                if now_monotonic - stored_at <= self._ttl_seconds:
+                if _entry_is_fresh(stored_at, now_monotonic=now_monotonic, max_age_seconds=self._ttl_seconds):
                     hit = json.loads(row["payload"])
                 else:
                     # expired: drop it now rather than leave a tombstone that

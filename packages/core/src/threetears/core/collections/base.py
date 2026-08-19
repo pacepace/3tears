@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVa
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
@@ -437,7 +439,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return MISSING
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return MISSING
         return row.get(field, MISSING)
@@ -458,7 +460,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return False
         row[field] = value
@@ -474,9 +476,79 @@ class BaseCollection(ABC, Generic[EntityT]):
             is not cached
         :rtype: dict[str, Any] | None
         """
+        return self._select_from_l1(entity_id)
+
+    @property
+    def l1_max_age_seconds(self) -> float | None:
+        """How long an L1 row cached from a lower tier may be served, or ``None``.
+
+        **``None`` unless a collection opts in, and structurally ``None`` when
+        there is no L3.** The second half is the load-bearing one. A collection
+        with no L3 pool does not fall back to a slower tier on a miss: the
+        L1+L2-only collections override :meth:`get` to return ``None`` on a
+        total miss, so an expired row does not become a pull-through, it becomes
+        "this row does not exist". Downstream, a compare-and-set that reads
+        absence writes a fresh row over a live one -- a presence room with ten
+        members replaced by a room with one, and no error anywhere. Expiry is a
+        cache mechanism, and a tier that is the source of truth is not a cache.
+
+        :return: the configured bound, or ``None`` when expiry is off
+        :rtype: float | None
+        """
+        if self.l3_pool is None:
+            return None
+        return self._registry.get_l1_max_age(self.table_name)
+
+    def _select_from_l1(self, entity_id: Any, *, expiring: bool = False) -> dict[str, Any] | None:
+        """The one L1 read, with expiry applied only where a miss is repairable.
+
+        Every reader **in this class** routes through here rather than calling
+        the backend itself, so the policy has one home. But the callers do not
+        share a contract, and that is why ``expiring`` is a parameter rather
+        than always-on:
+
+        - **Repairing callers** (:meth:`ensure`, :meth:`_ensure_in_l1`) treat a
+          miss as "go to the lower tier", so expiring a row makes it reload.
+          That is the whole mechanism, and they pass ``expiring=True``.
+        - **Reporting callers** (:meth:`get_row_sync`, :meth:`get_field_sync`,
+          :meth:`has_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
+          "not cached" and return it to a caller that will not fall back.
+          Expiring for them turns a stale row into a *deleted* one and reports
+          absence, which is worse than the staleness it was bounding:
+          ``__setitem__`` reads a field write back through
+          :meth:`get_row_sync` and skips propagation when it sees ``None``, so
+          the write is silently dropped, and an entity handle held across the
+          bound starts answering ``None`` for fields it has.
+
+        The distinction is a miss's *meaning*, not its value. Expiry converts a
+        stale hit into a miss, which is only an improvement where a miss is
+        cheap and self-correcting.
+
+        The class scoping is deliberate. A subclass in another package can
+        still reach ``self._l1`` directly, and one does --
+        ``ContextItemCollection.touch`` reads L1 to stamp ``date_accessed``.
+        That read is outside the bound, which is harmless there because it
+        neither serves the row to a caller nor clears the stamp on write-back,
+        but it is not covered by this funnel and should not be assumed to be.
+
+        :param entity_id: primary-key value identifying the row
+        :ptype entity_id: Any
+        :param expiring: whether to apply the collection's max-age bound; only
+            a caller that repairs a miss by pulling through may pass ``True``
+        :ptype expiring: bool
+        :return: row dict, or ``None`` when L1 is absent, the row is not
+            cached, or (when ``expiring``) the row was past its max age
+        :rtype: dict[str, Any] | None
+        """
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
+        row: dict[str, Any] | None = self._l1.select_by_id(
+            self.table_name,
+            self.normalize_pk(entity_id),
+            self.primary_key_columns,
+            max_age_seconds=self.l1_max_age_seconds if expiring else None,
+        )
+        return row
 
     def write_to_cache_sync(
         self,
@@ -511,7 +583,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         return row is not None
 
     def evict_from_cache_sync(self, entity_id: Any) -> bool:
@@ -724,10 +796,9 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         Returns the row data if found, None if not found in any tier.
         """
-        if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-            if row is not None:
-                return row  # type: ignore[no-any-return]
+        row = self._select_from_l1(entity_id, expiring=True)
+        if row is not None:
+            return row
         return sync_await(self._pull_through(entity_id))
 
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
@@ -735,15 +806,30 @@ class BaseCollection(ABC, Generic[EntityT]):
         l2_data = await self._get_from_l2(entity_id)
         if l2_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(l2_data), self.primary_key_columns)
             return l2_data
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
             return pg_data
         return None
+
+    @staticmethod
+    def _stamped(data: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of ``data`` carrying the cache-age stamp for this instant.
+
+        Stamped wherever a row arrives from a LOWER tier -- both pull-through
+        sites and :meth:`reload_entity` -- and nowhere else. The stamp records
+        provenance, not local activity: stamping on every write would let
+        ``set_field_sync`` renew a stale row's lifetime by editing one field,
+        which makes exactly the rows this bounds immortal.
+
+        A copy, because the caller's dict is returned to the caller and becomes
+        entity data. The stamp is storage bookkeeping and must not ride along.
+        """
+        return {**data, _CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
         """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found."""
@@ -953,14 +1039,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             access is guaranteed to hit L1 (when L1 is available).
         :rtype: dict[str, Any] | None
         """
-        if self._l1 is not None:
-            row: dict[str, Any] | None = self._l1.select_by_id(
-                self.table_name,
-                self.normalize_pk(entity_id),
-                self.primary_key_columns,
-            )
-            if row is not None:
-                return row
+        row = self._select_from_l1(entity_id, expiring=True)
+        if row is not None:
+            return row
         data = await self._pull_through(entity_id)
         return data
 
@@ -1110,7 +1191,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.set_data(data)
         entity.original_date_updated = data.get("date_updated")
         if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            # Stamped: this row came from L3, so its provenance is a lower tier
+            # even though no pull-through ran. Leaving it unstamped would make a
+            # freshly-reloaded row read as locally authored, and locally
+            # authored rows never expire.
+            self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
         await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 
