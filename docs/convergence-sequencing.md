@@ -509,6 +509,13 @@ discodon's NATS convergence and sits outside this sequence.)
 - **discodon:** consume its own extraction — first consumer, green before
   anyone else binds.
   → [`family-convergence.md` §5 (discodon)](family-convergence.md#5-implications-per-family-member)
+- **discodon (first, and it is the only thing this phase currently waits on):**
+  put the package boundary inside its own tree — the eval modules destined for
+  `3tears-eval-contracts` stop reaching into the host, asserted by a test.
+  Requirements, measured and stated as properties, at
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md).
+  Nothing moves out of discodon and no package is published; the lift becomes
+  mechanical once it holds.
 
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
