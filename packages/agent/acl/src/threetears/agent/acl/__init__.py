@@ -23,6 +23,22 @@ public surface — evaluation:
   :class:`LimitingSide`.
 - i/o protocols :class:`MembershipLoader` and :class:`GrantLoader`.
 
+public surface — permission catalog (write path, not evaluation):
+
+- :class:`PermissionCatalog` — the vocabulary of
+  ``(resource_type, action)`` pairs applications have declared, built
+  from :class:`ResourceTypeDescriptor` and :class:`ActionDescriptor`
+  entries carrying their declaring application and their operator-facing
+  labels.
+- :func:`validate_permissions` — report every pair in a
+  ``{resource_type: [action]}`` map that no entry declares;
+  :func:`enforce_declared_permissions` is the raising form, and
+  :class:`CatalogViolation` / :class:`CatalogViolationKind` /
+  :class:`UndeclaredPermission` carry the detail.
+
+nothing in that group participates in evaluation: a role evaluates
+identically whether or not a catalog exists.
+
 public surface — persistence:
 
 - collections :class:`GroupCollection`,
@@ -99,6 +115,16 @@ from threetears.agent.acl.cache import (
     GroupNamespaceKey,
     GroupTypeCustomerEntry,
     GroupTypeCustomerKey,
+)
+from threetears.agent.acl.catalog import (
+    ActionDescriptor,
+    CatalogViolation,
+    CatalogViolationKind,
+    PermissionCatalog,
+    ResourceTypeDescriptor,
+    UndeclaredPermission,
+    enforce_declared_permissions,
+    validate_permissions,
 )
 from threetears.agent.acl.collections import (
     GroupCollection,
@@ -190,6 +216,7 @@ __all__ = [
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
+    "ActionDescriptor",
     "ActorType",
     "AclInvalidationPublisher",
     "AclInvalidationSubscriber",
@@ -198,6 +225,8 @@ __all__ = [
     "publish_role_invalidation",
     "subscribe_acl_invalidation",
     "AssignmentInvalidatePayload",
+    "CatalogViolation",
+    "CatalogViolationKind",
     "ClaimsForAuthorization",
     "CollectionGrantLoader",
     "CollectionMembershipLoader",
@@ -227,6 +256,7 @@ __all__ = [
     "NamespaceCollection",
     "NamespaceEntity",
     "NamespaceNotFound",
+    "PermissionCatalog",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",
     "PLATFORM_BUILTIN_TOOL_USER_ROLE_DESCRIPTION",
     "PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME",
@@ -238,6 +268,7 @@ __all__ = [
     "RbacAuditAction",
     "RbacAuditResourceType",
     "RbacEventType",
+    "ResourceTypeDescriptor",
     "Role",
     "RoleAssignment",
     "RoleAssignmentCollection",
@@ -247,6 +278,7 @@ __all__ = [
     "RoleInvalidatePayload",
     "ScopeType",
     "Trail",
+    "UndeclaredPermission",
     "WILDCARD_RESOURCE_TYPE",
     "WRITE_FILE_MATCHING_PREFIX",
     "authorize",
@@ -256,9 +288,11 @@ __all__ = [
     "caller_visible_customer_clause",
     "caller_visible_customers_query",
     "customer_scope_visibility_clause",
+    "enforce_declared_permissions",
     "ensure_platform_builtin_tool_user_role",
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",
     "three_scope_visibility_clause",
+    "validate_permissions",
 ]

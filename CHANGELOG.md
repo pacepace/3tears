@@ -545,6 +545,67 @@ packages (bumped in lock-step).
   it parametrizes over every `.py` file in the repo, so deleting a file deletes
   a case.
 
+### Added
+
+- `agent-acl`: **`threetears.agent.acl.catalog` — a declarable vocabulary for
+  `Role.permissions`.** `Role.permissions` is free text. A role may name any
+  resource type and any action, both are compared by string equality at
+  evaluation time, and a pair nothing serves does not fail — it resolves to an
+  empty action set and the role grants silence. The role exists, it reads as
+  granted, and it does nothing.
+
+  `PermissionCatalog` is an application's statement of which pairs mean
+  something, built from `ResourceTypeDescriptor` entries that each carry a
+  declaring application, an operator-facing label, and a closed tuple of
+  `ActionDescriptor`s. `validate_permissions(permissions, catalog)` returns
+  every undeclared pair as a `CatalogViolation`; `enforce_declared_permissions`
+  is the raising form and carries the same detail on `UndeclaredPermission`.
+
+  Labels ship with the declaration rather than being retrofitted, because the
+  consumer is a role builder rendering `survey_version.field` to a researcher,
+  and a display string invented separately by each surface is a different string
+  on each surface.
+
+  **The resource type is a namespace type, not a free label**, and everything
+  else follows from that. Evaluation is namespace-centric end to end — the
+  evaluator resolves `role.actions_for(namespace.namespace_type)` — so a
+  declared resource type that `platform.namespaces.namespace_type` does not
+  admit has nothing to bind to, and a role naming it can never be reached.
+
+  That is also why the declaring application is a FIELD on the descriptor rather
+  than a prefix on the resource type. An application-prefixed wire form would
+  have to be the bucket key to have any effect, and the bucket key is what the
+  evaluator looks up by namespace type; a `survey/report` bucket would need a
+  `survey/report`-type namespace row, which the platform's
+  `namespaces_namespace_type_ck` CHECK does not admit and no product can widen
+  from its own repo. Two applications claiming one resource type is therefore
+  REFUSED at catalog construction, by name, rather than disambiguated: at
+  evaluation time there is no application dimension available to tell them
+  apart, so merging their action sets would let one application's role grant the
+  other's action on the same rows.
+
+  The wildcard bucket is skipped by an explicit branch rather than by failing to
+  find an entry for `"*"`. `{"*": ["read"]}` is the shipped `Reader` shape, it
+  names no resource type, and there is nothing to check it against;
+  `ResourceTypeDescriptor` separately refuses `"*"` as a declared type, so the
+  two cases cannot converge. Parameterized actions — the
+  `read_file_matching:<glob>` shape the evaluator already ships — are declared
+  once as a stem and match any argument.
+
+  Nothing here participates in evaluation. It is a write-path and
+  authoring-path concern; a role evaluates identically whether or not a catalog
+  exists.
+
+  Whether a declared resource type is a namespace type the platform actually
+  admits is deliberately NOT checked here. The authoritative closed set is the
+  `namespaces_namespace_type_ck` CHECK in the deploying hub. The nearest thing
+  on this side, `threetears.core.namespaces.PLURAL_PREFIX_BY_NAMESPACE_TYPE`,
+  already disagrees with it in both directions — it carries `hitl`, which no
+  CHECK admits, and omits `intention` and `identity`, which ship as role buckets
+  in `threetears.agent.intention` and `threetears.agent.identity`. Validating
+  against a list known to be wrong would refuse correct declarations and admit
+  incorrect ones, so that check belongs where the CHECK is.
+
 ## v0.26.1 -- 2026-08-18
 
 The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the
