@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.agent.tools._coercion import normalize_kwargs
+from threetears.agent.tools.http_operation import RestAffordance
 from threetears.observe import get_logger
 
 __all__ = [
@@ -110,7 +111,7 @@ class TearsTool(ABC):
 
     Face flags decouple a capability's *reach* -- the surfaces through
     which it can be called -- from its declaration. A tool may expose
-    any combination of the three reach faces:
+    any combination of the four reach faces:
 
     - ``face_platform_tool`` (default ``True``): reachable over the
       internal NATS mesh as a native platform tool (the historical
@@ -120,6 +121,15 @@ class TearsTool(ABC):
       API operation.
     - ``face_mcp`` (default ``False``): reachable as an external MCP
       tool.
+    - ``face_rest`` (default ``None``): reachable as an external REST
+      resource. The odd one out, and NOT a boolean: the other three
+      have a derived address (a mesh subject, an API operation name,
+      an MCP tool name all fall out of ``mcp_name()``), while a REST
+      resource needs a method, a path template, a binding from URL
+      positions to schema properties, and a cacheability posture.
+      Those live on a
+      :class:`~threetears.agent.tools.http_operation.RestAffordance`,
+      and ``None`` is the off state.
 
     The face flags govern *reach* only -- ACL still governs
     *authorization*. Like the eligibility flags, subclasses set them as
@@ -141,6 +151,15 @@ class TearsTool(ABC):
         API operation. Defaults to ``False``.
     :cvar face_mcp: whether this tool is reachable as an external MCP
         tool. Defaults to ``False``.
+    :cvar face_rest: how this tool is addressed when served as an
+        external REST resource, or ``None`` when it is not. Defaults to
+        ``None`` -- every face is surface to defend, so REST is off
+        until authored. Intra-tool coherence (method vocabulary, cache
+        posture) is checked when the declaration is constructed, i.e.
+        at class-definition time; the half that needs this tool's own
+        ``mcp_schema()`` is checked at registration. NOTHING serves it
+        yet: the declaration rides outward on the registration manifest
+        and stops there.
     :cvar requires_confirmation: whether a call to this tool must be
         gated behind a human-in-the-loop approval (the agent pauses via
         a LangGraph ``interrupt`` and only runs the tool after an
@@ -156,6 +175,7 @@ class TearsTool(ABC):
     face_platform_tool: bool = True
     face_api: bool = False
     face_mcp: bool = False
+    face_rest: RestAffordance | None = None
     requires_confirmation: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

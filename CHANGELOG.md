@@ -547,6 +547,86 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `agent-tools`, `core`: **a tool may declare a REST address — and nothing
+  serves it yet.** `TearsTool` gains a fourth reach face, `face_rest`, beside
+  `face_platform_tool` / `face_api` / `face_mcp`. It ships INERT on purpose: the
+  contract lands and is released before anything consumes it, so the serving
+  side is built against a published declaration rather than a moving one.
+
+  It is the one face that cannot be a boolean. The other three have a derived
+  address — a mesh subject, an API operation, an MCP tool name all fall out of
+  `mcp_name()` — while a REST resource needs a method, a path template, a
+  binding from URL positions to schema properties, and a cacheability posture.
+  Those live on `threetears.agent.tools.http_operation.RestAffordance`, and
+  `None` is the off state: every face is surface to defend.
+
+  **It is not a new descriptor type.** The outbound half of this exact idea
+  already shipped one directory down: `HttpOperationDescriptor` derives its
+  `{name}` placeholders from its own path template. Both now inherit
+  `PathTemplateBinding`, which owns the template, the placeholder derivation and
+  the `QUERY_METHODS` split, so the two directions cannot disagree about how a
+  template is read. What inbound deliberately does NOT inherit is as
+  load-bearing: no `credentials_ref` (inbound is authorized per caller, not by
+  an upstream secret), no `param_schema` (the tool's own `mcp_schema()` is the
+  one place it exists), and a CLOSED method vocabulary where outbound stays
+  permissive — an imported third-party spec may legitimately carry `PROPFIND`;
+  an authored declaration carrying `BREW` is a typo.
+
+  `HttpMethod` covers all seven verbs, HEAD and OPTIONS included. A five-verb
+  list would have left half of `QUERY_METHODS` — `{GET, DELETE, HEAD, OPTIONS}`
+  — undeclarable while the binding rule still branched on it.
+
+  **Binding covers path AND query, because a GET has nowhere else to put its
+  arguments.** `RestAffordance.bind()` partitions the tool's declared properties
+  into path (the template placeholders), then query for a `QUERY_METHODS` verb
+  and body otherwise. Header and cookie locations are unrepresented inbound:
+  those carry the platform's concerns, not a tool's arguments.
+
+  **Cacheability is derived and narrowable, never declared outright.**
+  `CacheClass` moves out of `threetears.datasources.geo_config` (where it was
+  spelled `CacheClassConfig` and served map tiles only) into
+  `threetears.core.http_cache`, because a second consumer arrived and neither
+  package may import the other. `threetears.datasources` re-exports the name it
+  has always used, so no geo declaration changes — one enum object, two names,
+  not two vocabularies. `narrow_cache_class()` is the rule as a function: a
+  declaration may narrow what the resolved resource already is and is clamped if
+  it tries to widen. A tool REST read is per-caller authorized by construction,
+  so a class attribute that could say "cacheable" outright is exactly the
+  widening that leaks to an edge. `cache_version_param` must name a path
+  placeholder — an HTTP shared cache keys on URL and cannot key on a bearer
+  token, so a version outside the URL keys nothing, and a tenant-varying
+  resource is either origin-only or carries its tenant in the path.
+
+  **What is validated, and what is not.** Intra-tool coherence fails early: the
+  method vocabulary and the cache posture at class-definition time (the
+  declaration is a class attribute, so constructing it IS defining the class),
+  and the path template against the tool's own `mcp_schema()` at registration,
+  with a message naming the offending property and the tool. Inter-tool
+  coherence — template collision across pods, prefix ownership within a
+  customer, whether a resolved tool has an ingress principal — needs the full
+  `platform.namespaces` view and belongs to the serving side, which refuses on
+  collision.
+
+  The existing registration manifest carries it; there is no second channel.
+  `ToolManifestEntry.face_rest` holds the declaration and deliberately has no
+  boolean twin — the declaration's presence IS the flag. The platform-scope
+  `v003` migration adds `face_rest BOOLEAN NOT NULL DEFAULT FALSE` beside the
+  other three face columns plus a nullable `face_rest_declaration JSONB`, both
+  idempotent. They ship here rather than in a consumer because splitting one
+  column family across two repositories puts half of it on a second release
+  train.
+
+  **Known open gap, assigned:** `_coercion` engages only for declared types
+  `object` and `array`, and `run` performs no schema validation, so a tool
+  declaring `{"page": {"type": "integer"}}` would receive `"5"` over REST and
+  `5` over a JSON body — a per-face divergence inside one tool. Closing it by
+  widening `_coercion` to scalars would change the arguments EVERY existing tool
+  receives on EVERY existing face, which an inert declaration-only change must
+  not carry. The serving shard parses path and query segments against the
+  declared schema before dispatch instead; `bind()` gives it the property names
+  and `mcp_schema().input_schema` the types. This is recorded in
+  `http_operation`'s module docstring so it cannot be lost.
+
 - `channels`: **`threetears.channels.mail` — outbound email, and the delivery
   reports that come back.** The platform had no mail at all: no SMTP, no
   provider API, nothing in `packages/*`. The `channels` protocol is not an

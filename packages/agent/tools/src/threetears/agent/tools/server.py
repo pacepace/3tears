@@ -51,6 +51,7 @@ from threetears.agent.tools.config import (
 )
 from threetears.agent.tools import nats_reauth
 from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
+from threetears.agent.tools.http_operation import RestAffordance
 from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
@@ -322,6 +323,14 @@ class ToolManifestEntry(BaseModel):
         tool; mirrors :attr:`TearsTool.face_mcp`. Defaults to
         ``False``.
     :ptype face_mcp: bool
+    :param face_rest: the tool's authored REST address, or ``None``
+        when it declares no REST face; mirrors
+        :attr:`TearsTool.face_rest`. Deliberately NOT accompanied by a
+        boolean twin: the declaration's presence IS the flag, and a
+        separate ``face_rest: bool`` beside it would be a second place
+        to say the same thing. The consumer that persists a boolean
+        column derives it from ``face_rest is not None``.
+    :ptype face_rest: RestAffordance | None
     :param requires_confirmation: whether a call to the tool must be
         gated behind human-in-the-loop approval; mirrors
         :attr:`TearsTool.requires_confirmation`. Defaults to ``False``
@@ -339,6 +348,7 @@ class ToolManifestEntry(BaseModel):
     face_platform_tool: bool = True
     face_api: bool = False
     face_mcp: bool = False
+    face_rest: RestAffordance | None = None
     requires_confirmation: bool = False
 
 
@@ -1184,9 +1194,29 @@ class ToolServer:
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
 
+        a tool that declares a REST face has its declaration checked against
+        its own ``mcp_schema()`` here -- the half of intra-tool coherence that
+        needs the instance. an incoherent declaration is refused at
+        registration rather than discovered on the first inbound request; the
+        method vocabulary and cache posture were already checked when the
+        declaration itself was constructed, at class-definition time.
+
+        INTER-tool coherence is NOT checked here and cannot be: template
+        collision across pods, prefix ownership within a customer, and whether
+        the resolved tool has an ingress principal all need the platform
+        namespace view that this pod does not hold.
+
         :param tool: TearsTool instance to register
         :ptype tool: TearsTool
+        :raises RestAffordanceError: when the tool's REST declaration names a
+            path placeholder its own input schema does not declare
         """
+        affordance = getattr(tool, "face_rest", None)
+        if affordance is not None:
+            affordance.validate_for_schema(
+                tool.mcp_schema().input_schema,
+                tool_name=tool.mcp_name(),
+            )
         key = f"{tool.mcp_name()}@{tool.mcp_version()}"
         self._tools[key] = tool
         log.info(
@@ -1756,6 +1786,7 @@ class ToolServer:
             face_platform_tool = bool(getattr(tool, "face_platform_tool", True))
             face_api = bool(getattr(tool, "face_api", False))
             face_mcp = bool(getattr(tool, "face_mcp", False))
+            face_rest = getattr(tool, "face_rest", None)
             requires_confirmation = bool(getattr(tool, "requires_confirmation", False))
             if not tool_eligible and not skill_eligible:
                 # registering a tool with both flags off makes it
@@ -1788,6 +1819,7 @@ class ToolServer:
                 face_platform_tool=face_platform_tool,
                 face_api=face_api,
                 face_mcp=face_mcp,
+                face_rest=face_rest,
                 requires_confirmation=requires_confirmation,
             )
             tools_list.append(entry)
