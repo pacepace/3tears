@@ -29,7 +29,21 @@ against a real broker with one line, `await js.delete_stream(f"KV_{bucket.name}"
 
 ## Detection, in two independent halves
 
-### 1. The in-process signal (free, and covers the pod that caused it)
+### 1. The in-process signal -- DESCOPED, deliberately
+
+**Not built.** The identity key below is sufficient for correctness, and this half is an
+optimisation on detection LATENCY for exactly one pod: the one whose own operation triggered
+the reopen. That pod learns from the identity check on its next catch-up pass like everyone
+else, so nothing is permanently missed.
+
+What it costs to skip: that pod's own bump broadcasts the new counter's first value, every
+peer drops it as stale, and the correction waits for a catch-up pass rather than arriving
+immediately. Acceptable because the pass is the mechanism the whole design already relies on
+for a dropped broadcast.
+
+Recorded rather than silently omitted because the shape below reads as two halves, and a
+reader finding one implemented would otherwise assume the other was forgotten. If detection
+latency ever matters, this is where it comes from, and the design is:
 
 `_run_with_reopen` (`kv.py:238-257`) is the single funnel every KV op passes through
 (`get` `:298`, `get_entry` `:316`, `put` `:338`, `create` `:355`, `update` `:386`,

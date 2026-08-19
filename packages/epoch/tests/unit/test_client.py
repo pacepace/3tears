@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch.client import _KV_KEY_GRAMMAR, EpochClient, _key_for
+from threetears.epoch.client import _IDENTITY_ATTEMPTS, _KV_KEY_GRAMMAR, EpochClient, _key_for
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject, Subjects
@@ -377,3 +377,60 @@ class TestEpochClientBucketIdentity:
         await client.bucket_identity()
 
         assert await client.current(_subject()) == 0
+
+
+class TestBucketIdentityFailsSafe:
+    """A KV failure is an outage, not a replaced counter.
+
+    The catch is deliberately broad, which is exactly why it needs pinning: a
+    real defect inside it would otherwise surface as a permanent, silent "no
+    replacement" across the whole fleet, and the detector would look healthy
+    the entire time.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_broker_reports_no_identity(self) -> None:
+        nats = _nats_mock()
+        nats.kv_bucket = AsyncMock(side_effect=RuntimeError("broker unreachable"))
+        client = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+
+        assert await client.bucket_identity() is None
+
+    @pytest.mark.asyncio
+    async def test_a_failing_create_reports_no_identity(self) -> None:
+        nats = _nats_mock()
+        bucket = MagicMock()
+        bucket.create = AsyncMock(side_effect=RuntimeError("kv down"))
+        nats.kv_bucket = AsyncMock(return_value=bucket)
+        client = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+
+        assert await client.bucket_identity() is None
+
+    @pytest.mark.asyncio
+    async def test_a_failing_read_reports_no_identity(self) -> None:
+        nats = _nats_mock()
+        bucket = MagicMock()
+        bucket.create = AsyncMock(return_value=None)
+        bucket.get = AsyncMock(side_effect=RuntimeError("kv down"))
+        nats.kv_bucket = AsyncMock(return_value=bucket)
+        client = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+
+        assert await client.bucket_identity() is None
+
+    @pytest.mark.asyncio
+    async def test_a_bucket_wiped_between_create_and_read_gives_up_bounded(self) -> None:
+        """Losing the create AND reading nothing means the bucket went again.
+
+        Retried, then given up on -- a broker recreating the bucket faster than
+        two round trips is an outage, not a race worth winning. Reporting an
+        identity here would be indistinguishable from stability.
+        """
+        nats = _nats_mock()
+        bucket = MagicMock()
+        bucket.create = AsyncMock(return_value=None)
+        bucket.get = AsyncMock(return_value=None)
+        nats.kv_bucket = AsyncMock(return_value=bucket)
+        client = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+
+        assert await client.bucket_identity() is None
+        assert bucket.create.await_count == _IDENTITY_ATTEMPTS

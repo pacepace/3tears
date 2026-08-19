@@ -41,6 +41,7 @@ from typing import Any, Final, Protocol
 
 from threetears.core.coordination.distributed_counter import DistributedCounter
 from threetears.nats import NatsClient
+from threetears.nats.kv import KvBucketLike
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject
 from uuid_utils import uuid7
@@ -258,14 +259,33 @@ class EpochClient:
             than two round trips is an outage, not a race to win)
         :rtype: str | None
         """
-        bucket = await self._nats.kv_bucket(name=_EPOCH_BUCKET, ttl=None)
+        try:
+            bucket = await self._nats.kv_bucket(name=_EPOCH_BUCKET, ttl=None)
+            return await self._identity_from(bucket)
+        # prawduct:allow prawduct/broad-except -- an unreachable broker is an
+        # outage, not a replaced counter. raising here would fail a catch-up
+        # that the durable path does not even need KV for, and reporting a
+        # changed identity would flush every cache in the fleet on a blip.
+        except Exception:  # noqa: BLE001
+            log.warning("epoch bucket identity unavailable; not treating as a replacement", exc_info=True)
+            return None
+
+    async def _identity_from(self, bucket: KvBucketLike) -> str | None:
+        """read or mint the identity on an already-open bucket.
+
+        :param bucket: the opened epoch KV bucket
+        :ptype bucket: Any
+        :return: the identity, or ``None`` when it could not be established
+        :rtype: str | None
+        """
         for _ in range(_IDENTITY_ATTEMPTS):
             minted = str(uuid7())  # convert at border: opaque KV value, never parsed back
             if await bucket.create(key=_IDENTITY_KEY, value=minted.encode()) is not None:
                 return minted
             existing = await bucket.get(key=_IDENTITY_KEY)
             if existing is not None:
-                return existing.decode()
+                decoded: str = existing.decode()
+                return decoded
             # lost the create AND read nothing: the bucket was wiped between
             # the two. try again rather than reporting an identity we do not
             # have -- reporting one would be indistinguishable from stability.

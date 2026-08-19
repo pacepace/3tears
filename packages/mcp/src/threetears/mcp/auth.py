@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
-from threetears.epoch import EpochClient, EpochListener
+from threetears.epoch import EpochClient, EpochListener, catchup_tick
 from threetears.nats import Subjects
 from threetears.observe import get_logger
 
@@ -487,6 +487,7 @@ class LocalGrantAuthorizer:
                 Subjects.mcp_rbac_epoch(),
                 self._on_rbac_bump,
                 primed_epoch=primed_epoch,
+                on_reset=self._on_rbac_reset,
             )
         log_extras: dict[str, Any] = {
             "grant_count": len(self._cache),
@@ -538,11 +539,13 @@ class LocalGrantAuthorizer:
         """periodic safety-net: pull current epoch; reload if stale.
 
         the listener's subscribe path covers the happy case; this
-        loop covers (a) the documented prime/subscribe race window
-        and (b) a broadcast outright dropped on the wire (subscriber
-        blip, JetStream redelivery edge). cheap when nothing has
-        changed -- a one-row indexed lookup on
-        ``platform.config_epochs``.
+        loop covers (a) the documented prime/subscribe race window,
+        (b) a broadcast outright dropped on the wire (subscriber blip,
+        JetStream redelivery edge), and (c) a counter REPLACED by a
+        broker restart, which every KV operation survives silently.
+        cheap when nothing has changed -- one counter read. the rbac
+        epoch is an ephemeral subject, so that read is NATS KV, not the
+        durable row the tile family keeps.
 
         :return: nothing
         :rtype: None
@@ -550,11 +553,15 @@ class LocalGrantAuthorizer:
         # the loop is only ever spawned under epoch_mode (start() guards the
         # create_task on epoch_mode), so the listener is non-None here.
         assert self._epoch_listener is not None
-        subject = Subjects.mcp_rbac_epoch()
+        subjects = [(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)]
         while True:
             try:
                 await asyncio.sleep(self._catchup_interval_seconds)
-                await self._epoch_listener.catch_up(subject, self._on_rbac_bump)
+                # the pass itself is the framework's: which subjects to poll,
+                # and whether one failing subject abandons the rest, are not
+                # decisions this consumer should hold its own opinion about.
+                # the LOOP stays here, because cadence and shutdown are.
+                await catchup_tick(self._epoch_listener, subjects)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -625,6 +632,29 @@ class LocalGrantAuthorizer:
             "MCP grant cache reloaded",
             extra={"extra_data": {"grant_count": len(self._cache)}},
         )
+
+    async def _on_rbac_reset(self) -> None:
+        """epoch-listener callback: the epoch counter was REPLACED, so reload.
+
+        Distinct from :meth:`_on_rbac_bump` because it carries no epoch, and
+        deliberately so: a reset means every number this pod compared against
+        belongs to a counter that no longer exists. The only value available is
+        below everything already acted on, which is exactly what epoch dedupe
+        discards -- so a reset dressed as a bump would be swallowed and the
+        grant cache would stay stale.
+
+        Without this the detection is inert on the one path that matters. The
+        listener would clear its last-seen and this pod would keep serving
+        authorization decisions from a cache nothing had told it to refresh.
+
+        :return: nothing
+        :rtype: None
+        """
+        log.warning(
+            "MCP rbac epoch counter was replaced; reloading grant cache",
+            extra={"extra_data": {"grant_count": len(self._cache)}},
+        )
+        await self._reload_cache()
 
     async def _on_rbac_bump(self, epoch: int, payload: dict[str, Any] | None) -> None:
         """epoch-listener callback: reload cache on rbac bump.

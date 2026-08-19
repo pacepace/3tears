@@ -34,11 +34,13 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
 
 from threetears.epoch.client import EpochClient, PoolLike
 from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
+from threetears.epoch.tick import catchup_tick
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
     "BumpCallback",
     "ResetCallback",
+    "catchup_tick",
     "EpochBumpMessage",
     "EpochClient",
     "EpochListener",

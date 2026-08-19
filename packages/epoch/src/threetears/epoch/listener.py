@@ -27,7 +27,7 @@ from threetears.nats.errors import SubscribeError
 from threetears.nats.subjects import Subject
 from threetears.observe import get_logger
 
-from threetears.epoch.client import EpochClient
+from threetears.epoch.client import EpochClient, _is_durable
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
@@ -224,6 +224,17 @@ class EpochListener:
             ``current()`` now (no state loaded against an earlier
             epoch)
         :ptype primed_epoch: int | None
+        **subscribing is not enough on its own.** A broadcast can be lost --
+        the documented prime/subscribe race, a dropped message, a subscriber
+        blip -- and since the counter moved to a memory-backed bucket, a broker
+        restart replaces it while every operation keeps succeeding. Only a
+        periodic :func:`~threetears.epoch.tick.catchup_tick` finds those. A
+        consumer that subscribes and never schedules one receives broadcasts
+        and misses everything a broadcast can lose, with nothing to say so.
+
+        The framework cannot schedule it for you: ``3tears-epoch`` may not own
+        a task in ``3tears``, so cadence is the consumer's.
+
         :param on_reset: invoked when the counter this listener tracks is
             REPLACED rather than advanced, with no epoch -- see
             :data:`ResetCallback`. omitting it means this consumer is not
@@ -392,7 +403,8 @@ class EpochListener:
                 if first_error is None:
                     first_error = exc
         log.warning(
-            "epoch counter replaced; last-seen cleared and consumers notified",
+            "epoch counter replaced; last-seen cleared"
+            + (f" and {notified} consumer(s) notified" if notified else " but NO consumer registered a reset callback"),
             extra={"extra_data": {"registrations": len(registrations), "notified": notified}},
         )
         if first_error is not None:
@@ -427,7 +439,11 @@ class EpochListener:
             counter read.
         :rtype: int
         """
-        if await self._bucket_was_replaced():
+        if not _is_durable(subject) and await self._bucket_was_replaced():
+            # durable subjects are skipped deliberately: their counter is a
+            # Postgres row that no broker restart touches, so the KV bucket's
+            # identity says nothing about them -- and asking would make a KV
+            # outage fail a catch-up that needs no KV at all.
             await self.signal_reset()
             return await self._epoch_client.current(subject)
         current = await self._epoch_client.current(subject)

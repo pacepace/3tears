@@ -19,20 +19,33 @@ from threetears.mcp.auth import (
 # ---------------------------------------------------------------------
 
 
-def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any]]:
-    """build a fake EpochClient + EpochListener; capture subscribe callback."""
+def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any], list[Any]]:
+    """build a fake EpochClient + EpochListener; capture both callbacks.
+
+    ``on_reset`` is captured separately from ``on_bump`` because they are not
+    interchangeable: a reset carries no epoch, and a consumer that treated it
+    as a bump would dedupe it away.
+    """
     fake_client = MagicMock()
     fake_client.current = AsyncMock(return_value=0)
 
     fake_listener = MagicMock()
     captured: list[Any] = []
+    captured_resets: list[Any] = []
 
-    async def _subscribe(subject: Any, on_bump: Any, primed_epoch: Any = None) -> None:  # noqa: ARG001
+    async def _subscribe(
+        subject: Any,  # noqa: ARG001
+        on_bump: Any,
+        primed_epoch: Any = None,  # noqa: ARG001
+        on_reset: Any = None,
+    ) -> None:
         captured.append(on_bump)
+        if on_reset is not None:
+            captured_resets.append(on_reset)
 
     fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
     fake_listener.catch_up = AsyncMock(return_value=0)
-    return fake_client, fake_listener, captured
+    return fake_client, fake_listener, captured, captured_resets
 
 
 async def _build_started_authorizer(
@@ -47,7 +60,7 @@ async def _build_started_authorizer(
     interval is set to a very large value so the task never fires
     during the test (deterministic).
     """
-    client, listener, captured = _make_listener_capturing_subscribe()
+    client, listener, captured, captured_resets = _make_listener_capturing_subscribe()
     authz = LocalGrantAuthorizer(
         grant_loader=loader,
         epoch_client=client,
@@ -218,7 +231,7 @@ class TestLocalGrantAuthorizer:
     async def test_start_subscribes_to_rbac_epoch(self) -> None:
         """start() subscribes the listener to Subjects.mcp_rbac_epoch."""
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
+        client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -256,7 +269,7 @@ class TestLocalGrantAuthorizer:
             order.append("reload")
             return []
 
-        client, listener, _ = _make_listener_capturing_subscribe()
+        client, listener, _, _ = _make_listener_capturing_subscribe()
         client.current = AsyncMock(side_effect=_current)
         authz = LocalGrantAuthorizer(
             grant_loader=AsyncMock(side_effect=_loader),
@@ -331,7 +344,7 @@ class TestLocalGrantAuthorizer:
     async def test_double_start_is_no_op(self) -> None:
         """calling start() twice does not re-subscribe or re-load."""
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
+        client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -372,7 +385,7 @@ class TestLocalGrantAuthorizerCatchupTick:
         import asyncio
 
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
+        client, listener, _, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -402,7 +415,7 @@ class TestLocalGrantAuthorizerCatchupTick:
         import asyncio
 
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
+        client, listener, _, _ = _make_listener_capturing_subscribe()
         # first catch_up raises; subsequent ones return 0.
         listener.catch_up = AsyncMock(
             side_effect=[
@@ -483,7 +496,7 @@ class TestLocalGrantAuthorizerOptionalEpoch:
     def test_constructor_rejects_only_epoch_client(self) -> None:
         """passing exactly one of (client, listener) is a usage error."""
         loader = AsyncMock(return_value=[])
-        client, _listener, _captured = _make_listener_capturing_subscribe()
+        client, _listener, _captured, _ = _make_listener_capturing_subscribe()
         with pytest.raises(ValueError, match="must be provided together"):
             LocalGrantAuthorizer(
                 grant_loader=loader,
@@ -494,10 +507,79 @@ class TestLocalGrantAuthorizerOptionalEpoch:
     def test_constructor_rejects_only_epoch_listener(self) -> None:
         """passing exactly one of (client, listener) is a usage error."""
         loader = AsyncMock(return_value=[])
-        _client, listener, _captured = _make_listener_capturing_subscribe()
+        _client, listener, _captured, _captured_resets = _make_listener_capturing_subscribe()
         with pytest.raises(ValueError, match="must be provided together"):
             LocalGrantAuthorizer(
                 grant_loader=loader,
                 epoch_listener=listener,
                 # epoch_client intentionally omitted
             )
+
+
+class TestLocalGrantAuthorizerReceivesResets:
+    """A detected counter replacement must reload this pod's grant cache.
+
+    Detection is inert without this. The listener clears its last-seen and the
+    pod carries on serving authorization decisions from a cache nothing told it
+    to refresh -- which is the failure the whole epoch mechanism exists to
+    prevent, arriving through the one path nobody wired.
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_registers_a_reset_callback(self) -> None:
+        client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(return_value=[]),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            assert captured_resets, "subscribed without an on_reset; a replaced counter reloads nothing"
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_the_reset_callback_reloads_the_grant_cache(self) -> None:
+        loads: list[int] = []
+
+        async def _counting_loader() -> list[Any]:
+            loads.append(1)
+            return []
+
+        client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=_counting_loader),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            before = len(loads)
+            await captured_resets[0]()
+            assert len(loads) == before + 1
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_the_reset_callback_takes_no_epoch(self) -> None:
+        """It must not be interchangeable with on_bump.
+
+        A reset dressed as a bump would carry a number below everything already
+        acted on, and the framework teaches consumers to dedupe on exactly that.
+        """
+        client, listener, _captured, captured_resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(return_value=[]),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            with pytest.raises(TypeError):
+                await captured_resets[0](7, None)
+        finally:
+            await authz.stop()

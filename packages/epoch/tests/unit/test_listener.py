@@ -790,3 +790,55 @@ class TestEpochListenerBucketIdentity:
         await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
 
         on_reset.assert_not_awaited()
+
+
+class TestDurableSubjectsSkipTheIdentityCheck:
+    """A tile epoch's counter is a Postgres row no broker restart touches.
+
+    Asking the KV bucket about its identity would be meaningless for those
+    subjects and actively harmful: it makes a catch-up that needs no KV at all
+    fail when KV is down, and it fires a reset at consumers whose counter never
+    moved.
+    """
+
+    @staticmethod
+    def _listener(nats: Any, identities: list[str | None]) -> EpochListener:
+        class _IdentityClient(_StubEpochClient):
+            async def bucket_identity(self) -> str | None:
+                return identities.pop(0) if len(identities) > 1 else identities[0]
+
+        return EpochListener(nats, _IdentityClient(nats, epoch=0))
+
+    @staticmethod
+    def _durable() -> Subject:
+        """a real tile-epoch subject, built by the factory the router reads."""
+        from threetears.nats.subjects import Subjects
+
+        return Subjects.datasource_tile_epoch("ds1", "parcels")
+
+    @pytest.mark.asyncio
+    async def test_a_changed_identity_does_not_reset_a_durable_subject(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a", "bucket-b"])
+        subject = self._durable()
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(subject, AsyncMock())
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_ephemeral_subject_on_the_same_listener_still_resets(self) -> None:
+        """The gate is per-subject, not a switch that turns detection off."""
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a", "bucket-b"])
+        ephemeral = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(ephemeral, AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(ephemeral, AsyncMock())
+        await listener.catch_up(ephemeral, AsyncMock())
+
+        on_reset.assert_awaited_once()

@@ -27,6 +27,7 @@ dependencies = [
     "3tears-nats[client]>=0.27.0,<0.28.0",
     "3tears-observe>=0.27.0,<0.28.0",
     "pydantic>=2",
+    "uuid-utils",  # uuid7 bucket-identity token (epoch.client)
 ]
 
 [project.urls]
