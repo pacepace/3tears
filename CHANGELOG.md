@@ -547,6 +547,103 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `channels`: **`threetears.channels.mail` — outbound email, and the delivery
+  reports that come back.** The platform had no mail at all: no SMTP, no
+  provider API, nothing in `packages/*`. The `channels` protocol is not an
+  answer either — `ChannelDeliveryMessage` requires a `conversation_id` and an
+  `agent_id` and routes to a thread, and a survey respondent or a
+  password-reset recipient has no platform presence at all.
+
+  A complete implementation existed one repo over, in
+  `14-eng-ai-bot-identity`'s `identity_core/email/`, whose own module docstring
+  set the condition for moving it: *"Not a new 3tears primitive — revisit only
+  if a second 3tears product needs the same capability."* Survey fielding is
+  that second product, so this is that implementation promoted rather than a
+  second copy of it.
+
+  Promoted as-is, including the decisions that are load-bearing rather than
+  incidental: stdlib `smtplib` on `asyncio.to_thread` instead of an async SMTP
+  dependency; no provider SDK, so changing relay is a settings edit rather than
+  a rewrite; settings read PER SEND, so an operator correcting a wrong password
+  waits for the next send rather than the next deploy; and EVERY failure
+  leaving as `EmailSendError`, because narrowing that catch was measured wrong
+  once already — a header the stdlib refuses to fold raises `HeaderWriteError`,
+  and it escaped a caller handling exactly one type.
+
+  What is a seam rather than a lift: the settings STORE stays with each
+  product. identity-core resolves its own from `platform_email_settings` with
+  the password sealed, a residency-routed pool and its own audit trail, none of
+  which generalises, so what moves upstream is `EmailSettingsResolver` — which
+  `PlatformEmailSettingsService` already satisfies structurally, method name
+  and return shape included. `StaticEmailSettingsResolver` is the answer for a
+  product with no settings table, and it keeps both disciplines: the password
+  arrives as a `scheme://locator` secret reference, resolved on every send.
+  The original's hard-wired NATS audit call becomes an `on_failure` callback
+  for the same reason.
+
+- `channels`: **`threetears.channels.mail.bounce` — a `bounced` outcome now has
+  a source.** An SMTP send is fire-and-forget: the relay accepts the message,
+  the conversation ends, and nothing on the outbound path can ever report a
+  bounce. `BounceReceiver` is the inbound half — verify the provider's
+  signature, parse the body into `DeliveryEvent` values, hand each to the
+  product.
+
+  `DeliveryEventType` separates `bounced_hard` from `bounced_soft` because the
+  policies are opposite (suppress immediately versus retry then suppress), and
+  keeps `complained` distinct from both: a spam report is a suppression event
+  where the address works perfectly, and folding it into a bounce loses an
+  opt-out and corrupts the bounce rate a sender's reputation is measured on.
+
+  It deliberately does NOT run through `WebhookReceiver`. That path resolves a
+  `webhook_subscriptions` row and dispatches a `WakeTrigger` into a
+  conversation for an agent to act on, and a delivery report has no
+  conversation, no agent and no user. What it DOES reuse is that receiver's
+  verification contract entire: the same `Verifier` callable shape, the same
+  canonical `verify_generic_hmac_sha256`, the same default signature header and
+  body-size cap. A second HMAC implementation was found and removed once in
+  this package already.
+
+  No provider-specific verifier ships. The default is the platform's own
+  `sha256=<hex>` HMAC; SendGrid signs with ECDSA and SES arrives as an
+  RSA-signed SNS notification, and both are `register_verifier`
+  implementations with a real signature-scheme decision behind them rather than
+  something to guess at here.
+
+- `channels`: **`threetears.channels.mail.batch` — many recipients, where one
+  failing is ordinary.** `send_batch` isolates per recipient, pulls the
+  iterable lazily so sample size does not drive memory, bounds concurrency, and
+  reports each failure by ADDRESS as it happens rather than only at the end —
+  a caller that records an outcome per recipient can resume from its own
+  records. Rate limiting plugs in through `SendPacer`, and `TokenBucketPacer`
+  is the platform's existing distributed `TokenBucket` over NATS KV rather than
+  a second limiter, because a per-process limiter set to a relay's rate is that
+  rate multiplied by the replica count.
+
+  Its ceiling is documented rather than discovered: no durability, no retry,
+  one process. Past roughly a hundred thousand recipients per run, or wherever
+  a partial run has to survive a restart, the shape wanted is a durable job per
+  recipient with this function reduced to the worker body.
+
+- `channels`: **`threetears.channels.mail.templating` — per-recipient
+  substitution, an HTML alternative, and `List-Unsubscribe`.** Products supply
+  the content; this owes a consistent way to fill it in. `{name}` substitution,
+  one pass, with a missing value refused BY NAME rather than rendering
+  `Hello , open` into a live inbox, values HTML-escaped in the HTML part only,
+  and a value carrying CRLF refused where it would land in a header. An HTML
+  body without a plain-text alternative is refused at construction.
+
+  `EmailMessage` carries `list_unsubscribe_url` / `list_unsubscribe_mailto`,
+  which the transport renders as RFC 2369 `List-Unsubscribe` and — for an
+  `https://` URL only — RFC 8058 `List-Unsubscribe-Post`. Bulk survey mail
+  legally needs both; transactional mail never bothered with either.
+
+  Deliberately not a template language, and the alternative was weighed:
+  `jinja2.sandbox.SandboxedEnvironment` is already used in
+  `threetears.agent.wake` and was ruled out because adding `jinja2` to
+  `3tears-channels` changes this package's dependency metadata for every
+  consumer that only wants Slack, and because a bulk-mail substitution surface
+  actively wants to be incapable of evaluating an expression.
+
 - `agent-acl`: **`threetears.agent.acl.catalog` — a declarable vocabulary for
   `Role.permissions`.** `Role.permissions` is free text. A role may name any
   resource type and any action, both are compared by string equality at
