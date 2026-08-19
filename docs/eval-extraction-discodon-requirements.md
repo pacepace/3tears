@@ -200,11 +200,10 @@ not discodon's.
 
 - The eval budget contract, shaped from `EvalRunCostCap` rather than from
   `BudgetPort` (R6), and D27 amended to say so.
-- A unit **label** beside a weighted-unit count. `Spend` carries
-  `provider_units` as a bare `Decimal` and its `__add__` refuses to sum money
-  across currencies — but sums `provider_units` across providers without a
-  murmur. One provider's credits and another's requests are not the same
-  quantity, and adding them fabricates one, which is the identical defect the
-  currency guard already exists to prevent. It is invisible with a single
-  provider and arrives with the second.
+- ~~A unit **label** beside a weighted-unit count.~~ **Delivered 2026-08-19.**
+  `Spend` now carries `provider_unit` as `"<provider>:<unit>"`, composed from
+  the provider's own `metered_unit` declaration, and `Spend.__add__` refuses a
+  mismatch the way it already refused mixed currencies. So the vocabulary R5
+  asks discodon to adopt is not aspirational — the search side of it exists and
+  is enforced by the adapter conformance suite.
 - The package cut itself, once R1 holds — at which point the lift is mechanical.
