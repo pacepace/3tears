@@ -18,10 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from threetears.core.testing.kv import FakeNatsClient
-from threetears.epoch.client import EpochClient
+from threetears.epoch.client import _KV_KEY_GRAMMAR, EpochClient, _key_for
 from threetears.epoch.wire import EpochBumpMessage
 from threetears.nats.errors import PublishError
-from threetears.nats.subjects import Subject
+from threetears.nats.subjects import Subject, Subjects
 
 
 def _subject(path: str = "app.capabilities.epoch") -> Subject:
@@ -53,8 +53,16 @@ def _nats_mock() -> Any:
 
 
 def _durable_subject(layer: str = "parcels") -> Subject:
-    """a subject from the family whose epoch must survive a broker restart."""
-    return Subject(path=f"app.datasource.ds1.tiles.{layer}.epoch", kind="point")
+    """a subject from the family whose epoch must survive a broker restart.
+
+    Built with the REAL ``Subjects`` factory rather than a literal. The
+    carve-out is decided by the subject's shape, and that shape is produced in
+    a different package: a hand-written literal would keep matching after
+    ``datasource_tile_epoch`` was restructured, so tile epochs would silently
+    move onto a resettable counter -- the CDN cache-key failure the carve-out
+    exists to prevent -- with every test still green.
+    """
+    return Subjects.datasource_tile_epoch("ds1", layer)
 
 
 class TestEpochClientCurrentReadsTheDurableRow:
@@ -74,12 +82,13 @@ class TestEpochClientCurrentReadsTheDurableRow:
         pool.fetchval = AsyncMock(return_value=None)
         client = EpochClient(pool, _nats_mock())
 
-        assert await client.current(_durable_subject("parcels")) == 0
+        subject = _durable_subject("parcels")
+        assert await client.current(subject) == 0
         pool.fetchval.assert_awaited_once()
         sql, *args = pool.fetchval.await_args.args
         assert "SELECT epoch FROM config_epochs" in sql
         assert "WHERE subject_path" in sql
-        assert args == ["app.datasource.ds1.tiles.parcels.epoch"]
+        assert args == [subject.path]
 
     @pytest.mark.asyncio
     async def test_an_existing_row_returns_its_epoch_as_int(self) -> None:
@@ -187,14 +196,18 @@ class TestEpochClientDurableCarveOut:
         pool = _pool_with_bump(returning_epoch=1)
         client = EpochClient(pool, _nats_mock())
 
-        await client.bump(_durable_subject("parcels"), payload=None)
+        subject = _durable_subject("parcels")
+        await client.bump(subject, payload=None)
 
         sql, *args = pool.fetchrow.await_args.args
         assert "INSERT INTO config_epochs" in sql
         assert "ON CONFLICT (subject_path)" in sql
         assert "epoch = config_epochs.epoch + 1" in sql
         assert "RETURNING epoch" in sql
-        assert args[0] == "app.datasource.ds1.tiles.parcels.epoch"
+        # compared against the builder's own output, not a copy of it: a copied
+        # literal keeps passing after the subject's shape changes, which is the
+        # drift this whole carve-out is exposed to.
+        assert args[0] == subject.path
         assert args[1] is None
 
     @pytest.mark.asyncio
@@ -279,24 +292,40 @@ class TestEpochClientWildcardSubjects:
 class TestEpochClientKeyDerivation:
     """A subject path is usually a legal KV key; when it is not, it is digested.
 
-    A path segment can carry a caller-supplied value, and one space would turn
-    a working bump into an ``InvalidKeyError`` raised in production rather than
-    caught in review. Rejecting is not an option either: the caller cannot
-    rename a user's layer.
+    Asserted against the KEY, not against a round trip. ``FakeKvBucket``
+    enforces no key grammar, so a round-trip test passes whether or not the
+    derivation exists -- which is exactly the shape that would let an illegal
+    key reach a real broker and raise ``InvalidKeyError`` at ``bump`` in
+    production. The grammar here is the one ``nats-server`` enforces.
     """
+
+    def test_a_legal_path_is_used_verbatim(self) -> None:
+        """A readable key is worth having when someone is reading a bucket."""
+        assert _key_for(_subject("app.capabilities.epoch")) == "app.capabilities.epoch"
+
+    def test_an_illegal_path_is_digested_into_a_legal_key(self) -> None:
+        key = _key_for(Subject(path="app.census tracts.epoch", kind="point"))
+
+        assert " " not in key
+        assert _KV_KEY_GRAMMAR.match(key), f"{key!r} is not a legal KV key"
+
+    def test_the_digest_is_deterministic_across_processes(self) -> None:
+        """Every pod must derive the same key, or they count different things."""
+        subject = Subject(path="app.census tracts.epoch", kind="point")
+
+        assert _key_for(subject) == _key_for(subject)
+
+    def test_two_illegal_paths_derive_different_keys(self) -> None:
+        a = _key_for(Subject(path="app.a b.epoch", kind="point"))
+        b = _key_for(Subject(path="app.c d.epoch", kind="point"))
+
+        assert a != b
 
     @pytest.mark.asyncio
     async def test_a_path_with_an_illegal_character_still_counts(self) -> None:
+        """The behavioural half: derivation is not merely internally consistent."""
         client = EpochClient(_pool_with_bump(returning_epoch=99), _nats_mock())
         subject = Subject(path="app.census tracts.epoch", kind="point")
 
         assert await client.bump(subject) == 1
         assert await client.current(subject) == 1
-
-    @pytest.mark.asyncio
-    async def test_two_illegal_paths_do_not_collide(self) -> None:
-        client = EpochClient(_pool_with_bump(returning_epoch=99), _nats_mock())
-
-        await client.bump(Subject(path="app.a b.epoch", kind="point"))
-
-        assert await client.current(Subject(path="app.c d.epoch", kind="point")) == 0

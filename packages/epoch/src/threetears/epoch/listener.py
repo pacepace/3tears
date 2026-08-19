@@ -386,6 +386,25 @@ class EpochListener:
         """
         current = await self._epoch_client.current(subject)
         last_seen = self._last_seen.get(subject.path, 0)
+        if current < last_seen:
+            # The counter went BACKWARDS, which a monotonic counter cannot do:
+            # it is a different counter. The ephemeral epochs live in a
+            # memory-backed KV bucket, so a broker restart recreates it empty
+            # and every operation then SUCCEEDS while reading zero -- there is
+            # no error to catch and no gap to notice.
+            #
+            # Without this arm the guard below can never fire again for the
+            # life of the process (nothing will ever exceed a last-seen the new
+            # counter cannot reach), so the pod stops reloading, permanently
+            # and silently. That is strictly worse than the durable row this
+            # replaced, which had no such mode.
+            #
+            # A backwards read is a weaker signal than the bucket-identity
+            # check that supersedes it -- a counter can legitimately be at zero
+            # because nothing has bumped it yet, so this costs one redundant
+            # reload in that case. Cheap, and it fails in the safe direction.
+            await self.signal_reset()
+            return current
         if current > last_seen:
             self._last_seen[subject.path] = current
             await on_bump(current, None)

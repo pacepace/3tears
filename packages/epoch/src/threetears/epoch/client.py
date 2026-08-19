@@ -2,7 +2,7 @@
 
 :class:`EpochClient` is the publish-side companion to
 :class:`~threetears.epoch.listener.EpochListener`. it owns one pair of
-operations against the ``config_epochs`` table:
+operations over whichever substrate the subject belongs to:
 
 - :meth:`current` -- read the latest epoch for a subject (used by
   listeners on cold start and by periodic catch-up ticks)
@@ -10,16 +10,26 @@ operations against the ``config_epochs`` table:
   publish an :class:`~threetears.epoch.wire.EpochBumpMessage` on the
   same subject so sibling pods notice immediately
 
-postgres is the source of truth. nats is the fast notify. a missed
-broadcast is recovered by either the next periodic tick (calls
-:meth:`current`) or by the next response that echoes a higher epoch
-(per-message echo, consumer-side).
+**two substrates, routed by what the number means.** an epoch is a
+coherence signal, not a durable fact, so the counter for one lives in a
+memory-backed NATS KV bucket (via
+:class:`~threetears.core.coordination.distributed_counter.DistributedCounter`)
+and resets with the broker -- which is harmless, because a restart that
+loses the counter also loses every cache it was sequencing.
 
-the row PK in ``config_epochs`` is the subject path string. the
-publisher always knows its own current epoch (just returned by the
-``RETURNING epoch`` clause); subscribers learn it from broadcasts and
-from echoes. this is the etcd ``mod_revision`` shape minus the
-multi-key transaction support: every domain is independent.
+the exception is an epoch whose VALUE escapes this cluster. a tile
+epoch is the ``v{n}`` in a tile URL and reaches browser and CDN caches
+nothing here can reach, so re-issuing ``v1..vN`` for different content
+would serve the old generation from an address that looks current. that
+family keeps its durable ``config_epochs`` row, keyed on the subject
+path.
+
+nats is the fast notify either way. a missed broadcast is recovered by
+the next periodic tick (calls :meth:`current`) or by the next response
+that echoes a higher epoch. the publisher always knows its own current
+epoch (the counter returns it); subscribers learn it from broadcasts and
+echoes. this is the etcd ``mod_revision`` shape minus the multi-key
+transaction support: every domain is independent.
 """
 
 from __future__ import annotations

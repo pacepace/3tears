@@ -635,3 +635,57 @@ class TestEpochListenerRegistrationOrdering:
 
         await listener.signal_reset()
         on_reset.assert_awaited_once()
+
+
+class TestEpochListenerBackwardsCounterIsAReset:
+    """A monotonic counter that goes backwards is a DIFFERENT counter.
+
+    The ephemeral epochs live in a memory-backed KV bucket, so a broker restart
+    recreates it empty and every operation then succeeds while reading zero.
+    There is no error to catch. Without this, ``catch_up``'s only arm is
+    ``current > last_seen``, which can never fire again once the new counter
+    starts below the old one -- the pod stops reloading permanently, and
+    silently, which is worse than the durable row this replaced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_backwards_read_fires_every_reset_callback(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        client = _StubEpochClient(nats, epoch=[5000, 0])
+        listener = EpochListener(nats, client)
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_backwards_read_clears_last_seen_so_bumps_dispatch_again(self) -> None:
+        """The wedge this exists to prevent, stated as the behaviour that returns."""
+        nats, callbacks = _capture_subscribe_typed()
+        client = _StubEpochClient(nats, epoch=[5000, 0])
+        listener = EpochListener(nats, client)
+        subject = _subject("app.a.epoch")
+        on_bump = AsyncMock()
+        await listener.subscribe(subject, on_bump, on_reset=AsyncMock())
+
+        await listener.catch_up(subject, AsyncMock())
+        await callbacks[0](EpochBumpMessage(subject_path="app.a.epoch", epoch=1, payload=None))
+
+        on_bump.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_equal_read_is_not_a_reset(self) -> None:
+        """Only BACKWARDS is suspicious; steady state must stay quiet."""
+        nats, _ = _capture_subscribe_typed()
+        client = _StubEpochClient(nats, epoch=5)
+        listener = EpochListener(nats, client)
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_not_awaited()

@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
+  A reset means the counter being tracked was REPLACED, not advanced, so it
+  carries no epoch: the only number available is below everything the consumer
+  has already acted on, which is exactly what epoch dedupe discards. The
+  listener now records every registration and fans a reset out to all of them,
+  clearing last-seen rather than re-priming.
+
+- `epoch`: `catch_up` treats a BACKWARDS counter as a generation reset. A
+  monotonic counter cannot go back, so a lower reading means a different
+  counter -- and without this arm the `current > last_seen` guard could never
+  fire again for the life of the process.
+
 - `core`: **a bounded lifetime for L1 rows, off unless a collection asks for it.**
   `CollectionRegistry.set_l1_max_age` / `get_l1_max_age`, with
   `DEFAULT_L1_MAX_AGE_SECONDS` (3600s) applied when a collection opts in without
@@ -36,7 +48,33 @@ packages (bumped in lock-step).
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
+
 ### Changed
+
+- `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
+  coherence signal, not a durable fact, so every `current()`, catch-up tick and
+  echo confirmation was putting L3 on the cache-coherence path for a number
+  that has no business surviving a restart. Ephemeral epochs now count on
+  `DistributedCounter`. The semantics consumers rely on are unchanged: per-key
+  contiguous counters, so `0` still means "never bumped" and the first bump
+  still returns `1`.
+
+  **`datasource_tile_epoch` is carved out and stays durable.** Its value is the
+  `v{n}` in a tile URL and reaches browser and CDN caches this cluster cannot
+  touch, so a counter that resets with the broker would re-issue `v1..vN` for
+  different content while those caches still hold the old generation. Routing
+  is by subject family, because durability is a property of what the number
+  means rather than of who bumps it.
+
+  Two things Postgres gave for free: a wildcard path matched no row and
+  returned `0`, so `current()` now short-circuits before the lookup (`*` and
+  `>` are illegal KV key characters); and a subject segment carrying a
+  caller-supplied value is a legal row PK but not always a legal key, so a path
+  outside the grammar is digested rather than raising at `bump` in production.
+
+  **Deployments must grant the `{ns}-epochs` KV bucket** to AGENT_POD, HUB and
+  GATEWAY. A missing KV grant does not raise: the call blocks to its deadline
+  and reads as an unreachable broker.
 
 - `core`: **a subclass accessor that caches an L3 read must say so.**
   `BaseCollection.write_to_cache_sync` takes `from_lower_tier=`, which stamps

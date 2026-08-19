@@ -12,7 +12,9 @@ Multiple in-memory configuration caches across the platform need to stay coheren
 
 Pure NATS broadcast (push) ships with a missed-message hole: a pod that didn't receive the broadcast (subscriber blip, pod just started during the window, JetStream redelivery edge) stays stale. Pure polling (pull) is correct but expensive on hot paths.
 
-This package combines both: a strictly-monotonic generation number (epoch) per *subject*, durable in Postgres, broadcast best-effort via NATS, and echoed in every relevant response message so consumers detect staleness on the next read and lazy-pull. Push for speed, pull for correctness.
+This package combines both: a strictly-monotonic generation number (epoch) per *subject*, broadcast best-effort via NATS and echoed in every relevant response message so consumers detect staleness on the next read and lazy-pull. Push for speed, pull for correctness.
+
+The counter itself lives in a memory-backed NATS KV bucket for every epoch whose value stays inside the cluster. That is deliberate: an epoch is a coherence signal, not a durable fact, and a restart that loses the counter also loses every cache it was sequencing. The one exception is an epoch whose value *escapes* -- a tile epoch is the `v{n}` in a tile URL and reaches browser and CDN caches nothing here can reach -- and that family keeps a durable `config_epochs` row.
 
 This is the standard pattern from etcd `mod_revision` + watch, K8s `resourceVersion` + informer, Envoy xDS `version_info` + ACK, DNS SOA serial + secondary refresh.
 
@@ -24,7 +26,7 @@ The unit of identity is the **NATS subject path**. Each consumer:
 2. Calls `EpochClient.bump(subject, payload=...)` after committing the row mutation that motivates the reload.
 3. Subscribes via `EpochListener.subscribe(subject, on_bump=...)` from sibling pods.
 
-The `platform.config_epochs` row PK is the subject path string. Postgres is the source of truth; the NATS broadcast is best-effort. A subscriber that missed every broadcast still catches up on the next request whose response echoes the higher epoch (per-message echo is consumer-side wiring; the framework supplies the building blocks).
+For the durable family, the `platform.config_epochs` row PK is the subject path string and Postgres is the source of truth. For everything else the KV counter is, keyed on the subject path (digested when the path falls outside the KV key grammar). The NATS broadcast is best-effort either way. A subscriber that missed every broadcast still catches up on the next request whose response echoes the higher epoch (per-message echo is consumer-side wiring; the framework supplies the building blocks).
 
 ## Wire envelope
 
@@ -47,6 +49,6 @@ CREATE TABLE IF NOT EXISTS config_epochs (
 );
 ```
 
-`bump(subject, payload)` runs `INSERT ... ON CONFLICT (subject_path) DO UPDATE SET epoch = config_epochs.epoch + 1, payload = $2, date_updated = now() RETURNING epoch`. Atomic; concurrent bumps from different writers serialize on the row lock.
+`bump(subject, payload)` increments the subject's counter and returns the new value. For an ephemeral subject that is a `DistributedCounter` CAS loop over NATS KV; for the durable family it is `INSERT ... ON CONFLICT (subject_path) DO UPDATE SET epoch = config_epochs.epoch + 1, payload = $2, date_updated = now() RETURNING epoch`, serialized on the row lock. Both are atomic and both hand back a per-subject contiguous number, so `0` means "never bumped" and the first bump returns `1`.
 
 Migration ships as a PLATFORM-scope `PackageMigrations` registration so consumers wire it via the canonical `MigrationRunner` alongside the rest of their platform tables.

@@ -9,7 +9,8 @@ provides three modules:
 - :mod:`threetears.epoch.wire` -- :class:`EpochBumpMessage` typed wire
   envelope
 - :mod:`threetears.epoch.client` -- :class:`EpochClient` publish-side
-  bump + current-read against ``config_epochs``
+  bump + current-read over the subject's substrate (NATS KV, or
+  ``config_epochs`` for the durable family)
 - :mod:`threetears.epoch.listener` -- :class:`EpochListener`
   subscribe-side dispatcher with monotonic dedupe + echo helper
 """

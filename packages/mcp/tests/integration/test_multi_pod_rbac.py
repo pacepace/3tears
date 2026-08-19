@@ -49,6 +49,7 @@ from threetears.mcp import (
     McpToolGrantCollection,
 )
 from threetears.mcp.migrations import register as register_mcp
+from threetears.nats.subjects import Subject
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 
 pytestmark = pytest.mark.integration
@@ -202,6 +203,23 @@ async def _build_started_authorizer(
 # ---------------------------------------------------------------------
 
 
+def _rbac_epoch(test_name: str) -> Subject:
+    """one RBAC epoch subject per test.
+
+    The epoch counter lives in a NATS KV bucket now, and the broker container
+    is session-scoped, so the bucket OUTLIVES a single test. Sharing
+    ``Subjects.mcp_rbac_epoch()`` across these would accumulate counts and make
+    every absolute epoch assertion depend on execution order -- passing alone,
+    failing in suite. The per-test ``pg_schema`` used to give this isolation
+    for free by resetting ``config_epochs``.
+
+    Built from the real builder rather than a literal, so a change to the
+    subject's shape still reaches these tests.
+    """
+    base = Subjects.mcp_rbac_epoch()
+    return Subject(path=f"{base.path}.{test_name}", kind=base.kind)
+
+
 @pytest.mark.asyncio
 async def test_grant_added_on_pod_a_propagates_to_pod_b(
     pg_pool: asyncpg.Pool,
@@ -249,7 +267,7 @@ async def test_grant_added_on_pod_a_propagates_to_pod_b(
             # bump is the caller's responsibility (matches the REST
             # endpoint pattern); here the test does it explicitly.
             await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
+                _rbac_epoch("added"),
                 payload={"grant_id": "test-grant", "action": "create"},
             )
 
@@ -305,7 +323,7 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
                 permission=permission,
             )
             await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
+                _rbac_epoch("removed"),
                 payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
             )
             for _ in range(20):
@@ -318,7 +336,7 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
             removed = await pod_a_collection.remove_grant(grant_entity.grant_id)
             assert removed is True
             await EpochClient(pg_pool, pod_a_nc).bump(
-                Subjects.mcp_rbac_epoch(),
+                _rbac_epoch("removed"),
                 payload={"grant_id": str(grant_entity.grant_id), "action": "delete"},
             )
 
@@ -396,7 +414,7 @@ async def test_missed_broadcast_recovers_via_catchup(
             permission=permission,
         )
         new_epoch = await pod_a_epoch_client.bump(
-            Subjects.mcp_rbac_epoch(),
+            _rbac_epoch("catchup"),
             payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
         )
         assert new_epoch == 1
@@ -409,7 +427,7 @@ async def test_missed_broadcast_recovers_via_catchup(
         # current=1 > last_seen=0, advances last_seen, fires the
         # callback which calls _reload_cache.
         result = await pod_b_listener.catch_up(
-            Subjects.mcp_rbac_epoch(),
+            _rbac_epoch("catchup"),
             pod_b_authorizer._on_rbac_bump,  # noqa: SLF001
         )
         assert result == 1
