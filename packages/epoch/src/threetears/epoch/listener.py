@@ -234,11 +234,7 @@ class EpochListener:
         """
         primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
         self._last_seen[subject.path] = primed
-        # keyed on the SUBSCRIBED path, not the message path: a wildcard is one
-        # registration and gets one reset callback, however many concrete
-        # subjects it later matches. dedupe stays keyed on the message path
-        # below, because those counters are independent numbers.
-        self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
+
         log.debug(
             "epoch listener primed last-seen",
             extra={
@@ -290,6 +286,16 @@ class EpochListener:
             )
         except SubscribeError:
             raise
+        # recorded only AFTER the subscribe succeeds. registering first would
+        # leave an entry behind when this raises, so a caller that retries
+        # would double-register and every later reset would fire that
+        # consumer twice -- a reload it cannot tell from a real second reset.
+        #
+        # keyed on the SUBSCRIBED path, not the message path: a wildcard is
+        # one registration and gets one reset callback, however many concrete
+        # subjects it later matches. dedupe stays keyed on the message path,
+        # because those counters are independent numbers.
+        self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
 
     async def signal_reset(self) -> None:
         """the counter was REPLACED; drop local state and tell every consumer.
@@ -297,8 +303,8 @@ class EpochListener:
         Called when the coherence substrate is found to be a different one --
         a broker restart on ephemeral storage recreates the bucket empty, and
         the counter starts again from zero while this process keeps running
-        with a high last-seen. Chunk 03 supplies the detection; this is what
-        it triggers.
+        with a high last-seen. The detection that calls this lives in the listener's identity
+        comparison; this is the mechanism it triggers.
 
         **Clears rather than re-primes.** Re-priming from the new counter
         looks tidier and re-creates the bug: identity and counter are two

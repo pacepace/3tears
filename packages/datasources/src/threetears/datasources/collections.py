@@ -435,7 +435,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             )
             if row is not None:
                 data = self._coerce_row(dict(row))
-                self.write_to_cache_sync(data)
+                self.write_to_cache_sync(data, from_lower_tier=True)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
 

@@ -38,6 +38,13 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `core`: **a subclass accessor that caches an L3 read must say so.**
+  `BaseCollection.write_to_cache_sync` takes `from_lower_tier=`, which stamps
+  the row's provenance and is what makes it eligible for expiry. Without it a
+  cached L3 read is indistinguishable from a local write and never expires, so
+  the rows most likely to go stale were exactly the ones exempt. Every in-repo
+  accessor that caches an L3 read now passes it.
+
 - `core`: **`_3t_cached_at` is now a reserved L1 column name.** The backend
   injects it into generated entity tables to record when a row was last obtained
   from a lower tier, and strips it from every row a read returns. A table
@@ -45,6 +52,14 @@ packages (bumped in lock-step).
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
 ### Fixed
+
+- `core`: `collection[id]` now honours the max-age bound. It resolves through a
+  path that repairs by pulling through, but read non-expiring, so it served a
+  stale row indefinitely while `get()` beside it refreshed.
+
+- `epoch`: `EpochListener.subscribe` records its registration only after the
+  NATS subscribe succeeds. Registering first left an entry behind on failure,
+  so a retry double-registered and every later reset fired that consumer twice.
 
 - `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
   schema, as `SQLiteBackend` already did. Without it any framework-injected

@@ -568,3 +568,46 @@ class TestEpochListenerResetFanOut:
         await callbacks[0](EpochBumpMessage(subject_path="app.a.epoch", epoch=1, payload=None))
 
         on_bump.assert_awaited_once()
+
+
+class TestEpochListenerRegistrationOrdering:
+    """A failed subscribe must leave no registration behind.
+
+    Registering before the subscribe would strand an entry when it raises, so
+    a caller that retries double-registers and every later reset fires that
+    consumer twice -- a reload it cannot tell from a genuine second reset.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_subscribe_registers_nothing(self) -> None:
+        from threetears.nats.errors import SubscribeError
+
+        pool = _pool_returning(epoch=1)
+        nats = MagicMock()
+        nats.subscribe_typed = AsyncMock(side_effect=SubscribeError("broker refused"))
+        listener = EpochListener(nats, EpochClient(pool, nats))
+
+        on_reset = AsyncMock()
+        with pytest.raises(SubscribeError):
+            await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=on_reset)
+
+        await listener.signal_reset()
+        on_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_after_a_failure_registers_exactly_once(self) -> None:
+        from threetears.nats.errors import SubscribeError
+
+        pool = _pool_returning(epoch=1)
+        nats = MagicMock()
+        nats.subscribe_typed = AsyncMock(side_effect=[SubscribeError("transient"), None])
+        listener = EpochListener(nats, EpochClient(pool, nats))
+        subject = _subject("app.a.epoch")
+
+        on_reset = AsyncMock()
+        with pytest.raises(SubscribeError):
+            await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        await listener.signal_reset()
+        on_reset.assert_awaited_once()
