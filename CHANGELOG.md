@@ -294,6 +294,38 @@ packages (bumped in lock-step).
   entity built against them addressed rows by the bare id. That went unnoticed
   while each entity carried its own `_id` override and surfaced the moment the
   overrides were deleted.
+
+### Fixed
+
+- `nats`: **a NATS permissions violation is no longer an anonymous error line.**
+  `NatsClient`'s error callback logged every nats-py error identically
+  (`NATS error: %s`), which for a permissions violation was the wrong shape for
+  the one failure on that callback nobody can otherwise see.
+
+  A permissions violation is not a denial you find out about. The server refuses
+  the operation and KEEPS THE CONNECTION OPEN — nats-py's `_process_err` returns
+  before `_close` for exactly this case — and nothing is raised to any caller. So
+  a refused SUBSCRIBE leaves a perfectly live client-side subscription that
+  receives nothing, forever, silently: the capability is dead and the only trace
+  is one line that reads like any transient transport hiccup.
+
+  The line now names the subject, says whether the refusal was a `publish` or a
+  `subscribe`, states the consequence (a subscribe violation means that
+  subscription receives nothing from now on; a publish violation means the
+  message was dropped while the sender believes it succeeded), and points at
+  `threetears.nats.subject_permissions.build_permissions` as the place the grant
+  is missing from. The raw server error is still carried verbatim.
+
+  Rate limiting keeps DISTINCT SUBJECTS distinct, so a second dead subject is
+  never suppressed behind the first — each is a different capability lost, not a
+  repeat of one error. Only the same subject repeating inside the window is
+  collapsed to debug, as before.
+
+  Observability only: no other error path changed, and nothing raises where the
+  client previously continued (the reconnect and degrade paths depend on that).
+  A permissions violation still does NOT trip the wedged-auth `is_healthy`
+  signal, which is correct — restarting the pod cannot fix a missing grant.
+
 ## v0.26.1 -- 2026-08-18
 
 The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the

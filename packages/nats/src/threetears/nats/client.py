@@ -40,6 +40,13 @@ design notes
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
+  a PERMISSIONS VIOLATION gets its own line naming the subject, the
+  refused operation, and the consequence -- it is the only error here
+  that leaves the connection up and raises to nobody, so a refused
+  subscribe otherwise reads as one anonymous error while the
+  subscription it belonged to silently receives nothing forever. its
+  rate-limit key carries the subject, so a second dead subject is
+  never suppressed behind the first.
 - **deadletter dispatch**: by default uncaught exceptions in subscribe
   callbacks publish the original message + a structured envelope to
   ``{ns}.deadletter.{original_path}``. opt out per-subscribe with
@@ -53,6 +60,7 @@ import asyncio
 import json
 import math
 import random
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -278,6 +286,48 @@ DEFAULT_JETSTREAM_PUBLISH_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 #: dedup window for error-callback rate limiting.
 _ERROR_LOG_RATE_LIMIT_SECONDS: Final[float] = 10.0
+
+#: the phrase every NATS server permissions refusal carries, matched lowercased. nats-py lowercases
+#: the whole ``-ERR`` payload in its protocol parser before dispatching to ``error_cb``, so the
+#: comparison is done on a lowercased copy rather than assuming either case.
+_PERMISSIONS_VIOLATION_PHRASE: Final[str] = "permissions violation"
+
+#: decomposes the server's refusal into the operation + the subject it names. The server emits
+#: ``Permissions Violation for Subscription to "<subject>"`` (optionally ``... using queue "<q>"``)
+#: and ``Permissions Violation for Publish to "<subject>"``; the subject is always the FIRST quoted
+#: token, so one pattern covers every variant. Case-insensitive so it survives a nats-py that stops
+#: lowercasing the payload.
+_PERMISSIONS_VIOLATION_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'permissions violation for (?P<operation>subscription|publish) to "(?P<subject>[^"]+)"',
+    re.IGNORECASE,
+)
+
+#: server wording -> the word an operator reads. "subscription" becomes "subscribe" so the two
+#: refusals read as the two operations a subject grant is split into.
+_VIOLATION_OPERATIONS: Final[dict[str, str]] = {"subscription": "subscribe", "publish": "publish"}
+
+#: what a refusal actually COSTS, per operation -- the half of the message that says a capability
+#: just went dead rather than merely that an error occurred.
+_VIOLATION_CONSEQUENCES: Final[dict[str, str]] = {
+    "subscribe": (
+        "That subscription stays open on this client and will receive NOTHING, from now on, "
+        "with no further error and no exception anywhere -- the capability it serves is dead "
+        "until the grant exists."
+    ),
+    "publish": (
+        "That message was DROPPED and reached no subscriber; the publish call itself did not "
+        "raise, so the sender believes it succeeded."
+    ),
+}
+
+#: placeholders for a violation whose wording :data:`_PERMISSIONS_VIOLATION_PATTERN` cannot
+#: decompose. Reporting the loss with placeholders beats degrading to an anonymous "NATS error".
+_UNKNOWN_OPERATION: Final[str] = "operation"
+_UNKNOWN_SUBJECT: Final[str] = "<not reported in the server's wording>"
+_UNKNOWN_CONSEQUENCE: Final[str] = (
+    "The refused operation fails SILENTLY: the connection stays open and nothing is raised to any "
+    "caller, so whatever it served is dead until the grant exists."
+)
 
 
 def _full_jitter_backoff(
@@ -2850,19 +2900,81 @@ def _is_outbound_overflow(exc: Exception) -> bool:
     return "outbound buffer limit exceeded" in str(exc).lower()
 
 
+def _permissions_violation(exc: Exception) -> tuple[str, str] | None:
+    """the ``(operation, subject)`` a server permissions violation names, or ``None``.
+
+    A permissions violation is the one error reaching this callback that leaves the connection UP
+    (nats-py's ``Client._process_err`` returns before ``_close`` for it) and that no caller ever
+    observes, so it is the one that has to be decomposed rather than logged whole. The server text
+    is matched CASE-INSENSITIVELY against the original string rather than a lowercased copy: nats-py
+    currently lowercases the whole ``-ERR`` payload in its protocol parser before dispatch, but a
+    version that stops doing so should hand back the subject in its true case, not a mangled one.
+
+    When the phrase is present but the wording cannot be decomposed -- a future NATS rewording --
+    this still reports a violation, with placeholders, rather than degrading to an anonymous error.
+
+    :param exc: the exception nats-py surfaced to the error callback
+    :ptype exc: Exception
+    :return: ``(operation, subject)`` with ``operation`` normalized to ``publish``/``subscribe``, or
+        ``None`` when ``exc`` is not a permissions violation
+    :rtype: tuple[str, str] | None
+    """
+    result: tuple[str, str] | None = None
+    text = str(exc)
+    if _PERMISSIONS_VIOLATION_PHRASE in text.lower():
+        match = _PERMISSIONS_VIOLATION_PATTERN.search(text)
+        if match is None:
+            result = (_UNKNOWN_OPERATION, _UNKNOWN_SUBJECT)
+        else:
+            operation = _VIOLATION_OPERATIONS[match.group("operation").lower()]
+            result = (operation, match.group("subject"))
+    return result
+
+
 async def _on_error(exc: Exception) -> None:
     """nats-py error callback with rate-limited logging.
+
+    A PERMISSIONS VIOLATION is singled out because it is otherwise INVISIBLE. The server refuses
+    the operation and keeps the connection open, and nothing is raised to any caller, so a refused
+    SUBSCRIBE leaves a live client-side subscription that will never receive a message and never
+    complain -- the capability is simply dead. Reported as one more ``NATS error: ...`` line, that
+    states neither which subject died nor that anything died at all. The dedicated line below names
+    the subject, says whether the refusal was a publish or a subscribe, and states the consequence.
+
+    Rate limiting keeps DISTINCT SUBJECTS distinct: the key carries the subject, so a second dead
+    subject is never suppressed behind the first (each one is a different capability lost, not a
+    repeat of the same error). Only the same subject repeating is collapsed.
+
+    This is observability only. Every error path here still logs and CONTINUES, because the
+    reconnect and degrade paths depend on that.
 
     :param exc: exception from nats-py client
     :ptype exc: Exception
     :return: nothing
     :rtype: None
     """
-    key = f"{type(exc).__name__}:{exc}"
+    violation = _permissions_violation(exc)
+    if violation is None:
+        key = f"{type(exc).__name__}:{exc}"
+    else:
+        key = f"{_PERMISSIONS_VIOLATION_PHRASE}:{violation[0]}:{violation[1]}"
     now = time.monotonic()
     last = _last_error_log.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
-        log.error("NATS error: %s", exc)
+        if violation is None:
+            log.error("NATS error: %s", exc)
+        else:
+            operation, subject = violation
+            log.error(
+                "NATS PERMISSIONS VIOLATION: the server refused this connection's %s of subject "
+                "%s. %s The minted user JWT does not grant that subject -- add it to this "
+                "principal's allow-list in threetears.nats.subject_permissions.build_permissions. "
+                "raw error: %s",
+                operation,
+                subject,
+                _VIOLATION_CONSEQUENCES.get(operation, _UNKNOWN_CONSEQUENCE),
+                exc,
+            )
         _last_error_log[key] = now
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)
