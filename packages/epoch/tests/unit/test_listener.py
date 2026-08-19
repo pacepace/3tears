@@ -409,3 +409,162 @@ class TestEpochListenerWildcardSubscription:
 
         consumer_cb.assert_not_awaited()
         assert listener.last_seen(subject) == 7
+
+
+class TestEpochListenerResetFanOut:
+    """A reset reaches every registered consumer, not the one that noticed it.
+
+    The listener previously kept no reference to any callback -- ``on_bump``
+    lived only as a closure argument -- so whichever call spotted a reset could
+    invoke only its own. A pod subscribed to two subjects would tell one
+    consumer and leave the other holding state it has no reason to doubt, which
+    for a subject that never bumps again is permanent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_every_registered_consumer_is_told(self) -> None:
+        pool = _pool_returning(epoch=5)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+
+        reset_a, reset_b = AsyncMock(), AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=reset_a)
+        await listener.subscribe(_subject("app.b.epoch"), AsyncMock(), on_reset=reset_b)
+
+        await listener.signal_reset()
+
+        reset_a.assert_awaited_once()
+        reset_b.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_wildcard_registration_is_told_once_after_matching_several(self) -> None:
+        """One registration, one callback, however many subjects it matched.
+
+        The matching has to actually happen for this to mean anything: a reset
+        signalled against a wildcard that never saw a message would report one
+        invocation whether the rule were per-registration or per-matched-path.
+        So two concrete subjects are delivered first, which is what puts two
+        entries in the dedupe map, and only then is the reset signalled.
+
+        Dedupe keys on the MESSAGE path, because those counters are unrelated
+        numbers. Registration keys on the SUBSCRIBED path, because the consumer
+        is one.
+        """
+        pool = _pool_returning(epoch=0)
+        nats, callbacks = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+
+        on_reset = AsyncMock()
+        await listener.subscribe(_subject("app.*.epoch"), AsyncMock(), on_reset=on_reset)
+        await callbacks[0](EpochBumpMessage(subject_path="app.a.epoch", epoch=1, payload=None))
+        await callbacks[0](EpochBumpMessage(subject_path="app.b.epoch", epoch=1, payload=None))
+
+        await listener.signal_reset()
+
+        on_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_two_consumers_on_the_same_subject_are_both_told(self) -> None:
+        """One listener per pod is the documented shape, so this is normal usage.
+
+        Both already receive bumps, because each ``subscribe`` registers its own
+        NATS callback. Recording one entry per PATH rather than per
+        subscription would give both consumers bumps and only the last one
+        resets -- the same permanent staleness this class exists to remove, one
+        scope smaller and considerably harder to notice.
+        """
+        pool = _pool_returning(epoch=3)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+        subject = _subject("app.shared.epoch")
+
+        first, second = AsyncMock(), AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=first)
+        await listener.subscribe(subject, AsyncMock(), on_reset=second)
+
+        await listener.signal_reset()
+
+        first.assert_awaited_once()
+        second.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_callback_does_not_deprive_the_others(self) -> None:
+        """The reset runs after last-seen is cleared, with nothing to retry it.
+
+        An early raise would leave every consumer after it both un-notified and
+        un-primed, which is worse than the staleness the reset announces.
+        """
+        pool = _pool_returning(epoch=3)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+
+        boom = AsyncMock(side_effect=RuntimeError("consumer bug"))
+        after = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=boom)
+        await listener.subscribe(_subject("app.b.epoch"), AsyncMock(), on_reset=after)
+
+        with pytest.raises(RuntimeError, match="consumer bug"):
+            await listener.signal_reset()
+
+        after.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_callback_still_surfaces(self) -> None:
+        """Continuing is not swallowing: the consumer bug is re-raised."""
+        pool = _pool_returning(epoch=3)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+        await listener.subscribe(
+            _subject("app.a.epoch"), AsyncMock(), on_reset=AsyncMock(side_effect=RuntimeError("consumer bug"))
+        )
+
+        with pytest.raises(RuntimeError, match="consumer bug"):
+            await listener.signal_reset()
+
+    @pytest.mark.asyncio
+    async def test_a_consumer_without_a_reset_callback_is_skipped(self) -> None:
+        """Omitting it is a choice, not an error."""
+        pool = _pool_returning(epoch=5)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+
+        told = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock())
+        await listener.subscribe(_subject("app.b.epoch"), AsyncMock(), on_reset=told)
+
+        await listener.signal_reset()
+
+        told.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_last_seen_is_cleared_not_reprimed(self) -> None:
+        """Re-priming re-creates the wedge this exists to prevent.
+
+        Identity and counter are two non-atomic reads, so a value read against
+        the old generation could be written into last-seen against the new one.
+        Clearing costs one redundant reload and cannot re-wedge.
+        """
+        pool = _pool_returning(epoch=5000)
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+        subject = _subject("app.a.epoch")
+        await listener.subscribe(subject, AsyncMock(), on_reset=AsyncMock())
+        assert listener.last_seen(subject) == 5000
+
+        await listener.signal_reset()
+
+        assert listener.last_seen(subject) == 0
+
+    @pytest.mark.asyncio
+    async def test_a_bump_after_a_reset_dispatches_from_zero(self) -> None:
+        """The point of clearing: the new counter's first bump is not swallowed."""
+        pool = _pool_returning(epoch=5000)
+        nats, callbacks = _capture_subscribe_typed()
+        listener = EpochListener(nats, EpochClient(pool, nats))
+        on_bump = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), on_bump, on_reset=AsyncMock())
+
+        await listener.signal_reset()
+        await callbacks[0](EpochBumpMessage(subject_path="app.a.epoch", epoch=1, payload=None))
+
+        on_bump.assert_awaited_once()

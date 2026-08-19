@@ -33,6 +33,7 @@ from threetears.epoch.wire import EpochBumpMessage
 __all__ = [
     "BumpCallback",
     "EpochListener",
+    "ResetCallback",
 ]
 
 log = get_logger(__name__)
@@ -45,6 +46,24 @@ invoked with ``(new_epoch, payload)``. the callback is responsible
 for deciding what to reload and from where -- the framework knows
 nothing about the consumer's caches. exceptions raised inside the
 callback propagate; the listener does not swallow consumer bugs.
+"""
+
+
+ResetCallback = Callable[[], Awaitable[None]]
+"""signature for a consumer's reset callback.
+
+invoked with NO epoch, deliberately. a reset means the counter this
+listener was tracking has been REPLACED, so every number it ever
+compared against is meaningless -- including whatever the new counter
+happens to read right now. handing one over would invite the consumer
+to dedupe on it, and this module spends its whole docstring surface
+teaching consumers to dedupe on epochs. a value below everything the
+consumer has already acted on is exactly what that dedupe discards, so
+the reset would be swallowed and the staleness it announces would
+persist.
+
+**must not be epoch-deduped.** a consumer that receives this reloads,
+unconditionally.
 """
 
 
@@ -77,6 +96,22 @@ class EpochListener:
         self._nats = nats_client
         self._epoch_client = epoch_client
         self._last_seen: dict[str, int] = {}
+        # Every registered subscription, so a reset can reach ALL of them.
+        # Without this the callbacks live only as closure arguments to
+        # ``subscribe`` and ``catch_up``, and whichever call happened to
+        # notice a reset could invoke only its own -- so a pod subscribed to
+        # two subjects would tell one consumer and silently leave the other
+        # holding state it has no reason to doubt. For a subject that never
+        # bumps again, that is permanent.
+        #
+        # A LIST per path, not one entry per path. This class is one listener
+        # per pod shared across everything the pod cares about, so two
+        # components subscribing the SAME subject is intended usage, and each
+        # registers its own NATS callback -- so both already receive bumps.
+        # One entry per path would give both consumers bumps and only the last
+        # one resets: the same permanent staleness, one scope smaller and
+        # considerably harder to notice.
+        self._registrations: dict[str, list[tuple[Subject, BumpCallback, ResetCallback | None]]] = {}
 
     def last_seen(self, subject: Subject) -> int:
         """return the listener's recorded last-seen epoch for a subject.
@@ -97,6 +132,7 @@ class EpochListener:
         subject: Subject,
         on_bump: BumpCallback,
         primed_epoch: int | None = None,
+        on_reset: ResetCallback | None = None,
     ) -> None:
         """register a callback for monotonic bumps on a subject.
 
@@ -185,6 +221,12 @@ class EpochListener:
             ``current()`` now (no state loaded against an earlier
             epoch)
         :ptype primed_epoch: int | None
+        :param on_reset: invoked when the counter this listener tracks is
+            REPLACED rather than advanced, with no epoch -- see
+            :data:`ResetCallback`. omitting it means this consumer is not
+            told, which is a choice rather than a default: after a reset its
+            state is stale with nothing scheduled to correct it.
+        :ptype on_reset: ResetCallback | None
         :return: nothing
         :rtype: None
         :raises SubscribeError: if the underlying NATS subscribe
@@ -192,6 +234,11 @@ class EpochListener:
         """
         primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
         self._last_seen[subject.path] = primed
+        # keyed on the SUBSCRIBED path, not the message path: a wildcard is one
+        # registration and gets one reset callback, however many concrete
+        # subjects it later matches. dedupe stays keyed on the message path
+        # below, because those counters are independent numbers.
+        self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
         log.debug(
             "epoch listener primed last-seen",
             extra={
@@ -243,6 +290,68 @@ class EpochListener:
             )
         except SubscribeError:
             raise
+
+    async def signal_reset(self) -> None:
+        """the counter was REPLACED; drop local state and tell every consumer.
+
+        Called when the coherence substrate is found to be a different one --
+        a broker restart on ephemeral storage recreates the bucket empty, and
+        the counter starts again from zero while this process keeps running
+        with a high last-seen. Chunk 03 supplies the detection; this is what
+        it triggers.
+
+        **Clears rather than re-primes.** Re-priming from the new counter
+        looks tidier and re-creates the bug: identity and counter are two
+        separate reads with no atomicity between them, so a value read against
+        the OLD generation can be written into last-seen against the new one,
+        leaving the pod wedged again with no further identity change to rescue
+        it. Clearing costs at most one redundant reload per subject and cannot
+        re-wedge.
+
+        Fans out to EVERY registration, not the one that noticed. A pod
+        subscribed to two subjects has two consumers holding state, and the
+        reset is equally true for both. A consumer that registered no
+        ``on_reset`` is skipped: it chose that at :meth:`subscribe`.
+
+        **One raising callback does not deprive the rest.** A bump callback
+        propagates because it harms only its own consumer, and that precedent
+        does not transfer here: this runs after ``_last_seen`` is already
+        cleared, with nothing scheduled to retry, so an early raise would
+        leave every consumer after it un-notified AND un-primed. Every
+        callback is attempted; the first exception is re-raised afterwards, so
+        a consumer bug still surfaces rather than being swallowed.
+
+        :return: nothing
+        :rtype: None
+        :raises Exception: the first exception raised by any consumer
+            callback, after every other callback has been attempted
+        """
+        self._last_seen.clear()
+        registrations = [entry for entries in self._registrations.values() for entry in entries]
+        notified = 0
+        first_error: BaseException | None = None
+        for subject, _on_bump, on_reset in registrations:
+            if on_reset is None:
+                continue
+            try:
+                await on_reset()
+                notified += 1
+            # prawduct:allow prawduct/broad-except -- a consumer bug must not
+            # deprive the remaining consumers of a reset they cannot otherwise
+            # learn about. re-raised below, never swallowed.
+            except Exception as exc:  # noqa: BLE001
+                log.exception(
+                    "epoch reset callback raised; continuing to the remaining consumers",
+                    extra={"extra_data": {"subject": subject.path}},
+                )
+                if first_error is None:
+                    first_error = exc
+        log.info(
+            "epoch counter replaced; last-seen cleared and consumers notified",
+            extra={"extra_data": {"registrations": len(registrations), "notified": notified}},
+        )
+        if first_error is not None:
+            raise first_error
 
     async def catch_up(
         self,
