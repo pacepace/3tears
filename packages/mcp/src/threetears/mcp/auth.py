@@ -521,9 +521,17 @@ class LocalGrantAuthorizer:
         :meth:`McpServer.stop` or a lifespan teardown) invoke once
         on shutdown.
 
+        ``_started`` is cleared FIRST, on every path. It used to be set only
+        after the task teardown, below an early return taken whenever there was
+        no task -- so a single-process authorizer (no epoch listener, hence no
+        catch-up task) stayed marked started forever, and :meth:`start`'s
+        double-start guard then refused to bring it back up. A stop that leaves
+        the object unable to start again is not idempotent, it is one-way.
+
         :return: nothing
         :rtype: None
         """
+        self._started = False
         if self._catchup_task is None:
             return
         self._catchup_task.cancel()
@@ -538,7 +546,6 @@ class LocalGrantAuthorizer:
             # later reset would call back into a stopped authorizer and ask it
             # to reload a cache it no longer maintains.
             self._epoch_listener.deregister(Subjects.mcp_rbac_epoch())
-        self._started = False
         log.info("MCP authorizer catch-up loop stopped")
 
     async def _catchup_loop(self) -> None:

@@ -461,12 +461,10 @@ class EpochListener:
         # already covered -- and the alternative is worse, since recording an
         # identity from a scoped reset would suppress a genuine replacement.
         # ``None`` is recorded deliberately when the identity cannot be read.
-        # After a reset the OLD identity is meaningless, so keeping it would
-        # make the next successful read look like a fresh replacement and fan
-        # out a second time for the same event -- which is exactly what happens
-        # on the backwards-counter arm, since that fires precisely when KV is
-        # unreadable. ``None`` means "unknown", and the next read primes
-        # instead of comparing.
+        # After a replacement the OLD identity is meaningless, so keeping it
+        # would make the next successful read look like a fresh replacement and
+        # fan out a second time for the same event. ``None`` means "unknown",
+        # and the next read primes instead of comparing.
         self._bucket_identity = await self._epoch_client.bucket_identity()
         registrations = [
             entry for entries in self._registrations.values() for entry in entries if not _is_durable(entry[0])

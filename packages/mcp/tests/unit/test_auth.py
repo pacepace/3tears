@@ -612,16 +612,32 @@ class TestStopDeregistersFromTheListener:
         assert listener.deregister.call_args.args[0] == Subjects.mcp_rbac_epoch()
 
     @pytest.mark.asyncio
-    async def test_stop_without_epoch_mode_deregisters_nothing(self) -> None:
-        """Single-process mode never registered, so there is nothing to drop.
+    async def test_stop_is_reversible_without_epoch_mode(self) -> None:
+        """A single-process authorizer must be startable again after stop.
 
-        Asserted against a listener that would record the call, rather than by
-        merely not raising -- a test whose only claim is "no exception" passes
-        just as happily when the code under it does the wrong thing.
+        The previous version of this test built a mock listener the authorizer
+        never received, so its ``assert_not_called()`` was true whatever the
+        code did -- vacuous, and worse than the bare no-exception check it
+        replaced, because the docstring claimed rigor it did not have. Passing
+        the listener in cannot fix that: epoch mode is decided solely by
+        ``self._epoch_listener is not None``, so it would invert the premise.
+
+        So this asserts something the no-listener path can actually get wrong,
+        and did: ``stop()`` set ``_started = False`` below an early return
+        taken whenever there was no catch-up task, leaving a single-process
+        authorizer permanently marked started and refused by ``start()``'s
+        double-start guard.
         """
-        _client, listener, _captured, _resets = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(grant_loader=AsyncMock(return_value=[]))
+        loader = AsyncMock(return_value=[])
+        authz = LocalGrantAuthorizer(grant_loader=loader)
         await authz.start()
         await authz.stop()
+        loads_after_first_cycle = loader.await_count
 
-        listener.deregister.assert_not_called()
+        await authz.start()
+
+        assert loader.await_count == loads_after_first_cycle + 1, (
+            "the restart was refused by the double-start guard, so the cache was never "
+            "reloaded -- stop() left the authorizer marked started"
+        )
+        await authz.stop()
