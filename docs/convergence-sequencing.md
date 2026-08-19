@@ -46,9 +46,10 @@ All items independent; all can start today.
   store-shape rule.
   → [`family-convergence.md` §4.2 (verified corrections)](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon),
   [open question 22](family-convergence.md#6-open-questions)
-- **discodon:** reshape budget refusal to the
+- **discodon:** ~~reshape budget refusal to the
   `check(estimate)`/`record(spend)` port shape, copied from
-  `threetears.search.contracts`, not invented.
+  `threetears.search.contracts`, not invented.~~ **Withdrawn 2026-08-19 —
+  this asked for the wrong shape.** See the correction below.
   → [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing);
   [`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon)
 - **metallm:** close the family version lag.
@@ -92,17 +93,28 @@ and one of them is subtler than not-done.**
   is not the protocol the item names**, and grepping for the item's own word —
   `StorageProtocol` — finds nothing, which is how this reads as untouched from
   outside.
-- **The budget reshape has the port's names and not its semantics.**
-  `EvalRunCostCap` in `discodon/eval/budget.py` exposes `check()` and
-  `record(cost_usd)`, which matches
+- **The budget reshape was withdrawn on 2026-08-19, and the paragraph that
+  called discodon's shape a defect was wrong.** It read: `EvalRunCostCap`
+  exposes `check()` and `record(cost_usd)`, matching
   [`threetears.search.contracts.BudgetPort`](../packages/search/src/threetears/search/contracts/budget.py)
-  by name. But `check()` takes **no estimate** and no scope: it reports
-  `accumulated > ceiling`, so it can only stop a run *after* the ceiling has
-  been crossed. The port's own docstring rules out exactly this — "an estimate
-  a run may freely exceed is not an estimate" — because `check(estimate)` is
-  asked *before* the provider call and must not debit. D27 wires the eval cost
-  cap onto `BudgetPort`; a same-named method with post-hoc semantics is the
-  shape most likely to be mistaken for done at wiring time.
+  by name, but `check()` takes no estimate and reports `accumulated > ceiling`,
+  so it can only stop a run *after* the ceiling is crossed — filed as the shape
+  most likely to be mistaken for done at wiring time.
+
+  **The two are solving different problems, and both shapes are right.** The
+  search port wraps exactly one provider call — `check(estimate)` before it,
+  `record(spend)` after it, both below the retry boundary — so it can refuse a
+  spend that has not happened yet. discodon's cap fires *between eval cells*,
+  where the cell's spend is already booked and the cell contains an unknown
+  number of LLM calls; there is no honest pre-estimate to give, and the port's
+  own "an estimate a run may freely exceed is not an estimate" is the argument
+  against inventing one. Requiring one shape for both was the error.
+
+  The eval budget contract will be shaped from what discodon runs in
+  production. Recorded as R6 of
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md),
+  stated there as a requirement precisely because an agent reading the
+  withdrawn instruction would "fix" a working production control.
 
 ## Phase 2 — In-family integration (3tears)
 

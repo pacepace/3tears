@@ -1510,13 +1510,25 @@ switch later costs no consumer rewrite).
    frozen web), through a `RecordingStore` over its existing store.
    Character-eval freezing stays on its action- and delivery-seam cassettes
    (D28), already wired discodon-side.
-6. Eval cost caps include search spend via the `BudgetPort` (check 3, under
-   D27's execution-spend rule). Recommended pre-work, doable any time while
-   discodon is still sole owner of its evals: reshape `EvalRunCostCap` and
-   the daily-budget mixin's refusal contract to the port's
-   `check(estimate)`/`record(spend)` shape, copied from
-   `threetears.search.contracts` rather than invented -- the protocol is
-   structural, so this gates on nothing shipping.
+6. Eval cost caps include search spend (check 3, under D27's execution-spend
+   rule). ***The pre-work this step used to recommend -- reshaping
+   `EvalRunCostCap` and the daily-budget mixin onto the port's
+   `check(estimate)`/`record(spend)` shape -- is withdrawn as of
+   2026-08-19.*** `BudgetPort` wraps one provider call and refuses a spend that
+   has not happened; the eval cap fires between cells, where the spend is
+   booked and the cell holds an unknown number of LLM calls, so there is no
+   honest estimate to pass. Two problems, two correct shapes. The eval budget
+   contract is shaped from what discodon runs -- R6 of
+   [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md).
+
+   **What check 3 actually needs is the other half, and it generalises past
+   search.** Eval must hold no provider-specific parameter-to-cost table: the
+   caller reports what it consumed in dimensions that name no provider --
+   calls, weighted provider units *and the name of that unit*, money and
+   currency. `Spend` here is already that shape (SR-E4), and eval owning an
+   equivalent vocabulary rather than importing this one is deliberate: eval
+   accounts for every metered external call -- image generation, Wolfram,
+   YouTube -- not only search. R5 of the same document.
 7. Existing web_search cassettes are keyed on the current wrapper's
    parameter hash; the rebuilt tool reshapes parameters, so this migration
    includes cassette re-capture (or a recorded key mapping) -- never silent
@@ -1718,6 +1730,14 @@ at 0.24.3+, and Gate C should confirm that floor rather than assume it.
 - **Model-mediated producer detail** (D3) -- designed when samsung pulls.
 - **D12 ratification** -- the robots/terms stance needs per-repo acceptance,
   not just this spec's proposal.
+- **A weighted provider unit has no name** (found 2026-08-19 while specifying
+  the eval extraction). `Spend.provider_units` is a bare `Decimal`, and
+  `Spend.__add__` refuses to sum `money` across currencies while summing
+  `provider_units` across providers silently. Tavily credits and another
+  provider's requests are not one quantity, and adding them fabricates one --
+  the identical defect the currency guard exists to prevent. Invisible with a
+  single provider; arrives with the second, which is also when a consumer
+  first reads a cross-provider total and believes it.
 
 ## 9. Requirements confidence
 
