@@ -4,6 +4,79 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## v0.27.0 -- 2026-08-18
+
+Names the limit above the publish bound, and lets a caller ask about it before
+building something that misses it.
+
+**A minor because the surface grew, and it had to.** A refusal nobody can catch
+specifically is a refusal nobody can act on, so the new type and the new
+property are the change; `BLD-7QM3`'s ruling puts them on a minor line.
+
+### Added
+
+- `nats`: **`PayloadTooLargeError`, for a publish the broker will not accept.**
+  `nats-py` refuses an oversized publish client-side, against the `max_payload`
+  the server advertised in its INFO -- 1 MB on an untuned broker. That refusal
+  arrived as a generic `PublishError` carrying a stringified cause, which left
+  the two failures a caller most needs to tell apart -- the frame we built is
+  too big, versus the connection is gone -- separable only by matching on
+  message text. One of them is a bug in what we built and **must never be
+  retried**: nothing about the next attempt is smaller, so a retry is an
+  infinite loop that logs. The other is an outage, where retrying is often
+  right.
+
+  Both numbers ride the exception as attributes rather than only as prose. It
+  subclasses `PublishError`, so every existing catch site is unaffected.
+
+  Every public publish entry point reaches it, including the JetStream path,
+  where the refusal fires before the ack wait. The task this came from assumed
+  all four funnelled through `_publish_bytes`; two of them do not, so the funnel
+  callers can rely on is the classification rather than the call.
+
+- `nats`: **`NatsClient.max_payload`, so a frame builder can ask what fits.**
+  The half that makes the error more than a nicer message: a caller that can ask
+  how much fits can pick a shape that fits -- a narrower projection, a handle to
+  the part that did not, a chunked `pipe` transfer -- instead of building it
+  large, publishing it, and learning the answer as an exception.
+
+  It answers `None` before connect and `None` while disconnected, which is the
+  point of it rather than a gap in it. `nats-py` pre-fills its own attribute
+  with a 1 MB default, so reading that early returns a guess wearing the shape
+  of an answer; a default here would be a second source of truth for the one
+  number this change exists to stop guessing. The classification is
+  catch-and-retype for the same reason -- the limit has exactly one source of
+  truth, and it is the connected server.
+
+### Changed
+
+- `channels`: **`RoomFanout.broadcast` documents what it propagates and what
+  must not be retried.** It still does not catch, which is correct -- this
+  package is not where the decision about a lost room frame is made, and its two
+  consumers each handle it differently on purpose. What it owed them was a
+  failure they can tell apart, and the docstring now names it.
+
+  The failure is silent by construction: the publishing pod's own sockets
+  already hold the content, so the person who caused an oversized frame sees
+  everything while the room sees nothing, and a single-pod test never reaches
+  the publish at all.
+
+- `langgraph`: **`DEFAULT_STRUCTURED_INLINE_MAX_CHARS` records the ceiling above
+  it.** The inline bound was a placeholder with an owner; it now has an upper
+  limit too, so the open question is answered inside a range rather than into
+  open air. Measured through the real event -> `Frame` -> `RoomFrame` nesting,
+  an untuned 1 MB broker works back to roughly 780,000 characters of artifact --
+  and the nesting cost is neither 1.0 nor stable (1.20x on a body-heavy payload,
+  1.34x on a metadata-heavy one), so the note points at
+  `scripts/measure-structured-result-sizes.py` rather than at either ratio.
+
+### Docs
+
+- `docs/structured-result-tiers.md` and its three task documents: let a client
+  declare what it wants from a structured result -- `citations` or `full` --
+  rather than having the platform drop everything when a projection does not fit
+  the frame. Proposal only; task-03, the ceiling above, is the first piece built.
+
 ## v0.26.1 -- 2026-08-18
 
 The sidecar, which 0.26.0 changed and had no way to ship. A patch, and the
