@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from threetears.core.cache.base import build_select_clause
+from threetears.core.cache.base import _CACHED_AT_COLUMN, _TABLES_WITHOUT_CACHE_STAMP, build_select_clause
 from threetears.observe import get_logger
 
 __all__ = [
@@ -137,6 +137,13 @@ class SQLiteBackend:
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+            # The stamp must land in BOTH the DDL and this registry. ``upsert``
+            # filters writes to the registry, so a column present only in the
+            # table would silently drop every stamp write and leave the column
+            # permanently NULL -- with any test that only inspects the DDL
+            # still passing.
+            if self._stamps_cache_age(table.name):
+                self._schema_info[table.name][_CACHED_AT_COLUMN] = "REAL"
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
@@ -287,6 +294,15 @@ class SQLiteBackend:
             col_type = schema.get(col_name, "TEXT")
             values.append(self.serialize_value(value, col_type))
 
+        # The stamp is preserved on absence, and that falls out of the column
+        # filter above rather than needing its own branch: a key the caller did
+        # not supply is not in ``columns``, so DO UPDATE SET never names it and
+        # the stored value survives. That matters because reads strip the stamp,
+        # so a read-modify-write caller (the context-item collection touching
+        # ``date_accessed``, for one) hands back a dict without it. Clearing on
+        # absence would make an hours-old row read as locally-authored, and
+        # locally-authored rows never expire. A fresh INSERT leaves it NULL,
+        # which is exactly right: that row WAS authored locally.
         update_cols = [c for c in columns if c not in pk_cols]
         update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
         conflict_clause = ", ".join(pk_cols)
@@ -489,10 +505,21 @@ class SQLiteBackend:
         return result
 
     def _deserialize_row(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
-        """Deserialize a SQLite row back to Python types using schema registry."""
+        """Deserialize a SQLite row back to Python types using schema registry.
+
+        Strips the injected cache-age stamp. This is the single funnel both
+        ``select_by_id`` and ``select_batch`` pass every row through, so
+        stripping here covers the ``SELECT *`` path AND a caller that names the
+        column explicitly -- there is no projection that reaches past it. The
+        stamp is backend bookkeeping; nothing above the cache tier has any use
+        for it, and a row handed to an entity constructor carrying an unknown
+        key is a bug waiting on the first strict consumer.
+        """
         schema = self._schema_info.get(table, {})
         return {
-            col_name: self.deserialize_field(value, schema.get(col_name, "TEXT")) for col_name, value in row.items()
+            col_name: self.deserialize_field(value, schema.get(col_name, "TEXT"))
+            for col_name, value in row.items()
+            if col_name != _CACHED_AT_COLUMN
         }
 
     def reset(self) -> None:
@@ -539,12 +566,25 @@ class SQLiteBackend:
                     primary = " PRIMARY KEY"
             columns.append(f'"{column.name}" {ddl_type}{nullable}{primary}')
 
+        if self._stamps_cache_age(table.name):
+            if any(col.name == _CACHED_AT_COLUMN for col in table.columns):
+                raise ValueError(
+                    f"table {table.name!r} declares {_CACHED_AT_COLUMN!r}, which is reserved "
+                    f"for the L1 cache-age stamp and is injected by the backend",
+                )
+            columns.append(f'"{_CACHED_AT_COLUMN}" REAL')
+
         if is_composite_pk:
             pk_clause = ", ".join(f'"{c}"' for c in pk_cols)
             columns.append(f"PRIMARY KEY ({pk_clause})")
 
         columns_sql = ", ".join(columns)
         return f"CREATE TABLE IF NOT EXISTS {table.name} ({columns_sql})"
+
+    @staticmethod
+    def _stamps_cache_age(table: str) -> bool:
+        """Whether ``table`` carries the injected cache-age stamp column."""
+        return table not in _TABLES_WITHOUT_CACHE_STAMP
 
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:

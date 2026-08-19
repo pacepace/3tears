@@ -14,6 +14,33 @@ __all__ = [
 MISSING = object()
 """Sentinel for cache miss. Distinct from None (which is a valid cached value)."""
 
+_CACHED_AT_COLUMN = "_3t_cached_at"
+"""Reserved L1 column holding the monotonic reading at which a row was pulled through.
+
+Injected into generated entity tables by the backend, never declared by a
+caller's SQLAlchemy metadata, and stripped from every row a read returns --
+so it is invisible above the cache tier and a table declaring it is a
+collision, not a contribution.
+
+The leading underscore and the ``3t`` prefix are the collision guard.
+``collection_scan_cache`` already carries its own ``stored_at_monotonic``
+(``collections/scan_cache.py``), which is why this is not simply named for
+what it holds: a blanket injection under that name would emit a duplicate
+column, and a blanket strip under it would break the scan cache's own read.
+"""
+
+_TABLES_WITHOUT_CACHE_STAMP: frozenset[str] = frozenset(
+    {
+        # Not entity caches. They ride the same L1 backend but are internal
+        # bookkeeping with their own lifetimes: the scan cache already has
+        # its own monotonic stamp, and the write buffer holds pending L3
+        # writes whose age means something entirely different.
+        "collection_scan_cache",
+        "write_buffer",
+    }
+)
+"""Tables the cache stamp is never injected into."""
+
 
 def _entry_is_fresh(
     stored_at_monotonic: float | None,

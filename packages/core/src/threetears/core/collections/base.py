@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVa
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.backends.protocol import L3Backend
 from threetears.core.cache import MISSING
+from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
@@ -735,15 +737,30 @@ class BaseCollection(ABC, Generic[EntityT]):
         l2_data = await self._get_from_l2(entity_id)
         if l2_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(l2_data), self.primary_key_columns)
             return l2_data
         pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
+                self._l1.upsert(self.table_name, self._stamped(pg_data), self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
             return pg_data
         return None
+
+    @staticmethod
+    def _stamped(data: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of ``data`` carrying the cache-age stamp for this instant.
+
+        Only the pull-through path stamps, and that is the whole design: the
+        stamp records when a row was last obtained from a LOWER tier, not when
+        it was last touched in L1. Stamping on every write would let
+        ``set_field_sync`` renew a stale row's lifetime by editing one field,
+        which makes exactly the rows this bounds immortal.
+
+        A copy, because the caller's dict is returned to the caller and becomes
+        entity data. The stamp is storage bookkeeping and must not ride along.
+        """
+        return {**data, _CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
         """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found."""
@@ -1110,7 +1127,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.set_data(data)
         entity.original_date_updated = data.get("date_updated")
         if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_columns)
+            # Stamped: this row came from L3, so its provenance is a lower tier
+            # even though no pull-through ran. Leaving it unstamped would make a
+            # freshly-reloaded row read as locally authored, and locally
+            # authored rows never expire.
+            self._l1.upsert(self.table_name, self._stamped(data), self.primary_key_columns)
         await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 

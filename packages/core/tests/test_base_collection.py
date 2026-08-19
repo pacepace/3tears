@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.cache.base import _CACHED_AT_COLUMN
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -1400,3 +1401,98 @@ class TestCorruptL2EntryFallsThroughToL3:
 
         assert entity is not None
         assert entity.name == "FromCache", "a healthy L2 entry was bypassed"
+
+
+class TestCacheAgeStampOnPullThrough:
+    """Only a pull-through stamps a row's provenance.
+
+    The stamp records when a row was last obtained from a LOWER tier, never
+    when it was last touched locally. That distinction is the mechanism: a row
+    renewed by every local edit would be immortal, which is precisely the
+    staleness this is meant to bound.
+    """
+
+    @staticmethod
+    def _stored_stamp(backend: SQLiteBackend, entity_id: str) -> float | None:
+        """Read the stamp straight from SQLite, since every read strips it."""
+        conn = backend.get_connection()
+        row = conn.execute(
+            f'SELECT "{_CACHED_AT_COLUMN}" FROM test_entities WHERE id = ?',
+            (entity_id,),
+        ).fetchone()
+        return None if row is None else row[0]
+
+    @pytest.mark.asyncio
+    async def test_a_pull_through_from_l3_stamps_the_l1_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        nats = _make_nats_mock()
+        l3_rows = {"p1": {"id": "p1", "name": "FromL3", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        assert await coll.get("p1") is not None
+
+        assert self._stored_stamp(l1_backend, "p1") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_pull_through_from_l2_stamps_the_l1_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        nats = _make_nats_mock()
+        nats.store["test_entities.p2"] = json.dumps({"id": "p2", "name": "FromL2", "score": 2}).encode()
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        assert await coll.get("p2") is not None
+
+        assert self._stored_stamp(l1_backend, "p2") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_locally_authored_write_is_not_stamped(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """This pod wrote it; no lower tier has served it yet."""
+        nats = _make_nats_mock()
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        coll.write_to_cache_sync({"id": "p3", "name": "Local", "score": 3})
+
+        assert self._stored_stamp(l1_backend, "p3") is None
+
+    @pytest.mark.asyncio
+    async def test_reload_entity_stamps_the_row_it_fetched_from_l3(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """Reached via ``BaseEntity.reload()``, not via get/ensure -- and it still counts.
+
+        It is not a pull-through, but it fetches from L3 and writes the result
+        into L1, so the row's provenance is a lower tier. An unstamped reload
+        would read as locally authored, and locally authored rows never expire.
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"p5": {"id": "p5", "name": "FromL3", "score": 5}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        entity = coll.create({"id": "p5", "name": "Local", "score": 0})
+        await coll.reload_entity(entity)
+
+        assert self._stored_stamp(l1_backend, "p5") is not None
+
+    @pytest.mark.asyncio
+    async def test_the_stamp_never_reaches_the_caller(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        l3_rows = {"p4": {"id": "p4", "name": "FromL3", "score": 4}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        entity = await coll.get("p4")
+        assert entity is not None
+        assert _CACHED_AT_COLUMN not in entity.to_dict()
+
+        row = coll.get_row_sync("p4")
+        assert row is not None
+        assert _CACHED_AT_COLUMN not in row
+
+        ensured = await coll.ensure("p4")
+        assert ensured is not None
+        assert _CACHED_AT_COLUMN not in ensured

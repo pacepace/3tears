@@ -59,6 +59,10 @@ fresher with respect to what other pods know.
 Consequences to implement deliberately:
 
 - Stamp in the pull-through path (`collections/base.py:737-738`, `:742-743`).
+- **Stamp in `reload_entity` too.** It is not a pull-through, but it fetches from L3 and
+  writes the result into L1, so the row's provenance is a lower tier and the invariant
+  applies. Easy to miss because it is reached from `BaseEntity.reload()` rather than from
+  `get`/`ensure`; found in review of Chunk 02, not in the original design.
 - Do **not** stamp in `upsert`. If it stamped there, `set_field_sync`
   (`collections/base.py:461-465`), `__setitem__` (`:800-805`) and
   `packages/agent/tools/src/threetears/agent/tools/collections.py:353-360` would each
@@ -66,6 +70,13 @@ Consequences to implement deliberately:
   shard targets immortal.
 - A row with no stamp (locally authored, never pulled through) is **treated as fresh**.
   It reflects a write this pod made, and expiring it would revert a local write.
+- **`upsert` preserves an existing stamp when the caller supplies none.** Discovered while
+  building Chunk 02, and load-bearing:
+  `packages/agent/tools/src/threetears/agent/tools/collections.py:353-361` reads a row from
+  L1, mutates one field, and upserts it straight back. Since reads strip the stamp (below),
+  that write-back carries none. Without this rule it would silently clear the stamp, and a
+  row that had been pulled through hours ago would start reading as locally-authored and
+  therefore never expire. Absence of the key means "unchanged", not "clear it".
 
 ## Injection points (the earlier draft named the wrong one)
 
@@ -80,7 +91,7 @@ The full set:
 |---|---|
 | DDL | `cache/sqlite.py:524-547` |
 | Schema registry | `cache/sqlite.py:139` |
-| Strip from results | `select_by_id` (`sqlite.py:310`) and `select_batch` (`sqlite.py:349`) |
+| Strip from results | `_deserialize_row`, the single funnel both `select_by_id` and `select_batch` already pass every row through |
 | Dynamic collections | `data/collection_factory.py:129,243` builds its own metadata and calls `initialize` per table |
 
 `execute_query` is deliberately exempt: it returns raw dicts against explicit column lists
@@ -88,9 +99,18 @@ and is used only for non-entity tables (`collections/flush.py:207`,
 `geo/features.py:163,194`), as are the raw-connection reads at `geo/features.py:127-137`.
 
 `build_select_clause` returns literal `"*"` when `columns is None` (`cache/base.py:42-43`),
-which is every production call, so the stamp does come back and must be stripped. When
-`columns` is not `None` the stamp is appended to the projection internally, stripped from
-the result, and a caller naming it explicitly is an error.
+which is every production call, so the stamp does come back and must be stripped. Stripping
+in `_deserialize_row` covers the projected case for free: a caller naming the stamp
+explicitly still gets it removed, so no projection has to be rewritten and no caller can
+name its way past the boundary.
+
+**Consequence for Chunk 03, decided here rather than discovered there.** Because reads strip
+the stamp, the expiry comparison cannot live above the backend: nothing above it can see the
+value. So the backend owns the *mechanism* (compare, and delete the expired row), and the
+collections layer owns the *policy* (whether this collection expires at all, and at what age)
+by configuring the backend per table. That split is the reason the exclusion below is
+expressible: `l3_pool is None` is a collections-level fact, and a collection that knows it
+has no L3 simply never configures a max age.
 
 ## Column name
 
@@ -101,8 +121,14 @@ blanket strip by that name breaks `ScanCache.get`, which reads it at `:132`.
 
 Use a reserved name (`_3t_cached_at`), declare it reserved so a user table using it is an
 error, and exempt the tables that are not entity caches: `write_buffer`
-(`collections/flush.py:30-39`), `collection_scan_cache`, and geo's raw R-tree tables
-(`geo/features.py:128-136`).
+(`collections/flush.py:30-39`) and `collection_scan_cache`.
+
+Geo's R-tree tables need no exemption entry, though an earlier draft of this section said
+they did. They are created by raw `CREATE TABLE` / `CREATE VIRTUAL TABLE` against the
+connection (`geo/features.py:127-137`) and never pass through `initialize()`, so the
+injection cannot reach them. Adding them to the exemption list would be inert, and inert
+entries are worse than absent ones: the next reader takes the list as the complete account
+of what is exempt and why.
 
 Type is `Float` (`REAL` under `sqlite.py:581-582`), not `Text`. `ScanCache` stores its
 stamp as a string and parses it back per read (`scan_cache.py:171`, `:132`); copying that
