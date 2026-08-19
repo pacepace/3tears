@@ -1,4 +1,4 @@
-"""epoch client -- atomic Postgres bump plus best-effort NATS broadcast.
+"""epoch client -- atomic counter bump plus best-effort NATS broadcast.
 
 :class:`EpochClient` is the publish-side companion to
 :class:`~threetears.epoch.listener.EpochListener`. it owns one pair of
@@ -95,9 +95,9 @@ class PoolLike(Protocol):
 #: KV bucket holding every EPHEMERAL epoch counter.
 #:
 #: ``ttl=None`` deliberately. ``NatsKvBucket``'s ttl is per-BUCKET and becomes
-#: the stream's ``max_age``, so any value here would expire the counters (and,
-#: once chunk 03 lands, the bucket-identity key) on a timer -- turning a reset
-#: from an event into a scheduled fleet-wide cache flush.
+#: the stream's ``max_age``, so any value here would expire the counters -- and
+#: the bucket-identity key that detects a recreated bucket -- on a timer,
+#: turning a reset from an event into a scheduled fleet-wide cache flush.
 _EPOCH_BUCKET: Final = "epochs"
 
 #: Subject families whose epoch value ESCAPES this cluster and therefore cannot
@@ -190,12 +190,14 @@ class EpochClient:
     one instance per process; safe to call from multiple admin
     handlers concurrently (the bump statement serializes on the row
     lock). the client never caches the last-seen epoch -- it always
-    round-trips Postgres on :meth:`bump` because the
-    ``RETURNING`` value is the only guaranteed-monotonic answer
-    available to a single writer in a multi-writer system.
+    round-trips the counter on :meth:`bump` because the value it
+    returns is the only guaranteed-monotonic answer available to a
+    single writer in a multi-writer system.
 
     :param pool: asyncpg-compatible pool exposing ``fetchrow`` /
-        ``fetchval``; production passes :class:`asyncpg.Pool`
+        ``fetchval``; production passes :class:`asyncpg.Pool`. Used ONLY by
+        the durable subject family -- every other epoch counts in NATS KV
+        and never touches it.
     :ptype pool: PoolLike
     :param nats_client: connected typed NATS wrapper for broadcast
     :ptype nats_client: NatsClient

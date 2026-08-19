@@ -118,7 +118,7 @@ class EpochListener:
 
         primarily for tests + diagnostics. returns ``0`` if the
         subject has never been subscribed (or was subscribed but
-        cold-start priming saw no row in ``config_epochs``).
+        cold-start priming found the counter at zero).
 
         :param subject: target subject
         :ptype subject: Subject
@@ -177,7 +177,7 @@ class EpochListener:
         one. Dedupe keys on
         the path each MESSAGE names, so every matched subject keeps
         its own counter -- necessary, because each has an independent
-        ``config_epochs`` row and their epochs are unrelated numbers.
+        counter and their epochs are unrelated numbers.
         Priming, however, cannot work: ``current()`` needs a concrete
         row, and the concrete subjects are not known until their
         messages arrive. So each matched subject starts at ``0`` and
@@ -255,7 +255,7 @@ class EpochListener:
             every matched subject onto one counter.
 
             that collapse loses writes rather than merely delaying
-            them: each subject owns an independent ``config_epochs``
+            them: each subject owns an independent
             row, so their counters are unrelated. a bump to 5 on one
             subject followed by a bump to 1 on another would see
             ``1 <= 5`` and drop the second silently.
@@ -352,7 +352,7 @@ class EpochListener:
                 )
                 if first_error is None:
                     first_error = exc
-        log.info(
+        log.warning(
             "epoch counter replaced; last-seen cleared and consumers notified",
             extra={"extra_data": {"registrations": len(registrations), "notified": notified}},
         )
@@ -371,8 +371,10 @@ class EpochListener:
         result is greater than this listener's last-seen for the
         subject, advances last-seen and invokes ``on_bump``.
 
-        idempotent: calling repeatedly with no intervening bump is a
-        cheap one-row indexed lookup with no side effect.
+        idempotent: calling repeatedly with no intervening bump is one
+        cheap counter read with no side effect. The exception is the reset
+        path, which clears last-seen and notifies consumers -- that fires once
+        per detected replacement, not once per call.
 
         :param subject: target subject
         :ptype subject: Subject
@@ -380,8 +382,10 @@ class EpochListener:
             invoked when the pulled epoch is strictly greater than
             last-seen
         :ptype on_bump: BumpCallback
-        :return: the resolved current epoch (matches what
-            :meth:`last_seen` will return after this call)
+        :return: the resolved current epoch. Matches what :meth:`last_seen`
+            will return after this call EXCEPT on the reset path, where
+            last-seen is cleared to zero and this still reports what the new
+            counter read.
         :rtype: int
         """
         current = await self._epoch_client.current(subject)
@@ -403,6 +407,10 @@ class EpochListener:
             # check that supersedes it -- a counter can legitimately be at zero
             # because nothing has bumped it yet, so this costs one redundant
             # reload in that case. Cheap, and it fails in the safe direction.
+            log.warning(
+                "epoch counter read backwards; treating as a replaced counter",
+                extra={"extra_data": {"subject": subject.path, "current": current, "last_seen": last_seen}},
+            )
             await self.signal_reset()
             return current
         if current > last_seen:

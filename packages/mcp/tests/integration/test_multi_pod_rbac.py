@@ -207,11 +207,11 @@ def _rbac_epoch(test_name: str) -> Subject:
     """one RBAC epoch subject per test.
 
     The epoch counter lives in a NATS KV bucket now, and the broker container
-    is session-scoped, so the bucket OUTLIVES a single test. Sharing
-    ``Subjects.mcp_rbac_epoch()`` across these would accumulate counts and make
-    every absolute epoch assertion depend on execution order -- passing alone,
-    failing in suite. The per-test ``pg_schema`` used to give this isolation
-    for free by resetting ``config_epochs``.
+    is session-scoped, so the bucket OUTLIVES a single test. The catch-up test
+    asserts ABSOLUTE epochs (``new_epoch == 1``), which would otherwise depend
+    on execution order -- passing alone, failing in suite. The per-test
+    ``pg_schema`` used to give that isolation for free by resetting
+    ``config_epochs``.
 
     Built from the real builder rather than a literal, so a change to the
     subject's shape still reaches these tests.
@@ -267,7 +267,7 @@ async def test_grant_added_on_pod_a_propagates_to_pod_b(
             # bump is the caller's responsibility (matches the REST
             # endpoint pattern); here the test does it explicitly.
             await EpochClient(pg_pool, pod_a_nc).bump(
-                _rbac_epoch("added"),
+                Subjects.mcp_rbac_epoch(),
                 payload={"grant_id": "test-grant", "action": "create"},
             )
 
@@ -323,7 +323,7 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
                 permission=permission,
             )
             await EpochClient(pg_pool, pod_a_nc).bump(
-                _rbac_epoch("removed"),
+                Subjects.mcp_rbac_epoch(),
                 payload={"grant_id": str(grant_entity.grant_id), "action": "create"},
             )
             for _ in range(20):
@@ -336,7 +336,7 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
             removed = await pod_a_collection.remove_grant(grant_entity.grant_id)
             assert removed is True
             await EpochClient(pg_pool, pod_a_nc).bump(
-                _rbac_epoch("removed"),
+                Subjects.mcp_rbac_epoch(),
                 payload={"grant_id": str(grant_entity.grant_id), "action": "delete"},
             )
 
