@@ -830,6 +830,30 @@ class TestDurableSubjectsSkipTheIdentityCheck:
         on_reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_durable_catch_up_does_not_consult_kv_at_all(self) -> None:
+        """The stronger half of the claim, asserted rather than inferred.
+
+        "A KV outage cannot fail a catch-up that needs no KV" only holds if the
+        identity is never ASKED FOR on this path. Asserting no reset fired
+        proves the answer was ignored, not that the question was never put.
+        """
+        nats, _ = _capture_subscribe_typed()
+        asked: list[int] = []
+
+        class _CountingClient(_StubEpochClient):
+            async def bucket_identity(self) -> str | None:
+                asked.append(1)
+                return "bucket-a"
+
+        listener = EpochListener(nats, _CountingClient(nats, epoch=0))
+        subject = self._durable()
+        await listener.subscribe(subject, AsyncMock())
+
+        await listener.catch_up(subject, AsyncMock())
+
+        assert asked == [], "a durable subject consulted KV; a KV outage would fail its catch-up"
+
+    @pytest.mark.asyncio
     async def test_an_ephemeral_subject_on_the_same_listener_still_resets(self) -> None:
         """The gate is per-subject, not a switch that turns detection off."""
         nats, _ = _capture_subscribe_typed()
