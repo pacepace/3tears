@@ -1,7 +1,7 @@
 # epoch-task-01: Move the ephemeral epoch counters from Postgres to NATS KV
 
-**Status:** BUILT on `feat/epoch-kv-counter`, not shipped (no PR, not merged, not
-released). Was never independently shippable; see "Shipping order".
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed across
+`3335a97f`..`ab93534b`; the branch pointer that carried them may move or go away. Was never independently shippable; see "Shipping order".
 **Scope:** `3tears-epoch` (`client.py`), `3tears-nats` (`subject_permissions.py`),
 `3tears-mcp` (integration tests), enforcement tests.
 **Depends on:** nothing to build. Blocked from shipping alone by epoch-task-02.

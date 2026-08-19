@@ -1,7 +1,7 @@
 # epoch-task-02: Detect a recreated bucket and reset, instead of dropping bumps forever
 
-**Status:** BUILT on `feat/epoch-kv-counter`, not shipped (no PR, not merged, not
-released). The in-process reopen signal below is DESCOPED; see that section. Reshaped after review, which found the first draft could notify only one
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed across
+`3335a97f`..`ab93534b`; the branch pointer that carried them may move or go away. The in-process reopen signal below is DESCOPED; see that section. Reshaped after review, which found the first draft could notify only one
 consumer and could re-wedge itself.
 **Scope:** `3tears-epoch` (`listener.py`, `client.py`), `3tears-nats` (`kv.py` and the
 `KvBucketLike` Protocol at `kv.py:437-464`), `3tears-core`

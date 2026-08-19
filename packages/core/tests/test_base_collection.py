@@ -6,6 +6,7 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1677,3 +1678,81 @@ class TestExpiryDoesNotBreakNonRepairingReads:
         refreshed = await coll.ensure("w3")
         assert refreshed is not None
         assert refreshed["name"] == "PeerWrote"
+
+
+class TestAnOlderL1BackendStillWorks:
+    """``L1Backend`` is a published Protocol, so implementers live out of repo.
+
+    Passing ``max_age_seconds=`` on every read -- even as ``None`` -- raises
+    ``TypeError`` on an implementation that predates the parameter, which is
+    every cached read for a feature nobody opted into. Both in-repo backends
+    accept the kwarg, so nothing else in the suite can catch a regression here.
+    """
+
+    class _PreExpiryBackend:
+        """An L1 backend whose reads predate the expiry parameters."""
+
+        def __init__(self) -> None:
+            self.rows: dict[Any, dict[str, Any]] = {}
+
+        def select_by_id(
+            self,
+            table: str,  # noqa: ARG002
+            entity_id: Any,
+            primary_key: Any = "id",  # noqa: ARG002
+            columns: Any = None,  # noqa: ARG002
+        ) -> dict[str, Any] | None:
+            key = entity_id if not isinstance(entity_id, tuple) else entity_id[0]
+            return self.rows.get(key)
+
+    def test_a_read_without_a_bound_omits_the_new_kwargs(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        backend = self._PreExpiryBackend()
+        backend.rows["old1"] = {"id": "old1", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+
+        row = coll.get_row_sync("old1")
+
+        assert row is not None
+        assert row["name"] == "kept"
+
+    def test_a_configured_bound_does_not_reach_a_reporting_read_either(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """Even opted in, the reporting reads never pass the new parameters.
+
+        ``get_row_sync`` reports whether a row is cached; it does not repair a
+        miss, so it does not expire and has no reason to ask. That keeps an
+        older backend working for the majority of reads on a collection that
+        HAS opted in -- only the repairing paths reach the parameter.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        backend = self._PreExpiryBackend()
+        backend.rows["old2"] = {"id": "old2", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+        coll.l3_pool = object()
+
+        assert coll.get_row_sync("old2") is not None
+
+    @pytest.mark.asyncio
+    async def test_only_a_repairing_read_under_a_bound_reaches_the_new_kwargs(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """And there the loud failure is the right one.
+
+        A deployment that configures a bound against a backend too old to
+        honour it should hear about it; the alternative is a bound that
+        silently never fires, which is the staleness it was asking to remove.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        backend = self._PreExpiryBackend()
+        backend.rows["old3"] = {"id": "old3", "name": "kept"}
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll._l1 = backend  # noqa: SLF001 - substituting the tier under test
+        coll.l3_pool = object()
+
+        with pytest.raises(TypeError):
+            await coll.ensure("old3")

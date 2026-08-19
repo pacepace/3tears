@@ -583,3 +583,37 @@ class TestLocalGrantAuthorizerReceivesResets:
                 await captured_resets[0](7, None)
         finally:
             await authz.stop()
+
+
+class TestStopDeregistersFromTheListener:
+    """A stopped authorizer must not keep receiving resets.
+
+    ``EpochListener._registrations`` has no automatic removal, so without this
+    the listener holds bound methods of a stopped object and hands them a reset
+    on the next fan-out -- asking an authorizer that considers itself finished
+    to reload a cache it no longer maintains.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stop_deregisters_the_rbac_subject(self) -> None:
+        client, listener, _captured, _resets = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(return_value=[]),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        from threetears.nats import Subjects
+
+        await authz.start()
+        await authz.stop()
+
+        listener.deregister.assert_called_once()
+        assert listener.deregister.call_args.args[0] == Subjects.mcp_rbac_epoch()
+
+    @pytest.mark.asyncio
+    async def test_stop_without_epoch_mode_deregisters_nothing(self) -> None:
+        """Single-process mode never registered, so there is nothing to drop."""
+        authz = LocalGrantAuthorizer(grant_loader=AsyncMock(return_value=[]))
+        await authz.start()
+        await authz.stop()

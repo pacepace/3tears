@@ -981,3 +981,60 @@ class TestDeregistrationStopsTheFanOut:
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
 
         assert listener.deregister(_subject("app.never.epoch")) == 0
+
+
+class TestABackwardsDurableSubjectResetsItself:
+    """The subject that DETECTS a backwards read must be the one reset by it.
+
+    The bucket-identity fan-out deliberately excludes durable subjects, because
+    a replaced KV bucket says nothing about a Postgres row. Delegating the
+    backwards arm to that fan-out left the detecting subject the only one NOT
+    reset -- wedged permanently, which is the exact mode the arm exists to
+    eliminate -- while every ephemeral consumer reloaded on every tick, because
+    the condition that triggered it never cleared.
+    """
+
+    @staticmethod
+    def _durable() -> Subject:
+        from threetears.nats.subjects import Subjects
+
+        return Subjects.datasource_tile_epoch("ds1", "parcels")
+
+    @pytest.mark.asyncio
+    async def test_a_durable_subject_reading_backwards_clears_its_own_last_seen(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=[5000, 0]))
+        subject = self._durable()
+        await listener.subscribe(subject, AsyncMock(), on_reset=AsyncMock())
+        assert listener.last_seen(subject) == 5000
+
+        await listener.catch_up(subject, AsyncMock())
+
+        assert listener.last_seen(subject) == 0, "the detecting subject was not reset; it is wedged"
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_reset_unrelated_subjects(self) -> None:
+        """A backwards read tells you about one counter, not the whole bucket."""
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=[5000, 5000, 0]))
+        backwards = _subject("app.a.epoch")
+        other = _subject("app.b.epoch")
+        other_reset = AsyncMock()
+        await listener.subscribe(backwards, AsyncMock(), on_reset=AsyncMock())
+        await listener.subscribe(other, AsyncMock(), on_reset=other_reset)
+
+        await listener.catch_up(backwards, AsyncMock())
+
+        other_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_detecting_subjects_consumer_is_told(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=[5000, 0]))
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_awaited_once()

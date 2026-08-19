@@ -204,8 +204,8 @@ class EpochClient:
     """publish-side client for cross-pod config-epoch coherence.
 
     one instance per process; safe to call from multiple admin
-    handlers concurrently (the bump statement serializes on the row
-    lock). the client never caches the last-seen epoch -- it always
+    handlers concurrently -- an ephemeral bump serializes through the
+    counter's CAS loop, a durable one on its row lock. the client never caches the last-seen epoch -- it always
     round-trips the counter on :meth:`bump` because the value it
     returns is the only guaranteed-monotonic answer available to a
     single writer in a multi-writer system.
@@ -337,7 +337,7 @@ class EpochClient:
         way concurrent bumps from different writers each receive a
         unique strictly-increasing epoch. broadcast is best-effort:
         :class:`~threetears.nats.errors.PublishError` is logged and
-        swallowed because the row commit is the source of truth and
+        swallowed because the counter increment already happened and
         any subscriber that missed the broadcast catches up via
         :meth:`current` on the next periodic tick or via a per-
         message epoch echo.

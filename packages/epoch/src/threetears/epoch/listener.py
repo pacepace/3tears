@@ -368,7 +368,7 @@ class EpochListener:
         self._last_seen.pop(subject.path, None)
         return len(dropped)
 
-    async def signal_reset(self) -> None:
+    async def signal_reset(self, subject: Subject | None = None) -> None:
         """the counter was REPLACED; drop local state and tell every consumer.
 
         Called when the coherence substrate is found to be a different one --
@@ -409,11 +409,33 @@ class EpochListener:
         callback is attempted; the first exception is re-raised afterwards, so
         a consumer bug still surfaces rather than being swallowed.
 
+        :param subject: reset only this subject's registrations, for the
+            backwards-counter detector which learns about ONE counter. ``None``
+            (the bucket-identity detector) resets every ephemeral registration,
+            because a replaced bucket replaced all of their counters at once.
+        :ptype subject: Subject | None
         :return: nothing
         :rtype: None
         :raises Exception: the first exception raised by any consumer
             callback, after every other callback has been attempted
         """
+        if subject is not None:
+            # ONE subject's counter went backwards. Reset that subject alone:
+            # a backwards read says nothing about any other subject, and for a
+            # DURABLE subject the bucket-wide fan-out below deliberately
+            # excludes it -- so delegating here would leave the very subject
+            # that detected the problem the only one not reset by it, wedged
+            # permanently while every ephemeral consumer reloaded on every tick
+            # because the condition never cleared.
+            self._last_seen.pop(subject.path, None)
+            for _s, _on_bump, on_reset in list(self._registrations.get(subject.path, [])):
+                if on_reset is not None:
+                    await on_reset()
+            log.warning(
+                "epoch counter for one subject read backwards; that subject reset",
+                extra={"extra_data": {"subject": subject.path}},
+            )
+            return
         for path in [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]:
             del self._last_seen[path]
         # Record the identity we are announcing, AFTER the clear and for BOTH
@@ -519,7 +541,7 @@ class EpochListener:
                 "epoch counter read backwards; treating as a replaced counter",
                 extra={"extra_data": {"subject": subject.path, "current": current, "last_seen": last_seen}},
             )
-            await self.signal_reset()
+            await self.signal_reset(subject)
             return current
         if current > last_seen:
             self._last_seen[subject.path] = current

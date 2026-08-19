@@ -1,7 +1,7 @@
 # epoch-task-05: Bound L1 staleness with lazy max-age expiry
 
-**Status:** BUILT, not shipped -- all three chunks are committed and pushed on
-`feat/l1-max-age-lazy-expiry`, which has no PR and is not merged or released. Reshaped
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed across
+`b1cf3228`..`29d3ece2`; the branch pointer that carried them may move or go away. Reshaped
 after review, which found that the naive version is data loss on two shipped packages, and
 again after the cumulative review, which found expiry made silent write loss routine on the
 read paths that do not repair.
