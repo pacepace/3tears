@@ -1,6 +1,7 @@
 # epoch-task-05: Bound L1 staleness with lazy max-age expiry
 
-**Status:** SHIPPED (all three chunks landed on `feat/l1-max-age-lazy-expiry`). Reshaped
+**Status:** BUILT, not shipped -- all three chunks are committed and pushed on
+`feat/l1-max-age-lazy-expiry`, which has no PR and is not merged or released. Reshaped
 after review, which found that the naive version is data loss on two shipped packages, and
 again after the cumulative review, which found expiry made silent write loss routine on the
 read paths that do not repair.
