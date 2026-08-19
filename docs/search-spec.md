@@ -1446,6 +1446,54 @@ change (every adoption assumes a current pin).
    filtered raw streams for structure, read `metadata` instead.
 5. PR, merge per its own workflow.
 
+***Correction 2026-08-19 — steps 3 and 4 describe a metallm tree three months
+stale, and both were already discharged before this document named them.***
+The steps are left above as written; what follows is what is actually true, and
+**check 1 passes by prior deletion rather than by migration work**.
+
+metallm's commit `f0b6903` (2026-06-23, *"consume the 3tears price-lookup
+primitive; drop the bespoke scraper"*) deleted **both** side-steps as a side
+effect of unrelated pricing work:
+
+- `api/src/services/web_fetch_utils.py` was **deleted as a file** — 210 lines,
+  zero importers.
+- `lookup_details` in `api/src/api/v1/admin/models.py` had its SearXNG
+  web-search-plus-LLM-extraction scrape replaced by
+  `threetears.models.lookup_price`. That commit's own message records
+  "adversarially verified: NO remnant of the bespoke pricing lookup remains".
+
+`grep -rin searxng api/src/` in metallm returns nothing today. There is no
+forwarding shim, no re-export, and no module of either name, so the check's
+"deleted, not wrapped" clause holds in its strong form. The only surviving
+`searxng` strings in that repo are its self-hosted service's own
+`searxng/settings.yml` and two `base_url` fixtures in an integration test.
+
+**Step 4 has no target either.** metallm does not filter raw streams for
+structure and deliberately refuses to: `_execute_service_tool`'s docstring
+(`api/src/services/tool_loop.py`) states that sniffing result text for an error
+prefix "both misses real failures and risks false positives", and status comes
+from an authoritative bool instead.
+
+**So metallm's migration reduces to step 2**, the pin — up as
+[metallm#288](https://github.com/pacepace/metallm/pull/288), pinning the whole
+family at the released tag `v0.26.1`. Under D29 that pin is what *binds* these
+contracts: publication does not, and a tag does not. It also unblocks
+[metallm#287](https://github.com/pacepace/metallm/pull/287), which fixes
+`_execute_service_tool` invoking `ainvoke(tool_args)` by args — the fourth site
+of the defect this repo closed in
+[#318](https://github.com/pacepace/3tears/pull/318) and
+[#326](https://github.com/pacepace/3tears/pull/326), and one that has been
+feeding the model stringified `(content, artifact)` tuples in production.
+
+**The generalisable point, and the reason this is recorded rather than quietly
+fixed.** A consumer-repo check written as *instructions to change a named file*
+rots at the consumer's commit rate, not ours, and nothing here notices — the
+whole cost of this one was paid re-deriving a June deletion in August. The five
+consumer-repo checks (1, 2, 3, 9, 10) all have this shape. **State a
+consumer-repo check as the property it wants, and verify it against the
+consumer's tree at the time of asking**; a filename in a step is a snapshot,
+not a requirement.
+
 **discodon** -- embedded mode (it is pre-NATS-convergence; check 10 says the
 switch later costs no consumer rewrite).
 1. Any generalization it needs lands **upstream first** (convergence

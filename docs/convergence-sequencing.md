@@ -423,6 +423,38 @@ cycle — a three-link chain, discodon → 3tears → discodon — but one whose
 link nobody outside discodon can pull. Neither end has moved in the five days
 since this was last written.
 
+*Status 2026-08-19 (same day, later) — metallm's migration is up, and it is
+almost entirely not a migration.* **Check 1 already passed**, by a deletion
+that happened on 2026-06-23: metallm's `f0b6903` removed
+`api/src/services/web_fetch_utils.py` as a file and replaced the SearXNG
+scrape in `lookup_details` with `threetears.models.lookup_price`, as a side
+effect of unrelated pricing work. No wrapper, no re-export;
+`grep -rin searxng api/src/` is empty. Step 4's clause has no target either —
+metallm deliberately refuses to sniff result text for structure and says so in
+`_execute_service_tool`'s docstring. What remained was step 2, the pin:
+[metallm#288](https://github.com/pacepace/metallm/pull/288) pins the whole
+family at `v0.26.1`, which under D29 is the event that **binds these
+contracts** — the first consumer pin against a version carrying search, which
+is exactly what Gate B was standing in front of. It also unblocks
+[metallm#287](https://github.com/pacepace/metallm/pull/287), a live production
+defect (the model reading stringified `(content, artifact)` tuples) that is the
+fourth site of what [#318](https://github.com/pacepace/3tears/pull/318)
+and [#326](https://github.com/pacepace/3tears/pull/326) closed here.
+
+**Neither metallm PR waits on anything in 3tears.** Both need only released
+tags — `v0.26.1` for the pin, `v0.24.7` for what #287 consumes — so
+[#368](https://github.com/pacepace/3tears/pull/368) and the unreleased 0.27.0
+are not in their path. Merge order between them is #288 then #287.
+
+**What this costs to know, and the rule it argues for.** Establishing the above
+meant re-deriving a three-month-old deletion, because
+[`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing) states check 1 as
+*instructions to change two named files* rather than as the property it wants.
+Consumer-repo checks rot at the consumer's commit rate and nothing here
+notices. Checks 2, 3, 9 and 10 are written the same way and are owed the same
+re-verification before anyone works from them. The correction is recorded at
+that section.
+
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
 fires whenever the first *pod-resident* search deploys, which follows
