@@ -464,8 +464,14 @@ decision rather than a gap: `curation/src/curation/discovery/` carries
 different problem from the leaf's (collection identity lookup, zero spend,
 provider relevance scores refused as evidence). Its recorded reason for keeping
 3tears out of the default install is transitive weight on a `MemoryMax=2G` Pi —
-so **the bar the leaf must clear there is install size, not capability**, and
-check 2 never asked about size. Check 9's premise expired outright: the plane
+so **the bar the leaf must clear there is install size, not capability** — and
+measured against that bar the leaf clears it: `3tears-search[standalone]` is 14
+packages and 10 MB, of which curation already carries all but three wheels and
+~684 KB, because both family leaves under it declare `dependencies = []`. The
+exclusion samsung recorded was about `3tears-models`' closure and does not
+transfer. `[extract]` is the extra to keep off that Pi (+16 packages, +65 MB,
+babel and lxml dominating), and phase 2 has no use for it. Check 2 never asked
+about size, so nobody measured it. Check 9's premise expired outright: the plane
 that would call search is a long-lived uvicorn process whose sync code runs in a
 threadpool, not the one-shot `asyncio.run()` the check describes.
 

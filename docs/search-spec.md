@@ -1619,6 +1619,36 @@ transitive closure**, and no phrasing of check 2 says so. Its pin is also two
 minors below anything adoptable: `3tears-models>=0.22.5,<0.23` against a family
 at 0.26.1.
 
+***And the leaf clears that bar with room to spare, which nobody had
+measured.*** Installed from PyPI at 0.26.1 on CPython 3.14:
+
+| Install | Packages | `site-packages` |
+|---|---|---|
+| `3tears-search` | 8 | 8.3 MB |
+| `3tears-search[standalone]` | 14 | 10 MB |
+| `3tears-search[standalone,extract]` | 30 | 75 MB |
+
+The base closure is pydantic plus the two dependency-free family leaves — both
+`3tears-observe` and `3tears-media-contracts` declare `dependencies = []`, which
+is D24's permitted floor doing exactly what it was written for. curation already
+declares `pydantic` **and** `httpx`, so the marginal cost of
+`3tears-search[standalone]` at that consumer is **three wheels, ~684 KB, and no
+new transitive dependency at all**.
+
+**The exclusion samsung recorded is sound for the package it was written about
+and does not transfer.** `3tears-models` brings anthropic, three `langchain-*`
+and jsonschema; the search leaf shares only the two empty leaves with it. What
+kept the leaf out of that plane was never the leaf's weight — it was that
+nobody had asked, and check 2 gave no reason to.
+
+**`[extract]` is the extra that must stay off a Pi: +16 packages, +65 MB**, of
+which babel is 32 MB and lxml 19 MB, arriving `trafilatura -> courlan -> babel`.
+Phase 2 has no use for it — museum JSON, no HTML-to-text — and the leaf refuses
+correctly in its absence: importing `threetears.search.extract` succeeds because
+`_load_extractor` defers the import, and calling it raises `LocalCapExceeded`
+naming the extra and its remediation rather than an `ImportError` from the
+middle of a pipeline.
+
 Where the leaf would plug in is named in samsung's own code and is unbuilt:
 `phase_two.py` records that nothing produces a `contemporary_web` candidate —
 every instance it stores comes from a museum API and is `institutional`.
