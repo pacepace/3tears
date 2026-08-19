@@ -428,23 +428,38 @@ class EpochListener:
             # permanently while every ephemeral consumer reloaded on every tick
             # because the condition never cleared.
             self._last_seen.pop(subject.path, None)
+            scoped_error: BaseException | None = None
             for _s, _on_bump, on_reset in list(self._registrations.get(subject.path, [])):
-                if on_reset is not None:
+                if on_reset is None:
+                    continue
+                try:
                     await on_reset()
+                # prawduct:allow prawduct/broad-except -- same contract as the
+                # bucket-wide path below: one consumer's bug must not deprive
+                # the others of a reset. re-raised after the loop.
+                except Exception as exc:  # noqa: BLE001
+                    log.exception(
+                        "epoch reset callback raised; continuing to the remaining consumers",
+                        extra={"extra_data": {"subject": subject.path}},
+                    )
+                    if scoped_error is None:
+                        scoped_error = exc
             log.warning(
                 "epoch counter for one subject read backwards; that subject reset",
                 extra={"extra_data": {"subject": subject.path}},
             )
+            if scoped_error is not None:
+                raise scoped_error
             return
         for path in [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]:
             del self._last_seen[path]
-        # Record the identity we are announcing, AFTER the clear and for BOTH
-        # detectors. Only the identity check used to maintain this, so a reset
-        # taken on the backwards-counter arm -- which happens exactly when the
-        # identity read failed, since a counter read can succeed while KV
-        # errors -- left the OLD identity recorded and fired a second full
-        # fan-out on the next pass. Recording it here means "announced" has one
-        # owner and one update site.
+        # Record the identity we are announcing, AFTER the clear. Only the
+        # bucket-wide path reaches here: a scoped reset returns above, because
+        # one subject's counter reading backwards is not a claim about the
+        # bucket. The cost of that layering is one redundant reload -- the
+        # identity detector may later notice a replacement the scoped reset
+        # already covered -- and the alternative is worse, since recording an
+        # identity from a scoped reset would suppress a genuine replacement.
         # ``None`` is recorded deliberately when the identity cannot be read.
         # After a reset the OLD identity is meaningless, so keeping it would
         # make the next successful read look like a fresh replacement and fan

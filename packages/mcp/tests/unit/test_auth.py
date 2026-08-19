@@ -613,7 +613,15 @@ class TestStopDeregistersFromTheListener:
 
     @pytest.mark.asyncio
     async def test_stop_without_epoch_mode_deregisters_nothing(self) -> None:
-        """Single-process mode never registered, so there is nothing to drop."""
+        """Single-process mode never registered, so there is nothing to drop.
+
+        Asserted against a listener that would record the call, rather than by
+        merely not raising -- a test whose only claim is "no exception" passes
+        just as happily when the code under it does the wrong thing.
+        """
+        _client, listener, _captured, _resets = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(grant_loader=AsyncMock(return_value=[]))
         await authz.start()
         await authz.stop()
+
+        listener.deregister.assert_not_called()

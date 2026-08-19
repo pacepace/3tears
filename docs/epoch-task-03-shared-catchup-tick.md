@@ -1,7 +1,8 @@
 # epoch-task-03: A shared catch-up tick body, driven by the consumer
 
-**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed across
-`3335a97f`..`ab93534b`; the branch pointer that carried them may move or go away. Reshaped after review; see "Why the tick does not live in core".
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed as a series of commits on the branch that carries this file; `git log --oneline
+-- packages/epoch` is the current answer, and a range written here goes stale the next time
+any of it is touched. Reshaped after review; see "Why the tick does not live in core".
 **Scope:** `3tears-epoch` (new tick body), `3tears-mcp` (`auth.py`, its loop body shrinks
 to a call).
 **Depends on:** epoch-task-02, which must not release without this. The recovery action a

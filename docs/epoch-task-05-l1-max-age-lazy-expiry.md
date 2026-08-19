@@ -1,7 +1,8 @@
 # epoch-task-05: Bound L1 staleness with lazy max-age expiry
 
-**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed across
-`b1cf3228`..`29d3ece2`; the branch pointer that carried them may move or go away. Reshaped
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed as a series of commits on the branch that carries this file; `git log --oneline
+-- packages/core/src/threetears/core/cache` is the current answer, and a range written here
+goes stale the next time any of it is touched. Reshaped
 after review, which found that the naive version is data loss on two shipped packages, and
 again after the cumulative review, which found expiry made silent write loss routine on the
 read paths that do not repair.

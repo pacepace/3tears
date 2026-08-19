@@ -1038,3 +1038,37 @@ class TestABackwardsDurableSubjectResetsItself:
         await listener.catch_up(subject, AsyncMock())
 
         on_reset.assert_awaited_once()
+
+
+class TestAScopedResetHonoursTheSameContract:
+    """Both reset paths promise the same thing: one raise does not deprive the rest.
+
+    The scoped path was added later and awaited its callbacks in a bare loop,
+    so the first raise abandoned the others -- while the docstring, shared
+    between both paths, argued at length why that must not happen.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_raising_callback_does_not_abandon_the_others(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=[5000, 0]))
+        subject = _subject("app.shared.epoch")
+        boom = AsyncMock(side_effect=RuntimeError("consumer bug"))
+        after = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=boom)
+        await listener.subscribe(subject, AsyncMock(), on_reset=after)
+
+        with pytest.raises(RuntimeError, match="consumer bug"):
+            await listener.signal_reset(subject)
+
+        after.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_failure_still_surfaces(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.a.epoch")
+        await listener.subscribe(subject, AsyncMock(), on_reset=AsyncMock(side_effect=RuntimeError("consumer bug")))
+
+        with pytest.raises(RuntimeError, match="consumer bug"):
+            await listener.signal_reset(subject)
