@@ -104,6 +104,19 @@ OMISSION_REASON_UNSERIALIZABLE = "not_json_serializable"
 #: placeholder with an owner** -- open question 1 of the design is metallm's
 #: to answer with its real per-frame budget, and every construction site
 #: reads it from here or from its own caller so answering it moves one line.
+#:
+#: **The answer has a ceiling, and it is lower than it looks.** Above this
+#: budget sits a limit nobody chose: a room frame crosses NATS, and an
+#: oversized publish is refused client-side against the broker's advertised
+#: ``max_payload`` -- 1 MB on an untuned broker, which works back through the
+#: event -> ``Frame`` -> ``RoomFrame`` nesting to roughly 780,000 characters of
+#: artifact. The nesting cost is not a constant (measured at 1.20x on a
+#: body-heavy payload and 1.34x on a metadata-heavy one), so anyone converting
+#: a frame budget into a bound here re-measures the shape they actually send
+#: with ``scripts/measure-structured-result-sizes.py`` rather than applying
+#: either ratio. What the two figures establish is only that the multiplier is
+#: neither 1.0 nor stable. Past the ceiling the answer stops being a bigger
+#: number and becomes a handle; see ``docs/structured-result-tiers.md``.
 DEFAULT_STRUCTURED_INLINE_MAX_CHARS = 16384
 
 
