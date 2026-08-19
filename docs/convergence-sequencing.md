@@ -68,6 +68,42 @@ family at 0.10.6. Because the phase gate is a coordination convention rather
 than a build dependency, 3tears carried on into Phase 2 work that does not
 consume either — see the Phase 2 note.
 
+***Correction 2026-08-19 — both outstanding items above have moved, and the
+note asserting otherwise was five days stale.*** discodon adopted 3.14 on
+2026-08-14 (`build: take the interpreter from uv, and move it to CPython
+3.14`); it now declares `requires-python = ">=3.14"`, not `>=3.12`. metallm
+closed its lag the same day, `v0.17.7 -> v0.24.4`, so it is current and no
+longer resolves the family at 0.10.6. **Neither landed because of this
+sequence** — each repo did it on its own clock, and nothing here was watching,
+which is the same failure mode Phase 2's third bullet recorded from the other
+direction: a status note goes stale in whichever direction nobody is checking.
+
+**What actually remains of discodon's two items is narrower than "outstanding",
+and one of them is subtler than not-done.**
+
+- **The storage carve is half-present, and the present half is not the half
+  this sequence needs.** `discodon/eval/storage.py` does carve a `Protocol` —
+  `EvalRunDocumentStore`, two methods, `load_eval_run_with_etag` and
+  `save_eval_run` — but it was carved for its own local reason (stating the
+  conditional-write retry policy over the protocol rather than over Postgres),
+  and it covers only that pair. `EvalStorage` does not declare it, and the
+  analysis bundle is not on it. So the seam Phase 3's replay record schema is
+  meant to be elicited against still does not exist. **A protocol in the file
+  is not the protocol the item names**, and grepping for the item's own word —
+  `StorageProtocol` — finds nothing, which is how this reads as untouched from
+  outside.
+- **The budget reshape has the port's names and not its semantics.**
+  `EvalRunCostCap` in `discodon/eval/budget.py` exposes `check()` and
+  `record(cost_usd)`, which matches
+  [`threetears.search.contracts.BudgetPort`](../packages/search/src/threetears/search/contracts/budget.py)
+  by name. But `check()` takes **no estimate** and no scope: it reports
+  `accumulated > ceiling`, so it can only stop a run *after* the ceiling has
+  been crossed. The port's own docstring rules out exactly this — "an estimate
+  a run may freely exceed is not an estimate" — because `check(estimate)` is
+  asked *before* the provider call and must not debit. D27 wires the eval cost
+  cap onto `BudgetPort`; a same-named method with post-hoc semantics is the
+  shape most likely to be mistaken for done at wiring time.
+
 ## Phase 2 — In-family integration (3tears)
 
 - **3tears:** search Phase 2 — Extract's web path; gut
@@ -203,6 +239,26 @@ to be forgotten, because nothing downstream complains. The design is now written
 ([`stream-protocol-structured-results.md`](stream-protocol-structured-results.md)),
 and it is design-only as the bullet always said, so nothing that shipped is
 wrong; the record was.
+
+*Status 2026-08-19 — the design-only bullet was built, and it grew a workstream.*
+[#355](https://github.com/pacepace/3tears/pull/355) shipped the channel on both
+streaming faces on 2026-08-18, four days after the design was written. The
+bullet said *design only* and the build came with it, for the reason recorded
+above: the decision the design could not take alone turned out to be one of
+five, and the other four were answerable from the two consumers' own code.
+**With that, every item in this phase is both decided and built** — the
+2026-08-14 correction stands as the record of how it was nearly missed.
+
+What followed is **not** part of this sequence and should not be counted
+against it. Building the channel surfaced a question the design had deferred —
+what a client may ask for, and what happens when the answer is too big — ruled
+in [`structured-result-tiers.md`](structured-result-tiers.md)
+([#367](https://github.com/pacepace/3tears/pull/367), 2026-08-18) and carved
+into three tasks. Task-03 is in flight
+([#368](https://github.com/pacepace/3tears/pull/368)); tasks 01 and 02 are
+unbuilt. It belongs to the chat-kit workstream
+([§4.11](family-convergence.md#411-chat-ui--a-headless-typescript-kit-protocol-from-3tears-seeds-from-scriob-and-metallm)),
+which this document explicitly does not sequence.
 
 See [`search-spec.md` §7 Phase 2](search-spec.md#7-sequencing) for the per-item
 table and the item 5 rulings.
@@ -350,6 +406,20 @@ will, and that build waits on discodon.
 *2026-08-14:* the first two are **not** blocked on the same thing — metallm's
 surface is released (0.24.2+), discodon's replay piece is unbuilt and waits on
 its own Phase 1 storage port. See the correction under Phase 3.
+
+*Status 2026-08-19 — nothing here has started, and the reasons differ per repo,
+as the note above predicted.* The family has released six more times since
+(v0.24.5 through v0.26.1, all tagged; 0.27.0 is bumped and in flight on
+[#368](https://github.com/pacepace/3tears/pull/368), not yet tagged), none of it
+search-side. **metallm is unblocked on every axis this document tracks**: it is
+current at 0.24.4, its lag item is closed, and Gate B closed on 2026-08-14. What
+it lacks is the branch — `feature/new-search` does not exist. **discodon is
+still hard-blocked, and the block is circular through Phase 1**: it needs the
+replay piece (search Phase 3 item 8), which is unbuilt here —
+`packages/search/src/threetears/search/` has `aggregate`, `select`, `extract`,
+`bind`, `call`, `limiter` and `standalone`, and no `replay.py` — and which is
+elicited against the storage port that is still uncarved *in discodon*. Neither
+end has moved in the five days since this was last written.
 
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
