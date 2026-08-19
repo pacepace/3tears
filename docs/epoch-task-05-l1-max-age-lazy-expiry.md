@@ -164,17 +164,24 @@ re-evaluate." Treating expiry as a miss without deleting is fine while pull-thro
 re-upserts, but when the row is genuinely gone from L3 the pull-through returns `None`,
 the entry is never deleted, and every read re-evaluates it forever. Delete on expiry.
 
-## DuckDB is out of scope, and here is why that is honest
+## DuckDB is mostly out of scope, and the exception is instructive
 
 An earlier draft required both backends to change together. `DuckDBBackend` has **zero**
-production construction sites (all seven are tests), and it is not a peer today:
-`initialize` short-circuits on re-entry (`duckdb.py:72-74`), so `collection_factory.py:243`'s
-per-table lazy init silently no-ops after the first table; `upsert` skips the registry
-filter (`:141`) and uses `INSERT OR REPLACE` (`:153`), which NULLs unlisted columns. An
-"identical behaviour" acceptance criterion cannot pass without fixing all of that.
+production construction sites (all are tests), and it is not a peer today: `initialize`
+short-circuits on re-entry, so the dynamic-collection path's per-table lazy init silently
+no-ops after the first table, and `upsert` uses `INSERT OR REPLACE`, which NULLs unlisted
+columns. An "identical behaviour" acceptance criterion cannot pass without fixing all of
+that.
 
-This shard changes SQLite only. Bringing DuckDB to parity or deleting it is separate work
-and should be filed as such.
+**Two DuckDB changes were forced anyway, and the reason generalises.** The stamp is written
+by the collections layer, which is backend-agnostic, so scoping a backend out of the READ
+side does not scope it out of the WRITE side. `upsert` had to start filtering to the
+registered schema, as SQLite always did, or the stamp reaches SQL against a table that
+declares no such column and every pull-through fails. Separately, the read side refuses a
+bound with `NotImplementedError` rather than accepting one it cannot honour.
+
+So: expiry itself is SQLite-only, but "out of scope" could not mean "untouched". Bringing
+the rest of DuckDB to parity, or deleting it, is still separate work.
 
 ## Why monotonic, and the constraint that keeps it true
 
@@ -223,9 +230,16 @@ only after the durable write is acked. Expiry evicts on a timer that knows nothi
 the buffer, so a row written under a deferred flush strategy and expired before its buffer
 entry drains would pull through and serve the pre-write value.
 
-The "no stamp means fresh" rule above covers this: a locally-authored write has no stamp
-and never expires. State that connection explicitly in the code, because it is not
-obvious that one rule is load-bearing for the other.
+The "no stamp means fresh" rule covers this **only for a row this process authored**. An
+earlier version of this section claimed it covered the deferred case outright; it does not.
+A row pulled through earlier keeps its stamp across a local save, because `upsert`
+preserves a stamp the caller does not supply, so it can age out while its write is still
+buffered.
+
+That is survivable rather than safe-by-construction: the pull-through reads L2, which the
+same save already wrote, so the new value comes back and nothing reverts. Without L2 wired
+it reads L3 and serves the pre-write value. The code comment at `_entry_is_fresh` states
+the same limit, because one rule being load-bearing for another is not obvious from either.
 
 ## Acceptance
 
