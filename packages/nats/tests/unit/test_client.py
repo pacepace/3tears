@@ -2287,6 +2287,158 @@ async def test_non_permissions_errors_keep_their_existing_shape_and_rate_limitin
     assert any("rate-limited duplicate" in line for line in debugs)
 
 
+def _extra_data(record: logging.LogRecord) -> dict[str, Any] | None:
+    """the structured payload the platform formatter serialises, or ``None`` when absent.
+
+    :param record: a captured log record
+    :ptype record: logging.LogRecord
+    :return: the ``extra_data`` mapping attached to ``record``, or ``None``
+    :rtype: dict[str, Any] | None
+    """
+    return getattr(record, "extra_data", None)
+
+
+@pytest.mark.asyncio
+async def test_permissions_violation_carries_structured_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the violation must be QUERYABLE, not only readable: subject, operation and raw error as fields.
+
+    the platform logs structurally via ``extra={"extra_data": {...}}`` -- the formatter serialises that
+    dict to JSON alongside the message -- and this line interpolated everything into prose instead. a
+    dead subject that only exists inside a sentence cannot be alerted on, grouped by, or extracted by
+    a log pipeline, which is most of what naming the subject was for.
+    """
+    from threetears.nats.client import _last_error_log, _on_error
+
+    _last_error_log.clear()
+    exc = _permission_error('Permissions Violation for Subscription to "3tears.forward.deadbeef.*"')
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(exc)
+
+    records = _client_records(caplog, logging.ERROR)
+    assert len(records) == 1
+    data = _extra_data(records[0])
+    assert data is not None, "the violation must carry extra_data, not prose alone"
+    assert data["subject"] == "3tears.forward.deadbeef.*"
+    assert data["operation"] == "subscribe"
+    assert "permissions violation" in data["error"].lower(), "the raw server error must survive as a field"
+
+
+@pytest.mark.asyncio
+async def test_publish_permissions_violation_structured_operation_is_publish(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the structured ``operation`` must discriminate publish from subscribe, not merely repeat prose."""
+    from threetears.nats.client import _last_error_log, _on_error
+
+    _last_error_log.clear()
+    exc = _permission_error('Permissions Violation for Publish to "3tears.tools.result.pod-7.abc"')
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(exc)
+
+    data = _extra_data(_client_records(caplog, logging.ERROR)[0])
+    assert data is not None
+    assert data["operation"] == "publish"
+    assert data["subject"] == "3tears.tools.result.pod-7.abc"
+
+
+@pytest.mark.asyncio
+async def test_a_lowercased_payload_declares_the_subject_case_untrustworthy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """when the whole payload arrived lowercase the subject MAY be mangled, and the field must say so.
+
+    nats-py lowercases the entire ``-ERR`` payload in its protocol parser before dispatch, so a subject
+    recovered from an all-lowercase payload cannot be distinguished from one the server really sent in
+    lowercase. for ``$KV.``/``$JS.API.``/``_INBOX_`` subjects the difference decides whether an operator
+    pasting it into a grant list gets a subject that matches. the field must not present a possibly
+    mangled subject as verbatim.
+    """
+    from threetears.nats.client import _SUBJECT_CASE_LOWERCASED, _last_error_log, _on_error
+
+    _last_error_log.clear()
+    # _permission_error lowercases, exactly as nats-py's parser does.
+    exc = _permission_error('Permissions Violation for Subscription to "$KV.3tears-Display.>"')
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(exc)
+
+    record = _client_records(caplog, logging.ERROR)[0]
+    data = _extra_data(record)
+    assert data is not None
+    assert data["subject"] == "$kv.3tears-display.>", "the subject is reported as received, not invented"
+    assert data["subject_case"] == _SUBJECT_CASE_LOWERCASED
+    # a human reading the line, not the JSON, must also be warned before pasting it into a grant list.
+    assert "lowercas" in record.getMessage().lower()
+
+
+@pytest.mark.asyncio
+async def test_a_payload_carrying_uppercase_declares_the_subject_verbatim(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """uppercase ANYWHERE in the payload proves the parser did not lowercase it, so the subject is exact.
+
+    the flag is derived rather than hardcoded so a nats-py that stops lowercasing (or a server error
+    surfaced by some other path) is reported as trustworthy instead of permanently caveated.
+    """
+    from threetears.nats.client import _SUBJECT_CASE_VERBATIM, _last_error_log, _on_error
+
+    from nats.errors import Error as NatsError
+
+    _last_error_log.clear()
+    exc = NatsError('nats: Permissions Violation for Subscription to "$KV.3tears-Display.>"')
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(exc)
+
+    record = _client_records(caplog, logging.ERROR)[0]
+    data = _extra_data(record)
+    assert data is not None
+    assert data["subject"] == "$KV.3tears-Display.>"
+    assert data["subject_case"] == _SUBJECT_CASE_VERBATIM
+    assert "lowercas" not in record.getMessage().lower(), "a verbatim subject must carry no false caveat"
+
+
+@pytest.mark.asyncio
+async def test_an_undecomposable_violation_does_not_claim_a_subject_it_never_recovered(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """no subject recovered means no subject CASE either; the fields must not fabricate one."""
+    from threetears.nats.client import _SUBJECT_CASE_NOT_REPORTED, _last_error_log, _on_error
+
+    _last_error_log.clear()
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(_permission_error("Permissions Violation on this connection"))
+
+    data = _extra_data(_client_records(caplog, logging.ERROR)[0])
+    assert data is not None
+    assert data["subject"] is None, "an unrecovered subject must be null, never a placeholder masquerading as one"
+    assert data["subject_case"] == _SUBJECT_CASE_NOT_REPORTED
+    assert data["operation"] is None
+    assert "permissions violation on this connection" in data["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_non_permissions_errors_gain_no_structured_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """every other error path is untouched -- same line, and no new fields on it."""
+    from threetears.nats.client import _last_error_log, _on_error
+
+    _last_error_log.clear()
+
+    with caplog.at_level(logging.ERROR, logger=_CLIENT_LOGGER):
+        await _on_error(OSError("connection reset by peer"))
+
+    record = _client_records(caplog, logging.ERROR)[0]
+    assert record.getMessage() == "NATS error: connection reset by peer"
+    assert _extra_data(record) is None
+
+
 def test_permissions_violation_is_not_an_authorization_violation() -> None:
     """the wedged-auth health signal must not be tripped by a permissions violation.
 

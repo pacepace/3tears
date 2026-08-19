@@ -46,7 +46,13 @@ design notes
   subscribe otherwise reads as one anonymous error while the
   subscription it belonged to silently receives nothing forever. its
   rate-limit key carries the subject, so a second dead subject is
-  never suppressed behind the first.
+  never suppressed behind the first. the same facts also go out
+  STRUCTURED (``extra={"extra_data": ...}``, the platform convention
+  the :mod:`threetears.observe` formatter serialises to JSON) as
+  ``subject`` / ``operation`` / ``subject_case`` / ``error``, so a dead
+  subject can be alerted on and grouped rather than only read. see
+  :data:`_SUBJECT_CASE_VERBATIM` for why the subject's case is
+  qualified rather than presented as exact.
 - **deadletter dispatch**: by default uncaught exceptions in subscribe
   callbacks publish the original message + a structured envelope to
   ``{ns}.deadletter.{original_path}``. opt out per-subscribe with
@@ -64,7 +70,7 @@ import re
 import time
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, NamedTuple, TypeVar
 
 import nats
 from nats.aio.client import Client as _NatsPyClient
@@ -322,11 +328,37 @@ _VIOLATION_CONSEQUENCES: Final[dict[str, str]] = {
 
 #: placeholders for a violation whose wording :data:`_PERMISSIONS_VIOLATION_PATTERN` cannot
 #: decompose. Reporting the loss with placeholders beats degrading to an anonymous "NATS error".
+#: they are for the HUMAN-READABLE sentence only -- the structured fields report ``None``, because a
+#: placeholder in a queryable field is a value a log pipeline would group and alert on as if it were
+#: a real subject.
 _UNKNOWN_OPERATION: Final[str] = "operation"
 _UNKNOWN_SUBJECT: Final[str] = "<not reported in the server's wording>"
 _UNKNOWN_CONSEQUENCE: Final[str] = (
     "The refused operation fails SILENTLY: the connection stays open and nothing is raised to any "
     "caller, so whatever it served is dead until the grant exists."
+)
+
+#: how far the reported subject's CASE can be trusted. nats-py lowercases the WHOLE ``-ERR`` payload
+#: in its protocol parser before dispatching to ``error_cb``, so a subject recovered from an
+#: all-lowercase payload may have been mangled on the way here. That is harmless for a HITL subject
+#: (sha256 hex, uuids -- already lowercase) and NOT harmless for ``$KV.``, ``$JS.API.`` or
+#: ``_INBOX_`` subjects, where an operator pasting the reported string into a grant list would get
+#: one that never matches. The subject is therefore reported EXACTLY as received, with a companion
+#: field saying whether that case is the server's or the client parser's -- rather than being
+#: silently "corrected", which would invent a case nothing observed.
+#:
+#: The flag is DERIVED, not assumed: uppercase anywhere in the payload proves the parser did not
+#: lowercase it, so a future nats-py that stops doing so reports ``verbatim`` with no code change.
+_SUBJECT_CASE_VERBATIM: Final[str] = "verbatim"
+_SUBJECT_CASE_LOWERCASED: Final[str] = "lowercased-by-nats-py-parser"
+_SUBJECT_CASE_NOT_REPORTED: Final[str] = "not-reported"
+
+#: the caveat appended to the human-readable line when the case cannot be trusted. an operator
+#: reading the sentence rather than the JSON must be warned BEFORE pasting the subject into a grant.
+_LOWERCASED_SUBJECT_CAVEAT: Final[str] = (
+    "The subject was reported by a client parser that lowercases the whole server error, so its case "
+    "may not be the server's -- verify before pasting it into a grant list (this matters for $KV., "
+    "$JS.API. and _INBOX_ subjects; HITL digests and uuids are lowercase already)."
 )
 
 
@@ -2900,8 +2932,21 @@ def _is_outbound_overflow(exc: Exception) -> bool:
     return "outbound buffer limit exceeded" in str(exc).lower()
 
 
-def _permissions_violation(exc: Exception) -> tuple[str, str] | None:
-    """the ``(operation, subject)`` a server permissions violation names, or ``None``.
+class _ViolationDetail(NamedTuple):
+    """what a server permissions refusal names, decomposed, with the case of the subject qualified.
+
+    ``operation`` and ``subject`` are ``None`` when the server's wording could not be decomposed:
+    the violation is still reported, but the structured fields say "not recovered" rather than
+    carrying a human placeholder a log pipeline would treat as a real subject.
+    """
+
+    operation: str | None
+    subject: str | None
+    subject_case: str
+
+
+def _permissions_violation(exc: Exception) -> _ViolationDetail | None:
+    """the operation, subject and subject-case a server permissions violation names, or ``None``.
 
     A permissions violation is the one error reaching this callback that leaves the connection UP
     (nats-py's ``Client._process_err`` returns before ``_close`` for it) and that no caller ever
@@ -2910,24 +2955,30 @@ def _permissions_violation(exc: Exception) -> tuple[str, str] | None:
     currently lowercases the whole ``-ERR`` payload in its protocol parser before dispatch, but a
     version that stops doing so should hand back the subject in its true case, not a mangled one.
 
+    Because that lowercasing cannot be undone, the subject is reported EXACTLY as received and
+    qualified by :attr:`_ViolationDetail.subject_case`: uppercase anywhere in the payload proves the
+    parser left it alone (:data:`_SUBJECT_CASE_VERBATIM`), an all-lowercase payload is
+    indistinguishable from a mangled one (:data:`_SUBJECT_CASE_LOWERCASED`). Guessing the true case
+    back would invent a value nothing observed.
+
     When the phrase is present but the wording cannot be decomposed -- a future NATS rewording --
-    this still reports a violation, with placeholders, rather than degrading to an anonymous error.
+    this still reports a violation, with ``None`` ids, rather than degrading to an anonymous error.
 
     :param exc: the exception nats-py surfaced to the error callback
     :ptype exc: Exception
-    :return: ``(operation, subject)`` with ``operation`` normalized to ``publish``/``subscribe``, or
-        ``None`` when ``exc`` is not a permissions violation
-    :rtype: tuple[str, str] | None
+    :return: the decomposed violation, or ``None`` when ``exc`` is not a permissions violation
+    :rtype: _ViolationDetail | None
     """
-    result: tuple[str, str] | None = None
+    result: _ViolationDetail | None = None
     text = str(exc)
     if _PERMISSIONS_VIOLATION_PHRASE in text.lower():
         match = _PERMISSIONS_VIOLATION_PATTERN.search(text)
         if match is None:
-            result = (_UNKNOWN_OPERATION, _UNKNOWN_SUBJECT)
+            result = _ViolationDetail(None, None, _SUBJECT_CASE_NOT_REPORTED)
         else:
             operation = _VIOLATION_OPERATIONS[match.group("operation").lower()]
-            result = (operation, match.group("subject"))
+            case = _SUBJECT_CASE_VERBATIM if text != text.lower() else _SUBJECT_CASE_LOWERCASED
+            result = _ViolationDetail(operation, match.group("subject"), case)
     return result
 
 
@@ -2957,23 +3008,33 @@ async def _on_error(exc: Exception) -> None:
     if violation is None:
         key = f"{type(exc).__name__}:{exc}"
     else:
-        key = f"{_PERMISSIONS_VIOLATION_PHRASE}:{violation[0]}:{violation[1]}"
+        key = f"{_PERMISSIONS_VIOLATION_PHRASE}:{violation.operation}:{violation.subject}"
     now = time.monotonic()
     last = _last_error_log.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
         if violation is None:
             log.error("NATS error: %s", exc)
         else:
-            operation, subject = violation
+            operation = violation.operation or _UNKNOWN_OPERATION
+            caveat = "" if violation.subject_case != _SUBJECT_CASE_LOWERCASED else f" {_LOWERCASED_SUBJECT_CAVEAT}"
             log.error(
                 "NATS PERMISSIONS VIOLATION: the server refused this connection's %s of subject "
                 "%s. %s The minted user JWT does not grant that subject -- add it to this "
-                "principal's allow-list in threetears.nats.subject_permissions.build_permissions. "
+                "principal's allow-list in threetears.nats.subject_permissions.build_permissions.%s "
                 "raw error: %s",
                 operation,
-                subject,
+                violation.subject or _UNKNOWN_SUBJECT,
                 _VIOLATION_CONSEQUENCES.get(operation, _UNKNOWN_CONSEQUENCE),
+                caveat,
                 exc,
+                extra={
+                    "extra_data": {
+                        "subject": violation.subject,
+                        "operation": violation.operation,
+                        "subject_case": violation.subject_case,
+                        "error": str(exc),
+                    }
+                },
             )
         _last_error_log[key] = now
     else:

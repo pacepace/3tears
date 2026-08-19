@@ -316,6 +316,28 @@ packages (bumped in lock-step).
   `threetears.nats.subject_permissions.build_permissions` as the place the grant
   is missing from. The raw server error is still carried verbatim.
 
+  Those same facts also go out STRUCTURED, via the platform's own
+  `extra={"extra_data": {...}}` convention that `threetears.observe`'s formatter
+  serialises to JSON — `subject`, `operation`, `subject_case` and `error`. Prose
+  alone could be read but not alerted on or grouped, which is most of what naming
+  the subject was for. When the server's wording cannot be decomposed at all the
+  fields are `null` rather than the human placeholders, so a log pipeline never
+  groups on a subject nobody recovered.
+
+  `subject_case` exists because the subject's case cannot always be trusted:
+  nats-py lowercases the WHOLE `-ERR` payload in its protocol parser before
+  dispatch. That is harmless for a HITL subject (sha256 digests and uuids are
+  lowercase already) and NOT harmless for `$KV.`, `$JS.API.` or `_INBOX_`
+  subjects, where an operator pasting the reported string into a grant list would
+  get one that never matches. The subject is therefore reported exactly as
+  received — never silently "corrected" into a case nothing observed — and
+  qualified: uppercase anywhere in the payload PROVES the parser left it alone
+  (`verbatim`), an all-lowercase payload is indistinguishable from a mangled one
+  (`lowercased-by-nats-py-parser`), and an undecomposable wording is
+  `not-reported`. The flag is derived, not assumed, so a future nats-py that
+  stops lowercasing reports `verbatim` with no code change. The human-readable
+  line carries the same caveat in words, and only when it applies.
+
   Rate limiting keeps DISTINCT SUBJECTS distinct, so a second dead subject is
   never suppressed behind the first — each is a different capability lost, not a
   repeat of one error. Only the same subject repeating inside the window is
@@ -325,6 +347,15 @@ packages (bumped in lock-step).
   client previously continued (the reconnect and degrade paths depend on that).
   A permissions violation still does NOT trip the wedged-auth `is_healthy`
   signal, which is correct — restarting the pod cannot fix a missing grant.
+
+  Proven end to end against a real broker by
+  `packages/nats/tests/integration/test_hitl_grant_silent_failure_live.py`: a
+  tool pod whose permissions were built WITHOUT `tool_namespaces` subscribes its
+  owner-routed HITL subject with no exception, reports itself healthy, receives
+  nothing when the hub publishes — and this line is the only evidence that
+  exists, naming that exact subject in its structured fields. The same test runs
+  the identical actions on the identical subject with `tool_namespaces` supplied
+  and the message genuinely arrives, so the credential is the only variable.
 
 ## v0.26.1 -- 2026-08-18
 
