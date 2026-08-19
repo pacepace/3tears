@@ -392,6 +392,47 @@ packages (bumped in lock-step).
   assertions against the stub and against a real `BaseCollection`, so the two
   cannot drift apart again silently.
 
+  **Two further gaps are now closed, and the second is the dangerous one.**
+  `write_to_cache_sync` did not accept the real one's optional `primary_key`
+  override (`collections/base.py:481-484`), which names the columns a single
+  write keys on and defaults to the collection's declared
+  `primary_key_columns`; a caller passing it — `agent/memory`'s collection tests
+  do — got a `TypeError` from the stub. That failure is at least loud.
+
+  `exists_in_cache_sync` and `evict_from_cache_sync` were simply ABSENT, and
+  absence on a `MagicMock` is not a failure: the attribute is auto-created and
+  the child it returns is truthy. A test asking "is this row cached?" got `True`
+  for a row nothing had ever written, `True` after an eviction it had just
+  requested, and `True` against an empty cache — an assertion that could not
+  fail. Both are now implemented against the real semantics, including the one
+  that reads backwards: `evict_from_cache_sync` returns `True` whenever an L1
+  backend EXISTS, not when a row was found, because the real method issues its
+  delete unconditionally (`collections/base.py:534-537`). Both short-circuit to
+  `False` with no L1, and both normalize the pk first, so a scalar id against a
+  composite-pk stub raises the same arity `ValueError` the real collection
+  raises.
+
+  The parity suite gains a real composite-pk `BaseCollection` alongside the
+  single-pk one, so the pk-override, presence and eviction assertions run
+  against both key shapes on both objects — 15 new tests, each asserting the
+  stub and a real collection agree.
+
+- `core`: **the last hand-rolled `mock_collection` fixture is gone.**
+  `packages/core/tests/test_base_entity.py` still defined its own, predating the
+  shared stub and carrying both of the defects above plus a third: it keyed its
+  dict by `str(entity_id)` rather than the normalized pk tuple, which collapses
+  `("cust-a", "row-1")` and `("cust-b", "row-1")` onto one entry. It now uses
+  `entity_collection_stub` like every other consumer.
+
+  All 35 tests pass unchanged. **No test in that file was passing only because
+  of a stub defect** — the three assertions that moved (`cache["e1"]` →
+  `cache[("e1",)]`) changed key SHAPE and nothing else, and no assertion was
+  weakened or removed. That is the expected outcome rather than a lucky one: the
+  file's fixture always reported a successful cache write, which is what the
+  shared stub does at its `has_l1=True` default, and no test in it writes a
+  PRIMARY KEY column through `set_field_sync`, which is the only case where
+  in-place mutation and a detached re-upsert differ.
+
 - `registry`: **`RbacEvaluatorAuthorizer`'s docstring described a grant the
   evaluator refuses.** It told an admin to reach platform built-in tools by
   binding a "default tool access" group to the caller's customer with a
@@ -454,6 +495,55 @@ packages (bumped in lock-step).
   workspace, and they must land together, since the `pythonpath` line alone
   would break them. Verified order-independent across `geo` / `acl` /
   `datasources` in both directions and all three together.
+
+  **68 of the 80 `tests/**/__init__.py` files that caused it are now deleted** —
+  and **12 turned out to still be load-bearing**, which the `pythonpath` line
+  alone does not make true of all of them.
+
+  The rule that separates the two: an `__init__.py` still decides the module
+  name wherever a conftest puts a TEST DIRECTORY on `sys.path`, which five do
+  (`agent/tools`, `agent/workspace`, `scrape` and `search` insert their own
+  tests dir; `packages/conversations/tests/conftest.py:15-16` inserts
+  `packages/core/tests/unit/coordination`). Once a test dir is on `sys.path`,
+  pytest's `resolve_pkg_root_and_module_name` walks OUTWARD from the deepest
+  package root and takes the first name that imports — so the innermost
+  candidate, `test_challenge` or `unit.test_bind`, wins and the walk never
+  reaches the repo root. The `__init__.py` is what moves the starting point up
+  to `packages/<pkg>`, past the bare candidate.
+
+  Deleting those was not cosmetic. It renamed
+  `packages.agent.workspace.tests.unit.test_bind` to `unit.test_bind` — the
+  shared top-level node this entry exists to remove — and it broke `scrape` and
+  `search` outright: a module with no package cannot resolve
+  `from ._searxng_payloads import ...`, so both trees stopped collecting
+  entirely (`ImportError: attempted relative import with no known parent
+  package`). The split was decided by measurement, not inspection: every
+  collected module's `__name__` was diffed before and after, and the 68 removed
+  are exactly the ones whose name did not move. After the deletion that diff is
+  empty — all 723 module names are byte-identical to the pre-change run.
+
+  `agent/tools` is the exception that proves the rule, and is NOT fixed here:
+  its tests dir is on `sys.path` (`tests/conftest.py:9`) and it has no
+  `tests/__init__.py`, so its modules were ALREADY named `unit.test_x` /
+  `enforcement.test_y` on `develop`. Its nested `__init__.py` files changed
+  nothing either way and are gone with the other 67. That package keeps a
+  latent version of this clash, unchanged by this branch.
+
+  The last two survivors are not test-tree packages at all:
+  `packages/agent/workspace/tests/_helpers/__init__.py` documents an importable
+  helper package that `tests/conftest.py` deliberately puts on `sys.path`
+  (import sites read `from _helpers.asyncpg_shims import ...`), and
+  `packages/scrape/sidecar/tests/__init__.py` belongs to the separate sidecar
+  deployable the workspace pytest config `--ignore`s outright and whose suite
+  runs from its own venv.
+
+  Collection counts are unchanged and still order-independent after the
+  deletion: `geo` + `acl` and `acl` + `geo` both collect 328, and all three with
+  `datasources` collect 2302 in either direction. The workspace total drops by
+  exactly the 68 parametrized cases that
+  `tests/enforcement/test_no_entity_id_override.py` generated for those files —
+  it parametrizes over every `.py` file in the repo, so deleting a file deletes
+  a case.
 
 ## v0.26.1 -- 2026-08-18
 

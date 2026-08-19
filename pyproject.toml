@@ -394,17 +394,18 @@ consider_namespace_packages = true
 # ``packages.<pkg>.tests....`` name instead of a bare ``tests....`` one.
 #
 # Without it the name a test module gets depends on WHICH PACKAGE pytest
-# collected first. Several packages ship a regular ``tests`` package
-# (``packages/agent/acl``, ``packages/geo``, ``packages/datasources``,
-# ... each has ``tests/__init__.py``), pytest walks up from a test file
-# only while ``__init__.py`` exists, and so it stops at ``packages/<pkg>``
-# and registers EVERY one of them under the same top-level name
-# ``tests``. ``sys.modules`` is first-writer-wins, so the first package
-# collected owns ``tests`` / ``tests.unit``, and every later package's
-# helper import -- absolute or relative, since a relative import just
-# resolves against the same shadowed ``__package__`` -- looks for its
-# own ``_fake_loaders`` / ``_helpers`` inside the WINNER's directory and
-# raises ``ModuleNotFoundError``.
+# collected first. Several packages USED TO ship a regular ``tests``
+# package (``packages/agent/acl``, ``packages/geo``,
+# ``packages/datasources`` and others each had ``tests/__init__.py``),
+# pytest walks up from a test file only while ``__init__.py`` exists,
+# and so it stopped at ``packages/<pkg>`` and registered EVERY one of
+# them under the same top-level name ``tests``. ``sys.modules`` is
+# first-writer-wins, so the first package collected owned ``tests`` /
+# ``tests.unit``, and every later package's helper import -- absolute or
+# relative, since a relative import just resolves against the same
+# shadowed ``__package__`` -- looked for its own ``_fake_loaders`` /
+# ``_helpers`` inside the WINNER's directory and raised
+# ``ModuleNotFoundError``.
 #
 # The workspace run ``pytest packages/ tests/`` was green only by
 # alphabetical accident: ``packages/agent/acl`` sorts first and won the
@@ -416,6 +417,46 @@ consider_namespace_packages = true
 #
 # Anchoring the name to the repo root removes the shared node entirely,
 # so collection no longer depends on argument order or on sort position.
+#
+# 68 of the 80 ``tests/**/__init__.py`` files have since been DELETED,
+# now that this line -- not their presence -- is what anchors the module
+# name for them.
+#
+# TWELVE ARE STILL LOAD-BEARING, and this is the rule that says which:
+# an ``__init__.py`` still decides the module name wherever a conftest
+# puts a TEST DIRECTORY on ``sys.path``. Five do
+# (``packages/agent/tools``, ``packages/agent/workspace``,
+# ``packages/scrape`` and ``packages/search`` insert their own tests
+# dir; ``packages/conversations/tests/conftest.py`` inserts
+# ``packages/core/tests/unit/coordination``). Once a test dir is on
+# ``sys.path``, pytest's ``resolve_pkg_root_and_module_name`` finds the
+# INNERMOST candidate importable -- ``test_challenge``,
+# ``unit.test_bind`` -- and stops there, because it walks outward from
+# the deepest package root and takes the first name that imports. The
+# ``__init__.py`` is what moves that starting point up to
+# ``packages/<pkg>``, so the walk never offers the bare candidate and
+# the repo-root name wins.
+#
+# Deleting them is not cosmetic: it renamed
+# ``packages.agent.workspace.tests.unit.test_bind`` to
+# ``unit.test_bind``, and it broke ``packages/scrape`` and
+# ``packages/search`` outright -- a module with no package cannot do
+# ``from ._searxng_payloads import ...``, so both trees failed to
+# collect at all. Measured by diffing every collected module's
+# ``__name__`` before and after; the 68 that were deleted are exactly
+# the ones whose name did not move.
+#
+# ``packages/agent/tools`` is the exception that proves the rule and is
+# NOT fixed here: its tests dir is on ``sys.path`` and it has no
+# ``tests/__init__.py``, so its modules were ALREADY named
+# ``unit.test_x`` / ``enforcement.test_y`` on ``develop``. Its nested
+# ``__init__.py`` files changed nothing and are gone with the other 67.
+#
+# The last two survivors are not test-tree packages at all:
+# ``packages/agent/workspace/tests/_helpers`` is an importable helper
+# package that ``tests/conftest.py`` puts on ``sys.path`` on purpose,
+# and ``packages/scrape/sidecar/tests`` belongs to the separate sidecar
+# deployable this config ``--ignore``s outright.
 pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [

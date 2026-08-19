@@ -5,8 +5,9 @@ attribute access: the declared ``primary_key_columns`` (which is where
 :class:`~threetears.core.entities.base.BaseEntity` derives its
 addressing ``_id`` from), the synchronous L1 cache surface
 (``write_to_cache_sync`` / ``get_field_sync`` / ``set_field_sync`` /
-``get_row_sync``), and the async persistence delegates (``save_entity``
-/ ``reload_entity``).
+``get_row_sync`` / ``exists_in_cache_sync`` / ``evict_from_cache_sync``),
+and the async persistence delegates (``save_entity`` /
+``reload_entity``).
 
 Entity unit tests want that surface without a registry, an L1 backend,
 a NATS client and a config object. Before this module every package
@@ -30,20 +31,26 @@ whole point.
 Where the stub answers differently from the collection it replaces, the
 difference is untestable: every test built on the stub agrees with the
 stub, and none of them notices the real behaviour. So each accessor
-matches ``BaseCollection``'s observable contract, including the two
+matches ``BaseCollection``'s observable contract, including the four
 cases that are easy to get subtly wrong:
 
-* ``has_l1=False`` models a collection whose ``_l1`` is ``None``. the
-  four sync accessors the stub implements short-circuit, writes report
-  failure, and the entity's ``_changes`` fallback / ``set_data``
-  ``RuntimeError`` paths become reachable from a unit test. the
-  short-circuit precedes pk normalization, as it does on the real
-  collection, so a no-L1 stub skips the arity check exactly as the real
-  one skips it.
+* ``has_l1=False`` models a collection whose ``_l1`` is ``None``. all
+  six sync accessors short-circuit, writes report failure, and the
+  entity's ``_changes`` fallback / ``set_data`` ``RuntimeError`` paths
+  become reachable from a unit test. the short-circuit precedes pk
+  normalization, as it does on the real collection, so a no-L1 stub
+  skips the arity check exactly as the real one skips it.
 * ``set_field_sync`` upserts a detached copy rather than mutating the
   cached row, so writing a PRIMARY KEY column leaves the old row behind
   and creates a second one -- what the real collection does, and what an
   in-place rename hid.
+* ``write_to_cache_sync`` takes the real one's optional ``primary_key``
+  override, naming the columns this one write keys on.
+* ``exists_in_cache_sync`` / ``evict_from_cache_sync`` are implemented
+  rather than left to :class:`~unittest.mock.MagicMock`'s auto-created
+  children. an unimplemented method here is worse than a wrong one:
+  the auto-created child returns a truthy mock, so a test asking "is
+  this row cached?" got ``True`` for a row nothing had ever written.
 
 ``packages/core/tests/test_entity_collection_stub.py`` runs the same
 assertions against this stub and against a real ``BaseCollection`` so
@@ -58,6 +65,22 @@ from unittest.mock import AsyncMock, MagicMock
 from threetears.core.cache import MISSING
 
 __all__ = ["entity_collection_stub"]
+
+
+def _as_columns(primary_key: str | tuple[str, ...]) -> tuple[str, ...]:
+    """coerce a pk-override argument to tuple form.
+
+    mirrors :meth:`SQLiteBackend._pk_columns`, which the real
+    ``write_to_cache_sync`` reaches through: a bare column name is the
+    single-pk shape and a tuple is the composite one.
+
+    :param primary_key: pk column name, or tuple of pk column names in
+        declared order
+    :ptype primary_key: str | tuple[str, ...]
+    :return: tuple of pk column names
+    :rtype: tuple[str, ...]
+    """
+    return (primary_key,) if isinstance(primary_key, str) else primary_key
 
 
 def _normalize(entity_id: Any, primary_key_columns: tuple[str, ...]) -> tuple[Any, ...]:
@@ -109,8 +132,9 @@ def entity_collection_stub(
     ``has_l1=False`` models a collection constructed against a registry
     with no L1 backend, where :attr:`BaseCollection._l1` is ``None`` and
     every sync accessor short-circuits: reads answer ``MISSING`` /
-    ``None`` and writes answer ``False``. that is not a cosmetic
-    difference. :meth:`BaseEntity.__init__` reads the write's return
+    ``None`` / ``False`` and writes and evictions answer ``False``. that
+    is not a cosmetic difference. :meth:`BaseEntity.__init__` reads the
+    write's return
     value to decide whether the row lives in L1 or in the in-memory
     ``_changes`` buffer, and :meth:`BaseEntity.set_data` raises
     ``RuntimeError`` on a refused write. a stub hard-coded to report
@@ -131,13 +155,21 @@ def entity_collection_stub(
     """
     cache: dict[tuple[Any, ...], dict[str, Any]] = {}
 
-    def _key_from_row(data: dict[str, Any]) -> tuple[Any, ...]:
-        return tuple(data.get(col) for col in primary_key_columns)
+    def _key_from_row(data: dict[str, Any], columns: tuple[str, ...] | None = None) -> tuple[Any, ...]:
+        return tuple(data.get(col) for col in (columns if columns is not None else primary_key_columns))
 
-    def _write_to_cache(data: dict[str, Any]) -> bool:
+    def _write_to_cache(data: dict[str, Any], primary_key: str | tuple[str, ...] | None = None) -> bool:
+        # the ``primary_key`` override is the real signature's second
+        # parameter, and it is positional-or-keyword there, so it is
+        # here too. it names the columns THIS write keys on, exactly as
+        # it names the L1 upsert's conflict target on the real
+        # collection; ``None`` means the declared pk. a stub that took
+        # ``data`` alone raised TypeError at every caller passing it --
+        # loud, but still a stand-in that cannot stand in.
         if not has_l1:
             return False
-        cache[_key_from_row(data)] = dict(data)
+        columns = primary_key_columns if primary_key is None else _as_columns(primary_key)
+        cache[_key_from_row(data, columns)] = dict(data)
         return True
 
     def _get_field(entity_id: Any, field: str) -> Any:
@@ -169,6 +201,25 @@ def entity_collection_stub(
         cache[_key_from_row(updated)] = updated
         return True
 
+    def _exists_in_cache(entity_id: Any) -> bool:
+        # absent before this existed, and absence is the dangerous
+        # shape: MagicMock auto-creates the attribute and its return
+        # value is a truthy child mock, so "is this row cached?"
+        # answered yes for a row nothing had ever written -- and yes
+        # again immediately after an eviction.
+        if not has_l1:
+            return False
+        return _normalize(entity_id, primary_key_columns) in cache
+
+    def _evict_from_cache(entity_id: Any) -> bool:
+        # ``True`` means "an L1 backend exists", NOT "a row was found":
+        # the real method issues its delete unconditionally and reports
+        # only whether there was an L1 to issue it against.
+        if not has_l1:
+            return False
+        cache.pop(_normalize(entity_id, primary_key_columns), None)
+        return True
+
     def _get_row(entity_id: Any) -> dict[str, Any] | None:
         # a COPY, matching SQLiteBackend.select_by_id. returning the live
         # dict let a caller mutate the "cache" through a read result,
@@ -187,6 +238,8 @@ def entity_collection_stub(
     collection.get_field_sync = MagicMock(side_effect=_get_field)
     collection.set_field_sync = MagicMock(side_effect=_set_field)
     collection.get_row_sync = MagicMock(side_effect=_get_row)
+    collection.exists_in_cache_sync = MagicMock(side_effect=_exists_in_cache)
+    collection.evict_from_cache_sync = MagicMock(side_effect=_evict_from_cache)
     collection.save_entity = AsyncMock()
     collection.reload_entity = AsyncMock()
     return collection, cache

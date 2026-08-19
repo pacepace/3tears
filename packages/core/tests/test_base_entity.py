@@ -2,49 +2,35 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
-from threetears.core.cache import MISSING
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing import entity_collection_stub
 
+StubCollection = tuple[MagicMock, dict[tuple[Any, ...], dict[str, Any]]]
+
 
 @pytest.fixture
-def mock_collection():
-    """Mock collection with in-memory L1 cache simulation."""
-    cache: dict[str, dict[str, object]] = {}
+def stub_collection() -> StubCollection:
+    """yield the shared single-pk collection stand-in and its row dict.
 
-    coll = MagicMock()
+    this file used to grow its own ``mock_collection`` fixture, which
+    predated :func:`threetears.core.testing.entity_collection_stub` and
+    carried the two defects that stub was since fixed for: a
+    ``write_to_cache_sync`` hard-coded to report success, and a
+    ``set_field_sync`` that mutated the cached row in place. it also
+    keyed its dict by ``str(entity_id)`` rather than the normalized pk
+    tuple, so a composite-pk entity would have collapsed two tenants'
+    rows onto one key.
 
-    def write_to_cache(data: dict[str, object]) -> bool:
-        pk = data.get("id", "")
-        cache[str(pk)] = dict(data)
-        return True
-
-    def get_field(entity_id: object, field: str) -> object:
-        row = cache.get(str(entity_id))
-        if row is None:
-            return MISSING
-        return row.get(field, MISSING)
-
-    def set_field(entity_id: object, field: str, value: object) -> None:
-        row = cache.get(str(entity_id))
-        if row is not None:
-            row[field] = value
-
-    def get_row(entity_id: object) -> dict[str, object] | None:
-        return cache.get(str(entity_id))
-
-    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll.get_field_sync = MagicMock(side_effect=get_field)
-    coll.set_field_sync = MagicMock(side_effect=set_field)
-    coll.get_row_sync = MagicMock(side_effect=get_row)
-    coll.save_entity = AsyncMock()
-    coll.reload_entity = AsyncMock()
-
-    return coll, cache
+    :return: the collection stub and the row dict backing it, keyed by
+        the normalized pk tuple
+    :rtype: tuple[MagicMock, dict[tuple[Any, ...], dict[str, Any]]]
+    """
+    return entity_collection_stub(("id",))
 
 
 class TestBaseEntity:
@@ -60,31 +46,29 @@ class TestBaseEntity:
         assert entity.is_new is True
         assert entity.is_dirty is True
 
-    def test_create_with_collection(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_create_with_collection(self, stub_collection: StubCollection) -> None:
         """Writes to L1 on construction, _changes is empty."""
-        coll, cache = mock_collection
+        coll, cache = stub_collection
         data = {"id": "e1", "name": "Bob", "score": 42}
 
         entity = BaseEntity(data, is_new=True, collection=coll)
 
         coll.write_to_cache_sync.assert_called_once_with(data)
-        assert cache["e1"]["name"] == "Bob"
+        assert cache[("e1",)]["name"] == "Bob"
         assert object.__getattribute__(entity, "_changes") == {}
         assert entity.name == "Bob"
 
-    def test_getattr_reads_from_changes_first(
-        self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
-    ) -> None:
+    def test_getattr_reads_from_changes_first(self, stub_collection: StubCollection) -> None:
         """Modified field reads show new value from _changes, not L1."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e2", "name": "Carol"}, is_new=False, collection=coll)
 
         entity.name = "Caroline"
         assert entity.name == "Caroline"
 
-    def test_getattr_reads_from_l1_cache(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_getattr_reads_from_l1_cache(self, stub_collection: StubCollection) -> None:
         """Unmodified field reads from L1 cache."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity(
             {"id": "e3", "name": "Dan", "role": "admin"},
             is_new=False,
@@ -94,21 +78,17 @@ class TestBaseEntity:
         assert entity.role == "admin"
         coll.get_field_sync.assert_called_with("e3", "role")
 
-    def test_getattr_raises_attributeerror(
-        self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
-    ) -> None:
+    def test_getattr_raises_attributeerror(self, stub_collection: StubCollection) -> None:
         """Accessing nonexistent field raises AttributeError."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e4", "name": "Eve"}, is_new=False, collection=coll)
 
         with pytest.raises(AttributeError, match="no attribute 'missing_field'"):
             _ = entity.missing_field
 
-    def test_setattr_records_change_and_updates_l1(
-        self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
-    ) -> None:
+    def test_setattr_records_change_and_updates_l1(self, stub_collection: StubCollection) -> None:
         """Setting a field updates both _changes and L1."""
-        coll, cache = mock_collection
+        coll, cache = stub_collection
         entity = BaseEntity({"id": "e5", "name": "Frank"}, is_new=False, collection=coll)
 
         entity.name = "Franklin"
@@ -116,13 +96,11 @@ class TestBaseEntity:
         coll.set_field_sync.assert_called_with("e5", "name", "Franklin")
         changes = object.__getattribute__(entity, "_changes")
         assert changes["name"] == "Franklin"
-        assert cache["e5"]["name"] == "Franklin"
+        assert cache[("e5",)]["name"] == "Franklin"
 
-    def test_get_changes_returns_modified_fields(
-        self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
-    ) -> None:
+    def test_get_changes_returns_modified_fields(self, stub_collection: StubCollection) -> None:
         """Only changed fields returned for non-new entity."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity(
             {"id": "e6", "name": "Grace", "age": 25},
             is_new=False,
@@ -135,11 +113,9 @@ class TestBaseEntity:
         assert changes == {"age": 26}
         assert "name" not in changes
 
-    def test_get_changes_returns_all_for_new(
-        self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
-    ) -> None:
+    def test_get_changes_returns_all_for_new(self, stub_collection: StubCollection) -> None:
         """New entity returns everything via to_dict()."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         data = {"id": "e7", "name": "Hank", "level": 5}
         entity = BaseEntity(data, is_new=True, collection=coll)
 
@@ -147,9 +123,9 @@ class TestBaseEntity:
 
         assert changes == {"id": "e7", "name": "Hank", "level": 5}
 
-    def test_is_dirty_after_modification(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_is_dirty_after_modification(self, stub_collection: StubCollection) -> None:
         """dirty=True after set, dirty=False after mark_clean."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e8", "name": "Iris"}, is_new=False, collection=coll)
 
         assert entity.is_dirty is False
@@ -158,9 +134,9 @@ class TestBaseEntity:
         entity.mark_clean()
         assert entity.is_dirty is False
 
-    def test_mark_clean(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_mark_clean(self, stub_collection: StubCollection) -> None:
         """Clears changes and dirty flag."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e9", "name": "Jack"}, is_new=True, collection=coll)
 
         entity.name = "Jackson"
@@ -173,9 +149,9 @@ class TestBaseEntity:
         assert entity.is_new is False
         assert object.__getattribute__(entity, "_changes") == {}
 
-    def test_to_dict_from_l1(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_to_dict_from_l1(self, stub_collection: StubCollection) -> None:
         """Returns full state from L1."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         data = {"id": "e10", "name": "Kate", "active": True}
         entity = BaseEntity(data, is_new=False, collection=coll)
 
@@ -193,9 +169,9 @@ class TestBaseEntity:
         assert result == {"id": "e11", "name": "Leo"}
 
     @pytest.mark.asyncio
-    async def test_save_delegates(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    async def test_save_delegates(self, stub_collection: StubCollection) -> None:
         """Calls collection.save_entity."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e12", "name": "Mia"}, is_new=True, collection=coll)
 
         await entity.save()
@@ -211,9 +187,9 @@ class TestBaseEntity:
             await entity.save()
 
     @pytest.mark.asyncio
-    async def test_reload_delegates(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    async def test_reload_delegates(self, stub_collection: StubCollection) -> None:
         """Calls collection.reload_entity."""
-        coll, _cache = mock_collection
+        coll, _cache = stub_collection
         entity = BaseEntity({"id": "e14", "name": "Olive"}, is_new=False, collection=coll)
 
         await entity.reload()
@@ -243,9 +219,9 @@ class TestBaseEntity:
 
         assert entity.id == "u-42"
 
-    def test_set_data_replaces_l1(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
+    def test_set_data_replaces_l1(self, stub_collection: StubCollection) -> None:
         """set_data writes to L1 and clears changes."""
-        coll, cache = mock_collection
+        coll, cache = stub_collection
         entity = BaseEntity({"id": "e16", "name": "Sam"}, is_new=True, collection=coll)
 
         entity.name = "Samuel"
@@ -253,7 +229,7 @@ class TestBaseEntity:
 
         entity.set_data({"id": "e16", "name": "Samwise", "level": 10})
 
-        assert cache["e16"]["name"] == "Samwise"
+        assert cache[("e16",)]["name"] == "Samwise"
         assert entity.is_dirty is False
         assert entity.is_new is False
         assert object.__getattribute__(entity, "_changes") == {}
