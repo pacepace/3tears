@@ -414,12 +414,14 @@ as the note above predicted.* The family has released six more times since
 search-side. **metallm is unblocked on every axis this document tracks**: it is
 current at 0.24.4, its lag item is closed, and Gate B closed on 2026-08-14. What
 it lacks is the branch — `feature/new-search` does not exist. **discodon is
-still hard-blocked, and the block is circular through Phase 1**: it needs the
+still hard-blocked, and the chain runs back through discodon itself**: it needs the
 replay piece (search Phase 3 item 8), which is unbuilt here —
 `packages/search/src/threetears/search/` has `aggregate`, `select`, `extract`,
 `bind`, `call`, `limiter` and `standalone`, and no `replay.py` — and which is
-elicited against the storage port that is still uncarved *in discodon*. Neither
-end has moved in the five days since this was last written.
+elicited against the storage port that is still uncarved *in discodon*. Not a
+cycle — a three-link chain, discodon → 3tears → discodon — but one whose first
+link nobody outside discodon can pull. Neither end has moved in the five days
+since this was last written.
 
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
