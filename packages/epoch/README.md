@@ -18,6 +18,21 @@ The counter itself lives in a memory-backed NATS KV bucket for every epoch whose
 
 This is the standard pattern from etcd `mod_revision` + watch, K8s `resourceVersion` + informer, Envoy xDS `version_info` + ACK, DNS SOA serial + secondary refresh.
 
+
+## Deployment obligation: the KV grant
+
+Every principal that bumps or reads an epoch must be granted the `{ns}-epochs` KV bucket
+(`AGENT_POD`, `HUB`, `GATEWAY` in `threetears.nats.subject_permissions`). **A missing KV
+grant does not raise.** The JetStream call blocks to its deadline and surfaces as an
+unreachable broker, so the symptom points at the network rather than at the permission that
+was never carried. `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant against
+the bucket the client actually opens.
+
+Consumers also register an `on_reset` callback and schedule a
+`threetears.epoch.catchup_tick` pass. A consumer that subscribes and schedules neither still
+receives broadcasts, and misses everything a broadcast can lose -- including a counter
+replaced by a broker restart, which every KV operation survives silently.
+
 ## Identity
 
 The unit of identity is the **NATS subject path**. Each consumer:

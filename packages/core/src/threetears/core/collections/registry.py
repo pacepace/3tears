@@ -234,6 +234,14 @@ class CollectionRegistry:
         worst of them and wrong for the rest. Nothing is bounded until a
         collection sets a value.
 
+        Not every backend can honour one. ``DuckDBBackend`` injects no stamp and
+        raises ``NotImplementedError`` on the first repairing read rather than
+        silently never expiring -- so a bound accepted here surfaces at read
+        time, not at configuration time. It has no production construction site
+        today, which is why this is a documented sharp edge rather than a
+        validation: the check would have to reach into the backend a collection
+        happens to hold, and the refusal it would duplicate is already loud.
+
         A collection with no L3 pool is refused a bound at the point of use
         (:attr:`BaseCollection.l1_max_age_seconds`), regardless of what is set
         here: with nothing to pull through from, an expired row is not a miss,
@@ -406,10 +414,17 @@ class CollectionRegistry:
         order.
 
         narrow exception scope: only :class:`PublishError` is logged
-        and swallowed (the write has already succeeded; the
-        invalidation broadcast is best-effort because the next pod
-        read will pull a stale-but-still-correct row from L3 if it
-        misses the eviction). programming errors propagate.
+        and swallowed. The write has already succeeded, and nats-py
+        buffers a publish issued while disconnected and flushes it on
+        reconnect, so an ordinary outage loses nothing.
+
+        The older justification here -- that a peer would "pull a
+        stale-but-still-correct row from L3" -- does not hold and is
+        recorded as wrong rather than deleted: a peer that missed the
+        eviction keeps serving its own L1 and never re-reads. What
+        actually bounds that staleness is the L1 max-age, and only for
+        a collection that has opted into one. programming errors
+        propagate.
 
         :param nats_client: connected typed NATS wrapper client;
             ``None`` short-circuits (no-op)
@@ -471,7 +486,9 @@ class CollectionRegistry:
             # wire envelope failed validation -- programming error,
             # but propagating would mask the calling write op. log
             # loud and continue; surfaces as a real failure in CI
-            # because tests assert on this counter.
+            # (there is no such counter, and nothing in
+            # test_cache_coherence.py asserts on one -- the claim this
+            # comment used to make was simply untrue).
             log.error(
                 "Invalidation envelope validation failed",
                 extra={

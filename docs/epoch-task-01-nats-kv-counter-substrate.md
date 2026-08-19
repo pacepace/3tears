@@ -1,6 +1,7 @@
 # epoch-task-01: Move the ephemeral epoch counters from Postgres to NATS KV
 
-**Status:** READY, but **not independently shippable**. See "Shipping order".
+**Status:** BUILT on `feat/epoch-kv-counter`, not shipped (no PR, not merged, not
+released). Was never independently shippable; see "Shipping order".
 **Scope:** `3tears-epoch` (`client.py`), `3tears-nats` (`subject_permissions.py`),
 `3tears-mcp` (integration tests), enforcement tests.
 **Depends on:** nothing to build. Blocked from shipping alone by epoch-task-02.
@@ -157,7 +158,11 @@ allowlist entry narrows to the carve-out. Root `CHANGELOG.md`.
 
 ## Version
 
-This changes `EpochClient.__init__` and is a breaking API change on a family at `0.26.1`.
+**`EpochClient.__init__` did NOT change**, contrary to an earlier draft of this section.
+It still takes `(pool, nats_client)`: the pool is retained for the durable tile family, and
+routing is by subject rather than by constructor, so no consumer -- including the
+out-of-repo hub -- has to change its wiring. The additions are new methods, so this is
+additive.
 Per `CLAUDE.md` the whole `3tears*` family moves to `0.27.0` in lockstep and every
 intra-family bound moves with it
 (`tests/enforcement/test_intra_family_version_bounds.py`). `bump-version.sh` only rewrites

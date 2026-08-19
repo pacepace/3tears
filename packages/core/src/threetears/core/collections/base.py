@@ -542,11 +542,25 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return None
+        max_age = self.l1_max_age_seconds if expiring else None
+        if max_age is None:
+            # The kwarg is omitted, not passed as None, when expiry is off.
+            # ``L1Backend`` is a published Protocol, so an out-of-repo
+            # implementation predating this parameter would raise TypeError on
+            # EVERY cached read otherwise -- and a bound nobody configured is
+            # the overwhelmingly common case, so the whole platform would break
+            # for a feature it had not opted into.
+            untouched: dict[str, Any] | None = self._l1.select_by_id(
+                self.table_name,
+                self.normalize_pk(entity_id),
+                self.primary_key_columns,
+            )
+            return untouched
         row: dict[str, Any] | None = self._l1.select_by_id(
             self.table_name,
             self.normalize_pk(entity_id),
             self.primary_key_columns,
-            max_age_seconds=self.l1_max_age_seconds if expiring else None,
+            max_age_seconds=max_age,
         )
         return row
 

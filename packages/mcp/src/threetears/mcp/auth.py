@@ -533,6 +533,12 @@ class LocalGrantAuthorizer:
         except asyncio.CancelledError:
             pass
         self._catchup_task = None
+        if self._epoch_listener is not None:
+            # the listener's registration outlives the task otherwise, so a
+            # later reset would call back into a stopped authorizer and ask it
+            # to reload a cache it no longer maintains.
+            self._epoch_listener.deregister(Subjects.mcp_rbac_epoch())
+        self._started = False
         log.info("MCP authorizer catch-up loop stopped")
 
     async def _catchup_loop(self) -> None:

@@ -1,6 +1,7 @@
 # epoch-task-02: Detect a recreated bucket and reset, instead of dropping bumps forever
 
-**Status:** READY. Reshaped after review, which found the first draft could notify only one
+**Status:** BUILT on `feat/epoch-kv-counter`, not shipped (no PR, not merged, not
+released). The in-process reopen signal below is DESCOPED; see that section. Reshaped after review, which found the first draft could notify only one
 consumer and could re-wedge itself.
 **Scope:** `3tears-epoch` (`listener.py`, `client.py`), `3tears-nats` (`kv.py` and the
 `KvBucketLike` Protocol at `kv.py:437-464`), `3tears-core`
@@ -72,10 +73,13 @@ The bucket carries its own identity under a reserved key, `_bucket_identity`.
   when the config is identical, so the create branch is taken on essentially every open of
   an existing bucket. An implementer who gated a `put` on it would have every pod start
   rewrite the identity and flush the whole fleet.
-- **Reading no identity while one is recorded is a reset.** `_reopen` copies back only
-  `self._kv` and writes no keys, and `NatsClient.kv_bucket` is cache-short-circuited
-  (`client.py:2198-2201`), so a self-healed bucket has no identity key until someone
-  re-creates it. Absent-but-previously-present must not read as unchanged.
+- **Reading no identity is NOT a reset** -- an earlier draft of this section said the
+  opposite, and the shipped code is the better rule. The identity is minted create-if-absent
+  on every read, so a bucket that genuinely lost its key gets a NEW one immediately and the
+  comparison catches it. The only way to read nothing is for KV itself to be unreachable,
+  and an outage is not a replacement: treating it as one flushes every cache in the fleet on
+  a blip, and forgetting the recorded identity would make the next successful read look like
+  a change too.
 - **The loser path is not atomic.** `create()` returning `None` then `get()` returning
   `None` (the bucket was wiped in between) is "identity unknown", which under the rule
   above is a reset. Retry the create/get pair a bounded number of times before concluding.
@@ -195,8 +199,10 @@ numbers are meaningless, which is more useful than knowing they were merely lowe
   the reset.
 - After a reset, `_last_seen` is empty, not re-primed.
 - A create race resolves to a single identity, with losers adopting the winner's.
-- An absent identity where one was previously recorded is treated as a reset.
-- The listener performs no KV write of any kind. (Stated this way because it is checkable;
+- An unreadable identity is NOT treated as a reset, and leaves the recorded one alone.
+- The listener issues exactly one kind of KV write: the create-if-absent that mints the
+  identity, which IS the mechanism. It performs no other. (Stated this way because it is
+  checkable;
   "the identity is opaque and never ordered" is not assertable by a behavioural test. If
   that guarantee needs enforcing, it is a static check under `tests/enforcement/`, not a
   unit test that cannot fail.)

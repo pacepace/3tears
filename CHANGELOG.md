@@ -8,6 +8,21 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `epoch`: **`catchup_tick(listener, subjects)`** -- one catch-up pass over a
+  consumer's subjects, pure-async, no internal polling. The consumer keeps its
+  loop, interval and shutdown; what it stops keeping is an opinion on which
+  subjects to poll and whether one failing subject abandons the rest. A
+  framework-owned loop is not available at any price here: `3tears-epoch`
+  cannot own a task in `3tears` without inverting the dependency arrow.
+
+  **A consumer that subscribes and schedules nothing gets no catch-up**, and
+  therefore never detects a replaced counter. That is a wiring requirement, not
+  a default.
+
+- `epoch`: **`EpochListener.deregister(subject)`.** Registrations were
+  append-only, so a consumer that had shut down still received resets through
+  bound methods of a stopped object.
+
 - `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
   A reset means the counter being tracked was REPLACED, not advanced, so it
   carries no epoch: the only number available is below everything the consumer
@@ -56,8 +71,10 @@ packages (bumped in lock-step).
   loses the row rather than refreshing it.
 
 - `core`: two keyword parameters on the `L1Backend` protocol reads,
-  `max_age_seconds` and `now_monotonic`. Both default to off, so every existing
-  caller is unaffected. `DuckDBBackend` raises `NotImplementedError` rather than
+  `max_age_seconds` and `now_monotonic`. Both default to off and the framework
+  omits them entirely when expiry is not configured, so existing callers **and
+  out-of-repo `L1Backend` implementations** are unaffected -- the kwargs reach a
+  backend only when a collection has opted into a bound. `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 

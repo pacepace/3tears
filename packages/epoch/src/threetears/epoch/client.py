@@ -384,8 +384,8 @@ class EpochClient:
             await self._nats.publish(subject=subject, message=message)
         except PublishError as exc:
             log.warning(
-                "epoch bump broadcast failed; row commit is durable, "
-                "subscribers will catch up via current() or per-message echo",
+                "epoch bump broadcast failed; the counter increment already happened, "
+                "subscribers catch up via the next catch-up pass or a per-message echo",
                 extra={
                     "extra_data": {
                         "subject": subject.path,

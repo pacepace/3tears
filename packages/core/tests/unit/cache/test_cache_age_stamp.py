@@ -1,8 +1,9 @@
 """The injected L1 cache-age stamp column.
 
-Chunk 02 lands the column and writes it on pull-through. Nothing reads it for
-expiry yet -- these tests pin that it exists where it must, is written when it
-should be, and is invisible to every caller above the cache tier.
+Pins that the column exists where it must, is written when a row arrives from
+a lower tier, and is invisible to every caller above the cache tier. What READS
+it for expiry is tested separately in ``test_l1_max_age_expiry.py``; these tests
+hold the stamp's own contract regardless of whether anything expires.
 """
 
 from __future__ import annotations

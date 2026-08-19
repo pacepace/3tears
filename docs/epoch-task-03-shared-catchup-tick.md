@@ -1,6 +1,7 @@
 # epoch-task-03: A shared catch-up tick body, driven by the consumer
 
-**Status:** READY. Reshaped after review; see "Why the tick does not live in core".
+**Status:** BUILT on `feat/epoch-kv-counter`, not shipped (no PR, not merged, not
+released). Reshaped after review; see "Why the tick does not live in core".
 **Scope:** `3tears-epoch` (new tick body), `3tears-mcp` (`auth.py`, its loop body shrinks
 to a call).
 **Depends on:** epoch-task-02, which must not release without this. The recovery action a

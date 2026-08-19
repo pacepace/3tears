@@ -866,3 +866,118 @@ class TestDurableSubjectsSkipTheIdentityCheck:
         await listener.catch_up(ephemeral, AsyncMock())
 
         on_reset.assert_awaited_once()
+
+
+class TestAReplacementIsAnnouncedOnce:
+    """A reset taken on either detector must not fire again on the next pass.
+
+    The backwards-counter arm fires precisely when the identity read failed --
+    a counter read can succeed while KV errors -- so if only the identity check
+    recorded what it announced, that path would leave the old identity in place
+    and fan out a second time as soon as KV recovered.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_backwards_reset_does_not_fan_out_twice(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        identities: list[str | None] = ["bucket-a", None, "bucket-b", "bucket-b"]
+
+        class _FlakyIdentityClient(_StubEpochClient):
+            async def bucket_identity(self) -> str | None:
+                return identities.pop(0) if len(identities) > 1 else identities[0]
+
+        listener = EpochListener(nats, _FlakyIdentityClient(nats, epoch=[5000, 0, 0]))
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        # first pass: identity unavailable, counter reads backwards -> one reset
+        await listener.catch_up(subject, AsyncMock())
+        # second pass: KV is back and reports the new identity
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_awaited_once()
+
+
+class TestAResetSparesDurableRegistrations:
+    """A replaced KV bucket says nothing about a Postgres-backed counter.
+
+    ``catch_up`` already refuses to even ask the identity question for a
+    durable subject. Fanning the answer out to one anyway would tell a
+    tile-epoch consumer to reload a version that is still current -- and that
+    version is baked into CDN cache keys, so re-issuing it is the single thing
+    this family cannot afford.
+    """
+
+    @staticmethod
+    def _durable() -> Subject:
+        from threetears.nats.subjects import Subjects
+
+        return Subjects.datasource_tile_epoch("ds1", "parcels")
+
+    @pytest.mark.asyncio
+    async def test_a_durable_consumer_is_not_told(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        durable_reset, ephemeral_reset = AsyncMock(), AsyncMock()
+        await listener.subscribe(self._durable(), AsyncMock(), on_reset=durable_reset)
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=ephemeral_reset)
+
+        await listener.signal_reset()
+
+        ephemeral_reset.assert_awaited_once()
+        durable_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_durable_subjects_last_seen_survives_the_reset(self) -> None:
+        """Clearing it would replay every tile version the consumer already has."""
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=42))
+        durable = self._durable()
+        await listener.subscribe(durable, AsyncMock())
+        assert listener.last_seen(durable) == 42
+
+        await listener.signal_reset()
+
+        assert listener.last_seen(durable) == 42
+
+
+class TestDeregistrationStopsTheFanOut:
+    """A shut-down consumer must stop receiving resets.
+
+    ``_registrations`` is append-only, so without this a stopped consumer keeps
+    being handed resets through bound methods of an object that considers
+    itself finished.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_deregistered_consumer_is_not_told(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+
+        assert listener.deregister(subject) == 1
+        await listener.signal_reset()
+
+        on_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_consumers_are_unaffected(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        stays = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=AsyncMock())
+        await listener.subscribe(_subject("app.b.epoch"), AsyncMock(), on_reset=stays)
+
+        listener.deregister(_subject("app.a.epoch"))
+        await listener.signal_reset()
+
+        stays.assert_awaited_once()
+
+    def test_deregistering_an_unknown_subject_is_not_an_error(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+
+        assert listener.deregister(_subject("app.never.epoch")) == 0

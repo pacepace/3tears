@@ -175,6 +175,17 @@ class EpochListener:
         optional. validation failures inside the typed dispatcher
         deadletter via the standard typed-NATS path.
 
+        **subscribing is not enough on its own.** A broadcast can be lost --
+        the documented prime/subscribe race, a dropped message, a subscriber
+        blip -- and since the counter moved to a memory-backed bucket, a broker
+        restart replaces it while every operation keeps succeeding. Only a
+        periodic :func:`~threetears.epoch.tick.catchup_tick` finds those. A
+        consumer that subscribes and never schedules one receives broadcasts
+        and misses everything a broadcast can lose, with nothing to say so.
+
+        The framework cannot schedule it for you: ``3tears-epoch`` may not own
+        a task in ``3tears``, so cadence is the consumer's.
+
         WILDCARD subscriptions are supported, and differ from a
         concrete one in THREE respects, all worth knowing before using
         one. Dedupe keys on
@@ -224,17 +235,6 @@ class EpochListener:
             ``current()`` now (no state loaded against an earlier
             epoch)
         :ptype primed_epoch: int | None
-        **subscribing is not enough on its own.** A broadcast can be lost --
-        the documented prime/subscribe race, a dropped message, a subscriber
-        blip -- and since the counter moved to a memory-backed bucket, a broker
-        restart replaces it while every operation keeps succeeding. Only a
-        periodic :func:`~threetears.epoch.tick.catchup_tick` finds those. A
-        consumer that subscribes and never schedules one receives broadcasts
-        and misses everything a broadcast can lose, with nothing to say so.
-
-        The framework cannot schedule it for you: ``3tears-epoch`` may not own
-        a task in ``3tears``, so cadence is the consumer's.
-
         :param on_reset: invoked when the counter this listener tracks is
             REPLACED rather than advanced, with no epoch -- see
             :data:`ResetCallback`. omitting it means this consumer is not
@@ -344,8 +344,29 @@ class EpochListener:
             "epoch bucket identity changed; the counter was replaced",
             extra={"extra_data": {"was": self._bucket_identity, "now": observed}},
         )
-        self._bucket_identity = observed
         return True
+
+    def deregister(self, subject: Subject) -> int:
+        """drop every registration for ``subject``, so a stopped consumer is not called.
+
+        ``_registrations`` is otherwise append-only, and :meth:`signal_reset`
+        fans out to everything it holds. A consumer that has shut down --
+        cancelled its tick, released its resources -- would still receive a
+        reset and be asked to reload state it no longer maintains, through
+        bound methods of an object that considers itself stopped.
+
+        The NATS subscription is separate and is not touched here: it belongs
+        to whoever created it, and tearing it down from a bookkeeping call
+        would surprise a consumer that deregisters one subject of several.
+
+        :param subject: the subject whose registrations to drop
+        :ptype subject: Subject
+        :return: how many registrations were dropped
+        :rtype: int
+        """
+        dropped = self._registrations.pop(subject.path, [])
+        self._last_seen.pop(subject.path, None)
+        return len(dropped)
 
     async def signal_reset(self) -> None:
         """the counter was REPLACED; drop local state and tell every consumer.
@@ -364,10 +385,21 @@ class EpochListener:
         it. Clearing costs at most one redundant reload per subject and cannot
         re-wedge.
 
-        Fans out to EVERY registration, not the one that noticed. A pod
-        subscribed to two subjects has two consumers holding state, and the
-        reset is equally true for both. A consumer that registered no
-        ``on_reset`` is skipped: it chose that at :meth:`subscribe`.
+        Fans out to every EPHEMERAL registration, not the one that noticed. A
+        pod subscribed to two ephemeral subjects has two consumers holding
+        state counted in the replaced bucket, and the reset is equally true for
+        both.
+
+        **Durable registrations are excluded**, for the same reason
+        :meth:`catch_up` skips the identity check for them: their counter is a
+        Postgres row that no broker restart touches. Telling a tile-epoch
+        consumer to reload because a KV bucket was recreated would discard a
+        version that is still perfectly current -- and that version is baked
+        into CDN cache keys, so re-issuing it is the one thing this family
+        cannot afford.
+
+        A consumer that registered no ``on_reset`` is skipped: it chose that at
+        :meth:`subscribe`.
 
         **One raising callback does not deprive the rest.** A bump callback
         propagates because it harms only its own consumer, and that precedent
@@ -382,8 +414,26 @@ class EpochListener:
         :raises Exception: the first exception raised by any consumer
             callback, after every other callback has been attempted
         """
-        self._last_seen.clear()
-        registrations = [entry for entries in self._registrations.values() for entry in entries]
+        for path in [p for p in self._last_seen if not _is_durable(Subject(path=p, kind="point"))]:
+            del self._last_seen[path]
+        # Record the identity we are announcing, AFTER the clear and for BOTH
+        # detectors. Only the identity check used to maintain this, so a reset
+        # taken on the backwards-counter arm -- which happens exactly when the
+        # identity read failed, since a counter read can succeed while KV
+        # errors -- left the OLD identity recorded and fired a second full
+        # fan-out on the next pass. Recording it here means "announced" has one
+        # owner and one update site.
+        # ``None`` is recorded deliberately when the identity cannot be read.
+        # After a reset the OLD identity is meaningless, so keeping it would
+        # make the next successful read look like a fresh replacement and fan
+        # out a second time for the same event -- which is exactly what happens
+        # on the backwards-counter arm, since that fires precisely when KV is
+        # unreadable. ``None`` means "unknown", and the next read primes
+        # instead of comparing.
+        self._bucket_identity = await self._epoch_client.bucket_identity()
+        registrations = [
+            entry for entries in self._registrations.values() for entry in entries if not _is_durable(entry[0])
+        ]
         notified = 0
         first_error: BaseException | None = None
         for subject, _on_bump, on_reset in registrations:
