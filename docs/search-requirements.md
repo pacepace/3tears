@@ -216,6 +216,14 @@ stable — new checks append rather than insert:
     external MCP tool from **one contract and one binding** — no second result
     shape per face (§5.5).
 
+**The wording above is the check; a step that names a consumer's files is not.**
+Five of these — 1, 2, 3, 9, 10 — are verifiable only in another repo, which this
+one does not watch, and all five were re-verified on 2026-08-19 against the
+consumer trees as they stand. Every one had moved, and none toward the step
+written for it. The findings, and what each check should be asking instead, are
+at [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing). The numbers here
+stay stable; re-read them against the consumer before working from them.
+
 ## 4. Principles
 
 These are about which direction things flow. They are the ones most likely to be
