@@ -188,11 +188,24 @@ free.
 **Property.** `EvalRunCostCap` keeps its current semantics: `check()` takes no
 estimate and reports accumulated-against-ceiling between cells.
 
-**Why this is stated as a requirement rather than left alone.** 3tears' plan of
-record (D27) says to wire the eval cost cap onto
-`threetears.search.contracts.BudgetPort`, and a 3tears document records
-discodon's `check()` as a defect for taking no estimate. **That reading is
-wrong, and 3tears is changing it.** Search's port wraps exactly one provider
+**Why this is stated as a requirement rather than left alone.** Several places
+in 3tears instructed exactly the opposite, and an agent reading the repo would
+have found them: `search-spec.md` §7 Phase 5 steps 1, 4 and 6;
+`convergence-sequencing.md` Phase 1, Phase 4 and "Why this order"; and
+`family-convergence.md` §5, which asked discodon to reshape the refusal
+*"now, while discodon is sole owner of its evals"* so the later wiring would be
+a one-line change. One of them also filed discodon's `check()` as a defect for
+taking no estimate. **All are withdrawn as of 2026-08-19**, and if you find
+another, it is stale rather than a competing decision — the withdrawal is the
+ruling.
+
+*(An earlier draft of this requirement attributed the instruction to D27. That
+was imprecise: D27 rules that a replayed result reports both the recorded and
+the execution spend, and says nothing about which port a cost cap implements.
+The wiring instruction lived in the sequencing steps listed above, which cited
+D27 for the adjacent execution-spend rule.)*
+
+**Why the instruction was wrong.** Search's port wraps exactly one provider
 call — `check(estimate)` before it, `record(spend)` after it, both below the
 retry boundary — so it can refuse a spend that has not happened yet. discodon's
 cap fires *between eval cells*, where the cell's spend is already booked and the
@@ -226,7 +239,10 @@ not discodon's.
 ## What 3tears owes back
 
 - The eval budget contract, shaped from `EvalRunCostCap` rather than from
-  `BudgetPort` (R6), and D27 amended to say so.
+  `BudgetPort` (R6). The instructions asking for the opposite are already
+  withdrawn across `search-spec.md`, `convergence-sequencing.md` and
+  `family-convergence.md`; what remains owed is the contract itself, cut from
+  what discodon runs.
 - ~~A unit **label** beside a weighted-unit count.~~ **Delivered 2026-08-19.**
   `Spend` now carries `provider_unit` as `"<provider>:<unit>"`, composed from
   the provider's own `metered_unit` declaration, and `Spend.__add__` refuses a
