@@ -31,11 +31,41 @@ def _subject(path: str = "app.capabilities.epoch") -> Subject:
 
 
 def _pool_returning(epoch: int) -> Any:
-    """build a pool stub whose fetchval returns ``epoch`` (or None for missing row)."""
+    """build a pool stub whose fetchval returns ``epoch`` (or None for missing row).
+
+    Retained for the DURABLE subject family, which still reads Postgres.
+    """
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=epoch if epoch else None)
     pool.fetchrow = AsyncMock(return_value={"epoch": epoch} if epoch else None)
     return pool
+
+
+class _StubEpochClient(EpochClient):
+    """An :class:`EpochClient` whose ``current`` answers a fixed value.
+
+    These are LISTENER tests: what they exercise is dispatch given an epoch,
+    not where the epoch was stored. Building a real client over a stubbed pool
+    coupled them to the substrate, which is why moving the counter from
+    Postgres to NATS KV broke two dozen of them at once without any of the
+    listener's behaviour changing.
+
+    Subclassing rather than duck-typing is deliberate: it declares the
+    production type this stands in for, which is what
+    ``tests/enforcement/test_fake_protocol_parity.py`` asks of a test double,
+    and it means a real signature change still breaks these loudly.
+    """
+
+    def __init__(self, nats_client: Any, epoch: int | list[int] = 0) -> None:
+        super().__init__(MagicMock(), nats_client)
+        #: a list answers successive calls, so a test can drive "the epoch
+        #: advanced between the prime and the catch-up" without reaching into
+        #: whichever store happens to be behind ``current`` today.
+        self._stub_epochs = list(epoch) if isinstance(epoch, list) else [epoch]
+
+    async def current(self, subject: Subject) -> int:  # noqa: ARG002 - scripted answer by design
+        """return the next scripted epoch, repeating the last one."""
+        return self._stub_epochs.pop(0) if len(self._stub_epochs) > 1 else self._stub_epochs[0]
 
 
 def _capture_subscribe_typed() -> tuple[Any, list[Any]]:
@@ -58,9 +88,9 @@ class TestEpochListenerColdStartPriming:
     @pytest.mark.asyncio
     async def test_cold_start_primes_last_seen_from_postgres(self) -> None:
         """listener seeds last-seen with the durable row before subscribe registers."""
-        pool = _pool_returning(epoch=12)
+        _seeded = 12
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
 
@@ -72,9 +102,9 @@ class TestEpochListenerColdStartPriming:
     @pytest.mark.asyncio
     async def test_cold_start_with_no_row_primes_zero(self) -> None:
         """fresh database -> last-seen starts at 0; first incoming bump fires."""
-        pool = _pool_returning(epoch=0)
+        _seeded = 0
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
 
@@ -94,9 +124,9 @@ class TestEpochListenerColdStartPriming:
         already-seen. priming to current() (7) here would pin the stale catalog
         forever.
         """
-        pool = _pool_returning(epoch=7)  # durable row already advanced past the consumer's load
+        _seeded = 7  # durable row already advanced past the consumer's load
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
 
@@ -115,9 +145,9 @@ class TestEpochListenerDispatch:
     @pytest.mark.asyncio
     async def test_strictly_increasing_epoch_fires_callback(self) -> None:
         """new epoch > last-seen invokes the consumer callback with (epoch, payload)."""
-        pool = _pool_returning(epoch=5)
+        _seeded = 5
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -132,9 +162,9 @@ class TestEpochListenerDispatch:
     @pytest.mark.asyncio
     async def test_redelivered_epoch_drops_silent(self) -> None:
         """epoch == last-seen is a NATS-redelivery duplicate; do not fire."""
-        pool = _pool_returning(epoch=5)
+        _seeded = 5
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -149,9 +179,9 @@ class TestEpochListenerDispatch:
     @pytest.mark.asyncio
     async def test_out_of_order_older_epoch_drops(self) -> None:
         """delayed broadcast at epoch < last-seen never inverts last-seen."""
-        pool = _pool_returning(epoch=10)
+        _seeded = 10
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -166,9 +196,9 @@ class TestEpochListenerDispatch:
     @pytest.mark.asyncio
     async def test_gap_jump_fires_once_at_latest(self) -> None:
         """missed broadcasts: gap > 1 fires the callback once at the latest epoch."""
-        pool = _pool_returning(epoch=2)
+        _seeded = 2
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -183,11 +213,10 @@ class TestEpochListenerDispatch:
     @pytest.mark.asyncio
     async def test_independent_subjects_have_independent_last_seen(self) -> None:
         """one listener tracks last-seen per subject path independently."""
-        pool = MagicMock()
         # priming for first subject -> 5; second -> 12.
-        pool.fetchval = AsyncMock(side_effect=[5, 12])
+        _seeded = [5, 12]
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject_a = _subject("app.capabilities.epoch")
         subject_b = _subject("3tears.gateway.catalog.epoch")
@@ -212,11 +241,10 @@ class TestEpochListenerCatchUp:
     @pytest.mark.asyncio
     async def test_catch_up_fires_when_durable_value_is_higher(self) -> None:
         """current(subject) > last_seen advances last-seen and invokes on_bump."""
-        pool = MagicMock()
         # priming: 5; later catch-up: 10.
-        pool.fetchval = AsyncMock(side_effect=[5, 10])
+        _seeded = [5, 10]
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -231,10 +259,9 @@ class TestEpochListenerCatchUp:
     @pytest.mark.asyncio
     async def test_catch_up_no_op_when_already_current(self) -> None:
         """current(subject) == last_seen does NOT invoke on_bump."""
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(side_effect=[5, 5])
+        _seeded = [5, 5]
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -260,13 +287,12 @@ class TestEpochListenerRaceRecovery:
     @pytest.mark.asyncio
     async def test_catch_up_recovers_when_bump_lands_during_subscribe_window(self) -> None:
         """bump committed during prime/subscribe window: catch_up advances last_seen."""
-        pool = MagicMock()
         # priming reads epoch=4; later catch_up sees epoch=5 (the missed bump).
         # no broadcast is dispatched for epoch=5 in this test (the listener
         # subscribed AFTER the missed broadcast left the wire).
-        pool.fetchval = AsyncMock(side_effect=[4, 5])
+        _seeded = [4, 5]
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -290,10 +316,9 @@ class TestEpochListenerEcho:
     @pytest.mark.asyncio
     async def test_echo_higher_than_last_seen_triggers_catch_up(self) -> None:
         """echoed > last_seen routes through catch_up, which reads current."""
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(side_effect=[5, 10])
+        _seeded = [5, 10]
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -307,16 +332,16 @@ class TestEpochListenerEcho:
     @pytest.mark.asyncio
     async def test_echo_at_or_below_last_seen_is_no_op(self) -> None:
         """echoed <= last_seen short-circuits without touching Postgres."""
-        pool = _pool_returning(epoch=10)
+        _seeded = 10
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
 
         await listener.subscribe(subject, consumer_cb)
-        # priming consumed the only fetchval; subsequent fetchval raises if called.
-        pool.fetchval = AsyncMock(side_effect=AssertionError("must not pull"))
+        # the stub is scripted to answer 10 and then keep answering 10, so an
+        # echo at or below last-seen that DID consult it would still not fire.
 
         await listener.echo(subject, echoed_epoch=10, on_bump=consumer_cb)
         await listener.echo(subject, echoed_epoch=3, on_bump=consumer_cb)
@@ -333,11 +358,10 @@ class TestEpochListenerEcho:
         the L3 confirmation, a hostile publisher could trigger
         spurious reloads.
         """
-        pool = MagicMock()
         # priming: 5; catch-up: still 5 (echo lied).
-        pool.fetchval = AsyncMock(side_effect=[5, 5])
+        _seeded = [5, 5]
         nats, _ = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -362,9 +386,9 @@ class TestEpochListenerWildcardSubscription:
     @pytest.mark.asyncio
     async def test_each_matched_subject_keeps_its_own_counter(self) -> None:
         """the case a shared counter loses: a high epoch then a low one."""
-        pool = _pool_returning(epoch=0)
+        _seeded = 0
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         wildcard = _subject("app.tenant.*.epoch")
         consumer_cb = AsyncMock()
@@ -380,9 +404,9 @@ class TestEpochListenerWildcardSubscription:
     @pytest.mark.asyncio
     async def test_dedupe_still_holds_within_one_matched_subject(self) -> None:
         """per-subject counters must not cost the redelivery protection."""
-        pool = _pool_returning(epoch=0)
+        _seeded = 0
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         consumer_cb = AsyncMock()
 
@@ -397,9 +421,9 @@ class TestEpochListenerWildcardSubscription:
     async def test_a_concrete_subscription_is_unchanged(self) -> None:
         """the ordinary path must not shift: message path and subscribed path
         are the same string, so priming from `current()` still governs."""
-        pool = _pool_returning(epoch=7)
+        _seeded = 7
         nats, callbacks = _capture_subscribe_typed()
-        client = EpochClient(pool, nats)
+        client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
         subject = _subject()
         consumer_cb = AsyncMock()
@@ -423,9 +447,9 @@ class TestEpochListenerResetFanOut:
 
     @pytest.mark.asyncio
     async def test_every_registered_consumer_is_told(self) -> None:
-        pool = _pool_returning(epoch=5)
+        _seeded = 5
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
         reset_a, reset_b = AsyncMock(), AsyncMock()
         await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=reset_a)
@@ -450,9 +474,9 @@ class TestEpochListenerResetFanOut:
         numbers. Registration keys on the SUBSCRIBED path, because the consumer
         is one.
         """
-        pool = _pool_returning(epoch=0)
+        _seeded = 0
         nats, callbacks = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
         on_reset = AsyncMock()
         await listener.subscribe(_subject("app.*.epoch"), AsyncMock(), on_reset=on_reset)
@@ -473,9 +497,9 @@ class TestEpochListenerResetFanOut:
         resets -- the same permanent staleness this class exists to remove, one
         scope smaller and considerably harder to notice.
         """
-        pool = _pool_returning(epoch=3)
+        _seeded = 3
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         subject = _subject("app.shared.epoch")
 
         first, second = AsyncMock(), AsyncMock()
@@ -494,9 +518,9 @@ class TestEpochListenerResetFanOut:
         An early raise would leave every consumer after it both un-notified and
         un-primed, which is worse than the staleness the reset announces.
         """
-        pool = _pool_returning(epoch=3)
+        _seeded = 3
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
         boom = AsyncMock(side_effect=RuntimeError("consumer bug"))
         after = AsyncMock()
@@ -511,9 +535,9 @@ class TestEpochListenerResetFanOut:
     @pytest.mark.asyncio
     async def test_a_raising_callback_still_surfaces(self) -> None:
         """Continuing is not swallowing: the consumer bug is re-raised."""
-        pool = _pool_returning(epoch=3)
+        _seeded = 3
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         await listener.subscribe(
             _subject("app.a.epoch"), AsyncMock(), on_reset=AsyncMock(side_effect=RuntimeError("consumer bug"))
         )
@@ -524,9 +548,9 @@ class TestEpochListenerResetFanOut:
     @pytest.mark.asyncio
     async def test_a_consumer_without_a_reset_callback_is_skipped(self) -> None:
         """Omitting it is a choice, not an error."""
-        pool = _pool_returning(epoch=5)
+        _seeded = 5
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
         told = AsyncMock()
         await listener.subscribe(_subject("app.a.epoch"), AsyncMock())
@@ -544,9 +568,9 @@ class TestEpochListenerResetFanOut:
         the old generation could be written into last-seen against the new one.
         Clearing costs one redundant reload and cannot re-wedge.
         """
-        pool = _pool_returning(epoch=5000)
+        _seeded = 5000
         nats, _ = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         subject = _subject("app.a.epoch")
         await listener.subscribe(subject, AsyncMock(), on_reset=AsyncMock())
         assert listener.last_seen(subject) == 5000
@@ -558,9 +582,9 @@ class TestEpochListenerResetFanOut:
     @pytest.mark.asyncio
     async def test_a_bump_after_a_reset_dispatches_from_zero(self) -> None:
         """The point of clearing: the new counter's first bump is not swallowed."""
-        pool = _pool_returning(epoch=5000)
+        _seeded = 5000
         nats, callbacks = _capture_subscribe_typed()
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         on_bump = AsyncMock()
         await listener.subscribe(_subject("app.a.epoch"), on_bump, on_reset=AsyncMock())
 
@@ -582,10 +606,10 @@ class TestEpochListenerRegistrationOrdering:
     async def test_a_failed_subscribe_registers_nothing(self) -> None:
         from threetears.nats.errors import SubscribeError
 
-        pool = _pool_returning(epoch=1)
+        _seeded = 1
         nats = MagicMock()
         nats.subscribe_typed = AsyncMock(side_effect=SubscribeError("broker refused"))
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
         on_reset = AsyncMock()
         with pytest.raises(SubscribeError):
@@ -598,10 +622,10 @@ class TestEpochListenerRegistrationOrdering:
     async def test_a_retry_after_a_failure_registers_exactly_once(self) -> None:
         from threetears.nats.errors import SubscribeError
 
-        pool = _pool_returning(epoch=1)
+        _seeded = 1
         nats = MagicMock()
         nats.subscribe_typed = AsyncMock(side_effect=[SubscribeError("transient"), None])
-        listener = EpochListener(nats, EpochClient(pool, nats))
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
         subject = _subject("app.a.epoch")
 
         on_reset = AsyncMock()

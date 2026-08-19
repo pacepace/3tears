@@ -113,3 +113,32 @@ def test_the_registry_catalog_grant_matches_the_bucket_the_registry_opens() -> N
         f"the catalog grant has been prefixed to '{_NAMESPACE}-{default}', which names a bucket "
         f"the registry never opens."
     )
+
+
+def test_the_epoch_bucket_the_pods_are_granted_is_the_one_epochclient_opens() -> None:
+    """The epoch grant and the bucket the client actually opens must agree.
+
+    Pinned as a PAIR for the reason this file exists: a missing or misspelled
+    KV grant does not raise. The JetStream call blocks to its deadline and
+    surfaces as an unreachable broker, so the symptom points at the network
+    rather than at a permission the grant never carried. Asserting either side
+    alone passes throughout that.
+
+    Both halves live in this repository, which is what makes them comparable
+    here: ``EpochClient`` names the bucket suffix, and ``subject_permissions``
+    grants it to the three principals that bump or read an epoch.
+    """
+    from threetears.epoch.client import _EPOCH_BUCKET
+
+    for principal, kwargs in (
+        (Principal.AGENT_POD, {"agent_id": "agent-1", "pod_id": "pod-1", "conn_id": "conn-1"}),
+        (Principal.HUB, {"conn_id": "conn-1"}),
+        (Principal.GATEWAY, {"conn_id": "conn-1"}),
+    ):
+        granted = build_permissions(principal, **kwargs).kv_buckets
+        assert f"{_NAMESPACE}-{_EPOCH_BUCKET}" in granted, (
+            f"{principal} is not granted the epoch bucket "
+            f"('{_NAMESPACE}-{_EPOCH_BUCKET}'); it holds {list(granted)}. Every epoch read "
+            f"and bump from this principal would block to its deadline and read as an "
+            f"unreachable broker."
+        )

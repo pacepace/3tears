@@ -118,9 +118,17 @@ async def pg_pool(pg_schema: tuple[str, str]) -> AsyncIterator[asyncpg.Pool]:
         await pool.close()
 
 
-def _subject() -> Subject:
+def _subject(name: str = "unit") -> Subject:
+    """one epoch subject per test.
+
+    The counter lives in a NATS KV bucket now, and the broker container is
+    session-scoped, so the bucket OUTLIVES a single test. A shared subject
+    would therefore accumulate counts across tests and make every absolute
+    epoch assertion depend on execution order -- passing alone, failing in
+    suite. Under Postgres the per-test schema gave this isolation for free.
+    """
     """canonical test subject."""
-    return Subject(path="itest.epoch.unit", kind="point")
+    return Subject(path=f"itest.epoch.{name}", kind="point")
 
 
 async def _connect_pod(nats_url: str, name: str) -> NatsClient:
@@ -158,7 +166,7 @@ async def test_two_pods_receive_bump_via_broadcast(
         async def cb_b(epoch: int, _payload: dict[str, object] | None) -> None:
             cb_b_calls.append(epoch)
 
-        subject = _subject()
+        subject = _subject("broadcast")
         await listener_a.subscribe(subject, cb_a)
         await listener_b.subscribe(subject, cb_b)
         # let subscriptions register server-side before publishing
@@ -197,7 +205,7 @@ async def test_pull_on_stale_recovers_missed_broadcast(
         writer = EpochClient(pg_pool, writer_nc)
         listener_b = EpochListener(pod_b_nc, EpochClient(pg_pool, pod_b_nc))
 
-        subject = _subject()
+        subject = _subject("stale-pull")
         cb_b_calls: list[int] = []
 
         async def cb_b(epoch: int, _payload: dict[str, object] | None) -> None:
@@ -247,7 +255,7 @@ async def test_per_message_echo_recovers_missed_broadcast(
         writer = EpochClient(pg_pool, writer_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
 
-        subject = _subject()
+        subject = _subject("echo")
         cb_calls: list[int] = []
 
         async def cb(epoch: int, _payload: dict[str, object] | None) -> None:
@@ -288,7 +296,7 @@ async def test_monotonicity_under_concurrent_writers(
         w2 = EpochClient(pg_pool, w2_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
 
-        subject = _subject()
+        subject = _subject("monotonic")
         observed: list[int] = []
 
         async def cb(epoch: int, _payload: dict[str, object] | None) -> None:

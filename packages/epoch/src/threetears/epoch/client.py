@@ -24,9 +24,12 @@ multi-key transaction support: every domain is independent.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from typing import Any, Protocol
+import re
+from typing import Any, Final, Protocol
 
+from threetears.core.coordination.distributed_counter import DistributedCounter
 from threetears.nats import NatsClient
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject
@@ -79,6 +82,85 @@ class PoolLike(Protocol):
         ...
 
 
+#: KV bucket holding every EPHEMERAL epoch counter.
+#:
+#: ``ttl=None`` deliberately. ``NatsKvBucket``'s ttl is per-BUCKET and becomes
+#: the stream's ``max_age``, so any value here would expire the counters (and,
+#: once chunk 03 lands, the bucket-identity key) on a timer -- turning a reset
+#: from an event into a scheduled fleet-wide cache flush.
+_EPOCH_BUCKET: Final = "epochs"
+
+#: Subject families whose epoch value ESCAPES this cluster and therefore cannot
+#: live on a counter that resets.
+#:
+#: ``datasource_tile_epoch``'s value is the ``v{n}`` segment of a tile URL, and
+#: the geo collection puts that version in its cache key, so the number reaches
+#: browser and CDN caches this system cannot reach. A memory-backed counter
+#: resets on a broker restart and would re-issue ``v1..vN`` for DIFFERENT
+#: content while those edge caches still hold the old generation keyed on the
+#: same version. No amount of in-process detection fixes a stale CDN.
+#:
+#: Matched on the subject's shape rather than declared per call site: durability
+#: is a property of what the number MEANS, not of who happens to bump it, and a
+#: per-call flag is one a caller can forget.
+_DURABLE_SUBJECT_MARKER: Final = ".tiles."
+
+
+#: The key grammar ``nats-server`` enforces on a KV key. A subject path is
+#: usually already legal (dots are permitted), but a path segment can carry a
+#: caller-supplied value, and one space turns a working bump into an
+#: ``InvalidKeyError`` raised in production rather than in review.
+_KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
+
+def _key_for(subject: Subject) -> str:
+    """derive this subject's KV counter key.
+
+    The path verbatim where it is already a legal key, because a readable key
+    is worth having when someone is staring at a bucket wondering which counter
+    is which. A path that is not legal is digested rather than rejected: the
+    caller cannot fix a subject built from a user-supplied layer name, and a
+    hard failure at ``bump`` would surface as an outage rather than a rename.
+    The digest is deterministic, so every pod derives the same key.
+
+    :param subject: the epoch subject
+    :ptype subject: Subject
+    :return: a key that satisfies the KV grammar
+    :rtype: str
+    """
+    if _KV_KEY_GRAMMAR.match(subject.path):
+        return subject.path
+    return f"digest.{hashlib.sha256(subject.path.encode()).hexdigest()}"
+
+
+def _is_durable(subject: Subject) -> bool:
+    """whether ``subject``'s epoch must survive a broker restart.
+
+    :param subject: the epoch subject being bumped or read
+    :ptype subject: Subject
+    :return: ``True`` when the value escapes the cluster and must stay durable
+    :rtype: bool
+    """
+    return _DURABLE_SUBJECT_MARKER in subject.path and subject.path.endswith(".epoch")
+
+
+def _is_wildcard(subject: Subject) -> bool:
+    """whether ``subject`` is a pattern rather than a concrete path.
+
+    KV keys admit only ``[-/_=.a-zA-Z0-9]``, so ``*`` and ``>`` are illegal and
+    ``get`` on one raises rather than missing. The listener's wildcard-priming
+    path depends on :meth:`EpochClient.current` answering ``0`` for a pattern,
+    which under Postgres happened for free (no row matched) and under KV has to
+    be said.
+
+    :param subject: the epoch subject
+    :ptype subject: Subject
+    :return: ``True`` when the path carries a NATS wildcard token
+    :rtype: bool
+    """
+    return "*" in subject.path or subject.path.endswith(">")
+
+
 _BUMP_SQL = (
     "INSERT INTO config_epochs (subject_path, epoch, payload) "
     "VALUES ($1, 1, $2::jsonb) "
@@ -121,6 +203,7 @@ class EpochClient:
         """
         self._pool = pool
         self._nats = nats_client
+        self._counter = DistributedCounter(nats_client, bucket_name=_EPOCH_BUCKET, ttl=None)
 
     @traced
     async def current(self, subject: Subject) -> int:
@@ -139,12 +222,15 @@ class EpochClient:
         :return: latest epoch, or ``0`` if no row exists
         :rtype: int
         """
-        value = await self._pool.fetchval(_CURRENT_SQL, subject.path)
-        if value is None:
-            result = 0
-        else:
-            result = int(value)
-        return result
+        if _is_wildcard(subject):
+            # a pattern names no single counter. answering 0 without a lookup
+            # is what the listener's wildcard priming expects, and asking KV
+            # would raise on an illegal key rather than miss.
+            return 0
+        if _is_durable(subject):
+            value = await self._pool.fetchval(_CURRENT_SQL, subject.path)
+            return 0 if value is None else int(value)
+        return await self._counter.get(_key_for(subject))
 
     @traced
     async def bump(
@@ -183,13 +269,16 @@ class EpochClient:
         # type codec; serialize at the call site so callers do not have
         # to register codecs to use this client. the ``$2::jsonb`` cast
         # in the SQL parses the resulting text back to jsonb.
-        payload_json = json.dumps(payload) if payload is not None else None
-        row = await self._pool.fetchrow(_BUMP_SQL, subject.path, payload_json)
-        if row is None:
-            raise RuntimeError(
-                f"config_epochs upsert returned no row for subject={subject.path!r}",
-            )
-        new_epoch = int(row["epoch"])
+        if _is_durable(subject):
+            payload_json = json.dumps(payload) if payload is not None else None
+            row = await self._pool.fetchrow(_BUMP_SQL, subject.path, payload_json)
+            if row is None:
+                raise RuntimeError(
+                    f"config_epochs upsert returned no row for subject={subject.path!r}",
+                )
+            new_epoch = int(row["epoch"])
+        else:
+            new_epoch = await self._counter.increment(_key_for(subject))
 
         message = EpochBumpMessage(
             subject_path=subject.path,
