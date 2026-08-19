@@ -241,7 +241,11 @@ def _estimate(provider: SearchProvider) -> Spend:
     :rtype: Spend
     """
     weighted = provider.capabilities.pricing_model == PRICING_PER_WEIGHTED_UNIT
-    return Spend(calls=1, provider_units=Decimal(1) if weighted else Decimal(0))
+    return Spend(
+        calls=1,
+        provider_units=Decimal(1) if weighted else Decimal(0),
+        provider_unit=provider.capabilities.qualified_unit if weighted else None,
+    )
 
 
 def _refusal(decision: BudgetDecision, *, provider: SearchProvider, egress: str) -> LocalCapExceeded:

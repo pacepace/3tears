@@ -1730,14 +1730,24 @@ at 0.24.3+, and Gate C should confirm that floor rather than assume it.
 - **Model-mediated producer detail** (D3) -- designed when samsung pulls.
 - **D12 ratification** -- the robots/terms stance needs per-repo acceptance,
   not just this spec's proposal.
-- **A weighted provider unit has no name** (found 2026-08-19 while specifying
-  the eval extraction). `Spend.provider_units` is a bare `Decimal`, and
-  `Spend.__add__` refuses to sum `money` across currencies while summing
-  `provider_units` across providers silently. Tavily credits and another
-  provider's requests are not one quantity, and adding them fabricates one --
-  the identical defect the currency guard exists to prevent. Invisible with a
-  single provider; arrives with the second, which is also when a consumer
-  first reads a cross-provider total and believes it.
+- ~~**A weighted provider unit has no name.**~~ **Closed the same day it was
+  opened, 2026-08-19, by fixing it rather than carrying it.**
+  `Spend.provider_units` was a bare `Decimal` while `Spend.__add__` refused to
+  sum `money` across currencies -- the identical fabrication, unguarded, in the
+  dimension right beside the one the guard was written for. `Spend` now carries
+  `provider_unit` as `"<provider>:<unit>"`, composed once from
+  `ProviderCapabilities.metered_unit` so a second spelling cannot appear and
+  compare unequal, and the sum refuses a mismatch. Qualified by provider on
+  purpose: two providers may both meter "credits" without those being one
+  fungible unit.
+
+  **Taken as a breaking change, deliberately.** `ContractModel` is
+  `extra="forbid"`, so an added field is a wire break for any reader on an
+  older exact version -- the exposure `_base.py` already documents. It was
+  taken because 0.27.0 is bumped and untagged, the only pinned consumer does
+  not call this surface, and a spend figure that silently sums two providers'
+  units fails in the direction nobody audits: it reads as a smaller, plausible
+  bill rather than as an error.
 
 ## 9. Requirements confidence
 

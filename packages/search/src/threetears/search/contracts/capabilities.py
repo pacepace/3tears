@@ -114,6 +114,33 @@ class ProviderCapabilities(ContractModel):
     #: :data:`PRICING_PER_REQUEST`, :data:`PRICING_PER_WEIGHTED_UNIT`. Open
     #: vocabulary with named well-known values.
     pricing_model: str | None = None
+    #: the name of the unit a :data:`PRICING_PER_WEIGHTED_UNIT` provider
+    #: meters in -- Tavily's ``credits``. Bare here, because this declares
+    #: what the provider calls its own unit; :attr:`Spend.provider_unit`
+    #: qualifies it with the provider name, since two providers both saying
+    #: "credits" do not have one fungible unit between them.
+    #:
+    #: ``None`` on a provider that meters no weighted unit, which is every
+    #: :data:`PRICING_FREE_SELF_HOSTED` and :data:`PRICING_PER_REQUEST`
+    #: provider. Declaring a unit while charging per request would promise a
+    #: count nothing produces.
+    metered_unit: str | None = None
+
+    @property
+    def qualified_unit(self) -> str | None:
+        """This provider's metered unit, qualified for :attr:`Spend.provider_unit`.
+
+        The one place ``"<provider>:<unit>"`` is composed, so a second
+        spelling cannot appear beside the first and compare unequal --
+        which would make two spends from the same provider refuse to sum.
+
+        :return: ``"<provider>:<metered_unit>"``, or ``None`` when this
+            provider meters no weighted unit
+        :rtype: str | None
+        """
+        if self.metered_unit is None:
+            return None
+        return f"{self.provider}:{self.metered_unit}"
 
     @model_validator(mode="after")
     def _criteria_declarations_do_not_contradict(self) -> ProviderCapabilities:
