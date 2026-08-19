@@ -181,3 +181,21 @@ class TestDuckDBRefusesRatherThanSilentlyNotExpiring:
         b = self._duck()
         b.upsert("widgets", {"id": "w1", "name": "one"}, "id")
         assert b.select_by_id("widgets", "w1", "id") is not None
+
+
+class TestExemptionsMatchTheirDeclarations:
+    """The exempt-table literals live in ``cache/`` but are owned by ``collections/``.
+
+    ``cache/`` cannot import ``collections/`` -- the dependency runs the other
+    way -- so the names are repeated. This is what stops the copies drifting:
+    rename a table at its declaration without updating the exemption and the
+    stamp starts being injected into a table that already has its own.
+    """
+
+    def test_exempt_tables_match_their_declarations(self) -> None:
+        from threetears.core.cache.base import _TABLES_WITHOUT_CACHE_STAMP
+        from threetears.core.collections.flush import _write_buffer_table
+        from threetears.core.collections.scan_cache import _scan_cache_table
+
+        declared = {_scan_cache_table.name, _write_buffer_table.name}
+        assert declared == set(_TABLES_WITHOUT_CACHE_STAMP)

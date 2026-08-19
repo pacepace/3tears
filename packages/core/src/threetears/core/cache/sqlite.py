@@ -380,7 +380,7 @@ class SQLiteBackend:
             return None
         raw = dict(row)
         if self._is_past_max_age(table, raw, max_age_seconds, now_monotonic):
-            self.delete_by_id(table, entity_id, primary_key)
+            self._drop_expired(table, entity_id, primary_key, raw, max_age_seconds, now_monotonic)
             return None
         return self._deserialize_row(table, raw)
 
@@ -467,7 +467,7 @@ class SQLiteBackend:
                 pk_value: Any = (
                     tuple(deserialized[c] for c in pk_cols) if len(pk_cols) > 1 else deserialized[pk_cols[0]]
                 )
-                self.delete_by_id(table, pk_value, primary_key)
+                self._drop_expired(table, pk_value, primary_key, raw, max_age_seconds, now_monotonic)
         return kept
 
     def delete_by_id(
@@ -671,6 +671,55 @@ class SQLiteBackend:
         if _CACHED_AT_COLUMN in columns:
             return columns
         return [*columns, _CACHED_AT_COLUMN]
+
+    def _drop_expired(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...],
+        raw_row: dict[str, Any],
+        max_age_seconds: float | None,
+        now_monotonic: float | None,
+    ) -> None:
+        """Delete a row that aged out, and say so.
+
+        Deleting silently makes the two states nobody can otherwise tell apart
+        look identical: a bound doing its job, and a bound that never fires
+        because the stamp column stayed NULL. The design record names that
+        second failure explicitly, and without a line here the only symptom is
+        staleness that was supposed to have been bounded.
+
+        Debug rather than info: on a busy collection this is per-read, and the
+        interesting signal is the rate, not the individual row.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value to delete by, in deserialized form
+        :ptype entity_id: Any
+        :param primary_key: pk column name or tuple, as the caller declared it
+        :ptype primary_key: str | tuple[str, ...]
+        :param raw_row: the row as read, stamp still present
+        :ptype raw_row: dict[str, Any]
+        :param max_age_seconds: the bound that was exceeded
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: the clock reading judged against
+        :ptype now_monotonic: float | None
+        :return: nothing
+        :rtype: None
+        """
+        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        reading = time.monotonic() if now_monotonic is None else now_monotonic
+        self.delete_by_id(table, entity_id, primary_key)
+        log.debug(
+            "L1 row dropped past its max age",
+            extra={
+                "extra_data": {
+                    "table": table,
+                    "age_seconds": None if stamp is None else reading - stamp,
+                    "max_age_seconds": max_age_seconds,
+                }
+            },
+        )
 
     def _is_past_max_age(
         self,

@@ -1593,3 +1593,87 @@ class TestL1MaxAgePolicy:
 
         assert entity is not None
         assert entity.name == "Original"
+
+
+class TestExpiryDoesNotBreakNonRepairingReads:
+    """Expiry converts a stale hit into a miss, which is only safe where a miss repairs.
+
+    Three reviewers converged on this independently: routing the reporting
+    readers through the expiring path made a field write vanish and an entity
+    handle answer wrongly, because those callers treat a miss as "not cached"
+    and do not fall back.
+    """
+
+    @staticmethod
+    def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
+        conn = backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+
+    @pytest.mark.asyncio
+    async def test_a_field_write_survives_an_aged_out_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id, "field"] = v`` must not silently drop the write.
+
+        ``__setitem__`` reads the row back through ``get_row_sync`` and skips
+        propagation on ``None``. If that read expired the row, the write landed
+        nowhere and nothing raised.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w1": {"id": "w1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("w1") is not None
+        self._age_out(l1_backend, "w1")
+
+        coll["w1", "name"] = "Written"
+
+        assert coll.get_row_sync("w1") is not None
+        assert coll.get_row_sync("w1")["name"] == "Written"
+
+    @pytest.mark.asyncio
+    async def test_an_entity_handle_still_reads_its_fields_across_the_bound(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """A handle resolves attributes through the reporting readers.
+
+        Expiring under it made ``to_dict()`` raise and field reads answer for a
+        row that is present in every tier.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w2": {"id": "w2", "name": "Held", "score": 7}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        entity = await coll.get("w2")
+        assert entity is not None
+        self._age_out(l1_backend, "w2")
+
+        assert entity.name == "Held"
+        assert entity.to_dict()["score"] == 7
+
+    @pytest.mark.asyncio
+    async def test_the_repairing_read_still_expires(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """The control: narrowing expiry must not have turned it off.
+
+        ``ensure`` repairs by pulling through, so it is one of the two callers
+        that still applies the bound.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"w3": {"id": "w3", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("w3") is not None
+        nats.store["test_entities.w3"] = json.dumps({"id": "w3", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "w3")
+
+        refreshed = await coll.ensure("w3")
+        assert refreshed is not None
+        assert refreshed["name"] == "PeerWrote"

@@ -499,15 +499,33 @@ class BaseCollection(ABC, Generic[EntityT]):
             return None
         return self._registry.get_l1_max_age(self.table_name)
 
-    def _select_from_l1(self, entity_id: Any) -> dict[str, Any] | None:
-        """The one L1 read, so no read path can skip the expiry policy.
+    def _select_from_l1(self, entity_id: Any, *, expiring: bool = False) -> dict[str, Any] | None:
+        """The one L1 read, with expiry applied only where a miss is repairable.
 
         Every reader **in this class** routes through here rather than calling
-        the backend itself. That is deliberate: the policy is a property of the
-        collection, and a second call site is a second place to forget it.
+        the backend itself, so the policy has one home. But the callers do not
+        share a contract, and that is why ``expiring`` is a parameter rather
+        than always-on:
 
-        The claim is scoped to this class on purpose. A subclass in another
-        package can still reach ``self._l1`` directly, and one does --
+        - **Repairing callers** (:meth:`ensure`, :meth:`_ensure_in_l1`) treat a
+          miss as "go to the lower tier", so expiring a row makes it reload.
+          That is the whole mechanism, and they pass ``expiring=True``.
+        - **Reporting callers** (:meth:`get_row_sync`, :meth:`get_field_sync`,
+          :meth:`has_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
+          "not cached" and return it to a caller that will not fall back.
+          Expiring for them turns a stale row into a *deleted* one and reports
+          absence, which is worse than the staleness it was bounding:
+          ``__setitem__`` reads a field write back through
+          :meth:`get_row_sync` and skips propagation when it sees ``None``, so
+          the write is silently dropped, and an entity handle held across the
+          bound starts answering ``None`` for fields it has.
+
+        The distinction is a miss's *meaning*, not its value. Expiry converts a
+        stale hit into a miss, which is only an improvement where a miss is
+        cheap and self-correcting.
+
+        The class scoping is deliberate. A subclass in another package can
+        still reach ``self._l1`` directly, and one does --
         ``ContextItemCollection.touch`` reads L1 to stamp ``date_accessed``.
         That read is outside the bound, which is harmless there because it
         neither serves the row to a caller nor clears the stamp on write-back,
@@ -515,8 +533,11 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param entity_id: primary-key value identifying the row
         :ptype entity_id: Any
+        :param expiring: whether to apply the collection's max-age bound; only
+            a caller that repairs a miss by pulling through may pass ``True``
+        :ptype expiring: bool
         :return: row dict, or ``None`` when L1 is absent, the row is not
-            cached, or the row was past its max age
+            cached, or (when ``expiring``) the row was past its max age
         :rtype: dict[str, Any] | None
         """
         if self._l1 is None:
@@ -525,7 +546,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             self.table_name,
             self.normalize_pk(entity_id),
             self.primary_key_columns,
-            max_age_seconds=self.l1_max_age_seconds,
+            max_age_seconds=self.l1_max_age_seconds if expiring else None,
         )
         return row
 
@@ -775,7 +796,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         Returns the row data if found, None if not found in any tier.
         """
-        row = self._select_from_l1(entity_id)
+        row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
             return row
         return sync_await(self._pull_through(entity_id))
@@ -1018,7 +1039,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             access is guaranteed to hit L1 (when L1 is available).
         :rtype: dict[str, Any] | None
         """
-        row = self._select_from_l1(entity_id)
+        row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
             return row
         data = await self._pull_through(entity_id)

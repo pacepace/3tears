@@ -138,8 +138,14 @@ class DuckDBBackend:
         :rtype: None
         """
         _ = self._pk_columns(primary_key)  # validate shape, unused in SQL
-        columns = list(data.keys())
         schema = self._schema_info.get(table, {})
+        # Filter to columns this table actually has, matching SQLiteBackend.
+        # Without it any framework-injected key reaches the SQL: the L1
+        # cache-age stamp is written by the collection's pull-through for
+        # every backend, and this one declares no such column, so an
+        # unfiltered write fails on a table that is otherwise fine. Unknown
+        # schema (unregistered table) keeps the old write-everything shape.
+        columns = [c for c in data if c in schema] if schema else list(data.keys())
 
         values = []
         for col_name in columns:

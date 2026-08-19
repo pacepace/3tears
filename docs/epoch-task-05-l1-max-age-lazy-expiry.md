@@ -1,7 +1,9 @@
 # epoch-task-05: Bound L1 staleness with lazy max-age expiry
 
-**Status:** READY. Reshaped after review, which found that the naive version is data loss
-on two shipped packages.
+**Status:** SHIPPED (all three chunks landed on `feat/l1-max-age-lazy-expiry`). Reshaped
+after review, which found that the naive version is data loss on two shipped packages, and
+again after the cumulative review, which found expiry made silent write loss routine on the
+read paths that do not repair.
 **Scope:** `3tears-core` (`cache/base.py`, `cache/sqlite.py`, `collections/registry.py`,
 `collections/scan_cache.py`, `data/collection_factory.py`). Behaviour also changes for
 `3tears-channels`, `3tears-registry`, `3tears-geo` and `3tears-agent-tools`, which read L1
@@ -189,9 +191,16 @@ meaningless, and this mechanism must switch to a wall clock or be disabled.
 ## Configuration: per-collection, defaulting to 3600s
 
 **The design decision is the shape of the knob, not its value.** Per-collection
-configuration puts it on `CollectionRegistry._overrides` (`collections/registry.py:106`,
-`configure` at `:114-129`, `get_l1_backend` at `:205-208`); a single global value would put
-it on the backend constructor instead. Per-collection is the choice, because collections in
+configuration lives on `CollectionRegistry`; a single global value would put it on the
+backend constructor instead.
+
+**It must NOT share `_overrides` with the tier overrides**, though an earlier version of
+this section said it should. `register()` hard-resets that dict whenever it is handed any
+tier kwarg, and wiring commonly configures before registering, so a bound stored there is
+silently dropped: expiry off while the operator believes it on. It lives in its own
+`_l1_max_ages` dict, with a regression test named for exactly that. Anyone tidying two
+table-keyed dicts into one will reintroduce the defect, which is why this is recorded
+rather than quietly fixed. Per-collection is the choice, because collections in
 this repo differ by orders of magnitude in read volume and in how much staleness they can
 tolerate, and a global value would be tuned for the worst of them.
 

@@ -486,6 +486,12 @@ class CollectionRegistry:
             )
 
     def clear(self) -> None:
-        """Remove all registered collections and overrides (for tests)."""
+        """Remove all registered collections, overrides and L1 bounds (for tests)."""
         self._collections.clear()
         self._overrides.clear()
+        # The bound keeps its own dict so ``register()`` cannot wipe it, but a
+        # separate lifetime is not an unbounded one: a table re-registered after
+        # a clear would otherwise inherit a bound nobody in the new setup asked
+        # for, which is the same silent-config class of bug in the other
+        # direction.
+        self._l1_max_ages.clear()

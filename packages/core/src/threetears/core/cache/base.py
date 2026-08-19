@@ -35,6 +35,14 @@ _TABLES_WITHOUT_CACHE_STAMP: frozenset[str] = frozenset(
         # bookkeeping with their own lifetimes: the scan cache already has
         # its own monotonic stamp, and the write buffer holds pending L3
         # writes whose age means something entirely different.
+        #
+        # These literals are owned by ``collections/scan_cache.py`` and
+        # ``collections/flush.py``, which declare the tables. They are repeated
+        # rather than imported because ``cache/`` must not import ``collections/``
+        # -- the dependency runs the other way, and inverting it to save two
+        # strings would be the worse trade. ``test_exempt_tables_match_their_
+        # declarations`` fails if the two ever disagree, so the duplication
+        # cannot drift silently.
         "collection_scan_cache",
         "write_buffer",
     }
@@ -88,12 +96,15 @@ def _entry_is_fresh(
     # Expiring it would discard a local write in favour of the older
     # value a pull-through would return, so it is fresh by definition.
     #
-    # That rule is also what makes a DEFERRED flush safe. Under a
-    # non-ALWAYS FlushStrategy a write sits in the write buffer before it
-    # reaches L3; if such a row could expire, a read would pull through and
-    # serve the pre-write value, so a locally-committed write would appear
-    # to revert. It cannot, because a locally-authored row carries no stamp.
-    # The two rules are one rule, and that is easy to unpick by accident.
+    # This covers a DEFERRED flush only for a row this process AUTHORED. A
+    # row that was pulled through earlier keeps its stamp across a local
+    # save (``upsert`` preserves a stamp the caller does not supply), so it
+    # can age out while its write is still sitting in the write buffer. The
+    # pull-through that follows reads L2, which the same save already wrote,
+    # so the new value comes back and nothing reverts. Without L2 wired it
+    # would read L3 and serve the pre-write value. Stated because an earlier
+    # version of this comment claimed the no-stamp rule covered the deferred
+    # case outright, and it does not.
     if stored_at_monotonic is None:
         return True
     return now_monotonic - stored_at_monotonic <= max_age_seconds
