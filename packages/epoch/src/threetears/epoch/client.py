@@ -43,6 +43,7 @@ from threetears.core.coordination.distributed_counter import DistributedCounter
 from threetears.nats import NatsClient
 from threetears.nats.errors import PublishError
 from threetears.nats.subjects import Subject
+from uuid_utils import uuid7
 from threetears.observe import get_logger, traced
 
 from threetears.epoch.wire import EpochBumpMessage
@@ -99,6 +100,20 @@ class PoolLike(Protocol):
 #: the bucket-identity key that detects a recreated bucket -- on a timer,
 #: turning a reset from an event into a scheduled fleet-wide cache flush.
 _EPOCH_BUCKET: Final = "epochs"
+
+#: Reserved key holding the epoch bucket's opaque identity.
+#:
+#: A leading underscore keeps it out of the subject-path keyspace: every
+#: ``Subjects`` builder prefixes the namespace, so no epoch key can begin with
+#: one. The value is a ``uuid7`` string, compared for EQUALITY only -- it says
+#: "this is a different bucket", never "this is a later one".
+_IDENTITY_KEY: Final = "_bucket_identity"
+
+#: How many times to retry the create/read pair before giving up on learning an
+#: identity. The pair is not atomic: a bucket wiped between the two leaves the
+#: read empty. Bounded because a broker recreating the bucket faster than two
+#: round trips is not a race to win, it is an outage.
+_IDENTITY_ATTEMPTS: Final = 3
 
 #: Subject families whose epoch value ESCAPES this cluster and therefore cannot
 #: live on a counter that resets.
@@ -217,19 +232,64 @@ class EpochClient:
         self._nats = nats_client
         self._counter = DistributedCounter(nats_client, bucket_name=_EPOCH_BUCKET, ttl=None)
 
+    async def bucket_identity(self) -> str | None:
+        """the epoch bucket's opaque identity, minting one if it has none.
+
+        **This is what tells a live pod that its counter was replaced rather
+        than merely rewound.** The ephemeral counters live in a memory-backed
+        bucket, so a broker restart recreates it empty and every operation then
+        SUCCEEDS while reading zero -- there is no error to catch, no gap in
+        the sequence, and nothing else in the system that changes.
+
+        Every caller attempts the create unconditionally; the return
+        distinguishes winner from loser, so no branch on "did I make this
+        bucket" is needed -- and that branch would be wrong anyway, since
+        ``STREAM.CREATE`` succeeds for a bucket that already exists with the
+        same config.
+
+        Compared for EQUALITY only, never for order. A changed identity says
+        the old numbers are meaningless, which is more useful than knowing they
+        were merely lower, and it needs no clock: seeding a replacement counter
+        ABOVE the old one cannot be done without remembering what the old one
+        reached, which is the durability this design removes.
+
+        :return: the identity, or ``None`` when it could not be established
+            within :data:`_IDENTITY_ATTEMPTS` (a bucket being recreated faster
+            than two round trips is an outage, not a race to win)
+        :rtype: str | None
+        """
+        bucket = await self._nats.kv_bucket(name=_EPOCH_BUCKET, ttl=None)
+        for _ in range(_IDENTITY_ATTEMPTS):
+            minted = str(uuid7())  # convert at border: opaque KV value, never parsed back
+            if await bucket.create(key=_IDENTITY_KEY, value=minted.encode()) is not None:
+                return minted
+            existing = await bucket.get(key=_IDENTITY_KEY)
+            if existing is not None:
+                return existing.decode()
+            # lost the create AND read nothing: the bucket was wiped between
+            # the two. try again rather than reporting an identity we do not
+            # have -- reporting one would be indistinguishable from stability.
+        log.warning("could not establish epoch bucket identity", extra={"extra_data": {"attempts": _IDENTITY_ATTEMPTS}})
+        return None
+
     @traced
     async def current(self, subject: Subject) -> int:
         """read the latest epoch recorded for a subject.
 
         used by :class:`~threetears.epoch.listener.EpochListener` on
         cold start to prime its last-seen, and by periodic catch-up
-        ticks. returns ``0`` when no row exists yet -- the bump-side
-        ``ON CONFLICT`` clause guarantees the first successful
-        :meth:`bump` returns ``1``, so a returned ``0`` here means
-        "nobody has bumped this domain in this database."
+        ticks. returns ``0`` when the subject has never been bumped --
+        both substrates count per subject from zero, so the first
+        :meth:`bump` returns ``1`` and a returned ``0`` here means
+        "nobody has bumped this domain".
 
-        :param subject: target subject; the subject's ``path`` is
-            the row PK
+        Reads the KV counter for an ephemeral subject and the durable
+        row for the tile family. A wildcard path short-circuits to ``0``
+        without touching either.
+
+        :param subject: target subject; its ``path`` keys the
+            counter (digested when outside the KV key grammar), or is
+            the row PK on the durable path
         :ptype subject: Subject
         :return: latest epoch, or ``0`` if no row exists
         :rtype: int
@@ -252,8 +312,9 @@ class EpochClient:
     ) -> int:
         """atomically increment the epoch for a subject, then broadcast.
 
-        the upsert is serialized on the row lock; concurrent bumps
-        from different writers wait briefly and each receive a
+        an ephemeral subject counts through a CAS loop in NATS KV; the
+        durable tile family serializes on its Postgres row lock. Either
+        way concurrent bumps from different writers each receive a
         unique strictly-increasing epoch. broadcast is best-effort:
         :class:`~threetears.nats.errors.PublishError` is logged and
         swallowed because the row commit is the source of truth and
@@ -261,21 +322,23 @@ class EpochClient:
         :meth:`current` on the next periodic tick or via a per-
         message epoch echo.
 
-        callers MUST invoke after the row mutation that motivates
-        the bump has committed. bumping inside an open transaction
-        broadcasts a phantom epoch if the transaction rolls back.
+        callers MUST invoke after the mutation that motivates the bump
+        has committed. bumping inside an open transaction broadcasts a
+        phantom epoch if the transaction rolls back.
 
-        :param subject: target subject; the subject's ``path`` is
-            the row PK and the broadcast subject
+        :param subject: target subject; its ``path`` keys the
+            counter (digested when outside the KV key grammar), or is
+            the row PK on the durable path and the broadcast subject
         :ptype subject: Subject
         :param payload: opaque hint forwarded to subscribers in the
             broadcast envelope; framework never inspects
         :ptype payload: dict[str, Any] | None
-        :return: the new epoch returned by ``RETURNING``
+        :return: the new epoch the counter reports
         :rtype: int
-        :raises RuntimeError: if the upsert returns no row (should
-            never happen on a healthy database -- the ``RETURNING``
-            clause is unconditional)
+        :raises RuntimeError: if the DURABLE path's upsert returns no
+            row (should never happen on a healthy database -- the
+            ``RETURNING`` clause is unconditional). The ephemeral path
+            raises :class:`~threetears.nats.errors.KvError` instead.
         """
         # asyncpg does not auto-encode dict to jsonb without a per-pool
         # type codec; serialize at the call site so callers do not have

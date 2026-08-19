@@ -328,3 +328,65 @@ async def test_monotonicity_under_concurrent_writers(
         assert all(b > a for a, b in zip(observed, observed[1:], strict=False))
         assert observed[-1] == 50
         assert listener.last_seen(subject) == 50
+
+
+@pytest.mark.asyncio
+async def test_a_recreated_bucket_is_detected_and_the_pod_recovers(
+    nats_container: Any,
+    pg_pool: asyncpg.Pool,
+) -> None:
+    """The regression this whole chunk exists for, against a REAL broker.
+
+    A memory-backed KV bucket is wiped when NATS restarts, and the counter
+    starts again from zero while pods keep running with a high last-seen.
+    Every KV operation still SUCCEEDS -- there is no exception to catch and no
+    gap in the sequence -- so without detection ``catch_up``'s guard can never
+    fire again for the life of the process and the pod stops reloading,
+    permanently and silently.
+
+    A fake cannot prove this. ``FakeKvBucket`` has no notion of a stream that
+    can be deleted out from under it, so a test built on one would exercise the
+    comparison and not the failure. The wipe here is the same one-line
+    ``delete_stream`` the nats package's own self-heal test performs.
+    """
+    set_default_namespace("itest")
+
+    async with await _connect_pod(nats_container, "recover") as nc:
+        client = EpochClient(pg_pool, nc)
+        listener = EpochListener(nc, client)
+        subject = _subject("recovery")
+
+        reloads: list[str] = []
+
+        async def on_bump(_epoch: int, _payload: dict[str, object] | None) -> None:
+            reloads.append("bump")
+
+        async def on_reset() -> None:
+            reloads.append("reset")
+
+        await listener.subscribe(subject, on_bump, on_reset=on_reset)
+
+        # advance the counter well past anything a fresh bucket could reach
+        for _ in range(5):
+            await client.bump(subject)
+        await listener.catch_up(subject, on_bump)
+        assert listener.last_seen(subject) == 5
+        reloads.clear()
+
+        # the broker loses the bucket. every subsequent KV call still succeeds.
+        js = nc.jetstream_context()
+        await js.delete_stream("KV_itest-epochs")
+
+        await listener.catch_up(subject, on_bump)
+
+        assert "reset" in reloads, (
+            "a recreated bucket was not detected; the pod is wedged and will never "
+            "reload again for the life of the process"
+        )
+        assert listener.last_seen(subject) == 0
+
+        # and the pod is genuinely live again: the new counter's first bump dispatches
+        reloads.clear()
+        await client.bump(subject)
+        await listener.catch_up(subject, on_bump)
+        assert "bump" in reloads

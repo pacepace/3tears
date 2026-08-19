@@ -15,6 +15,19 @@ packages (bumped in lock-step).
   listener now records every registration and fans a reset out to all of them,
   clearing last-seen rather than re-priming.
 
+- `epoch`: **a recreated counter bucket is detected by identity.** The bucket
+  carries an opaque `uuid7` under a reserved key, minted create-if-absent so a
+  race resolves to one value and every opener converges on it. The listener
+  compares it for EQUALITY only and, on a change, clears last-seen and notifies
+  every registered consumer.
+
+  This is the conclusive detector. A memory-backed bucket is wiped when the
+  broker restarts, and every KV operation then *succeeds* while reading zero --
+  no exception, no gap in the sequence. The backwards-counter arm below is
+  cheaper but ambiguous (a counter legitimately reads zero when nothing has
+  bumped it), and it cannot see a bucket replaced while last-seen was already
+  zero. Both are kept.
+
 - `epoch`: `catch_up` treats a BACKWARDS counter as a generation reset. A
   monotonic counter cannot go back, so a lower reading means a different
   counter -- and without this arm the `current > last_seen` guard could never

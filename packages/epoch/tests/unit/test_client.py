@@ -329,3 +329,51 @@ class TestEpochClientKeyDerivation:
 
         assert await client.bump(subject) == 1
         assert await client.current(subject) == 1
+
+
+class TestEpochClientBucketIdentity:
+    """The bucket mints an opaque identity, and every opener converges on one."""
+
+    @pytest.mark.asyncio
+    async def test_an_identity_is_minted_on_first_ask(self) -> None:
+        client = EpochClient(_pool_with_bump(returning_epoch=1), _nats_mock())
+
+        assert await client.bucket_identity() is not None
+
+    @pytest.mark.asyncio
+    async def test_the_identity_is_stable_across_reads(self) -> None:
+        """An identity that changed per read would look like a permanent reset."""
+        client = EpochClient(_pool_with_bump(returning_epoch=1), _nats_mock())
+
+        first = await client.bucket_identity()
+        assert await client.bucket_identity() == first
+
+    @pytest.mark.asyncio
+    async def test_racing_clients_on_one_bucket_agree(self) -> None:
+        """Create-if-absent resolves the race; the loser adopts the winner's."""
+        nats = _nats_mock()
+        a = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+        b = EpochClient(_pool_with_bump(returning_epoch=1), nats)
+
+        assert await a.bucket_identity() == await b.bucket_identity()
+
+    @pytest.mark.asyncio
+    async def test_separate_buckets_carry_separate_identities(self) -> None:
+        """Two brokers, two buckets, two identities -- the property detection needs."""
+        first = EpochClient(_pool_with_bump(returning_epoch=1), _nats_mock())
+        second = EpochClient(_pool_with_bump(returning_epoch=1), _nats_mock())
+
+        assert await first.bucket_identity() != await second.bucket_identity()
+
+    @pytest.mark.asyncio
+    async def test_the_identity_key_is_not_a_counter(self) -> None:
+        """It shares the bucket with the counters and must not be mistaken for one.
+
+        No ``Subjects`` builder produces a path starting with an underscore --
+        every one prefixes the namespace -- so the reserved key cannot collide
+        with a subject's counter.
+        """
+        client = EpochClient(_pool_with_bump(returning_epoch=1), _nats_mock())
+        await client.bucket_identity()
+
+        assert await client.current(_subject()) == 0

@@ -204,7 +204,7 @@ async def _build_started_authorizer(
 
 
 def _rbac_epoch(test_name: str) -> Subject:
-    """one RBAC epoch subject per test.
+    """a test-scoped RBAC epoch subject, used by the catch-up test alone.
 
     The epoch counter lives in a NATS KV bucket now, and the broker container
     is session-scoped, so the bucket OUTLIVES a single test. The catch-up test
@@ -361,7 +361,7 @@ async def test_missed_broadcast_recovers_via_catchup(
 
     proves the safety net: even if every NATS broadcast dropped
     (subscriber blip, JetStream redelivery edge), the periodic
-    :meth:`EpochListener.catch_up` reads the durable Postgres view
+    :meth:`EpochListener.catch_up` reads the epoch counter
     and the authorizer reloads.
 
     deterministic simulation: pod B never subscribes (so it cannot

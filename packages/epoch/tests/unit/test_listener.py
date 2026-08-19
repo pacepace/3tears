@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch.client import EpochClient
 from threetears.epoch.listener import EpochListener
 from threetears.epoch.wire import EpochBumpMessage
@@ -71,6 +72,10 @@ class _StubEpochClient(EpochClient):
 def _capture_subscribe_typed() -> tuple[Any, list[Any]]:
     """build a NatsClient stub that captures subscribe_typed callbacks."""
     nats = MagicMock()
+    # a real in-memory KV, not an AsyncMock: the client mints a bucket identity
+    # through it now, and a mock would hand back a fresh Mock every call -- so a
+    # listener would see the "identity" change on every tick and reset forever.
+    nats.kv_bucket = FakeNatsClient().kv_bucket
     captured_callbacks: list[Any] = []
 
     async def _subscribe_typed(*, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> None:  # noqa: ARG001
@@ -687,5 +692,101 @@ class TestEpochListenerBackwardsCounterIsAReset:
         await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
 
         await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_not_awaited()
+
+
+class TestEpochListenerBucketIdentity:
+    """A changed bucket identity is the conclusive replacement detector.
+
+    A backwards reading is suggestive but ambiguous: a counter legitimately
+    reads zero when nothing has bumped it yet. A changed identity is
+    conclusive, and it catches the case a backwards read misses entirely -- a
+    bucket recreated while this listener's last-seen was already zero.
+    """
+
+    @staticmethod
+    def _listener(nats: Any, identities: list[str | None]) -> EpochListener:
+        """a listener whose client reports a scripted sequence of identities."""
+
+        class _IdentityClient(_StubEpochClient):
+            async def bucket_identity(self) -> str | None:
+                return identities.pop(0) if len(identities) > 1 else identities[0]
+
+        return EpochListener(nats, _IdentityClient(nats, epoch=0))
+
+    @pytest.mark.asyncio
+    async def test_first_observation_is_not_a_replacement(self) -> None:
+        """Cold start has nothing to have been replaced.
+
+        Treating it as one would make every pod flush its caches on boot.
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a"])
+        on_reset = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+
+        on_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stable_identity_is_not_a_replacement(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a"])
+        on_reset = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+
+        on_reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_identity_fires_the_reset(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a", "bucket-b"])
+        on_reset = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+
+        on_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_is_caught_even_at_a_zero_last_seen(self) -> None:
+        """The case the backwards-read detector cannot see.
+
+        With last-seen already 0 there is no backwards reading to notice, so
+        without the identity check a bucket recreated here goes undetected.
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a", "bucket-b"])
+        subject = _subject("app.a.epoch")
+        on_reset = AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=on_reset)
+        assert listener.last_seen(subject) == 0
+
+        await listener.catch_up(subject, AsyncMock())
+        await listener.catch_up(subject, AsyncMock())
+
+        on_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_unavailable_identity_is_not_a_replacement(self) -> None:
+        """An unreachable broker is an outage, not a reset.
+
+        Forgetting the recorded identity would also make the NEXT successful
+        read look like a change, so a spurious flush would follow every blip.
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = self._listener(nats, ["bucket-a", None, "bucket-a"])
+        on_reset = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(), on_reset=on_reset)
+
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
+        await listener.catch_up(_subject("app.a.epoch"), AsyncMock())
 
         on_reset.assert_not_awaited()

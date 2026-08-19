@@ -112,6 +112,9 @@ class EpochListener:
         # one resets: the same permanent staleness, one scope smaller and
         # considerably harder to notice.
         self._registrations: dict[str, list[tuple[Subject, BumpCallback, ResetCallback | None]]] = {}
+        # The identity of the bucket this listener's numbers were counted in.
+        # ``None`` until first observed; compared for EQUALITY only.
+        self._bucket_identity: str | None = None
 
     def last_seen(self, subject: Subject) -> int:
         """return the listener's recorded last-seen epoch for a subject.
@@ -179,7 +182,7 @@ class EpochListener:
         its own counter -- necessary, because each has an independent
         counter and their epochs are unrelated numbers.
         Priming, however, cannot work: ``current()`` needs a concrete
-        row, and the concrete subjects are not known until their
+        subject, and the concrete subjects are not known until their
         messages arrive. So each matched subject starts at ``0`` and
         the FIRST bump seen for it always dispatches, even when the
         consumer's state already reflected that epoch.
@@ -256,7 +259,7 @@ class EpochListener:
 
             that collapse loses writes rather than merely delaying
             them: each subject owns an independent
-            row, so their counters are unrelated. a bump to 5 on one
+            counter, so their values are unrelated. a bump to 5 on one
             subject followed by a bump to 1 on another would see
             ``1 <= 5`` and drop the second silently.
             """
@@ -296,6 +299,42 @@ class EpochListener:
         # subjects it later matches. dedupe stays keyed on the message path,
         # because those counters are independent numbers.
         self._registrations.setdefault(subject.path, []).append((subject, on_bump, on_reset))
+
+    async def _bucket_was_replaced(self) -> bool:
+        """whether the counter bucket is a DIFFERENT one than last observed.
+
+        The stronger of the two detectors. A backwards reading (handled in
+        :meth:`catch_up`) is suggestive but ambiguous -- a counter legitimately
+        reads zero when nothing has bumped it yet -- whereas a changed identity
+        is conclusive, and it catches the case a backwards read misses entirely:
+        a bucket recreated while this listener's last-seen was already zero.
+
+        First observation is not a replacement. A listener that has never seen
+        an identity has nothing to have been replaced, and treating cold start
+        as a reset would make every pod flush its caches on boot.
+
+        An identity that cannot be established leaves the recorded one alone
+        and reports no replacement: an unreachable broker is not a reset, and
+        forgetting the identity would turn the NEXT successful read into a
+        spurious one.
+
+        :return: ``True`` when the identity changed since it was last observed
+        :rtype: bool
+        """
+        observed = await self._epoch_client.bucket_identity()
+        if observed is None:
+            return False
+        if self._bucket_identity is None:
+            self._bucket_identity = observed
+            return False
+        if observed == self._bucket_identity:
+            return False
+        log.warning(
+            "epoch bucket identity changed; the counter was replaced",
+            extra={"extra_data": {"was": self._bucket_identity, "now": observed}},
+        )
+        self._bucket_identity = observed
+        return True
 
     async def signal_reset(self) -> None:
         """the counter was REPLACED; drop local state and tell every consumer.
@@ -388,6 +427,9 @@ class EpochListener:
             counter read.
         :rtype: int
         """
+        if await self._bucket_was_replaced():
+            await self.signal_reset()
+            return await self._epoch_client.current(subject)
         current = await self._epoch_client.current(subject)
         last_seen = self._last_seen.get(subject.path, 0)
         if current < last_seen:
