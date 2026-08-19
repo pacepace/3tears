@@ -455,6 +455,43 @@ notices. Checks 2, 3, 9 and 10 are written the same way and are owed the same
 re-verification before anyone works from them. The correction is recorded at
 that section.
 
+*Status 2026-08-19 (same day, later still) — the other four consumer checks were
+re-verified against their trees, and the picture per repo is now firm.*
+
+**samsung's phase-2 image search is built and is not on the leaf**, which is a
+decision rather than a gap: `curation/src/curation/discovery/` carries
+`phase_two.py`, an `ImageSearch` seam and an Art Institute provider, solving a
+different problem from the leaf's (collection identity lookup, zero spend,
+provider relevance scores refused as evidence). Its recorded reason for keeping
+3tears out of the default install is transitive weight on a `MemoryMax=2G` Pi —
+so **the bar the leaf must clear there is install size, not capability** — and
+measured against that bar the leaf clears it: `3tears-search[standalone]` is 14
+packages and 10 MB, of which curation already carries all but three wheels and
+~684 KB, because both family leaves under it declare `dependencies = []`. The
+exclusion samsung recorded was about `3tears-models`' closure and does not
+transfer. `[extract]` is the extra to keep off that Pi (+16 packages, +65 MB,
+babel and lxml dominating), and phase 2 has no use for it. Check 2 never asked
+about size, so nobody measured it. Check 9's premise expired outright: the plane
+that would call search is a long-lived uvicorn process whose sync code runs in a
+threadpool, not the one-shot `asyncio.run()` the check describes.
+
+**discodon has no 3tears dependency at all** — nothing in `pyproject.toml` or
+`uv.lock`, no `threetears` import — so its steps 1 and 2 have no referent, and
+its position is a first adoption rather than a migration. Check 3's spend half
+is *already largely true by other means*: research-tool search dollars enter
+`EvalRunCostCap` through a per-run rate card whenever the operator declared a
+credit rate, while the standalone `web_search` tool's credits are deliberately
+excluded until cassette withholding reaches that seam. Its replay half holds at
+the two seams D28 gave discodon and is unbuilt at the one this program proposes,
+on both sides. **Check 10 has no site**: no `nats` anywhere in discodon, 49
+modules on `zmq`, no leaf consumed — there is no "before" for the switch to
+preserve.
+
+Detail and evidence for all four at
+[`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing); the check list at
+[`search-requirements.md` §3](search-requirements.md#3-how-we-would-know-it-worked)
+now carries a pointer to it.
+
 **Checkpoint:** metallm and discodon merged and green; acceptance recorded.
 (**Gate C** — the wire-compatibility promise and released envelope asks —
 fires whenever the first *pod-resident* search deploys, which follows

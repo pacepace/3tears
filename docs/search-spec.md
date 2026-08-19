@@ -1523,6 +1523,62 @@ switch later costs no consumer rewrite).
    reuse.
 8. PR, merge; record acceptance of what binds it (D15).
 
+***Correction 2026-08-19 — verified against discodon's tree. Check 3's spend
+half is largely satisfied already, by code that never touched this family;
+check 10 has no site at all.***
+
+**discodon has no 3tears dependency of any kind.** `3tears` appears in neither
+its `pyproject.toml` nor its `uv.lock`, and no module imports `threetears`. The
+Phase 5 preamble's consumption modes — develop tracking develop, releases
+pinning the whole family — are true of metallm and have **no referent here**:
+step 2 is not a pin to bump but a first adoption, and step 1's "lands upstream
+first" governs a relationship that does not exist yet.
+
+**Check 3, first half — search spend inside the eval cost ceiling — is already
+true for the research path, and deliberately false for the standalone tool.**
+Built without `BudgetPort`, and the route is worth stating because a migrator
+reading step 6 would not expect to find it:
+`external_pricing_for` (`discodon/eval/usage_capture.py`) resolves one
+`ExternalCallPricing` per run from the research tool's depth
+(`SEARCH_CREDITS_BY_DEPTH`) and the operator-declared
+`config.tavily.usd_per_credit`; `blended_cost_roles` puts `external` into the
+roles `EvalResult.cost_usd` sums **exactly when that card is priced**;
+`runner.py` calls `on_cost(result.cost_usd)` after each saved cell, and
+`EvalService` wires that to `EvalRunCostCap.record`. So a run whose operator
+declared a credit rate stops on a ceiling that already counts its research
+search dollars.
+
+What is outside is outside on purpose: the standalone `web_search` tool's calls
+land as `external` rows carrying credits and **no dollars**
+(`RoleUsageLedger.add_unpriced_calls`), contributing nothing to the total, and
+discodon names its own blocker — action-seam dollars need the cassette
+withholding widened to that seam first. Volume rather than dollars is bounded
+separately, by `EvalRun.max_metered_calls`. One inconsistency a migrator will
+hit: `discodon/eval/models.py` still describes `max_cost_usd` as capping "the
+run's LLM cost", written before `external` joined the blend.
+
+**Step 6's reshape is still owed, and for the reason already recorded** at
+[`convergence-sequencing.md` Phase 1](convergence-sequencing.md#phase-1--foundations):
+`EvalRunCostCap.check()` takes no estimate and reports `accumulated > ceiling`,
+so it can only stop a run *after* the ceiling is crossed. Same names as
+`BudgetPort`, post-hoc semantics. Re-verified today, unchanged.
+
+**Check 3, second half — replay — is satisfied at the two seams D28 assigned to
+discodon and unbuilt at the one this document proposes.** Action-seam
+(`web_search`) and delivery-seam (research) cassettes are wired discodon-side.
+The search-internal replay of step 5 exists on neither side:
+`packages/search/src/threetears/search/` has no `replay.py`, and `RecordingStore`
+appears nowhere in discodon.
+
+**Check 10 has no site, and nothing on discodon's current course will give it
+one.** `nats` appears nowhere in its code or its compose files; 49 modules
+import `zmq`; no leaf is consumed. A check phrased as *before and after the
+switch* needs a before, and there is none to preserve.
+
+So discodon's honest position is not "not started": **step 6's property is
+mostly met by other means, steps 3, 4, 5 and 7 have no started work, and steps
+1 and 2 have no referent.**
+
 **samsung** -- rides its planned phase-2 image-search work, not a
 migration-for-migration's-sake.
 1. Branch per its own conventions when that work starts.
@@ -1532,6 +1588,97 @@ migration-for-migration's-sake.
    `media-contracts` facets; verify checks 2, 5, 9 (no fork, no torch,
    one-shot `asyncio.run()`).
 4. Record acceptance (D15).
+
+***Correction 2026-08-19 — samsung's phase-2 image search is BUILT, it is not
+built on the leaf, and that is a decision with a price tag rather than a gap.***
+
+The work this step forecasts as "when that work schedules" shipped:
+`curation/src/curation/discovery/phase_two.py` ranks image instances,
+`discovery/images.py` is the provider seam (`ImageSearch`, `ImageQuery`,
+`FoundImage`), and `discovery/artic.py` is its first provider.
+
+**It does not use `3tears-search`, and not by forking it — the two solve
+different problems.** Phase 2 asks a museum's collection for instances of a
+*named* work and settles identity by comparing title and artist above the seam.
+It refuses to treat the provider's relevance score as evidence at all, having
+measured a nonsense query returning ten real works scoring in the fifties, and
+it spends nothing — so no budget, no carriers, no ranking cross that seam.
+Check 2's "without forking" clause has nothing to bite on. What it should have
+asked is whether the leaf was **considered and rejected**, and it was.
+
+**The rejection is recorded, and its currency is install weight rather than
+capability.** `curation/pyproject.toml` states 3tears core is "deliberately
+absent and is not expected", and confines `3tears-models` to an opt-in `eval`
+group because the default install is the plane running beside `display` under
+`MemoryMax=2G` (`deploy/curation.service`) and that one package would bring
+`3tears-observe`, `3tears-media-contracts`, `anthropic`, three `langchain-*`
+packages and `jsonschema` with it. Web-shaped traffic goes to one provider —
+OpenRouter, via its web plugin — behind a first-party client on a narrow seam.
+**So the bar `3tears-search` must clear at this consumer is the size of its
+transitive closure**, and no phrasing of check 2 says so. Its pin is also two
+minors below anything adoptable: `3tears-models>=0.22.5,<0.23` against a family
+at 0.26.1.
+
+***And the leaf clears that bar with room to spare, which nobody had
+measured.*** Installed from PyPI at 0.26.1 on CPython 3.14:
+
+| Install | Packages | `site-packages` |
+|---|---|---|
+| `3tears-search` | 8 | 8.3 MB |
+| `3tears-search[standalone]` | 14 | 10 MB |
+| `3tears-search[standalone,extract]` | 30 | 75 MB |
+
+The base closure is pydantic plus the two dependency-free family leaves — both
+`3tears-observe` and `3tears-media-contracts` declare `dependencies = []`, which
+is D24's permitted floor doing exactly what it was written for. curation already
+declares `pydantic` **and** `httpx`, so the marginal cost of
+`3tears-search[standalone]` at that consumer is **three wheels, ~684 KB, and no
+new transitive dependency at all**.
+
+**The exclusion samsung recorded is sound for the package it was written about
+and does not transfer.** `3tears-models` brings anthropic, three `langchain-*`
+and jsonschema; the search leaf shares only the two empty leaves with it. What
+kept the leaf out of that plane was never the leaf's weight — it was that
+nobody had asked, and check 2 gave no reason to.
+
+**`[extract]` is the extra that must stay off a Pi: +16 packages, +65 MB**, of
+which babel is 32 MB and lxml 19 MB, arriving `trafilatura -> courlan -> babel`.
+Phase 2 has no use for it — museum JSON, no HTML-to-text — and the leaf refuses
+correctly in its absence: importing `threetears.search.extract` succeeds because
+`_load_extractor` defers the import, and calling it raises `LocalCapExceeded`
+naming the extra and its remediation rather than an `ImportError` from the
+middle of a pipeline.
+
+Where the leaf would plug in is named in samsung's own code and is unbuilt:
+`phase_two.py` records that nothing produces a `contemporary_web` candidate —
+every instance it stores comes from a museum API and is `institutional`.
+
+***Check 9 describes a caller samsung no longer is, and the real shape is the
+harder one.*** The one-shot `asyncio.run()` callers are the legacy 2024 scripts
+(`tvart.py`, `tv_api_check.py`, `display/tools/power_probe.py`) — the modules
+`curation` exists to retire. The plane that would call search is a long-lived
+uvicorn process: `curation/src/curation/app.py` builds a FastAPI app with a
+mounted MCP session manager, its HTTP routes are plain `def` so Starlette runs
+them in its threadpool, and MCP tool dispatch crosses into sync code through
+`asyncio.to_thread` (`curation/src/curation/mcp/server.py`). The calling code is
+genuinely synchronous, which is the half that matters and it holds — but "no
+ambient event loop, no long-lived client" is **false of the process**. A leaf
+proved only against a bare `asyncio.run()` would not have proved what this
+consumer needs: a synchronous entry point reached from a worker thread while a
+loop runs on the main one.
+
+Check 5 passes vacuously and should not be counted: `torch` appears in no
+manifest or lock in that repo, but nothing has driven the check, because the
+leaf is not installed.
+
+***What the four re-verifications have in common.*** Three months of consumer
+commits moved every one of checks 1, 2, 3, 9 and 10, and none of the movement
+was toward the step as written — 1 and half of 3 came true by unrelated work, 2
+was answered in the negative for a reason recorded only in the consumer's own
+`pyproject.toml`, 9's premise expired, and 10 lost the "before" it compares
+against. A consumer-repo check is a claim about a tree this repo does not watch;
+it has to be re-read against that tree at the time of asking, and its cost is
+paid by whoever asks late.
 
 **Ordering within Phase 5:** metallm first (smallest, exercises the gutted
 builtins), discodon second (deepest, exercises budgets + replay + corpus),
