@@ -439,7 +439,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return MISSING
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return MISSING
         return row.get(field, MISSING)
@@ -460,7 +460,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         if row is None:
             return False
         row[field] = value
@@ -476,9 +476,58 @@ class BaseCollection(ABC, Generic[EntityT]):
             is not cached
         :rtype: dict[str, Any] | None
         """
+        return self._select_from_l1(entity_id)
+
+    @property
+    def l1_max_age_seconds(self) -> float | None:
+        """How long an L1 row cached from a lower tier may be served, or ``None``.
+
+        **``None`` unless a collection opts in, and structurally ``None`` when
+        there is no L3.** The second half is the load-bearing one. A collection
+        with no L3 pool does not fall back to a slower tier on a miss: the
+        L1+L2-only collections override :meth:`get` to return ``None`` on a
+        total miss, so an expired row does not become a pull-through, it becomes
+        "this row does not exist". Downstream, a compare-and-set that reads
+        absence writes a fresh row over a live one -- a presence room with ten
+        members replaced by a room with one, and no error anywhere. Expiry is a
+        cache mechanism, and a tier that is the source of truth is not a cache.
+
+        :return: the configured bound, or ``None`` when expiry is off
+        :rtype: float | None
+        """
+        if self.l3_pool is None:
+            return None
+        return self._registry.get_l1_max_age(self.table_name)
+
+    def _select_from_l1(self, entity_id: Any) -> dict[str, Any] | None:
+        """The one L1 read, so no read path can skip the expiry policy.
+
+        Every reader **in this class** routes through here rather than calling
+        the backend itself. That is deliberate: the policy is a property of the
+        collection, and a second call site is a second place to forget it.
+
+        The claim is scoped to this class on purpose. A subclass in another
+        package can still reach ``self._l1`` directly, and one does --
+        ``ContextItemCollection.touch`` reads L1 to stamp ``date_accessed``.
+        That read is outside the bound, which is harmless there because it
+        neither serves the row to a caller nor clears the stamp on write-back,
+        but it is not covered by this funnel and should not be assumed to be.
+
+        :param entity_id: primary-key value identifying the row
+        :ptype entity_id: Any
+        :return: row dict, or ``None`` when L1 is absent, the row is not
+            cached, or the row was past its max age
+        :rtype: dict[str, Any] | None
+        """
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
+        row: dict[str, Any] | None = self._l1.select_by_id(
+            self.table_name,
+            self.normalize_pk(entity_id),
+            self.primary_key_columns,
+            max_age_seconds=self.l1_max_age_seconds,
+        )
+        return row
 
     def write_to_cache_sync(
         self,
@@ -513,7 +562,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+        row = self._select_from_l1(entity_id)
         return row is not None
 
     def evict_from_cache_sync(self, entity_id: Any) -> bool:
@@ -726,10 +775,9 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         Returns the row data if found, None if not found in any tier.
         """
-        if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-            if row is not None:
-                return row  # type: ignore[no-any-return]
+        row = self._select_from_l1(entity_id)
+        if row is not None:
+            return row
         return sync_await(self._pull_through(entity_id))
 
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
@@ -751,9 +799,9 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _stamped(data: dict[str, Any]) -> dict[str, Any]:
         """Return a copy of ``data`` carrying the cache-age stamp for this instant.
 
-        Only the pull-through path stamps, and that is the whole design: the
-        stamp records when a row was last obtained from a LOWER tier, not when
-        it was last touched in L1. Stamping on every write would let
+        Stamped wherever a row arrives from a LOWER tier -- both pull-through
+        sites and :meth:`reload_entity` -- and nowhere else. The stamp records
+        provenance, not local activity: stamping on every write would let
         ``set_field_sync`` renew a stale row's lifetime by editing one field,
         which makes exactly the rows this bounds immortal.
 
@@ -970,14 +1018,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             access is guaranteed to hit L1 (when L1 is available).
         :rtype: dict[str, Any] | None
         """
-        if self._l1 is not None:
-            row: dict[str, Any] | None = self._l1.select_by_id(
-                self.table_name,
-                self.normalize_pk(entity_id),
-                self.primary_key_columns,
-            )
-            if row is not None:
-                return row
+        row = self._select_from_l1(entity_id)
+        if row is not None:
+            return row
         data = await self._pull_through(entity_id)
         return data
 

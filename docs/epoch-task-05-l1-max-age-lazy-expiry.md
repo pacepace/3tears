@@ -30,6 +30,20 @@ touches either: an invalidation dropped when the outbound buffer overflows, and 
 published in that window and never knows. No publisher-side mechanism can reach the second
 one. A max-age bounds both.
 
+## What the bound actually bounds, which is not what it first looks like
+
+**Expiring an L1 row resolves against L2, not L3.** A pull-through consults L2 first and
+stops there on a hit, so the freshest value this mechanism can produce is whatever L2
+holds. That is not a limitation, it is precisely the fit: the residue being bounded is a
+peer's write whose invalidation was lost, and that write *did* reach L2, because
+`_save_to_l2` is on the same path as the L3 write. Only this pod's L1 copy is stale.
+
+Worth stating because it is easy to reason about this as "L1 expiry re-reads the database"
+and then stage a test that way. It does not, and such a test fails for the right reason.
+The bound is on how long one pod may disagree with the shared tier, not on how long the
+shared tier may disagree with durable storage. L2 has its own 7200s TTL (`kv.py:161`) for
+the latter.
+
 ## The exclusion that makes this safe, and is not optional
 
 **Expiry must never apply to a collection with no L3.** Two shipped families set
@@ -187,7 +201,11 @@ for that starting value is thin and should be treated as such. The L2 bucket TTL
 (`kv.py:161`), so a default below it means a refetch usually resolves at L2 rather than L3,
 and a default above it is largely inert. 3600s sits under that with room.
 
-Expiry is off by default regardless, per the exclusion above. A collection opts in.
+Expiry is off by default regardless, per the exclusion above. A collection opts in --
+and 3600s is what it gets if it opts in without naming a number
+(`DEFAULT_L1_MAX_AGE_SECONDS`). Those two statements only look contradictory: there is
+no fleet-wide default, and there IS a default for the value, which is the only place a
+default can live once nothing is bounded until asked.
 
 ## Interaction with the deferred write buffer
 

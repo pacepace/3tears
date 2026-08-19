@@ -1403,8 +1403,8 @@ class TestCorruptL2EntryFallsThroughToL3:
         assert entity.name == "FromCache", "a healthy L2 entry was bypassed"
 
 
-class TestCacheAgeStampOnPullThrough:
-    """Only a pull-through stamps a row's provenance.
+class TestCacheAgeStampOnLowerTierReads:
+    """A row's provenance is stamped wherever it arrives from a lower tier.
 
     The stamp records when a row was last obtained from a LOWER tier, never
     when it was last touched locally. That distinction is the mechanism: a row
@@ -1496,3 +1496,100 @@ class TestCacheAgeStampOnPullThrough:
         ensured = await coll.ensure("p4")
         assert ensured is not None
         assert _CACHED_AT_COLUMN not in ensured
+
+
+class TestL1MaxAgePolicy:
+    """Who gets a staleness bound, and who is structurally refused one."""
+
+    def test_expiry_is_off_until_a_collection_asks(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = object()
+        assert coll.l1_max_age_seconds is None
+
+    def test_a_configured_collection_with_an_l3_gets_its_bound(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        registry.set_l1_max_age("test_entities", 3600.0)
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = object()
+        assert coll.l1_max_age_seconds == 3600.0
+
+    def test_a_collection_with_no_l3_is_refused_a_bound_even_when_configured(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """The regression this chunk exists to prevent.
+
+        With no L3 there is nothing to pull through from, so an expired row is
+        not a miss that repairs itself -- it is a deletion. A caller that reads
+        absence and writes goes on to replace live state with a fresh empty
+        row, and nothing raises. Refusing the bound here is what makes that
+        impossible rather than merely unlikely.
+        """
+        registry.set_l1_max_age("test_entities", 1.0)
+        coll = StubCollection(registry, config_always, nats_client=_make_nats_mock())
+        coll.l3_pool = None
+        assert coll.l1_max_age_seconds is None
+
+    def test_a_nonpositive_bound_is_refused_at_configuration_time(self, registry: CollectionRegistry) -> None:
+        with pytest.raises(ValueError, match="positive"):
+            registry.set_l1_max_age("test_entities", 0)
+
+    @pytest.mark.asyncio
+    async def test_an_expired_row_pulls_through_and_picks_up_a_peers_write(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """End to end, staged the way the failure actually happens.
+
+        The residue this bounds is a peer's write whose invalidation never
+        arrived. That write DID reach L2, which is shared -- only this pod's L1
+        copy is stale. So expiry is checked against what L2 holds, not L3: a
+        pull-through consults L2 first and stops there on a hit.
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"m1": {"id": "m1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        # a real L3 handle, because a collection without one is refused a bound
+        # outright -- that gate is the subject of the tests above.
+        coll.l3_pool = object()
+
+        assert await coll.get("m1") is not None
+        # a peer writes; its invalidation is lost, so this pod's L1 keeps the
+        # old row while the shared tier already holds the new one.
+        nats.store["test_entities.m1"] = json.dumps({"id": "m1", "name": "PeerWrote", "score": 2}).encode()
+        conn = l1_backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m1"))
+
+        entity = await coll.get("m1")
+
+        assert entity is not None
+        assert entity.name == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_without_the_bound_the_same_stale_row_is_served_forever(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """The control for the test above: no bound, no recovery.
+
+        Same staging, expiry off. This is the unbounded staleness the chunk
+        exists to close, and it is worth pinning so the previous test cannot
+        quietly start passing for some other reason.
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"m2": {"id": "m2", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        # a real L3 handle, because a collection without one is refused a bound
+        # outright -- that gate is the subject of the tests above.
+        coll.l3_pool = object()
+
+        assert await coll.get("m2") is not None
+        nats.store["test_entities.m2"] = json.dumps({"id": "m2", "name": "PeerWrote", "score": 2}).encode()
+        conn = l1_backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, "m2"))
+
+        entity = await coll.get("m2")
+
+        assert entity is not None
+        assert entity.name == "Original"

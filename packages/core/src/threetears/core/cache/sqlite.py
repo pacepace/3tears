@@ -12,13 +12,19 @@ import enum
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from threetears.core.cache.base import _CACHED_AT_COLUMN, _TABLES_WITHOUT_CACHE_STAMP, build_select_clause
+from threetears.core.cache.base import (
+    _CACHED_AT_COLUMN,
+    _TABLES_WITHOUT_CACHE_STAMP,
+    _entry_is_fresh,
+    build_select_clause,
+)
 from threetears.observe import get_logger
 
 __all__ = [
@@ -329,6 +335,9 @@ class SQLiteBackend:
         entity_id: Any,
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
+        *,
+        max_age_seconds: float | None = None,
+        now_monotonic: float | None = None,
     ) -> dict[str, Any] | None:
         """select single row by primary key with type deserialization.
 
@@ -344,23 +353,36 @@ class SQLiteBackend:
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
         :ptype columns: Sequence[str] | None
-        :return: row dict on hit, ``None`` on miss
+        :param max_age_seconds: bound on how long a row cached from a lower
+            tier may be served; ``None`` (the default) disables expiry
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied monotonic clock reading, so a
+            test can exercise an hour-long window without sleeping
+        :ptype now_monotonic: float | None
+        :return: row dict on hit, ``None`` on miss or when the row was past
+            its max age (in which case the row is also deleted)
         :rtype: dict[str, Any] | None
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
         """
         pk_cols = self._pk_columns(primary_key)
         pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
-        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
+        select_clause = build_select_clause(
+            self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
+        )
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
         sql = f"SELECT {select_clause} FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
         row = cursor.fetchone()
-        if row is not None:
-            return self._deserialize_row(table, dict(row))
-        return None
+        if row is None:
+            return None
+        raw = dict(row)
+        if self._is_past_max_age(table, raw, max_age_seconds, now_monotonic):
+            self.delete_by_id(table, entity_id, primary_key)
+            return None
+        return self._deserialize_row(table, raw)
 
     def select_batch(
         self,
@@ -368,6 +390,9 @@ class SQLiteBackend:
         entity_ids: list[Any],
         primary_key: str | tuple[str, ...] = "id",
         columns: Sequence[str] | None = None,
+        *,
+        max_age_seconds: float | None = None,
+        now_monotonic: float | None = None,
     ) -> list[dict[str, Any]]:
         """select multiple rows by primary key with type deserialization.
 
@@ -385,14 +410,23 @@ class SQLiteBackend:
             selects every column. Exactly the named columns come back --
             pk columns are NOT implicitly added.
         :ptype columns: Sequence[str] | None
-        :return: list of row dicts; empty list when ``entity_ids`` is empty
+        :param max_age_seconds: bound on how long a row cached from a lower
+            tier may be served; ``None`` (the default) disables expiry
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied monotonic clock reading, so a
+            test can exercise an hour-long window without sleeping
+        :ptype now_monotonic: float | None
+        :return: list of row dicts, omitting (and deleting) any past its max
+            age; empty list when ``entity_ids`` is empty
         :rtype: list[dict[str, Any]]
         :raises ValueError: if ``columns`` is empty, or names a column
             the table's registered schema does not have
         """
         if not entity_ids:
             return []
-        select_clause = build_select_clause(self._schema_info.get(table), table, columns)
+        select_clause = build_select_clause(
+            self._schema_info.get(table), table, self._with_stamp(table, columns, max_age_seconds)
+        )
         pk_cols = self._pk_columns(primary_key)
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
@@ -412,7 +446,29 @@ class SQLiteBackend:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
-        return [self._deserialize_row(table, dict(row)) for row in rows]
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            raw = dict(row)
+            # Age is read from the raw row, because ``_deserialize_row`` strips
+            # the stamp; the pk is taken from the deserialized one, because
+            # ``delete_by_id`` serializes what it is given and a raw value
+            # would be serialized twice.
+            expired = self._is_past_max_age(table, raw, max_age_seconds, now_monotonic)
+            deserialized = self._deserialize_row(table, raw)
+            if not expired:
+                kept.append(deserialized)
+                continue
+            if all(c in deserialized for c in pk_cols):
+                # Same disposal as the single-row path: drop it rather than
+                # leave a tombstone every later read has to re-evaluate. A
+                # projection that omitted a pk column leaves nothing to delete
+                # BY, so the row is skipped this read and collected on the next
+                # unprojected one.
+                pk_value: Any = (
+                    tuple(deserialized[c] for c in pk_cols) if len(pk_cols) > 1 else deserialized[pk_cols[0]]
+                )
+                self.delete_by_id(table, pk_value, primary_key)
+        return kept
 
     def delete_by_id(
         self,
@@ -585,6 +641,76 @@ class SQLiteBackend:
     def _stamps_cache_age(table: str) -> bool:
         """Whether ``table`` carries the injected cache-age stamp column."""
         return table not in _TABLES_WITHOUT_CACHE_STAMP
+
+    def _with_stamp(
+        self,
+        table: str,
+        columns: Sequence[str] | None,
+        max_age_seconds: float | None,
+    ) -> Sequence[str] | None:
+        """Add the stamp to an explicit projection when expiry needs to read it.
+
+        An unprojected read already returns every column. A projected one does
+        not, and the stamp missing from the row is indistinguishable from a row
+        that carries no stamp -- which reads as fresh. That would let a caller
+        silently opt out of expiry by naming columns, so the projection is
+        widened rather than trusted. ``_deserialize_row`` strips it again, so
+        the caller still never sees it.
+
+        :param table: target table name
+        :ptype table: str
+        :param columns: the caller's projection, or ``None`` for all columns
+        :ptype columns: Sequence[str] | None
+        :param max_age_seconds: the expiry bound, or ``None`` when off
+        :ptype max_age_seconds: float | None
+        :return: the projection to query with
+        :rtype: Sequence[str] | None
+        """
+        if columns is None or max_age_seconds is None or not self._stamps_cache_age(table):
+            return columns
+        if _CACHED_AT_COLUMN in columns:
+            return columns
+        return [*columns, _CACHED_AT_COLUMN]
+
+    def _is_past_max_age(
+        self,
+        table: str,
+        raw_row: dict[str, Any],
+        max_age_seconds: float | None,
+        now_monotonic: float | None,
+    ) -> bool:
+        """Whether ``raw_row`` is older than the caller's bound allows.
+
+        Reads the stamp before ``_deserialize_row`` strips it, which is why the
+        comparison lives at this tier at all: nothing above the cache can see
+        the value.
+
+        A row with no stamp is never past its age. That is not a special case
+        bolted on here -- it is the rule stated once in
+        :func:`~threetears.core.cache.base._entry_is_fresh`: an unstamped row
+        was authored locally and has never been served by a lower tier, so
+        expiring it would discard a local write.
+
+        :param table: target table name
+        :ptype table: str
+        :param raw_row: the row as read, stamp still present
+        :ptype raw_row: dict[str, Any]
+        :param max_age_seconds: the expiry bound, or ``None`` when off
+        :ptype max_age_seconds: float | None
+        :param now_monotonic: caller-supplied clock reading, or ``None`` to read one
+        :ptype now_monotonic: float | None
+        :return: ``True`` when the row must be treated as a miss
+        :rtype: bool
+        """
+        if max_age_seconds is None or not self._stamps_cache_age(table):
+            return False
+        stamp = raw_row.get(_CACHED_AT_COLUMN)
+        reading = time.monotonic() if now_monotonic is None else now_monotonic
+        return not _entry_is_fresh(
+            stamp,
+            now_monotonic=reading,
+            max_age_seconds=max_age_seconds,
+        )
 
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
