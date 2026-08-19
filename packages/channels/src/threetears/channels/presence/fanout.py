@@ -169,11 +169,6 @@ class RoomFanout:
         like every other pod. fanning here too would double-deliver to the
         sender pod's local members.
 
-        :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
-        :ptype room_id: str
-        :param payload: opaque message body delivered verbatim to each
-            local socket
-        :ptype payload: str
         **a failed publish propagates, and that is deliberate.** this package
         is not where the decision about a lost room frame is made: one caller
         wants a fanout failure kept distinct from the author's own socket
@@ -198,6 +193,11 @@ class RoomFanout:
         stays that way -- that is a different failure with a different
         correctness story.
 
+        :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
+        :ptype room_id: str
+        :param payload: opaque message body delivered verbatim to each
+            local socket
+        :ptype payload: str
         :param exclude: connection-id to omit from delivery on every pod
             (typically the originating socket), or ``None`` for everyone
         :ptype exclude: str | None
