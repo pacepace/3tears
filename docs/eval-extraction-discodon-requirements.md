@@ -122,8 +122,21 @@ consumed**, in dimensions that do not name a provider:
   another provider may bill requests, queries, or nothing at all;
 - `money` + `currency` — where the provider reports an actual charge.
 
-Eval prices the units it is given at an operator-declared rate per
-`(provider, unit)`, and never re-derives the volume.
+**Each contribution names the provider it came from**, and that is a different
+field from where a dollar figure came from: `price_source` today says
+`"openrouter"` or `"tavily:configured_rate"` — the provenance of a *price* — and
+answers nothing about who was called. Eval prices the units it is given at an
+operator-declared rate per `(provider, unit)`, and never re-derives the volume.
+
+**This is a change, not a relabelling.** Today every external call lands in one
+`external` role with no provider identity on the row, and the run carries a
+single `ExternalCallPricing` whose own docstring calls it "the rate card for a
+credit-metered role (search)". Tavily, SearXNG and Wolfram are not
+distinguishable in that structure, and `add_unpriced_calls` exists because
+callers the one card cannot price still have to be counted. A self-hosted
+SearXNG call is a real call with genuinely zero money — representable, and
+different from an unpriced Tavily call, which is a real cost nobody declared a
+rate for. One bucket cannot say which is which.
 
 **Why the direction matters more than the table.** Today the dependency points
 the wrong way: eval reaches *into* a tool module for a constant, then
@@ -146,15 +159,29 @@ search, so it owns its own vocabulary and search's `Spend` is one compatible
 instance of it. If the two are worth unifying later, that is a shared-contracts
 decision, not a dependency edge from eval to search.
 
-**Keep the property the current rate card has.** `ExternalCallPricing` is
-resolved once at launch and carried to every cell, so an operator editing a
-hot-reloadable rate mid-run cannot leave one run measured in two currencies.
-That must survive; it is the reason the rate is a per-run card rather than a
-lookup at read time.
+**Keep the property the current rate card has — as a table, not a card.**
+`ExternalCallPricing` is resolved once at launch and carried to every cell, so
+an operator editing a hot-reloadable rate mid-run cannot leave one run measured
+in two currencies. That property must survive, and it is the reason the rate is
+resolved per run rather than looked up at read time. What changes is its arity:
+the run resolves a **rate table** once at launch, one entry per
+`(provider, unit)`, instead of one card for one provider. A provider with no
+declared rate stays counted and unpriced, exactly as today — that arm is right
+and should not be lost in the widening.
 
-**Verify.** A test that prices a run's external calls from a supplied
-`(unit, rate)` pairing with no import of any tool module, and a test that two
-callers reporting different units on the same run are not silently summed.
+**Units from different providers are never summed into one number.** A
+cross-provider total is either per-provider, or money-only where every provider
+involved had a declared rate. Credits and Wolfram calls are not one quantity,
+and a figure that adds them is not a smaller truth but a fabricated one. This is
+the same defect `Spend.__add__` already guards for currency and does not yet
+guard for units — see what 3tears owes back, below.
+
+**Verify.** Three tests: one that prices a run's external calls from a supplied
+rate table with no import of any tool module; one that a run calling two
+providers with different units prices each at its own rate and does not sum the
+units; and one that a zero-money provider (a self-hosted search) and a provider
+with no declared rate produce distinguishable rows rather than both reading as
+free.
 
 ## R6 — do NOT converge the eval cost cap onto `BudgetPort`
 
