@@ -241,7 +241,9 @@ class CollectionRegistry:
 
         :param table_name: the collection's table
         :ptype table_name: str
-        :param max_age_seconds: the bound, or ``None`` to turn expiry off
+        :param max_age_seconds: the bound, or ``None`` to turn expiry off.
+            Omitted, it is :data:`DEFAULT_L1_MAX_AGE_SECONDS` -- opting in
+            without a number is the supported way to take the default.
         :ptype max_age_seconds: float | None
         :return: nothing
         :rtype: None
