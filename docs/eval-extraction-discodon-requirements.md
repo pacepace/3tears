@@ -108,24 +108,53 @@ depend on the tool subsystem.
 
 **Verify.** Covered by R1 once the collector call moves to the caller.
 
-## R5 — provider credit metering is injected, not imported
+## R5 — external-call spend is reported by the caller, in provider-agnostic units
 
-**Property.** `usage_capture.py` does not import `SEARCH_CREDITS_BY_DEPTH` from
-`discodon.tools.web_search_tool`. The credits-per-call table arrives as
-configuration, alongside the operator-declared dollars-per-credit it is already
-paired with.
+**Property.** Eval holds no provider-specific parameter-to-cost table and
+interprets no provider-specific parameter. `usage_capture.py` does not import
+`SEARCH_CREDITS_BY_DEPTH`, does not know what a `search_depth` is, and does not
+derive a volume from one. **The thing that made the call reports what it
+consumed**, in dimensions that do not name a provider:
 
-**Why this one is different from the rest.** It is not a shim to be removed —
-it is a convergence point. In the extracted world that table is the *search
-adapter's* property, and `3tears-search` already owns the Tavily adapter.
-Injecting it now means the eventual resolution against the search leaf is a
-wiring change rather than a code change. The rationale already written beside
-that constant — that the credit cost is a property of the call, and that eval's
-run-level rate card resolves off the research tool's depth — is the same
-argument for injecting it.
+- `calls` — how many provider calls were made;
+- `provider_units` + the **name of that unit** — the provider's own weighted
+  metering, whatever it is: Tavily bills credits and charges 2 for `advanced`,
+  another provider may bill requests, queries, or nothing at all;
+- `money` + `currency` — where the provider reports an actual charge.
 
-**Verify.** A test that constructs the rate card from a supplied table, with no
-import of the tool module.
+Eval prices the units it is given at an operator-declared rate per
+`(provider, unit)`, and never re-derives the volume.
+
+**Why the direction matters more than the table.** Today the dependency points
+the wrong way: eval reaches *into* a tool module for a constant, then
+re-computes the call's cost itself from a parameter it also has to understand.
+That is why a `web_search` call at `basic` gets billed at the research tool's
+`advanced` rate unless something intervenes — the code that knows what the call
+actually was is not the code doing the arithmetic. Reporting outward removes the
+whole class: a caller cannot mis-bill a call it is describing.
+
+**It also generalises past search, which is the point.** discodon meters image
+generation, Wolfram and YouTube on the same budget mixin. An eval package whose
+external-spend vocabulary is "credits by depth" can only ever account for one
+provider of one kind of call.
+
+`threetears.search.contracts.Spend` is already exactly this shape — `calls`,
+`provider_units`, `money`/`currency`, wall-clock, bytes, with SR-E4 stating in
+terms that the unit is provider-defined and Tavily `advanced` = 2 credits. Do
+**not** import it: eval accounts for every metered external call, not only
+search, so it owns its own vocabulary and search's `Spend` is one compatible
+instance of it. If the two are worth unifying later, that is a shared-contracts
+decision, not a dependency edge from eval to search.
+
+**Keep the property the current rate card has.** `ExternalCallPricing` is
+resolved once at launch and carried to every cell, so an operator editing a
+hot-reloadable rate mid-run cannot leave one run measured in two currencies.
+That must survive; it is the reason the rate is a per-run card rather than a
+lookup at read time.
+
+**Verify.** A test that prices a run's external calls from a supplied
+`(unit, rate)` pairing with no import of any tool module, and a test that two
+callers reporting different units on the same run are not silently summed.
 
 ## R6 — do NOT converge the eval cost cap onto `BudgetPort`
 
@@ -171,6 +200,11 @@ not discodon's.
 
 - The eval budget contract, shaped from `EvalRunCostCap` rather than from
   `BudgetPort` (R6), and D27 amended to say so.
-- The credit-table seam on the search side, so R5's injected value eventually
-  resolves against `3tears-search` rather than a local constant.
+- A unit **label** beside a weighted-unit count. `Spend` carries
+  `provider_units` as a bare `Decimal` and its `__add__` refuses to sum money
+  across currencies — but sums `provider_units` across providers without a
+  murmur. One provider's credits and another's requests are not the same
+  quantity, and adding them fabricates one, which is the identical defect the
+  currency guard already exists to prevent. It is invisible with a single
+  provider and arrives with the second.
 - The package cut itself, once R1 holds — at which point the lift is mechanical.
