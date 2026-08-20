@@ -76,6 +76,24 @@ class TestReadingTheServersRefusal:
         assert remedy is not None
         assert "'prod-epochs'" in remedy
 
+    def test_a_stream_merely_containing_kv_is_not_read_as_a_bucket(self) -> None:
+        """``kv_`` must open a subject token, not appear anywhere in one.
+
+        A stream named ``events-kv_v2`` is not a KV bucket. Naming one would send
+        the reader to grant a bucket nothing will ever open, which is worse than
+        saying nothing: the generic remedy at least describes the real situation.
+
+        :return: nothing
+        :rtype: None
+        """
+        exc = nats_errors.Error('nats: permissions violation for publish to "$js.api.stream.create.events-kv_v2"')
+
+        remedy = permissions_violation_remedy(exc)
+
+        assert remedy is not None
+        assert "v2" not in remedy.replace(str(exc), "")
+        assert "KV bucket" not in remedy
+
     def test_a_refusal_naming_no_kv_subject_still_explains_itself(self) -> None:
         """An unnameable bucket is not a reason to fall back to the bland line.
 
@@ -125,6 +143,24 @@ class TestTheRemedyText:
 
         assert "kv_buckets" in remedy
         assert "threetears.nats.subject_permissions" in remedy
+
+    def test_an_uncertain_remedy_does_not_assert_the_cause(self) -> None:
+        """Where a grant is only the leading candidate, the text must say so.
+
+        A failed bucket bind has no refusal behind it: a bucket nobody created
+        fails identically. An error that asserts the wrong cause sends the reader
+        further away than one that admits it is ranking two.
+
+        :return: nothing
+        :rtype: None
+        """
+        certain = kv_grant_remedy("prod-epochs")
+        hedged = kv_grant_remedy("prod-epochs", certain=False)
+
+        assert certain.startswith("FIX:")
+        assert hedged.startswith("MOST LIKELY FIX")
+        assert "never created" in hedged
+        assert "kv_buckets" in hedged
 
     def test_the_timeout_remedy_puts_the_grant_ahead_of_the_network(self) -> None:
         """Both causes are named, and the silent one comes first.

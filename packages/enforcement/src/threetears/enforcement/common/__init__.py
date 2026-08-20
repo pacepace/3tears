@@ -35,7 +35,6 @@ from threetears.enforcement.common.inheritance import (
 from threetears.enforcement.common.exemptions import (
     Exemption,
     parse_exemptions_with_rationale,
-    rationale_defect,
     apply_exemptions,
     ExemptionError,
 )
@@ -75,7 +74,6 @@ __all__ = [
     "iter_python_files",
     "note_unscanned",
     "parse_exemptions_with_rationale",
-    "rationale_defect",
     "parse_python_file",
     "relative_posix_path",
     "repo_identity",

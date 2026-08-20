@@ -197,9 +197,9 @@ alone.
 
 Every test fake (a class named `Fake<Name>` or `_Fake<Name>` under any `tests/` directory) MUST declare what production protocol it stands in for. Three routes, in order of preference:
 
-1. **Subclass it** -- `class _FakeKv(KvBucketLike):`. mypy then enforces the surface for you.
-2. **`# parity-with: <fully.qualified.name>`** on the line above the class. The walker imports the target and compares method surfaces.
-3. **`# parity-exempt: <rationale>`** on the line above the class, for a hand-rolled subset stub with no single production protocol to name. The rationale must be at least 30 characters and must not be a blanket phrase ("tests need this", "temporary", ...); the same bar the exemption file applies.
+1. **Subclass it** -- `class _FakeKv(KvBucketLike):`. The walker accepts any non-`object` base and checks nothing further, on the theory that a type checker covers it. Note that in THIS repo it does not: mypy runs over `packages/*/src` only, so a subclassed fake's surface is unverified by anything. Prefer it anyway for a real Protocol (the base documents the intent and an IDE will follow it), but reach for route 2 when you want the surface actually compared.
+2. **`# parity-with: <fully.qualified.name>`** on the line above the class. The walker imports the target and compares method surfaces. This is the only route that verifies anything.
+3. **`# parity-exempt: <rationale>`** on the line above the class, for a hand-rolled subset stub with no single production protocol to name. The rationale must be at least 30 characters and must not be a blanket phrase ("tests need this", "temporary", ...); the same bar the exemption file applies. **One line, however long** -- the walker reads the first non-blank line above the class and stops, so a wrapped rationale exempts nothing.
 
 Workspace tests centralise their asyncpg + workspace-entity shells under `packages/agent/workspace/tests/_helpers/{asyncpg_shims,workspace_shims}.py` so per-test inline fakes only need a one-line subclass declaration.
 

@@ -4,9 +4,13 @@
 # class. The walker reads it there, and the rationale bar is the same one this
 # file enforces: at least 30 characters, no blanket phrases.
 #
-#     # parity-exempt: subset shim for nats.js.KeyValue exposing only get/put/create/
-#     # update/delete; the full KeyValue carries history/watch/purge, unrelated here
+#     # parity-exempt: subset shim for nats.js.KeyValue exposing only the get/put/create/update/delete surface; full KeyValue carries history/watch/purge
 #     class _FakeKv:
+#
+# ONE LINE, however long. The walker takes the first non-blank line above the
+# class and stops, so a rationale wrapped onto a second comment line exempts
+# nothing and reports `no_declaration` -- and ruff does not reflow comments,
+# so nothing will tell you.
 #
 # Entries here are keyed `path:LINE:symbol`, and that line number is the problem:
 # it is a property of the file's layout, not of the fake. Adding one import to a

@@ -25,11 +25,16 @@ hand is its own maintenance burden and inevitably falls out of sync.
 
 ## Exemptions
 
-Every domain takes exemptions, and every exemption carries a rationale. The
-rule is one function, `common.exemptions.rationale_defect`: at least 30
-characters, and not one of the blanket phrases ("tests need this",
+Every domain takes exemptions, and every exemption carries a rationale: at
+least 30 characters, and not one of the blanket phrases ("tests need this",
 "temporary", "required", ...). A rationale that costs nothing to write is a
 silent test-disabler.
+
+`common.exemptions.rationale_defect` is that rule as a function. The shared
+exemption-file parser and the `fake_parity` in-source marker both call it;
+`nats_wrapper_usage` and `dict_state_detection` predate it and still carry
+their own copies, which have drifted (one matches blanket phrases exactly
+where the shared rule matches a prefix). Call the shared one in new code.
 
 Two places an exemption can live, and the choice matters:
 

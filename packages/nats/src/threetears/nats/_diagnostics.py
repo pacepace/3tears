@@ -57,11 +57,16 @@ _KV_SUBJECT: Final = re.compile(r"\$kv\.(?P<bucket>[^.\s\"']+)\.", re.IGNORECASE
 #:
 #: The control plane is refused separately from the data plane, and it is the one
 #: that fails FIRST -- opening a bucket is ``STREAM.CREATE`` before any key exists.
-_KV_STREAM_SUBJECT: Final = re.compile(r"\$js\.api\.[^\s\"']*?\bkv_(?P<bucket>[^.\s\"']+)", re.IGNORECASE)
+#:
+#: ``kv_`` must open a subject TOKEN (anchored on the preceding dot), not merely a word.
+#: A ``\b`` would also match inside a stream named ``events-kv_v2``, and reporting a
+#: KV bucket that does not exist is worse than reporting none: it sends the reader to
+#: add a grant for a name nothing will ever open.
+_KV_STREAM_SUBJECT: Final = re.compile(r"\$js\.api\.[^\s\"']*?\.kv_(?P<bucket>[^.\s\"']+)", re.IGNORECASE)
 
 
-def kv_grant_remedy(bucket: str) -> str:
-    """The exact grant a principal needs for ``bucket``, as an actionable sentence.
+def kv_grant_remedy(bucket: str, *, certain: bool = True) -> str:
+    """The grant a principal needs for ``bucket``, as an actionable sentence.
 
     Names the declaration site rather than only the wire subjects, because the
     wire subjects are derived: ``mint_user_jwt`` turns one ``kv_buckets`` entry
@@ -70,11 +75,23 @@ def kv_grant_remedy(bucket: str) -> str:
 
     :param bucket: fully-qualified bucket name, prefix included
     :ptype bucket: str
+    :param certain: ``True`` where the server named this bucket in a refusal, so
+        the missing grant IS the cause. ``False`` where a grant is only the
+        leading candidate -- a bind that fails against a bucket nobody created
+        looks the same, and an error that asserts the wrong cause sends the
+        reader further away than one that admits it is guessing.
+    :ptype certain: bool
     :return: remediation text naming the declaration and the grants it mints
     :rtype: str
     """
+    opening = (
+        f"FIX: grant this principal the KV bucket {bucket!r}."
+        if certain
+        else f"MOST LIKELY FIX (the other candidate is a bucket that was never created): grant "
+        f"this principal the KV bucket {bucket!r}."
+    )
     return (
-        f"FIX: grant this principal the KV bucket {bucket!r}. Add it to the principal's "
+        f"{opening} Add it to the principal's "
         f"`kv_buckets` in `threetears.nats.subject_permissions`, then re-mint the user JWT "
         f"and reconnect -- `mint_user_jwt` expands one entry into pub+sub on "
         f'"$KV.{bucket}.>" and JetStream control over stream "KV_{bucket}". '

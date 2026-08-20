@@ -18,6 +18,7 @@ import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import KvError, NatsKvBucket
+from threetears.nats.kv import _last_timeout_remedy_log  # noqa: SLF001 - module-level throttle state under test
 
 
 # parity-exempt: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
@@ -449,12 +450,47 @@ class TestAKvOperationThatNeverAnswers:
         kv.put = _never_answers
         bucket = NatsKvBucket(client=None, full_name="prod-epochs", kv=kv, ttl=None)  # type: ignore[arg-type]
 
+        _last_timeout_remedy_log.pop("prod-epochs", None)
         with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
 
         messages = [record.getMessage() for record in caplog.records]
         assert any("'prod-epochs'" in message and "kv_buckets" in message for message in messages), messages
+
+    @pytest.mark.asyncio
+    async def test_the_remedy_is_not_repeated_for_every_wedged_operation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The condition lasts; the explanation should not be re-printed per operation.
+
+        A wedged broker times out every KV call, and the remedy is long and identical
+        each time. Emitting it unthrottled buries the diagnosis inside its own
+        repetitions. Each call still raises, which is the signal the caller acts on.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="throttle-probe", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        _last_timeout_remedy_log.pop("throttle-probe", None)
+        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            for _ in range(3):
+                with pytest.raises((PublishTimeoutError, KvError)):
+                    await bucket.put(key="k", value=b"v")
+
+        remedies = [r for r in caplog.records if "throttle-probe" in r.getMessage() and "kv_buckets" in r.getMessage()]
+        assert len(remedies) == 1, f"remedy logged {len(remedies)} times across 3 wedged operations"
 
 
 class TestOpeningAnUngrantedBucket:

@@ -31,11 +31,18 @@ declare what production protocol it stands in for, via one of:
    ``no_declaration`` for a fake nobody touched. a file entry also
    cannot notice that the module it names was deleted.
 
-   the rationale clears the same bar as an exemption-file one --
-   :func:`~threetears.enforcement.common.exemptions.rationale_defect`
-   is the single copy of that rule -- so the route that survives a
-   reformat is not also the one that admits ``# parity-exempt: wip``.
-   a bare ``# parity-exempt:`` does not exempt.
+   the rationale clears the same bar as an exemption-file one, via
+   :func:`~threetears.enforcement.common.exemptions.rationale_defect`,
+   so the route that survives a reformat is not also the one that
+   admits ``# parity-exempt: wip``. a bare ``# parity-exempt:`` does
+   not exempt. **the rationale must be ONE comment line**, however
+   long: :func:`_read_markers` takes the first non-blank line above
+   the class and stops, so a wrapped rationale exempts nothing.
+
+   (``rationale_defect`` is shared by this domain and the common
+   exemption-file parser, not by every domain: ``nats_wrapper_usage``
+   and ``dict_state_detection`` carry their own copies, and those two
+   have already drifted from it and from each other.)
 
 fakes that have NEITHER a subclass, a ``# parity-with:`` marker, nor a
 ``# parity-exempt:`` marker raise ``fake_parity.no_declaration`` so the
@@ -232,6 +239,11 @@ def fake_parity_violations(
       declaration (no non-object base, no ``# parity-with:`` marker).
       surfaced as ``add a subclass declaration or
       ``# parity-with:`` marker, or exempt with rationale``.
+
+    - ``fake_parity.weak_exempt_rationale`` -- a ``# parity-exempt:``
+      marker whose reason is too short or is a blanket phrase. the
+      marker is the preferred exemption route, so it carries the same
+      rationale bar the exemption file does.
 
     - ``fake_parity.method_missing`` -- a marker fake is missing a
       public method declared on its production target.
