@@ -139,11 +139,13 @@ packages (bumped in lock-step).
   it, and the reason the requirement had to be written in a release note before:
   there was nowhere else to put it.
 
-- `epoch`: **which substrate an epoch takes is now declared per family, not
-  inferred from the subject's spelling.** `_is_durable` matched any path
-  containing `.tiles.`, so a subject nobody had considered was classified
-  silently -- and the silent answer is ephemeral, which is the direction that
-  cannot be repaired once a version number has reached a CDN.
+- `epoch`: **which substrate an epoch takes is now declared per family, with a
+  test that fails when a new epoch subject is declared by neither.** Previously
+  a subject nobody had considered was classified silently, and the silent answer
+  is ephemeral, which is the direction that cannot be repaired once a version
+  number has reached a CDN. The classifier still applies a path marker; what
+  changed is that the marker now belongs to a named, reasoned declaration and
+  that nothing can be absent from the tables.
 
   Both tables now carry every epoch subject with its reason, and
   `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real

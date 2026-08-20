@@ -132,10 +132,15 @@ _IDENTITY_ATTEMPTS: Final = 3
 #:
 #: **Durability is a property of the SUBJECT, declared here, per family.** Not
 #: a per-call flag: two call sites bumping the same subject could then disagree,
-#: and a caller can forget one. Not an inferred substring either -- the previous
-#: shape matched any path containing ``.tiles.``, which silently classified a
-#: subject nobody had thought about. Every epoch subject must appear in this
-#: table or in :data:`_EPHEMERAL_FAMILIES` below;
+#: and a caller can forget one.
+#:
+#: The DECLARATION is the table; the marker beside each entry is only how the
+#: table is applied to a concrete path, and :func:`_is_durable` still matches on
+#: it. That matcher is unchanged in behaviour from the bare ``.tiles.`` constant
+#: it replaced, and on its own it would classify a subject nobody had thought
+#: about exactly as before. What closes that is not the matcher but the
+#: enumeration: every epoch subject must appear in this table or in
+#: :data:`_EPHEMERAL_FAMILIES` below;
 #: ``packages/epoch/tests/unit/test_durability_policy.py`` enumerates the real
 #: ``Subjects`` factory and fails when a new ``*_epoch`` builder matches
 #: neither, so adding one forces the decision instead of defaulting to

@@ -91,8 +91,12 @@ class TestEpochListenerColdStartPriming:
     """:meth:`subscribe` primes last-seen via :meth:`EpochClient.current` BEFORE registering."""
 
     @pytest.mark.asyncio
-    async def test_cold_start_primes_last_seen_from_postgres(self) -> None:
-        """listener seeds last-seen with the durable row before subscribe registers."""
+    async def test_cold_start_primes_last_seen_from_the_counter(self) -> None:
+        """listener seeds last-seen from the counter before subscribe registers.
+
+        The counter is NATS KV here: this subject is ephemeral. Only the tile
+        family reads a Postgres row, and it has its own tests below.
+        """
         _seeded = 12
         nats, _ = _capture_subscribe_typed()
         client = _StubEpochClient(nats, epoch=_seeded)
@@ -123,13 +127,13 @@ class TestEpochListenerColdStartPriming:
         """``primed_epoch`` primes last-seen to the caller's loaded epoch, not ``current()``.
 
         the consumer read current()=3 + loaded its state, then a bump raced the
-        load and the durable row is now 7. priming to the LOADED epoch (3) -- not
+        load and the counter is now 7. priming to the LOADED epoch (3) -- not
         the now-advanced current() (7) -- keeps last-seen BEHIND the missed bump,
         so the catch-up / next broadcast at 7 fires instead of being swallowed as
         already-seen. priming to current() (7) here would pin the stale catalog
         forever.
         """
-        _seeded = 7  # durable row already advanced past the consumer's load
+        _seeded = 7  # counter already advanced past the consumer's load
         nats, callbacks = _capture_subscribe_typed()
         client = _StubEpochClient(nats, epoch=_seeded)
         listener = EpochListener(nats, client)
@@ -137,7 +141,7 @@ class TestEpochListenerColdStartPriming:
 
         await listener.subscribe(subject, AsyncMock(), primed_epoch=3)
 
-        # last-seen reflects the LOADED epoch, not the advanced durable row.
+        # last-seen reflects the LOADED epoch, not the advanced counter.
         assert listener.last_seen(subject) == 3
         # the bump at 7 the loaded state missed now fires (recoverable), not dropped.
         await callbacks[0](EpochBumpMessage(subject_path=subject.path, epoch=7, payload={}))
@@ -244,7 +248,7 @@ class TestEpochListenerCatchUp:
     """:meth:`catch_up` reads current and fires when stale."""
 
     @pytest.mark.asyncio
-    async def test_catch_up_fires_when_durable_value_is_higher(self) -> None:
+    async def test_catch_up_fires_when_the_counter_is_higher(self) -> None:
         """current(subject) > last_seen advances last-seen and invokes on_bump."""
         # priming: 5; later catch-up: 10.
         _seeded = [5, 10]
@@ -307,7 +311,7 @@ class TestEpochListenerRaceRecovery:
         assert listener.last_seen(subject) == 4
         consumer_cb.assert_not_awaited()
 
-        # next periodic catch_up tick: discovers durable=5, fires callback.
+        # next periodic catch_up tick: discovers counter=5, fires callback.
         result = await listener.catch_up(subject, consumer_cb)
 
         assert result == 5
@@ -316,7 +320,7 @@ class TestEpochListenerRaceRecovery:
 
 
 class TestEpochListenerEcho:
-    """:meth:`echo` is the per-message epoch-echo path; pulls L3 to confirm."""
+    """:meth:`echo` is the per-message epoch-echo path; reads the counter to confirm."""
 
     @pytest.mark.asyncio
     async def test_echo_higher_than_last_seen_triggers_catch_up(self) -> None:
@@ -336,7 +340,7 @@ class TestEpochListenerEcho:
 
     @pytest.mark.asyncio
     async def test_echo_at_or_below_last_seen_is_no_op(self) -> None:
-        """echoed <= last_seen short-circuits without touching Postgres."""
+        """echoed <= last_seen short-circuits without reading the counter at all."""
         _seeded = 10
         nats, _ = _capture_subscribe_typed()
         client = _StubEpochClient(nats, epoch=_seeded)
@@ -355,13 +359,13 @@ class TestEpochListenerEcho:
         assert listener.last_seen(subject) == 10
 
     @pytest.mark.asyncio
-    async def test_echo_higher_than_last_seen_but_durable_disagrees_no_callback(self) -> None:
-        """echoed > last_seen but durable still equals last_seen: no callback fires.
+    async def test_echo_higher_than_last_seen_but_the_counter_disagrees_no_callback(self) -> None:
+        """echoed > last_seen but the counter still equals last_seen: no callback fires.
 
         defends against malicious / corrupt response envelopes that
         echo a higher epoch than the writer ever recorded. without
-        the L3 confirmation, a hostile publisher could trigger
-        spurious reloads.
+        confirming against the counter, a hostile publisher could
+        trigger spurious reloads.
         """
         # priming: 5; catch-up: still 5 (echo lied).
         _seeded = [5, 5]

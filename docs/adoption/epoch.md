@@ -68,9 +68,10 @@ the one whose value escapes to caches we cannot purge, conditional durability is
 the wrong guarantee, so it keeps an unconditional Postgres row.
 
 Which substrate a subject takes is declared per family in
-`threetears.epoch.client`, not inferred and not passed per call. A per-call flag
-lets two call sites disagree about one subject; inference silently classifies a
-subject nobody considered. `packages/epoch/tests/unit/test_durability_policy.py`
+`threetears.epoch.client`, not passed per call: a per-call flag lets two call
+sites disagree about one subject. The classifier still matches a path marker to
+apply that declaration, so it is the enumeration below, not the matcher, that
+stops a subject nobody considered from being classified silently. `packages/epoch/tests/unit/test_durability_policy.py`
 enumerates the real `Subjects` factory and fails when a new `*_epoch` builder is
 in neither table, so adding one forces the decision rather than defaulting to
 ephemeral -- the direction that cannot be repaired.

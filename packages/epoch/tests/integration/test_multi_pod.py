@@ -3,7 +3,8 @@
 verifies the full push-plus-pull design end-to-end against real
 testcontainers. The NATS container is what these tests exercise: every
 subject here is ephemeral, so the counter is KV. A Postgres container is
-still provisioned by the fixtures and is currently unused by this file --
+still provisioned by the fixtures and injected into every EpochClient here,
+but no test in this file reads or writes a row --
 it would earn its place the day a tile-shaped subject is added here to
 cover the durable carve-out at integration level.
 
@@ -251,7 +252,7 @@ async def test_per_message_echo_recovers_missed_broadcast(
     """per-message echo path is the second recovery channel after pull-tick.
 
     consumer receives a response whose envelope echoes a higher
-    epoch; :meth:`EpochListener.echo` confirms via L3 and fires.
+    epoch; :meth:`EpochListener.echo` confirms against the counter and fires.
     """
     set_default_namespace("itest")
 

@@ -25,6 +25,7 @@ and a hand-written literal would keep matching after the builder changed.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -34,13 +35,29 @@ from threetears.epoch.client import (  # noqa: SLF001 - this module IS the polic
     _EPHEMERAL_FAMILIES,
     _is_durable,
 )
-from threetears.nats.subjects import Subject, Subjects, set_default_namespace
+from threetears.nats.subjects import Subject, Subjects, get_default_namespace, set_default_namespace
 
 
 @pytest.fixture(autouse=True)
-def _namespace() -> None:
-    """Bind a namespace so the builders render."""
+def _namespace() -> Iterator[None]:
+    """Bind a namespace so the builders render, and put back whatever was there.
+
+    ``set_default_namespace`` is process-global. Leaving it set would make this
+    file decide the ambient namespace for everything that runs after it, which
+    is green today only because nothing downstream asserts on a path literal --
+    a property of the current assertions, not of this fixture.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    try:
+        previous: str | None = get_default_namespace()
+    except Exception:  # noqa: BLE001 - unset is a normal starting state, not a failure
+        previous = None
     set_default_namespace("polprobe")
+    yield
+    if previous is not None:
+        set_default_namespace(previous)
 
 
 def _epoch_builders() -> dict[str, Any]:
@@ -67,7 +84,8 @@ def _build(builder: Any) -> Subject:
     params = [
         p
         for p in inspect.signature(builder).parameters.values()
-        if p.default is inspect.Parameter.empty and p.kind is not inspect.Parameter.VAR_KEYWORD
+        if p.default is inspect.Parameter.empty
+        and p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
     ]
     built: Subject = builder(*["polprobe" for _ in params])
     return built
@@ -148,6 +166,9 @@ class TestTheDeclarationMatchesTheClassifier:
 
         A tile DATA subject shares the `.tiles.` segment and must not be routed
         to a Postgres counter it has no row in.
+
+        The one literal in this module, and deliberately: no builder produces a
+        non-epoch tile subject, so there is nothing in the factory to drive.
 
         :return: nothing
         :rtype: None
