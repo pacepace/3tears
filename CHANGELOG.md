@@ -19,9 +19,17 @@ packages (bumped in lock-step).
   therefore never detects a replaced counter. That is a wiring requirement, not
   a default.
 
-- `epoch`: **`EpochListener.deregister(subject)`.** Registrations were
-  append-only, so a consumer that had shut down still received resets through
-  bound methods of a stopped object.
+- `epoch`: **`EpochListener.deregister(subject, on_bump=None)`.** Registrations
+  were append-only, so a consumer that had shut down still received resets
+  through bound methods of a stopped object.
+
+  **Pass `on_bump` when the subject may be shared.** The listener keeps one
+  registration list per subject because two consumers on one subject are
+  supported, so omitting it drops the others too. Passing the callback you
+  subscribed with drops exactly your own entry; omitting it stays correct for a
+  sole owner tearing the subject down. Match is by equality, so a bound method
+  works -- identity does not, because one is built fresh on every attribute
+  access.
 
 - `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
   A reset means the counter being tracked was REPLACED, not advanced, so it

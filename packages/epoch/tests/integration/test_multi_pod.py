@@ -10,8 +10,10 @@ Postgres + NATS testcontainer pair:
   unsubscribed BEFORE a bump, the missed-broadcast listener still
   catches up via :meth:`EpochListener.catch_up` (the periodic-tick
   shape) and via :meth:`EpochListener.echo` (the per-message-echo
-  shape). proves Postgres is the source of truth and a missed
-  broadcast does not leak forward.
+  shape). proves the counter is the source of truth and a missed
+  broadcast does not leak forward. That counter is the NATS KV one:
+  no subject in this file matches the durable tile family, so nothing
+  here reads a Postgres row.
 - monotonicity under contention: 50 random bumps from two writers
   yield strictly-monotonic last-seen on every listener.
 
@@ -127,7 +129,6 @@ def _subject(name: str = "unit") -> Subject:
     epoch assertion depend on execution order -- passing alone, failing in
     suite. Under Postgres the per-test schema gave this isolation for free.
     """
-    """canonical test subject."""
     return Subject(path=f"itest.epoch.{name}", kind="point")
 
 
