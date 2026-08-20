@@ -170,15 +170,24 @@ class PathTemplateBinding:
     :ivar path_template: request path with ``{name}`` placeholders (e.g.
         ``/surveys/{survey_id}``)
     :ivar path_params: placeholder names extracted from ``path_template``;
-        derived at construction and never supplied by the caller
+        always derived at construction. accepted as a keyword argument for
+        compatibility and then ignored, exactly as it was before this base
+        class existed -- ``HttpOperationDescriptor`` has declared it since it
+        was introduced and has always overwritten whatever was passed. it
+        stays accepted rather than becoming ``init=False`` so no existing
+        construction site raises ``TypeError``; supplying it has never had an
+        effect and still has none
     """
 
     method: str
     path_template: str
-    path_params: frozenset[str] = field(default=frozenset(), init=False)
+    # keyword-only so subclasses may keep declaring REQUIRED fields after it:
+    # a plain defaulted field here would put a default ahead of them and
+    # dataclass construction would refuse the subclass outright.
+    path_params: frozenset[str] = field(default=frozenset(), kw_only=True)
 
     def __post_init__(self) -> None:
-        """derive ``path_params`` from ``path_template``.
+        """derive ``path_params`` from ``path_template``, discarding any passed value.
 
         :return: nothing
         :rtype: None
