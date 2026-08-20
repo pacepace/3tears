@@ -623,11 +623,13 @@ so the diagnosis survives.
 
 **A destructive-operation guard must not offer an alternative that does not
 exist.** `insight_delete` refuses without an echoed id and advises "archive it
-instead to exclude it from cohorts without destroying it". `EvalInsight` carries
-an `archived` field, and `curation.py`'s shared `_ARCHIVE_INSTEAD` constant
-asserts in its own docstring that the alternative "is true of runs, results,
-analyses and insights" — but storage exposes only save/query/load/delete for
-insights, and no service method or operator surface sets the field. The guard steers an operator toward an
+instead to exclude it from cohorts without destroying it". `curation.py`'s shared
+`_ARCHIVE_INSTEAD` constant asserts in its own docstring that the alternative "is
+true of runs, results, analyses and insights". **For insights that is false at
+every level:** `EvalInsight` has no `archived` field — its siblings
+`EvalAnalysis` and `EvalCampaign` do, which is how the opposite came to be
+believed — storage exposes only save/query/load/delete, and no operator surface
+offers it. The guard steers an operator toward an
 irreversible delete by promising a reversible option they cannot reach. The
 mechanism for getting this right already exists and was applied one call site
 away: the classifier-snapshot delete noticed the same mismatch for its own object
