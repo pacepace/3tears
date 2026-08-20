@@ -1,6 +1,8 @@
 # epoch-task-02: Detect a recreated bucket and reset, instead of dropping bumps forever
 
-**Status:** READY. Reshaped after review, which found the first draft could notify only one
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed as a series of commits on the branch that carries this file; `git log --oneline
+-- packages/epoch` is the current answer, and a range written here goes stale the next time
+any of it is touched. The in-process reopen signal below is DESCOPED; see that section. Reshaped after review, which found the first draft could notify only one
 consumer and could re-wedge itself.
 **Scope:** `3tears-epoch` (`listener.py`, `client.py`), `3tears-nats` (`kv.py` and the
 `KvBucketLike` Protocol at `kv.py:437-464`), `3tears-core`
@@ -29,7 +31,21 @@ against a real broker with one line, `await js.delete_stream(f"KV_{bucket.name}"
 
 ## Detection, in two independent halves
 
-### 1. The in-process signal (free, and covers the pod that caused it)
+### 1. The in-process signal -- DESCOPED, deliberately
+
+**Not built.** The identity key below is sufficient for correctness, and this half is an
+optimisation on detection LATENCY for exactly one pod: the one whose own operation triggered
+the reopen. That pod learns from the identity check on its next catch-up pass like everyone
+else, so nothing is permanently missed.
+
+What it costs to skip: that pod's own bump broadcasts the new counter's first value, every
+peer drops it as stale, and the correction waits for a catch-up pass rather than arriving
+immediately. Acceptable because the pass is the mechanism the whole design already relies on
+for a dropped broadcast.
+
+Recorded rather than silently omitted because the shape below reads as two halves, and a
+reader finding one implemented would otherwise assume the other was forgotten. If detection
+latency ever matters, this is where it comes from, and the design is:
 
 `_run_with_reopen` (`kv.py:238-257`) is the single funnel every KV op passes through
 (`get` `:298`, `get_entry` `:316`, `put` `:338`, `create` `:355`, `update` `:386`,
@@ -58,10 +74,13 @@ The bucket carries its own identity under a reserved key, `_bucket_identity`.
   when the config is identical, so the create branch is taken on essentially every open of
   an existing bucket. An implementer who gated a `put` on it would have every pod start
   rewrite the identity and flush the whole fleet.
-- **Reading no identity while one is recorded is a reset.** `_reopen` copies back only
-  `self._kv` and writes no keys, and `NatsClient.kv_bucket` is cache-short-circuited
-  (`client.py:2198-2201`), so a self-healed bucket has no identity key until someone
-  re-creates it. Absent-but-previously-present must not read as unchanged.
+- **Reading no identity is NOT a reset** -- an earlier draft of this section said the
+  opposite, and the shipped code is the better rule. The identity is minted create-if-absent
+  on every read, so a bucket that genuinely lost its key gets a NEW one immediately and the
+  comparison catches it. The only way to read nothing is for KV itself to be unreachable,
+  and an outage is not a replacement: treating it as one flushes every cache in the fleet on
+  a blip, and forgetting the recorded identity would make the next successful read look like
+  a change too.
 - **The loser path is not atomic.** `create()` returning `None` then `get()` returning
   `None` (the bucket was wiped in between) is "identity unknown", which under the rule
   above is a reset. Retry the create/get pair a bounded number of times before concluding.
@@ -181,8 +200,10 @@ numbers are meaningless, which is more useful than knowing they were merely lowe
   the reset.
 - After a reset, `_last_seen` is empty, not re-primed.
 - A create race resolves to a single identity, with losers adopting the winner's.
-- An absent identity where one was previously recorded is treated as a reset.
-- The listener performs no KV write of any kind. (Stated this way because it is checkable;
+- An unreadable identity is NOT treated as a reset, and leaves the recorded one alone.
+- The listener issues exactly one kind of KV write: the create-if-absent that mints the
+  identity, which IS the mechanism. It performs no other. (Stated this way because it is
+  checkable;
   "the identity is opaque and never ordered" is not assertable by a behavioural test. If
   that guarantee needs enforcing, it is a static check under `tests/enforcement/`, not a
   unit test that cannot fail.)

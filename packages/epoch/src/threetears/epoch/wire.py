@@ -2,7 +2,7 @@
 
 publishers emit one :class:`EpochBumpMessage` per
 :meth:`threetears.epoch.client.EpochClient.bump` call after the
-``config_epochs`` row has committed. every other pod subscribed to the
+counter has been incremented. every other pod subscribed to the
 matching :class:`~threetears.nats.subjects.Subject` receives the message
 via :meth:`threetears.nats.NatsClient.subscribe_typed` with
 ``message_type=EpochBumpMessage`` -- validation failures deadletter via
@@ -30,10 +30,10 @@ class EpochBumpMessage(BaseModel):
     """typed wire envelope for one config-epoch bump broadcast.
 
     :ivar subject_path: namespaced NATS subject the bump targets;
-        matches the ``config_epochs.subject_path`` row PK and the
+        matches the counter's key and the
         path string of the :class:`Subject` the publisher used
     :ivar epoch: new strictly-monotonic epoch returned by the
-        atomic ``INSERT ... ON CONFLICT DO UPDATE`` statement
+        atomic increment (a KV CAS loop, or the durable row's upsert)
     :ivar payload: opaque hint for the consumer's reload callback;
         framework never inspects, consumers parse if useful
     """

@@ -1,6 +1,8 @@
 # epoch-task-05: Bound L1 staleness with lazy max-age expiry
 
-**Status:** SHIPPED (all three chunks landed on `feat/l1-max-age-lazy-expiry`). Reshaped
+**Status:** MERGED to `develop` as PR #381; not yet released. Landed as a series of commits on `feat/l1-max-age-lazy-expiry`; `git log --oneline
+-- packages/core/src/threetears/core/cache` is the current answer, and a range written here
+goes stale the next time any of it is touched. Reshaped
 after review, which found that the naive version is data loss on two shipped packages, and
 again after the cumulative review, which found expiry made silent write loss routine on the
 read paths that do not repair.

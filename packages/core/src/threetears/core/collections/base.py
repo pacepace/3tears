@@ -550,11 +550,25 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return None
+        max_age = self.l1_max_age_seconds if expiring else None
+        if max_age is None:
+            # The kwarg is omitted, not passed as None, when expiry is off.
+            # ``L1Backend`` is a published Protocol, so an out-of-repo
+            # implementation predating this parameter would raise TypeError on
+            # EVERY cached read otherwise -- and a bound nobody configured is
+            # the overwhelmingly common case, so the whole platform would break
+            # for a feature it had not opted into.
+            untouched: dict[str, Any] | None = self._l1.select_by_id(
+                self.table_name,
+                self.normalize_pk(entity_id),
+                self.primary_key_columns,
+            )
+            return untouched
         row: dict[str, Any] | None = self._l1.select_by_id(
             self.table_name,
             self.normalize_pk(entity_id),
             self.primary_key_columns,
-            max_age_seconds=self.l1_max_age_seconds if expiring else None,
+            max_age_seconds=max_age,
         )
         return row
 
@@ -562,6 +576,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         self,
         data: dict[str, Any],
         primary_key: str | tuple[str, ...] | None = None,
+        *,
+        from_lower_tier: bool = False,
     ) -> bool:
         """upsert full row into L1 cache, synchronously.
 
@@ -572,13 +588,23 @@ class BaseCollection(ABC, Generic[EntityT]):
             accepts either single column name (str) or tuple of column
             names (composite-pk override).
         :ptype primary_key: str | tuple[str, ...] | None
+        :param from_lower_tier: whether ``data`` was just read from L2 or
+            L3 rather than authored here. Stamps the row's provenance, which
+            is what makes it eligible for max-age expiry. **A subclass
+            accessor that reads L3 and caches the result must pass this**:
+            without it the row is indistinguishable from a local write and
+            never expires, so the rows most likely to go stale are exactly
+            the ones exempt. Defaults to ``False`` because the unstamped
+            reading is the safe one -- it can only under-expire, never
+            revert a local write.
+        :ptype from_lower_tier: bool
         :return: ``True`` on successful write, ``False`` when L1 is absent
         :rtype: bool
         """
         if self._l1 is None:
             return False
         pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
-        self._l1.upsert(self.table_name, data, pk)
+        self._l1.upsert(self.table_name, self._stamped(data) if from_lower_tier else data, pk)
         return True
 
     def exists_in_cache_sync(self, entity_id: Any) -> bool:
@@ -847,7 +873,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         through, which is what earns it the bound; ``get_row_sync`` is a reporting
         read and does not expire, so borrowing it here would return the stale row
         and return it forever -- ``collection[id]`` never reaches the pull-through
-        below, whatever max age the collection configured.
+        below, whatever max age the collection configured, while ``get()`` beside
+        it refreshes. The re-read after the pull-through does NOT expire: it was
+        just written.
         """
         row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:

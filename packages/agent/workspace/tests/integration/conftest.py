@@ -138,6 +138,7 @@ class _StoredWorkspace:
         return f"workspace.{self.id}"
 
 
+# parity-exempt: the integration-conftest store is the dispatch table for every workspace integration test; its execute+fetchrow surface is exactly what the integration tests need and does not align with any single production class
 class _FakeStore:
     """
     process-local, dict-backed stand-in for the workspace schema tables.
@@ -609,6 +610,7 @@ def _subject_matches(subject: str, prefix: str) -> bool:
 
 
 @dataclass
+# parity-exempt: nats-py Msg shape for audit subscriber fixtures; minimal subject+data carrier matching the canonical NATS Msg the workspace audit consumer reads
 class _FakeMsg:
     """minimal subset of nats-py ``Msg`` used by handler shims."""
 
@@ -658,6 +660,7 @@ class _InMemoryContextCollection:
         self.deleted.append(entity_id)
 
 
+# parity-exempt: ToolContextManager subset for workspace integration tests; the integration suite exercises pin namespaces only and the production manager has additional context surfaces out of scope
 class _FakeToolContextManager:
     """
     duck-typed stand-in for :class:`ToolContextManager`.

@@ -8,6 +8,54 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `epoch`: **`catchup_tick(listener, subjects)`** -- one catch-up pass over a
+  consumer's subjects, pure-async, no internal polling. The consumer keeps its
+  loop, interval and shutdown; what it stops keeping is an opinion on which
+  subjects to poll and whether one failing subject abandons the rest. A
+  framework-owned loop is not available at any price here: `3tears-epoch`
+  cannot own a task in `3tears` without inverting the dependency arrow.
+
+  **A consumer that subscribes and schedules nothing gets no catch-up**, and
+  therefore never detects a replaced counter. That is a wiring requirement, not
+  a default.
+
+- `epoch`: **`EpochListener.deregister(subject, on_bump=None)`.** Registrations
+  were append-only, so a consumer that had shut down still received resets
+  through bound methods of a stopped object.
+
+  **Pass `on_bump` when the subject may be shared.** The listener keeps one
+  registration list per subject because two consumers on one subject are
+  supported, so omitting it drops the others too. Passing the callback you
+  subscribed with drops exactly your own entry; omitting it stays correct for a
+  sole owner tearing the subject down. Match is by equality, so a bound method
+  works -- identity does not, because one is built fresh on every attribute
+  access.
+
+- `epoch`: **`ResetCallback` / `subscribe(..., on_reset=)` / `signal_reset()`.**
+  A reset means the counter being tracked was REPLACED, not advanced, so it
+  carries no epoch: the only number available is below everything the consumer
+  has already acted on, which is exactly what epoch dedupe discards. The
+  listener now records every registration and fans a reset out to all of them,
+  clearing last-seen rather than re-priming.
+
+- `epoch`: **a recreated counter bucket is detected by identity.** The bucket
+  carries an opaque `uuid7` under a reserved key, minted create-if-absent so a
+  race resolves to one value and every opener converges on it. The listener
+  compares it for EQUALITY only and, on a change, clears last-seen and notifies
+  every registered consumer.
+
+  This is the conclusive detector. A memory-backed bucket is wiped when the
+  broker restarts, and every KV operation then *succeeds* while reading zero --
+  no exception, no gap in the sequence. The backwards-counter arm below is
+  cheaper but ambiguous (a counter legitimately reads zero when nothing has
+  bumped it), and it cannot see a bucket replaced while last-seen was already
+  zero. Both are kept.
+
+- `epoch`: `catch_up` treats a BACKWARDS counter as a generation reset. A
+  monotonic counter cannot go back, so a lower reading means a different
+  counter -- and without this arm the `current > last_seen` guard could never
+  fire again for the life of the process.
+
 - `core`: **a bounded lifetime for L1 rows, off unless a collection asks for it.**
   `CollectionRegistry.set_l1_max_age` / `get_l1_max_age`, with
   `DEFAULT_L1_MAX_AGE_SECONDS` (3600s) applied when a collection opts in without
@@ -40,17 +88,110 @@ packages (bumped in lock-step).
   what separates a bound doing its job from one that never fires.
 
 - `core`: two keyword parameters on the `L1Backend` protocol reads,
-  `max_age_seconds` and `now_monotonic`. Both default to off, so every existing
-  **caller** is unaffected. An **implementer** is not, and the failure is worse
-  than a rejected type: `runtime_checkable` compares member NAMES only, so a
-  third-party backend still passes `isinstance` while missing the keywords, and
-  the break surfaces as a `TypeError` at call time rather than at the seam.
-  In-tree backends are updated; an out-of-tree one needs the two keywords added.
-  `DuckDBBackend` raises `NotImplementedError` rather than
+  `max_age_seconds` and `now_monotonic`. Both default to off, and the framework
+  **omits them entirely** rather than passing `None` when expiry is not
+  configured, so existing callers and out-of-repo `L1Backend` implementations
+  are unaffected until a collection opts into a bound.
+
+  Once one does, an out-of-tree backend must accept the two keywords, and the
+  failure mode is worse than a rejected type: `runtime_checkable` compares
+  member NAMES only, so such a backend still passes `isinstance` and the break
+  surfaces as a `TypeError` at call time rather than at the seam. In-tree
+  backends are updated. `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
 ### Changed
+
+- `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
+  onto the classes they describe.** All 82 live entries are now
+  `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is
+  empty and documents why.
+
+  A file entry is keyed `path:LINE:symbol`, which is a property of the file's
+  layout rather than of the fake. Adding one import to a test module shifted
+  four entries and failed the gate with `no_declaration` for four fakes nobody
+  had touched, pointing at a declaration that already existed. Three further
+  entries named a module deleted some time ago and nothing noticed.
+
+  The in-place marker now clears the same rationale bar the file applies (30
+  characters, no blanket phrases), enforced through one shared
+  `common.exemptions.rationale_defect` so the route that survives a reformat is
+  not also the route with no standard. A marker that fails it reports
+  `fake_parity.weak_exempt_rationale`.
+
+- `nats`: **an ungranted KV bucket now says so, and says how to fix it.** A KV
+  operation the server refuses on permissions is never answered, so it dies on
+  the wrapper's deadline and reports a timeout -- the same thing an unreachable
+  broker reports. The operator goes to the network and finds a connection that
+  is up and carrying every other subject perfectly well.
+
+  The server does announce it, on a channel nothing was reading closely: a
+  `permissions violation` frame reaches the error callback and, unlike an
+  authorization violation, leaves the connection OPEN. Nothing downstream
+  re-reports it. That frame is now decoded to the bucket it names -- from the
+  `$KV` data subject or the `$JS.API...KV_{bucket}` control subject, whichever
+  was refused -- and logged with the `kv_buckets` entry to add. The deadline
+  path says the same thing where only the bucket name is available, and a
+  failed bucket open carries it in the raised `KvError`.
+
+  This is the failure mode a new grant requirement produces when someone misses
+  it, and the reason the requirement had to be written in a release note before:
+  there was nowhere else to put it.
+
+- `epoch`: **which substrate an epoch takes is now declared per family, with a
+  test that fails when a new `*_epoch` builder is declared by neither.** Previously
+  a subject nobody had considered was classified silently, and the silent answer
+  is ephemeral, which is the direction that cannot be repaired once a version
+  number has reached a CDN. The classifier still applies a path marker; what
+  changed is that the marker now belongs to a named, reasoned declaration and
+  that nothing can be absent from the tables.
+
+  Both tables now carry every epoch subject with its reason as a FIELD the
+  test can read, and
+  `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
+  `Subjects` factory: a new `*_epoch` builder fails until someone decides, a
+  declaration for a deleted subject fails, and a declaration that disagrees with
+  the classifier fails. All five existing subjects were re-decided on their
+  merits; the classification is unchanged.
+
+  **There is no durable epoch in NATS and that is a decision.** `storage="file"`
+  exists, but file-backed JetStream survives only if the store directory does,
+  and the failure this design answers wipes JetStream wholesale -- so NATS
+  durability is conditional on a volume someone provisioned. Conditional is the
+  wrong guarantee for the one value that escapes to caches we cannot purge.
+
+- `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
+  coherence signal, not a durable fact, so every `current()`, catch-up tick and
+  echo confirmation was putting L3 on the cache-coherence path for a number
+  that has no business surviving a restart. Ephemeral epochs now count on
+  `DistributedCounter`. The semantics consumers rely on are unchanged: per-key
+  contiguous counters, so `0` still means "never bumped" and the first bump
+  still returns `1`.
+
+  **`datasource_tile_epoch` is carved out and stays durable.** Its value is the
+  `v{n}` in a tile URL and reaches browser and CDN caches this cluster cannot
+  touch, so a counter that resets with the broker would re-issue `v1..vN` for
+  different content while those caches still hold the old generation. Routing
+  is by subject family, because durability is a property of what the number
+  means rather than of who bumps it.
+
+  Two things Postgres gave for free: a wildcard path matched no row and
+  returned `0`, so `current()` now short-circuits before the lookup (`*` and
+  `>` are illegal KV key characters); and a subject segment carrying a
+  caller-supplied value is a legal row PK but not always a legal key, so a path
+  outside the grammar is digested rather than raising at `bump` in production.
+
+  **Deployments must grant the `{ns}-epochs` KV bucket** to AGENT_POD, HUB and
+  GATEWAY. A missing KV grant does not raise: the call blocks to its deadline
+  and reads as an unreachable broker.
+
+- `core`: **a subclass accessor that caches an L3 read must say so.**
+  `BaseCollection.write_to_cache_sync` takes `from_lower_tier=`, which stamps
+  the row's provenance and is what makes it eligible for expiry. Without it a
+  cached L3 read is indistinguishable from a local write and never expires, so
+  the rows most likely to go stale were exactly the ones exempt. Every in-repo
+  accessor that caches an L3 read now passes it.
 
 - `core`: **`_3t_cached_at` is now a reserved L1 column name.** The backend
   injects it into generated entity tables to record when a row was last obtained
@@ -59,6 +200,18 @@ packages (bumped in lock-step).
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
 ### Fixed
+
+- `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
+  below an early return taken whenever there was no catch-up task -- which is
+  every single-process authorizer, since that task exists only in epoch mode --
+  so a stopped authorizer stayed marked started and `start()`'s double-start
+  guard refused to bring it back up. It also now releases the task handle
+  before awaiting it, so a raise during teardown cannot strand a cancelled
+  task on an object that already reads as not-started.
+
+- `epoch`: `EpochListener.subscribe` records its registration only after the
+  NATS subscribe succeeds. Registering first left an entry behind on failure,
+  so a retry double-registered and every later reset fired that consumer twice.
 
 - `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
   schema, as `SQLiteBackend` already did. Without it any framework-injected

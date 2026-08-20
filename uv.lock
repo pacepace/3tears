@@ -7,40 +7,40 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-08-05T20:02:07.827937Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-3tears-agent-identity = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-workspace = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-nats = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-models = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-tools = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-object-store = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-conversations = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-registry = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-search = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-mcp = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-wake = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-skills = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-channels = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-enforcement = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-epoch = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-acl = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-geo = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-intention = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-iam = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scheduled-jobs = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-observe = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-langgraph = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-knowledge = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-backup = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-media-contracts = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-scrape = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-datasources = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-audit = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
-3tears-agent-memory = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+3tears-agent-identity = { timestamp = "2026-08-19T20:02:07.827957Z", span = "PT0S" }
+3tears-agent-workspace = { timestamp = "2026-08-19T20:02:07.827958Z", span = "PT0S" }
+3tears-nats = { timestamp = "2026-08-19T20:02:07.827961Z", span = "PT0S" }
+3tears-models = { timestamp = "2026-08-19T20:02:07.827961Z", span = "PT0S" }
+3tears-agent-tools = { timestamp = "2026-08-19T20:02:07.827958Z", span = "PT0S" }
+3tears-object-store = { timestamp = "2026-08-19T20:02:07.827961Z", span = "PT0S" }
+3tears-conversations = { timestamp = "2026-08-19T20:02:07.827959Z", span = "PT0S" }
+3tears-registry = { timestamp = "2026-08-19T20:02:07.827962Z", span = "PT0S" }
+3tears-search = { timestamp = "2026-08-19T20:02:07.827962Z", span = "PT0S" }
+3tears-mcp = { timestamp = "2026-08-19T20:02:07.82796Z", span = "PT0S" }
+3tears = { timestamp = "2026-08-19T20:02:07.827949Z", span = "PT0S" }
+3tears-agent-wake = { timestamp = "2026-08-19T20:02:07.827958Z", span = "PT0S" }
+3tears-agent-skills = { timestamp = "2026-08-19T20:02:07.827958Z", span = "PT0S" }
+3tears-channels = { timestamp = "2026-08-19T20:02:07.827959Z", span = "PT0S" }
+3tears-enforcement = { timestamp = "2026-08-19T20:02:07.827959Z", span = "PT0S" }
+3tears-epoch = { timestamp = "2026-08-19T20:02:07.827959Z", span = "PT0S" }
+3tears-agent-acl = { timestamp = "2026-08-19T20:02:07.827956Z", span = "PT0S" }
+3tears-geo = { timestamp = "2026-08-19T20:02:07.82796Z", span = "PT0S" }
+3tears-agent-intention = { timestamp = "2026-08-19T20:02:07.827957Z", span = "PT0S" }
+3tears-iam = { timestamp = "2026-08-19T20:02:07.82796Z", span = "PT0S" }
+3tears-scheduled-jobs = { timestamp = "2026-08-19T20:02:07.827962Z", span = "PT0S" }
+3tears-observe = { timestamp = "2026-08-19T20:02:07.827961Z", span = "PT0S" }
+3tears-langgraph = { timestamp = "2026-08-19T20:02:07.82796Z", span = "PT0S" }
+3tears-agent-knowledge = { timestamp = "2026-08-19T20:02:07.827957Z", span = "PT0S" }
+3tears-backup = { timestamp = "2026-08-19T20:02:07.827958Z", span = "PT0S" }
+3tears-media-contracts = { timestamp = "2026-08-19T20:02:07.827961Z", span = "PT0S" }
+3tears-scrape = { timestamp = "2026-08-19T20:02:07.827962Z", span = "PT0S" }
+3tears-datasources = { timestamp = "2026-08-19T20:02:07.827959Z", span = "PT0S" }
+3tears-agent-audit = { timestamp = "2026-08-19T20:02:07.827956Z", span = "PT0S" }
+3tears-agent-memory = { timestamp = "2026-08-19T20:02:07.827957Z", span = "PT0S" }
 
 [manifest]
 members = [
@@ -665,6 +665,7 @@ dependencies = [
     { name = "3tears-nats", extra = ["client"] },
     { name = "3tears-observe" },
     { name = "pydantic" },
+    { name = "uuid-utils" },
 ]
 
 [package.metadata]
@@ -673,6 +674,7 @@ requires-dist = [
     { name = "3tears-nats", extras = ["client"], editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]

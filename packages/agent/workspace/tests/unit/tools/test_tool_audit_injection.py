@@ -57,6 +57,7 @@ from _helpers.workspace_shims import (
 
 
 @dataclass
+# parity-exempt: NatsClient subset for the tool-audit-injection unit; the audit emitter publishes a single subject and the wrapper's full surface is out of scope
 class _FakeNats:
     """records canonical wrapper-shaped publishes for audit assertions."""
 

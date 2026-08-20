@@ -46,10 +46,12 @@ class _MockRouter:
 # ---------------------------------------------------------------------------
 
 
+# parity-exempt: discord.Thread stand-in for unit testing the discord adapter routing logic; full discord.py Thread carries dozens of message/member/permission methods the tests do not exercise
 class _FakeThread:
     """sentinel type standing in for discord.Thread in mocked tests."""
 
 
+# parity-exempt: discord.DMChannel stand-in for the same routing tests with the same out-of-scope discord.py surface
 class _FakeDMChannel:
     """sentinel type standing in for discord.DMChannel in mocked tests."""
 

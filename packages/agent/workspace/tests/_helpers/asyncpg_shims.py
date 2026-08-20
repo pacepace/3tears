@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 
+# parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
 class FakeAsyncpgTransaction:
     """asyncpg.Transaction subset shell.
 
@@ -52,6 +53,7 @@ class FakeAsyncpgTransaction:
     """
 
 
+# parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
 class FakeAsyncpgConnection:
     """asyncpg.Connection subset shell.
 
@@ -66,6 +68,7 @@ class FakeAsyncpgConnection:
     """
 
 
+# parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
 class FakeAsyncpgAcquireCM:
     """asyncpg ``Pool.acquire()`` async-CM subset shell.
 
@@ -74,6 +77,7 @@ class FakeAsyncpgAcquireCM:
     """
 
 
+# parity-exempt: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
 class FakeAsyncpgPool:
     """asyncpg.Pool subset shell.
 

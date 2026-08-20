@@ -594,7 +594,14 @@ class SQLiteBackend:
         Strips the injected cache-age stamp. This is the single funnel both
         ``select_by_id`` and ``select_batch`` pass every row through, so
         stripping here covers the ``SELECT *`` path AND a caller that names the
-        column explicitly -- there is no projection that reaches past it. The
+        column explicitly, so no projection through those two reaches past it.
+
+        ``execute_query`` is NOT covered: it is on the same protocol, returns
+        raw rows, and a ``SELECT *`` through it against a non-exempt entity
+        table yields the stamp. No in-repo caller is affected (the scan cache
+        and geo name their columns; the flush buffer is exempt), and it is
+        documented as the raw escape hatch -- but a future caller that selects
+        star through it and hands the row onward would carry the stamp with it. The
         stamp is backend bookkeeping; nothing above the cache tier has any use
         for it, and a row handed to an entity constructor carrying an unknown
         key is a bug waiting on the first strict consumer.

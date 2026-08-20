@@ -283,15 +283,24 @@ uv sync                      # install all packages in dev mode
 ./scripts/test.sh core       # a single package
 ./scripts/lint.sh            # ruff check + format
 ./scripts/typecheck.sh       # mypy (strict)
+./scripts/test-integration.sh  # real NATS/Postgres containers; NOT run by check-all.sh
 ```
 
 Use the scripts. Never invoke `pytest`, `ruff`, or `mypy` directly.
+
+`check-all.sh` runs lint, typecheck, the workspace suite and the sidecar suite.
+It does **not** run the integration tests: those need Docker, so folding them in
+would break the gate wherever Docker is absent. `test.sh` excludes them too
+(`-m "not integration"`). Cross-pod behaviour lives entirely in that suite, so
+run it before opening a PR -- a green `check-all.sh` says nothing about it.
 
 ## Contributing
 
 1. Fork the repository and cut a feature branch.
 2. Write tests for new behavior. Tests are contracts here.
-3. Run `./scripts/check-all.sh`. Everything passes or it does not ship.
+3. Run `./scripts/check-all.sh`, then `./scripts/test-integration.sh`. Both, or
+   it does not ship: `check-all.sh` does not cover the integration suite, and
+   that suite is where all cross-pod behavior is tested.
 4. Open a pull request.
 
 ## License

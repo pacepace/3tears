@@ -31,6 +31,7 @@ class _Reply:
     data: bytes
 
 
+# parity-exempt: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request_typed
 class _FakeNatsClient:
     """fake NATS client recording publish subjects + payloads.
 

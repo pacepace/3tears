@@ -1,6 +1,8 @@
 # epoch-task-01: Move the ephemeral epoch counters from Postgres to NATS KV
 
-**Status:** READY, but **not independently shippable**. See "Shipping order".
+**Status:** BUILT, not shipped -- no PR, not merged, not released. Landed as a series of commits on the branch that carries this file; `git log --oneline
+-- packages/epoch` is the current answer, and a range written here goes stale the next time
+any of it is touched. Was never independently shippable; see "Shipping order".
 **Scope:** `3tears-epoch` (`client.py`), `3tears-nats` (`subject_permissions.py`),
 `3tears-mcp` (integration tests), enforcement tests.
 **Depends on:** nothing to build. Blocked from shipping alone by epoch-task-02.
@@ -69,7 +71,17 @@ in-process detection fixes it.
 So `config_epochs` survives for this family. `EpochClient` gains an explicit substrate
 choice rather than a wholesale migration, and the durable path stays the default for any
 epoch whose value is published outside the cluster. **Record in this document which
-subjects take which path before building.** Long term the tile version is arguably a
+subjects take which path before building.**
+
+> **Where that record ended up.** Not here. The mapping lives as two declared tables
+> in `threetears.epoch.client` (`_DURABLE_FAMILIES` / `_EPHEMERAL_FAMILIES`), each entry
+> carrying its reason, because a table beside the classifier cannot drift from it the way
+> a design record can. `packages/epoch/tests/unit/test_durability_policy.py` enumerates
+> the real `Subjects` factory against those tables, so a new `*_epoch` builder fails until
+> someone decides -- which is the obligation this paragraph was reaching for, held by
+> something that runs.
+
+Long term the tile version is arguably a
 content version rather than an epoch and belongs elsewhere entirely; that is separate
 work, not this task.
 
@@ -157,7 +169,11 @@ allowlist entry narrows to the carve-out. Root `CHANGELOG.md`.
 
 ## Version
 
-This changes `EpochClient.__init__` and is a breaking API change on a family at `0.26.1`.
+**`EpochClient.__init__` did NOT change**, contrary to an earlier draft of this section.
+It still takes `(pool, nats_client)`: the pool is retained for the durable tile family, and
+routing is by subject rather than by constructor, so no consumer -- including the
+out-of-repo hub -- has to change its wiring. The additions are new methods, so this is
+additive.
 Per `CLAUDE.md` the whole `3tears*` family moves to `0.27.0` in lockstep and every
 intra-family bound moves with it
 (`tests/enforcement/test_intra_family_version_bounds.py`). `bump-version.sh` only rewrites

@@ -1861,6 +1861,13 @@ class Subjects:
         not global: a single global version would discard every
         layer's edge cache worldwide whenever one of them was reseeded.
 
+        **this subject's SHAPE is load-bearing.** ``EpochClient`` routes on it:
+        a tile epoch keeps a durable Postgres row while every other epoch
+        counts in a memory-backed NATS KV bucket that resets with the broker.
+        Restructuring this path without updating that predicate would move tile
+        versions onto a resettable counter, and the version is baked into edge
+        cache keys nothing here can reach.
+
         higher cardinality than this family's other members, which are
         parameterless platform-wide config domains -- there is one row
         in ``platform.config_epochs`` per registered geo layer, and one

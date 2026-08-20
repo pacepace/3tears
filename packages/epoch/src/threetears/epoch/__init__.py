@@ -9,7 +9,8 @@ provides three modules:
 - :mod:`threetears.epoch.wire` -- :class:`EpochBumpMessage` typed wire
   envelope
 - :mod:`threetears.epoch.client` -- :class:`EpochClient` publish-side
-  bump + current-read against ``config_epochs``
+  bump + current-read over the subject's substrate (NATS KV, or
+  ``config_epochs`` for the durable family)
 - :mod:`threetears.epoch.listener` -- :class:`EpochListener`
   subscribe-side dispatcher with monotonic dedupe + echo helper
 """
@@ -32,11 +33,14 @@ except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
 from threetears.epoch.client import EpochClient, PoolLike
-from threetears.epoch.listener import BumpCallback, EpochListener
+from threetears.epoch.listener import BumpCallback, EpochListener, ResetCallback
+from threetears.epoch.tick import catchup_tick
 from threetears.epoch.wire import EpochBumpMessage
 
 __all__ = [
     "BumpCallback",
+    "ResetCallback",
+    "catchup_tick",
     "EpochBumpMessage",
     "EpochClient",
     "EpochListener",

@@ -76,6 +76,7 @@ from nats.errors import (
 from pydantic import BaseModel, ValidationError
 from threetears.observe import get_logger, representative_exception
 
+from threetears.nats._diagnostics import permissions_violation_remedy
 from threetears.nats._publish import as_payload_too_large, publish_bounded, raise_as_publish_error
 from threetears.nats.errors import (
     NamespaceNotConfiguredError,
@@ -2940,6 +2941,14 @@ def _is_outbound_overflow(exc: Exception) -> bool:
 async def _on_error(exc: Exception) -> None:
     """nats-py error callback with rate-limited logging.
 
+    A permissions violation is logged as a remediation instead of as an error
+    string. It is the one condition here that arrives with the connection still
+    UP -- ``nats-py``'s ``_process_err`` closes the connection for every other
+    ``-ERR`` but returns early for this one -- so nothing downstream will
+    re-report it, and the operation it refused will resurface much later as a
+    timeout that reads like an unreachable broker. This callback is the only
+    place the truth is available. See :mod:`threetears.nats._diagnostics`.
+
     :param exc: exception from nats-py client
     :ptype exc: Exception
     :return: nothing
@@ -2949,7 +2958,11 @@ async def _on_error(exc: Exception) -> None:
     now = time.monotonic()
     last = _last_error_log.get(key, 0.0)
     if now - last >= _ERROR_LOG_RATE_LIMIT_SECONDS:
-        log.error("NATS error: %s", exc)
+        remedy = permissions_violation_remedy(exc)
+        if remedy is not None:
+            log.error(remedy, extra={"extra_data": {"nats_error": str(exc)}})
+        else:
+            log.error("NATS error: %s", exc)
         _last_error_log[key] = now
     else:
         log.debug("NATS error (rate-limited duplicate): %s", exc)

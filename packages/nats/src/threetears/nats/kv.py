@@ -23,6 +23,7 @@ design notes
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -30,6 +31,7 @@ from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
+from threetears.nats._diagnostics import kv_grant_remedy, kv_timeout_remedy
 from threetears.nats._publish import run_bounded
 from threetears.nats.errors import KvError, PublishTimeoutError
 
@@ -57,6 +59,20 @@ log = get_logger(__name__)
 #: ``delete`` / ``purge`` all do), reached through the flush path that discards
 #: ``CancelledError``. Reads travel the same path and get the same bound.
 _KV_OP_TIMEOUT_SECONDS: float = 10.0
+
+#: How often the KV-timeout remedy may be logged, per bucket.
+#:
+#: The condition it explains (an ungranted bucket, or an unreachable broker) persists
+#: for as long as it persists, producing one timeout per operation. The remedy does not
+#: change between them, so repeating it verbatim buries itself.
+_TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS: float = 300.0
+
+#: Last time the remedy was logged, keyed by fully-qualified bucket name.
+#:
+#: Module-level because :class:`NatsKvBucket` declares ``__slots__`` and because the
+#: throttle should hold across bucket handles for the same name -- a re-open mints a new
+#: instance, and a reconnect loop must not reset the throttle on every attempt.
+_last_timeout_remedy_log: dict[str, float] = {}
 
 
 class NatsKvBucket:
@@ -187,8 +203,19 @@ class NatsKvBucket:
                 try:
                     kv = await js.key_value(full_name)
                 except Exception as bind_exc:
+                    # Both halves failed, which is the shape an ungranted bucket produces:
+                    # STREAM.CREATE and STREAM.INFO are refused alike and neither is answered,
+                    # so both calls die on their own deadline. Carry the fix in the exception
+                    # rather than only in a log line -- this one propagates to the caller, and
+                    # for the bucket a component opens on first use it is the FIRST symptom.
+                    #
+                    # Unhedged here, unlike the bind-only branch below: `create_if_missing` was
+                    # asked for, so a bucket that merely does not exist would have been CREATED.
+                    # Reaching the bind at all means the create failed for some other reason,
+                    # and the bind failing too rules out "it already existed".
                     raise KvError(
-                        f"open KV bucket failed: bucket={full_name}: create={exc!r} bind={bind_exc!r}"
+                        f"open KV bucket failed: bucket={full_name}: create={exc!r} bind={bind_exc!r}. "
+                        f"{kv_grant_remedy(full_name)}"
                     ) from bind_exc
                 log.debug(
                     "JetStream KV bucket bound (already existed)",
@@ -198,7 +225,11 @@ class NatsKvBucket:
             try:
                 kv = await js.key_value(full_name)
             except Exception as exc:
-                raise KvError(f"bind KV bucket failed: bucket={full_name}: {exc}") from exc
+                # Hedged: this branch never attempts a create, so a bucket nobody has
+                # created yet fails here exactly the way an ungranted one does.
+                raise KvError(
+                    f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
+                ) from exc
 
         return cls(
             client=client,
@@ -251,10 +282,35 @@ class NatsKvBucket:
             # A wedged operation is not a vanished bucket. Re-opening runs another KV call
             # against the same unresponsive broker, so the retry wedges too -- one deadline
             # becomes two, and the caller waits twice as long to learn the same thing.
+            #
+            # Logged here rather than left to the caller because the deadline is where the
+            # ambiguity lives: an ungranted bucket and a dead broker produce the identical
+            # timeout, and only this frame knows which bucket to name in the fix.
+            #
+            # Rate-limited per bucket. The remedy is long and it is the same remedy every
+            # time; the condition that produces it produces one per operation, for as long
+            # as it lasts. Emitting it unthrottled would bury the diagnosis inside its own
+            # repetitions -- the failure the caller still hits every time is the raised
+            # PublishTimeoutError, not this line.
+            self._log_timeout_remedy()
             raise
         except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
             await self._reopen()
             return await self._bounded(op)
+
+    def _log_timeout_remedy(self) -> None:
+        """Emit the ungranted-bucket-or-dead-broker remedy, at most once per window per bucket.
+
+        :return: nothing
+        :rtype: None
+        """
+        now = time.monotonic()
+        last = _last_timeout_remedy_log.get(self._full_name, 0.0)
+        if now - last < _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS:
+            log.debug("KV operation timed out on %s (remedy already logged)", self._full_name)
+            return
+        _last_timeout_remedy_log[self._full_name] = now
+        log.error(kv_timeout_remedy(self._full_name), extra={"extra_data": {"bucket": self._full_name}})
 
     async def _bounded(self, op: Any) -> Any:
         """Run one KV op under a deadline the operation cannot swallow.

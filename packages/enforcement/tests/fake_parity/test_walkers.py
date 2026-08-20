@@ -168,6 +168,52 @@ class TestExemptMarker:
         assert fakes[0].exempt_rationale == "subset stub"
 
 
+class TestTheInPlaceRationaleClearsTheSameBar:
+    """The preferred exemption route must not also be the cheap one.
+
+    The marker beats a line-keyed file entry because it moves with the code. If it
+    accepted any non-blank string while the file demanded a specific 30-character
+    reason, the recommendation would read "use the route with no standard" -- and
+    every exemption would migrate to it for exactly that reason.
+    """
+
+    def test_a_too_short_rationale_is_refused(self, tmp_path: Path) -> None:
+        """Length is the file's bar, so it is the marker's bar.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        _write(tmp_path / "test_thing.py", "# parity-exempt: subset stub\nclass _FakeBucket:\n    pass\n")
+
+        violations = fake_parity_violations((tmp_path,), tmp_path)
+
+        assert len(violations) == 1
+        assert violations[0].category == "fake_parity.weak_exempt_rationale"
+        assert violations[0].symbol == "_FakeBucket"
+
+    def test_a_blanket_rationale_is_refused(self, tmp_path: Path) -> None:
+        """A blanket phrase is refused even when it is long enough to pass on length.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        _write(
+            tmp_path / "test_thing.py",
+            "# parity-exempt: tests need this and there is nothing else to say about it\n"
+            "class _FakeBucket:\n    pass\n",
+        )
+
+        violations = fake_parity_violations((tmp_path,), tmp_path)
+
+        assert len(violations) == 1
+        assert violations[0].category == "fake_parity.weak_exempt_rationale"
+        assert "blanket phrase" in violations[0].reason
+
+
 # ------------------------------------------------------------------
 # marker comment parity check
 # ------------------------------------------------------------------

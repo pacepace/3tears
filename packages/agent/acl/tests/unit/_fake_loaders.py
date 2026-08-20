@@ -59,6 +59,7 @@ def make_cache(store: "FakeStore", ttl_seconds: int = 60) -> AclCache:
 
 
 @dataclass
+# parity-exempt: combined in-memory store satisfying both MembershipLoader and GrantLoader Protocols; the parity walker supports one marker per class so we exempt with both target Protocols named here
 class FakeStore:
     """in-memory store satisfying both loader Protocols.
 
