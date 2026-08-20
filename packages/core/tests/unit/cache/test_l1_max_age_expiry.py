@@ -7,6 +7,7 @@ short window would be flaky.
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
 
 import pytest
@@ -199,3 +200,83 @@ class TestExemptionsMatchTheirDeclarations:
 
         declared = {_scan_cache_table.name, _write_buffer_table.name}
         assert declared == set(_TABLES_WITHOUT_CACHE_STAMP)
+
+
+class TestTheStampNeverEscapes:
+    """`_CACHED_AT_COLUMN` promises it is stripped from every row a read returns.
+
+    `_deserialize_row` covers the keyed reads. `execute_query` is an `L1Backend`
+    protocol member too, and a `SELECT *` through it was handing the caller the
+    raw bookkeeping column.
+    """
+
+    def test_execute_query_does_not_leak_the_stamp(self) -> None:
+        """A `SELECT *` returns entity columns only.
+
+        :return: nothing
+        :rtype: None
+        """
+        b = _backend()
+        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+
+        rows = b.execute_query("SELECT * FROM widgets")
+
+        assert rows and _CACHED_AT_COLUMN not in rows[0]
+        assert rows[0]["name"] == "one"
+
+    def test_the_keyed_read_still_does_not_leak_it_either(self) -> None:
+        """The control, so a regression in one path is not masked by the other.
+
+        :return: nothing
+        :rtype: None
+        """
+        b = _backend()
+        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+
+        row = b.select_by_id("widgets", "w1", "id")
+
+        assert row is not None and _CACHED_AT_COLUMN not in row
+
+
+class TestAFailedExpiryDeleteDoesNotBreakTheRead:
+    """Reads were immune to write contention before expiry existed.
+
+    `_drop_expired` deletes through `delete_by_id`, which opens `BEGIN IMMEDIATE`
+    and re-raises `OperationalError`. Letting that out of a read would surface
+    lock contention at every call site that reads a bounded collection, and in
+    `select_batch` it would abandon every row after the failure.
+    """
+
+    @staticmethod
+    def _refuse_deletes(backend: SQLiteBackend) -> None:
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        backend.delete_by_id = _boom  # type: ignore[method-assign]
+
+    def test_the_read_reports_a_miss_instead_of_raising(self) -> None:
+        """An expired row is withheld even when it cannot be deleted.
+
+        :return: nothing
+        :rtype: None
+        """
+        b = _backend()
+        b.upsert("widgets", {"id": "w1", "name": "one", _CACHED_AT_COLUMN: 100.0}, "id")
+        self._refuse_deletes(b)
+
+        assert b.select_by_id("widgets", "w1", "id", max_age_seconds=30.0, now_monotonic=200.0) is None
+
+    def test_a_batch_read_keeps_going_after_one_failed_delete(self) -> None:
+        """One undeletable stale row must not abandon the rows behind it.
+
+        :return: nothing
+        :rtype: None
+        """
+        b = _backend()
+        b.upsert("widgets", {"id": "w1", "name": "stale", _CACHED_AT_COLUMN: 100.0}, "id")
+        b.upsert("widgets", {"id": "w2", "name": "fresh", _CACHED_AT_COLUMN: 190.0}, "id")
+        self._refuse_deletes(b)
+
+        rows = b.select_batch("widgets", ["w1", "w2"], "id", max_age_seconds=30.0, now_monotonic=200.0)
+
+        assert [r["name"] for r in rows] == ["fresh"]

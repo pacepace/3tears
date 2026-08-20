@@ -507,11 +507,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         share a contract, and that is why ``expiring`` is a parameter rather
         than always-on:
 
-        - **Repairing callers** (:meth:`ensure`, :meth:`_ensure_in_l1`) treat a
+        - **Repairing callers** (:meth:`ensure`, :meth:`_resolve_row`,
+          :meth:`_ensure_in_l1`) treat a
           miss as "go to the lower tier", so expiring a row makes it reload.
           That is the whole mechanism, and they pass ``expiring=True``.
+
+          :meth:`_resolve_row` is on this list for a reason worth stating: it
+          backs ``collection[id]``, the primary read path, and it reaches L1
+          directly rather than through :meth:`get_row_sync`. Routing it through
+          that reporting method instead makes the bound unreachable for
+          subscript reads -- the non-expiring read returns the stale row and
+          nothing further runs -- which is inert, not conservative.
         - **Reporting callers** (:meth:`get_row_sync`, :meth:`get_field_sync`,
-          :meth:`has_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
+          :meth:`set_field_sync`, :meth:`exists_in_cache_sync`) treat a miss as
           "not cached" and return it to a caller that will not fall back.
           Expiring for them turns a stale row into a *deleted* one and reports
           absence, which is worse than the staleness it was bounding:
@@ -832,8 +840,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         return {**data, _CACHED_AT_COLUMN: time.monotonic()}
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
-        """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found."""
-        row = self.get_row_sync(entity_id)
+        """Get row from L1, pulling through L2/L3 on miss. Raises KeyError if not found.
+
+        The first read expires, and goes to :meth:`_select_from_l1` directly rather
+        than through :meth:`get_row_sync`. This method repairs a miss by pulling
+        through, which is what earns it the bound; ``get_row_sync`` is a reporting
+        read and does not expire, so borrowing it here would return the stale row
+        and return it forever -- ``collection[id]`` never reaches the pull-through
+        below, whatever max age the collection configured.
+        """
+        row = self._select_from_l1(entity_id, expiring=True)
         if row is not None:
             return row
         data = self._ensure_in_l1(entity_id)
@@ -859,12 +875,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if isinstance(key, tuple):
             entity_id, field = key
-            result = self.get_field_sync(entity_id, field)
+            # Straight to the repairing read, not through ``get_field_sync`` first.
+            # That is a reporting read and does not expire, so a stale row still
+            # holding the field answered here and the bound never applied to
+            # ``collection[id, "field"]``. Resolving first is also one L1 read
+            # rather than two, and the outcomes are otherwise identical -- a row
+            # without the field raises below either way.
+            row = self._resolve_row(entity_id)
+            result = row.get(field, MISSING)
             if result is MISSING:
-                row = self._resolve_row(entity_id)
-                result = row.get(field, MISSING)
-                if result is MISSING:
-                    raise KeyError(f"{self.table_name}[{entity_id!r}, {field!r}]: field not found")
+                raise KeyError(f"{self.table_name}[{entity_id!r}, {field!r}]: field not found")
             return result
         entity_id = key
         row = self._resolve_row(entity_id)

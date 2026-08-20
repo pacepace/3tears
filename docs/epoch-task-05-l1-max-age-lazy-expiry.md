@@ -10,6 +10,13 @@ read paths that do not repair.
 directly.
 **Depends on:** nothing. Independent of epoch-task-01 through 04.
 
+> **On the `path:line` citations below.** They were accurate when this record was
+> written and most have since moved, including within the branch this record
+> describes. Read them as "this file, around here", and resolve the enclosing
+> symbol rather than the line. New citations in this repo should name the symbol;
+> a line number is a fact about a file's layout, and it rots on the first edit
+> above it.
+
 ---
 
 ## Objective
@@ -58,7 +65,8 @@ the latter.
 
 Both override `get()` to consult L1 then L2 and return `None` on total miss, so an expired
 entry does not raise. It silently becomes "this row does not exist". In the L1-only mode
-that `collections/base.py:1180-1184` documents as supported, a CAS mutate then sees an
+that `BaseCollection.l2_cas_mutate` documents as supported (its "L1-only fallback"
+paragraph), a CAS mutate then sees an
 absent room, and `save_entity(self.create(...))` writes a fresh one-member room over a
 room that had ten. Membership destroyed by a timer, no error anywhere.
 

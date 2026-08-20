@@ -1677,3 +1677,128 @@ class TestExpiryDoesNotBreakNonRepairingReads:
         refreshed = await coll.ensure("w3")
         assert refreshed is not None
         assert refreshed["name"] == "PeerWrote"
+
+
+class TestTheBoundReachesTheSubscriptReadPath:
+    """``collection[id]`` is the primary read, and the bound has to reach it.
+
+    ``_resolve_row`` repairs a miss by pulling through, so it is a repairing
+    caller. It briefly read L1 through ``get_row_sync``, which is a REPORTING
+    read and does not expire -- so a stale row was returned before the
+    pull-through below it could ever run, and every subscript read served it
+    indefinitely on a collection that had opted into a bound.
+
+    Nothing caught that: the collection-tier tests covered ``ensure`` and the
+    reporting readers, and the backend-tier tests covered the predicate. The
+    wiring between them was the gap.
+    """
+
+    @staticmethod
+    def _age_out(backend: SQLiteBackend, entity_id: str) -> None:
+        conn = backend.get_connection()
+        conn.execute(f'UPDATE test_entities SET "{_CACHED_AT_COLUMN}" = ? WHERE id = ?', (0.0, entity_id))
+
+    @pytest.mark.asyncio
+    async def test_the_entity_subscript_expires_and_pulls_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id]`` past the bound reloads instead of serving the stale row.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s1": {"id": "s1", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s1") is not None
+        nats.store["test_entities.s1"] = json.dumps({"id": "s1", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s1")
+
+        assert coll["s1"].name == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_the_field_subscript_expires_and_pulls_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """``collection[id, "field"]`` resolves through the same row read.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s2": {"id": "s2", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s2") is not None
+        nats.store["test_entities.s2"] = json.dumps({"id": "s2", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s2")
+
+        assert coll["s2", "name"] == "PeerWrote"
+
+    @pytest.mark.asyncio
+    async def test_a_row_inside_the_bound_is_served_without_pulling_through(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """The control: expiring the subscript path must not make every read a pull-through.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :return: nothing
+        :rtype: None
+        """
+        registry.set_l1_max_age("test_entities", 30.0)
+        nats = _make_nats_mock()
+        l3_rows = {"s3": {"id": "s3", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s3") is not None
+        nats.store["test_entities.s3"] = json.dumps({"id": "s3", "name": "PeerWrote", "score": 2}).encode()
+
+        # Not aged out: the L1 row is inside its window and must win.
+        assert coll["s3"].name == "Original"
+
+    @pytest.mark.asyncio
+    async def test_an_unbounded_collection_keeps_serving_the_old_row(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig, l1_backend: SQLiteBackend
+    ) -> None:
+        """No opt-in, no expiry -- the subscript path must not have become always-expiring.
+
+        :param registry: collection registry bound to the L1 backend
+        :ptype registry: CollectionRegistry
+        :param config_always: flush-always config
+        :ptype config_always: DefaultCoreConfig
+        :param l1_backend: the SQLite L1 backend, used to age the row out
+        :ptype l1_backend: SQLiteBackend
+        :return: nothing
+        :rtype: None
+        """
+        nats = _make_nats_mock()
+        l3_rows = {"s4": {"id": "s4", "name": "Original", "score": 1}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+        coll.l3_pool = object()
+
+        assert await coll.get("s4") is not None
+        nats.store["test_entities.s4"] = json.dumps({"id": "s4", "name": "PeerWrote", "score": 2}).encode()
+        self._age_out(l1_backend, "s4")
+
+        assert coll["s4"].name == "Original"

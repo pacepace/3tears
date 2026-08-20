@@ -46,6 +46,29 @@ packages (bumped in lock-step).
 
 ### Fixed
 
+- `core`: **the max-age bound now reaches `collection[id]`.** `_resolve_row`
+  read L1 through `get_row_sync`, and `collection[id, "field"]` read it through
+  `get_field_sync` -- both REPORTING reads, which do not expire. A stale row
+  was therefore returned before either path could reach the pull-through below
+  it, so the primary read path served it indefinitely on a collection that had
+  opted in. Both now take the repairing read. The field subscript also drops a
+  redundant L1 read on the way.
+
+  The gap was structural: collection-tier tests covered `ensure` and the
+  reporting readers, backend-tier tests covered the predicate, and the wiring
+  between them had none. It does now, in both directions -- expiry reaches the
+  subscript path, and an unbounded collection still does not expire.
+
+- `core`: `execute_query` strips `_3t_cached_at`. It is an `L1Backend` protocol
+  member, so a `SELECT *` through it handed callers a column the constant's own
+  contract says never escapes.
+
+- `core`: a failed expiry delete no longer raises out of a read. `delete_by_id`
+  opens `BEGIN IMMEDIATE` and re-raises `OperationalError`, which made reads
+  newly susceptible to write contention and, in `select_batch`, abandoned every
+  row behind the failure. The row is withheld either way and the next read
+  retries the delete.
+
 - `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
   schema, as `SQLiteBackend` already did. Without it any framework-injected
   column reached the SQL against a table that does not declare it.

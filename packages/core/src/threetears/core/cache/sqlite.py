@@ -503,12 +503,28 @@ class SQLiteBackend:
             raise
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        """Execute a generic SELECT query, returning list of row dicts."""
+        """Execute a generic SELECT query, returning list of row dicts.
+
+        The cached-at stamp is stripped here too. ``_deserialize_row`` strips it
+        on the keyed reads, but this is an ``L1Backend`` protocol member and a
+        ``SELECT *`` through it would hand a caller an internal bookkeeping
+        column that :data:`~threetears.core.cache.base._CACHED_AT_COLUMN`
+        promises never escapes.
+
+        :param sql: SELECT statement with ``?`` placeholders
+        :ptype sql: str
+        :param params: positional parameter values
+        :ptype params: tuple[Any, ...]
+        :return: row dicts, stamp removed
+        :rtype: list[dict[str, Any]]
+        """
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
-        return [dict(row) for row in rows] if rows else []
+        if not rows:
+            return []
+        return [{k: v for k, v in dict(row).items() if k != _CACHED_AT_COLUMN} for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
         """Serialize a Python value for SQLite storage based on column type."""
@@ -692,6 +708,14 @@ class SQLiteBackend:
         Debug rather than info: on a busy collection this is per-read, and the
         interesting signal is the rate, not the individual row.
 
+        **The delete may fail, and a read must not raise because of it.**
+        ``delete_by_id`` opens ``BEGIN IMMEDIATE`` and re-raises
+        ``OperationalError`` on lock contention. Letting that out would make
+        reads newly susceptible to write contention -- and in ``select_batch``
+        it would abandon every row after the failure. A failed delete costs
+        nothing: the row is already being withheld from this caller, and the
+        next read judges it again and retries the delete.
+
         :param table: target table name
         :ptype table: str
         :param entity_id: pk value to delete by, in deserialized form
@@ -709,7 +733,14 @@ class SQLiteBackend:
         """
         stamp = raw_row.get(_CACHED_AT_COLUMN)
         reading = time.monotonic() if now_monotonic is None else now_monotonic
-        self.delete_by_id(table, entity_id, primary_key)
+        try:
+            self.delete_by_id(table, entity_id, primary_key)
+        except sqlite3.OperationalError as exc:
+            log.warning(
+                "L1 row past its max age could not be dropped; withholding it anyway",
+                extra={"extra_data": {"table": table, "max_age_seconds": max_age_seconds, "error": str(exc)}},
+            )
+            return
         log.debug(
             "L1 row dropped past its max age",
             extra={
