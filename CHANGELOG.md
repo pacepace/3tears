@@ -93,7 +93,6 @@ packages (bumped in lock-step).
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 
-
 ### Changed
 
 - `enforcement`: **fake-parity exemptions moved out of the line-keyed file and

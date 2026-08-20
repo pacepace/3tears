@@ -612,6 +612,84 @@ class TestStopDeregistersFromTheListener:
         assert listener.deregister.call_args.args[0] == Subjects.mcp_rbac_epoch()
 
 
+class TestStopReallyRemovesTheRegistration:
+    """The sibling class asserts against a Mock listener, which cannot see this.
+
+    `deregister.assert_called_once()` proves the CALL happened. It says nothing
+    about whether anything was removed, and the interesting failures are all on
+    that side: `deregister` first dropped every consumer on the subject, then
+    (matching by identity, against a bound method that is rebuilt on every
+    attribute access) dropped none. Both passed the Mock assertion.
+
+    This drives a REAL `EpochListener` and asks the question behaviourally: after
+    `stop()`, a reset fan-out must not reload this authorizer's cache.
+    """
+
+    @staticmethod
+    def _real_listener() -> tuple[Any, Any]:
+        """A real EpochListener over a stubbed NATS client and epoch client."""
+        from threetears.epoch import EpochListener
+
+        nats = MagicMock()
+        nats.subscribe_typed = AsyncMock()
+        epoch_client = MagicMock()
+        epoch_client.current = AsyncMock(return_value=0)
+        # signal_reset re-primes the bucket identity; without this the await
+        # lands on a bare MagicMock and the test fails for the wrong reason.
+        epoch_client.bucket_identity = AsyncMock(return_value="bucket-1")
+        return EpochListener(nats, epoch_client), epoch_client
+
+    @pytest.mark.asyncio
+    async def test_a_reset_after_stop_does_not_reload_the_cache(self) -> None:
+        """The registration is gone, so the fan-out cannot reach a stopped authorizer.
+
+        :return: nothing
+        :rtype: None
+        """
+        listener, epoch_client = self._real_listener()
+        loader = AsyncMock(return_value=[])
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+
+        await authz.start()
+        await authz.stop()
+        loads_after_stop = loader.await_count
+
+        await listener.signal_reset()
+
+        assert loader.await_count == loads_after_stop, (
+            "a reset reached a stopped authorizer: deregister did not remove the registration"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_reset_before_stop_does_reload_the_cache(self) -> None:
+        """The control. Without it the test above passes when the wiring never worked.
+
+        :return: nothing
+        :rtype: None
+        """
+        listener, epoch_client = self._real_listener()
+        loader = AsyncMock(return_value=[])
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            epoch_client=epoch_client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+
+        await authz.start()
+        loads_after_start = loader.await_count
+
+        await listener.signal_reset()
+
+        assert loader.await_count > loads_after_start
+        await authz.stop()
+
+
 class TestStopIsReversible:
     """A stopped authorizer must be startable again.
 
