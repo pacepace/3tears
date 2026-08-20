@@ -145,6 +145,7 @@ __all__ = [
     "TAVILY_PARAM_SEARCH_DEPTH",
     "TAVILY_PARAM_TIME_RANGE",
     "TAVILY_PARAM_TOPIC",
+    "TAVILY_METERED_UNIT",
     "TAVILY_PROVIDER",
     "TAVILY_QUOTA_REMEDIATION",
     "TAVILY_RAW_CONTENT_FORMATS",
@@ -158,6 +159,11 @@ _logger = get_logger(__name__)
 
 #: product name; the key Tavily's capabilities are registered under.
 TAVILY_PROVIDER: Final[str] = "tavily"
+
+#: What Tavily meters in. Named here beside the provider, because
+#: :attr:`ProviderCapabilities.qualified_unit` composes the two into the
+#: label a :class:`Spend` carries (SR-E4).
+TAVILY_METERED_UNIT: Final[str] = "credits"
 
 #: namespace for Tavily-specific criteria. Provider parameters the well-known
 #: vocabulary does not own ride ``tavily:<name>`` rather than widening it (the
@@ -242,6 +248,7 @@ TAVILY_QUOTA_REMEDIATION: Final[str] = (
 #: consumer can branch before constructing an adapter.
 TAVILY_CAPABILITIES: Final[ProviderCapabilities] = ProviderCapabilities(
     provider=TAVILY_PROVIDER,
+    metered_unit=TAVILY_METERED_UNIT,
     pushdown_criteria=(
         CRITERION_DOMAINS_INCLUDE,
         CRITERION_DOMAINS_EXCLUDE,
@@ -1107,6 +1114,7 @@ class TavilyAdapter:
             wall_clock_seconds=response.elapsed_seconds,
             calls=1,
             provider_units=credits_spent,
+            provider_unit=TAVILY_CAPABILITIES.qualified_unit if credits_spent else None,
             bytes_transferred=len(response.body),
         )
 

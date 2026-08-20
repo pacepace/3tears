@@ -216,6 +216,14 @@ stable — new checks append rather than insert:
     external MCP tool from **one contract and one binding** — no second result
     shape per face (§5.5).
 
+**The wording above is the check; a step that names a consumer's files is not.**
+Five of these — 1, 2, 3, 9, 10 — are verifiable only in another repo, which this
+one does not watch, and all five were re-verified on 2026-08-19 against the
+consumer trees as they stand. Every one had moved, and none toward the step
+written for it. The findings, and what each check should be asking instead, are
+at [`search-spec.md` §7 Phase 5](search-spec.md#7-sequencing). The numbers here
+stay stable; re-read them against the consumer before working from them.
+
 ## 4. Principles
 
 These are about which direction things flow. They are the ones most likely to be
@@ -1021,6 +1029,18 @@ verified 2026-08-04: the tool's own default depth is `basic`, so the 2× fires
 only where an operator sets `advanced` per-entity. And the eval-side ledger
 now weights correctly (`SEARCH_CREDITS_BY_DEPTH`), so the daily budget and
 the ledger disagree exactly there.
+
+**An accounted unit must also say whose it is** (added 2026-08-19, while
+specifying the eval extraction). A weighted count with no unit name is not
+accountable at more than one provider: `Spend` carried `provider_units` as a
+bare number, and `Spend.__add__` refused to sum money across currencies while
+summing units across providers silently — the identical fabrication, in the
+dimension right beside the one the guard was written for. Tavily credits and
+another provider's requests are not one quantity. `Spend.provider_unit` now
+carries `"<provider>:<unit>"`, composed in one place from the provider's own
+declaration (`ProviderCapabilities.metered_unit`), and the sum refuses a
+mismatch. Qualified by provider deliberately: two providers may both call their
+unit "credits" without those credits being fungible.
 
 **SR-E5 (REQUIRED).** Cost granularity is per-request for some providers, and the
 model must not imply per-result pricing. Samsung: "The fee is charged per search

@@ -305,13 +305,19 @@ extraction:
     through a thin adapter;
   - if the coupling still fights, gen extracts last — it gates nothing, and
     open question 3 already contemplates folding it.
-- **Budget machinery is port-shaped already, refusal contract aside.**
-  `EvalRunCostCap` carries a literal `record()`/`exceeded` pair; the daily
-  budget mixin returns a host `ActionResult` on refusal. Reshape that
-  refusal to the `check(estimate)`/`record(spend)` port the search contract
-  defines (`search-spec.md` Phase 5) — **now, while discodon is sole owner
-  of its evals** — and the later eval-cap-implements-BudgetPort wiring
-  becomes the one-line change the plan promises.
+- **Budget machinery is port-shaped already, and the reshape once asked for
+  here is withdrawn (2026-08-19).** `EvalRunCostCap` carries a literal
+  `record()`/`exceeded` pair; the daily budget mixin returns a host
+  `ActionResult` on refusal. This bullet used to ask that the refusal be
+  reshaped to the `check(estimate)`/`record(spend)` port the search contract
+  defines, so a later eval-cap-implements-`BudgetPort` wiring would be a
+  one-line change. **There is no such wiring to make.** `BudgetPort` wraps one
+  provider call and refuses a spend that has not happened; the eval cap fires
+  between cells, where the spend is booked and the cell holds an unknown
+  number of LLM calls, so no honest estimate exists to pass. Two problems, two
+  correct shapes — and the eval budget contract is extracted from what
+  discodon runs. R6 of
+  [`eval-extraction-discodon-requirements.md`](eval-extraction-discodon-requirements.md).
 
 Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep

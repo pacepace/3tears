@@ -251,6 +251,45 @@ def test_spend_refuses_cross_currency_money() -> None:
         _ = Spend(money=Decimal("1")) + Spend(money=Decimal("1"), currency="EUR")
 
 
+def test_spend_refuses_cross_provider_units() -> None:
+    """SR-E4: one provider's credits and another's are not one quantity.
+
+    The same fabrication the currency guard prevents, in the dimension that
+    had no guard: a cost surface summing Tavily credits into another
+    provider's units would display a number nothing spent.
+    """
+    with pytest.raises(ValueError, match="provider units"):
+        _ = Spend(provider_units=Decimal("2"), provider_unit="tavily:credits") + Spend(
+            provider_units=Decimal("1"), provider_unit="brave:requests"
+        )
+
+
+def test_spend_sums_matching_provider_units() -> None:
+    """two calls to the same provider aggregate, label intact."""
+    total = Spend(provider_units=Decimal("2"), provider_unit="tavily:credits", calls=1) + Spend(
+        provider_units=Decimal("1"), provider_unit="tavily:credits", calls=1
+    )
+    assert total.provider_units == Decimal("3")
+    assert total.provider_unit == "tavily:credits"
+    assert total.calls == 2
+
+
+def test_a_zero_unit_spend_adopts_the_other_side_s_label() -> None:
+    """Spend() is the aggregation identity, in this dimension too.
+
+    A free or per-request call carries no unit, and summing one into a
+    weighted call's spend must neither refuse nor drop the label -- the
+    total still counts Tavily credits, and a reader with no label cannot
+    tell what the number is.
+    """
+    assert (Spend(calls=1) + Spend(provider_units=Decimal("2"), provider_unit="tavily:credits")).provider_unit == (
+        "tavily:credits"
+    )
+    assert (Spend(provider_units=Decimal("2"), provider_unit="tavily:credits") + Spend(calls=1)).provider_unit == (
+        "tavily:credits"
+    )
+
+
 def test_naive_retrieval_time_is_rejected() -> None:
     """provenance timestamps are timezone-aware by construction."""
     data = PROVENANCE.model_dump()

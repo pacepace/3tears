@@ -23,7 +23,8 @@ holding for *whichever* provider it was handed:
 A sixth pin rides along wherever the vocabulary lets it be stated generically
 rather than per-provider: **weighted pricing bills something** -- a provider
 that declares :data:`~threetears.search.contracts.PRICING_PER_WEIGHTED_UNIT`
-attaches nonzero ``provider_units`` to a served call (SR-E4). It reads its
+attaches nonzero ``provider_units`` -- labelled with its own unit -- to a
+served call (SR-E4). It reads its
 condition off the provider's own capability declaration rather than off which
 case is running, so it is one assertion for every provider rather than a
 per-case restatement -- and it is silent, not skipped, for a provider that
@@ -287,6 +288,12 @@ class ProviderConformanceSuite:
         assert result.spend.provider_units > 0, (
             f"{provider.provider} declares {PRICING_PER_WEIGHTED_UNIT!r} pricing but billed "
             f"provider_units={result.spend.provider_units} on a served call"
+        )
+        assert result.spend.provider_unit == provider.capabilities.qualified_unit, (
+            f"{provider.provider} billed provider_units without naming them as its own unit: "
+            f"spend says {result.spend.provider_unit!r}, capabilities declare "
+            f"{provider.capabilities.qualified_unit!r}. An unlabelled weighted unit sums "
+            f"silently against another provider's."
         )
 
     async def test_the_success_fixture_is_this_provider_s_own_shape(self) -> None:
