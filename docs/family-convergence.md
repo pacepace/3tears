@@ -281,19 +281,39 @@ the package split follows seams that already exist:
 - **`3tears-eval-gen`** — LLM-assisted variation expansion and rubric/case
   proposers. The most independent aspect; it only writes documents.
 
-Verified against discodon 2026-08-04 — three corrections that shape the
-extraction:
+Verified against discodon 2026-08-04, updated 2026-08-20 — three findings that
+shape the extraction:
 
-- **The storage Protocol does not exist yet.** `EvalStorage` is a 65-method
-  concrete Postgres class. The narrow port — `upsert/get/query/delete` keyed
-  by `(scope, doc_type, id)` — is designed in prose, with two unstarted
-  prerequisites (an eval-owned namespace; `universe` generalized to
-  `scope`). The only Protocol actually shipped is the 4-method
-  `CassetteStore`. **Remediate in discodon before extraction:** carve the
-  port and make `EvalStorage` implement it while discodon is still sole
-  owner, shaped against the family store contracts (open question 22) — so
-  eval-contracts lifts a proven port instead of minting the family's fourth
-  store shape.
+- **The storage Protocol exists** (carved 2026-08-20).
+  `discodon/eval/store_port.py` declares `DocumentStore`; `store_adapter.py`
+  implements it over YugabyteDB and is **the only file in the package that
+  imports `discodon.db`**. The eval core imports the port only, so eval-contracts
+  lifts a proven port rather than minting the family's fourth store shape.
+
+  **It is seven methods, not the four designed in prose** (`upsert/get/query/delete`).
+  Take this shape — the extra three are what a real store turned out to need:
+
+  | Method | Why it is in the contract |
+  |---|---|
+  | `get` / `upsert` / `delete` | point read and write, keyed by `(doc_id, pk)` |
+  | `get_with_etag` + `upsert(if_match=)` | optimistic concurrency; read-modify-write without exposing transactions |
+  | `get_many` | batch point read within one partition — the bundle pipeline is N round-trips without it |
+  | `by_doc_type` / `iter_by_doc_type` | typed query, and an identity-only (`id, pk`) cross-partition sweep for operator wipes |
+
+  Storage-layer columns are stripped **in the adapter, on the way out**, so the
+  core receives documents it can hand straight to a model. That is part of the
+  port's contract, not a defensive habit in the caller.
+
+  **Keyed by `(doc_id, pk)`, not by `(scope, doc_type, id)`.** Partitioning and
+  tenancy live in the adapter: the scope a caller passes binds to the `pk` column,
+  and row-level security scopes every operation to the connection environment
+  independently of the SQL text. No query in the port carries an environment
+  predicate of its own.
+
+  **One prerequisite this bullet named is still open:** `universe` is not
+  generalised to `scope`. The package holds 33 `universe_id` references and no
+  `scope_id`, so the port is carved under host vocabulary. See the gap list at the
+  end of this section.
 - **The analysis *core* is dependency-free; the analysis *generator* is
   not.** `analysis/bundle.py` and its models are stdlib + pydantic as
   claimed. `analysis/generator.py` imports the host's OpenRouter client and
@@ -305,6 +325,12 @@ extraction:
     through a thin adapter;
   - if the coupling still fights, gen extracts last — it gates nothing, and
     open question 3 already contemplates folding it.
+
+  **Status 2026-08-20.** The narrow completion protocol exists —
+  `discodon/eval/provider.py` declares `CompletionClient` and `CompletionResult`
+  as Protocols, and it is a registered contract surface. The package still imports
+  `discodon.llm`; the remaining edges are enumerated (discodon #2402–#2407) rather
+  than closed.
 - **Budget machinery is port-shaped already, and the reshape once asked for
   here is withdrawn (2026-08-19).** `EvalRunCostCap` carries a literal
   `record()`/`exceeded` pair; the daily budget mixin returns a host
@@ -323,6 +349,19 @@ Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
 versioning makes multi-package consumption free within the family.
 
+**`Battery` and `Run` are therefore optional levels in the containment spine**
+(`Subject → Behavior → Battery? → Campaign → Run? → Observation`), and an absent
+level is a recorded fact rather than a null. Each is a control — a battery holds
+the *stimulus* constant so a difference is attributable to the variant; a run
+holds the *apparatus* constant by commission — so an absent one is a specific,
+named loss of inferential strength that the campaign's declared design states.
+They are optional because observational evidence genuinely has none, not because
+a consumer lacks the concept: a cohort A/B under a declared configuration **is** a
+run, and a consumer that wants one should grow it. `Campaign` — a curated
+observation set under a subject × behavior with a declared design — is the level
+every consumer binds to, and nothing about the commissioned path is softened to
+make the observational one expressible.
+
 Presentation stays app-side — REST/MCP routes and React are adapters over the
 analysis projections. One boundary shift is in flight: discodon's
 chart-substrate decision (2026-08-02, accepted) replaces bespoke chart
@@ -339,12 +378,37 @@ components with compiled **Vega-Lite specs**.
 Net effect on open question 9: sharing charts no longer requires sharing
 React.
 
+**Status 2026-08-20.** `discodon/eval/viz/` installs standalone (compiler,
+payloads, policy, render, palette, text metrics). Three rules it settles for the
+package:
+
+- **The palette is host-supplied.** The package holds chart shape; the app supplies
+  colour. Enforced by the package boundary, not by convention.
+- **"No domain vocabulary in the package" is a test, not a property.** It is
+  asserted over the source, because it does not stay true on its own.
+- **A substitute typeface is disclosed in the render.** Headless rendering on a
+  machine with different fonts is the normal case for CI and for agents, and text
+  metrics change silently when a font is swapped.
+
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
 machinery — scrape's runtime recipe-judge loop — becomes an internal consumer of
 eval-run's judge primitives once they land; and the eval measure registry must
 disambiguate its naming from the unrelated BI measures in
 `datasources.definition`.
+
+**Open against this section as of 2026-08-20** — each blocks a named thing. The
+first two were the contract's open decisions and are now ruled; what is left of them
+is build:
+
+| Gap | Blocks | Where it is decided |
+|---|---|---|
+| `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **ruled** — R9; discodon Wave 2 design §5.2 |
+| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **ruled** — R11; discodon C6 |
+| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | discodon, Wave 2 |
+| Package still imports `discodon.llm` | R1 holding for the analysis generator | discodon, #2402–#2407 |
+| R8's input registry not built | R10's controllability map, which derives from it | discodon, Wave 2 |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | discodon #2412 |
 
 ### 4.3 Prompt management — identity from discodon; durable tier from scriob's pattern
 
@@ -392,6 +456,24 @@ shared engine. What is shared: every engine emits an **assembly-provenance
 record** — content hashes of each component that entered the prompt, plus a
 composition/variant hash. Cheap for static and dynamic engines alike, and what
 makes different engines comparable.
+
+**The record attaches to the observation, not to the batch that commissioned
+it** — the only level at which it is true, since apparatus is not constant
+within a batch: `prompt_cache.state` moves cost by up to 10× and varies across
+k-iterations of one discodon run, and a routing provider can differ between
+trial 1 and trial 5 of one scriob baseline. A batch stays first-class as the
+declaration that these observations were commissioned together under a declared
+apparatus — that is what separates an experiment from a log — and an
+observation may reference one or carry its apparatus inline.
+
+**Each observation records whether its apparatus was `declared` or
+`witnessed`.** Declared means set before the measurement and controlled;
+witnessed means recorded as found. Across the family this splits four to two —
+discodon, scriob, samsung and hallucinote commission; metallm's live turns and
+3tears `scrape`'s runtime recipe-judge loop witness — and the two never pool
+into one cell, because pooling them would report an experimental k over partly
+observational evidence. Without the flag the analysis layer has to be *told in
+prose* not to write "B beat A" over observational data.
 
 #### Measurement: A/B by variant identity
 
