@@ -224,8 +224,11 @@ Use it for the staleness invalidation cannot reach: a dropped invalidation when
 the outbound buffer overflows, and a pod whose subscription is partitioned while
 its peers stay healthy.
 
-**A collection with no L3 pool is refused a bound.** With nothing to pull through
-from, an expired row is not a miss that repairs — it reads as "this row does not
+**A collection with no L3 pool is refused a bound at the point of use.**
+`set_l1_max_age` still accepts and stores the value — the refusal is in
+`BaseCollection.l1_max_age_seconds`, which reports `None` whatever was
+configured, so wiring order cannot defeat it. With nothing to pull through from,
+an expired row is not a miss that repairs — it reads as "this row does not
 exist", and a compare-and-set that reads absence writes fresh state over live
 state. `DuckDBBackend` refuses too, with `NotImplementedError`: it injects no
 stamp, so accepting a bound would silently not enforce it.
