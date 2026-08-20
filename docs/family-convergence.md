@@ -281,19 +281,39 @@ the package split follows seams that already exist:
 - **`3tears-eval-gen`** — LLM-assisted variation expansion and rubric/case
   proposers. The most independent aspect; it only writes documents.
 
-Verified against discodon 2026-08-04 — three corrections that shape the
-extraction:
+Verified against discodon 2026-08-04, updated 2026-08-20 — three findings that
+shape the extraction:
 
-- **The storage Protocol does not exist yet.** `EvalStorage` is a 65-method
-  concrete Postgres class. The narrow port — `upsert/get/query/delete` keyed
-  by `(scope, doc_type, id)` — is designed in prose, with two unstarted
-  prerequisites (an eval-owned namespace; `universe` generalized to
-  `scope`). The only Protocol actually shipped is the 4-method
-  `CassetteStore`. **Remediate in discodon before extraction:** carve the
-  port and make `EvalStorage` implement it while discodon is still sole
-  owner, shaped against the family store contracts (open question 22) — so
-  eval-contracts lifts a proven port instead of minting the family's fourth
-  store shape.
+- **The storage Protocol exists** (carved 2026-08-20).
+  `discodon/eval/store_port.py` declares `DocumentStore`; `store_adapter.py`
+  implements it over YugabyteDB and is **the only file in the package that
+  imports `discodon.db`**. The eval core imports the port only, so eval-contracts
+  lifts a proven port rather than minting the family's fourth store shape.
+
+  **It is seven methods, not the four designed in prose** (`upsert/get/query/delete`).
+  Take this shape — the extra three are what a real store turned out to need:
+
+  | Method | Why it is in the contract |
+  |---|---|
+  | `get` / `upsert` / `delete` | point read and write, keyed by `(doc_id, pk)` |
+  | `get_with_etag` + `upsert(if_match=)` | optimistic concurrency; read-modify-write without exposing transactions |
+  | `get_many` | batch point read within one partition — the bundle pipeline is N round-trips without it |
+  | `by_doc_type` / `iter_by_doc_type` | typed query, and an identity-only (`id, pk`) cross-partition sweep for operator wipes |
+
+  Storage-layer columns are stripped **in the adapter, on the way out**, so the
+  core receives documents it can hand straight to a model. That is part of the
+  port's contract, not a defensive habit in the caller.
+
+  **Keyed by `(doc_id, pk)`, not by `(scope, doc_type, id)`.** Partitioning and
+  tenancy live in the adapter: the scope a caller passes binds to the `pk` column,
+  and row-level security scopes every operation to the connection environment
+  independently of the SQL text. No query in the port carries an environment
+  predicate of its own.
+
+  **One prerequisite this bullet named is still open:** `universe` is not
+  generalised to `scope`. The package holds 33 `universe_id` references and no
+  `scope_id`, so the port is carved under host vocabulary. See the gap list at the
+  end of this section.
 - **The analysis *core* is dependency-free; the analysis *generator* is
   not.** `analysis/bundle.py` and its models are stdlib + pydantic as
   claimed. `analysis/generator.py` imports the host's OpenRouter client and
@@ -305,6 +325,12 @@ extraction:
     through a thin adapter;
   - if the coupling still fights, gen extracts last — it gates nothing, and
     open question 3 already contemplates folding it.
+
+  **Status 2026-08-20.** The narrow completion protocol exists —
+  `discodon/eval/provider.py` declares `CompletionClient` and `CompletionResult`
+  as Protocols, and it is a registered contract surface. The package still imports
+  `discodon.llm`; the remaining edges are enumerated (discodon #2402–#2407) rather
+  than closed.
 - **Budget machinery is port-shaped already, and the reshape once asked for
   here is withdrawn (2026-08-19).** `EvalRunCostCap` carries a literal
   `record()`/`exceeded` pair; the daily budget mixin returns a host
@@ -339,12 +365,36 @@ components with compiled **Vega-Lite specs**.
 Net effect on open question 9: sharing charts no longer requires sharing
 React.
 
+**Status 2026-08-20.** `discodon/eval/viz/` installs standalone (compiler,
+payloads, policy, render, palette, text metrics). Three rules it settles for the
+package:
+
+- **The palette is host-supplied.** The package holds chart shape; the app supplies
+  colour. Enforced by the package boundary, not by convention.
+- **"No domain vocabulary in the package" is a test, not a property.** It is
+  asserted over the source, because it does not stay true on its own.
+- **A substitute typeface is disclosed in the render.** Headless rendering on a
+  machine with different fonts is the normal case for CI and for agents, and text
+  metrics change silently when a font is swapped.
+
 Donated content: metallm's sycophancy-judge prompt; hallucinote's
 brief/rubric/verdict scenario schema. Two footnotes: 3tears' only in-house eval
 machinery — scrape's runtime recipe-judge loop — becomes an internal consumer of
 eval-run's judge primitives once they land; and the eval measure registry must
 disambiguate its naming from the unrelated BI measures in
 `datasources.definition`.
+
+**Open against this section as of 2026-08-20** — each blocks a named thing, and
+the first two are decisions rather than work:
+
+| Gap | Blocks | Where it is decided |
+|---|---|---|
+| `SweepableValue` carries no `display` | a readable memo for any consumer whose levers are scalars | contract, before the cut (R9) |
+| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | contract, before the cut (R11) |
+| `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | discodon, Wave 2 |
+| Package still imports `discodon.llm` | R1 holding for the analysis generator | discodon, #2402–#2407 |
+| R8's input registry not built | R10's controllability map, which derives from it | discodon, Wave 2 |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | discodon, unscheduled |
 
 ### 4.3 Prompt management — identity from discodon; durable tier from scriob's pattern
 
