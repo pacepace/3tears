@@ -9,6 +9,7 @@ tests against a real JetStream KV bucket live in tests/integration/.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -419,3 +420,102 @@ class TestAKvOperationThatNeverAnswers:
                 await bucket.put(key="k", value=b"v")
 
         assert attempts == 1, f"the wedged operation was retried {attempts} times through reopen"
+
+    @pytest.mark.asyncio
+    async def test_the_timeout_log_names_the_bucket_and_the_grant(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A deadline cannot tell an ungranted bucket from a dead broker; the log must say so.
+
+        The two produce the identical timeout, because a JetStream request the server
+        refuses is never answered at all. This frame is the only one that knows which
+        bucket to name, so leaving the reader with "the broker did not answer" sends them
+        to the network while a healthy connection carries every other subject.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        from threetears.nats.errors import PublishTimeoutError
+
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="prod-epochs", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("'prod-epochs'" in message and "kv_buckets" in message for message in messages), messages
+
+
+class TestOpeningAnUngrantedBucket:
+    """The FIRST symptom, for a bucket a component opens lazily on first use.
+
+    Both halves of the opener are refused alike -- `STREAM.CREATE` and the `key_value`
+    bind -- and neither is answered, so both die on their own deadline and the caller
+    gets a `KvError` naming two transport failures. That message is what reaches the
+    operator, so the fix has to be in it rather than only in a log line.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_open_carries_the_grant_it_probably_needs(self) -> None:
+        """The raised error names the bucket's grant, not just the two failures.
+
+        :return: nothing
+        :rtype: None
+        """
+        js = MagicMock()
+
+        async def _refused(*_args: object, **_kwargs: object) -> None:
+            raise TimeoutError("nats: timeout")
+
+        js.create_key_value = _refused
+        js.key_value = _refused
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=js)
+
+        with pytest.raises(KvError) as caught:
+            await NatsKvBucket.open(
+                client=client,
+                full_name="prod-epochs",
+                ttl=None,
+                storage="memory",
+                create_if_missing=True,
+                history=1,
+            )
+
+        assert "kv_buckets" in str(caught.value)
+        assert '"$KV.prod-epochs.>"' in str(caught.value)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_bind_only_open_carries_it_too(self) -> None:
+        """`create_if_missing=False` takes a different branch and needs the same hint.
+
+        :return: nothing
+        :rtype: None
+        """
+        js = MagicMock()
+
+        async def _refused(*_args: object, **_kwargs: object) -> None:
+            raise TimeoutError("nats: timeout")
+
+        js.key_value = _refused
+        client = MagicMock()
+        client.jetstream_context = MagicMock(return_value=js)
+
+        with pytest.raises(KvError) as caught:
+            await NatsKvBucket.open(
+                client=client,
+                full_name="prod-epochs",
+                ttl=None,
+                storage="memory",
+                create_if_missing=False,
+                history=1,
+            )
+
+        assert "kv_buckets" in str(caught.value)

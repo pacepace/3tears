@@ -30,6 +30,7 @@ from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.observe import get_logger
 
+from threetears.nats._diagnostics import kv_grant_remedy, kv_timeout_remedy
 from threetears.nats._publish import run_bounded
 from threetears.nats.errors import KvError, PublishTimeoutError
 
@@ -187,8 +188,14 @@ class NatsKvBucket:
                 try:
                     kv = await js.key_value(full_name)
                 except Exception as bind_exc:
+                    # Both halves failed, which is the shape an ungranted bucket produces:
+                    # STREAM.CREATE and STREAM.INFO are refused alike and neither is answered,
+                    # so both calls die on their own deadline. Carry the fix in the exception
+                    # rather than only in a log line -- this one propagates to the caller, and
+                    # for the bucket a component opens on first use it is the FIRST symptom.
                     raise KvError(
-                        f"open KV bucket failed: bucket={full_name}: create={exc!r} bind={bind_exc!r}"
+                        f"open KV bucket failed: bucket={full_name}: create={exc!r} bind={bind_exc!r}. "
+                        f"{kv_grant_remedy(full_name)}"
                     ) from bind_exc
                 log.debug(
                     "JetStream KV bucket bound (already existed)",
@@ -198,7 +205,9 @@ class NatsKvBucket:
             try:
                 kv = await js.key_value(full_name)
             except Exception as exc:
-                raise KvError(f"bind KV bucket failed: bucket={full_name}: {exc}") from exc
+                raise KvError(
+                    f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name)}"
+                ) from exc
 
         return cls(
             client=client,
@@ -251,6 +260,11 @@ class NatsKvBucket:
             # A wedged operation is not a vanished bucket. Re-opening runs another KV call
             # against the same unresponsive broker, so the retry wedges too -- one deadline
             # becomes two, and the caller waits twice as long to learn the same thing.
+            #
+            # Logged here rather than left to the caller because the deadline is where the
+            # ambiguity lives: an ungranted bucket and a dead broker produce the identical
+            # timeout, and only this frame knows which bucket to name in the fix.
+            log.error(kv_timeout_remedy(self._full_name), extra={"extra_data": {"bucket": self._full_name}})
             raise
         except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
             await self._reopen()

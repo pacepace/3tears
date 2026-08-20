@@ -81,6 +81,25 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `nats`: **an ungranted KV bucket now says so, and says how to fix it.** A KV
+  operation the server refuses on permissions is never answered, so it dies on
+  the wrapper's deadline and reports a timeout -- the same thing an unreachable
+  broker reports. The operator goes to the network and finds a connection that
+  is up and carrying every other subject perfectly well.
+
+  The server does announce it, on a channel nothing was reading closely: a
+  `permissions violation` frame reaches the error callback and, unlike an
+  authorization violation, leaves the connection OPEN. Nothing downstream
+  re-reports it. That frame is now decoded to the bucket it names -- from the
+  `$KV` data subject or the `$JS.API...KV_{bucket}` control subject, whichever
+  was refused -- and logged with the `kv_buckets` entry to add. The deadline
+  path says the same thing where only the bucket name is available, and a
+  failed bucket open carries it in the raised `KvError`.
+
+  This is the failure mode a new grant requirement produces when someone misses
+  it, and the reason the requirement had to be written in a release note before:
+  there was nowhere else to put it.
+
 - `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
   coherence signal, not a durable fact, so every `current()`, catch-up tick and
   echo confirmation was putting L3 on the cache-coherence path for a number

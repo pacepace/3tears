@@ -13,6 +13,12 @@ than raising, indistinguishable from an unreachable broker.
 ``test_user_jwt_scoped_grant_live.py`` exists for that shape. Remove a grant something
 does need and you get the same silence.
 
+:mod:`threetears.nats._diagnostics` now names this cause in the log -- from the
+server's own refusal frame, and again at the deadline -- so the diagnosis is no
+longer only in a reader's head. It does not make the grant correct, which is what
+this guard is for: a log line an operator must read at the right moment is a worse
+place to catch a wrong name than a test that fails before the deploy.
+
 **Three naming conventions are live here, and all three are legitimate.** This was
 learned the expensive way: an earlier version of this guard rejected the third as
 malformed, which would have removed grants the hub depends on.

@@ -58,13 +58,13 @@ packages/nats/tests/unit/test_client.py:77:_FakeMsg
 # rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
 packages/nats/tests/unit/test_client.py:86:_FakeNatsPyClient
 # rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
-packages/nats/tests/unit/test_kv.py:22:_FakeEntry
+packages/nats/tests/unit/test_kv.py:23:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
-packages/nats/tests/unit/test_kv.py:28:_FakeKv
+packages/nats/tests/unit/test_kv.py:29:_FakeKv
 # rationale: minimal JetStream stand-in exposing only create_key_value/key_value for the bucket self-heal re-open path; full nats.js JetStreamContext surface is huge and unrelated to wrapper behaviour
-packages/nats/tests/unit/test_kv.py:92:_FakeJetStream
+packages/nats/tests/unit/test_kv.py:93:_FakeJetStream
 # rationale: minimal NatsClient stand-in exposing only jetstream_context() for the bucket self-heal re-open path; full NatsClient parity would be over-mocking
-packages/nats/tests/unit/test_kv.py:105:_FakeClient
+packages/nats/tests/unit/test_kv.py:106:_FakeClient
 # rationale: minimal Entry dataclass for the distributed-lock unit tests carrying only value+revision; mirrors test_kv.py:_FakeEntry exemption
 packages/nats/tests/unit/test_distributed_lock.py:23:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue used by the distributed-lock unit tests; tracks call/state for assertions, same surface as test_kv.py's _FakeKv
