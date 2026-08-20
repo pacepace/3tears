@@ -6,9 +6,10 @@ entry -- that was the reason this script ran most often -- so what remains for i
 NEW access, or one that moved to a different scope. Two enforcement tests fail when either
 happens, in both directions.
 
-Rationales are carried forward by `(path, enclosing scope, symbol, occurrence)`, which is the key
-the entries are now written in, so only a genuinely new access needs new text. Any access it cannot map is reported and given a
-placeholder, so it is visible rather than silently templated.
+Rationales are carried forward by `(path, enclosing scope, symbol, occurrence)`, which is
+the key the entries are now written in, so only a genuinely new access needs new text. Any
+access it cannot map is reported and given a placeholder, so it is visible rather than
+silently templated.
 
 Discovery and AST walking come from `threetears.enforcement.underscore_access`, the same
 canonical domain the enforcement tests are thin shells over, so this script and the checks that

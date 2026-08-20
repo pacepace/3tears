@@ -1,7 +1,7 @@
 """thin shell -- actual reconciliation logic in
 :mod:`threetears.enforcement.underscore_access.ledger`.
 
-``_underscore_exemptions.txt`` is a list of ``path:line:symbol`` triples, each with a rationale
+``_underscore_exemptions.txt`` is a list of ``path:scope#N:symbol`` keys, each with a rationale
 recording why one private access was judged acceptable. Nothing verified either half of that
 until this existed, and both had rotted: entries pointing at code that had moved or gone, and
 accesses in the scrape suites with no entry at all. A stale exemption is worse than a missing
@@ -66,7 +66,7 @@ class TestUnderscoreExemptionsResolve:
         )
 
     def test_every_entry_resolves_to_the_symbol_it_claims(self) -> None:
-        """A triple whose line no longer holds that symbol is a rationale for the wrong code."""
+        """An entry whose scope no longer holds that symbol is a rationale for the wrong code."""
         unresolved = unresolved_entries(_EXEMPTIONS, _REPO_ROOT)
 
         assert not unresolved, (
@@ -428,6 +428,11 @@ class TestTheTwoOccurrenceCountersAgree:
     Latent today, and "today" is the whole guarantee -- so this asserts it rather
     than leaving it in a commit message. If it fires, the fix is one numbering
     source, not a new entry.
+
+    The end-to-end gate over the real ledger is `test_underscore_access.py`, which
+    runs the matcher. Nothing in THIS module exercises `_occurrences`: both
+    directions here number via `scoped_accesses` on both sides, so a check written
+    here could never see the two counters disagree.
     """
 
     def test_no_walker_scanned_file_has_two_accesses_of_one_symbol_on_one_line(self) -> None:
@@ -464,17 +469,3 @@ class TestTheTwoOccurrenceCountersAgree:
             "`private_accesses` counts these once and the walkers count them twice, so the "
             f"ledger's ordinals and the matcher's diverge -- {collapsed}"
         )
-
-    def test_every_ledger_entry_still_suppresses_its_violation(self) -> None:
-        """The end-to-end statement of the same thing, and the one that matters.
-
-        If the two counters disagreed anywhere, some entry would stop covering the
-        access it was written for and the underscore gate would report it. That gate
-        passing over the real ledger IS the agreement, so assert it here rather than
-        inferring it from a green run elsewhere.
-
-        :return: nothing
-        :rtype: None
-        """
-        assert unlisted_accesses(_EXEMPTIONS, _REPO_ROOT) == []
-        assert unresolved_entries(_EXEMPTIONS, _REPO_ROOT) == []

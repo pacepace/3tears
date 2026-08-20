@@ -342,9 +342,20 @@ def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
     """every private access in *path*, keyed the way a ledger entry keys it.
 
     ``(scope, symbol, occurrence) -> line``. The occurrence is the ordinal among
-    same-scope, same-symbol accesses ordered by line, which is the same rule
-    :func:`carry_forward_rationales` and the regeneration script both use -- one
-    implementation, so a ledger the script writes is a ledger these checks read.
+    same-scope, same-symbol accesses ordered by line, which is the rule
+    :func:`carry_forward_rationales` and the regeneration script also use, so a
+    ledger the script writes is a ledger these checks read.
+
+    **It is NOT the only implementation of that rule.**
+    :func:`~threetears.enforcement.common.exemptions.apply_exemptions` numbers the
+    same ordinals over WALKER VIOLATIONS, which is a different population:
+    :func:`private_accesses` returns a set keyed by line, so two reads of one
+    private on a single line collapse here and are counted twice there, and the
+    walkers also emit violations that are not private reads at all. Where both
+    counters run -- an exempted file under a ``src`` root -- they must agree or an
+    entry covers a different access than the one it was written for. That is
+    asserted in ``tests/enforcement/test_underscore_exemptions_resolve.py``, not
+    guaranteed by construction.
 
     The line is carried as the VALUE rather than the key: it is what an error
     message needs to point a reader at, and nothing matches on it.

@@ -277,10 +277,16 @@ def apply_exemptions(
 ) -> list[Violation]:
     """filter ``violations`` against ``exemptions``, preserving order.
 
-    a violation is exempted iff its
-    ``(relative_posix_path(file, repo_root), line, symbol)`` triple
-    matches an exemption. an exemption with ``line=0`` (the ``LINE='*'``
-    shorthand) matches any line in that file.
+    a violation is exempted when it matches an entry under that entry's own key
+    form:
+
+    - **line** -- its ``(relative path, line, symbol)`` triple matches;
+    - **``*``** (``line=0``, ``scope=None``) -- the symbol matches anywhere in
+      that file;
+    - **scope** (``scope`` set) -- the symbol matches inside that qualname, at
+      that occurrence. Requires ``scope_of``; without one a scope-keyed entry
+      matches nothing, so a domain cannot be changed by this form without
+      opting in.
 
     returns a new list — does not mutate ``violations``.
 
@@ -290,6 +296,17 @@ def apply_exemptions(
     :ptype exemptions: list[Exemption]
     :param repo_root: repo root for relative-path comparison
     :ptype repo_root: Path
+    :param scope_of: resolves ``(source path, line)`` to the enclosing qualname,
+        enabling scope-keyed matching. ``None`` leaves those entries inert.
+
+        **Occurrence ordinals are numbered over the VIOLATIONS passed here**, by
+        line within each ``(file, scope, symbol)`` group. A caller whose ledger
+        numbers a different population -- ``underscore_access`` writes its ledger
+        from an AST scan, not from walker output -- must ensure the two agree, or
+        an entry covers a different access than the one it was written for. That
+        domain asserts the agreement in
+        ``tests/enforcement/test_underscore_exemptions_resolve.py``.
+    :ptype scope_of: Callable[[Path, int], str] | None
     :return: violations not matched by any exemption, in original order
     :rtype: list[Violation]
     """

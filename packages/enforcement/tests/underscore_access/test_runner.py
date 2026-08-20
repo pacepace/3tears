@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _pytest.outcomes import Failed
 
 from threetears.enforcement.underscore_access import (
     UnderscoreAccessConfig,
@@ -419,5 +420,9 @@ class TestTheScopeCacheDoesNotOutliveTheFile:
         # Same path, new content: the access moves into a function, so its scope is
         # no longer <module> and the entry must stop matching.
         consumer.write_text("def wrapper():\n    from pkg._helper import _name\n\n    return _name\n")
-        with pytest.raises(BaseException):  # noqa: B017, PT011 - pytest.fail raises its own type
+        # `pytest.fail` raises `Failed`, which is what a strict-mode violation looks
+        # like. Named rather than caught as BaseException: a bare catch passes on an
+        # ImportError or a typo in this fixture just as happily, which is the vacuous
+        # assertion this suite keeps finding elsewhere.
+        with pytest.raises(Failed, match="underscore"):
             run_underscore_enforcement(config, walker="shape_a")
