@@ -397,13 +397,14 @@ eval-run's judge primitives once they land; and the eval measure registry must
 disambiguate its naming from the unrelated BI measures in
 `datasources.definition`.
 
-**Open against this section as of 2026-08-20** — each blocks a named thing, and
-the first two are decisions rather than work:
+**Open against this section as of 2026-08-20** — each blocks a named thing. The
+first two were the contract's open decisions and are now ruled; what is left of them
+is build:
 
 | Gap | Blocks | Where it is decided |
 |---|---|---|
-| `SweepableValue` carries no `display` | a readable memo for any consumer whose levers are scalars | contract, before the cut (R9) |
-| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | contract, before the cut (R11) |
+| `SweepableValue` carries no `display` or `scale` | a readable memo, and a true-spacing axis, for any consumer whose levers are scalars | **ruled** — R9; discodon Wave 2 design §5.2 |
+| No declared pooling boundary; a pooled composite carries no dimension basis | evaluating subjects that have no self-description | **ruled** — R11; discodon C6 |
 | `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | discodon, Wave 2 |
 | Package still imports `discodon.llm` | R1 holding for the analysis generator | discodon, #2402–#2407 |
 | R8's input registry not built | R10's controllability map, which derives from it | discodon, Wave 2 |

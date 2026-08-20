@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening)
+**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -360,6 +360,14 @@ snapshotted fixture, not a wider override map; **building an override path into
 `directives` would add a second host-shaped mechanism to the one component that
 already cannot be extracted.**
 
+**Two products out of two, uncoordinated.** metallm independently content-hashes
+its persona blocks — `identity_versions.content_hash`, a parent-pointer chain, one
+active per block — and leaves every other lever name-referenced. That is the same
+split discodon has, arrived at without contact between them, which is the strongest
+available evidence that R9 describes a real requirement rather than a discodon
+artefact. It also means the half both products left undone is precisely the half
+R9 asks for.
+
 **Content identity is necessary and not sufficient — a registration also supplies a
 rendering and a scale.** A content hash of `0.4` is a correct identity and a useless
 reader label, and a memo reading *"component 9c1e… beat component 4b7a…"* satisfies R9
@@ -388,43 +396,13 @@ need `interval` independently: discodon (temperature, k), metallm
 nominal model id and an interval dimension; one `SweepableValue` loses the interval
 half and the axis with it.
 
+**No consumer carries this today.** The viz payload's `SweepDimension{name, ordered}`
+already asks whether an axis is ordered, of values that have no way to answer — it is
+downstream of a distinction the data model does not make.
+
 **Verify.** Two runs naming the same preset across an edit to that preset's
 content do not share a variant key; and a variant key can be computed for a
 component the host supplies as bytes, with no registry present.
-
-### R9 amended — identity is not sufficient; a registration also renders
-
-Walking **metallm** as the second consumer changes this requirement.
-
-metallm independently content-hashes its persona blocks
-(`identity_versions.content_hash`, parent-pointer chain, one active per block) and
-leaves everything else name-referenced — the same split discodon has. Two products
-out of two, uncoordinated. R9 describes a real requirement.
-
-But metallm's levers are **scalars**: ~30 per-user knobs like
-`memory.similarity_threshold = 0.4`. A content hash of `0.4` is a correct identity
-and an unreadable label, and R8 already requires that a reader can judge whether a
-dimension matters. *"Component 9c1e… outperformed component 4b7a…"* satisfies R9
-as written and defeats the product.
-
-**A registered value carries identity and rendering as one object:**
-
-```
-SweepableValue {
-  content_hash: str          # identity — always present, always the join key
-  display:      str          # REQUIRED. "0.4", "top_k=15", "converged", "personality v7"
-  ordinal?:     float        # present when the values are ordered
-  raw?:         JSON         # present when small and safe to show; absent for large blobs
-}
-```
-
-`display` is host-supplied and never interpreted by the engine. `ordinal` is what
-lets a sweep render as a continuous axis instead of unordered categories — the
-difference between "there is a knee at 4–6" and "these six things differ". It has
-no carrier in either product today; the viz payload's `SweepDimension{name,
-ordered}` is already downstream of a distinction the data model does not make.
-
-**Status: proposed, not ratified.** Cheap before a consumer binds, expensive after.
 
 ## R10 — what is evaluable is declared per precondition, derived where it can be, and gates authoring
 
@@ -549,7 +527,7 @@ meaningful, and **states the dimension basis of any pooled quality number**.
 |---|---|---|
 | Subject key present and non-empty | engine | yes — unrepresentable, not defaulted |
 | A pooled quality number carries its dimension basis | engine | yes |
-| The key is stable across renames and unique within its scope | host | **no** — the engine sees a string and must not classify it |
+| The key is stable across renames and unique within its scope | host | **not per row** — the engine sees a string; it warns at population level |
 
 **Why the rule is on the key and not on the subject type.** A rule of the form
 *"never pool across personas"* is written about who the subject is, while its
@@ -559,6 +537,15 @@ something with no self-description — a system prompt, a model chosen for an
 internal function, a retrieval configuration — where several candidates share
 **one declared rubric** and comparing them is the point of the campaign. Phrasing
 the rule on the subject forbids that case.
+
+**Key and label are separate required fields.** That is not enforcement — a host can
+pass the display name into both — but it makes the mistake an affirmative act visible in
+the data rather than an omission nobody can see. And while the engine cannot classify a
+single string (a UUID, `persona:kairo` and `Kairo` are indistinguishable, and any
+id-vs-label heuristic would reject exactly the slug-shaped keys a non-entity subject
+naturally uses), it holds the whole population, where instability *is* observable: one
+key under two labels, or one label under two keys, is the historical failure itself, and
+the engine warns on it without classifying anything.
 
 **The risk this actually manages is a wrong key, not a careless comparison.** The
 failure that produced discodon's version of this rule was subject identity keyed
@@ -579,9 +566,10 @@ dimension set.
 subjects with different keys never merge into one cell; a pooled composite renders
 with the dimension set it was computed over and is marked when that set is ragged.
 
-**Status: proposed, not ratified** (discodon owner decision, pending). A "no" is
-coherent: it keeps the prohibition and leaves the non-self-describing subject
-unserved until the disclosure is built.
+**Status: ruled** — discodon C6 (`.prawduct/artifacts/eval-system.md`), 2026-08-20.
+The declaration replaces the blunt prohibition, with the three obligations above and the
+sequencing constraint intact: the disclosure ships before any pooling prohibition
+relaxes. What remains is build, not decision.
 
 ## Two host norms that do not cross into the package
 
@@ -628,8 +616,8 @@ not discodon's.
   the same seam `family-convergence.md` §4.3 names from the prompt side
   ("content-addressed prompt identity and eval identity are two mechanisms
   today"); one unification serves both. It carries
-  `SweepableValue{content_hash, display, ordinal?, raw?}` — identity *and*
-  rendering — per R9's amendment.
+  `SweepableValue{content_hash, display, scale, raw?}` — identity, rendering *and*
+  spacing — since a hash alone is a correct identity and an unreadable label.
 - **The pooling-boundary contract** (R11): a required non-empty subject key, and a
   dimension basis on every pooled quality number. Owed with its sequencing
   constraint — the disclosure ships before any prohibition relaxes.

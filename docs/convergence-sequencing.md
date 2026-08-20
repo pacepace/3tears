@@ -538,11 +538,12 @@ discodon's NATS convergence and sits outside this sequence.)
   (`CompletionClient` / `CompletionResult`); R10's fidelity axis; an installable
   chart/spec package with a host-supplied palette.
 
-  Outstanding, and the first two are decisions rather than work:
+  Outstanding — the first item was this phase's pair of open decisions and both
+  are now ruled, so what remains of it is build:
 
-  - **`SweepableValue.display`** (R9) and **the pooling boundary** (R11) are
-    unratified contract amendments. Both are cheaper before the cut than after, so
-    they belong to this phase.
+  - **`SweepableValue`'s `display` and `scale`** (R9) and **the pooling boundary**
+    (R11) are ruled (discodon Wave 2 design §5.2; C6) and unbuilt. Both are cheaper
+    before the cut than after, so they still belong to this phase.
   - **`universe` → `scope`** — discodon Wave 2; touches the MCP surface. Binding
     eval-contracts before it lands means binding under provisional vocabulary.
   - **The package still imports `discodon.llm`** — discodon #2402–#2407.
