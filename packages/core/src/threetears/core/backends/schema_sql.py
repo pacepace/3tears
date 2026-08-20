@@ -10,7 +10,8 @@ emitting **byte-identical** SQL to the hand-rolled collection path.
 ``TableSchema`` / ``Column`` are imported only under ``TYPE_CHECKING``: every function
 here reads the schema/column through its duck-typed surface
 (``schema.columns`` / ``schema.name`` / ``schema.pk_columns`` / ``schema.cas_column`` /
-``schema.on_conflict`` / ``schema.mutable_columns()`` / ``schema.column(name)`` /
+``schema.cas_null_safe`` / ``schema.on_conflict`` / ``schema.mutable_columns()`` /
+``schema.column(name)`` /
 ``column.column_type`` / ``column.name`` / ``column.nullable`` / ``column.server_default``),
 so there is **no runtime ``backends → collections`` import** (which would be a cycle —
 ``collections`` imports ``backends``).
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 __all__ = [
     "build_cas_params",
     "build_cas_update_sql",
+    "build_cas_upsert_params",
+    "build_cas_upsert_sql",
     "build_delete_sql",
     "build_fetch_sql",
     "build_insert_params",
@@ -611,6 +614,131 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
     set_clause = ", ".join(set_parts)
     result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
     return result
+
+
+def _conflict_target_ref(schema: TableSchema) -> str:
+    """render the name the ``ON CONFLICT DO UPDATE ... WHERE`` clause uses for the target row.
+
+    inside that clause the pre-update row is addressed through the INSERT
+    target's relation name, NOT through a schema-qualified name, so a schema
+    declaring ``name="analytics.counters"`` must fence on ``counters.<col>``.
+    a bare table name (every schema in the family today) is returned
+    unchanged.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :return: unqualified relation name usable as a column qualifier
+    :rtype: str
+    """
+    return schema.name.rsplit(".", 1)[-1]
+
+
+def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None) -> str:
+    """build the NULL-safe CAS upsert for a ``cas_null_safe=True`` schema.
+
+    ONE statement covers both the create and the update, because a derived
+    (non-random) primary key makes them the same race::
+
+        INSERT INTO t (...) VALUES (...)
+        ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.<mutable>
+        WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+
+    * **no conflicting row**: the plain INSERT applies, the fence is never
+      evaluated, the row is created and one row is affected. the fence
+      cannot block a genuine creation.
+    * **conflicting row, fence matches**: ``DO UPDATE`` applies and one row
+      is affected. ``IS NOT DISTINCT FROM`` is Postgres's NULL-safe
+      equality, so an expected value of ``NULL`` matches a stored ``NULL``
+      -- which plain ``=`` never can, and which is exactly the "no row
+      existed when i read" case.
+    * **conflicting row, fence does not match**: ``DO UPDATE`` is skipped,
+      ZERO rows are affected, nothing is written. the caller reads that 0 as
+      "another writer got there first, re-read and retry".
+
+    parameter ordering is the INSERT's own (declared column order, filtered
+    by :func:`insert_columns_for_data`) with the fence value appended last,
+    so :func:`build_cas_upsert_params` stays positionally aligned.
+
+    :param schema: table schema, which must declare ``cas_null_safe=True``
+        (validated by ``TableSchema.__post_init__``, not re-checked here)
+    :ptype schema: TableSchema
+    :param data: row dict to drive column selection. ``None`` is treated as
+        an empty dict.
+    :ptype data: dict[str, Any] | None
+    :return: parameterized INSERT ... ON CONFLICT ... WHERE SQL
+    :rtype: str
+    :raises RuntimeError: when the schema has no ``cas_column``, when
+        ``on_conflict`` is not ``"update"``, or when the ``cas_column`` is
+        not among the emitted INSERT columns (which would leave the fence
+        referencing a column the statement never writes)
+    """
+    if schema.cas_column is None:
+        raise RuntimeError(
+            f"TableSchema(name={schema.name!r}): NULL-safe CAS upsert requires cas_column to be set",
+        )
+    if schema.on_conflict != "update":
+        raise RuntimeError(
+            f"TableSchema(name={schema.name!r}): NULL-safe CAS upsert requires "
+            f"on_conflict='update', got {schema.on_conflict!r}",
+        )
+    cols = insert_columns_for_data(schema, data or {})
+    emitted = {c.name for c in cols}
+    if schema.cas_column not in emitted:
+        raise RuntimeError(
+            f"TableSchema(name={schema.name!r}): NULL-safe CAS upsert requires the "
+            f"cas_column {schema.cas_column!r} in the emitted INSERT columns; it was "
+            f"dropped from this statement, so the write would proceed unfenced",
+        )
+    col_names = ", ".join(c.name for c in cols)
+    placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
+    pk_cols = ", ".join(schema.pk_columns)
+    # the cas_column is mutable + non-pk + emitted (schema validation plus
+    # the guard above), so this list is never empty and the statement can
+    # never degrade to the ``DO NOTHING`` fallback build_insert_sql uses --
+    # which would be an unfenced no-op reporting the same 0 rows a lost
+    # race reports.
+    mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
+    set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
+    cas_idx = len(cols) + 1
+    target = _conflict_target_ref(schema)
+    return (
+        f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause} "
+        f"WHERE {target}.{schema.cas_column} IS NOT DISTINCT FROM ${cas_idx}"
+    )
+
+
+def build_cas_upsert_params(
+    schema: TableSchema,
+    data: dict[str, Any],
+    original_timestamp: datetime | None,
+) -> list[Any]:
+    """build the parameter list for the NULL-safe CAS upsert path.
+
+    layout: the INSERT's own params (declared column order, filtered by
+    :func:`insert_columns_for_data`) then the fence value last. unlike
+    :func:`build_cas_params`, ``original_timestamp`` may legitimately be
+    ``None`` -- that is the first-write case the NULL-safe fence exists for.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param data: row dict keyed by column name
+    :ptype data: dict[str, Any]
+    :param original_timestamp: pre-mutation fence value, or ``None`` when
+        the caller read no row
+    :ptype original_timestamp: datetime | None
+    :return: parameter list matching the CAS upsert placeholder layout
+    :rtype: list[Any]
+    :raises RuntimeError: when the schema has no ``cas_column``
+    """
+    if schema.cas_column is None:
+        raise RuntimeError(
+            f"TableSchema(name={schema.name!r}): NULL-safe CAS path reached without cas_column",
+        )
+    params = build_insert_params(schema, data)
+    cas_col = schema.column(schema.cas_column)
+    params.append(normalize_write_value(cas_col, original_timestamp))
+    return params
 
 
 def build_select_column_list(schema: TableSchema) -> str:

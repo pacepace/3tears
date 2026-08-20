@@ -547,6 +547,58 @@ packages (bumped in lock-step).
 
 ### Added
 
+- `core`: **`TableSchema(cas_null_safe=True)` — a compare-and-swap fence that
+  covers a row's FIRST write.** Default `False`, so no existing schema, caller
+  or emitted statement changes.
+
+  The fence a `SchemaBackedCollection` could generate had a hole in it, and the
+  hole was silent. `SqlL3Backend._upsert_schema` treated a write as
+  fence-eligible only when the expected value was non-`None`; a save carrying
+  `original_timestamp=None` fell through to an UNFENCED
+  `INSERT … ON CONFLICT (pk) DO UPDATE SET …`. That is correct for a RANDOM
+  primary key, where two writers cannot collide on one id. It is wrong for a
+  DERIVED one — a `uuid5` or hash of the business key — where two writers who
+  have never seen the row still compute the same id and collide on its first
+  insert. Both statements reported one row affected, the second overwrote the
+  first, and a read-modify-write lost an increment with nothing raised
+  anywhere. The other branch could not cover it either: `WHERE cas_column = $n`
+  is an equality test, and `= NULL` matches nothing, ever.
+
+  With the flag on, one statement serves create and update alike::
+
+      INSERT INTO t (…) VALUES (…)
+      ON CONFLICT (pk) DO UPDATE SET <mutable> = EXCLUDED.…
+      WHERE t.<cas_column> IS NOT DISTINCT FROM $N
+
+  `IS NOT DISTINCT FROM` is Postgres's NULL-safe equality, so an expected value
+  of `NULL` matches a row nobody has stamped and matches NOTHING once a rival
+  has. With no conflicting row at all the plain INSERT applies and the fence is
+  never evaluated, so it cannot block a genuine creation — it only stops a
+  second writer clobbering the first. The loser affects 0 rows, which
+  `save_entity` turns into `ConcurrentModificationError` for the caller's retry
+  loop.
+
+  This is the shape three `14-eng-ai-survey` collections hand-write today
+  precisely because the generator could not express it, and it is what blocked
+  converting them. The 20-way concurrency test that exercises it is an
+  INTEGRATION test, which is why nobody's unit gate ever saw the loss.
+
+  The opt-in is validated at construction rather than trusted, because every
+  way of getting it wrong degrades silently: it requires `cas_column` set,
+  `on_conflict="update"`, and a `cas_column` that is a mutable non-pk column
+  with no `server_default` — anything else leaves the fence unable to advance,
+  or drops it out of the statement altogether. Constructing such a collection
+  with the table also listed in `collection_flush_tables` is refused for the
+  same reason: a buffered write is replayed without the fence value it was
+  decided under, so every deferred write to an existing row would evaporate.
+
+- `core`: `BaseCollection.emits_cas_fence`, a `False`-by-default property a
+  collection overrides to declare that EVERY write it generates is fenced. The
+  framework uses it in the fire-and-forget `collection[id] = value` path, which
+  has no caller left to return a rowcount to: a 0 there is now logged as a lost
+  write rather than discarded. Unfenced collections are unaffected, where 0 is
+  the ordinary "DO NOTHING matched" outcome and not a loss.
+
 - `agent-tools`, `core`: **a tool may declare a REST address — and nothing
   serves it yet.** `TearsTool` gains a fourth reach face, `face_rest`, beside
   `face_platform_tool` / `face_api` / `face_mcp`. It ships INERT on purpose: the

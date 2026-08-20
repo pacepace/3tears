@@ -299,6 +299,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         ...
 
+    @property
+    def emits_cas_fence(self) -> bool:
+        """whether EVERY L3 write this collection generates carries a CAS fence.
+
+        ``False`` by default, and for the ordinary collection it is the truth:
+        a save with ``original_timestamp=None`` is written unfenced, so a
+        ``save_to_store`` returning 0 means the backend chose not to write
+        (``ON CONFLICT DO NOTHING``, a no-op update) rather than "another
+        writer beat me".
+
+        a collection that fences unconditionally --
+        :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`
+        over a ``TableSchema(cas_null_safe=True)`` -- overrides this to ``True``.
+        the framework then knows a 0 rowcount is a LOST RACE on every write
+        path, including the fire-and-forget ones that have no caller left to
+        return it to, and says so in the log instead of dropping it silently.
+
+        :return: whether a 0 rowcount from :meth:`save_to_store` always means
+            "lost the race"
+        :rtype: bool
+        """
+        return False
+
     @abstractmethod
     async def delete_from_store(self, entity_id: Any) -> None:
         """delete one entity's row from the L3 durable tier, keyed by pk.
@@ -840,7 +863,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
             try:
-                await self.save_to_store(data)
+                rows_affected = await self.save_to_store(data)
             except Exception as exc:
                 log.error(
                     "Background L3 write failed",
@@ -852,6 +875,26 @@ class BaseCollection(ABC, Generic[EntityT]):
                         }
                     },
                 )
+            else:
+                # This path is fire-and-forget: there is no caller left to
+                # hand a rowcount back to, and no exception is raised when a
+                # CAS fence rejects the write. On an unconditionally fenced
+                # collection that makes a 0 here a LOST WRITE -- L1 and L2
+                # already hold the new value while L3 kept the old one. Say
+                # so. (Left silent for unfenced collections, where 0 is the
+                # ordinary "DO NOTHING matched" outcome, not a loss.)
+                if rows_affected == 0 and self.emits_cas_fence:
+                    log.error(
+                        "Background L3 write lost its CAS race and was dropped; "
+                        "the sync item-assignment write path cannot retry -- use "
+                        "save_entity() with a retry loop on a cas_null_safe table",
+                        extra={
+                            "extra_data": {
+                                "entity_id": str(entity_id),
+                                "table": self.table_name,
+                            }
+                        },
+                    )
 
     def __contains__(self, entity_id: Any) -> bool:
         """Check if entity is in L1 cache."""

@@ -364,10 +364,31 @@ class SqlL3Backend:
         cas: datetime | None,
         conn: Any,
     ) -> int:
-        """Schema-aware upsert: byte-identical to the collection's old ``save_to_store``."""
-        cas_eligible = schema.cas_column is not None and cas is not None and schema.on_conflict == "update"
-        if cas_eligible:
-            assert cas is not None  # narrowed by cas_eligible
+        """Schema-aware upsert: byte-identical to the collection's old ``save_to_store``.
+
+        Three generated shapes, selected by the schema (never by the caller):
+
+        * ``cas_null_safe=True`` -- ONE statement for create and update alike:
+          ``INSERT ... ON CONFLICT (pk) DO UPDATE SET ... WHERE t.<cas> IS NOT
+          DISTINCT FROM $N``. ``cas=None`` is FENCE-ELIGIBLE here, which is the
+          whole point: a derived (non-random) primary key means two concurrent
+          FIRST writers compute the same id, and NULL-safe equality is what lets
+          the loser affect 0 rows instead of silently overwriting the winner.
+        * ``cas_column`` set, ``on_conflict='update'`` and a non-``None`` ``cas``
+          -- the historical fenced ``UPDATE ... WHERE pk AND <cas> = $N``.
+        * everything else -- the unfenced ``INSERT ... ON CONFLICT`` from
+          ``build_insert_sql``. Unchanged, and still what ``cas=None`` selects on
+          every schema that has not opted in.
+
+        ``cas_null_safe`` is read through ``getattr`` because this module reads the
+        schema duck-typed (see the ``schema_sql`` module docstring); a non-
+        ``TableSchema`` descriptor without the attribute keeps the old behaviour.
+        """
+        cas_declared = schema.cas_column is not None and schema.on_conflict == "update"
+        if cas_declared and getattr(schema, "cas_null_safe", False):
+            sql = schema_sql.build_cas_upsert_sql(schema, data)
+            params = schema_sql.build_cas_upsert_params(schema, data, cas)
+        elif cas_declared and cas is not None:
             sql = schema_sql.build_cas_update_sql(schema, data)
             params = schema_sql.build_cas_params(schema, data, cas)
         else:
