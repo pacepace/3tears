@@ -305,9 +305,12 @@ def apply_exemptions(
         line within each ``(file, scope, symbol)`` group. A caller whose ledger
         numbers a different population -- ``underscore_access`` writes its ledger
         from an AST scan, not from walker output -- must ensure the two agree, or
-        an entry covers a different access than the one it was written for. That
-        domain asserts the agreement in
-        ``tests/enforcement/test_underscore_exemptions_resolve.py``.
+        an entry covers a different access than the one it was written for. The
+        gate that would catch that is that domain's
+        ``tests/enforcement/test_underscore_access.py``, which runs THIS matcher
+        over the real ledger. Its ``test_underscore_exemptions_resolve.py``
+        asserts one divergence shape directly but numbers both of its own sides
+        with the ledger's counter, so it cannot see the two disagree.
     :ptype scope_of: Callable[[Path, int], str] | None
     :return: violations not matched by any exemption, in original order
     :rtype: list[Violation]
