@@ -28,14 +28,24 @@ packages (bumped in lock-step).
   Expiry applies only on the read paths that repair by pulling through. The
   paths that merely report whether a row is cached do not expire: for them a
   miss is a final answer a caller acts on, so converting a stale hit into one
-  loses the row rather than refreshing it.
+  loses the row rather than refreshing it. The repairing set is `ensure`,
+  `collection[id]` and `collection[id, "field"]`; the reporting set is
+  `get_row_sync`, `get_field_sync`, `set_field_sync` and `exists_in_cache_sync`.
+
+  A read that does expire deletes the row, and a delete that loses a lock does
+  not raise out of the read: the row is withheld either way and the next read
+  retries. The stamp is stripped from every row the `L1Backend` protocol
+  returns, `execute_query` included. Expiry drops increment
+  `threetears_l1_rows_expired_total`, labelled by table, because the rate is
+  what separates a bound doing its job from one that never fires.
 
 - `core`: two keyword parameters on the `L1Backend` protocol reads,
   `max_age_seconds` and `now_monotonic`. Both default to off, so every existing
-  **caller** is unaffected. An **implementer** is not: `L1Backend` is a
-  `runtime_checkable` Protocol, so a third-party backend that does not accept
-  the new keywords stops satisfying it and fails when core passes them. In-tree
-  backends are updated; an out-of-tree one needs the two keywords added.
+  **caller** is unaffected. An **implementer** is not, and the failure is worse
+  than a rejected type: `runtime_checkable` compares member NAMES only, so a
+  third-party backend still passes `isinstance` while missing the keywords, and
+  the break surfaces as a `TypeError` at call time rather than at the seam.
+  In-tree backends are updated; an out-of-tree one needs the two keywords added.
   `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
@@ -49,29 +59,6 @@ packages (bumped in lock-step).
   duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
 
 ### Fixed
-
-- `core`: **the max-age bound now reaches `collection[id]`.** `_resolve_row`
-  read L1 through `get_row_sync`, and `collection[id, "field"]` read it through
-  `get_field_sync` -- both REPORTING reads, which do not expire. A stale row
-  was therefore returned before either path could reach the pull-through below
-  it, so the primary read path served it indefinitely on a collection that had
-  opted in. Both now take the repairing read. The field subscript also drops a
-  redundant L1 read on the way.
-
-  The gap was structural: collection-tier tests covered `ensure` and the
-  reporting readers, backend-tier tests covered the predicate, and the wiring
-  between them had none. It does now, in both directions -- expiry reaches the
-  subscript path, and an unbounded collection still does not expire.
-
-- `core`: `execute_query` strips `_3t_cached_at`. It is an `L1Backend` protocol
-  member, so a `SELECT *` through it handed callers a column the constant's own
-  contract says never escapes.
-
-- `core`: a failed expiry delete no longer raises out of a read. `delete_by_id`
-  opens `BEGIN IMMEDIATE` and re-raises `OperationalError`, which made reads
-  newly susceptible to write contention and, in `select_batch`, abandoned every
-  row behind the failure. The row is withheld either way and the next read
-  retries the delete.
 
 - `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
   schema, as `SQLiteBackend` already did. Without it any framework-injected

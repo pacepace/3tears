@@ -118,9 +118,15 @@ The full set:
 | Strip from results | `_deserialize_row`, the single funnel both `select_by_id` and `select_batch` already pass every row through |
 | Dynamic collections | `data/collection_factory.py:129,243` builds its own metadata and calls `initialize` per table |
 
-`execute_query` is deliberately exempt: it returns raw dicts against explicit column lists
-and is used only for non-entity tables (`collections/flush.py:207`,
-`geo/features.py:163,194`), as are the raw-connection reads at `geo/features.py:127-137`.
+`execute_query` was deliberately exempt here, on the grounds that it returns raw dicts
+against explicit column lists and is used only for non-entity tables
+(`collections/flush.py`, `geo/features.py`), as are that module's raw-connection reads.
+**That exemption did not hold and was reversed before merge.** `execute_query` is an
+`L1Backend` protocol member, so it is not only reachable by the in-tree callers this
+argument enumerated: a `SELECT *` through it handed a caller the stamp, which is the one
+thing the column's own contract promises never escapes. It now strips the stamp like the
+keyed reads. The in-tree callers were unaffected either way, which is exactly why the
+argument looked sound.
 
 `build_select_clause` returns literal `"*"` when `columns is None` (`cache/base.py:42-43`),
 which is every production call, so the stamp does come back and must be stripped. Stripping
@@ -249,6 +255,33 @@ same save already wrote, so the new value comes back and nothing reverts. Withou
 it reads L3 and serves the pre-write value. The code comment at `_entry_is_fresh` states
 the same limit, because one rule being load-bearing for another is not obvious from either.
 
+## Expiry applies only where a miss repairs (added after the cumulative review)
+
+The first shipped shape expired on every L1 read. That is wrong, and the way it is wrong
+is silent.
+
+A read's callers do not share a contract. A **repairing** caller (`ensure`, `_resolve_row`,
+`_ensure_in_l1`) treats a miss as "go to the lower tier", so expiring a row makes it
+reload, which is the entire mechanism. A **reporting** caller (`get_row_sync`,
+`get_field_sync`, `set_field_sync`, `exists_in_cache_sync`) treats a miss as "not cached"
+and hands it to something that will not fall back. Expiring under those turns a stale hit
+into a *deleted* row and reports absence, which is worse than the staleness it bounds:
+`__setitem__` reads a field write back through `get_row_sync` and skips propagation on
+`None`, so the write vanishes with nothing raised, and an entity handle held across the
+bound starts answering `None` for fields it has.
+
+So `_select_from_l1` takes an `expiring` flag and every reader in the class routes through
+it. The distinction is a miss's *meaning*, not its value.
+
+**The correction over-shot once, and that is the lesson worth keeping.** Narrowing to
+opt-in-per-call-site left `_resolve_row` reading through `get_row_sync`, and
+`collection[id, "field"]` reading through `get_field_sync` -- both reporting reads. Since
+a row that could expire must exist, the non-expiring read always answered first and the
+bound never applied to `collection[id]` at all. The feature shipped inert on its primary
+read path and every test passed, because the collection-tier tests covered `ensure` and
+the reporting readers while the backend-tier tests covered the predicate, and nothing
+covered the wiring between the two.
+
 ## Acceptance
 
 - A collection with `l3_pool is None` never expires an entry, proven against
@@ -260,3 +293,9 @@ the same limit, because one rule being load-bearing for another is not obvious f
 - `ScanCache` uses the extracted helper; there is one implementation of the predicate.
 - `collection_scan_cache` and `write_buffer` gain no injected column.
 - A row written locally and never pulled through does not expire.
+- **A repairing read expires; a reporting read does not.** Both directions are proven at
+  the collection tier, not only at the backend: `collection[id]` and
+  `collection[id, "field"]` past the bound reload, a field write across the bound still
+  propagates, and an entity handle held across it still answers.
+- **An unbounded collection still does not expire**, so the reachability fix cannot have
+  turned expiry on by default.
