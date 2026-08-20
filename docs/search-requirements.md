@@ -1564,8 +1564,11 @@ serialisation one. That moves this from "rule before the first consumer binds"
 toward gating the first pod-resident deployment.
 
 **SR-M2 (DECISION).** Response caching — where, and is it in scope?
-`shared_search.md:173-175` raises it and notes core collections have no TTL
-semantics. It interacts with SR-F3: a cache and a replay store solve adjacent
+`shared_search.md` §5.1 raises it. Core collections do have an opt-in L1 max
+age, but it is not TTL and does not change this decision: it bounds an L1 row
+cached from a lower tier, and a collection with no L3 pool is refused a bound,
+which is precisely the shape a response cache has.
+It interacts with SR-F3: a cache and a replay store solve adjacent
 problems, and building one without deciding the other tends to produce a cache
 that is *almost* a replay store.
 *Recommendation:* decide replay first; caching after, in its light.

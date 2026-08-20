@@ -68,13 +68,28 @@ packages (bumped in lock-step).
   Expiry applies only on the read paths that repair by pulling through. The
   paths that merely report whether a row is cached do not expire: for them a
   miss is a final answer a caller acts on, so converting a stale hit into one
-  loses the row rather than refreshing it.
+  loses the row rather than refreshing it. The repairing set is `ensure`,
+  `collection[id]` and `collection[id, "field"]`; the reporting set is
+  `get_row_sync`, `get_field_sync`, `set_field_sync` and `exists_in_cache_sync`.
+
+  A read that does expire deletes the row, and a delete that loses a lock does
+  not raise out of the read: the row is withheld either way and the next read
+  retries. The stamp is stripped from every row the `L1Backend` protocol
+  returns, `execute_query` included. Expiry drops increment
+  `threetears_l1_rows_expired_total`, labelled by table, because the rate is
+  what separates a bound doing its job from one that never fires.
 
 - `core`: two keyword parameters on the `L1Backend` protocol reads,
-  `max_age_seconds` and `now_monotonic`. Both default to off and the framework
-  omits them entirely when expiry is not configured, so existing callers **and
-  out-of-repo `L1Backend` implementations** are unaffected -- the kwargs reach a
-  backend only when a collection has opted into a bound. `DuckDBBackend` raises `NotImplementedError` rather than
+  `max_age_seconds` and `now_monotonic`. Both default to off, and the framework
+  **omits them entirely** rather than passing `None` when expiry is not
+  configured, so existing callers and out-of-repo `L1Backend` implementations
+  are unaffected until a collection opts into a bound.
+
+  Once one does, an out-of-tree backend must accept the two keywords, and the
+  failure mode is worse than a rejected type: `runtime_checkable` compares
+  member NAMES only, so such a backend still passes `isinstance` and the break
+  surfaces as a `TypeError` at call time rather than at the seam. In-tree
+  backends are updated. `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 

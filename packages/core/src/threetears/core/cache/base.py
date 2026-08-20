@@ -1,4 +1,14 @@
-"""L1 cache backend protocol and sentinel value."""
+"""L1 cache backend protocol, and the row-age policy every backend shares.
+
+Holds four things, not one:
+
+- :class:`L1Backend`, the protocol every L1 backend implements.
+- :data:`MISSING`, the cache-miss sentinel (distinct from a cached ``None``).
+- The cached-at stamp: :data:`_CACHED_AT_COLUMN`, the tables exempt from it, and
+  :func:`_entry_is_fresh`, which is the single copy of the max-age predicate so
+  two backends cannot disagree about what "expired" means.
+- :func:`build_select_clause`, shared SQL construction.
+"""
 
 from __future__ import annotations
 

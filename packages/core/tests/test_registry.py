@@ -244,6 +244,41 @@ class TestL1MaxAgeConfiguration:
         registry.register(_make_mock_collection("widgets"), l3_pool=MagicMock())
         assert registry.get_l1_max_age("widgets") == 30.0
 
+    def test_a_bound_on_one_table_does_not_leak_to_another(self) -> None:
+        """The bound is per table, not per registry.
+
+        Lived in `3tears-channels`' no-L3 guard, which is a file about presence
+        having no L3 to pull through from. The assertion is generic registry
+        behaviour and nothing in core covered it.
+
+        :return: nothing
+        :rtype: None
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("table_a", 30.0)
+        assert registry.get_l1_max_age("table_b") is None
+
+    def test_clear_drops_the_bound_with_everything_else(self) -> None:
+        """``clear()`` must not leave a bound behind for the next registration.
+
+        The bound keeps its own dict precisely so ``register()`` cannot wipe it,
+        and the design record anticipates someone tidying the two table-keyed
+        dicts together. A separate lifetime is not an unbounded one: a table
+        re-registered after a clear would otherwise inherit expiry nobody in the
+        new setup asked for, which is the same silent-config bug in the other
+        direction.
+
+        :return: nothing
+        :rtype: None
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        assert registry.get_l1_max_age("widgets") == 30.0
+
+        registry.clear()
+
+        assert registry.get_l1_max_age("widgets") is None
+
     def test_a_bound_survives_every_tier_override_register_accepts(self) -> None:
         registry = CollectionRegistry()
         registry.set_l1_max_age("widgets", 30.0)
