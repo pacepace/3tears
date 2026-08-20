@@ -533,6 +533,24 @@ discodon's NATS convergence and sits outside this sequence.)
   Nothing moves out of discodon and no package is published; the lift becomes
   mechanical once it holds.
 
+  **Held as of 2026-08-20.** In place: R1's boundary test; the `DocumentStore`
+  port with its YugabyteDB adapter; the narrow completion protocol
+  (`CompletionClient` / `CompletionResult`); R10's fidelity axis; an installable
+  chart/spec package with a host-supplied palette.
+
+  Outstanding — the first item was this phase's pair of open decisions and both
+  are now ruled, so what remains of it is build:
+
+  - **`SweepableValue`'s `display` and `scale`** (R9) and **the pooling boundary**
+    (R11) are ruled (discodon Wave 2 design §5.2; C6) and unbuilt. Both are cheaper
+    before the cut than after, so they still belong to this phase.
+  - **`universe` → `scope`** — discodon Wave 2; touches the MCP surface. Binding
+    eval-contracts before it lands means binding under provisional vocabulary.
+  - **The package still imports `discodon.llm`** — discodon #2402–#2407.
+  - **R8's input registry** — not built, and **R10's authoring-time gate cannot be
+    built without it**, since controllability derives from the registry. One of
+    R10's four axes exists.
+
 **Checkpoint:** discodon running on the extracted packages; the eval
 contracts ratified per
 [SR-M3's per-repo-acceptance pattern](search-requirements.md#m-lifecycle).

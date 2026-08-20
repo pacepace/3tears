@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day
+**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day; R11 and per-requirement status added 2026-08-20 (evening); R9 and R11 reconciled against the discodon Wave 2 rulings 2026-08-20
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -50,6 +50,32 @@ a review comment somebody has to notice.
 
 Every requirement below is a specific instance of this one. R1 is what makes
 them stay true after they are met.
+
+**How it works in discodon** (`tests/unit/eval/test_extraction_import_boundary.py`).
+The AST walk is as specified. What holds it in place is **two registers, not one**:
+
+- `_EVAL_HOST_ALLOWLIST` — **debt, and it may only shrink.** Each entry carries a
+  reason and, as a typed field, the issue that retires it. Free-text scanning for
+  an issue number is wrong: a reason legitimately mentions other issues and the
+  scan then adopts the wrong owner.
+- `_EVAL_HOST_ADAPTERS` — **the declared host-adapter seam, permanent by design.**
+  These modules exist to be host-coupled; an extraction deletes them rather than
+  porting them.
+
+Filing a seam as debt records a retirement that must never happen; filing debt as
+a seam launders it into architecture. Neither is detectable afterwards, so the
+split is structural.
+
+Both registers are **size-pinned, counted in `(file, host module)` pairs** — an
+entry-counting ceiling lets a new module join an existing file's tuple silently.
+Growing a ceiling is a two-line, diff-visible act.
+
+**What this test does not catch:** a module added to the package and left
+unclassified. Rename and deletion of a declared module fail; a new unclassified
+file is simply absent from every register, and absence is not a failure. Closing
+it requires asserting the classified set is total — write that assertion first,
+while the module set is small (discodon is retrofitting it across ~35 files,
+#2409).
 
 ## R2 — eval owns its model base
 
@@ -334,6 +360,14 @@ snapshotted fixture, not a wider override map; **building an override path into
 `directives` would add a second host-shaped mechanism to the one component that
 already cannot be extracted.**
 
+**Two products out of two, uncoordinated.** metallm independently content-hashes
+its persona blocks — `identity_versions.content_hash`, a parent-pointer chain, one
+active per block — and leaves every other lever name-referenced. That is the same
+split discodon has, arrived at without contact between them, which is the strongest
+available evidence that R9 describes a real requirement rather than a discodon
+artefact. It also means the half both products left undone is precisely the half
+R9 asks for.
+
 **Content identity is necessary and not sufficient — a registration also supplies a
 rendering and a scale.** A content hash of `0.4` is a correct identity and a useless
 reader label, and a memo reading *"component 9c1e… beat component 4b7a…"* satisfies R9
@@ -361,6 +395,10 @@ need `interval` independently: discodon (temperature, k), metallm
 **A compound lever registers as two axes.** scriob's `embedder = voyage-3.5/1024` is a
 nominal model id and an interval dimension; one `SweepableValue` loses the interval
 half and the axis with it.
+
+**No consumer carries this today.** The viz payload's `SweepDimension{name, ordered}`
+already asks whether an axis is ordered, of values that have no way to answer — it is
+downstream of a distinction the data model does not make.
 
 **Verify.** Two runs naming the same preset across an edit to that preset's
 content do not share a variant key; and a variant key can be computed for a
@@ -462,6 +500,87 @@ absent from the input registry is reported as uncontrollable without a second
 list being maintained; and the fidelity axis is covered by a test that the eval
 and production paths reach one construction function, not by an entry anywhere.
 
+**Status: one axis of four is built.** The fidelity axis exists in discodon and
+works as prescribed — production and eval reach one construction function, and
+`fidelity.py` proves it by **walking the source**, not by counting calls at
+runtime. A runtime assertion passes just as happily once a third path is added.
+The registry naming *which* pairs must converge is separated from the walker that
+proves convergence: the walker is what extracts, the registry is what stays.
+
+**Not built: the gate.** Representability, controllability and observability have
+no authoring-time refusal, and controllability cannot have one until R8's input
+registry exists — R10 derives that map from the registry rather than maintaining a
+second list. Until then R10 is a description, which is the failure mode it names.
+
+Tracked as discodon **#2412**, which carries the per-axis state and keeps R10's own
+constraints (derive rather than maintain; the unit is a precondition, not an area;
+fidelity stays a test and gains no map entry).
+
+## R11 — the subject key declares the pooling boundary; the engine discloses the basis
+
+**Property.** Every observation carries a required, non-empty **subject key**.
+Observations sharing a key pool; observations with different keys do not. The
+engine performs the pooling the host declared, does not adjudicate whether it is
+meaningful, and **states the dimension basis of any pooled quality number**.
+
+| Obligation | Owner | Checked |
+|---|---|---|
+| Subject key present and non-empty | engine | yes — unrepresentable, not defaulted |
+| A pooled quality number carries its dimension basis | engine | yes |
+| The key is stable across renames and unique within its scope | host | **not per row** — the engine sees a string; it warns at population level |
+
+**Why the rule is on the key and not on the subject type.** A rule of the form
+*"never pool across personas"* is written about who the subject is, while its
+rationale is about where the rubric comes from. Those coincide only when each
+subject derives its own rubric. They separate as soon as a host evaluates
+something with no self-description — a system prompt, a model chosen for an
+internal function, a retrieval configuration — where several candidates share
+**one declared rubric** and comparing them is the point of the campaign. Phrasing
+the rule on the subject forbids that case.
+
+**Key and label are separate required fields.** That is not enforcement — a host can
+pass the display name into both — but it makes the mistake an affirmative act visible in
+the data rather than an omission nobody can see. And while the engine cannot classify a
+single string (a UUID, `persona:kairo` and `Kairo` are indistinguishable, and any
+id-vs-label heuristic would reject exactly the slug-shaped keys a non-entity subject
+naturally uses), it holds the whole population, where instability *is* observable: one
+key under two labels, or one label under two keys, is the historical failure itself, and
+the engine warns on it without classifying anything.
+
+**The risk this actually manages is a wrong key, not a careless comparison.** The
+failure that produced discodon's version of this rule was subject identity keyed
+on a **display name**: a rename split one subject in two, and two same-named
+subjects in different scopes merged into one. Same defect class as R9's
+`prompt_overrides` — identity taken by name where it must be taken by something
+stable. One lesson, two surfaces.
+
+**Sequencing — this is a hard order, not a preference.** In discodon a pooled
+composite is a mean over whatever dimensions each result happens to hold, and no
+layer records which. Obligation 2 therefore does not exist yet, and the blunt
+prohibition is currently the only thing preventing a silent mean over a ragged
+dimension set.
+
+> **The disclosure must exist before any pooling prohibition is relaxed.**
+
+**Verify.** A blank subject key is rejected by the model rather than defaulted; two
+subjects with different keys never merge into one cell; a pooled composite renders
+with the dimension set it was computed over and is marked when that set is ragged.
+
+**Status: ruled** — discodon C6 (`.prawduct/artifacts/eval-system.md`), 2026-08-20.
+The declaration replaces the blunt prohibition, with the three obligations above and the
+sequencing constraint intact: the disclosure ships before any pooling prohibition
+relaxes. What remains is build, not decision.
+
+## Two host norms that do not cross into the package
+
+- **Single-operator scale.** Discodon assumes one operator. The package must not:
+  **metallm is multi-tenant.** Unqualified global queries and scope-free sweeps
+  fail the second consumer at adoption rather than at review.
+- **Retention is bounded by the matrix, never by what was observed.** A subject
+  snapshot carries the **content hash** of each component, never the component
+  text. Holding recent memory or working notes verbatim per observation scales
+  retention with what the candidate produced.
+
 ## Explicitly not in scope
 
 `service.py`, `runner.py`, `persona_factory.py`, `storage.py` and
@@ -496,13 +615,20 @@ not discodon's.
   supplying bytes, with no registry of its own to resolve names against. This is
   the same seam `family-convergence.md` §4.3 names from the prompt side
   ("content-addressed prompt identity and eval identity are two mechanisms
-  today"); one unification serves both.
+  today"); one unification serves both. It carries
+  `SweepableValue{content_hash, display, scale, raw?}` — identity, rendering *and*
+  spacing — since a hash alone is a correct identity and an unreadable label.
+- **The pooling-boundary contract** (R11): a required non-empty subject key, and a
+  dimension basis on every pooled quality number. Owed with its sequencing
+  constraint — the disclosure ships before any prohibition relaxes.
 - **The coverage schema and its checker** (R10): the four-axis vocabulary,
   the per-precondition unit, and the authoring-time refusal. The facts are the
   host's and the fidelity axis is a test rather than a record; what the package
   owes is the shape they are expressed in, so two consumers describe their gaps
   the same way.
 - The package cut itself, once R1 holds — at which point the lift is mechanical.
+  R1's test holds in discodon today; its totality assertion belongs in the
+  package's own conformance suite, where the module set is still small.
 
 ---
 
