@@ -300,3 +300,81 @@ class TestShapeBToggle:
         )
         # disabled shape B: zero violations, strict passes.
         run_underscore_enforcement(config, walker="shape_b")
+
+
+class TestAScopeKeyedExemptionSurvivesAnEditAboveIt:
+    """The reason this domain moved off line keys, exercised through the real runner.
+
+    A line number is a fact about the file's layout, not about the access. Insert an
+    import at the top and every line-keyed entry below it stops matching, so the run
+    reports its original violations against code nobody touched. That fired twice in
+    one session here.
+
+    These build one synthetic repo, run enforcement over it, then rewrite the source
+    with lines inserted above the access and run again. The scope-keyed entry must
+    hold across the edit; the line-keyed one must not, which is the control that
+    stops the first assertion passing for some unrelated reason.
+    """
+
+    @staticmethod
+    def _repo(tmp_path: Path, *, padding: int, key: str, rationale: str) -> UnderscoreAccessConfig:
+        """Build a repo whose single access sits `padding` lines further down."""
+        repo = _make_repo_with_pyproject(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "__init__.py", "")
+        _write(src / "pkg" / "_helper.py", "_name = 1\n")
+        _write(
+            src / "consumer" / "__init__.py",
+            "".join(f"# filler {i}\n" for i in range(padding)) + "from pkg._helper import _name\n",
+        )
+        ledger = repo / "_exemptions.txt"
+        ledger.write_text(f"# rationale: {rationale}\nsrc/consumer/__init__.py:{key}:_name\n")
+        return UnderscoreAccessConfig(
+            repo_root=repo,
+            scan_roots=(src,),
+            inheritance_roots=(src,),
+            exemptions_path=ledger,
+        )
+
+    def _run(self, config: UnderscoreAccessConfig, monkeypatch: pytest.MonkeyPatch) -> bool:
+        """Run enforcement in strict mode; True when it passed."""
+        monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "strict")
+        try:
+            run_underscore_enforcement(config, walker="shape_a")
+        except BaseException:  # noqa: BLE001 - pytest.fail raises its own type; any failure is "did not pass"
+            return False
+        return True
+
+    def test_a_scope_key_still_matches_after_lines_are_inserted_above(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same access, same scope, six lines further down. The entry does not move.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :param monkeypatch: pytest monkeypatch
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        unpadded = self._repo(tmp_path / "a", padding=0, key="<module>", rationale=_VALID_RATIONALE)
+        padded = self._repo(tmp_path / "b", padding=6, key="<module>", rationale=_VALID_RATIONALE)
+
+        assert self._run(unpadded, monkeypatch), "the scope key did not match before the edit"
+        assert self._run(padded, monkeypatch), "an edit above the access broke a scope-keyed entry"
+
+    def test_the_line_key_is_the_thing_that_breaks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The control. Without it the test above passes on a run that exempts everything.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :param monkeypatch: pytest monkeypatch
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        unpadded = self._repo(tmp_path / "c", padding=0, key="1", rationale=_VALID_RATIONALE)
+        padded = self._repo(tmp_path / "d", padding=6, key="1", rationale=_VALID_RATIONALE)
+
+        assert self._run(unpadded, monkeypatch), "the line key did not match its own line"
+        assert not self._run(padded, monkeypatch), "a line-keyed entry survived an edit above it"

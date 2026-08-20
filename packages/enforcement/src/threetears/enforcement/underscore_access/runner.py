@@ -40,6 +40,7 @@ from threetears.enforcement.common import (
 from threetears.enforcement.underscore_access.config import (
     UnderscoreAccessConfig,
 )
+from threetears.enforcement.underscore_access.ledger import enclosing_scopes
 from threetears.enforcement.underscore_access.walkers import (
     shape_a_violations,
     shape_b_violations,
@@ -49,6 +50,11 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 __all__ = ["run_underscore_enforcement"]
+
+#: Per-file scope maps, so a run parses each exempted file once rather than once
+#: per access. Process-lived: the enforcement run is a single pass over a tree
+#: that is not being edited underneath it.
+_SCOPE_CACHE: dict[str, dict[int, str]] = {}
 
 
 _VALID_WALKERS: frozenset[str] = frozenset(
@@ -114,7 +120,7 @@ def run_underscore_enforcement(
     violations = _run_walker(walker, config, scan_roots, inheritance_roots)
 
     exemptions = _load_exemptions(config.exemptions_path)
-    filtered = apply_exemptions(violations, exemptions, config.repo_root)
+    filtered = apply_exemptions(violations, exemptions, config.repo_root, scope_of=_scope_of)
 
     mode = resolve_mode(config.mode_env_var, default=MODE_STRICT)
 
@@ -174,6 +180,40 @@ def _resolve_inheritance_roots(
     if config.inheritance_roots is not None:
         return config.inheritance_roots
     return discover_src_roots(config.repo_root)
+
+
+def _scope_of(path: Path, line: int) -> str:
+    """resolve a source line to the qualname of the scope enclosing it.
+
+    The identity a scope-keyed exemption is written against. Backed by
+    :func:`~threetears.enforcement.underscore_access.ledger.enclosing_scopes`, which
+    is the same derivation ``scripts/regen-underscore-exemptions.py`` uses to carry
+    rationales forward -- so an entry the script writes is an entry this matches, by
+    construction rather than by two implementations agreeing.
+
+    Per-file results are cached: a run resolves thousands of accesses across a few
+    dozen exempted files, and re-parsing each file per access would dominate it.
+
+    :param path: absolute path of the file the access is in
+    :ptype path: Path
+    :param line: 1-based line of the access
+    :ptype line: int
+    :return: enclosing qualname, or ``"<module>"`` at module level and for a file
+        that cannot be read
+    :rtype: str
+    """
+    key = str(path)
+    scopes = _SCOPE_CACHE.get(key)
+    if scopes is None:
+        try:
+            scopes = enclosing_scopes(path)
+        except OSError:
+            # A path the walker reached but this cannot read is not a reason to fail
+            # the whole run: it degrades to module scope, which simply will not match
+            # a scope-keyed entry, so the violation is REPORTED rather than hidden.
+            scopes = {}
+        _SCOPE_CACHE[key] = scopes
+    return scopes.get(line, "<module>")
 
 
 def _load_exemptions(path: Path | None) -> list[Exemption]:
