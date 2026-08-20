@@ -418,3 +418,19 @@ class TestScopeKeysAreOptIn:
 
         with pytest.raises(ExemptionError, match="must be an integer"):
             parse_exemptions_with_rationale(path)
+
+    def test_a_non_decimal_digit_does_not_escape_as_a_bare_valueerror(self, tmp_path: Path) -> None:
+        """`isdigit` is true for a superscript two; `int()` on one raises.
+
+        The same escape `--5` took, one character class over. `isdecimal` is the
+        predicate that agrees with `int`.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:²:_x\n")
+
+        with pytest.raises(ExemptionError, match="must be an integer"):
+            parse_exemptions_with_rationale(path)

@@ -353,11 +353,16 @@ def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
     private on a single line collapse here and are counted twice there, and the
     walkers also emit violations that are not private reads at all. Where both
     counters run -- an exempted file under a ``src`` root -- they must agree or an
-    entry covers a different access than the one it was written for. The gate that
-    would catch it is ``tests/enforcement/test_underscore_access.py``, which runs
-    the matcher over the real ledger; ``test_underscore_exemptions_resolve.py``
-    additionally asserts that the one-line collapse shape is absent. Neither is a
-    guarantee by construction.
+    entry covers a different access than the one it was written for.
+
+    **No live gate in this repo catches that.** All five walkers currently report
+    zero violations over its src roots, so the matcher is handed an empty list and
+    never matches one of these entries; ``test_underscore_access.py`` is a
+    regression guard for when that changes, not a present check. What does hold
+    today is ``TestTheTwoOccurrenceCountersAgree``, which asserts the divergent
+    shape is absent, and the unit tests that drive the matcher over a synthetic
+    repo with real violations. Agreement is asserted, never guaranteed by
+    construction.
 
     The line is carried as the VALUE rather than the key: it is what an error
     message needs to point a reader at, and nothing matches on it.
@@ -383,6 +388,15 @@ def ledger_scope_entries(exemptions_path: Path) -> list[tuple[str, str, str, int
     Line-keyed entries are skipped rather than converted: converting one needs the
     file, and a check that silently reinterpreted a line as a scope would report
     nothing for exactly the entries that had gone stale.
+
+    **An ordinal-less key is read as occurrence 0 here, and as EVERY occurrence by
+    the matcher** (:func:`~threetears.enforcement.common.exemptions.apply_exemptions`
+    treats a ``None`` ordinal as a wildcard). The two readings disagree, and this
+    domain never has to choose between them because it never writes that form:
+    ``scripts/regen-underscore-exemptions.py`` always emits ``#N``, and all 311
+    live entries carry one. Hand-writing an ordinal-less entry here would make
+    ``unlisted_accesses`` report occurrence 1 as unlisted while the matcher
+    silently exempted it, so do not.
 
     :param exemptions_path: ledger file
     :ptype exemptions_path: Path

@@ -231,7 +231,10 @@ def _parse_key(field: str, path: Path, lineno: int, *, allow_scope_keys: bool) -
     """
     if field == "*":
         return (0, None, None)
-    if field.isdigit():
+    # ``isdecimal`` not ``isdigit``: a superscript two is a digit and is not an int,
+    # so ``isdigit`` would send it to ``int()`` and out as a bare ValueError -- the
+    # same escape ``--5`` used to take, one character class over.
+    if field.isdecimal():
         line_int = int(field)
         if line_int < 1:
             raise ExemptionError(f"{path}:{lineno}: line number must be positive, got {line_int}")
@@ -305,12 +308,16 @@ def apply_exemptions(
         line within each ``(file, scope, symbol)`` group. A caller whose ledger
         numbers a different population -- ``underscore_access`` writes its ledger
         from an AST scan, not from walker output -- must ensure the two agree, or
-        an entry covers a different access than the one it was written for. The
-        gate that would catch that is that domain's
-        ``tests/enforcement/test_underscore_access.py``, which runs THIS matcher
-        over the real ledger. Its ``test_underscore_exemptions_resolve.py``
-        asserts one divergence shape directly but numbers both of its own sides
-        with the ledger's counter, so it cannot see the two disagree.
+        an entry covers a different access than the one it was written for. The matcher's scope path is proven by
+        unit tests that build a repo WITH violations
+        (``packages/enforcement/tests/underscore_access/test_runner.py``), not by
+        this repo's own ledger: all five walkers currently report ZERO violations
+        over its src roots, so ``test_underscore_access.py`` runs this function
+        over an empty list and matches none of the 311 entries. The only live
+        guard on the two counters agreeing is
+        ``TestTheTwoOccurrenceCountersAgree`` in
+        ``tests/enforcement/test_underscore_exemptions_resolve.py``, which checks
+        that the divergent shape is absent.
     :ptype scope_of: Callable[[Path, int], str] | None
     :return: violations not matched by any exemption, in original order
     :rtype: list[Violation]

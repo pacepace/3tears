@@ -429,10 +429,16 @@ class TestTheTwoOccurrenceCountersAgree:
     than leaving it in a commit message. If it fires, the fix is one numbering
     source, not a new entry.
 
-    The end-to-end gate over the real ledger is `test_underscore_access.py`, which
-    runs the matcher. Nothing in THIS module exercises `_occurrences`: both
-    directions here number via `scoped_accesses` on both sides, so a check written
-    here could never see the two counters disagree.
+    Nothing in THIS module exercises `_occurrences`: both directions here number
+    via `scoped_accesses` on both sides, so a check written here could never see
+    the two counters disagree. Nor does anything else in this repo -- all five
+    walkers currently report zero violations over its src roots, so the matcher
+    runs over an empty list and `test_underscore_access.py` matches none of the
+    311 entries. It is a regression guard for when violations appear, not a
+    present check.
+
+    Which makes THIS the only live guard: it does not prove the counters agree,
+    it proves the shape on which they could disagree is absent.
     """
 
     def test_no_walker_scanned_file_has_two_accesses_of_one_symbol_on_one_line(self) -> None:

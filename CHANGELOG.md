@@ -122,7 +122,6 @@ packages (bumped in lock-step).
   `scoped_accesses`, `ledger_scope_entries`, `ledger_paths`. `ledger_entries`
   still reads line-keyed entries only and is unchanged for consumers using them.
 
-
 - `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
   onto the classes they describe.** All 82 live entries are now
   `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is
