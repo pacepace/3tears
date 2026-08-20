@@ -53,6 +53,28 @@ await catchup_tick(listener, [(subject, on_bump), ...])
 A consumer that subscribes and schedules nothing still receives broadcasts,
 but misses everything a broadcast can lose, including a replaced counter.
 
+### There is no durable epoch in NATS, deliberately
+
+`NatsKvBucket` accepts `storage="file"`, so a counter that survives a broker
+process restart is constructible. It is not used, because file-backed JetStream
+survives only if the store directory survives, and the failure this design
+answers is a broker on ephemeral storage whose restart wipes JetStream
+wholesale. On that deployment `file` is exactly as durable as `memory`, so NATS
+durability is conditional on how someone provisioned a volume.
+
+For every epoch except one, that does not matter: a reset costs one extra
+reload from a lower tier that is the real source of truth, and fails safe. For
+the one whose value escapes to caches we cannot purge, conditional durability is
+the wrong guarantee, so it keeps an unconditional Postgres row.
+
+Which substrate a subject takes is declared per family in
+`threetears.epoch.client`, not inferred and not passed per call. A per-call flag
+lets two call sites disagree about one subject; inference silently classifies a
+subject nobody considered. `packages/epoch/tests/unit/test_durability_policy.py`
+enumerates the real `Subjects` factory and fails when a new `*_epoch` builder is
+in neither table, so adding one forces the decision rather than defaulting to
+ephemeral -- the direction that cannot be repaired.
+
 One family is carved out and stays on a durable Postgres row:
 `Subjects.datasource_tile_epoch`. Its value is the `v{n}` in a tile URL and
 reaches CDN and browser caches, so a counter that reset would re-issue

@@ -1,7 +1,11 @@
 """multi-pod integration test: two listeners stay coherent on bumps.
 
-verifies the full push-plus-pull design end-to-end against a real
-Postgres + NATS testcontainer pair:
+verifies the full push-plus-pull design end-to-end against real
+testcontainers. The NATS container is what these tests exercise: every
+subject here is ephemeral, so the counter is KV. A Postgres container is
+still provisioned by the fixtures and is currently unused by this file --
+it would earn its place the day a tile-shaped subject is added here to
+cover the durable carve-out at integration level.
 
 - happy path: a writer bumps :class:`EpochClient.bump`; both
   subscribed listeners receive the broadcast and advance their
@@ -193,9 +197,11 @@ async def test_pull_on_stale_recovers_missed_broadcast(
 ) -> None:
     """pod B never sees the broadcast; catches up on the next pull.
 
-    proves the durable Postgres write is the recovery mechanism. a
-    missed broadcast becomes a < 1-tick delay before any consumer
-    notices the staleness and reloads.
+    proves the COUNTER is the recovery mechanism, not the broadcast: a
+    missed broadcast becomes a < 1-tick delay before any consumer notices
+    the staleness and reloads. That counter is the NATS KV one -- this
+    subject is not in the durable tile family, so no Postgres row is
+    involved on this path.
     """
     set_default_namespace("itest")
 
@@ -281,10 +287,11 @@ async def test_monotonicity_under_concurrent_writers(
 ) -> None:
     """50 interleaved bumps from two writers yield strict monotonicity.
 
-    proves the row-lock serialization of ``ON CONFLICT DO UPDATE
-    SET epoch = epoch + 1`` plus the listener's dedupe-on-equal
-    discipline together produce a monotonically-increasing sequence
-    on every subscriber.
+    proves the KV counter's compare-and-swap loop plus the listener's
+    dedupe-on-equal discipline together produce a monotonically-increasing
+    sequence on every subscriber. NOT the Postgres ``ON CONFLICT DO UPDATE
+    SET epoch = epoch + 1`` row lock: that SQL is ``_BUMP_SQL``, which only
+    the durable tile family reaches and this test never executes.
     """
     set_default_namespace("itest")
 
@@ -318,9 +325,9 @@ async def test_monotonicity_under_concurrent_writers(
         # let any in-flight broadcasts drain
         await asyncio.sleep(0.5)
 
-        # final last-seen must equal 50 (all bumps committed durably)
-        durable = await listener._epoch_client.current(subject)  # noqa: SLF001
-        assert durable == 50
+        # every bump landed: the counter itself reports 50
+        counted = await listener._epoch_client.current(subject)  # noqa: SLF001
+        assert counted == 50
 
         # observed deliveries must be strictly monotonic (some may have
         # been deduped or merged via gap-jump; the contract is no

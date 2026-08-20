@@ -139,6 +139,25 @@ packages (bumped in lock-step).
   it, and the reason the requirement had to be written in a release note before:
   there was nowhere else to put it.
 
+- `epoch`: **which substrate an epoch takes is now declared per family, not
+  inferred from the subject's spelling.** `_is_durable` matched any path
+  containing `.tiles.`, so a subject nobody had considered was classified
+  silently -- and the silent answer is ephemeral, which is the direction that
+  cannot be repaired once a version number has reached a CDN.
+
+  Both tables now carry every epoch subject with its reason, and
+  `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
+  `Subjects` factory: a new `*_epoch` builder fails until someone decides, a
+  declaration for a deleted subject fails, and a declaration that disagrees with
+  the classifier fails. All five existing subjects were re-decided on their
+  merits; the classification is unchanged.
+
+  **There is no durable epoch in NATS and that is a decision.** `storage="file"`
+  exists, but file-backed JetStream survives only if the store directory does,
+  and the failure this design answers wipes JetStream wholesale -- so NATS
+  durability is conditional on a volume someone provisioned. Conditional is the
+  wrong guarantee for the one value that escapes to caches we cannot purge.
+
 - `epoch`: **the epoch counter moved off Postgres onto NATS KV.** An epoch is a
   coherence signal, not a durable fact, so every `current()`, catch-up tick and
   echo confirmation was putting L3 on the cache-coherence path for a number

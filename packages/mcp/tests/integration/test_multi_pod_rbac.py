@@ -23,7 +23,9 @@ shape mirrors :mod:`threetears.epoch.tests.integration.test_multi_pod`:
 - a missed-broadcast path covers the periodic catch-up tick: the
   receiver's listener never sees the broadcast (subscription
   detached), but the next ``catch_up`` call discovers the higher
-  durable epoch and reloads the cache.
+  epoch and reloads the cache. The grants are in Postgres; the EPOCH
+  is a NATS KV counter -- ``mcp.rbac.epoch`` is not in the durable
+  tile family.
 
 requires docker; gated by ``pytest.mark.integration``.
 """
@@ -367,7 +369,7 @@ async def test_missed_broadcast_recovers_via_catchup(
     deterministic simulation: pod B never subscribes (so it cannot
     receive any broadcast). pod A mutates + bumps. pod B's
     last_seen stays at 0; the next ``catch_up`` call sees the
-    higher durable epoch and reloads. no NATS-dispatch race.
+    higher epoch on the KV counter and reloads. no NATS-dispatch race.
     """
     set_default_namespace("itest")
     async with (

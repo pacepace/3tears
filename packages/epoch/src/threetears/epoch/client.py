@@ -119,17 +119,51 @@ _IDENTITY_ATTEMPTS: Final = 3
 #: Subject families whose epoch value ESCAPES this cluster and therefore cannot
 #: live on a counter that resets.
 #:
-#: ``datasource_tile_epoch``'s value is the ``v{n}`` segment of a tile URL, and
-#: the geo collection puts that version in its cache key, so the number reaches
-#: browser and CDN caches this system cannot reach. A memory-backed counter
-#: resets on a broker restart and would re-issue ``v1..vN`` for DIFFERENT
-#: content while those edge caches still hold the old generation keyed on the
-#: same version. No amount of in-process detection fixes a stale CDN.
+#: **There is no durable epoch in NATS, and that is a decision, not a gap.**
+#: ``NatsKvBucket`` does accept ``storage="file"``, so a file-backed counter is
+#: constructible and would survive a broker process restart. It is not used
+#: here because file-backed JetStream survives only if the store DIRECTORY
+#: survives, and the failure this whole design answers is a broker on ephemeral
+#: storage whose restart wipes JetStream wholesale -- on that deployment
+#: ``file`` is exactly as durable as ``memory``. That makes NATS durability
+#: CONDITIONAL on how someone provisioned a volume. For a value whose only
+#: consumer is a CDN we cannot purge, conditional is the wrong guarantee, so
+#: the one family that needs it keeps an unconditional Postgres row.
 #:
-#: Matched on the subject's shape rather than declared per call site: durability
-#: is a property of what the number MEANS, not of who happens to bump it, and a
-#: per-call flag is one a caller can forget.
-_DURABLE_SUBJECT_MARKER: Final = ".tiles."
+#: **Durability is a property of the SUBJECT, declared here, per family.** Not
+#: a per-call flag: two call sites bumping the same subject could then disagree,
+#: and a caller can forget one. Not an inferred substring either -- the previous
+#: shape matched any path containing ``.tiles.``, which silently classified a
+#: subject nobody had thought about. Every epoch subject must appear in this
+#: table or in :data:`_EPHEMERAL_FAMILIES` below;
+#: ``packages/epoch/tests/unit/test_durability_policy.py`` enumerates the real
+#: ``Subjects`` factory and fails when a new ``*_epoch`` builder matches
+#: neither, so adding one forces the decision instead of defaulting to
+#: ephemeral -- which is the direction that cannot be repaired.
+_DURABLE_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "datasource_tile_epoch",
+        # The value is the ``v{n}`` segment of a tile URL and the geo collection
+        # puts it in its cache key, so the number reaches browser and CDN caches
+        # this system cannot reach. A counter that reset would re-issue
+        # ``v1..vN`` for DIFFERENT content while those caches still hold the old
+        # generation at the same version. No in-process detection fixes that.
+        ".tiles.",
+    ),
+)
+
+#: Epoch families deliberately left on the ephemeral counter, with the reason.
+#:
+#: Listed rather than left implicit so the enumeration test can tell "decided
+#: ephemeral" from "nobody looked". Every one of these resolves a reset by
+#: reloading from a lower tier that IS the source of truth, so a replaced
+#: counter costs one extra reload and fails safe.
+_EPHEMERAL_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
+    ("capabilities_epoch", "pods reload the capabilities registry from its Postgres row"),
+    ("gateway_catalog_epoch", "pods re-run _load_catalog from the gateway tables"),
+    ("mcp_rbac_epoch", "pods reload the RBAC view from mcp_tool_grants"),
+    ("identity_epoch", "pods drop cached principal status and re-read it"),
+)
 
 
 #: The key grammar ``nats-server`` enforces on a KV key. A subject path is
@@ -167,7 +201,9 @@ def _is_durable(subject: Subject) -> bool:
     :return: ``True`` when the value escapes the cluster and must stay durable
     :rtype: bool
     """
-    return _DURABLE_SUBJECT_MARKER in subject.path and subject.path.endswith(".epoch")
+    if not subject.path.endswith(".epoch"):
+        return False
+    return any(marker in subject.path for _name, marker in _DURABLE_FAMILIES)
 
 
 def _is_wildcard(subject: Subject) -> bool:
