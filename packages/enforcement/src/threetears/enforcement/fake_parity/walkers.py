@@ -24,10 +24,18 @@ declare what production protocol it stands in for, via one of:
    line immediately preceding the class definition. a fake that
    genuinely cannot declare one production protocol (a hand-rolled
    subset stub) carries the rationale ON THE CLASS instead of in a
-   central exemptions file. the marker travels with the class, so a
-   reformat that shifts line numbers can never orphan it (the failure
-   mode line-keyed file exemptions have). the rationale must be
-   non-blank; a bare ``# parity-exempt:`` does not exempt.
+   central exemptions file. **this is the route to use.** the marker
+   travels with the class through every rename, move and reformat,
+   where a line-keyed file entry is pinned to a layout: insert one
+   import above a fake and its exemption stops matching, reporting
+   ``no_declaration`` for a fake nobody touched. a file entry also
+   cannot notice that the module it names was deleted.
+
+   the rationale clears the same bar as an exemption-file one --
+   :func:`~threetears.enforcement.common.exemptions.rationale_defect`
+   is the single copy of that rule -- so the route that survives a
+   reformat is not also the one that admits ``# parity-exempt: wip``.
+   a bare ``# parity-exempt:`` does not exempt.
 
 fakes that have NEITHER a subclass, a ``# parity-with:`` marker, nor a
 ``# parity-exempt:`` marker raise ``fake_parity.no_declaration`` so the
@@ -49,6 +57,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common.ast_helpers import note_unscanned
+from threetears.enforcement.common.exemptions import rationale_defect
 from threetears.enforcement.common.violations import Violation
 
 __all__ = [
@@ -273,7 +282,21 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
     if fake.bases:
         return []
     if fake.exempt_rationale is not None:
-        return []
+        defect = rationale_defect(fake.exempt_rationale)
+        if defect is None:
+            return []
+        # The in-place marker is the PREFERRED exemption route, so it has to clear the
+        # same bar the exemption file does -- otherwise the route that survives a
+        # reformat is also the one where "# parity-exempt: wip" gets through.
+        return [
+            Violation(
+                category="fake_parity.weak_exempt_rationale",
+                file=fake.file,
+                line=fake.line,
+                symbol=fake.name,
+                reason=f"`# parity-exempt:` rationale {defect}",
+            ),
+        ]
     if fake.marker_target is None:
         return [
             Violation(

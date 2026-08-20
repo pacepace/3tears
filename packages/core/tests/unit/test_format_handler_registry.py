@@ -20,6 +20,7 @@ from threetears.core.serialization import (
 )
 
 
+# parity-exempt: yaml format-handler stand-in; FormatHandler Protocol surface is parse+dump only and the fake exercises both, but we exempt rather than mark because the test is the format-handler-registry test itself
 class _FakeYamlHandler:
     """stand-in FormatHandler implementation for registry tests.
 
@@ -88,6 +89,7 @@ class _FakeYamlHandler:
         return tree
 
 
+# parity-exempt: toml format-handler stand-in; same shape as yaml fake above and same exemption rationale
 class _FakeTomlHandler:
     """second stand-in handler used to verify disjoint registry entries."""
 

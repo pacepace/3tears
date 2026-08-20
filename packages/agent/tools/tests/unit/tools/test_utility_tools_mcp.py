@@ -20,6 +20,7 @@ from threetears.agent.tools.document import ParseDocumentTool
 # -- Fake MediaStorage for AnalyzeMediaTool --
 
 
+# parity-exempt: MediaStorage subset for one utility tools test that needs only get_media; the analyze_media + protocols tests have markers for the full surface
 class _FakeMediaStorage:
     """minimal MediaStorage stub for construction tests."""
 

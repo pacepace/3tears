@@ -61,6 +61,7 @@ class _FakeWorkspaceCollection(FakeWorkspaceCollection):
 
 
 @dataclass
+# parity-exempt: workspace version-row stand-in for the workspace_history tool unit; the production VersionRow has more attributes than the test reads
 class _FakeVersionRow:
     relative_path: str
     version: int

@@ -21,6 +21,38 @@ usually without the same care.
 - Default dead-lettering on uncaught subscribe exceptions.
 - JetStream KV bucket helpers, used as the L2 tier by `core`.
 
+## KV bucket grants
+
+A KV operation is a JetStream API request, and a request the server refuses
+on permissions is never answered. It has no error to return, so the call sits
+until the wrapper's 10-second deadline and reports a timeout, which is also
+what an unreachable broker reports. The connection itself stays up and
+carries every other subject perfectly well, so the obvious next step (check
+the network) finds nothing wrong.
+
+Declare each bucket a principal touches in
+`threetears.nats.subject_permissions`:
+
+```python
+kv_buckets=(f"{ns}-epochs", f"{ns}-collections")
+```
+
+`mint_user_jwt` expands one entry into pub+sub on `$KV.{bucket}.>` and
+JetStream control over the backing stream `KV_{bucket}`. Grant the data
+subjects by hand and the control plane still refuses `STREAM.CREATE`, so the
+bucket never opens.
+
+The wrapper does the diagnosis for you rather than leaving it in this
+document. The server announces a refusal once, as a `permissions violation`
+frame on the error callback, and unlike an authorization violation it does
+not close the connection, so nothing downstream re-reports it. That frame is
+decoded to the bucket it names and logged with the `kv_buckets` entry to add.
+The deadline path and a failed `kv_bucket()` open say the same thing.
+
+Bucket names are checked against their openers by
+`tests/enforcement/test_kv_bucket_grant_naming.py`, which catches a grant
+naming a bucket nothing creates before it reaches a deployment.
+
 ## Design philosophy
 
 A single canonical wrapper so platform services and any 3tears app never

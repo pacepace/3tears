@@ -23,10 +23,14 @@ This is the standard pattern from etcd `mod_revision` + watch, K8s `resourceVers
 
 Every principal that bumps or reads an epoch must be granted the `{ns}-epochs` KV bucket
 (`AGENT_POD`, `HUB`, `GATEWAY` in `threetears.nats.subject_permissions`). **A missing KV
-grant does not raise.** The JetStream call blocks to its deadline and surfaces as an
-unreachable broker, so the symptom points at the network rather than at the permission that
-was never carried. `tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant against
-the bucket the client actually opens.
+grant does not raise.** A refused JetStream request is never answered, so the call blocks to
+its deadline and returns a timeout, indistinguishable by shape from an unreachable broker.
+
+The log tells them apart. `threetears.nats` reads the server's `permissions violation` frame
+(which leaves the connection open, so nothing else reports it), names the bucket, and states
+the `kv_buckets` entry to add; the deadline path and a failed bucket open say the same.
+`tests/enforcement/test_kv_bucket_grant_naming.py` pins the grant against the bucket the
+client actually opens, which catches a wrong name before a deploy rather than in a log.
 
 Consumers also register an `on_reset` callback and schedule a
 `threetears.epoch.catchup_tick` pass. A consumer that subscribes and schedules neither still

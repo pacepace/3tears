@@ -20,12 +20,14 @@ from threetears.nats import LockHeld, NatsKvBucket, nats_distributed_lock
 from threetears.nats.errors import KvError
 
 
+# parity-exempt: minimal Entry dataclass for the distributed-lock unit tests carrying only value+revision; mirrors test_kv.py:_FakeEntry exemption
 class _FakeEntry:
     def __init__(self, value: bytes | None, revision: int | None) -> None:
         self.value = value
         self.revision = revision
 
 
+# parity-exempt: subset shim for nats.js.KeyValue used by the distributed-lock unit tests; tracks call/state for assertions, same surface as test_kv.py's _FakeKv
 class _FakeKv:
     """Fake nats-py KeyValue handle backing a NatsKvBucket.
 
@@ -95,6 +97,7 @@ class _FakeKv:
         del self.store[key]
 
 
+# parity-exempt: minimal NatsClient stand-in exposing only kv_bucket(); the distributed-lock body touches only that surface, so full NatsClient parity would be over-mocking
 class _FakeClient:
     """Minimal :class:`NatsClient` stand-in exposing only ``kv_bucket``.
 

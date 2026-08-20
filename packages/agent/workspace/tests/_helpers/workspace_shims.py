@@ -40,6 +40,7 @@ __all__ = [
 ]
 
 
+# parity-exempt: parity base for workspace test subclasses; the production WorkspaceFileLease surface is a partial subset the bases canonicalize
 class FakeWorkspaceFileLease:
     """parity base for the production :class:`WorkspaceFileLease`.
 
@@ -51,6 +52,7 @@ class FakeWorkspaceFileLease:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production LeaseHandle async-CM surface is dunder-only with no public parity to assert
 class FakeWorkspaceFileLeaseHandle:
     """parity base for the production :class:`LeaseHandle`.
 
@@ -61,6 +63,7 @@ class FakeWorkspaceFileLeaseHandle:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production Workspace entity has many fields tests do not read, so the base is attribute-shape only
 class FakeWorkspaceEntity:
     """parity base for the production :class:`Workspace` entity.
 
@@ -72,6 +75,7 @@ class FakeWorkspaceEntity:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production WorkspaceFile entity has many fields tests do not read, so the base is attribute-shape only
 class FakeWorkspaceFile:
     """parity base for the production :class:`WorkspaceFile` entity.
 
@@ -82,6 +86,7 @@ class FakeWorkspaceFile:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production WorkspaceCollection has many lookup methods tests never exercise so subset parity is intentional
 class FakeWorkspaceCollection:
     """parity base for the production :class:`WorkspaceCollection`.
 
@@ -92,6 +97,7 @@ class FakeWorkspaceCollection:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production WorkspaceFileCollection has many lookup methods tests never exercise so subset parity is intentional
 class FakeWorkspaceFileCollection:
     """parity base for the production :class:`WorkspaceFileCollection`.
 
@@ -101,6 +107,7 @@ class FakeWorkspaceFileCollection:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; the production WorkspaceFileVersionCollection has many lookup methods tests never exercise so subset parity is intentional
 class FakeWorkspaceFileVersionCollection:
     """parity base for the production :class:`WorkspaceFileVersionCollection`.
 
@@ -112,6 +119,7 @@ class FakeWorkspaceFileVersionCollection:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; production ToolContextManager is heavy and tests use only the pin-namespace surface
 class FakeWorkspaceContext:
     """parity base for ``ToolContextManager`` / ``WorkspaceContextManager``.
 
@@ -122,6 +130,7 @@ class FakeWorkspaceContext:
     """
 
 
+# parity-exempt: parity base for workspace test subclasses; production WorkspaceSandbox has path-resolution behaviour tests short-circuit to tmp_path
 class FakeWorkspaceSandbox:
     """parity base for the production :class:`WorkspaceSandbox`.
 

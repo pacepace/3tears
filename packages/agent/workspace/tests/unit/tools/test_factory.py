@@ -24,6 +24,7 @@ from _helpers.workspace_shims import (
 )
 
 
+# parity-exempt: workspace-collection subset for the workspace tools factory test; the test exercises factory wiring only and does not call collection methods directly
 class _FakeCollection:
     """minimal collection stub satisfying the WorkspaceListTool/UseTool deps."""
 
@@ -102,6 +103,7 @@ def _make_acl_cache() -> AclCache:
     )
 
 
+# parity-exempt: NamespaceCollection subset for the workspace tools factory test exposing only the get_by_name lookup the namespace-emit surface uses
 class _FakeNamespaceCollection:
     """stub that satisfies the ``namespace_collection`` shape at build time.
 

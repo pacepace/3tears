@@ -31,6 +31,7 @@ from threetears.core.data.migrations import (
 
 
 # parity-exempt: narrow migration-capture stub — emulates only the execute/fetch subset the MigrationRunner calls, not a DataStore substitute.
+# parity-exempt: in-memory DataStore for the conversations migration runner unit test; identical shape to core's _fake_store with the same execute+query subset
 class _FakeDataStore:
     """
     in-memory DataStore stub capturing every executed statement.

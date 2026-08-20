@@ -19,6 +19,7 @@ from threetears.nats import Subject, set_default_namespace
 
 
 @dataclass
+# parity-exempt: NATS wrapper subset for the audit-publish unit test; the test only needs the jetstream_publish surface, no full NatsClient parity to declare
 class _FakeWrapper:
     """minimal fake :class:`threetears.nats.NatsClient` recording each publish.
 

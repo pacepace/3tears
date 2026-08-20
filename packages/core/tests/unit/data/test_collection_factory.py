@@ -64,6 +64,7 @@ class FakeRecord:
 
 
 # parity-with: asyncpg.Pool
+# parity-exempt: the L3 seam is duck-typed (async fetch/fetchrow/execute per BaseCollection.l3_pool docs); the fake implements exactly that consumed subset, and asyncpg.Pool's connection-management surface (acquire/release/copy_*/sizing) is outside the collection contract
 class FakeAsyncpgPool:
     """duck-typed L3 pool whose ``fetch`` yields ``FakeRecord`` rows.
 

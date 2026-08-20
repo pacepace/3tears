@@ -34,6 +34,7 @@ from .conftest import Pod
 pytestmark = pytest.mark.integration
 
 
+# parity-exempt: live-socket transport stand-in for the cross-pod concurrency proof; transport handle, no public parity to assert
 class _FakeSocket:
     """stand-in live socket handle for the concurrency proof."""
 

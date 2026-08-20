@@ -27,6 +27,7 @@ __all__ = [
     "ExemptionError",
     "apply_exemptions",
     "parse_exemptions_with_rationale",
+    "rationale_defect",
 ]
 
 
@@ -150,6 +151,35 @@ def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
     return entries
 
 
+def rationale_defect(rationale: str) -> str | None:
+    """say why ``rationale`` is not an acceptable exemption reason, or ``None``.
+
+    The rule, separated from where it is applied, because an exemption does not
+    only live in an exemption file. A domain can let a fake carry its rationale
+    as a comment on the class -- which is strictly better, since the comment
+    moves with the code -- and that route must clear the same bar or the
+    "better" route is also the loophole.
+
+    Returns text rather than raising: the file parser turns it into an
+    :class:`ExemptionError` at parse time, and an in-source marker turns it into
+    an ordinary violation reported alongside the others.
+
+    :param rationale: the reason text, already stripped of its marker prefix
+    :ptype rationale: str
+    :return: what is wrong with it, or ``None`` when it is acceptable
+    :rtype: str | None
+    """
+    if not rationale:
+        return "must be followed by a non-empty reason"
+    if len(rationale) < _MIN_RATIONALE_LENGTH:
+        return f"must be at least {_MIN_RATIONALE_LENGTH} characters; got {len(rationale)}: {rationale!r}"
+    lower = rationale.lower()
+    for phrase in _BLANKET_RATIONALE_PHRASES:
+        if lower == phrase or lower.startswith(phrase + " ") or lower.startswith(phrase + "."):
+            return f"{rationale!r} matches blanket phrase {phrase!r}; rationales must be specific"
+    return None
+
+
 def _validate_rationale(rationale: str, path: Path, lineno: int) -> None:
     """raise :class:`ExemptionError` if ``rationale`` is empty / blanket / too short.
 
@@ -161,21 +191,9 @@ def _validate_rationale(rationale: str, path: Path, lineno: int) -> None:
     :ptype lineno: int
     :raises ExemptionError: rationale fails any of the contract checks
     """
-    if not rationale:
-        raise ExemptionError(f"{path}:{lineno}: '# rationale:' must be followed by a non-empty reason")
-    if len(rationale) < _MIN_RATIONALE_LENGTH:
-        raise ExemptionError(
-            f"{path}:{lineno}: rationale must be at least "
-            f"{_MIN_RATIONALE_LENGTH} characters; got {len(rationale)}: "
-            f"{rationale!r}"
-        )
-    lower = rationale.lower()
-    for phrase in _BLANKET_RATIONALE_PHRASES:
-        if lower == phrase or lower.startswith(phrase + " ") or lower.startswith(phrase + "."):
-            raise ExemptionError(
-                f"{path}:{lineno}: rationale {rationale!r} matches blanket "
-                f"phrase {phrase!r}; rationales must be specific"
-            )
+    defect = rationale_defect(rationale)
+    if defect is not None:
+        raise ExemptionError(f"{path}:{lineno}: rationale {defect}")
 
 
 def apply_exemptions(

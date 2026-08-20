@@ -195,6 +195,14 @@ alone.
 
 ## Test Fakes
 
-Every test fake (a class named `Fake<Name>` or `_Fake<Name>` under any `tests/` directory) MUST declare what production protocol it stands in for, via subclass declaration, a `# parity-with: <fully.qualified.name>` marker comment, or an exemption with `# rationale:` line in `tests/enforcement/_fake_parity_exemptions.txt`. Workspace tests centralise their asyncpg + workspace-entity shells under `packages/agent/workspace/tests/_helpers/{asyncpg_shims,workspace_shims}.py` so per-test inline fakes only need a one-line subclass declaration.
+Every test fake (a class named `Fake<Name>` or `_Fake<Name>` under any `tests/` directory) MUST declare what production protocol it stands in for. Three routes, in order of preference:
+
+1. **Subclass it** -- `class _FakeKv(KvBucketLike):`. mypy then enforces the surface for you.
+2. **`# parity-with: <fully.qualified.name>`** on the line above the class. The walker imports the target and compares method surfaces.
+3. **`# parity-exempt: <rationale>`** on the line above the class, for a hand-rolled subset stub with no single production protocol to name. The rationale must be at least 30 characters and must not be a blanket phrase ("tests need this", "temporary", ...); the same bar the exemption file applies.
+
+Workspace tests centralise their asyncpg + workspace-entity shells under `packages/agent/workspace/tests/_helpers/{asyncpg_shims,workspace_shims}.py` so per-test inline fakes only need a one-line subclass declaration.
+
+**Exempt in place, not in `tests/enforcement/_fake_parity_exemptions.txt`.** That file still parses, and it is deliberately empty. Its entries are keyed `path:LINE:symbol`, so one added import shifts every fake below it and the gate fails with `no_declaration` for a fake nobody touched. A marker on the class moves with the class.
 
 Enforced by `tests/enforcement/test_fake_protocol_parity.py` (thin shell over the canonical walker in `packages/enforcement/src/threetears/enforcement/fake_parity/`). Mode is controlled by `FAKE_PARITY_ENFORCEMENT_MODE` -- defaults to `strict`. Catches the drift bug class where production protocols evolve while test fakes silently rot until a downstream test happens to call the missing method.

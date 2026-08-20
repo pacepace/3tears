@@ -39,6 +39,7 @@ class _Registration:
     queue: str | None
 
 
+# parity-exempt: subset shim for nats.aio.Client carrying only subscribe/unsubscribe/flush/publish_raw_reply/publish_raw/request_raw, which is the entire surface serve_owner, forward and the byte pipe reach through; it exists so both ends derive a session's subject for real rather than against a stub, and the full client's jetstream/kv/auth methods are unreachable from owner-routed forwarding or from a stream that has already been routed
 class FakeBus:
     """Just enough NATS for ``serve_owner`` and ``forward`` to meet over.
 

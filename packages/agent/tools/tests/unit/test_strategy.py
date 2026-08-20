@@ -15,6 +15,7 @@ from threetears.agent.tools.strategy import (
 )
 
 
+# parity-exempt: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
 class _FakeStrategy:
     """fake strategy that records provisioning + teardown calls.
 

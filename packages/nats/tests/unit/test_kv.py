@@ -20,12 +20,14 @@ from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from threetears.nats import KvError, NatsKvBucket
 
 
+# parity-exempt: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
 class _FakeEntry:
     def __init__(self, value: bytes | None, revision: int | None) -> None:
         self.value = value
         self.revision = revision
 
 
+# parity-exempt: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
 class _FakeKv:
     """fake KeyValue handle storing entries in a dict."""
 
@@ -90,6 +92,7 @@ def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
     return bucket, kv
 
 
+# parity-exempt: minimal JetStream stand-in exposing only create_key_value/key_value for the bucket self-heal re-open path; full nats.js JetStreamContext surface is huge and unrelated to wrapper behaviour
 class _FakeJetStream:
     """Returns a pre-seeded healed KV from create_key_value / key_value (re-open path)."""
 
@@ -103,6 +106,7 @@ class _FakeJetStream:
         return self._healed_kv
 
 
+# parity-exempt: minimal NatsClient stand-in exposing only jetstream_context() for the bucket self-heal re-open path; full NatsClient parity would be over-mocking
 class _FakeClient:
     """Minimal NatsClient stand-in whose jetstream re-open yields ``healed_kv``."""
 

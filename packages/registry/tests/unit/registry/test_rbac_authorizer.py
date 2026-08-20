@@ -91,6 +91,7 @@ class _StubToolNamespace:
         self.customer_id = customer_id
 
 
+# parity-exempt: subset shim for the post-discovery NamespaceCollection exposing only the get_by_name lookup the rbac authorizer evaluates against
 class _FakeNamespaceCollection:
     """duck-typed ``NamespaceCollection`` with a preconfigured ``get_by_name``.
 

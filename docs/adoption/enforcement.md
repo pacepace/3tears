@@ -23,6 +23,28 @@ hand is its own maintenance burden and inevitably falls out of sync.
   `tests/enforcement/` directory -- not universally wired into every
   package's tests.
 
+## Exemptions
+
+Every domain takes exemptions, and every exemption carries a rationale. The
+rule is one function, `common.exemptions.rationale_defect`: at least 30
+characters, and not one of the blanket phrases ("tests need this",
+"temporary", "required", ...). A rationale that costs nothing to write is a
+silent test-disabler.
+
+Two places an exemption can live, and the choice matters:
+
+- **In the source, on the thing being exempted.** The `fake_parity` domain
+  reads `# parity-exempt: <rationale>` from the line above the class. This is
+  the better route wherever a domain offers it: the marker moves with the
+  code through renames, moves and reformats, and a reader of the fake finds
+  the reason next to the fake.
+- **In `tests/enforcement/_<domain>_exemptions.txt`**, keyed
+  `path:LINE:symbol`. Use `path:*:symbol` to exempt a symbol anywhere in the
+  file. A numeric line pins the entry to the file's current layout, so an
+  unrelated edit above it silently stops it matching and the domain reports
+  the original violation against untouched code. Nothing detects that the
+  path it names has been deleted, either.
+
 ## Design philosophy
 
 The central operating premise: if an architectural rule can be stated

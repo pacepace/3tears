@@ -31,6 +31,7 @@ from threetears.agent.workspace.tools.workspace_list import WorkspaceListTool
 
 
 @dataclass
+# parity-exempt: workspace discovery-client subset for the workspace_list tool unit; same shape as workspace_current's discovery-client fake above
 class _FakeDiscoveryClient:
     """stand-in for :class:`NamespaceDiscoveryClient` returning fixed items.
 

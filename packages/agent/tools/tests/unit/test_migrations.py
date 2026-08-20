@@ -29,6 +29,7 @@ from threetears.core.data.migrations import (
 )
 
 
+# parity-exempt: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
 class _FakeDataStore:
     """
     in-memory DataStore stub capturing every executed statement.

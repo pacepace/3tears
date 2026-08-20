@@ -88,6 +88,7 @@ class _FakeContext(FakeWorkspaceContext):
 
 
 @dataclass
+# parity-exempt: workspace pin-namespace stand-in for test_helpers; the pin model is dataclass-shaped and the test reads only the pinned name attribute
 class _FakePin:
     workspace_id: UUID
     workspace_name: str

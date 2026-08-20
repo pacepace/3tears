@@ -96,15 +96,15 @@ packages/core/tests/test_lazy_init.py:63:_LAZY
 packages/core/tests/test_lazy_init.py:70:_LAZY
 
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:176:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:177:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:189:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:190:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:203:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:204:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:218:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:219:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:229:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:230:_nats_client
 
 # rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
 packages/models/src/threetears/models/tool_name_translation.py:235:_arun

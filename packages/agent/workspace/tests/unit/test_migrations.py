@@ -21,6 +21,7 @@ from threetears.core.data.migrations import (
 )
 
 
+# parity-exempt: in-memory DataStore for the workspace migration runner unit test; identical shape to the core+conversations migration fakes
 class _FakeDataStore:
     """
     in-memory DataStore stub that captures executed SQL.

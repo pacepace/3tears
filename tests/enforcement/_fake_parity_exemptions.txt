@@ -1,211 +1,23 @@
-# exemptions for fake-protocol-parity enforcement.
+# fake-protocol-parity exemptions -- DELIBERATELY EMPTY. Exempt in place instead.
 #
-# every entry MUST be preceded by `# rationale: <specific reason>`.
-# blanket phrases ("test fixture", "tests need this", "internal access",
-# "needed", "necessary", "temporary", "todo", "fixme", "required")
-# are rejected by the parser. each exemption names what the fake is
-# and why neither subclass declaration nor `# parity-with:` marker
-# fits its case.
-
-# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
-packages/agent/workspace/tests/_helpers/asyncpg_shims.py:43:FakeAsyncpgTransaction
-# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
-packages/agent/workspace/tests/_helpers/asyncpg_shims.py:55:FakeAsyncpgConnection
-# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
-packages/agent/workspace/tests/_helpers/asyncpg_shims.py:69:FakeAsyncpgAcquireCM
-# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
-packages/agent/workspace/tests/_helpers/asyncpg_shims.py:77:FakeAsyncpgPool
-# rationale: parity base for workspace test subclasses; the production WorkspaceFileLease surface is a partial subset the bases canonicalize
-packages/agent/workspace/tests/_helpers/workspace_shims.py:43:FakeWorkspaceFileLease
-# rationale: parity base for workspace test subclasses; the production LeaseHandle async-CM surface is dunder-only with no public parity to assert
-packages/agent/workspace/tests/_helpers/workspace_shims.py:54:FakeWorkspaceFileLeaseHandle
-# rationale: parity base for workspace test subclasses; the production Workspace entity has many fields tests do not read, so the base is attribute-shape only
-packages/agent/workspace/tests/_helpers/workspace_shims.py:64:FakeWorkspaceEntity
-# rationale: parity base for workspace test subclasses; the production WorkspaceFile entity has many fields tests do not read, so the base is attribute-shape only
-packages/agent/workspace/tests/_helpers/workspace_shims.py:75:FakeWorkspaceFile
-# rationale: parity base for workspace test subclasses; the production WorkspaceCollection has many lookup methods tests never exercise so subset parity is intentional
-packages/agent/workspace/tests/_helpers/workspace_shims.py:85:FakeWorkspaceCollection
-# rationale: parity base for workspace test subclasses; the production WorkspaceFileCollection has many lookup methods tests never exercise so subset parity is intentional
-packages/agent/workspace/tests/_helpers/workspace_shims.py:95:FakeWorkspaceFileCollection
-# rationale: parity base for workspace test subclasses; the production WorkspaceFileVersionCollection has many lookup methods tests never exercise so subset parity is intentional
-packages/agent/workspace/tests/_helpers/workspace_shims.py:104:FakeWorkspaceFileVersionCollection
-# rationale: parity base for workspace test subclasses; production ToolContextManager is heavy and tests use only the pin-namespace surface
-packages/agent/workspace/tests/_helpers/workspace_shims.py:115:FakeWorkspaceContext
-# rationale: parity base for workspace test subclasses; production WorkspaceSandbox has path-resolution behaviour tests short-circuit to tmp_path
-packages/agent/workspace/tests/_helpers/workspace_shims.py:125:FakeWorkspaceSandbox
-
-# canonical shared fakes under packages/core/tests
-# rationale: subset shim for nats.js.KeyValue exposing only the get/put/create/update/delete surface KVLease + workspace tests exercise; full nats-py KeyValue carries history/watch/purge methods unrelated to KVLease
-packages/core/tests/unit/data/migrations/_fake_store.py:14:FakeDataStore
-# rationale: yaml format-handler stand-in; FormatHandler Protocol surface is parse+dump only and the fake exercises both, but we exempt rather than mark because the test is the format-handler-registry test itself
-packages/core/tests/unit/test_format_handler_registry.py:23:_FakeYamlHandler
-# rationale: toml format-handler stand-in; same shape as yaml fake above and same exemption rationale
-packages/core/tests/unit/test_format_handler_registry.py:91:_FakeTomlHandler
-
-# langgraph chat-model caching tests
-# rationale: subset shim for langchain_anthropic.ChatAnthropic carrying _generate plus the cache_control attribute the cache-injection test inspects; full ChatAnthropic surface is the LangChain BaseChatModel hierarchy and out of scope
-packages/langgraph/tests/test_agent_node_caching.py:61:_FakeAnthropicChatModel
-# rationale: subset shim for langchain_openai.ChatOpenAI same shape and rationale as the anthropic fake above
-packages/langgraph/tests/test_agent_node_caching.py:133:_FakeOpenAIChatModel
-# rationale: deliberately-unrecognized chat model used to test the cache-injection fallback path; no production class to declare parity with
-packages/langgraph/tests/test_agent_node_caching.py:187:_FakeUnknownChatModel
-
-# nats unit tests
-# rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
-packages/nats/tests/unit/test_client.py:53:_FakeSubscription
-# rationale: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
-packages/nats/tests/unit/test_client.py:77:_FakeMsg
-# rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
-packages/nats/tests/unit/test_client.py:86:_FakeNatsPyClient
-# rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
-packages/nats/tests/unit/test_kv.py:23:_FakeEntry
-# rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
-packages/nats/tests/unit/test_kv.py:29:_FakeKv
-# rationale: minimal JetStream stand-in exposing only create_key_value/key_value for the bucket self-heal re-open path; full nats.js JetStreamContext surface is huge and unrelated to wrapper behaviour
-packages/nats/tests/unit/test_kv.py:93:_FakeJetStream
-# rationale: minimal NatsClient stand-in exposing only jetstream_context() for the bucket self-heal re-open path; full NatsClient parity would be over-mocking
-packages/nats/tests/unit/test_kv.py:106:_FakeClient
-# rationale: minimal Entry dataclass for the distributed-lock unit tests carrying only value+revision; mirrors test_kv.py:_FakeEntry exemption
-packages/nats/tests/unit/test_distributed_lock.py:23:_FakeEntry
-# rationale: subset shim for nats.js.KeyValue used by the distributed-lock unit tests; tracks call/state for assertions, same surface as test_kv.py's _FakeKv
-packages/nats/tests/unit/test_distributed_lock.py:29:_FakeKv
-# rationale: minimal NatsClient stand-in exposing only kv_bucket(); the distributed-lock body touches only that surface, so full NatsClient parity would be over-mocking
-packages/nats/tests/unit/test_distributed_lock.py:98:_FakeClient
-
-# mcp http transport
-# rationale: httpx.AsyncBaseTransport stand-in for unit-testing the MCP http client; full transport surface includes connection-pool primitives the tests do not exercise
-packages/mcp/tests/unit/test_http_client.py:17:_FakeTransport
-
-# audit + acl
-# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the jetstream_publish surface, no full NatsClient parity to declare
-packages/agent/audit/tests/unit/test_publish.py:22:_FakeWrapper
-# rationale: combined in-memory store satisfying both MembershipLoader and GrantLoader Protocols; the parity walker supports one marker per class so we exempt with both target Protocols named here
-packages/agent/acl/tests/unit/_fake_loaders.py:62:FakeStore
-
-# registry rbac authorizer
-# rationale: subset shim for the post-discovery NamespaceCollection exposing only the get_by_name lookup the rbac authorizer evaluates against
-packages/registry/tests/unit/registry/test_rbac_authorizer.py:94:_FakeNamespaceCollection
-
-# channels (discord)
-# rationale: discord.Thread stand-in for unit testing the discord adapter routing logic; full discord.py Thread carries dozens of message/member/permission methods the tests do not exercise
-packages/channels/tests/unit/channels/test_discord.py:49:_FakeThread
-# rationale: discord.DMChannel stand-in for the same routing tests with the same out-of-scope discord.py surface
-packages/channels/tests/unit/channels/test_discord.py:53:_FakeDMChannel
-
-# conversations migration runner
-# rationale: in-memory DataStore for the conversations migration runner unit test; identical shape to core's _fake_store with the same execute+query subset
-packages/conversations/tests/unit/test_migrations.py:34:_FakeDataStore
-
-# agent/tools test-support classes
-# rationale: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
-packages/agent/tools/tests/unit/test_bootstrap.py:16:_FakeToolServer
-# rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
-packages/agent/tools/tests/unit/test_migrations.py:32:_FakeDataStore
-# rationale: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
-packages/agent/tools/tests/unit/test_platform_migrations.py:31:_FakeDataStore
-# rationale: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
-packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
-# rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
-packages/agent/tools/tests/unit/tools/test_tool_server_baseline_audit.py:43:_FakeNats
-# rationale: MediaStorage subset for one utility tools test that needs only get_media; the analyze_media + protocols tests have markers for the full surface
-packages/agent/tools/tests/unit/tools/test_utility_tools_mcp.py:23:_FakeMediaStorage
-# rationale: asyncpg Pool subset shim used by the agent-tools test_helpers module; the test_helpers shim returns rows from a dict the agent-tools collection tests share
-packages/agent/tools/tests/testing_utils.py:66:FakePool
-
-# workspace integration conftest fakes (already extensively migrated; remaining edge cases)
-# rationale: the integration-conftest store is the dispatch table for every workspace integration test; its execute+fetchrow surface is exactly what the integration tests need and does not align with any single production class
-packages/agent/workspace/tests/integration/conftest.py:141:_FakeStore
-# rationale: nats-py Msg shape for audit subscriber fixtures; minimal subject+data carrier matching the canonical NATS Msg the workspace audit consumer reads
-packages/agent/workspace/tests/integration/conftest.py:612:_FakeMsg
-# rationale: ToolContextManager subset for workspace integration tests; the integration suite exercises pin namespaces only and the production manager has additional context surfaces out of scope
-packages/agent/workspace/tests/integration/conftest.py:661:_FakeToolContextManager
-
-# workspace unit-test one-offs (each fake stands in for a single production interface and the test exercises a small subset)
-# rationale: NatsClient subset for the audit-publish unit covering bind in test_bind; the bind audit emitter calls publish so the test only models that surface
-packages/agent/workspace/tests/unit/test_bind.py:600:_FakeNats
-# rationale: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
-packages/agent/workspace/tests/unit/test_collections.py:135:_FakeNatsBus
-# rationale: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request_typed
-packages/agent/workspace/tests/unit/test_discovery_client.py:34:_FakeNatsClient
-# rationale: in-memory DataStore for the workspace migration runner unit test; identical shape to the core+conversations migration fakes
-packages/agent/workspace/tests/unit/test_migrations.py:24:_FakeDataStore
-# rationale: workspace-collection subset for the workspace tools factory test; the test exercises factory wiring only and does not call collection methods directly
-packages/agent/workspace/tests/unit/tools/test_factory.py:27:_FakeCollection
-# rationale: NamespaceCollection subset for the workspace tools factory test exposing only the get_by_name lookup the namespace-emit surface uses
-packages/agent/workspace/tests/unit/tools/test_factory.py:105:_FakeNamespaceCollection
-# rationale: workspace pin-namespace stand-in for test_helpers; the pin model is dataclass-shaped and the test reads only the pinned name attribute
-packages/agent/workspace/tests/unit/tools/test_helpers.py:91:_FakePin
-# rationale: NatsClient subset for the tool-audit-injection unit; the audit emitter publishes a single subject and the wrapper's full surface is out of scope
-packages/agent/workspace/tests/unit/tools/test_tool_audit_injection.py:60:_FakeNats
-# rationale: workspace discovery-client subset for the workspace_current tool unit; the discovery client carries multiple find methods and the test only exercises one
-packages/agent/workspace/tests/unit/tools/test_workspace_current.py:48:_FakeDiscoveryClient
-# rationale: workspace version-row stand-in for the workspace_history tool unit; the production VersionRow has more attributes than the test reads
-packages/agent/workspace/tests/unit/tools/test_workspace_history.py:64:_FakeVersionRow
-# rationale: workspace discovery-client subset for the workspace_list tool unit; same shape as workspace_current's discovery-client fake above
-packages/agent/workspace/tests/unit/tools/test_workspace_list.py:34:_FakeDiscoveryClient
-# rationale: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
-packages/agent/workspace/tests/unit/tools/test_workspace_use.py:30:_FakeCollection
-
-# agent-skills shard-02 agent-tools unit tests
-# rationale: AgentSkillCollection subset for the eight tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user/increment_outcome_counts and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
-packages/agent/skills/tests/unit/test_tools_factories.py:51:_FakeSkillsCollection
-# rationale: AgentSkillInvocationCollection subset for skill_invoke + skill_report_outcome unit coverage; the tools call only create/save_entity/record/list_for_conversation/set_outcome so the cache/persistence methods on the production class are out of scope
-packages/agent/skills/tests/unit/test_tools_factories.py:171:_FakeInvocationsCollection
-# rationale: in-memory SkillRegistryClient implementation; the production protocol is the SkillRegistryClient defined in tools.py and the fake declares parity-with via the marker on the class, but the strict walker also requires this entry to satisfy the cross-file Protocol lookup
-packages/agent/skills/tests/unit/test_tools_factories.py:228:_FakeRegistry
-
-# agent-wake shard-04 agent-tools unit tests
-# rationale: WakeScheduleCollection subset for the schedule tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/list_active_for_conversation/count_active_for_conversation/pause/resume so the cache+l2/l3 SQL methods on the production class are not part of the tool API contract
-packages/agent/wake/tests/unit/test_tools_factories.py:104:_FakeScheduleCollection
-# rationale: WebhookSubscriptionCollection subset for the webhook tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/pause/resume/rotate_secret and the cache+l2/l3 + find_by_id methods are exercised in the integration suite instead
-packages/agent/wake/tests/unit/test_tools_factories.py:178:_FakeSubscriptionsCollection
-# rationale: in-memory WakeRegistryClient implementation subclassing the production protocol; the fake declares its parity via subclass declaration but the strict walker also requires this entry to satisfy the cross-file Protocol lookup performed during walker analysis
-packages/agent/wake/tests/unit/test_tools_factories.py:235:_FakeRegistry
-# rationale: identity-encryption stand-in matching the two-method EncryptionService Protocol; production parity is declared via the parity-with marker on the class but the strict walker requires this entry for the cross-file lookup
-packages/agent/wake/tests/unit/test_tools_factories.py:269:_FakeEncryption
-# rationale: the L3 seam is duck-typed (async fetch/fetchrow/execute per BaseCollection.l3_pool docs); the fake implements exactly that consumed subset, and asyncpg.Pool's connection-management surface (acquire/release/copy_*/sizing) is outside the collection contract
-packages/core/tests/unit/data/test_collection_factory.py:67:FakeAsyncpgPool
-
-# --- L3 store-seam refactor pass: pre-existing channels/nats test fakes that were
-# --- never declared. external-library fakes and intentional-subset stand-ins.
-
-# rationale: fakes the external nats.js.api.PubAck ack object (seq + duplicate fields only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:41:_FakePubAck
-# rationale: fakes the external nats JetStreamContext (add_stream/publish subset with scripted acks); external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:47:_FakeJetStream
-# rationale: fakes the external nats Client wrapper handing back the fake jetstream; external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:78:_FakeClient
-# rationale: fakes the external nats.js.api.StreamState (last_seq field only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:223:_FakeStreamState
-# rationale: fakes the external nats.js.api.StreamInfo (last_seq field only); not a threetears protocol
-packages/nats/tests/unit/test_oplog.py:228:_FakeStreamInfo
-# rationale: fakes the external nats pull subscription raising a scripted fetch error; external lib, no threetears parity
-packages/nats/tests/unit/test_oplog.py:233:_FakePullSub
-# rationale: live-socket transport stand-in capturing send_text frames; the production socket handle is a dunder/transport surface with no public parity to assert in a fanout unit test
-packages/channels/tests/unit/channels/presence/test_fanout.py:33:_FakeSocket
-# rationale: records unsubscribe teardown only; intentional subset of the subscription surface the fanout path exercises
-packages/channels/tests/unit/channels/presence/test_fanout.py:50:_FakeSubscription
-# rationale: NatsClient stand-in recording publishes + handing back fake subscriptions; intentional subset of the NatsClient surface the fanout path uses
-packages/channels/tests/unit/channels/presence/test_fanout.py:61:_FakeNats
-# rationale: RoomState stand-in recording join/leave + serving canned local sockets; intentional subset of the RoomState surface
-packages/channels/tests/unit/channels/presence/test_fanout.py:100:_FakeRoomState
-# rationale: live-socket transport stand-in for the cross-pod concurrency proof; transport handle, no public parity to assert
-packages/channels/tests/integration/channels/presence/test_presence_cross_pod.py:37:_FakeSocket
-# rationale: inlined in-memory MembershipLoader+GrantLoader (the acl test pattern); a two-protocol composite with no single production parity target
-packages/channels/tests/integration/channels/test_websocket_cross_pod.py:68:_FakeStore
-# rationale: live-socket transport stand-in; transport handle, no public parity to assert
-packages/channels/tests/unit/channels/presence/test_room_state.py:22:_FakeSocket
-# rationale: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:46:_FakeRoomState
-# rationale: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:60:_FakeFanout
-# rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
-packages/channels/tests/unit/channels/test_websocket_task03.py:102:_FakeOpHandler
-
-# canonical shared fakes under packages/scrape/tests
-# rationale: subset shim for nats.js.KeyValue carrying only the create/get_entry/update/delete surface KVLease calls while a session claim is held; put and get are deliberately absent so a claim renewed by an unconditional write fails here instead of passing
-packages/scrape/tests/_kv_shims.py:31:FakeKvBucket
-# rationale: subset shim for nats.aio.Client exposing kv_bucket alone, which is the entire surface KVLease reaches through; the full client's two dozen publish/subscribe/jetstream methods are unreachable from a lease
-packages/scrape/tests/_kv_shims.py:92:FakeNatsClient
-# rationale: subset shim for nats.aio.Client carrying only subscribe/unsubscribe/flush/publish_raw_reply/publish_raw/request_raw, which is the entire surface serve_owner, forward and the byte pipe reach through; it exists so both ends derive a session's subject for real rather than against a stub, and the full client's jetstream/kv/auth methods are unreachable from owner-routed forwarding or from a stream that has already been routed
-packages/scrape/tests/_bus_shims.py:42:FakeBus
+# Put a `# parity-exempt: <rationale>` comment on the line directly above the
+# class. The walker reads it there, and the rationale bar is the same one this
+# file enforces: at least 30 characters, no blanket phrases.
+#
+#     # parity-exempt: subset shim for nats.js.KeyValue exposing only get/put/create/
+#     # update/delete; the full KeyValue carries history/watch/purge, unrelated here
+#     class _FakeKv:
+#
+# Entries here are keyed `path:LINE:symbol`, and that line number is the problem:
+# it is a property of the file's layout, not of the fake. Adding one import to a
+# test module shifts every fake below it and the gate then fails with
+# "fake has no parity declaration" -- naming the wrong defect, for a fake nobody
+# touched, pointing at a declaration that does exist. It also cannot notice when
+# the file it names is deleted; three entries here outlived their module.
+#
+# The `path:*:symbol` wildcard dodges the shift but keeps the other half of the
+# problem: the rationale still lives away from the class it describes, where a
+# reader of the fake will not find it and an author of the fake will not update it.
+#
+# Adding an entry below will work. Prefer not to: a marker on the class travels
+# with the class through every rename, move and reformat.

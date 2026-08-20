@@ -81,6 +81,23 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
+  onto the classes they describe.** All 82 live entries are now
+  `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is
+  empty and documents why.
+
+  A file entry is keyed `path:LINE:symbol`, which is a property of the file's
+  layout rather than of the fake. Adding one import to a test module shifted
+  four entries and failed the gate with `no_declaration` for four fakes nobody
+  had touched, pointing at a declaration that already existed. Three further
+  entries named a module deleted some time ago and nothing noticed.
+
+  The in-place marker now clears the same rationale bar the file applies (30
+  characters, no blanket phrases), enforced through one shared
+  `common.exemptions.rationale_defect` so the route that survives a reformat is
+  not also the route with no standard. A marker that fails it reports
+  `fake_parity.weak_exempt_rationale`.
+
 - `nats`: **an ungranted KV bucket now says so, and says how to fix it.** A KV
   operation the server refuses on permissions is never answered, so it dies on
   the wrapper's deadline and reports a timeout -- the same thing an unreachable

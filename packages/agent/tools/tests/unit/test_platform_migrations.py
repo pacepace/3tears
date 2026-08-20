@@ -28,6 +28,7 @@ from threetears.core.data.migrations import (
 )
 
 
+# parity-exempt: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
 class _FakeDataStore:
     """recording stand-in for :class:`DataStore`.
 
