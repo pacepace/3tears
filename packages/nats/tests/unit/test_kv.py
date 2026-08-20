@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,7 @@ import pytest
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 
 from threetears.nats import KvError, NatsKvBucket
+from threetears.nats.errors import PublishTimeoutError
 from threetears.nats.kv import _last_timeout_remedy_log  # noqa: SLF001 - module-level throttle state under test
 
 
@@ -360,6 +362,23 @@ async def test_ttl_property() -> None:
     assert bucket.ttl == timedelta(seconds=60)
 
 
+@pytest.fixture(autouse=True)
+def _clear_timeout_remedy_throttle() -> Iterator[None]:
+    """Reset the per-bucket remedy throttle around every test in this module.
+
+    The throttle is module-level state with a 300s window, so without this the
+    FIRST test to wedge a given bucket logs the remedy and every later one is
+    silently suppressed. That failure is ordering-dependent, which is the kind
+    that shows up in CI and not locally.
+
+    :return: nothing
+    :rtype: Iterator[None]
+    """
+    _last_timeout_remedy_log.clear()
+    yield
+    _last_timeout_remedy_log.clear()
+
+
 class TestAKvOperationThatNeverAnswers:
     """The publish wedge at its other call site.
 
@@ -379,7 +398,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
         from threetears.nats.kv import _KV_OP_TIMEOUT_SECONDS  # noqa: SLF001
 
         kv = MagicMock()
@@ -407,7 +425,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
 
         kv = MagicMock()
         attempts = 0
@@ -440,7 +457,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
 
         kv = MagicMock()
 
@@ -450,7 +466,6 @@ class TestAKvOperationThatNeverAnswers:
         kv.put = _never_answers
         bucket = NatsKvBucket(client=None, full_name="prod-epochs", kv=kv, ttl=None)  # type: ignore[arg-type]
 
-        _last_timeout_remedy_log.pop("prod-epochs", None)
         with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             with pytest.raises((PublishTimeoutError, KvError)):
                 await bucket.put(key="k", value=b"v")
@@ -473,7 +488,6 @@ class TestAKvOperationThatNeverAnswers:
         :return: nothing
         :rtype: None
         """
-        from threetears.nats.errors import PublishTimeoutError
 
         kv = MagicMock()
 
@@ -483,7 +497,6 @@ class TestAKvOperationThatNeverAnswers:
         kv.put = _never_answers
         bucket = NatsKvBucket(client=None, full_name="throttle-probe", kv=kv, ttl=None)  # type: ignore[arg-type]
 
-        _last_timeout_remedy_log.pop("throttle-probe", None)
         with caplog.at_level(logging.ERROR), patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05):
             for _ in range(3):
                 with pytest.raises((PublishTimeoutError, KvError)):
@@ -531,10 +544,18 @@ class TestOpeningAnUngrantedBucket:
 
         assert "kv_buckets" in str(caught.value)
         assert '"$KV.prod-epochs.>"' in str(caught.value)
+        # Unhedged: create_if_missing was asked for, so a merely-absent bucket would
+        # have been created. Reaching the bind at all rules that cause out.
+        assert "FIX: grant" in str(caught.value)
+        assert "never created" not in str(caught.value)
 
     @pytest.mark.asyncio
-    async def test_a_failed_bind_only_open_carries_it_too(self) -> None:
-        """`create_if_missing=False` takes a different branch and needs the same hint.
+    async def test_a_failed_bind_only_open_hedges_between_the_two_causes(self) -> None:
+        """`create_if_missing=False` never attempts a create, so it cannot rule one out.
+
+        A bucket nobody has created yet fails this branch exactly the way an ungranted
+        one does, so asserting the grant would send half of these readers to change a
+        permission that was already correct.
 
         :return: nothing
         :rtype: None
@@ -559,3 +580,4 @@ class TestOpeningAnUngrantedBucket:
             )
 
         assert "kv_buckets" in str(caught.value)
+        assert "never created" in str(caught.value)

@@ -6,11 +6,14 @@ declare what production protocol it stands in for, via one of:
 1. **subclass declaration** -- ``class _FakeKvBucket(NatsKvBucket):``
    the walker reads the AST class bases and skips parity checks for
    any fake that has at least one base other than ``object``. the
-   subclass declaration is the parity declaration; mypy's structural
-   typing already enforces method-surface compatibility on imported
-   bases. the walker accepts ``object`` literally (no parity declared)
-   as a violation, every other base name as "parity declared via
-   subclass".
+   subclass declaration IS the parity declaration, on the assumption
+   that a type checker covers the surface. **check that assumption in
+   your repo before relying on it**: a consumer that excludes its test
+   trees from mypy (3tears does -- it type-checks ``packages/*/src``
+   only) leaves a subclassed fake verified by nothing at all. route 2
+   is the one that compares surfaces here. the walker accepts
+   ``object`` literally (no parity declared) as a violation, every
+   other base name as "parity declared via subclass".
 
 2. **marker comment** -- ``# parity-with: <fully.qualified.name>``
    on the line immediately preceding the class definition. the
@@ -51,8 +54,10 @@ by name and then forget to say what it claims to mock.
 
 return-type and parameter-type annotations are NOT compared. the
 walker enforces *callability* (the fake must accept every required
-production parameter); type compatibility is mypy's job for
-subclassed fakes and is best-effort for marker fakes.
+production parameter); type compatibility is left to a type checker
+for subclassed fakes -- see the caveat on route 1 above about whether
+one actually runs over your test tree -- and is best-effort for
+marker fakes.
 """
 
 from __future__ import annotations
@@ -277,8 +282,9 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
 
     routing:
 
-    1. fake has at least one non-object base -> SKIP. mypy enforces
-       structural parity on imported bases.
+    1. fake has at least one non-object base -> SKIP, deferring to a
+       type checker on the base (which may or may not run over this
+       tree; see the module docstring's route 1).
     2. fake has a ``# parity-exempt:`` rationale -> SKIP. the rationale
        on the class is the exemption (it travels with the code).
     3. fake has a ``# parity-with:`` marker -> import the target, compare

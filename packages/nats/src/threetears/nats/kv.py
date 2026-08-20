@@ -208,9 +208,14 @@ class NatsKvBucket:
                     # so both calls die on their own deadline. Carry the fix in the exception
                     # rather than only in a log line -- this one propagates to the caller, and
                     # for the bucket a component opens on first use it is the FIRST symptom.
+                    #
+                    # Unhedged here, unlike the bind-only branch below: `create_if_missing` was
+                    # asked for, so a bucket that merely does not exist would have been CREATED.
+                    # Reaching the bind at all means the create failed for some other reason,
+                    # and the bind failing too rules out "it already existed".
                     raise KvError(
                         f"open KV bucket failed: bucket={full_name}: create={exc!r} bind={bind_exc!r}. "
-                        f"{kv_grant_remedy(full_name, certain=False)}"
+                        f"{kv_grant_remedy(full_name)}"
                     ) from bind_exc
                 log.debug(
                     "JetStream KV bucket bound (already existed)",
@@ -220,6 +225,8 @@ class NatsKvBucket:
             try:
                 kv = await js.key_value(full_name)
             except Exception as exc:
+                # Hedged: this branch never attempts a create, so a bucket nobody has
+                # created yet fails here exactly the way an ungranted one does.
                 raise KvError(
                     f"bind KV bucket failed: bucket={full_name}: {exc}. {kv_grant_remedy(full_name, certain=False)}"
                 ) from exc
