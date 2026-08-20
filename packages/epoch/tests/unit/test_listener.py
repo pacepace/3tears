@@ -98,7 +98,7 @@ class TestEpochListenerColdStartPriming:
         assert listener.last_seen(subject) == 12
 
     @pytest.mark.asyncio
-    async def test_cold_start_with_no_row_primes_zero(self) -> None:
+    async def test_cold_start_with_nothing_bumped_primes_zero(self) -> None:
         """a counter nobody has bumped -> last-seen starts at 0; first bump fires."""
         _seeded = 0
         nats, _ = _capture_subscribe_typed()

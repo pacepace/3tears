@@ -353,7 +353,8 @@ class EpochClient:
             counter (digested when outside the KV key grammar), or is
             the row PK on the durable path
         :ptype subject: Subject
-        :return: latest epoch, or ``0`` if no row exists
+        :return: latest epoch, or ``0`` when nothing has bumped this subject
+            (an absent KV key, or an absent row on the durable path)
         :rtype: int
         """
         if _is_wildcard(subject):
