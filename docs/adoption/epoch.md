@@ -71,10 +71,11 @@ Which substrate a subject takes is declared per family in
 `threetears.epoch.client`, not passed per call: a per-call flag lets two call
 sites disagree about one subject. The classifier still matches a path marker to
 apply that declaration, so it is the enumeration test named below, not the
-matcher, that stops a subject nobody considered from being classified silently. `packages/epoch/tests/unit/test_durability_policy.py`
-enumerates the real `Subjects` factory and fails when a new `*_epoch` builder is
-in neither table, so adding one forces the decision rather than defaulting to
-ephemeral -- the direction that cannot be repaired.
+matcher, that stops a subject nobody considered from being classified silently.
+`packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
+`Subjects` factory and fails when a new `*_epoch` builder is in neither table,
+so adding one forces the decision rather than defaulting to ephemeral -- the
+direction that cannot be repaired.
 
 One family is carved out and stays on a durable Postgres row:
 `Subjects.datasource_tile_epoch`. Its value is the `v{n}` in a tile URL and

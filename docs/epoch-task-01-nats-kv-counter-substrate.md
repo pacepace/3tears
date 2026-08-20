@@ -71,7 +71,17 @@ in-process detection fixes it.
 So `config_epochs` survives for this family. `EpochClient` gains an explicit substrate
 choice rather than a wholesale migration, and the durable path stays the default for any
 epoch whose value is published outside the cluster. **Record in this document which
-subjects take which path before building.** Long term the tile version is arguably a
+subjects take which path before building.**
+
+> **Where that record ended up.** Not here. The mapping lives as two declared tables
+> in `threetears.epoch.client` (`_DURABLE_FAMILIES` / `_EPHEMERAL_FAMILIES`), each entry
+> carrying its reason, because a table beside the classifier cannot drift from it the way
+> a design record can. `packages/epoch/tests/unit/test_durability_policy.py` enumerates
+> the real `Subjects` factory against those tables, so a new `*_epoch` builder fails until
+> someone decides -- which is the obligation this paragraph was reaching for, held by
+> something that runs.
+
+Long term the tile version is arguably a
 content version rather than an epoch and belongs elsewhere entirely; that is separate
 work, not this task.
 

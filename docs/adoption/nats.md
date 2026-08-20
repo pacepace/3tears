@@ -49,9 +49,13 @@ not close the connection, so nothing downstream re-reports it. That frame is
 decoded to the bucket it names and logged with the `kv_buckets` entry to add.
 The deadline path and a failed `kv_bucket()` open say the same thing.
 
-Bucket names are checked against their openers by
-`tests/enforcement/test_kv_bucket_grant_naming.py`, which catches a grant
-naming a bucket nothing creates before it reaches a deployment.
+`tests/enforcement/test_kv_bucket_grant_naming.py` compares grants against
+openers **only where both live in the 3tears repository** -- it says so itself,
+and it enumerates nothing. Your grants and your openers are not reachable by it.
+Nothing checks that your `kv_buckets` entry matches the name your component
+actually opens, and a mismatch produces exactly the timeout described above:
+authorised against a bucket that does not exist while the one you open is
+ungranted. Grant the name your opener produces, prefix included.
 
 ## Design philosophy
 
