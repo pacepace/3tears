@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.registry import DEFAULT_L1_MAX_AGE_SECONDS, CollectionRegistry
 
 
 def _make_mock_collection(table_name: str) -> MagicMock:
@@ -204,3 +204,88 @@ class TestBindTable:
         assert _underlying_l3(registry.get_l3_pool("groups")) is rbac_pool
         assert _underlying_l3(registry.get_l3_pool("workspace_files")) is default_l3
         assert _underlying_l3(registry.get_l3_pool("memories")) is default_l3
+
+
+class TestL1MaxAgeConfiguration:
+    """The bound's own lifecycle, separate from whether a collection may use it."""
+
+    def test_omitting_the_value_applies_the_default(self) -> None:
+        """Opting in without a number is the documented way to get 3600s.
+
+        The design advertises the default; without this nothing executes the
+        parameter's default and the advertised behaviour is untested prose.
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets")
+        assert registry.get_l1_max_age("widgets") == DEFAULT_L1_MAX_AGE_SECONDS
+
+    def test_an_explicit_value_wins_over_the_default(self) -> None:
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        assert registry.get_l1_max_age("widgets") == 30.0
+
+    def test_none_turns_expiry_off_again(self) -> None:
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        registry.set_l1_max_age("widgets", None)
+        assert registry.get_l1_max_age("widgets") is None
+
+    def test_registering_with_a_tier_override_does_not_clobber_the_bound(self) -> None:
+        """The regression the bound was moved out of ``_overrides`` to prevent.
+
+        ``register()`` hard-resets the per-table override dict whenever it is
+        given any tier kwarg. Wiring commonly configures before registering, so
+        a bound stored in that dict would be silently dropped -- expiry off
+        while the operator believes it on, with nothing raising. Putting the
+        key back into ``_overrides`` fails here.
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        registry.register(_make_mock_collection("widgets"), l3_pool=MagicMock())
+        assert registry.get_l1_max_age("widgets") == 30.0
+
+    def test_a_bound_on_one_table_does_not_leak_to_another(self) -> None:
+        """The bound is per table, not per registry.
+
+        Lived in `3tears-channels`' no-L3 guard, which is a file about presence
+        having no L3 to pull through from. The assertion is generic registry
+        behaviour and nothing in core covered it.
+
+        :return: nothing
+        :rtype: None
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("table_a", 30.0)
+        assert registry.get_l1_max_age("table_b") is None
+
+    def test_clear_drops_the_bound_with_everything_else(self) -> None:
+        """``clear()`` must not leave a bound behind for the next registration.
+
+        The bound keeps its own dict precisely so ``register()`` cannot wipe it,
+        and the design record anticipates someone tidying the two table-keyed
+        dicts together. A separate lifetime is not an unbounded one: a table
+        re-registered after a clear would otherwise inherit expiry nobody in the
+        new setup asked for, which is the same silent-config bug in the other
+        direction.
+
+        :return: nothing
+        :rtype: None
+        """
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        assert registry.get_l1_max_age("widgets") == 30.0
+
+        registry.clear()
+
+        assert registry.get_l1_max_age("widgets") is None
+
+    def test_a_bound_survives_every_tier_override_register_accepts(self) -> None:
+        registry = CollectionRegistry()
+        registry.set_l1_max_age("widgets", 30.0)
+        registry.register(
+            _make_mock_collection("widgets"),
+            l1_backend=MagicMock(),
+            l2_client=MagicMock(),
+            l3_pool=MagicMock(),
+        )
+        assert registry.get_l1_max_age("widgets") == 30.0

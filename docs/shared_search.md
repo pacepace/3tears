@@ -185,9 +185,14 @@ one, and it should look like it.
 
 ## 5. Open questions
 
-1. **Response caching.** Where does it live? Core collections have no TTL
-   semantics — don't force the dogfood; an httpx-level or app-side cache may
-   be the honest answer.
+1. **Response caching.** Where does it live? Core collections have an opt-in
+   L1 max age (`CollectionRegistry.set_l1_max_age`), but it is not TTL: it
+   bounds how long an L1 row cached *from a lower tier* is served, and a
+   collection with no L3 pool is refused a bound outright, because an expired
+   row there reads as "does not exist" rather than as a miss that repairs.
+   A response cache has no lower tier to pull through from, so it is exactly
+   the shape that refusal excludes — don't force the dogfood; an httpx-level
+   or app-side cache may be the honest answer.
 2. **robots.txt.** A stance, or adapter-side? Currently unaddressed
    everywhere in the family.
 3. **Heavy-tier escalation.** Auto-escalate on stub detection is convenient

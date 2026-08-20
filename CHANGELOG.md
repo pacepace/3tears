@@ -4,6 +4,66 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Added
+
+- `core`: **a bounded lifetime for L1 rows, off unless a collection asks for it.**
+  `CollectionRegistry.set_l1_max_age` / `get_l1_max_age`, with
+  `DEFAULT_L1_MAX_AGE_SECONDS` (3600s) applied when a collection opts in without
+  naming a number. A read past the bound deletes the row and reports a miss, so
+  the next read pulls through.
+
+  It exists for the staleness nothing else reaches: an invalidation dropped when
+  the outbound buffer overflows, and a pod whose *subscription* is partitioned
+  while its peers stay healthy, which misses every invalidation published in that
+  window and never learns it did. No publisher-side mechanism can see the second.
+
+  **A collection with no L3 pool is refused a bound**, whatever configuration
+  says. With nothing to pull through from, an expired row is not a miss that
+  repairs itself, it reads as "this row does not exist" -- and a compare-and-set
+  that reads absence writes a fresh row over live state. That covers the
+  presence and heartbeat collections, which are L1+L2 only by design.
+
+  Expiry applies only on the read paths that repair by pulling through. The
+  paths that merely report whether a row is cached do not expire: for them a
+  miss is a final answer a caller acts on, so converting a stale hit into one
+  loses the row rather than refreshing it. The repairing set is `ensure`,
+  `collection[id]` and `collection[id, "field"]`; the reporting set is
+  `get_row_sync`, `get_field_sync`, `set_field_sync` and `exists_in_cache_sync`.
+
+  A read that does expire deletes the row, and a delete that loses a lock does
+  not raise out of the read: the row is withheld either way and the next read
+  retries. The stamp is stripped from every row the `L1Backend` protocol
+  returns, `execute_query` included. Expiry drops increment
+  `threetears_l1_rows_expired_total`, labelled by table, because the rate is
+  what separates a bound doing its job from one that never fires.
+
+- `core`: two keyword parameters on the `L1Backend` protocol reads,
+  `max_age_seconds` and `now_monotonic`. Both default to off, so every existing
+  **caller** is unaffected. An **implementer** is not, and the failure is worse
+  than a rejected type: `runtime_checkable` compares member NAMES only, so a
+  third-party backend still passes `isinstance` while missing the keywords, and
+  the break surfaces as a `TypeError` at call time rather than at the seam.
+  In-tree backends are updated; an out-of-tree one needs the two keywords added.
+  `DuckDBBackend` raises `NotImplementedError` rather than
+  accepting a bound it cannot honour -- it injects no stamp, so silence there
+  would hand back exactly the unbounded staleness the caller asked to be rid of.
+
+### Changed
+
+- `core`: **`_3t_cached_at` is now a reserved L1 column name.** The backend
+  injects it into generated entity tables to record when a row was last obtained
+  from a lower tier, and strips it from every row a read returns. A table
+  declaring a column of that name raises at `initialize()` rather than emitting
+  duplicate DDL. `collection_scan_cache` and `write_buffer` are exempt.
+
+### Fixed
+
+- `core`: `DuckDBBackend.upsert` now filters writes to the table's registered
+  schema, as `SQLiteBackend` already did. Without it any framework-injected
+  column reached the SQL against a table that does not declare it.
+
 ## v0.27.0 -- 2026-08-18
 
 Names the limit above the publish bound, and lets a caller ask about it before
