@@ -394,7 +394,7 @@ the first two are decisions rather than work:
 | `universe` not generalised to `scope` | eval-contracts binding under final vocabulary | discodon, Wave 2 |
 | Package still imports `discodon.llm` | R1 holding for the analysis generator | discodon, #2402–#2407 |
 | R8's input registry not built | R10's controllability map, which derives from it | discodon, Wave 2 |
-| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | discodon, unscheduled |
+| R10's authoring-time refusal not built | the gate; only the fidelity axis of four exists | discodon #2412 |
 
 ### 4.3 Prompt management — identity from discodon; durable tier from scriob's pattern
 

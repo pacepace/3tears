@@ -496,6 +496,10 @@ no authoring-time refusal, and controllability cannot have one until R8's input
 registry exists — R10 derives that map from the registry rather than maintaining a
 second list. Until then R10 is a description, which is the failure mode it names.
 
+Tracked as discodon **#2412**, which carries the per-axis state and keeps R10's own
+constraints (derive rather than maintain; the unit is a precondition, not an area;
+fidelity stays a test and gains no map entry).
+
 ## R11 — the subject key declares the pooling boundary; the engine discloses the basis
 
 **Property.** Every observation carries a required, non-empty **subject key**.
