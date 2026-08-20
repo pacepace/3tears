@@ -549,7 +549,12 @@ class LocalGrantAuthorizer:
             # the listener's registration outlives the task otherwise, so a
             # later reset would call back into a stopped authorizer and ask it
             # to reload a cache it no longer maintains.
-            self._epoch_listener.deregister(Subjects.mcp_rbac_epoch())
+            #
+            # Scoped to OUR callback: the listener keeps one registration list
+            # per subject because two consumers on one subject are supported,
+            # and a bare deregister would unregister every other authorizer
+            # sharing this listener along with this one.
+            self._epoch_listener.deregister(Subjects.mcp_rbac_epoch(), self._on_rbac_bump)
         log.info("MCP authorizer catch-up loop stopped")
 
     async def _catchup_loop(self) -> None:

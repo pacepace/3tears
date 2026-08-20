@@ -976,6 +976,75 @@ class TestDeregistrationStopsTheFanOut:
 
         stays.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_a_consumer_leaving_a_shared_subject_does_not_take_the_others(self) -> None:
+        """The registration list is per path because sharing a subject is supported.
+
+        The sibling test above uses two DIFFERENT subjects, so it never exercised
+        this. A bare `deregister` popped the whole list, which unregistered every
+        other consumer on that subject -- silently, and visible only later as a
+        cache that stopped reloading. `LocalGrantAuthorizer.stop()` is a real
+        caller of exactly this shape.
+
+        :return: nothing
+        :rtype: None
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.shared.epoch")
+        leaving_bump, staying_reset = AsyncMock(), AsyncMock()
+        await listener.subscribe(subject, leaving_bump, on_reset=AsyncMock())
+        await listener.subscribe(subject, AsyncMock(), on_reset=staying_reset)
+
+        assert listener.deregister(subject, leaving_bump) == 1
+        await listener.signal_reset()
+
+        staying_reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dropping_the_last_consumer_on_a_subject_still_clears_last_seen(self) -> None:
+        """Clearing last-seen is right only once nobody is left on the path.
+
+        Clearing it while another consumer is still registered would re-fire that
+        consumer's next bump as new.
+
+        :return: nothing
+        :rtype: None
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=7))
+        subject = _subject("app.shared.epoch")
+        first, second = AsyncMock(), AsyncMock()
+        await listener.subscribe(subject, first)
+        await listener.subscribe(subject, second)
+        assert listener.last_seen(subject) == 7
+
+        listener.deregister(subject, first)
+        assert listener.last_seen(subject) == 7, "last-seen cleared while a consumer remained"
+
+        listener.deregister(subject, second)
+        assert listener.last_seen(subject) == 0
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_callback_still_drops_everything(self) -> None:
+        """The sole-owner case keeps its old behaviour.
+
+        :return: nothing
+        :rtype: None
+        """
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.shared.epoch")
+        a, b = AsyncMock(), AsyncMock()
+        await listener.subscribe(subject, AsyncMock(), on_reset=a)
+        await listener.subscribe(subject, AsyncMock(), on_reset=b)
+
+        assert listener.deregister(subject) == 2
+        await listener.signal_reset()
+
+        a.assert_not_awaited()
+        b.assert_not_awaited()
+
     def test_deregistering_an_unknown_subject_is_not_an_error(self) -> None:
         nats, _ = _capture_subscribe_typed()
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))

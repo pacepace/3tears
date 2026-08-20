@@ -51,7 +51,7 @@ For the durable family, the `platform.config_epochs` row PK is the subject path 
 
 `EpochBumpMessage` is a frozen Pydantic v2 model:
 
-- `subject_path: str` is the namespaced subject the bump targets (matches the row PK)
+- `subject_path: str` is the namespaced subject the bump targets (the KV counter key, or the row PK for the durable tile family)
 - `epoch: int` is the new strictly-monotonic value
 - `payload: dict[str, Any] | None` is an opaque hint for the consumer's reload callback (e.g. `{"model_id": "...", "action": "create"}`)
 

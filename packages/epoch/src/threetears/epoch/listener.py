@@ -346,8 +346,8 @@ class EpochListener:
         )
         return True
 
-    def deregister(self, subject: Subject) -> int:
-        """drop every registration for ``subject``, so a stopped consumer is not called.
+    def deregister(self, subject: Subject, on_bump: BumpCallback | None = None) -> int:
+        """drop registrations for ``subject``, so a stopped consumer is not called.
 
         ``_registrations`` is otherwise append-only, and :meth:`signal_reset`
         fans out to everything it holds. A consumer that has shut down --
@@ -355,18 +355,50 @@ class EpochListener:
         reset and be asked to reload state it no longer maintains, through
         bound methods of an object that considers itself stopped.
 
+        **Pass ``on_bump`` when the subject may be shared.** The registration
+        list is per path precisely because two consumers on one subject are
+        intended usage, so dropping the whole list unregisters the other one
+        too -- silently, and only visibly much later as a cache that stopped
+        reloading. Passing the callback this consumer subscribed with drops
+        exactly its own entry. Omitting it keeps the drop-everything behaviour,
+        which is right for a sole owner tearing the subject down.
+
         The NATS subscription is separate and is not touched here: it belongs
         to whoever created it, and tearing it down from a bookkeeping call
         would surprise a consumer that deregisters one subject of several.
 
         :param subject: the subject whose registrations to drop
         :ptype subject: Subject
+        :param on_bump: drop only the registration made with this callback;
+            ``None`` drops every registration on the subject
+        :ptype on_bump: BumpCallback | None
         :return: how many registrations were dropped
         :rtype: int
         """
-        dropped = self._registrations.pop(subject.path, [])
-        self._last_seen.pop(subject.path, None)
-        return len(dropped)
+        entries = self._registrations.get(subject.path, [])
+        if on_bump is None:
+            dropped = len(entries)
+            self._registrations.pop(subject.path, None)
+        else:
+            keep = [e for e in entries if e[1] is not on_bump]
+            dropped = len(entries) - len(keep)
+            if keep:
+                self._registrations[subject.path] = keep
+            else:
+                self._registrations.pop(subject.path, None)
+
+        # Only once nobody is left on the path. Clearing while another consumer
+        # is still registered would re-fire its next bump as new.
+        #
+        # For a WILDCARD subscription this pops a key that was never written:
+        # dedupe is keyed on the path each MESSAGE names, so the entries a
+        # wildcard seeded are the concrete subjects it matched. Those are left,
+        # deliberately -- matching them back would need a subject matcher this
+        # package does not have, and a stale entry only suppresses a bump whose
+        # epoch the counter already passed, which is the correct answer anyway.
+        if not self._registrations.get(subject.path):
+            self._last_seen.pop(subject.path, None)
+        return dropped
 
     async def signal_reset(self, subject: Subject | None = None) -> None:
         """the counter was REPLACED; drop local state and tell every consumer.
@@ -574,14 +606,17 @@ class EpochListener:
         completion responses echo their view of
         ``catalog.tool-gateway`` and ``mcp.rbac``), forward each
         ``(subject, echoed_epoch)`` pair through this method. if
-        echoed > last-seen, schedule a fetch (here: pull current
-        from L3 to confirm, then advance last-seen + invoke
-        ``on_bump``).
+        echoed > last-seen, confirm it against the counter
+        (:meth:`EpochClient.current`), then advance last-seen and
+        invoke ``on_bump``.
 
         the echoed value is treated as a *hint*; the callback fires
-        only after the durable :meth:`EpochClient.current` confirms
-        the higher value (defends against malicious / corrupt
-        envelopes).
+        only after :meth:`EpochClient.current` confirms the higher
+        value (defends against malicious / corrupt envelopes). that
+        read goes to the KV counter for an ephemeral subject and to
+        the Postgres row only for the durable tile family -- it is
+        authoritative either way, which is what this needs, but it is
+        not "the durable view" for most subjects.
 
         :param subject: subject the echo refers to
         :ptype subject: Subject
@@ -589,8 +624,8 @@ class EpochListener:
             advertises for this subject
         :ptype echoed_epoch: int
         :param on_bump: same callback shape as :meth:`subscribe`;
-            invoked when the echoed value is confirmed by L3 and
-            is strictly greater than last-seen
+            invoked when the echoed value is confirmed by the
+            counter and is strictly greater than last-seen
         :ptype on_bump: BumpCallback
         :return: nothing
         :rtype: None
