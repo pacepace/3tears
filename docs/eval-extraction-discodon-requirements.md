@@ -304,6 +304,16 @@ reason, not only the name, and the `confounds` prose is **required** on
 apparatus registrations rather than optional. That requirement, written for a
 single-product system, is what makes a multi-product one legible.
 
+**The rule binds every engine-owned name on a host-facing field, not just the input
+registry.** Two cases found while applying it. A campaign field named `intended_k`
+means iterations-per-cell to discodon and the candidate window to scriob (which calls
+the repeat count `trials`), so one engine-owned name meant two things — it is
+`intended_repetitions`. And a closed engine-owned enum has the same failure: a caveat
+classified as `apparatus | sampling | instrument | scope` forces a domain with a
+legitimate fifth kind to jam it into `scope` until the field means nothing, so the
+engine kinds stay open to host-registered additions. **The slot is shared, the
+vocabulary is the host's** — the same sentence, one level out from levers.
+
 **Verify.** Construct a run from a host that registers nothing beyond the shared
 core and assert the bisect and confound surfaces return a well-formed empty
 answer rather than raising or reporting fabricated agreement; and a test that
@@ -349,6 +359,34 @@ identity function already hashes. The correct route for such an A/B is a
 snapshotted fixture, not a wider override map; **building an override path into
 `directives` would add a second host-shaped mechanism to the one component that
 already cannot be extracted.**
+
+**Content identity is necessary and not sufficient — a registration also supplies a
+rendering and a scale.** A content hash of `0.4` is a correct identity and a useless
+reader label, and a memo reading *"component 9c1e… beat component 4b7a…"* satisfies R9
+while defeating the product. This is the mechanism for the legibility R8 already
+requires and never supplied:
+
+```
+SweepableValue { content_hash, display, scale, raw? }
+
+scale ∈
+  nominal                 unordered categories (a prompt block, a model id)
+                          → display REQUIRED; a hash has no natural rendering
+  ordinal(rank)           ordered but unspaced (small / medium / large)
+  interval(value, unit?)  a real number with real spacing (0.4, 15, 2000 ms)
+                          → display DERIVED from value by default
+```
+
+**`scale`, not a bare ordinal, because rank without spacing draws a false chart.** A
+lever swept at 0.1 / 0.4 / 0.85 rendered as ranks 1/2/3 puts the knee in the wrong
+place — wrong in exactly the case that motivates carrying the field. Three consumers
+need `interval` independently: discodon (temperature, k), metallm
+(`memory.similarity_threshold`, `memory.context_budget`), scriob (candidate window
+`k`, embedder dimension).
+
+**A compound lever registers as two axes.** scriob's `embedder = voyage-3.5/1024` is a
+nominal model id and an interval dimension; one `SweepableValue` loses the interval
+half and the axis with it.
 
 **Verify.** Two runs naming the same preset across an edit to that preset's
 content do not share a variant key; and a variant key can be computed for a

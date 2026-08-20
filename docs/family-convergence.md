@@ -349,6 +349,19 @@ Consumers demonstrably want different subsets (hallucinote: run+judge; scriob:
 analysis/trends; samsung: the runner; CI: run without gen), and lockstep
 versioning makes multi-package consumption free within the family.
 
+**`Battery` and `Run` are therefore optional levels in the containment spine**
+(`Subject → Behavior → Battery? → Campaign → Run? → Observation`), and an absent
+level is a recorded fact rather than a null. Each is a control — a battery holds
+the *stimulus* constant so a difference is attributable to the variant; a run
+holds the *apparatus* constant by commission — so an absent one is a specific,
+named loss of inferential strength that the campaign's declared design states.
+They are optional because observational evidence genuinely has none, not because
+a consumer lacks the concept: a cohort A/B under a declared configuration **is** a
+run, and a consumer that wants one should grow it. `Campaign` — a curated
+observation set under a subject × behavior with a declared design — is the level
+every consumer binds to, and nothing about the commissioned path is softened to
+make the observational one expressible.
+
 Presentation stays app-side — REST/MCP routes and React are adapters over the
 analysis projections. One boundary shift is in flight: discodon's
 chart-substrate decision (2026-08-02, accepted) replaces bespoke chart
@@ -442,6 +455,24 @@ shared engine. What is shared: every engine emits an **assembly-provenance
 record** — content hashes of each component that entered the prompt, plus a
 composition/variant hash. Cheap for static and dynamic engines alike, and what
 makes different engines comparable.
+
+**The record attaches to the observation, not to the batch that commissioned
+it** — the only level at which it is true, since apparatus is not constant
+within a batch: `prompt_cache.state` moves cost by up to 10× and varies across
+k-iterations of one discodon run, and a routing provider can differ between
+trial 1 and trial 5 of one scriob baseline. A batch stays first-class as the
+declaration that these observations were commissioned together under a declared
+apparatus — that is what separates an experiment from a log — and an
+observation may reference one or carry its apparatus inline.
+
+**Each observation records whether its apparatus was `declared` or
+`witnessed`.** Declared means set before the measurement and controlled;
+witnessed means recorded as found. Across the family this splits four to two —
+discodon, scriob, samsung and hallucinote commission; metallm's live turns and
+3tears `scrape`'s runtime recipe-judge loop witness — and the two never pool
+into one cell, because pooling them would report an experimental k over partly
+observational evidence. Without the flag the analysis layer has to be *told in
+prose* not to write "B beat A" over observational data.
 
 #### Measurement: A/B by variant identity
 
