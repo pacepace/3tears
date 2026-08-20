@@ -31,17 +31,6 @@ def _subject(path: str = "app.capabilities.epoch") -> Subject:
     return Subject(path=path, kind=kind)
 
 
-def _pool_returning(epoch: int) -> Any:
-    """build a pool stub whose fetchval returns ``epoch`` (or None for missing row).
-
-    Retained for the DURABLE subject family, which still reads Postgres.
-    """
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=epoch if epoch else None)
-    pool.fetchrow = AsyncMock(return_value={"epoch": epoch} if epoch else None)
-    return pool
-
-
 class _StubEpochClient(EpochClient):
     """An :class:`EpochClient` whose ``current`` answers a fixed value.
 
@@ -110,7 +99,7 @@ class TestEpochListenerColdStartPriming:
 
     @pytest.mark.asyncio
     async def test_cold_start_with_no_row_primes_zero(self) -> None:
-        """fresh database -> last-seen starts at 0; first incoming bump fires."""
+        """a counter nobody has bumped -> last-seen starts at 0; first bump fires."""
         _seeded = 0
         nats, _ = _capture_subscribe_typed()
         client = _StubEpochClient(nats, epoch=_seeded)
@@ -386,7 +375,8 @@ class TestEpochListenerWildcardSubscription:
     """one subscription covering many subjects keeps a counter PER subject.
 
     the failure this guards is silent and lossy, not merely stale. every
-    matched subject owns an independent ``config_epochs`` row, so their
+    matched subject owns an independent counter -- a KV key each, since
+    these subjects are ephemeral -- so their
     epochs are unrelated numbers -- a bump to 5 on one and 1 on another
     are both legitimate. deduping them against a single counter drops
     the lower one and the consumer never learns it happened.

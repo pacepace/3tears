@@ -25,7 +25,6 @@ and a hand-written literal would keep matching after the builder changed.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -35,29 +34,25 @@ from threetears.epoch.client import (  # noqa: SLF001 - this module IS the polic
     _EPHEMERAL_FAMILIES,
     _is_durable,
 )
-from threetears.nats.subjects import Subject, Subjects, get_default_namespace, set_default_namespace
+from threetears.nats.subjects import Subject, Subjects, set_default_namespace
 
 
 @pytest.fixture(autouse=True)
-def _namespace() -> Iterator[None]:
-    """Bind a namespace so the builders render, and put back whatever was there.
+def _namespace() -> None:
+    """Bind a namespace so the builders render.
 
-    ``set_default_namespace`` is process-global. Leaving it set would make this
-    file decide the ambient namespace for everything that runs after it, which
-    is green today only because nothing downstream asserts on a path literal --
-    a property of the current assertions, not of this fixture.
+    No teardown, deliberately. The root ``conftest.py``'s autouse
+    ``_bind_test_subject_namespace`` calls ``_reset_default_namespace()`` both
+    before and after every test in the workspace, precisely so a test that sets
+    the process-wide global cannot shadow its neighbours. Restoring here would
+    duplicate that, and an earlier attempt to do so was worse than nothing: it
+    read the env-derived value and wrote it back as an explicitly-set global,
+    which is the state the root fixture keeps clear.
 
     :return: nothing
-    :rtype: Iterator[None]
+    :rtype: None
     """
-    try:
-        previous: str | None = get_default_namespace()
-    except Exception:  # noqa: BLE001 - unset is a normal starting state, not a failure
-        previous = None
     set_default_namespace("polprobe")
-    yield
-    if previous is not None:
-        set_default_namespace(previous)
 
 
 def _epoch_builders() -> dict[str, Any]:
@@ -114,7 +109,7 @@ class TestEveryEpochSubjectHasADecidedSubstrate:
         :return: nothing
         :rtype: None
         """
-        durable = {name for name, _marker in _DURABLE_FAMILIES}
+        durable = {name for name, _marker, _why in _DURABLE_FAMILIES}
         ephemeral = {name for name, _why in _EPHEMERAL_FAMILIES}
 
         undeclared = sorted(set(_epoch_builders()) - durable - ephemeral)
@@ -132,7 +127,7 @@ class TestEveryEpochSubjectHasADecidedSubstrate:
         :rtype: None
         """
         known = set(_epoch_builders())
-        declared = {name for name, _ in _DURABLE_FAMILIES} | {name for name, _ in _EPHEMERAL_FAMILIES}
+        declared = {name for name, _m, _w in _DURABLE_FAMILIES} | {name for name, _w in _EPHEMERAL_FAMILIES}
 
         stale = sorted(declared - known)
         assert not stale, f"declared substrate for subject(s) that no longer exist: {stale}"
@@ -148,7 +143,7 @@ class TestTheDeclarationMatchesTheClassifier:
         :rtype: None
         """
         builders = _epoch_builders()
-        for name, _marker in _DURABLE_FAMILIES:
+        for name, _marker, _why in _DURABLE_FAMILIES:
             assert _is_durable(_build(builders[name])), f"{name} is declared durable but classifies ephemeral"
 
     def test_every_ephemeral_declaration_classifies_ephemeral(self) -> None:
@@ -176,10 +171,18 @@ class TestTheDeclarationMatchesTheClassifier:
         assert not _is_durable(Subject(path="polprobe.datasource.ds1.tiles.parcels.render", kind="point"))
 
     def test_every_declaration_carries_a_reason(self) -> None:
-        """A table entry with no reason is a rubber stamp.
+        """A table entry with no reason is a rubber stamp. BOTH tables.
+
+        The durable table used to keep its reason in an inline comment, which
+        this test cannot read -- so the guarantee covered one table of two while
+        the prose claimed both.
 
         :return: nothing
         :rtype: None
         """
-        for name, why in _EPHEMERAL_FAMILIES:
-            assert len(why) >= 20, f"{name}'s ephemeral rationale is too thin: {why!r}"
+        both = [(name, why) for name, _marker, why in _DURABLE_FAMILIES]
+        both += list(_EPHEMERAL_FAMILIES)
+
+        assert len(both) == len(_DURABLE_FAMILIES) + len(_EPHEMERAL_FAMILIES)
+        for name, why in both:
+            assert len(why) >= 20, f"{name}'s rationale is too thin: {why!r}"

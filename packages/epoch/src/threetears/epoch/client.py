@@ -145,15 +145,16 @@ _IDENTITY_ATTEMPTS: Final = 3
 #: ``Subjects`` factory and fails when a new ``*_epoch`` builder matches
 #: neither, so adding one forces the decision instead of defaulting to
 #: ephemeral -- which is the direction that cannot be repaired.
-_DURABLE_FAMILIES: Final[tuple[tuple[str, str], ...]] = (
+#: Each entry is ``(builder name, path marker, reason)``. The reason is a FIELD
+#: rather than a comment so the policy test can require one; a rationale the
+#: enforcement cannot read is a rationale nobody has to write.
+_DURABLE_FAMILIES: Final[tuple[tuple[str, str, str], ...]] = (
     (
         "datasource_tile_epoch",
-        # The value is the ``v{n}`` segment of a tile URL and the geo collection
-        # puts it in its cache key, so the number reaches browser and CDN caches
-        # this system cannot reach. A counter that reset would re-issue
-        # ``v1..vN`` for DIFFERENT content while those caches still hold the old
-        # generation at the same version. No in-process detection fixes that.
         ".tiles.",
+        "the value is the v{n} in a tile URL and the geo collection puts it in its cache key, "
+        "so it reaches browser and CDN caches this system cannot purge; a counter that reset "
+        "would re-issue v1..vN for DIFFERENT content at a version those caches still hold",
     ),
 )
 
@@ -208,7 +209,7 @@ def _is_durable(subject: Subject) -> bool:
     """
     if not subject.path.endswith(".epoch"):
         return False
-    return any(marker in subject.path for _name, marker in _DURABLE_FAMILIES)
+    return any(marker in subject.path for _name, marker, _why in _DURABLE_FAMILIES)
 
 
 def _is_wildcard(subject: Subject) -> bool:

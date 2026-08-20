@@ -140,14 +140,15 @@ packages (bumped in lock-step).
   there was nowhere else to put it.
 
 - `epoch`: **which substrate an epoch takes is now declared per family, with a
-  test that fails when a new epoch subject is declared by neither.** Previously
+  test that fails when a new `*_epoch` builder is declared by neither.** Previously
   a subject nobody had considered was classified silently, and the silent answer
   is ephemeral, which is the direction that cannot be repaired once a version
   number has reached a CDN. The classifier still applies a path marker; what
   changed is that the marker now belongs to a named, reasoned declaration and
   that nothing can be absent from the tables.
 
-  Both tables now carry every epoch subject with its reason, and
+  Both tables now carry every epoch subject with its reason as a FIELD the
+  test can read, and
   `packages/epoch/tests/unit/test_durability_policy.py` enumerates the real
   `Subjects` factory: a new `*_epoch` builder fails until someone decides, a
   declaration for a deleted subject fails, and a declaration that disagrees with
