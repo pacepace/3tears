@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20
+**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20; R10 the same day
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -328,6 +328,102 @@ already cannot be extracted.**
 content do not share a variant key; and a variant key can be computed for a
 component the host supplies as bytes, with no registry present.
 
+## R10 — what is evaluable is declared per precondition, derived where it can be, and gates authoring
+
+**Property.** A consumer can answer, for any surface of its own application,
+whether eval reaches it — along four axes that fail independently:
+
+| Axis | The question |
+|---|---|
+| **Representable** | Can the simulated world instantiate the precondition a scenario needs? |
+| **Controllable** | Can eval vary it at run scope, with the variation captured in identity? |
+| **Faithful** | Is the thing eval exercises the thing production runs? |
+| **Observable** | Can eval see the outcome at all? |
+
+The answer is **derived** from the mechanism that already carries the fact
+wherever one exists, is **declared** only where nothing carries it, and
+**fails template authoring** rather than being published as prose.
+
+**Why, and why these four.** The 2026-08-19/20 wave hit all four, each in a
+different part of the system, and each was discovered by spending a run:
+
+- **Representable** — the toolworld has no `now_playing`, so a scenario asking a
+  listener to skip the current track could not exist. The subject behaved
+  correctly and the rubric scored it at the floor. Cost: a cancelled run, an
+  archived template, and a reading that looked like catastrophic behavioural
+  failure.
+- **Controllable** — `directives` is a persona field and `prompt_overrides`
+  reaches prompt-registry slots only, so the one component the measurements
+  identified as the fix target is the one component no run can vary. Cost: a
+  planned track redesigned mid-campaign.
+- **Faithful** — the classifier evaluator builds its call from a hardcoded stub
+  rather than the production construction path. Cost: an accuracy figure below
+  chance, reported before it was retracted.
+- **Observable** — the classifier's own skip decision logs at DEBUG and the log
+  pipeline ingests INFO and above, so the base-rate question had no data behind
+  it at all. Cost: a whole track abandoned as unanswerable.
+
+Four axes, four independent failures, one campaign. The taxonomy is evidence
+rather than design.
+
+**Derive it; do not maintain it.** A hand-written coverage document is a durable
+claim riding on values that move underneath it, and it fails in the reassuring
+direction — it goes on saying "supported" after the support is refactored away.
+Most of it does not need to be written down twice:
+
+- The **input registry** of R8 *is* the controllability map. A host that
+  registers what it sweeps has already enumerated what can be swept, and a
+  surface absent from the registry is a surface no run can vary. The registry
+  does double duty and cannot drift from itself.
+- The **toolworld's seed schema** is the representability map — the state
+  dimensions a world accepts are the preconditions a scenario may presume.
+- **R9's content hash** answers whether a variation is even identifiable once
+  made.
+
+**Fidelity is the one axis that must not be mapped at all.** Whether the eval
+path constructs what production constructs cannot be inferred from structure,
+and a document asserting it is exactly the claim that was false here, and stayed
+false until a campaign spent real money measuring a stub. The
+correct form is not an entry in a map but a **shared construction path** with a
+test asserting the two callers reach it — proven, not declared. A map entry
+would have recorded "classifier: covered" and been wrong.
+
+**The unit is a precondition, not an area.** This is the failure mode most
+likely to be built by accident, and the wave contains its counterexample: after
+the skip template was archived as unrepresentable, the *same* underlying concern
+was measured successfully through a different mechanism — a queue-state flag
+needing no now-playing seed — and it reproduced the finding. A map reading
+"skip/segue: unsupported" would have discouraged the probe that worked. So the
+honest output is *"this scenario requires state S, which this world cannot
+instantiate"*, which sends an author looking for another path. **"This area is
+unevaluable" is a conclusion the map is not entitled to draw.**
+
+**A gate, not a page.** The value is refusing a template that presumes a
+precondition the world cannot instantiate, at authoring time, before a run is
+paid for. A page is read once by whoever wrote it. The campaign's own recorded
+lesson was that the skipped verification step is cheap and belongs before
+authoring; R10 asks for it as a mechanism rather than a habit.
+
+**Ownership splits three ways, and only one of them is 3tears'.** The *facts*
+originate in the consuming repo, because only the host knows what its own world
+can hold. The *schema, vocabulary and checker* belong in the package, or every
+consumer invents private words and no cross-product tooling can read them.
+Development tooling is a **reader** — a good surface for "here is what this
+template would presume that is not covered", and the wrong home for the source
+of truth, since it cannot be gated in CI and drifts without saying so.
+
+**Any entry that is declared rather than derived is a claim under test.** The
+same wave found a destructive-operation guard advising an archive surface that
+was never built, in a package whose shared helper asserts in its own docstring
+that the alternative applies. A declaration nobody executes decays exactly that
+way.
+
+**Verify.** A template presuming a state dimension the registered world does not
+accept fails authoring, naming the dimension rather than the area; a surface
+absent from the input registry is reported as uncontrollable without a second
+list being maintained; and the fidelity axis is covered by a test that the eval
+and production paths reach one construction function, not by an entry anywhere.
+
 ## Explicitly not in scope
 
 `service.py`, `runner.py`, `persona_factory.py`, `storage.py` and
@@ -363,6 +459,11 @@ not discodon's.
   the same seam `family-convergence.md` §4.3 names from the prompt side
   ("content-addressed prompt identity and eval identity are two mechanisms
   today"); one unification serves both.
+- **The coverage schema and its checker** (R10): the four-axis vocabulary,
+  the per-precondition unit, and the authoring-time refusal. The facts are the
+  host's and the fidelity axis is a test rather than a record; what the package
+  owes is the shape they are expressed in, so two consumers describe their gaps
+  the same way.
 - The package cut itself, once R1 holds — at which point the lift is mechanical.
 
 ---
