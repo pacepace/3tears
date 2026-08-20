@@ -25,7 +25,7 @@ from threetears.core.cache.base import (
     _entry_is_fresh,
     build_select_clause,
 )
-from threetears.observe import get_logger
+from threetears.observe import counter, get_logger
 
 __all__ = [
     "SQLiteBackend",
@@ -39,6 +39,18 @@ except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
 log = get_logger(__name__)
+
+#: Name of the expired-row counter, resolved at the call site rather than here.
+#:
+#: NOT built at module scope. ``counter()`` registers with prometheus's global
+#: registry, which outlives a module reload, while the helper's own cache does
+#: not -- so a re-import raises ``Duplicated timeseries``. That is not
+#: hypothetical here: ``test_l1_surface_imports_without_the_client`` purges
+#: ``threetears`` and re-imports the L1 path to prove it needs no NATS client,
+#: and a module-level metric turned that guard into an error. Building it inside
+#: the function keeps this module free of import-time side effects, which is the
+#: property that test exists to defend, and costs a cached lookup per drop.
+_EXPIRED_DROPS_METRIC: str = "threetears_l1_rows_expired_total"
 
 
 class _PooledConnection:
@@ -706,7 +718,10 @@ class SQLiteBackend:
         staleness that was supposed to have been bounded.
 
         Debug rather than info: on a busy collection this is per-read, and the
-        interesting signal is the rate, not the individual row.
+        interesting signal is the rate, not the individual row -- which is why
+        the rate is a counter (:data:`_EXPIRED_DROPS_METRIC`) rather than something a
+        reader has to reconstruct by grepping debug logs that production does
+        not keep at that level.
 
         **The delete may fail, and a read must not raise because of it.**
         ``delete_by_id`` opens ``BEGIN IMMEDIATE`` and re-raises
@@ -741,6 +756,11 @@ class SQLiteBackend:
                 extra={"extra_data": {"table": table, "max_age_seconds": max_age_seconds, "error": str(exc)}},
             )
             return
+        counter(
+            _EXPIRED_DROPS_METRIC,
+            description="L1 rows deleted for exceeding their configured max age",
+            label_names=("table",),
+        ).labels(table=table).inc()
         log.debug(
             "L1 row dropped past its max age",
             extra={

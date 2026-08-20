@@ -32,7 +32,11 @@ packages (bumped in lock-step).
 
 - `core`: two keyword parameters on the `L1Backend` protocol reads,
   `max_age_seconds` and `now_monotonic`. Both default to off, so every existing
-  caller is unaffected. `DuckDBBackend` raises `NotImplementedError` rather than
+  **caller** is unaffected. An **implementer** is not: `L1Backend` is a
+  `runtime_checkable` Protocol, so a third-party backend that does not accept
+  the new keywords stops satisfying it and fails when core passes them. In-tree
+  backends are updated; an out-of-tree one needs the two keywords added.
+  `DuckDBBackend` raises `NotImplementedError` rather than
   accepting a bound it cannot honour -- it injects no stamp, so silence there
   would hand back exactly the unbounded staleness the caller asked to be rid of.
 

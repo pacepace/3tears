@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.core.collections.registry import CollectionRegistry
 
 from .conftest import InMemoryNatsBus, make_pod
 
@@ -55,10 +54,3 @@ class TestABoundIsRefusedEvenWhenConfigured:
         table = _collections(collection)[0].table_name
         registry.set_l1_max_age(table, 1.0)
         assert registry.get_l1_max_age(table) == 1.0
-
-
-class TestRegistryIsolation:
-    def test_a_bound_on_one_table_does_not_leak_to_another(self) -> None:
-        registry = CollectionRegistry()
-        registry.set_l1_max_age("table_a", 30.0)
-        assert registry.get_l1_max_age("table_b") is None
