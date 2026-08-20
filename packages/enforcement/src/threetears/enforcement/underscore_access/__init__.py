@@ -33,6 +33,9 @@ from threetears.enforcement.underscore_access.config import (
     UnderscoreAccessConfig,
 )
 from threetears.enforcement.underscore_access.ledger import (
+    MODULE_SCOPE,
+    ledger_scope_entries,
+    scoped_accesses,
     blanket_noqa_offenders,
     carry_forward_rationales,
     enclosing_scopes,
@@ -63,6 +66,9 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 __all__ = [
+    "MODULE_SCOPE",
+    "ledger_scope_entries",
+    "scoped_accesses",
     "UnderscoreAccessConfig",
     "all_exempted_files",
     "blanket_noqa_offenders",

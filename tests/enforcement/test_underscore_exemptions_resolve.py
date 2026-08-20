@@ -28,6 +28,7 @@ from threetears.enforcement.underscore_access import (
     missing_files,
     orphan_rationales,
     unlisted_accesses,
+    scoped_accesses,
     unresolved_entries,
 )
 
@@ -253,3 +254,90 @@ class TestCarryForwardAcrossScopeDrift:
 
         assert ("sample.py", "first", "_a", 0) not in carried
         assert carried[("sample.py", "inserted", "_a", 0)] == "reason belonging to first"
+
+
+class TestAnEditAboveAnEntryIsNotDrift:
+    """The guarantee the key was changed for, stated as the thing it must not do.
+
+    A line-keyed entry stops matching when anything above it moves, so the gate
+    reports the original violation against code nobody touched and the only remedy
+    is re-running a regeneration script. That fired twice in one session here: a
+    `# parity-exempt:` comment, then a one-line import.
+
+    A gate that fails on unrelated edits trains people to re-run the script without
+    reading what changed, which is the state in which a genuinely wrong entry gets
+    regenerated straight past. That is why this is worth a key change rather than
+    care.
+    """
+
+    _SOURCE = "def only():\n    obj._thing\n"
+    _PADDED = "import calendar\nimport json\nimport os\n\n\ndef only():\n    obj._thing\n"
+
+    def _ledger(self, tmp_path: Path, key: str) -> Path:
+        path = tmp_path / "_exemptions.txt"
+        path.write_text(f"# rationale: {'framework-stable internal read the test needs'}\nsample.py:{key}:_thing\n")
+        return path
+
+    def test_a_scope_keyed_entry_survives_five_lines_inserted_above_it(self, tmp_path: Path) -> None:
+        """Same access, same scope, five lines further down. Nothing to re-run.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        ledger = self._ledger(tmp_path, "only#0")
+
+        source.write_text(self._SOURCE)
+        assert unresolved_entries(ledger, tmp_path) == [], "the scope key did not resolve before the edit"
+
+        source.write_text(self._PADDED)
+        assert unresolved_entries(ledger, tmp_path) == [], "an edit above the access broke a scope-keyed entry"
+
+    def test_the_line_keyed_form_is_what_breaks(self, tmp_path: Path) -> None:
+        """The control. Without it the test above passes on a check that resolves nothing.
+
+        Line-keyed entries are skipped by the scope-keyed reader, so they resolve
+        vacuously rather than failing -- which is the shape that would make the first
+        test meaningless. Asserted here so that stays visible.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        source.write_text(self._PADDED)
+
+        assert unresolved_entries(self._ledger(tmp_path, "2"), tmp_path) == []
+
+    def test_an_access_that_leaves_its_scope_is_still_caught(self, tmp_path: Path) -> None:
+        """The key is stable, not blind: a genuinely stale entry must still surface.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        ledger = self._ledger(tmp_path, "only#0")
+
+        source.write_text("def renamed():\n    obj._thing\n")
+
+        assert unresolved_entries(ledger, tmp_path) == ["sample.py:only#0:_thing"]
+
+    def test_a_second_access_in_the_scope_needs_its_own_entry(self, tmp_path: Path) -> None:
+        """Occurrence still separates two accesses, so the second is not silently covered.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        source = tmp_path / "sample.py"
+        source.write_text("def only():\n    obj._thing\n    obj._thing\n")
+        ledger = self._ledger(tmp_path, "only#0")
+
+        assert unresolved_entries(ledger, tmp_path) == []
+        assert scoped_accesses(source).keys() == {("only", "_thing", 0), ("only", "_thing", 1)}

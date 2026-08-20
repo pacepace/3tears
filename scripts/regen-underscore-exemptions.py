@@ -29,6 +29,7 @@ from pathlib import Path
 from threetears.enforcement.underscore_access import (
     all_exempted_files,
     carry_forward_rationales,
+    MODULE_SCOPE,
     enclosing_scopes,
     private_accesses,
 )
@@ -79,14 +80,15 @@ def main() -> int:
         # one name in one scope, which is the commonest shape there is.
         seen: Counter[tuple[str, str]] = Counter()
         for number, symbol in accesses:
-            scope = scopes.get(number, "")
-            reason = rationales.get((rel, scope, symbol, seen[scope, symbol]))
+            scope = scopes.get(number, MODULE_SCOPE)
+            occurrence = seen[scope, symbol]
+            reason = rationales.get((rel, scope, symbol, occurrence))
             seen[scope, symbol] += 1
             if reason is None:
                 unmapped.append(f"{rel}:{number}:{symbol}")
                 reason = _PLACEHOLDER
             out.append(f"# rationale: {reason}")
-            out.append(f"{rel}:{number}:{symbol}")
+            out.append(f"{rel}:{scope}#{occurrence}:{symbol}")
 
     _LEDGER.write_text("\n".join(out) + "\n")
     entries = sum(1 for line in out if line and not line.startswith("#"))
