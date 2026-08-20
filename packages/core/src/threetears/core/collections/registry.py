@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import Subjects
-from threetears.nats.errors import PublishError, SubscribeError
+from threetears.nats.errors import PublishError
 from threetears.core.collections.scan_cache import ScanCache
 from threetears.observe import get_logger
 from uuid_utils import uuid7
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
     # in a nats-py-free submodule, so importing it eagerly costs nothing.
-    from threetears.nats import NatsClient
+    from threetears.nats import NatsClient, Subscription
 
 __all__ = [
     "DEFAULT_L1_MAX_AGE_SECONDS",
@@ -128,6 +128,16 @@ class CollectionRegistry:
         # wrote. An opaque token, never used as a UUID.
         self._origin_id: str = str(uuid7())  # convert at border: invalidation wire-envelope origin token
         self._scan_cache: ScanCache | None = None
+        # The invalidation listener's lifecycle state, set together by
+        # :meth:`start_invalidation_listener` and cleared together by
+        # :meth:`stop_invalidation_listener`. The subscription being non-``None``
+        # IS the "a listener is live" answer -- deliberately not a separate
+        # boolean, which would be one more thing to drift out of step with the
+        # handle it describes. The client is retained solely so ``stop`` can
+        # route the unsubscribe back through it, keeping the client's own
+        # subscription bookkeeping correct.
+        self._nats_client: NatsClient | None = None
+        self._invalidation_subscription: Subscription | None = None
 
     def configure(
         self,
@@ -320,6 +330,13 @@ class CollectionRegistry:
         surfaces immediately rather than as silent
         invalidation-skips.
 
+        **idempotent while a listener is live.** a second call is a
+        no-op rather than a second consumer: two subscriptions on one
+        subject in one process means every broadcast is handled twice,
+        and a teardown that releases one of them leaves the other
+        running. call :meth:`stop_invalidation_listener` first to
+        rebind to a different client.
+
         :param nats_client: connected typed NATS wrapper client
         :ptype nats_client: NatsClient
         :return: nothing
@@ -327,7 +344,12 @@ class CollectionRegistry:
         :raises SubscribeError: if the underlying subscribe fails to
             register (transport / config error)
         """
-        self._nats_client = nats_client
+        if self._invalidation_subscription is not None:
+            log.debug(
+                "Invalidation listener already running",
+                extra={"extra_data": {"subject": Subjects.cache_invalidate().path}},
+            )
+            return
 
         async def _on_invalidation(message: CacheInvalidationMessage) -> None:
             # Skip invalidations this registry published itself. A single
@@ -390,15 +412,59 @@ class CollectionRegistry:
             entity_id = tuple(message.ids)
             l1.delete_by_id(message.table, entity_id, pk_cols)
 
-        try:
-            await nats_client.subscribe_typed(
-                subject=Subjects.cache_invalidate(),
-                message_type=CacheInvalidationMessage,
-                cb=_on_invalidation,
-            )
-        except SubscribeError:
-            # surface subscribe failure; cache coherence is not optional
-            raise
+        # SubscribeError propagates deliberately: cache coherence is not
+        # optional, so a process that cannot subscribe must fail its startup
+        # rather than run on silently as an island. Both fields stay unset on
+        # that path, so a failed start leaves nothing behind for ``stop`` to
+        # find and a retry is a clean first start.
+        subscription = await nats_client.subscribe_typed(
+            subject=Subjects.cache_invalidate(),
+            message_type=CacheInvalidationMessage,
+            cb=_on_invalidation,
+        )
+        self._nats_client = nats_client
+        self._invalidation_subscription = subscription
+
+    async def stop_invalidation_listener(self) -> None:
+        """drop this registry's cache-invalidation subscription.
+
+        the teardown half of :meth:`start_invalidation_listener`, for a
+        process's shutdown path. after it returns the registry holds no
+        subscription and no client, and a later ``start`` subscribes
+        again -- the registry is reusable, not one-shot.
+
+        **a no-op when no listener is live**, whether one was never
+        started or was already stopped. callers run this from a
+        ``finally`` / ``close()`` alongside other teardown, where a
+        raise would abandon the teardown steps after it.
+
+        **no exception handling here, deliberately.**
+        :meth:`NatsClient.unsubscribe` already absorbs the transport
+        failures a shutdown produces: it returns early on an
+        already-closed subscription, and it wraps both the raw
+        unsubscribe and the dispatch-task join in its own handlers that
+        log at WARNING. so unsubscribing on a draining connection does
+        not raise, and a catch here would be code that never runs while
+        looking like it guards something. what WOULD reach a caller is a
+        genuine programming error, which must surface.
+
+        the handle is released before the unsubscribe is awaited, so the
+        registry is restartable even on the paths that unwind slowly.
+
+        :return: nothing
+        :rtype: None
+        """
+        subscription = self._invalidation_subscription
+        nats_client = self._nats_client
+        if subscription is None or nats_client is None:
+            return
+        self._invalidation_subscription = None
+        self._nats_client = None
+        await nats_client.unsubscribe(subscription)
+        log.info(
+            "Invalidation listener stopped",
+            extra={"extra_data": {"subject": Subjects.cache_invalidate().path}},
+        )
 
     async def publish_invalidation(
         self,
@@ -503,7 +569,17 @@ class CollectionRegistry:
             )
 
     def clear(self) -> None:
-        """Remove all registered collections, overrides and L1 bounds (for tests)."""
+        """Remove all registered collections, overrides and L1 bounds (for tests).
+
+        **Does NOT stop the invalidation listener**, and cannot: unsubscribing
+        is awaitable and this method is synchronous. A registry cleared while a
+        listener is live keeps that subscription and the callback goes on
+        firing. The by-pk eviction below it is inert -- the collection lookup
+        misses and returns -- but the scan-cache drop sits ABOVE that guard and
+        runs on every broadcast regardless, so a cleared registry is not an
+        idle one. Call :meth:`stop_invalidation_listener` alongside this in any
+        teardown that started a listener.
+        """
         self._collections.clear()
         self._overrides.clear()
         # The bound keeps its own dict so ``register()`` cannot wipe it, but a

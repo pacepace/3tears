@@ -145,6 +145,11 @@ Unless noted, these are exported from `threetears.core` (see §15).
   explicit `None` disables L2 for that collection. Drives cross-pod invalidation via
   `start_invalidation_listener(nats)` / `publish_invalidation(...)` using a typed
   `CacheInvalidationMessage` on `Subjects.cache_invalidate()`.
+  `stop_invalidation_listener()` is the teardown half: it unsubscribes the listener and
+  is safe to call from a `finally` — a second call, or one with nothing subscribed, is a
+  no-op, and a stop on an already-draining connection does not raise. A second
+  `start_invalidation_listener` while one is live is likewise a no-op rather than a
+  second consumer, so the registry is reusable across a stop/start.
 - **`DataStore`** — the ergonomic front door. Wraps a registry, creates tables from
   declarative definitions, hands you collections by name (`store["my_table"]`),
   exposes raw `query` / `execute`, and `run_migrations(runner)`.
@@ -371,7 +376,8 @@ async def wire_with_l2(pg_pool) -> None:
 
     # ... use `widgets` exactly as in §8.1 ...
 
-    await nats.shutdown()   # graceful drain on shutdown
+    await registry.stop_invalidation_listener()   # release the subscription first
+    await nats.shutdown()                         # graceful drain on shutdown
 ```
 
 > Need L2 on for some tables but off for others? Override per table with
@@ -611,7 +617,8 @@ id.
 **Step 6 — Wire startup and shutdown. Required.**
 - Inputs: a shutdown grace window **≥ the NATS drain timeout (~30s default)**.
 - App counterpart: on startup create the pool and (if multi-pod) the `NatsClient`; on
-  SIGTERM call `await nats.shutdown()` then `await pool.close()`. A health check can call
+  SIGTERM call `await registry.stop_invalidation_listener()`, then
+  `await nats.shutdown()`, then `await pool.close()`. A health check can call
   `await nats.ping()` and run `SELECT 1` on the pool.
 
 **Variant — sandboxed pods (no DB credentials).** Don't give these pods the DSN. Give
@@ -679,7 +686,7 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
 - [ ] (Multi-pod) `await NatsClient.connect(...)`; pass it as
       `registry.configure(..., l2_client=nats)` so collections pick up L2 (§8.2);
       `await registry.start_invalidation_listener(nats)` on every pod;
-      `await nats.shutdown()` on exit.
+      `await registry.stop_invalidation_listener()` then `await nats.shutdown()` on exit.
 - [ ] Define schema with `TableDef`/`ColumnDef`/…; author migrations per
       [`how-to-add-a-migration.md`](./how-to-add-a-migration.md); apply at startup.
 - [ ] Choose `collection_flush` (start with `ALWAYS`).
