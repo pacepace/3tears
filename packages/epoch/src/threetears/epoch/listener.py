@@ -141,7 +141,9 @@ class EpochListener:
 
         primes the per-subject last-seen BEFORE the NATS subscription
         registers, so the first broadcast a subscriber receives is
-        compared against the durable view rather than against ``0``.
+        compared against the counter's current value rather than against
+        ``0`` (the KV counter for an ephemeral subject, the Postgres row for
+        the durable tile family).
         without this priming, every cold-started pod would fire its
         ``on_bump`` callback once on the first arriving broadcast
         even when the pod's local state already reflects that epoch.
@@ -380,7 +382,13 @@ class EpochListener:
             dropped = len(entries)
             self._registrations.pop(subject.path, None)
         else:
-            keep = [e for e in entries if e[1] is not on_bump]
+            # Equality, NOT identity. A bound method is built fresh on every
+            # attribute access, so ``self._on_x is self._on_x`` is False and an
+            # identity match silently drops nothing -- which is how the only
+            # production caller (``LocalGrantAuthorizer.stop``) passes it.
+            # ``a.m == a.m`` is True because a bound method compares on
+            # ``(__func__, __self__)``.
+            keep = [e for e in entries if e[1] != on_bump]
             dropped = len(entries) - len(keep)
             if keep:
                 self._registrations[subject.path] = keep

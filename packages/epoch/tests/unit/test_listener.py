@@ -1045,6 +1045,44 @@ class TestDeregistrationStopsTheFanOut:
         a.assert_not_awaited()
         b.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_a_bound_method_deregisters_itself(self) -> None:
+        """The only production caller passes a bound method, and identity fails for those.
+
+        `a.m is a.m` is False -- a bound method is built fresh on every attribute
+        access -- so an identity match drops nothing and `stop()` leaves the
+        registration in place, which is the whole thing `deregister` exists to
+        prevent. `a.m == a.m` is True.
+
+        The three sibling tests all pass `AsyncMock()` held in a local, where
+        identity holds, so none of them can see this.
+
+        :return: nothing
+        :rtype: None
+        """
+
+        class _Consumer:
+            def __init__(self) -> None:
+                self.reset_calls = 0
+
+            async def on_bump(self, epoch: int, payload: dict[str, Any] | None) -> None:
+                """Bump callback registered and later deregistered as a bound method."""
+
+            async def on_reset(self) -> None:
+                """Reset callback that must stop firing once deregistered."""
+                self.reset_calls += 1
+
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.bound.epoch")
+        consumer = _Consumer()
+        await listener.subscribe(subject, consumer.on_bump, on_reset=consumer.on_reset)
+
+        assert listener.deregister(subject, consumer.on_bump) == 1
+
+        await listener.signal_reset()
+        assert consumer.reset_calls == 0
+
     def test_deregistering_an_unknown_subject_is_not_an_error(self) -> None:
         nats, _ = _capture_subscribe_typed()
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))

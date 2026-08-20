@@ -172,10 +172,6 @@ packages (bumped in lock-step).
 
 ### Fixed
 
-- `core`: `collection[id]` now honours the max-age bound. It resolves through a
-  path that repairs by pulling through, but read non-expiring, so it served a
-  stale row indefinitely while `get()` beside it refreshed.
-
 - `mcp`: `LocalGrantAuthorizer.stop()` is reversible. It cleared `_started`
   below an early return taken whenever there was no catch-up task -- which is
   every single-process authorizer, since that task exists only in epoch mode --
