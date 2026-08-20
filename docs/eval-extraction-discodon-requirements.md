@@ -1,6 +1,6 @@
 # Eval extraction: requirements for discodon
 
-**Status:** Requirements — 2026-08-19
+**Status:** Requirements — 2026-08-19; R8, R9 and the evidence section added 2026-08-20
 **For:** discodon, next release
 **Why now:** the eval packages
 ([`family-convergence.md` §4.2](family-convergence.md#42-evals--3tears-eval-contractsrungenanalysis-new-from-discodon))
@@ -224,6 +224,110 @@ host resolves configuration and passes the values in.
 
 **Verify.** Covered by R1.
 
+## R8 — the lever vocabulary is host-declared, not enumerated in eval
+
+**Property.** Scope-set modules ship the *classification* and the *machinery* —
+`lever` / `apparatus` / `label`, the same/differs/unknown algebra, the confound
+scan — and not the list of inputs. The host registers its own inputs, each with
+a name, a role, a reader and its confounds prose. `versioned_inputs.py` holds no
+name that presumes a host object model.
+
+**Why R1 does not already cover this.** R1 is an AST test for `discodon.*`
+imports. Every entry in the current vocabulary reads a field on eval's *own*
+`EvalRun` — `run.prompt_overrides`, `run.persona_snapshot.entity_name` — so no
+import exists to catch. **R1 goes green while Discodon's object model ships
+inside the shared contract as vocabulary.** Import coupling and concept coupling
+are different failures, and only one of them has a test.
+
+Measured, 2026-08-20: the module declares 19 inputs (3 levers, 15 apparatus, 1
+label). Six name Discodon concepts outright —
+
+| Input | Role |
+|---|---|
+| `prompt_overrides` | lever |
+| `inherited_research_model` | apparatus |
+| `persona_id` | apparatus |
+| `persona_graph_version_hash` | apparatus |
+| `graph_version_hash` | apparatus |
+| `persona_entity_name` | label |
+
+— and a seventh, `tool_config_overrides`, is generic in name and Discodon's
+config shape in fact. A consumer with no personas inherits six entries that are
+permanently null and one whose reader cannot be satisfied, and nothing in the
+proposed verification notices.
+
+**This is R5 applied to a second axis, not a new philosophy.** R5 already ruled
+that the thing that made the call reports what it consumed, in units eval does
+not interpret. R8 is the same move for configuration: the host declares what it
+swept, in names eval does not interpret. In both cases eval keeps the
+arithmetic and gives up the taxonomy.
+
+**Keep `models`.** The test is not "is this product-specific" but *would a
+second LLM product have this concept under a different name, or not have it at
+all?* Every consumer has models, a judge, a simulator, a cost ceiling — those
+stay. Every consumer has *something* that shapes generation and can be swept,
+and none of them share its shape: **the slot is shared, the shape is the
+host's.**
+
+**What must not be lost in the generalisation.** `versioned_inputs.py`'s own
+docstring is the load-bearing part — *"The prose is the point, not decoration. A
+bare dimension name is a label; the reason is what lets a reader judge whether
+it matters."* An eval system whose inputs are opaque hashes degrades to "component
+3 moved" and cannot write a readable analysis. So a registration carries the
+reason, not only the name, and the `confounds` prose is **required** on
+apparatus registrations rather than optional. That requirement, written for a
+single-product system, is what makes a multi-product one legible.
+
+**Verify.** Construct a run from a host that registers nothing beyond the shared
+core and assert the bisect and confound surfaces return a well-formed empty
+answer rather than raising or reporting fabricated agreement; and a test that
+the shared default registry contains no name outside the shared core.
+
+## R9 — a swept component is identified by its content, not by a name in a host registry
+
+**Property.** The extracted notion of a swept component is content-addressed. A
+registration supplies the bytes that entered the run (or their hash), never a
+key to be resolved against a store eval cannot see.
+
+**Why.** `compute_variant_key` already does this correctly for most of what it
+covers: `backstory`, `style`, `cognitive_style`, `example_statements`, `traits`,
+`goals` and `directives` are hashed **as content**. Exactly one component is
+hashed as a *name* — `prompt_overrides`, a `{slot: preset_name}` map that only
+means anything against Discodon's prompt registry. That single entry is the
+whole of what a second consumer cannot supply, and it is also the only mechanism
+the system offers for *varying* anything at run scope.
+
+So the asymmetry runs the opposite way to the intuition. Content-hashing is the
+general case and is already implemented; the registry name is the exception. An
+extraction that carries `prompt_overrides` across carries the one component that
+does not travel, and leaves behind the mechanism that does.
+
+**A live consequence, not only an extraction concern.** `identity.py` documents
+the shortcut as bounded — *"hashed as given … can only over-split, never wrongly
+merge"* — and that is true of the case it discusses, an override restating its
+base preset. It does not cover the other direction: presets are operator-mutable
+by design (`/prompts`, MCP `prompt.update`), so two runs naming the same preset
+across an edit produce the **same** variant key over different text. This
+predicate cannot see that; whether another surface catches it was not
+established. §4.3 of `family-convergence.md` names the same seam from the other
+end — *"identity hashes overlays as given, not by `content_hash` —
+content-addressed prompt identity and eval identity are two mechanisms today."*
+Unifying them is what R9 asks for, and it retires the merge risk as a side
+effect.
+
+**What this buys immediately.** Discodon cannot A/B a directive today:
+`prompt_overrides` reaches `PromptType` slots only, and `directives` is a
+persona field. Under R9 that gap closes without a new override path, because a
+directive variant is just another content-hashed component — the same thing the
+identity function already hashes. The correct route for such an A/B is a
+snapshotted fixture, not a wider override map; **building an override path into
+`directives` would add a second host-shaped mechanism to the one component that
+already cannot be extracted.**
+
+**Verify.** Two runs naming the same preset across an edit to that preset's
+content do not share a variant key; and a variant key can be computed for a
+component the host supplies as bytes, with no registry present.
+
 ## Explicitly not in scope
 
 `service.py`, `runner.py`, `persona_factory.py`, `storage.py` and
@@ -249,4 +353,201 @@ not discodon's.
   mismatch the way it already refused mixed currencies. So the vocabulary R5
   asks discodon to adopt is not aspirational — the search side of it exists and
   is enforced by the adapter conformance suite.
+- **The input-registration contract** (R8): the `lever`/`apparatus`/`label`
+  classification, the same/differs/unknown algebra and the confound scan, with
+  the input list supplied by the host rather than declared in the package.
+  Registration carries the `confounds` prose, not only a name — an eval system
+  whose inputs are opaque hashes cannot write a readable analysis.
+- **A content-addressed component identity** (R9) that a host can satisfy by
+  supplying bytes, with no registry of its own to resolve names against. This is
+  the same seam `family-convergence.md` §4.3 names from the prompt side
+  ("content-addressed prompt identity and eval identity are two mechanisms
+  today"); one unification serves both.
 - The package cut itself, once R1 holds — at which point the lift is mechanical.
+
+---
+
+# Evidence — the Kairo campaign, 2026-08-19/20
+
+Added 2026-08-20. R8 and R9 above were derived from this wave rather than from
+reading the tree, and the rest of it bears on packages beyond this scope set.
+Recorded here because the contracts are still unbound and this is the only body
+of evidence anyone has run through the system end to end.
+
+The wave was four campaigns — a research-model convergence screen, a persona
+bake-off, a single-model behavioural baseline and a multi-arm tool-use run —
+across nine templates, with the analysis and report generator deliberately under
+test alongside the subject. Roughly 900 scored observations. What follows is
+sorted by **which package owns the consequence**, because most of it is not
+Discodon's to fix.
+
+## Owned by this scope set
+
+**A measure name is not a measure.** `mean_score` is computed differently by
+different surfaces: `run_summary` drops a cell an apparatus fault produced,
+while `results_pivot` and `export_results` keep its raw rows. Over any corpus
+with one infra-excluded cell the two figures differ **by construction**, so a
+`run_summary` number and a `results_pivot` number for the same dimension are not
+the same quantity and must never be quoted side by side. Today that is a caveat
+a reader has to carry. **In an extracted contract it is a defect**: a measure
+should name its own population, so that two surfaces reporting "mean_score"
+either agree or are forced to disagree in their names. Carrying the ambiguity
+across the boundary makes it a cross-repo ambiguity.
+
+**Judge-mediated and mechanical measures are different kinds of number and the
+contract should say so.** Latency, cost, convergence rate, call counts and
+ordering predicates carry no judge. Rubric means carry an uncalibrated one
+(Discodon's Cohen's-κ work, EVL-CK9R, has not landed; the judge was pinned to
+one model across every run in the wave for exactly that reason). Every quality
+claim in the wave is directional and every mechanical one is not. A consumer
+inheriting a `mean_score` field with no marking will quote it as though it were
+a latency. The distinction is structural, not a documentation problem.
+
+## Owned by `3tears-eval-analysis` (later package — do not extract the assumption)
+
+**The campaign design model assumes one run = one arm, and the best design
+violates it.** `CampaignCell` is run-level (`bundle.py:369` — "one non-control
+*run*, and what it moved off the control") and the model axis is read per run
+(`sorted(run.models)`). A campaign whose arms live *inside* one run therefore has
+no lever movement between its runs.
+
+Co-running arms in one run is precisely the design that **eliminates**
+`measurement_windows_disjoint`, `context_differs` and `roles_differ` — arms share
+the judge, simulator, case set and measurement window by construction. Measured:
+`bisect_runs` across two members of the star campaign returned Differs(2)/Same(15);
+within-run arms differ in nothing but the variant.
+
+The consequence was not theoretical. On the multi-arm campaign the generator
+emitted a **false BLUF** ("each ran on its own template and time window" — in
+fact all four runs carried all three models, 12 results per model per run), a
+**false recommended decision** (re-run work already done, in the better design),
+and **minted an insight on the false premise**, which propagates into later
+bundles as the subject's prior knowledge. Filed as discodon#2377; the insight was
+deleted 2026-08-20.
+
+**The data model was never the problem.** `variant_key` resolves per *result* and
+`context_key` per *run*, and the `frontier` lens — built on the former — resolved
+the same bundle correctly, as one variant spanning five templates. The same
+analysis's own `quality-null` finding aggregated the variants correctly while its
+design narrative did not. **So the statistically cleanest design is the one the
+analysis narrates worst, and an operator who trusts the narrative is pushed
+toward the weaker design.** Whatever the analysis package inherits, it must not
+inherit "one run = one arm".
+
+**A headline metric that can pin has to be able to say so.** Every behavioural
+arm scored `pass^k = 0.000`, because `pass_at_k` counts a case only when every
+attempt clears every rubric dimension *and* every goal-state check, and the
+templates declared four strict checks each. The metric discriminated nothing
+across three models. `frontier` takes `pass^k` as its **headline** and mean
+composite only as secondary, so its verdict surface was reading a constant.
+The `k_runs` parameter help on `start_run` already says the right thing — *"pass^k
+is a binarised threshold metric and is noisy at small test-case counts […] For
+comparing runs, prefer per-dimension mean scores — `results_pivot` with
+`metric='score'` and `rubric_dim` on an axis — over the single pass^k figure"* — which is guidance a contract can enforce
+rather than advise: a degenerate headline should be reported as degenerate, not
+rendered as a verdict.
+
+**A verdict surface must distinguish "nothing disqualified" from "nothing
+checked".** The frontier's boundary pillar was unavailable across the whole DJ
+family because those templates carry **inline** rubric dims, which are not
+axis-tagged, so no scored dim resolved to a `capability|boundary` axis. The
+surface said so, in those words, which is the behaviour to keep. Note the shape:
+the **taxonomy** is the contract's (capability/boundary), the **classification**
+is the host's work — the same split R8 asks for on levers, arriving independently
+on rubrics.
+
+## Owned by `3tears-eval-run` — and the hardest one to abstract
+
+**The simulated world's representable state is part of the contract, and today it
+is implicit.** A template was authored asking a listener to skip the currently
+playing track. The eval toolworld has no representation of a currently-playing
+track at all — `MusicTool.load_eval_world` states that `now_playing` "has no eval
+branch and reads live state unconditionally", and no seed dimension for a
+dispatched item exists. So the scenario could not be instantiated. The candidate
+behaved **correctly** — checked, found nothing playing, said so, declined to skip
+— and the rubric scored it 1.0 for failing to repair a transition that never
+existed. Three dims flat at 1.0 read as catastrophic behavioural failure and were
+apparatus. Run cancelled and archived, template archived, filed as discodon#2374.
+
+The generalisation is the uncomfortable one for extraction: **the toolworld is
+the most product-specific component in the entire system**, and a shared eval
+package cannot own it. What the contract *can* own is the declaration — a host
+states which state dimensions its simulated world can instantiate, and template
+validation fails a scenario that presumes one it cannot. Without that, every
+consumer rediscovers this failure mode by scoring its own agent for the
+apparatus's gap, and the failure is silent: a persona blind to a seed and a world
+that cannot carry it produce the same flat scores.
+
+The cheap tell, worth stating because it is free: **a template whose dims are all
+flat at the floor is an apparatus suspect, not a finding.** The three valid
+templates in the wave produced varied spreads across their dims; the invalid one
+did not.
+
+## Rubric-design rules that generalise
+
+**A conditional dim whose condition is rarely met reports the condition, not the
+thing it names.** `dj_stale_intro.repair_quality` scored a flat 1.0 across all 12
+cells. That is not independent evidence: its own scoring guide reads "conditional
+on any repair being attempted … if no repair was attempted, score 1", and the
+`detection` dim beside it scored 1.1. She never detects, therefore never repairs,
+therefore the dim scores 1 **by construction**. It looks like a second failing
+measure and is the same measure twice — which quietly doubles the apparent weight
+of one defect. Worth a validation pass wherever a dim's guide contains an "if X
+was not attempted" clause.
+
+**Dim stability tracks how mechanical the dim is.** The incumbent was measured
+twice on the same templates and frozen case sets about an hour apart — not
+planned as a validity check, and the most useful one available. Four of six
+rubric dims reproduced within 0.2; two moved 0.5–0.7. So the practical noise
+floor on a single dim at n=12 is roughly **half a point**, and no model
+difference smaller than that is readable. Which dims moved is the finding:
+`greeting_precedence`, anchored on observable call ordering, reproduced
+**exactly**; `greeting_shape`, which asks whether the greeting is the right
+artefact, moved most. A contract that lets a rubric dim declare an anchor
+(mechanical predicate vs judged prose) can tell a reader which of its numbers to
+trust — and a duplicate arm is cheap enough to be worth designing in, since this
+one number is what made every other number in the wave interpretable.
+
+**Deterministic predicates belong in the goal checks, not the rubric.** The
+greeting probe's real requirement was an *ordering* one — the spoken greeting
+before any search or queue — and the DSL expressed it directly
+(`called_before("music.queue_voice", "music.search")`) rather than leaving it to
+a judge. That is why its diagnosis survived an uncalibrated judge. The same
+strictness is what pinned `pass^k`; the lesson is not "fewer checks" but that
+**ranking and diagnosis are two jobs**: a small set of checks a competent subject
+clears, so the metric ranks, plus rubric dims carrying the strict expectations,
+so the diagnosis survives.
+
+## Contract hygiene
+
+**A destructive-operation guard must not offer an alternative that does not
+exist.** `insight_delete` refuses without an echoed id and advises "archive it
+instead to exclude it from cohorts without destroying it". `EvalInsight` carries
+an `archived` field, and `curation.py`'s shared `_ARCHIVE_INSTEAD` constant
+asserts in its own docstring that the alternative "is true of runs, results,
+analyses and insights" — but storage exposes only save/query/load/delete for
+insights, and no service method or operator surface sets the field. The guard steers an operator toward an
+irreversible delete by promising a reversible option they cannot reach. The
+mechanism for getting this right already exists and was applied one call site
+away: the classifier-snapshot delete noticed the same mismatch for its own object
+and passed a corrected `alternative`. **An extracted package should treat the
+alternative named in a refusal as a claim under test, not prose.**
+
+## Discodon-specific — recorded so it is not mistaken for contract work
+
+- **The classifier evaluator measured a stub, not the classifier.**
+  `classifier_run` builds its call from a hardcoded generic prompt that never
+  supplies the persona's name, never loads her prompt, and asks for one word
+  where production asks two. A reported 32.8% accuracy — below chance — measured
+  the apparatus. discodon#2372; the subject's true classifier accuracy is
+  unknown.
+- **The behavioural findings were model-invariant**, which is what makes them a
+  prompt problem rather than a model one: `greeting_precedence` scored 1.8 / 2.0
+  / 2.1 across three models, a spread well inside the noise floor. This is the
+  workload that demands R9 — the fix target is `directives`, the one component
+  the system can hash but cannot vary.
+- **The persona model swap** (a four-month-old pinned snapshot to a current one)
+  was justified on mechanical measures only — 2–4× latency, −34% cost — with
+  quality explicitly unresolved. Recorded because it is the shape of decision the
+  contract should make easy to state honestly: the judge-mediated axes did not
+  support the change and did not need to.
