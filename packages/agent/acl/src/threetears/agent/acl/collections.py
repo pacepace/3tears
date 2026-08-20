@@ -690,8 +690,11 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
 
     # v0.8.0 hygiene enrichment: ``is_builtin`` server default + date
     # defaults match the platform DDL (test fixture lines 177-185).
-    # Platform-managed table -- 3tears has no migration; the
-    # ``UNIQUE(name)`` constraint lives in the platform DDL.
+    # Platform-managed table -- 3tears has no migration; the name
+    # uniqueness constraints live in the platform DDL. Those are now
+    # ownership-partitioned rather than global: unique across
+    # ``customer_id IS NULL`` rows, and unique per ``(customer_id,
+    # name)``, so two customers may both author a "Field Manager".
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``role_id`` to
     # standardize on ``<entity>_id`` across all entity tables.
     primary_key_column: str = "role_id"
@@ -703,6 +706,12 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE),
             Column("permissions", JSONB_TYPE),
+            # owning customer for a customer-authored role; NULL for
+            # platform-owned rows (every built-in, plus any role a
+            # platform admin authors). immutable: re-owning a role
+            # would silently move every assignment that references it,
+            # so the write path creates a new role instead.
+            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column(
                 "is_builtin",
                 BOOL_TYPE,
@@ -812,7 +821,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         if self.l3_pool is not None and len(role_ids) > 0:
             rows = await self.l3_pool.fetch(
                 """
-                SELECT role_id, name, permissions, is_builtin
+                SELECT role_id, name, permissions, is_builtin, customer_id
                   FROM roles
                  WHERE role_id = ANY($1::uuid[])
                 """,
@@ -824,9 +833,52 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
                     name=row["name"],
                     permissions=_coerce_role_permissions(row["permissions"]),
                     is_built_in=bool(row["is_builtin"]),
+                    customer_id=_coerce_uuid(row["customer_id"]),
                 )
                 for row in rows
             ]
+        return result
+
+    async def list_visible_to_customer(
+        self,
+        customer_id: UUID | None,
+    ) -> list[RoleEntity]:
+        """list the roles a caller in ``customer_id`` may see.
+
+        that is every platform-owned role (``customer_id IS NULL`` --
+        the built-ins plus anything a platform admin authored) plus the
+        roles ``customer_id`` itself authored. a role authored by
+        ANOTHER customer is absent from the result, so a customer cannot
+        enumerate a neighbour's role names through the role menu.
+
+        passing ``customer_id=None`` narrows to platform-owned rows
+        only; a platform admin wanting every row across every customer
+        uses :meth:`list_all`.
+
+        :param customer_id: caller's owning customer UUID, or ``None``
+            to see only the platform-owned roles
+        :ptype customer_id: UUID | None
+        :return: list of role entities ordered by ``date_created``
+            ascending
+        :rtype: list[RoleEntity]
+        """
+        result: list[RoleEntity] = []
+        if self.l3_pool is not None:
+            rows = await self.l3_pool.fetch(
+                """
+                SELECT * FROM roles
+                 WHERE customer_id IS NULL
+                    OR customer_id = $1
+                 ORDER BY date_created ASC
+                """,
+                customer_id,
+            )
+            for row in rows:
+                data = self._coerce_row(dict(row))
+                self.write_to_cache_sync(data)
+                result.append(
+                    self.entity_class(data, is_new=False, collection=self),
+                )
         return result
 
 

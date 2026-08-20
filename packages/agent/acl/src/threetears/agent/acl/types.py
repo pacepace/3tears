@@ -201,18 +201,36 @@ class Role:
     :data:`WILDCARD_RESOURCE_TYPE`) is permitted for type-agnostic
     roles like ``Reader``, ``Writer``, ``Admin``.
 
+    a role is owned either by the platform (``customer_id is None``) or
+    by exactly one customer. platform-owned roles are the shipped
+    built-ins plus any operator-authored role a platform admin writes;
+    customer-owned roles are authored by a customer admin out of that
+    application's permission catalog (see
+    :mod:`threetears.agent.acl.catalog`) and are resolvable ONLY inside
+    the owning customer. name uniqueness follows ownership: unique
+    across platform-owned rows, and unique per customer for
+    customer-owned ones, so two customers may both have a "Field Manager".
+
     :ivar id: role UUID
-    :ivar name: role name (unique platform-wide)
+    :ivar name: role name; unique within the role's ownership scope
     :ivar permissions: ``{resource_type: frozenset(actions)}`` mapping
-    :ivar is_built_in: whether this role is shipped by the platform
-        (true) or authored by a customer admin (always false today;
-        the customer-authored path is reserved for future work)
+    :ivar is_built_in: whether this role is shipped by the platform's
+        seed migration. distinct from ownership: an operator-authored
+        platform role is ``is_built_in=False`` with
+        ``customer_id=None``
+    :ivar customer_id: owning customer UUID for a customer-authored
+        role, or ``None`` when the role is platform-owned. an
+        assignment naming a customer-owned role contributes nothing
+        against a namespace belonging to any other customer — the
+        evaluator enforces that independently of the group wall, so a
+        mis-scoped assignment row cannot leak the role
     """
 
     id: UUID
     name: str
     permissions: Mapping[str, frozenset[str]]
     is_built_in: bool
+    customer_id: UUID | None = None
 
     def actions_for(self, resource_type: str) -> frozenset[str]:
         """compute the action set this role grants for a resource type.

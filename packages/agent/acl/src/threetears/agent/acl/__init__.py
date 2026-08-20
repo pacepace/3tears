@@ -39,6 +39,22 @@ public surface — permission catalog (write path, not evaluation):
 nothing in that group participates in evaluation: a role evaluates
 identically whether or not a catalog exists.
 
+public surface — delegation ceiling (write path, not evaluation):
+
+- :func:`resolve_held_permissions` — what a delegated admin
+  demonstrably holds across their customer, answered by the evaluator
+  and quantified over every namespace a grant could reach, returned as
+  :class:`HeldPermissions` with the contributing trails.
+- :func:`enforce_within_held_permissions` — refuse a permissions map
+  that exceeds that ceiling, raising :class:`PermissionEscalation`
+  carrying :class:`EscalationViolation` detail plus the trails;
+  :func:`escalating_permissions` is the reporting form and
+  :func:`held_actions_on` the primitive both are built from.
+
+this is the check that lets role authoring and role assignment drop
+below platform-admin without letting a customer admin hand out more than
+they were given. it, too, changes no evaluation.
+
 public surface — persistence:
 
 - collections :class:`GroupCollection`,
@@ -135,6 +151,15 @@ from threetears.agent.acl.collections import (
     RoleAssignmentCollection,
     RoleCollection,
 )
+from threetears.agent.acl.delegation import (
+    EscalationViolation,
+    HeldPermissions,
+    PermissionEscalation,
+    enforce_within_held_permissions,
+    escalating_permissions,
+    held_actions_on,
+    resolve_held_permissions,
+)
 from threetears.agent.acl.entities import (
     GroupEntity,
     GroupMemberEntity,
@@ -230,6 +255,7 @@ __all__ = [
     "ClaimsForAuthorization",
     "CollectionGrantLoader",
     "CollectionMembershipLoader",
+    "EscalationViolation",
     "EvaluationContext",
     "EvaluationResult",
     "ExternalAudienceNotSupported",
@@ -244,6 +270,7 @@ __all__ = [
     "GroupNamespaceKey",
     "GroupTypeCustomerEntry",
     "GroupTypeCustomerKey",
+    "HeldPermissions",
     "ImpersonationCategory",
     "ImpersonationGateCollection",
     "ImpersonationGateEntity",
@@ -257,6 +284,7 @@ __all__ = [
     "NamespaceEntity",
     "NamespaceNotFound",
     "PermissionCatalog",
+    "PermissionEscalation",
     "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",
     "PLATFORM_BUILTIN_TOOL_USER_ROLE_DESCRIPTION",
     "PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME",
@@ -289,10 +317,14 @@ __all__ = [
     "caller_visible_customers_query",
     "customer_scope_visibility_clause",
     "enforce_declared_permissions",
+    "enforce_within_held_permissions",
     "ensure_platform_builtin_tool_user_role",
+    "escalating_permissions",
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",
+    "held_actions_on",
+    "resolve_held_permissions",
     "three_scope_visibility_clause",
     "validate_permissions",
 ]

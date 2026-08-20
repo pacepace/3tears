@@ -49,6 +49,18 @@ returning correct customer_id on each membership row; evaluator
 double-checks at side-resolution boundary so a buggy loader cannot
 leak grants across customer lines.
 
+second, independent wall — role ownership: a customer-authored
+:class:`~threetears.agent.acl.types.Role` (``customer_id`` set)
+contributes nothing against a namespace belonging to a different
+customer, checked in :func:`_walk_assignments`. the group wall does
+not cover this case: a PLATFORM-scoped group has ``customer_id is
+None`` and passes the group check against every customer, so an
+assignment binding such a group to a customer-authored role would
+otherwise carry that customer's role everywhere. built-in and
+operator-authored platform roles carry ``customer_id is None`` and are
+unaffected — their evaluation is identical before and after this wall
+existed.
+
 mixed-membership groups (a group with both user and agent members)
 are handled correctly by side split: user side only counts
 groups in which actor is a user member, agent side only
@@ -721,6 +733,25 @@ def _walk_assignments(
             # assignment it holds cannot reach this namespace.
             continue
         role = roles.get(assignment.role_id)
+        if role is not None and role.customer_id is not None and role.customer_id != namespace.customer_id:
+            # role is customer-authored and owned by a different
+            # customer. this is a SEPARATE wall from the group check
+            # above: a platform-scoped group (customer_id IS NULL)
+            # passes that check universally, so without this line an
+            # assignment binding a platform group to a customer-authored
+            # role would carry that role's actions into every customer.
+            # ownership travels with the role, not with the grant.
+            log.debug(
+                "skipping assignment whose role belongs to another customer",
+                extra={
+                    "extra_data": {
+                        "assignment_id": str(assignment.id),
+                        "role_id": str(assignment.role_id),
+                        "role_customer_id": str(role.customer_id),
+                    }
+                },
+            )
+            continue
         if role is None:
             log.debug(
                 "skipping assignment with unresolved role",
