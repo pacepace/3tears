@@ -581,3 +581,52 @@ class TestOpeningAnUngrantedBucket:
 
         assert "kv_buckets" in str(caught.value)
         assert "never created" in str(caught.value)
+
+
+class TestTheRemedyIsNotSuppressedOnAFreshlyBootedMachine:
+    """`time.monotonic()` is time since BOOT on Linux, not since the epoch.
+
+    The throttle compared `now - last` against its window with `0.0` standing in for
+    "never logged". On a machine whose uptime is under that window the arithmetic
+    suppresses the FIRST remedy -- the one that matters, because a missing KV grant
+    is most likely to bite a process that has just started.
+
+    It reads as correct on any developer machine (uptime in days) and fails only
+    where it counts. CI found it: a GitHub runner is about a minute old.
+
+    Probed by inflating the INTERVAL rather than faking the clock. Patching
+    `time.monotonic` patches it for asyncio too and hangs the event loop; making the
+    window larger than the machine's uptime reproduces the same arithmetic on any
+    host, and is what the old code fails.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_first_remedy_logs_however_young_the_machine_is(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An absent key means never logged, whatever the clock reads.
+
+        :param caplog: pytest log capture
+        :ptype caplog: pytest.LogCaptureFixture
+        :return: nothing
+        :rtype: None
+        """
+        kv = MagicMock()
+
+        async def _never_answers(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(3600)
+
+        kv.put = _never_answers
+        bucket = NatsKvBucket(client=None, full_name="fresh-boot", kv=kv, ttl=None)  # type: ignore[arg-type]
+
+        with (
+            caplog.at_level(logging.ERROR),
+            patch("threetears.nats.kv._KV_OP_TIMEOUT_SECONDS", 0.05),
+            # Larger than any real uptime, so `now - 0.0` is inside the window and the
+            # old `0.0` sentinel suppresses. Absence must still mean "never logged".
+            patch("threetears.nats.kv._TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS", 1e12),
+        ):
+            with pytest.raises((PublishTimeoutError, KvError)):
+                await bucket.put(key="k", value=b"v")
+
+        assert any("'fresh-boot'" in r.getMessage() and "kv_buckets" in r.getMessage() for r in caplog.records), (
+            "the first remedy was suppressed because the machine had not been up long enough"
+        )

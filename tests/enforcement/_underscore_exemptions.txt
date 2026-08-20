@@ -1,12 +1,33 @@
 # underscore-access exemptions file.
 #
-# every entry is an exact (file, line, symbol) triple. each entry
+# every entry is an exact (file, SCOPE, symbol, occurrence) key. each entry
 # requires a preceding '# rationale: <specific reason>' line. "internal
 # access needed" is not a rationale.
 #
 # format:
 #   # rationale: why this access has no public alternative
-#   path/relative/to/repo-root.py:42:_private_symbol
+#   path/relative/to/repo-root.py:Class.method#0:_private_symbol
+#
+# the middle field is the qualname of the scope enclosing the access, or
+# `<module>` at module level, plus the ordinal among same-scope same-symbol
+# accesses. it is NOT a line number, and that is the point: a line number is a
+# fact about the file's layout, so an edit anywhere above an entry silently
+# stopped it matching and this ledger's own checks then reported the original
+# violation against code nobody had touched. that fired twice in one session --
+# a comment insertion, then a one-line import -- and each time the remedy was
+# "re-run the regeneration", which works and teaches you to re-run it without
+# reading what changed. that is the state in which a genuinely wrong entry gets
+# regenerated straight past.
+#
+# the ordinal is still there because two accesses in one scope routinely have
+# two different reasons -- a line that reads a value and a line that asserts on
+# it. dropping it collapses them and the second rationale is replaced by a copy
+# of the first at the next regeneration; that happened, and
+# `test_two_accesses_in_one_scope_keep_their_own_rationales` pins it.
+#
+# inserting an access BEFORE an existing one in the same scope still renumbers
+# that group. ordinals cannot avoid it. the blast radius is one
+# (file, scope, symbol) group rather than every entry below a line.
 #
 # maintained in lockstep with ruff's per-file-ignores for SLF001, wherever
 # ruff reads them from -- the root pyproject.toml, and any nested ruff.toml,
@@ -17,18 +38,18 @@
 # Figures describing a past state are fine -- they report what was, and cannot
 # go stale.
 #
-# NOTE ON LINE NUMBERS: these triples ARE checked now, in both directions,
-# by tests/enforcement/test_underscore_exemptions_resolve.py -- every entry
-# must resolve to the symbol it names, and every private access on a
+# NOTE ON CHECKING: these keys ARE checked, in both directions, by
+# tests/enforcement/test_underscore_exemptions_resolve.py -- every entry must
+# name an access the file still has, and every private access on a
 # per-file-exempted path must have an entry. That closes the drift this note
 # was originally written to warn about: entries under such a path used to be
 # documentation nothing read back, since the underscore walker scans
 # packages/*/src only and never enters a tests/ tree.
 #
-# They still drift when a file is edited above them; the difference is that
-# the drift now fails a test instead of sitting unnoticed. Regenerate rather
-# than hand-edit -- one command, which carries every rationale forward by
-# (path, enclosing scope, symbol) so only a genuinely new access needs new text:
+# They no longer drift on an edit above them. What still requires regeneration
+# is a genuinely NEW access, or one that moved to a different scope. Regenerate
+# rather than hand-edit -- one command, which carries every rationale forward by
+# the same key the entries are written in, so only a new access needs new text:
 #   uv run python scripts/regen-underscore-exemptions.py
 # It reads EVERY ruff config, not just the root pyproject.toml. Reading only
 # the root is how five reviewed sidecar entries were deleted without anything
@@ -46,656 +67,656 @@
 # never flagged in the first place.
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/identity/tests/test_lazy_init.py:47:_LAZY
+packages/agent/identity/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/identity/tests/test_lazy_init.py:51:_LAZY
+packages/agent/identity/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/intention/tests/test_lazy_init.py:47:_LAZY
+packages/agent/intention/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/intention/tests/test_lazy_init.py:51:_LAZY
+packages/agent/intention/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/knowledge/tests/test_lazy_init.py:47:_LAZY
+packages/agent/knowledge/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/knowledge/tests/test_lazy_init.py:51:_LAZY
+packages/agent/knowledge/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/memory/tests/test_lazy_init.py:47:_LAZY
+packages/agent/memory/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/memory/tests/test_lazy_init.py:51:_LAZY
+packages/agent/memory/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/tools/tests/test_lazy_init.py:48:_LAZY
+packages/agent/tools/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_is_subset_of_lazy#0:_LAZY
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/agent/tools/tests/test_lazy_init.py:52:_LAZY
+packages/agent/tools/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
-packages/agent/workspace/tests/unit/test_validators.py:143:_RESOLVED
+packages/agent/workspace/tests/unit/test_validators.py:_clear_resolve_cache#0:_RESOLVED
 
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/channels/tests/unit/channels/presence/test_collection.py:144:_rehydrate_datetimes
+packages/channels/tests/unit/channels/presence/test_collection.py:TestSerialization.test_connection_serialize_deserialize_round_trip#0:_rehydrate_datetimes
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/channels/tests/unit/channels/presence/test_collection.py:156:_rehydrate_datetimes
+packages/channels/tests/unit/channels/presence/test_collection.py:TestSerialization.test_naive_datetime_coerced_to_aware_utc#0:_rehydrate_datetimes
 
 # rationale: lifecycle test asserts fire_and_forget holds a strong reference to a task scheduled on a caller's running loop until it completes; _pending_tasks is the internal strong-reference anchor with no public accessor and exposing one would add API surface only this test needs
-packages/core/tests/test_bridge.py:32:_pending_tasks
+packages/core/tests/test_bridge.py:test_fire_and_forget_survives_gc_on_running_loop#0:_pending_tasks
 # rationale: lifecycle test asserts fire_and_forget holds a strong reference to a task scheduled on a caller's running loop until it completes; _pending_tasks is the internal strong-reference anchor with no public accessor and exposing one would add API surface only this test needs
-packages/core/tests/test_bridge.py:42:_pending_tasks
+packages/core/tests/test_bridge.py:test_fire_and_forget_survives_gc_on_running_loop#1:_pending_tasks
 
 # rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:64:_HAS_DUCKDB
+packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#0:_HAS_DUCKDB
 # rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:67:_HAS_DUCKDB
+packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#1:_HAS_DUCKDB
 # rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
-packages/core/tests/test_duckdb_backend.py:71:_HAS_DUCKDB
+packages/core/tests/test_duckdb_backend.py:TestImportError.test_import_error_without_duckdb#2:_HAS_DUCKDB
 
 # rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:63:_LAZY
+packages/core/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_all_and_lazy_are_the_same_set#0:_LAZY
 # rationale: lazy-surface consistency test asserts the package's _LAZY resolution table and __all__ are the SAME set, in both directions -- it previously asserted only a subset, which let four names be reachable and undeclared. _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
-packages/core/tests/test_lazy_init.py:70:_LAZY
+packages/core/tests/test_lazy_init.py:TestLazySurfaceConsistency.test_type_checking_block_matches_lazy#0:_LAZY
 
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:177:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_factory_resolves_l2_from_registry#0:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:190:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_explicit_none_disables_l2#0:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:204:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_explicit_client_wins_over_registry#0:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:219:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_bind_table_l2_override_wins_over_default#0:_nats_client
 # rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
-packages/core/tests/unit/data/test_collection_factory.py:230:_nats_client
+packages/core/tests/unit/data/test_collection_factory.py:TestL2RegistryFallback.test_datastore_create_table_threads_registry_l2#0:_nats_client
 
 # rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:235:_arun
+packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#0:_arun
 # rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain -- calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
-packages/models/src/threetears/models/tool_name_translation.py:236:_arun
+packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._arun#1:_arun
 # rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:261:_run
+packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#0:_run
 # rationale: the sync _run override forwards to delegate._run for the same double-wrapper reason as the _arun entries above -- the proxy's own run wrapper has already fired the callback chain.
-packages/models/src/threetears/models/tool_name_translation.py:262:_run
+packages/models/src/threetears/models/tool_name_translation.py:NameMangledToolProxy._run#1:_run
 
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:218:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:220:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:228:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_emits_on_chat_model_stream#2:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:274:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_ainvoke_preserves_streaming_callbacks#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:276:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_ainvoke_preserves_streaming_callbacks#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:282:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_ainvoke_preserves_streaming_callbacks#2:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:350:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_survives_with_config_callbacks#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:352:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_survives_with_config_callbacks#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:358:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperStreaming.test_astream_events_survives_with_config_callbacks#2:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:427:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:429:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:434:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:489:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:491:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:494:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#2:_agenerate
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:548:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_ainvoke_untranslates_when_aggregating_from_astream#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:550:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_ainvoke_untranslates_when_aggregating_from_astream#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:553:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicWrapperToolNameValidation.test_ainvoke_untranslates_when_aggregating_from_astream#2:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:597:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_astream_forward_translates_outbound_dotted_names#0:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:599:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_astream_forward_translates_outbound_dotted_names#1:_astream
 # rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
-packages/models/tests/unit/models/test_provider_anthropic.py:603:_astream
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_astream_forward_translates_outbound_dotted_names#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:636:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:638:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:639:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; the test monkey-patches ChatAnthropic._agenerate to return a fixed fake result so the wrapper's ainvoke path is exercised without a real Anthropic HTTP call. Same seam as the _astream entries above, for the non-streaming branch.
-packages/models/tests/unit/models/test_provider_anthropic.py:641:_agenerate
+packages/models/tests/unit/models/test_provider_anthropic.py:TestAnthropicForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#3:_agenerate
 
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:171:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:173:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_emits_on_chat_model_stream#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:181:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_emits_on_chat_model_stream#2:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:239:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_survives_with_config_callbacks#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:241:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_survives_with_config_callbacks#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:247:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperStreaming.test_astream_events_survives_with_config_callbacks#2:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:304:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_astream_forward_translates_outbound_dotted_names#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:306:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_astream_forward_translates_outbound_dotted_names#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:310:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_astream_forward_translates_outbound_dotted_names#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:343:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:345:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:346:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:348:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#3:_agenerate
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:391:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_untranslates_when_aggregating_from_astream#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:393:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_untranslates_when_aggregating_from_astream#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:396:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_untranslates_when_aggregating_from_astream#2:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:428:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_forward_translates_outbound_dotted_names#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:430:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_forward_translates_outbound_dotted_names#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:433:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIInvokeParity.test_ainvoke_forward_translates_outbound_dotted_names#2:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:487:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#0:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:489:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#1:_astream
 # rationale: OpenAI-wrapper streaming regression test monkey-patches ChatOpenAI._astream to yield fake chunks for the same parity-test reason as the OpenRouter / Anthropic tests; pins the v2-event-tap contract for the OpenAI wrapper too.
-packages/models/tests/unit/models/test_provider_openai.py:494:_astream
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_astream_drops_invalid_tool_calls_with_junk_names#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:544:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:546:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:547:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenAI HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openai.py:549:_agenerate
+packages/models/tests/unit/models/test_provider_openai.py:TestOpenAIWrapperToolNameValidation.test_agenerate_drops_invalid_tool_calls_with_junk_names#3:_agenerate
 
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:234:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_bind_tools_populates_reverse_map#0:_name_reverse_map
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:253:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_reverse_translate_message_rewrites_tool_calls#0:_name_reverse_map
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:275:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_reverse_translate_message_rewrites_tool_call_chunks#0:_name_reverse_map
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:297:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_reverse_translate_message_rewrites_invalid_tool_calls#0:_name_reverse_map
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:352:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_ainvoke_untranslates_when_aggregating_from_astream#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:354:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_ainvoke_untranslates_when_aggregating_from_astream#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:357:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_ainvoke_untranslates_when_aggregating_from_astream#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:451:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_drops_invalid_tool_calls_with_junk_names#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:453:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_drops_invalid_tool_calls_with_junk_names#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:458:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_drops_invalid_tool_calls_with_junk_names#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:515:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_keeps_nameless_streaming_continuation#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:517:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_keeps_nameless_streaming_continuation#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:522:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_keeps_nameless_streaming_continuation#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:580:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_agenerate_drops_invalid_tool_calls_with_junk_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:582:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_agenerate_drops_invalid_tool_calls_with_junk_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:585:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_agenerate_drops_invalid_tool_calls_with_junk_names#2:_agenerate
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:608:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_reverse_translate_message_noop_when_no_tools_bound#0:_name_reverse_map
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:629:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_reverse_translate_message_noop_for_unmatched_name#0:_name_reverse_map
 # rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
-packages/models/tests/unit/models/test_provider_openrouter.py:645:_name_reverse_map
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_rebind_replaces_reverse_map#0:_name_reverse_map
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:710:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_translates_aimessage_chunk_tool_calls#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:712:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_translates_aimessage_chunk_tool_calls#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:717:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_translates_aimessage_chunk_tool_calls#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:770:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_emits_on_chat_model_stream#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:772:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_emits_on_chat_model_stream#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:780:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_emits_on_chat_model_stream#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:878:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_survives_with_config_callbacks#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:880:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_survives_with_config_callbacks#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:886:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestNameTranslatingChatOpenRouter.test_astream_events_survives_with_config_callbacks#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:958:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestVanillaChatAnthropicBaseline.test_anthropic_direct_emits_on_chat_model_stream#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:960:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestVanillaChatAnthropicBaseline.test_anthropic_direct_emits_on_chat_model_stream#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:968:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestVanillaChatAnthropicBaseline.test_anthropic_direct_emits_on_chat_model_stream#2:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:1132:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_astream_forward_translates_outbound_dotted_names#0:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:1134:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_astream_forward_translates_outbound_dotted_names#1:_astream
 # rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
-packages/models/tests/unit/models/test_provider_openrouter.py:1138:_astream
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_astream_forward_translates_outbound_dotted_names#2:_astream
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:1173:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#0:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:1175:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#1:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:1176:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#2:_agenerate
 # rationale: LangChain BaseChatModel._agenerate is the documented subclass-implementable non-streaming hook; patched to a fake result so the wrapper's ainvoke path runs without a real OpenRouter HTTP call. Same seam as the _astream entries above.
-packages/models/tests/unit/models/test_provider_openrouter.py:1178:_agenerate
+packages/models/tests/unit/models/test_provider_openrouter.py:TestOpenRouterForwardTranslation.test_agenerate_forward_translates_outbound_dotted_names#3:_agenerate
 
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
-packages/models/tests/unit/models/test_tracking.py:231:_TRACER_PROVIDER_SET_ONCE
+packages/models/tests/unit/models/test_tracking.py:TestUsageTracker.setup_class#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the OTel once-flag and its ._done reset travel together; resetting both is the only way to re-init a provider between tracking tests, and the SDK exposes no public reset.
-packages/models/tests/unit/models/test_tracking.py:231:_done
+packages/models/tests/unit/models/test_tracking.py:TestUsageTracker.setup_class#0:_done
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
-packages/models/tests/unit/models/test_tracking.py:440:_TRACER_PROVIDER_SET_ONCE
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerSinks.setup_class#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the OTel once-flag and its ._done reset travel together; resetting both is the only way to re-init a provider between tracking tests, and the SDK exposes no public reset.
-packages/models/tests/unit/models/test_tracking.py:440:_done
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerSinks.setup_class#0:_done
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
-packages/models/tests/unit/models/test_tracking.py:582:_TRACER_PROVIDER_SET_ONCE
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerTenantSpanAttrs.setup_class#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the OTel once-flag and its ._done reset travel together; resetting both is the only way to re-init a provider between tracking tests, and the SDK exposes no public reset.
-packages/models/tests/unit/models/test_tracking.py:582:_done
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerTenantSpanAttrs.setup_class#0:_done
 # rationale: reads UsageTracker._prom to assert a tracker built with NO prom_registry is wired to the same emitter _get_prom_emitter() returns -- the backward-compat contract, not the per-registry caching one. The emitter is chosen in __init__ and exposed nowhere else, so the attribute is the only evidence.
-packages/models/tests/unit/models/test_tracking.py:745:_prom
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerCustomRegistry.test_default_registry_path_unchanged#0:_prom
 # rationale: test reads UsageTracker._prom (cached PromEmitter) to assert tracker-per-registry identity (two trackers with the same registry share the emitter); pins the cached-by-registry contract.
-packages/models/tests/unit/models/test_tracking.py:815:_prom
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerCustomRegistry.test_per_registry_emitter_caching#0:_prom
 # rationale: compares two trackers' cached emitters to pin that DISTINCT registries do NOT share one -- the inverse of the same-registry caching contract asserted above, and a different claim about the same attribute.
-packages/models/tests/unit/models/test_tracking.py:832:_prom
+packages/models/tests/unit/models/test_tracking.py:TestUsageTrackerCustomRegistry.test_distinct_registries_get_distinct_emitters#0:_prom
 
 # rationale: OTel SDK >=1.39 guards set_tracer_provider behind an internal once-flag with no public reset; the dimensions suite re-inits a provider per case to assert span attributes in isolation, which is unreachable without touching it.
-packages/models/tests/unit/models/test_tracking_dimensions.py:179:_TRACER_PROVIDER_SET_ONCE
+packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDimensionSpanAttrs.setup_class#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on the same line -- the flag and its ._done reset travel together.
-packages/models/tests/unit/models/test_tracking_dimensions.py:179:_done
+packages/models/tests/unit/models/test_tracking_dimensions.py:TestUsageTrackerDimensionSpanAttrs.setup_class#0:_done
 
 # rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
-packages/observe/src/threetears/observe/logging.py:249:_getframe
+packages/observe/src/threetears/observe/logging.py:ThreeTearsLogger.makeRecord#0:_getframe
 
 # rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
-packages/observe/src/threetears/observe/setup.py:169:_TRACER_PROVIDER_SET_ONCE
+packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
-packages/observe/src/threetears/observe/setup.py:169:_done
+packages/observe/src/threetears/observe/setup.py:init_telemetry#0:_done
 # rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
-packages/observe/src/threetears/observe/setup.py:302:_TRACER_PROVIDER_SET_ONCE
+packages/observe/src/threetears/observe/setup.py:shutdown_telemetry#0:_TRACER_PROVIDER_SET_ONCE
 # rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
-packages/observe/src/threetears/observe/setup.py:302:_done
+packages/observe/src/threetears/observe/setup.py:shutdown_telemetry#0:_done
 
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:22:_prometheus_available
+packages/observe/tests/test_metrics.py:_reset_prometheus_check#0:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:24:_prometheus_available
+packages/observe/tests/test_metrics.py:_reset_prometheus_check#1:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:33:_prometheus_available
+packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_available_when_installed#0:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:41:_prometheus_available
+packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#0:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:43:_prometheus_available
+packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#1:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:44:_prometheus_available
+packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#2:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:46:_prometheus_available
+packages/observe/tests/test_metrics.py:TestPrometheusCheck.test_prometheus_cached_after_first_check#3:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:139:_prometheus_available
+packages/observe/tests/test_metrics.py:TestAccessors.test_accessor_passthrough_without_prometheus#0:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:211:_prometheus_available
+packages/observe/tests/test_metrics.py:TestMeteredDecorator.test_metered_passthrough_without_prometheus#0:_prometheus_available
 # rationale: fixture reads module-level _prometheus_available to snapshot cache state before each test so monkeypatching does not leak. mirrors _otel_available's own exemption above.
-packages/observe/tests/test_metrics.py:222:_prometheus_available
+packages/observe/tests/test_metrics.py:TestMeteredDecorator.test_metered_async_passthrough_without_prometheus#0:_prometheus_available
 
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:25:_otel_available
+packages/observe/tests/test_tracing.py:_reset_otel_check#0:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:27:_otel_available
+packages/observe/tests/test_tracing.py:_reset_otel_check#1:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:36:_otel_available
+packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_available_when_installed#0:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:44:_otel_available
+packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#0:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:46:_otel_available
+packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#1:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:48:_otel_available
+packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#2:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:50:_otel_available
+packages/observe/tests/test_tracing.py:TestOtelCheck.test_otel_cached_after_first_check#3:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:179:_otel_available
+packages/observe/tests/test_tracing.py:TestTracedDecorator.test_traced_passthrough_without_otel#0:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:190:_otel_available
+packages/observe/tests/test_tracing.py:TestTracedDecorator.test_traced_async_passthrough_without_otel#0:_otel_available
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
-packages/observe/tests/test_tracing.py:205:_otel_available
+packages/observe/tests/test_tracing.py:TestSetSpanAttribute.test_noop_without_otel#0:_otel_available
 
 # rationale: module-private helper called from SessionManager in the same module; the isolated-context creation is deliberately not part of hitl.py's public surface because a caller reaching it directly would skip the slot accounting that makes the working set bounded
-packages/scrape/sidecar/hitl.py:892:_create_isolated_tab
+packages/scrape/sidecar/hitl.py:_open_isolated#0:_create_isolated_tab
 # rationale: module-private helper called from SessionManager in the same module; nav-step replay is shared with the render path and kept private so the timeout budget stays owned by its two call sites rather than by whoever imports it next
-packages/scrape/sidecar/hitl.py:901:_execute_nav_steps
+packages/scrape/sidecar/hitl.py:_open_isolated#0:_execute_nav_steps
 
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:448:_apply_context_state
+packages/scrape/sidecar/main.py:_render#0:_apply_context_state
 # rationale: as above -- main applies a human's exported cookies to a render context using hitl's applier, so the export and the re-apply cannot drift into two encodings.
-packages/scrape/sidecar/main.py:455:_apply_context_state
+packages/scrape/sidecar/main.py:_render#1:_apply_context_state
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/main.py:510:_apply_origin_storage
+packages/scrape/sidecar/main.py:_render#0:_apply_origin_storage
 
 # rationale: the test asserts a second start does not spawn a second x11vnc over the running one, and the process handle is the only evidence of that; a public accessor would exist solely for this test
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:127:_x11vnc
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:test_start_is_idempotent#0:_x11vnc
 # rationale: the same assertion's second half -- comparing the pid before and after an idempotent start is what distinguishes 'returned the running session' from 'respawned and got lucky'
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:132:_x11vnc
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:test_start_is_idempotent#1:_x11vnc
 # rationale: -localhost IS the access control on the RFB port, so the built argv is asserted directly; going through start() would need a real x11vnc and would test the stub's argument parsing instead of the flag
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:226:_x11vnc_argv
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:test_x11vnc_is_bound_to_loopback_so_the_pod_is_the_boundary#0:_x11vnc_argv
 # rationale: the test pins that no child gets an undrained stderr pipe, which is a property of the spawn call itself; reaching it through start() would assert on the stub's behaviour rather than on the kwargs passed
-packages/scrape/sidecar/tests/test_hitl_lifecycle.py:251:_spawn
+packages/scrape/sidecar/tests/test_hitl_lifecycle.py:test_the_child_never_gets_an_undrained_pipe#0:_spawn
 
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/tests/test_hitl_session.py:383:_apply_origin_storage
+packages/scrape/sidecar/tests/test_hitl_session.py:test_exported_local_storage_is_actually_restored#0:_apply_origin_storage
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/tests/test_hitl_session.py:406:_apply_origin_storage
+packages/scrape/sidecar/tests/test_hitl_session.py:test_storage_is_not_written_into_the_wrong_origin#0:_apply_origin_storage
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/tests/test_hitl_session.py:426:_apply_origin_storage
+packages/scrape/sidecar/tests/test_hitl_session.py:test_a_value_with_quotes_does_not_break_the_expression#0:_apply_origin_storage
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/tests/test_hitl_session.py:444:_apply_origin_storage
+packages/scrape/sidecar/tests/test_hitl_session.py:test_unparseable_storage_is_skipped_without_losing_the_cookies#0:_apply_origin_storage
 # rationale: as above -- localStorage is origin-scoped, so it is applied after navigation by hitl's own helper rather than duplicated in main. The sidecar suites call it directly to assert the origin-scoping and the quote handling.
-packages/scrape/sidecar/tests/test_hitl_session.py:458:_apply_origin_storage
+packages/scrape/sidecar/tests/test_hitl_session.py:test_a_page_that_refuses_script_does_not_fail_the_restore#0:_apply_origin_storage
 # rationale: the session's state export has no public accessor and is the step under test: what a human's solve hands back is exactly what this suite asserts.
-packages/scrape/sidecar/tests/test_hitl_session.py:540:_export_state
+packages/scrape/sidecar/tests/test_hitl_session.py:test_export_state_never_raises_into_a_completion#0:_export_state
 
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:318:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:_reset_browser#0:_browser
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:319:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:_reset_browser#0:_ready
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:321:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:_reset_browser#1:_browser
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:322:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:_reset_browser#1:_ready
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:336:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestHealthz.test_not_ready_while_browser_started_but_warm_up_incomplete#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:342:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestHealthz.test_ready_once_warm_up_completes#0:_browser
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:343:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:TestHealthz.test_ready_once_warm_up_completes#0:_ready
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:358:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderContract.test_success_shape#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:374:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderContract.test_navigation_timeout#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:381:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderContract.test_driver_crash#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:390:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderContract.test_no_wait_for_skips_select_but_settles#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:405:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_real_404_page_reports_404_not_200#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:418:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_no_response_event_falls_back_to_200_and_requested_url#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:437:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_final_url_reflects_redirect_not_originally_requested_url#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:457:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_subresource_response_ignored#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:472:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_iframe_response_for_different_frame_ignored#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:489:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestRenderRealStatus.test_redirect_chain_reports_final_status_not_first#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:507:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_capture_network_false_returns_no_calls#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:530:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_captures_a_real_json_call#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:565:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_captures_a_post_requests_payload#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:584:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_non_json_body_is_not_captured#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:606:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_xssi_prefixed_json_body_is_captured#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:627:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_genuinely_non_json_body_still_dropped_after_prefix_stripping#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:648:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_non_xhr_fetch_resource_type_is_not_captured#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:664:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_base64_body_is_not_captured#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:681:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNetworkCapture.test_multiple_calls_all_captured#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:696:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_no_nav_steps_selects_nothing_extra#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:704:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_click_step_selects_and_clicks#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:720:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_fill_step_clears_and_sends_keys#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:736:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_wait_for_step_selects_without_clicking_or_typing#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:752:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_scroll_into_view_step_selects_and_scrolls#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:768:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_scroll_page_step_scrolls_with_the_given_amount#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:785:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_scroll_page_step_uses_the_default_amount_when_value_omitted#0:_browser
 # rationale: the module's own scroll constant, read so the assertion tracks the value rather than restating it.
-packages/scrape/sidecar/tests/test_render_contract.py:797:_DEFAULT_SCROLL_PAGE_AMOUNT
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_scroll_page_step_uses_the_default_amount_when_value_omitted#0:_DEFAULT_SCROLL_PAGE_AMOUNT
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:801:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_scroll_page_step_non_int_value_returns_422_nav_step_failed#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:817:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_evaluate_step_runs_the_expression_and_records_the_result#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:834:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_evaluate_step_records_each_step_result_in_order#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:853:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_no_evaluate_steps_leaves_eval_results_empty#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:861:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_evaluate_step_protocol_exception_returns_422_nav_step_failed#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:877:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_wait_ms_step_sleeps_the_given_duration#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:896:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_steps_execute_in_order_before_the_final_wait_for#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:915:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_click_step_selector_never_found_returns_422_nav_step_failed#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:935:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_a_failed_nav_step_still_closes_the_tab#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:951:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_a_failing_step_aborts_before_the_final_settle_wait#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:978:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_a_transient_stale_node_error_is_retried_and_succeeds#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:999:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_stale_node_error_exhausting_every_retry_returns_422#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1023:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_final_wait_for_also_retries_the_same_stale_node_race#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1033:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestNavSteps.test_unsupported_action_returns_422_nav_step_failed#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1056:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_succeeds_on_first_attempt_marks_ready#0:_browser
 # rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
-packages/scrape/sidecar/tests/test_render_contract.py:1059:_warm_up
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_succeeds_on_first_attempt_marks_ready#0:_warm_up
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:1061:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_succeeds_on_first_attempt_marks_ready#0:_ready
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1068:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_retries_then_succeeds#0:_browser
 # rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
-packages/scrape/sidecar/tests/test_render_contract.py:1071:_warm_up
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_retries_then_succeeds#0:_warm_up
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:1073:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_retries_then_succeeds#0:_ready
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1081:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_fails_open_after_exhausting_retries#0:_browser
 # rationale: the lazy warm-up hook has no public accessor; asserting it runs exactly once on the first request is the behaviour under test.
-packages/scrape/sidecar/tests/test_render_contract.py:1085:_warm_up
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_fails_open_after_exhausting_retries#0:_warm_up
 # rationale: the module-level readiness flag, paired with _browser -- the two together are what cold-start versus warm-start means, and neither is reachable any other way.
-packages/scrape/sidecar/tests/test_render_contract.py:1087:_ready
+packages/scrape/sidecar/tests/test_render_contract.py:TestWarmUp.test_fails_open_after_exhausting_retries#0:_ready
 # rationale: a test-side navigation stub on the fake browser, not production state.
-packages/scrape/sidecar/tests/test_render_contract.py:1113:_simulate_navigation
+packages/scrape/sidecar/tests/test_render_contract.py:_FakeDownloadTab.send#0:_simulate_navigation
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1210:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_success_shape#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1223:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_isolated_context_is_disposed_after_download#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1230:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_tab_is_closed_after_download#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1239:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_download_that_never_completes_returns_504#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1261:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_crdownload_in_progress_file_is_not_treated_as_complete#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1269:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_non_pdf_filename_gets_octet_stream_content_type#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1279:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_target_lookup_retries_past_transient_propagation_delay#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1288:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_target_never_appearing_reports_driver_crash#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1296:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_context_disposal_failure_does_not_mask_a_successful_download#0:_browser
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1306:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestDownloadContract.test_concurrent_downloads_do_not_cross_contaminate#0:_browser
 # rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
-packages/scrape/sidecar/tests/test_render_contract.py:1360:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:TestEgressReporting.test_a_configured_proxy_reaches_the_browser_args#0:_browser_args
 # rationale: the Chromium argument builder; that a configured egress proxy reaches the browser command line is the property, and the built list is where it is observable.
-packages/scrape/sidecar/tests/test_render_contract.py:1365:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:TestEgressReporting.test_no_proxy_configured_adds_no_argument#0:_browser_args
 # rationale: the sidecar's module-level browser handle has no public accessor; tests set and read it to drive cold-start, warm-start and retry scenarios without launching a real Chromium.
-packages/scrape/sidecar/tests/test_render_contract.py:1435:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestEgressReporting.test_the_response_reports_the_exit_the_render_used#0:_browser
 # rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1508:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_the_new_tab_page_is_left_on_about_blank#0:_browser
 # rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
-packages/scrape/sidecar/tests/test_render_contract.py:1510:_hide_the_idle_window
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_the_new_tab_page_is_left_on_about_blank#0:_hide_the_idle_window
 # rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1525:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_it_is_navigated_rather_than_closed#0:_browser
 # rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
-packages/scrape/sidecar/tests/test_render_contract.py:1527:_hide_the_idle_window
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_it_is_navigated_rather_than_closed#0:_hide_the_idle_window
 # rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1535:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_real_page_is_left_alone#0:_browser
 # rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
-packages/scrape/sidecar/tests/test_render_contract.py:1537:_hide_the_idle_window
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_real_page_is_left_alone#0:_hide_the_idle_window
 # rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1548:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_browser_that_refuses_does_not_fail_startup#0:_browser
 # rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
-packages/scrape/sidecar/tests/test_render_contract.py:1551:_hide_the_idle_window
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_browser_that_refuses_does_not_fail_startup#0:_hide_the_idle_window
 # rationale: the module-level browser is what the idle-window path reads its tab list from; the test substitutes it because a real Chromium is AGPL-isolated to this container and never present in a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1555:_browser
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_no_browser_at_all_is_not_an_error#0:_browser
 # rationale: drives the startup helper directly; the operator-facing property it protects (one window on the display, not two) has no public entry point and is called only from the lifespan
-packages/scrape/sidecar/tests/test_render_contract.py:1557:_hide_the_idle_window
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_no_browser_at_all_is_not_an_error#0:_hide_the_idle_window
 # rationale: the lifespan tears sessions down on exit, so the test substitutes the manager to keep a real reaper task out of a unit run
-packages/scrape/sidecar/tests/test_render_contract.py:1587:_sessions
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_container_startup_actually_calls_it#0:_sessions
 # rationale: the WIRING test: every other test here drives the helper directly and stayed green with the lifespan call deleted, so this asserts container startup actually reaches it
-packages/scrape/sidecar/tests/test_render_contract.py:1589:_lifespan
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_container_startup_actually_calls_it#0:_lifespan
 # rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
-packages/scrape/sidecar/tests/test_render_contract.py:1608:_hide_window_titled
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_the_idle_window_is_taken_off_the_screen_and_out_of_the_taskbar#0:_hide_window_titled
 # rationale: the window-manager half, exercised without a browser so a failure in one of the two calls it makes cannot be hidden by the other
-packages/scrape/sidecar/tests/test_render_contract.py:1625:_hide_window_titled
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_no_matching_window_is_not_an_error#0:_hide_window_titled
 # rationale: the subprocess boundary's missing-binary arm: asserted to return None rather than raise for a binary that is not installed, which is what a stripped image looks like and must not fail container startup
-packages/scrape/sidecar/tests/test_render_contract.py:1630:_wm_output
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_window_manager_that_will_not_answer_does_not_fail_startup#0:_wm_output
 # rationale: asserts the arguments PRODUCTION builds; an earlier version of a sibling test rebuilt the list itself and stayed green with the production line deleted
-packages/scrape/sidecar/tests/test_render_contract.py:1638:_browser_args
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_chromium_is_launched_on_a_blank_page#0:_browser_args
 # rationale: the subprocess boundary's TIMEOUT arm, which is a different claim: a hung call must KILL its child, because wait_for cancels the await and not the process -- a leaked process for the life of a long-running unattended container
-packages/scrape/sidecar/tests/test_render_contract.py:1673:_wm_output
+packages/scrape/sidecar/tests/test_render_contract.py:TestChromiumsIdleWindowIsNotSomethingAnOperatorCanClickOn.test_a_hung_window_manager_call_is_killed_rather_than_abandoned#0:_wm_output
 
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
-packages/scrape/tests/test_collections.py:293:_rows
+packages/scrape/tests/test_collections.py:test_target_falls_back_to_in_memory_dict_when_no_l3_configured#0:_rows
 # rationale: ScrapeCollection's in-memory L1 row map has no public accessor; the test asserts what a save() actually wrote into it, which is the only place the write is observable before a flush.
-packages/scrape/tests/test_collections.py:334:_rows
+packages/scrape/tests/test_collections.py:test_target_delete_removes_from_in_memory_dict#0:_rows
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:371:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_warns_once_across_repeated_access_on_one_collection#0:_durable_store
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:390:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_a_second_collection_over_the_same_table_does_not_warn_again#0:_durable_store
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:391:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_a_second_collection_over_the_same_table_does_not_warn_again#1:_durable_store
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:401:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_a_different_table_still_warns#0:_durable_store
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:402:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_a_different_table_still_warns#1:_durable_store
 # rationale: the resolved durable backend has no public accessor, and 'this collection fell back to the in-memory store and said so' is only checkable by reading it -- asserting on the constructor argument would assert the test's own input.
-packages/scrape/tests/test_collections.py:413:_durable_store
+packages/scrape/tests/test_collections.py:TestInMemoryL3FallbackWarning.test_no_warning_when_a_real_l3_pool_is_wired#0:_durable_store
 
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
-packages/scrape/tests/test_driver_api.py:324:_pool
+packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_the_configured_exit_is_bound_to_the_client_it_builds#0:_pool
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_driver_api.py:326:_egress
+packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_the_configured_exit_is_bound_to_the_client_it_builds#0:_egress
 # rationale: the pinned httpx client has no accessor; the test asserts an injected client is reused rather than replaced
-packages/scrape/tests/test_driver_api.py:343:_client
+packages/scrape/tests/test_driver_api.py:TestApiDriverEgress.test_an_injected_client_is_not_rebound#0:_client
 
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:481:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:TestADroppedSolveIsNeverSilent.test_it_warns_when_a_solve_is_dropped#0:_warn_dropped_session_state
 # rationale: the per-origin dedupe of the dropped-solve warning is only observable by calling the emitter directly; driving it through render() would need five real fetches per driver to assert one log line, and the public surface deliberately exposes no way to ask "have you already warned about this origin"
-packages/scrape/tests/test_driver_contract.py:498:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:TestADroppedSolveIsNeverSilent.test_one_origin_is_reported_once_however_many_documents_it_has#0:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:523:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:TestADroppedSolveIsNeverSilent.test_a_second_site_is_still_reported#0:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:524:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:TestADroppedSolveIsNeverSilent.test_a_second_site_is_still_reported#1:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:542:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:TestADroppedSolveIsNeverSilent.test_the_download_driver_does_not_tell_you_to_use_the_thing_it_is#0:_warn_dropped_session_state
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:564:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#0:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:565:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#0:_warn_dropped_session_state
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:567:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#0:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:568:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#1:_MAX_WARNED_ORIGINS
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:568:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#1:_warned_dropped_origins
 # rationale: the dedupe set has no accessor, and a bound that is configured but never enforced is exactly the failure this asserts against; reading the observed size is the only way to see it
-packages/scrape/tests/test_driver_contract.py:569:_warned_dropped_origins
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#2:_warned_dropped_origins
 # rationale: the module's own cap, read so the test scales with it rather than hardcoding a number that would silently stop matching
-packages/scrape/tests/test_driver_contract.py:570:_MAX_WARNED_ORIGINS
+packages/scrape/tests/test_driver_contract.py:test_the_dropped_solve_memory_does_not_grow_without_bound#2:_MAX_WARNED_ORIGINS
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:600:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:test_two_unparseable_urls_are_each_reported#0:_warn_dropped_session_state
 # rationale: the dropped-solve warning is protected -- implementations call it, consumers never do -- and this suite asserts the CARDINALITY it applies across every backend at once; the per-driver call sites are covered at render level in each driver's own suite, which is where deleting one must fail
-packages/scrape/tests/test_driver_contract.py:601:_warn_dropped_session_state
+packages/scrape/tests/test_driver_contract.py:test_two_unparseable_urls_are_each_reported#1:_warn_dropped_session_state
 
 # rationale: the pacing delay has no accessor and is itself the behaviour under test
-packages/scrape/tests/test_driver_listing_detail.py:409:_pace_delay_seconds
+packages/scrape/tests/test_driver_listing_detail.py:TestListingDetailDriver.test_default_pace_delay_is_nonzero#0:_pace_delay_seconds
 
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/scrape/tests/test_health.py:421:_rehydrate_datetimes
+packages/scrape/tests/test_health.py:test_a_row_round_tripped_through_l2_comes_back_with_real_datetimes#0:_rehydrate_datetimes
 # rationale: asserts the L2 timestamp contract across the serialize/rehydrate boundary. The rehydration is `BaseCollection`'s internal read-path step, not a public seam; driving it through a live KV round-trip instead would make the test about NATS fixtures rather than about the contract, and composing the two calls by hand is exactly what the read path does.
-packages/scrape/tests/test_health.py:456:_rehydrate_datetimes
+packages/scrape/tests/test_health.py:test_an_unparseable_timestamp_is_a_corrupt_cache_entry#0:_rehydrate_datetimes
 
 # rationale: module-private factory for the default robots fetcher; which exit that default binds is the whole subject and is unobservable from outside
-packages/scrape/tests/test_robots.py:517:_default_fetch_via
+packages/scrape/tests/test_robots.py:test_the_default_fetcher_leaves_by_the_configured_exit#0:_default_fetch_via
 # rationale: httpx's connection pool is the only place a configured proxy is visible after construction; asserting the transport is merely not-None was the vacuous version this replaced
-packages/scrape/tests/test_robots.py:523:_pool
+packages/scrape/tests/test_robots.py:test_the_default_fetcher_leaves_by_the_configured_exit#0:_pool
 # rationale: module-private factory for the default robots fetcher; which exit that default binds is the whole subject and is unobservable from outside
-packages/scrape/tests/test_robots.py:544:_default_fetch_via
+packages/scrape/tests/test_robots.py:test_the_default_fetcher_with_no_exit_binds_no_transport#0:_default_fetch_via
 # rationale: the tool's recipe collection has no accessor, and seeding it is what keeps the eval loop off a real LLM
-packages/scrape/tests/test_robots.py:555:_recipe_collection
+packages/scrape/tests/test_robots.py:_seed#0:_recipe_collection
 # rationale: module-private housekeeping step; that a store outage cannot escape it is only reachable by calling it
-packages/scrape/tests/test_robots.py:706:_clear_robots_block_if_any
+packages/scrape/tests/test_robots.py:test_a_health_store_failure_does_not_escape_the_clear_down#0:_clear_robots_block_if_any
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:800:_cache
+packages/scrape/tests/test_robots.py:test_the_per_origin_stores_do_not_grow_without_bound#0:_cache
 # rationale: RobotsGate's per-origin fetch clock has no accessor; bounded retention and forget() are only checkable against it
-packages/scrape/tests/test_robots.py:801:_last_fetch_at
+packages/scrape/tests/test_robots.py:test_the_per_origin_stores_do_not_grow_without_bound#0:_last_fetch_at
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:802:_cache
+packages/scrape/tests/test_robots.py:test_the_per_origin_stores_do_not_grow_without_bound#1:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:803:_cache
+packages/scrape/tests/test_robots.py:test_the_per_origin_stores_do_not_grow_without_bound#2:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:815:_cache
+packages/scrape/tests/test_robots.py:test_forget_drops_one_origin_and_leaves_the_rest#0:_cache
 # rationale: RobotsGate's per-origin fetch clock has no accessor; bounded retention and forget() are only checkable against it
-packages/scrape/tests/test_robots.py:816:_last_fetch_at
+packages/scrape/tests/test_robots.py:test_forget_drops_one_origin_and_leaves_the_rest#0:_last_fetch_at
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:817:_cache
+packages/scrape/tests/test_robots.py:test_forget_drops_one_origin_and_leaves_the_rest#1:_cache
 # rationale: RobotsGate's parsed-file cache has no accessor; the LRU bound and forget() are observable nowhere else, and asserting the CONFIGURED cap instead of the observed one is exactly the vacuous test this suite exists to exclude
-packages/scrape/tests/test_robots.py:843:_cache
+packages/scrape/tests/test_robots.py:test_a_forget_during_a_fetch_is_not_undone_by_it#0:_cache
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1044:_delay_pacer
+packages/scrape/tests/test_robots.py:test_an_origin_that_asked_for_nothing_is_not_paced#0:_delay_pacer
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1048:_delay_pacer
+packages/scrape/tests/test_robots.py:test_an_origin_that_asked_for_nothing_is_not_paced#1:_delay_pacer
 # rationale: asserts the pacer was never consulted; a gate that silently claimed a token is indistinguishable from one that did not, except here
-packages/scrape/tests/test_robots.py:1056:_delay_pacer
+packages/scrape/tests/test_robots.py:test_an_origin_that_asked_for_nothing_is_not_paced#2:_delay_pacer
 # rationale: the unparseable-delay branch is unreachable through a real robots.txt -- the stdlib parser filters those -- so calling it with a stub parser is the only caller that exists
-packages/scrape/tests/test_robots.py:1096:_capped_delay
+packages/scrape/tests/test_robots.py:test_a_malformed_delay_is_reported_once_per_poll_not_twice#0:_capped_delay
 # rationale: the unparseable-delay branch is unreachable through a real robots.txt -- the stdlib parser filters those -- so calling it with a stub parser is the only caller that exists
-packages/scrape/tests/test_robots.py:1097:_capped_delay
+packages/scrape/tests/test_robots.py:test_a_malformed_delay_is_reported_once_per_poll_not_twice#1:_capped_delay
 
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:864:_robots
+packages/scrape/tests/test_tool.py:TestScrapeToolFetchCircuit.test_a_cancellation_during_the_crawl_delay_still_releases_the_probe#0:_robots
 # rationale: the assertion is that a driver which cannot accept a stored solve is NOT reported to the circuit, and the circuit call sits inside this one method. Driving it through `execute` would need a seeded recipe, a health row and a real solve to reach the same branch, which tests the fixtures rather than the decision.
-packages/scrape/tests/test_tool.py:1335:_render_once
+packages/scrape/tests/test_tool.py:test_a_driver_that_cannot_take_a_solve_is_not_backed_off#0:_render_once
 # rationale: the branch under test -- a solve exists and the driver cannot take it -- is decided inside this one method, and it returns before any fetch. Driving it through `execute` would need a seeded recipe and a health row to reach the same branch, which tests the fixtures rather than the decision. The separate `_last_fetch_at` read below carries its own reason.
-packages/scrape/tests/test_tool.py:1393:_render_once
+packages/scrape/tests/test_tool.py:test_a_refused_fetch_does_not_charge_the_origins_clock#0:_render_once
 # rationale: the assertion is that a refused fetch left the origin's crawl-delay clock untouched, and that clock is the gate's own internal store with no public reader. `check()` would answer indirectly through a wait time, but it also POPULATES the cache it reads, so asserting through it changes the thing under test.
-packages/scrape/tests/test_tool.py:1403:_last_fetch_at
+packages/scrape/tests/test_tool.py:test_a_refused_fetch_does_not_charge_the_origins_clock#0:_last_fetch_at
 # rationale: asserts the render-failure log carries the error type and a traceback. Driving it through `execute` would need a seeded recipe and a health row to reach the same guard, which tests the fixtures rather than the log line.
-packages/scrape/tests/test_tool.py:1436:_render_once
+packages/scrape/tests/test_tool.py:test_a_render_failure_logs_what_actually_went_wrong#0:_render_once
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1546:_egress
+packages/scrape/tests/test_tool.py:TestEgressByName.test_a_name_resolves_through_the_registry#0:_egress
 # rationale: the resolved egress driver has no accessor; asserting on the constructor argument would assert on the test's own input rather than on name resolution
-packages/scrape/tests/test_tool.py:1547:_egress
+packages/scrape/tests/test_tool.py:TestEgressByName.test_a_name_resolves_through_the_registry#1:_egress
 # rationale: ScrapeTool's resolved robots gate has no accessor, and the subject is the tool's own guard rather than how it builds a gate
-packages/scrape/tests/test_tool.py:1662:_robots
+packages/scrape/tests/test_tool.py:TestTheFleetAndTheSiteBothBind.test_a_suppressed_poll_takes_no_turn_at_all#0:_robots

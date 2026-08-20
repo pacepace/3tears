@@ -103,6 +103,25 @@ packages (bumped in lock-step).
 
 ### Changed
 
+- `enforcement`: **exemption entries can be keyed on a scope instead of a line.**
+  `Exemption` gains `scope` and `occurrence`; `parse_exemptions_with_rationale`
+  accepts `path:qualname[#N]:symbol` when the caller passes
+  `allow_scope_keys=True`; `apply_exemptions` accepts a `scope_of` resolver and
+  matches on the scope when one is supplied. Both default to off, so a line-keyed
+  file in any other domain parses and matches exactly as before -- including
+  still raising on a non-numeric key, which for those domains is a typo.
+
+  `underscore_access` opts in, and its ledger is regenerated onto scope keys. A
+  line number is a fact about a file's LAYOUT, so an edit anywhere above an entry
+  silently stopped it matching and the reconciliation check then reported the
+  original violation against code nobody had touched. `#N` is retained because
+  two accesses in one function routinely have two different reasons, and
+  collapsing them replaced the second rationale with a copy of the first.
+
+  New in `threetears.enforcement.underscore_access`: `MODULE_SCOPE`,
+  `scoped_accesses`, `ledger_scope_entries`, `ledger_paths`. `ledger_entries`
+  still reads line-keyed entries only and is unchanged for consumers using them.
+
 - `enforcement`: **fake-parity exemptions moved out of the line-keyed file and
   onto the classes they describe.** All 82 live entries are now
   `# parity-exempt: <rationale>` markers; `_fake_parity_exemptions.txt` is

@@ -305,8 +305,14 @@ class NatsKvBucket:
         :rtype: None
         """
         now = time.monotonic()
-        last = _last_timeout_remedy_log.get(self._full_name, 0.0)
-        if now - last < _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS:
+        last = _last_timeout_remedy_log.get(self._full_name)
+        # ABSENCE means never logged, not ``0.0``. ``time.monotonic()`` is time since
+        # BOOT on Linux, so on a freshly-started machine it is a small number and
+        # ``now - 0.0`` is under the interval -- which suppressed the FIRST remedy for
+        # the first five minutes of a process's life, exactly when a missing grant is
+        # most likely to be the thing that is wrong. It reads as correct on any
+        # long-lived developer machine and fails only where it matters.
+        if last is not None and now - last < _TIMEOUT_REMEDY_LOG_INTERVAL_SECONDS:
             log.debug("KV operation timed out on %s (remedy already logged)", self._full_name)
             return
         _last_timeout_remedy_log[self._full_name] = now

@@ -44,11 +44,20 @@ Two places an exemption can live, and the choice matters:
   code through renames, moves and reformats, and a reader of the fake finds
   the reason next to the fake.
 - **In `tests/enforcement/_<domain>_exemptions.txt`**, keyed
-  `path:LINE:symbol`. Use `path:*:symbol` to exempt a symbol anywhere in the
-  file. A numeric line pins the entry to the file's current layout, so an
-  unrelated edit above it silently stops it matching and the domain reports
-  the original violation against untouched code. Nothing detects that the
-  path it names has been deleted, either.
+  `path:KEY:symbol`. `KEY` takes three forms:
+  - a **line number**, which pins the entry to the file's current layout. An
+    unrelated edit above it silently stops it matching, and the domain then
+    reports the original violation against untouched code.
+  - `*`, exempting that symbol anywhere in the file.
+  - a **scope key** `Class.method#0`, for a domain that opts in with
+    `allow_scope_keys`. It survives an edit above the access, because it names
+    the enclosing scope and the ordinal within it rather than a line. The
+    `underscore_access` domain uses this; `#N` is what keeps two accesses in one
+    function from collapsing onto one rationale.
+
+  Whichever form is used, an entry naming a path that no longer exists is caught
+  only if the domain has its own reconciliation check -- `underscore_access` does
+  (`missing_files`), most do not.
 
 ## Design philosophy
 
