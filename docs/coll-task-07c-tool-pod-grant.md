@@ -57,11 +57,8 @@ connect.
 A namespace-derived scope was designed and rejected on evidence — worth recording
 because the reasoning generalizes:
 
-- `tool_namespace_id` mints **one row per tool**, and tool servers in this
-  workspace register up to ~20 each. (An earlier draft said 62; that number was
-  unsourced and the builtin server registers at most 9. The "one row per tool"
-  shape is what matters, not the count — re-read `_register_builtin_tools` rather
-  than trusting either figure.)
+- `tool_namespace_id` mints **one row per tool** — see the ledger's Part 2 for
+  the counts and their anchors. The shape is what matters, not the number.
 - It is a pure function of manifest values **the pod sends**, bounded only by an
   `allowed_namespaces` prefix test — so a pod could mint unbounded new scopes into
   a memory-backed bucket with no `max_bytes`.
@@ -98,23 +95,22 @@ pk of every write — gives it:
   collection, L1 and has-table guards, so a forged message naming any table drops
   a security cache on pods that hold no such collection.
 
-Note the static NATS users already grant this subject unprefixed, so closing it
-is part of `coll-task-05b`, not this shard alone.
-
 **The decision, so an implementer does not have to make it:** grant the global
 subject, record the exposure as accepted for this landing, and defer both
 `origin` authentication and any move to a scoped subject.
 
 The reasoning: the static NATS users already hold this subject unprefixed, so a
-tool pod is not the widest holder and scoping it alone would buy little. Both
+tool pod is not the widest holder and scoping it alone would buy little
+(closing that side is `coll-task-05b`'s). Both
 deferred items are publisher-side changes across three repos — a wire-protocol
 change, not a grant change — and they need their own shard with their own
 review. Carrying them as a P0 checkbox here would make the implementer the
 ratifier of a security posture.
 
-That future shard owes two things: `origin` minted from the authenticated
-principal, and `_on_invalidation` rejecting a table the receiver does not hold
-**before** touching the scan cache. Note the guard reorder overlaps
+**`coll-task-08-invalidation-origin-auth`** owes two things: `origin` minted from
+the authenticated principal, and `_on_invalidation` rejecting a table the
+receiver does not hold **before** touching the scan cache. It is not written yet;
+the name exists so the deferral is findable rather than floating. Note the guard reorder overlaps
 `coll-task-03`'s L2S-09, which restructures the same function — sequence them or
 land them together.
 
@@ -125,11 +121,12 @@ land them together.
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | TP-01 | A tool pod is granted `{ns}-collections`, scoped to its `tool_pods.id`, on **publish only** (read is the scoped `DIRECT.GET` tail) | P0 |
-| TP-02 | The tool pod is granted the **global** invalidation subject, with the exposure below recorded as accepted; `origin` authentication and any scoped-subject move are deferred to a named future shard | P0 |
+| TP-02 | The tool pod is granted the **global** invalidation subject, with the exposure below recorded as accepted; `origin` authentication and any scoped-subject move are deferred to `coll-task-08-invalidation-origin-auth` | P0 |
 | TP-03 | Replicas of one tool pod share L2 keys; two tool pods do not | P0 |
 | TP-04 | The pod starts and stops the invalidation listener via `coll-task-01`'s API | P0 |
 | TP-05 | The pod constructs no `SQLiteBackend` directly | P0 |
-| TP-06 | Proven live: a second principal is **refused** on this pod's keys | P0 |
+| TP-06 | The pod opens the collections bucket eagerly at startup via `ensure_kv_bucket`, before its registry is configured (`coll-task-04` KVC-05) | P0 |
+| TP-07 | Proven live: a second principal is **refused** on this pod's keys | P0 |
 
 ---
 
@@ -166,7 +163,7 @@ half. State the intended end state in the PR rather than leaving three.
 - `packages/agent/tools/src/threetears/agent/tools/bootstrap.py` — the collection-stack builder and the listener start/stop.
 - `packages/agent/tools/pyproject.toml` — the `3tears-agent-acl[bus]` dependency.
 - `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` — the refusal probe for TP-06.
-- `packages/core/src/threetears/core/collections/registry.py` — only if TP-02 lands here; see below.
+
 
 ---
 
@@ -213,5 +210,5 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
    attempt to read this pod's keys. Refused, both direct and body-carried.
 5. `nats kv ls` shows the pod's keys under its own scope and nowhere else.
 
-Step 4 is what proves the sequence did its job. Without it this shard has shown
+Step 4 is TP-07, and it is what proves the sequence did its job. Without it this shard has shown
 only that a tool pod can cache, not that it can cache safely.

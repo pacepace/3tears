@@ -40,7 +40,7 @@ from threetears.enforcement.common import (
 from threetears.enforcement.underscore_access.config import (
     UnderscoreAccessConfig,
 )
-from threetears.enforcement.underscore_access.ledger import enclosing_scopes
+from threetears.enforcement.underscore_access.ledger import MODULE_SCOPE, enclosing_scopes
 from threetears.enforcement.underscore_access.walkers import (
     shape_a_violations,
     shape_b_violations,
@@ -52,9 +52,14 @@ from threetears.enforcement.underscore_access.walkers import (
 __all__ = ["run_underscore_enforcement"]
 
 #: Per-file scope maps, so a run parses each exempted file once rather than once
-#: per access. Process-lived: the enforcement run is a single pass over a tree
-#: that is not being edited underneath it.
-_SCOPE_CACHE: dict[str, dict[int, str]] = {}
+#: per access.
+#:
+#: Keyed by path AND mtime. A single enforcement run does read a tree nobody is
+#: editing, but this module is imported for the process, not for the run: a test
+#: session that runs enforcement over a file, rewrites it, and runs again is a
+#: real caller, and a path-only key would answer the second run from the first
+#: run's parse. The tests for this feature do exactly that shape.
+_SCOPE_CACHE: dict[tuple[str, int], dict[int, str]] = {}
 
 
 _VALID_WALKERS: frozenset[str] = frozenset(
@@ -202,7 +207,11 @@ def _scope_of(path: Path, line: int) -> str:
         that cannot be read
     :rtype: str
     """
-    key = str(path)
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        # Unreadable now; report it rather than cache a guess about it.
+        return MODULE_SCOPE
     scopes = _SCOPE_CACHE.get(key)
     if scopes is None:
         try:
@@ -213,7 +222,7 @@ def _scope_of(path: Path, line: int) -> str:
             # a scope-keyed entry, so the violation is REPORTED rather than hidden.
             scopes = {}
         _SCOPE_CACHE[key] = scopes
-    return scopes.get(line, "<module>")
+    return scopes.get(line, MODULE_SCOPE)
 
 
 def _load_exemptions(path: Path | None) -> list[Exemption]:
@@ -227,7 +236,7 @@ def _load_exemptions(path: Path | None) -> list[Exemption]:
     """
     if path is None:
         return []
-    return parse_exemptions_with_rationale(path)
+    return parse_exemptions_with_rationale(path, allow_scope_keys=True)
 
 
 def _run_walker(

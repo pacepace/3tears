@@ -93,6 +93,8 @@ The per-bucket opt-in below applies to the **publish** narrowing only.
 | GRANT-09 | `$JS.API.DIRECT.GET.{stream}.>` is narrowed to the principal's scope | P0 |
 | GRANT-10 | A scoped bucket whose principal has no scope is a mint-time error | P0 |
 | GRANT-11 | `Principal` gains `AGENT_ROUTER` and `DATASET_EXECUTOR`, and the four currently-dead members are adopted rather than left unreferenced | P0 |
+| GRANT-12 | `_js_api_grants_for_stream` is promoted to public `js_api_grants_for_stream` — `__all__`, Sphinx docstring, exported from `threetears.nats` | P0 |
+| GRANT-13 | Every principal that subscribes via `subscribe_typed` holds publish on `{ns}.deadletter.>` | P0 |
 
 GRANT-05's carve-out is not a softening: `-04` makes hub bootstrap the canonical
 declarer, which needs `CREATE` and `UPDATE`. Note the wildcard is **not** the
@@ -162,6 +164,33 @@ taking it here is the unblocking move; annotate Chunk 11 accordingly.
 Note the adoption is a **grant-surface** change, not a migration: these
 processes keep their static credentials until `-05b` moves them. What the enum
 buys immediately is a legal, pinnable scope value.
+
+---
+
+## GRANT-12: promote the grant builder so the conf side can generate from it
+
+`coll-task-05b` must deny each static user's `$JS.` reach into the collections
+stream, and the only correct source for those subjects is the function that
+emits them. Hand-deriving the shapes has now failed twice — once on whole-token
+wildcards, once by missing `$JS.API.STREAM.MSG.*.{stream}` (six tokens,
+terminal, which is BYPASS 1).
+
+`-05b` lives in the hub, so importing `_js_api_grants_for_stream` across a repo
+boundary would be a Shape-A underscore violation. Per promote-not-exempt, the
+fix belongs here: make it public, and have `-05b` call it.
+
+---
+
+## GRANT-13: the deadletter grant nobody holds
+
+`subscribe_typed` routes validation failures to `{ns}.deadletter.{subject}`.
+Grepping `subject_permissions.py` for `deadletter` returns **nothing** — no
+principal is granted it. The registry is incidentally covered by its static
+`aibots.>`; a callout-minted agent pod is not, so its deadletter publish is
+refused.
+
+This is pre-existing, and `coll-task-07a` makes it load-bearing by moving two
+more consumers onto `subscribe_typed`. Fix it here, where the resolvers live.
 
 ---
 

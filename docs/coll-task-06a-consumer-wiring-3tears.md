@@ -34,7 +34,7 @@ this process's L2 is a source of truth, not a cache. Coordinate with
 `coll-task-05a`, which adds the collections grant the registry has never held.
 
 **The registry currently runs its L2 collection against a bucket it is not
-granted** — see `coll-task-05`. Wiring a scope here without that grant lands a
+granted** — see `coll-task-05a`. Wiring a scope here without that grant lands a
 correctly-scoped key on a bucket the principal cannot reach.
 
 ---

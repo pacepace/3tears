@@ -4,7 +4,13 @@ every domain's exemption file (``tests/enforcement/_<domain>_exemptions.txt``)
 follows the same shape::
 
     # rationale: <specific reason>
-    relative/path.py:LINE:symbol
+    relative/path.py:KEY:symbol
+
+``KEY`` is a line number, ``*`` for the whole file, or -- for a domain that opts
+in with ``allow_scope_keys`` -- an enclosing qualname with an optional ordinal
+(``Class.method#0``). The opt-in matters: for a line-keyed domain a non-numeric
+key is a TYPO, and accepting it silently would make an inert exemption out of
+what should be an error naming the line.
 
 each entry MUST be preceded by a ``# rationale: ...`` line; rationales
 shorter than the threshold or matching well-known blanket phrases are
@@ -97,13 +103,15 @@ _BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset(
 )
 
 
-def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
+def parse_exemptions_with_rationale(path: Path, *, allow_scope_keys: bool = False) -> list[Exemption]:
     """parse an exemption file, enforcing the rationale-required contract.
 
     every non-comment, non-blank line must be of the form
-    ``relative/path.py:LINE:symbol``. ``LINE`` is either a positive
-    integer (a specific line) or ``*`` (any line in the file —
-    represented as ``line=0`` in the resulting :class:`Exemption`).
+    ``relative/path.py:KEY:symbol``. ``KEY`` is a positive integer (a specific
+    line), ``*`` (any line in the file), or -- only when ``allow_scope_keys``
+    is set -- a scope key ``qualname[#N]``. Both non-line forms are
+    represented as ``line=0`` in the resulting :class:`Exemption`; a scope key
+    is told apart from ``*`` by its non-``None`` :attr:`Exemption.scope`.
 
     each entry MUST be preceded by exactly one ``# rationale:
     <reason>`` line; the rationale text must be at least
@@ -113,6 +121,11 @@ def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
 
     :param path: path to the exemption file
     :ptype path: Path
+    :param allow_scope_keys: accept ``qualname[#N]`` as a third key form. OFF by
+        default, and that default is the point: for a line-keyed domain a middle
+        field that is not a number is a TYPO, and accepting it silently would turn
+        ``a.py:1O2:_x`` into an inert exemption instead of an error naming the line
+    :ptype allow_scope_keys: bool
     :return: parsed entries in file order
     :rtype: list[Exemption]
     :raises ExemptionError: missing rationale, blanket rationale,
@@ -148,7 +161,7 @@ def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
         if pending is None:
             raise ExemptionError(f"{path}:{lineno}: entry has no preceding '# rationale: ...' line")
         key_field = match.group("line")
-        line_int, scope, occurrence = _parse_key(key_field, path, lineno)
+        line_int, scope, occurrence = _parse_key(key_field, path, lineno, allow_scope_keys=allow_scope_keys)
         entries.append(
             Exemption(
                 file=match.group("file"),
@@ -199,7 +212,7 @@ def rationale_defect(rationale: str) -> str | None:
 _SCOPE_OCCURRENCE = re.compile(r"^(?P<scope>[^#]+)#(?P<occurrence>\d+)$")
 
 
-def _parse_key(field: str, path: Path, lineno: int) -> tuple[int, str | None, int | None]:
+def _parse_key(field: str, path: Path, lineno: int, *, allow_scope_keys: bool) -> tuple[int, str | None, int | None]:
     """resolve an entry's middle field into ``(line, scope, occurrence)``.
 
     Three forms, distinguished without ambiguity: ``*`` is file-wide, an integer
@@ -218,11 +231,16 @@ def _parse_key(field: str, path: Path, lineno: int) -> tuple[int, str | None, in
     """
     if field == "*":
         return (0, None, None)
-    if field.lstrip("-").isdigit():
+    if field.isdigit():
         line_int = int(field)
         if line_int < 1:
             raise ExemptionError(f"{path}:{lineno}: line number must be positive, got {line_int}")
         return (line_int, None, None)
+    if not allow_scope_keys:
+        raise ExemptionError(
+            f"{path}:{lineno}: line number must be an integer or '*', got {field!r}. "
+            f"(Scope keys are accepted only for a domain that opts in with allow_scope_keys.)"
+        )
 
     match = _SCOPE_OCCURRENCE.match(field)
     if match is not None:

@@ -53,16 +53,16 @@ only if a pod needs durable state.
 shutdown" is not expressible in the hub repo. `-02` is therefore not a hub-only
 landing.
 
-**`-03` before `-04` before `-05`.** The key prefix is inert until the grant
+**`-03` before `-04` before `-05a`.** The key prefix is inert until the grant
 narrows; the grant is unenforceable on reads until the bucket runs
 `allow_direct: true`, because with it false the key rides in the request body
 where no subject permission can see it.
 
 **`-06x` after those.** They supply the scope every process needs.
 
-**`-07x` last, in order.** `-07a` is a consolidation with no *grant* change and can be
-reviewed on its own (it does carry two stated behaviour changes — see its
-CON-04 and CON-05). `-07c` grants the bucket, which must come after the grant
+**`-07x` last, in order.** `-07a` changes no grant *narrowing*, and is reviewable
+on its own — though it carries two stated behaviour changes (CON-04, CON-05) and
+depends on `-05a` GRANT-13 for the deadletter grant `subscribe_typed` needs. `-07c` grants the bucket, which must come after the grant
 surface is safe.
 
 `-01`/`-02` are separable from the rest: the invalidation gap is a live

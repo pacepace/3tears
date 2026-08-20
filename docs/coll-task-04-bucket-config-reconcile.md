@@ -2,7 +2,7 @@
 
 ## Objective
 
-Make `coll-task-05`'s narrowed grant enforceable on reads, by running the
+Make `coll-task-05a`'s narrowed grant enforceable on reads, by running the
 collections KV bucket with `allow_direct: true`.
 
 Getting there means giving KV buckets a create-or-reconcile primitive and
@@ -37,8 +37,10 @@ claim of the sequence.
 
 ## The defect: create-or-bind discards the requested config
 
-`NatsKvBucket.open` tries `create_key_value(...)`, and on any exception binds to
-the existing bucket in an `except` branch that **drops the caller's config**.
+`NatsKvBucket.open` tries `create_key_value(...)` and, on exception, binds to the
+existing bucket in an `except` branch that **drops the caller's config**. (If the
+bind itself also fails it raises `KvError` with the grant remedy — that arm is
+fine; the silent one is the successful bind.)
 There is a `log.debug` for the bind; nothing at WARNING or above says the
 requested config was not applied.
 
@@ -90,10 +92,18 @@ self-consistent; only storage is stale.
 **KVC-10 takes the reconnect branch, not `storage: file`.** A `file`-storage
 branch was considered and rejected: CLAUDE.md's Config Source-of-Truth carve-out
 ratifies that the `BaseCollection` L2 cache stays `storage="memory"` and that the
-named volume deliberately does not push it to disk. Reversing that is a bigger
+named volume deliberately does not push it to disk. (That carve-out cites
+`NatsKvClient.storage` as its authority — the class KVC-09 deletes, whose
+docstrings claim *file* storage against a memory default. The real authority is
+`NatsClient.kv_bucket`'s `storage: str = "memory"`; say so in the CLAUDE.md edit
+this shard already schedules.) Reversing that is a bigger
 decision than this shard, and it composes badly with unlimited `max_age` plus
 `coll-task-03`'s tombstones. The reconnect hook already exists —
-`NatsClient.add_reconnect_callback`, dispatched from `_on_reconnected`.
+`NatsClient.add_reconnect_callback`, dispatched from the `_dispatch_reconnected`
+closure installed as nats-py's `reconnected_cb`. (`_on_reconnected` is log-only —
+it is called *by* that closure, not the dispatcher.) The one production caller to
+copy is `aibots_agents/runtime/bootstrap/orchestrator.py`'s
+`_on_nats_reconnected`.
 
 ---
 
@@ -135,7 +145,7 @@ class outright. If deletion slips, narrow the catch instead.
 ## Reconcile policy
 
 `ensure_jetstream_stream` updates in place, and that is the right consistency
-for both JetStream resource kinds. `coll-task-05` removes `STREAM.UPDATE` from
+for both JetStream resource kinds. `coll-task-05a` removes `STREAM.UPDATE` from
 pod principals, so a pod cannot update even if the primitive can. Those
 reconcile:
 
@@ -143,7 +153,7 @@ reconcile:
 - **Only the declaring identity is granted to.** The hub declares the collections
   bucket in lifespan beside the streams it already declares there, with the same
   "idempotent: binds to the existing stream on restart" reasoning.
-  `coll-task-05`'s GRANT-05 must carry a matching `declare` capability for that
+  `coll-task-05a`'s GRANT-05 must carry a matching `declare` capability for that
   identity — an INFO-only allow-list with no exception makes this requirement
   unexecutable and a cold cluster unable to bootstrap.
 - **Pods pass `create_if_missing=False`** for the collections open specifically —
@@ -156,7 +166,7 @@ This satisfies the Config Source-of-Truth rule — pods are readers.
 Flipping the `kv_bucket` default would break every bucket that relies on
 first-use creation — the coordination primitives, epoch client, IAM stores,
 memory extraction, three hub caches — all of which the scope note below
-enumerates and which `coll-task-05` restates as fact.
+enumerates and enumerated in the scope note below.
 
 It would also neuter `NatsKvBucket._reopen`, which re-runs `open()` with the
 stored flag and **exists because a single-node NATS restart on ephemeral
@@ -198,7 +208,7 @@ collections bucket, and sequence accordingly.
 
 `create_key_value` never sets `deny_purge`, so KVC-08 is unreachable through it.
 `ensure_kv_bucket` must go through `add_stream`/`update_stream` and **reproduce
-the whole KV stream shape** — roughly eighteen fields, including `deny_delete`,
+the whole KV stream shape** — nineteen fields, including `deny_delete`,
 `discard=NEW`, `allow_rollup_hdrs`, `max_msgs_per_subject=history`,
 `duplicate_window`, `allow_msg_ttl`, `subject_delete_marker_ttl`, `max_msgs=-1`,
 `max_consumers=-1` and `subjects=["$KV.{b}.>"]`.
@@ -240,7 +250,8 @@ such collection in the bucket.
 ## Files to Modify
 
 - `packages/nats/src/threetears/nats/client.py` — `ensure_kv_bucket`; thread `direct` through `kv_bucket` (no such parameter today); share the bucket cache.
-- `packages/nats/src/threetears/nats/kv.py` — `KvConfigMismatch`; `NatsKvBucket.open`'s bind branch delegates or refuses.
+- `packages/nats/src/threetears/nats/kv.py` — `NatsKvBucket.open`'s **create** branch routes through `ensure_kv_bucket` instead of calling `create_key_value` directly, and the bind branch delegates or refuses. The create branch matters most: `_reopen` re-runs `open()` after a NATS restart, so leaving it on `create_key_value` means the hub's own cached handle silently recreates the bucket with `direct` unset, racing KVC-10.
+- `packages/nats/src/threetears/nats/errors.py` — `KvConfigMismatch`, subclassing `NatsClientError` beside `KvError` and `StreamSubjectsOverlapError`. Every nats exception has one home.
 - `packages/core/src/threetears/core/collections/registry.py` — the `configure()`-level `create_if_missing` flag. **Not** a literal in `base.py`; `base.py`'s `_ensure_kv` reads the flag.
 - `packages/core/src/threetears/core/cache/kv.py` — **delete** `NatsKvClient` (KVC-09); decide `BucketConfig`'s fate.
 - `packages/core/tests/test_kv_client.py` — deleted with it (24 tests).
@@ -307,7 +318,7 @@ uv run pytest tests/unit/ -q
 Live: `nats stream info KV_aibots-collections -j` — `allow_direct` true after.
 
 Behavioural, and the one that matters: with `allow_direct: true` and
-`coll-task-05`'s grant in place, a principal reads its own key and is **refused**
+`coll-task-05a`'s grant in place, a principal reads its own key and is **refused**
 on another's, via both the direct and the body-carried form. If the body-carried
 form still succeeds, this shard did not land.
 

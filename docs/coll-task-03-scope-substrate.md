@@ -3,7 +3,7 @@
 ## Objective
 
 Give the shared `{ns}-collections` NATS KV bucket intra-bucket key isolation, so
-`coll-task-05` can narrow the grant from `$KV.{bucket}.>` to a per-principal
+`coll-task-05a` can narrow the grant from `$KV.{bucket}.>` to a per-principal
 subject.
 
 This lands the data half: the key shape, the scope helper, and validation at
@@ -64,9 +64,10 @@ generation grants — so a lost key admits a superseded connection rather than
 refusing it.
 
 That collection is **PRIVATE**, decided here rather than deferred: writer and
-reader are both the hub across replicas — established by the call site in
-`hub/app.py`, which comments that one instance is shared by both, not by the
-class docstring, which speaks only to cross-replica coherence.
+reader are both the hub across replicas — the class docstring says a handshake
+completed on one replica must fence a connection whose callout resolves on a
+sibling, and the `hub/app.py` call site reinforces it with "ONE instance shared
+by both".
 
 **The cutover is `coll-task-06b`'s, and it is not a free cache miss.** Re-keying
 disarms the fence for every in-flight reauth. Do **not** improvise a remedy here:
@@ -110,12 +111,13 @@ Three implementation constraints, each of which would silently defeat it:
    forbids repo-wide and which the underscore contract says to fix by promoting,
    not exempting. Add `BaseCollection.delete_l2_entry(entity_id)`, public, in
    `__all__`, with a Sphinx docstring.
-3. **Gate on L2 presence, or bound the tombstones.** A KV delete writes a marker
-   **unconditionally**, so every principal would write markers for entities it
-   never cached, into a memory bucket with `history=1`, unlimited `max_age` and
-   no `max_bytes`. Either check presence first, or have `coll-task-04` set a
-   bounded `max_age`/`subject_delete_marker_ttl` on the collections stream. State
-   the resulting growth bound either way.
+3. **Gate on L2 presence.** A KV delete writes a marker **unconditionally**, so
+   an ungated eviction writes markers for entities the receiver never cached,
+   into a memory bucket with `history=1`, unlimited `max_age` and no `max_bytes`.
+   Check presence first. (Bounding `max_age`/`subject_delete_marker_ttl` on the
+   stream was the alternative; `coll-task-04` compares only `direct` and asserts
+   unlimited `max_age` throughout, so it does not carry that requirement and this
+   shard must not assume it will.)
 
 ### The scope is the sharing boundary
 
@@ -211,7 +213,7 @@ Two constraints fix the home and the name:
   with three behaviours across three packages is worse than the duplication.
 
 The signature must accept UUIDs: `_sanitize` has ~40 references across ~30 lines
-in `subjects.py`, several passing UUIDs, which would fail mypy under `str`-only.
+in `subjects.py` — 34 call sites across 24 lines — several passing UUIDs, which would fail mypy under `str`-only.
 Widening `core.namespaces.sanitize_segment` the same way breaks nothing — its
 only non-test caller is `build_namespace_name`.
 
@@ -248,10 +250,10 @@ make a process "fail at startup"; it makes it die on the first cache access unde
 load, which for the agent router's sticky routing is a production outage.
 
 So the check is at `configure()` (L2S-02), with `l2_key` as the backstop for the
-construction path that never calls it. Note `l2_key` reads the scope off
-`self._registry` — a required positional on `BaseCollection.__init__` — which is
-also why the backstop only fires when the registry itself is unscoped. Do not add
-a constructor parameter.
+construction path that never calls it. After this change `l2_key` reads the scope off `self._registry` — a required
+positional on `BaseCollection.__init__` — which is also why the backstop only
+fires when the registry itself is unscoped. (Today it touches `_registry` not at
+all.) Do not add a constructor parameter.
 
 **L2S-02 is evaluated over registry state after the merge, not over this call's
 arguments.** `configure()` merges — `if l2_client is not None: self._l2_client = ...`.
@@ -288,7 +290,7 @@ defeating the grant. It also permits `/`, and leading, trailing and doubled dots
 
 ## Files to Modify
 
-- `packages/nats/src/threetears/nats/subjects.py` — promote `_sanitize` to public `sanitize_subject_segment`; rewire its ~40 in-file references.
+- `packages/nats/src/threetears/nats/subjects.py` — promote `_sanitize` to public `sanitize_subject_segment`; rewire its 34 in-file call sites.
 - `packages/nats/src/threetears/nats/subject_permissions.py` — `kv_key_scope_for`, the scope grammar; `_seg` delegates to the promoted sanitizer.
 - `packages/nats/src/threetears/nats/__init__.py` — add the new names to the eager re-export block **and** `__all__`. While here: its comment claims `test_lazy_surface` checks the TYPE_CHECKING block; it does not (see below).
 - `packages/nats/tests/unit/test_lazy_surface.py` — it asserts lazy-map ↔ submodule exports and lazy-map ⊆ `__all__`. It never parses the TYPE_CHECKING block, despite the test named for it.
@@ -317,8 +319,11 @@ Write it fresh. The contract:
 - `configure(l2_client=X)` with no scope raises, naming `kv_key_scope`;
 - scope-then-client and client-then-scope both succeed (the two-pass wiring
   above), because the check is over merged registry state;
-- a scope containing `.` or `/` is refused at `configure()`, and one colliding
-  with `SHARED_KV_KEY_SCOPE`'s former literal or a bare `Principal` value is too;
+- a scope containing `.` or `/` is refused at `configure()`;
+- a **pod-derived** scope colliding with a bare `Principal` value is refused —
+  and, in the same test, `kv_key_scope_for(Principal.REGISTRY)` is **accepted**,
+  because an infra scope *is* that value. `configure()` cannot tell the two apart
+  on its own, so the check belongs in `kv_key_scope_for`, not in `configure()`;
 - the backstop raise from `l2_key` is not a `KvError` subclass;
 - the scope segment survives body hashing — assert only that delta; the SHA-256
   fallback invariant belongs to `test_base_collection.py`;
@@ -350,6 +355,8 @@ implementation, the tier decision has been reopened by accident.
 - DO NOT check L2S-02 against one call's arguments. Two-pass wiring is normal.
 - DO NOT scope buckets other than collections. Nothing else writes a prefix, and a missing `$KV.` match does not raise — it blocks to the deadline and reads as an unreachable broker.
 - DO NOT reintroduce a shared tier. Three problems, all in the ledger.
+- DO NOT implement L2S-09 by calling `invalidate_cache` from `_on_invalidation`. It is public, it does look exactly right — and it **re-publishes**. Since the `origin` filter only skips *self*, every receiver would rebroadcast under its own origin: an unbounded eviction storm. Use the promoted `delete_l2_entry`.
+- DO NOT put the blanket `Principal`-collision ban in `configure()`. It cannot distinguish a pod-derived scope from an infra one, and would refuse every infra principal at startup.
 
 ---
 

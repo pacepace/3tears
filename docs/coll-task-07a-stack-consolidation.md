@@ -2,11 +2,13 @@
 
 ## Objective
 
-Delete two copies of the same ACL invalidation wiring and make both callers use
-the shared implementation that **already exists**.
+Delete the duplicated ACL invalidation wiring and make every caller use the
+shared implementation that **already exists**.
 
-No security change. This shard is pure consolidation and can be reviewed on its
-own — which is why it is split out from the tool-pod grant work in `-07c`.
+No *grant-surface* change, and reviewable on its own — which is why it is split
+out from the tool-pod grant work in `-07c`. It does carry two deliberate
+behaviour changes (CON-04, CON-05), and it depends on `coll-task-05a` GRANT-13
+for the deadletter grant that adopting `subscribe_typed` requires.
 
 ---
 
@@ -14,16 +16,18 @@ own — which is why it is split out from the tool-pod grant work in `-07c`.
 
 `threetears.agent.acl.invalidation_bus` defines `AclInvalidationSubscriber` as a
 Protocol, exported from the package `__init__`, and `subscribe_acl_invalidation`
-already performs exactly the wiring that two repos duplicate — the same three
-handlers, the same payload models, the same no-queue-group rationale.
+already performs exactly the wiring that **three** call sites duplicate — the
+same three handlers, the same payload models.
 
-Neither `packages/registry/.../rbac_stack.py` nor the SDK's
-`runtime/three_tier_stack.py` calls it.
+None of `packages/registry/.../rbac_stack.py`, the SDK's
+`runtime/three_tier_stack.py`, or the hub's `broker/acl.py` calls it. The hub's
+copy already pairs `subscribe_invalidations` with `unsubscribe_invalidations`,
+which is the shape CON-02 wants.
 
 So the instruction is **not** "extract a shared subscriber" — an earlier
 formulation of this work said that, and it would have collided with a Protocol of
-that exact name in that exact package. It is: **delete both copies, call the
-existing function, and add the teardown half it lacks.**
+that exact name in that exact package. It is: **delete all three copies and call
+the existing function.**
 
 `rbac_stack.py`'s own opening docstring already says it "mirrors the agent SDK's
 `build_three_tier_stack` with the agent-specific bits stripped" — the duplication
@@ -51,12 +55,20 @@ This is the argument for doing it now rather than recording it.
 - The registry uses `TIMESTAMP(timezone=True)` where the SDK uses bare
   `TIMESTAMP`.
 
-The hub copy is outside this shard's repos. Either give CON-03/CON-04 a hub half
-or fold it into `coll-task-06b`, which already visits every hub registry site —
-but do not leave "lives once" as a criterion while a third copy stands.
+**This shard takes the hub half.** It crosses a repo, as `-01` and `-04` already
+do, and the alternative — folding it into `coll-task-06b` — does not work:
+`hub/common/l1_cache.py` is not a registry-construction site, so `-06b` never
+visits it. Leaving "lives once" as a criterion while a third copy stands is the
+failure this section exists to name.
 
 The rbac L1 table metadata should move beside the ACL Collections in
-`threetears.agent.acl`. The registry's stated reason for keeping its own copy —
+`threetears.agent.acl` — and be **generated**, not retyped.
+`TableSchema.to_sqlalchemy_table(metadata)` already performs this conversion,
+`NamespaceCollection` is a `SchemaBackedCollection`, and
+`core/testing/sqla_parity.py` is the established drift guard for any table that
+must stay hand-written. Consolidating three hand-maintained copies into one
+hand-maintained copy just moves the drift a column later — which is exactly the
+bug this section opens by describing. The registry's stated reason for keeping its own copy —
 avoiding a dependency on the agents package — does not block that: the registry
 already imports from `threetears.agent.acl`.
 
@@ -66,21 +78,23 @@ already imports from `threetears.agent.acl`.
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| CON-01 | Both callers use `subscribe_acl_invalidation`; both local copies are deleted | P0 |
+| CON-01 | **All three** callers use `subscribe_acl_invalidation`; every local copy is deleted | P0 |
 | CON-02 | Callers unsubscribe the handles the function already returns; add `unsubscribe_acl_invalidation(subscriptions)` beside it so the idiom is one, and type the return | P0 |
 | CON-03 | The rbac L1 table metadata lives once, in `threetears.agent.acl` | P0 |
-| CON-04 | The consolidated metadata carries every column of `NamespaceCollection.schema` | P0 |
+| CON-04 | The consolidated metadata is **generated** from `NamespaceCollection.schema` via `TableSchema.to_sqlalchemy_table`, not retyped | P0 |
 | CON-05 | The only behavioural changes are CON-04's bug fix and the malformed-payload semantics below — both stated in the commit | P0 |
 
-**CON-02 is smaller than it looks, and an earlier draft got it backwards.**
+**CON-02 is smaller than it looks.**
 `subscribe_acl_invalidation` does **not** lack teardown: it returns the three
 `Subscription` handles, its docstring says they are "for the caller to
 unsubscribe at shutdown", and it already unwinds them itself on partial failure.
 Both existing callers run that loop. The real defects are the untyped `list[Any]`
 return and two competing idioms — the bus unwinds via `subscription.unsubscribe()`
-while consumers call `nats_client.unsubscribe(sub)`. Do **not** restructure a
-deliberately stateless handle-returning function into a `coll-task-01`-style
-lifecycle object; no state lives on the subscriber.
+while consumers call `nats_client.unsubscribe(sub)`. Those are not equivalent —
+the client form also removes the handle from `client._subscriptions`, the
+`Subscription` form does not. Pick the client form (what all three consumers use
+today) and say so, or the helper silently changes teardown bookkeeping and CON-05
+is wrong again. No state lives on the subscriber; do not give it any.
 
 **CON-05 is not "no behavioural change".** The local copies use raw `subscribe`
 with hand-rolled `model_validate_json` and log WARNING + continue on a malformed
@@ -98,7 +112,9 @@ CON-04 is also a deliberate behaviour change — see below.
 
 - `packages/agent/acl/src/threetears/agent/acl/invalidation_bus.py` — the teardown counterpart.
 - `packages/agent/acl/` — the rbac L1 table metadata, beside the ACL Collections.
-- `packages/registry/src/threetears/registry/rbac_stack.py` — delete the local subscriber and teardown; call the shared one.
+- `packages/registry/src/threetears/registry/rbac_stack.py` — delete the local subscriber and teardown; call the shared one. Also fix its handler docstring, which claims unparseable payloads are logged **and the cache invalidated** ("the canonical fail-safe behaviour") — every handler returns after the warning without invalidating.
+- `14-eng-ai-bot/src/aibots/hub/broker/acl.py` — the **third** copy, with its own `subscribe_invalidations` / `unsubscribe_invalidations`.
+- `14-eng-ai-bot/src/aibots/hub/common/l1_cache.py` — the third rbac-metadata copy, also missing the five columns, and live under `HubNamespaceCollection`. Its comment claims it mirrors the canonical `TableSchema` byte-for-byte.
 - `packages/registry/src/threetears/registry/l1_cache.py` — delete the duplicated metadata.
 - `14-eng-ai-bot-agents/src/aibots_agents/runtime/three_tier_stack.py` and `runtime/l1_cache.py` — same.
 
@@ -121,7 +137,7 @@ introduced. Fix them in place while the files are open.
 ## Anti-patterns
 
 - DO NOT create a new `AclInvalidationSubscriber`. One exists, as a Protocol, in the target package — and note it degrades to plain `object` when the acl `[bus]` extra is absent, which is why the extra is required rather than optional.
-- DO NOT build a teardown function. The handles are already returned.
+- DO NOT restructure the subscriber into a stateful lifecycle object. The handles are already returned; `unsubscribe_acl_invalidation` is a thin symmetric helper, not a redesign.
 - DO NOT leave one copy "for now". CLAUDE.md bans the parallel path.
 - DO NOT adopt the registry's or the hub's column list. Both are behind; `NamespaceCollection.schema` is the source.
 - DO NOT widen the scope to the L3 backend split or the agent-specific collections.

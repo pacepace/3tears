@@ -378,3 +378,46 @@ class TestAScopeKeyedExemptionSurvivesAnEditAboveIt:
 
         assert self._run(unpadded, monkeypatch), "the line key did not match its own line"
         assert not self._run(padded, monkeypatch), "a line-keyed entry survived an edit above it"
+
+
+class TestTheScopeCacheDoesNotOutliveTheFile:
+    """The cache is module state, and this module is imported for the PROCESS.
+
+    A single enforcement run reads a tree nobody is editing, which is the argument
+    for caching at all. But a test session that runs enforcement, rewrites a file
+    and runs again is a real caller with a real second answer, and a path-only key
+    would serve it the first run's parse.
+
+    The sibling tests for this feature dodge it by building two separate repos, so
+    nothing exercised the stale path until this.
+    """
+
+    def test_the_same_path_reparsed_after_an_edit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One repo, edited in place between two runs.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :param monkeypatch: pytest monkeypatch
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        repo = _make_repo_with_pyproject(tmp_path / "repo")
+        src = repo / "src"
+        _write(src / "pkg" / "__init__.py", "")
+        _write(src / "pkg" / "_helper.py", "_name = 1\n")
+        consumer = _write(src / "consumer" / "__init__.py", "from pkg._helper import _name\n")
+        ledger = repo / "_exemptions.txt"
+        ledger.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/consumer/__init__.py:<module>#0:_name\n")
+        config = UnderscoreAccessConfig(
+            repo_root=repo, scan_roots=(src,), inheritance_roots=(src,), exemptions_path=ledger
+        )
+        monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "strict")
+
+        run_underscore_enforcement(config, walker="shape_a")
+
+        # Same path, new content: the access moves into a function, so its scope is
+        # no longer <module> and the entry must stop matching.
+        consumer.write_text("def wrapper():\n    from pkg._helper import _name\n\n    return _name\n")
+        with pytest.raises(BaseException):  # noqa: B017, PT011 - pytest.fail raises its own type
+            run_underscore_enforcement(config, walker="shape_a")

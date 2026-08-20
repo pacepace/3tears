@@ -138,7 +138,7 @@ class TestParseRejects:
             f"# rationale: {VALID_RATIONALE}\na.py:only#x:_x\n",
         )
         with pytest.raises(ExemptionError, match="malformed scope key"):
-            parse_exemptions_with_rationale(path)
+            parse_exemptions_with_rationale(path, allow_scope_keys=True)
 
     def test_zero_line_explicitly_rejected(self, tmp_path: Path) -> None:
         # the ``*`` form is the canonical "any line"; literal 0 must be rejected
@@ -253,7 +253,7 @@ class TestTheScopeKeyForm:
         """
         path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:TestThing.test_it:_x\n")
 
-        entry = parse_exemptions_with_rationale(path)[0]
+        entry = parse_exemptions_with_rationale(path, allow_scope_keys=True)[0]
 
         assert (entry.scope, entry.occurrence, entry.line) == ("TestThing.test_it", None, 0)
 
@@ -267,7 +267,7 @@ class TestTheScopeKeyForm:
         """
         path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:only#2:_x\n")
 
-        entry = parse_exemptions_with_rationale(path)[0]
+        entry = parse_exemptions_with_rationale(path, allow_scope_keys=True)[0]
 
         assert (entry.scope, entry.occurrence) == ("only", 2)
 
@@ -281,7 +281,7 @@ class TestTheScopeKeyForm:
         """
         path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:<module>:_x\n")
 
-        assert parse_exemptions_with_rationale(path)[0].scope == "<module>"
+        assert parse_exemptions_with_rationale(path, allow_scope_keys=True)[0].scope == "<module>"
 
     def test_a_scope_key_is_not_treated_as_file_wide(self, tmp_path: Path) -> None:
         """The hazard this form introduces, pinned.
@@ -370,3 +370,51 @@ class TestTheScopeKeyForm:
 
         assert apply_exemptions([before], exemptions, tmp_path, scope_of=_scope_of) == []
         assert apply_exemptions([after], exemptions, tmp_path, scope_of=_scope_of) == []
+
+
+class TestScopeKeysAreOptIn:
+    """A line-keyed domain must keep getting an error for a typo in its key field.
+
+    Every other domain sharing this parser is line-keyed. Accepting
+    any non-numeric field as a scope everywhere would turn `a.py:1O2:_x` -- an O for a
+    zero -- into an inert exemption that matches nothing, silently, instead of an error
+    naming the line. The first version of this change did exactly that.
+    """
+
+    def test_a_typo_still_raises_for_a_domain_that_did_not_opt_in(self, tmp_path: Path) -> None:
+        """The default, which is what every other domain gets.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:1O2:_x\n")
+
+        with pytest.raises(ExemptionError, match="must be an integer"):
+            parse_exemptions_with_rationale(path)
+
+    def test_the_same_file_parses_when_the_domain_opts_in(self, tmp_path: Path) -> None:
+        """The control, so the test above cannot pass by rejecting everything.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:1O2:_x\n")
+
+        assert parse_exemptions_with_rationale(path, allow_scope_keys=True)[0].scope == "1O2"
+
+    def test_a_negative_line_does_not_reach_int(self, tmp_path: Path) -> None:
+        """`--5` used to slip past the digit guard and raise a bare ValueError.
+
+        :param tmp_path: pytest temp directory
+        :ptype tmp_path: Path
+        :return: nothing
+        :rtype: None
+        """
+        path = _write(tmp_path / "ex.txt", f"# rationale: {VALID_RATIONALE}\na.py:--5:_x\n")
+
+        with pytest.raises(ExemptionError, match="must be an integer"):
+            parse_exemptions_with_rationale(path)

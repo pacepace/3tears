@@ -1,6 +1,6 @@
 """reconciliation between ``_underscore_exemptions.txt`` and the code it claims to describe.
 
-the ledger is a list of ``path:line:symbol`` triples, each preceded by a rationale recording why
+the ledger is a list of ``path:scope#N:symbol`` keys, each preceded by a rationale recording why
 one private access was judged acceptable. the underscore walkers scan a repo's ``src`` roots and
 never enter a ``tests/`` tree, so for every exempted test file the ledger is documentation that
 nothing reads back -- and it rots in both directions:
@@ -34,6 +34,7 @@ __all__ = [
     "carry_forward_rationales",
     "MODULE_SCOPE",
     "enclosing_scopes",
+    "ledger_paths",
     "ledger_scope_entries",
     "scoped_accesses",
     "ledger_entries",
@@ -59,7 +60,13 @@ _RATIONALE_PREFIX = "# rationale:"
 
 
 def ledger_entries(exemptions_path: Path) -> list[tuple[str, int, str]]:
-    """every ``path:line:symbol`` triple in the ledger, comments and blanks dropped."""
+    """every LINE-keyed ``path:line:symbol`` triple, comments and blanks dropped.
+
+    Scope-keyed entries are skipped, so this returns nothing for a ledger written in
+    that form -- see :func:`ledger_scope_entries` for those and :func:`ledger_paths`
+    for the key-agnostic path list. Retained because it is published and a consumer
+    ledger may still be line-keyed.
+    """
     found: list[tuple[str, int, str]] = []
     for raw in exemptions_path.read_text().split("\n"):
         line = raw.strip()
@@ -298,9 +305,37 @@ def carry_forward_rationales(exemptions_path: Path, repo_root: Path) -> dict[tup
     return found
 
 
+def ledger_paths(exemptions_path: Path) -> list[str]:
+    """the path field of every entry, whatever key form it uses.
+
+    Deliberately key-agnostic. :func:`ledger_entries` filters on a digit key, so on a
+    scope-keyed ledger it returns nothing -- and :func:`missing_files`, which only ever
+    needed the path, silently answered "no missing files" for any possible content. That
+    is a disabled gate rather than a wrong answer, and the direction it guards is not
+    covered anywhere else: :func:`unresolved_entries` skips a non-existent source
+    precisely BECAUSE this owned it, and :func:`unlisted_accesses` only walks files that
+    do exist.
+
+    :param exemptions_path: ledger file
+    :ptype exemptions_path: Path
+    :return: relative path of each entry, in file order, duplicates kept
+    :rtype: list[str]
+    """
+    found: list[str] = []
+    for raw in exemptions_path.read_text().split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        path, _, rest = line.partition(":")
+        _key, _, symbol = rest.partition(":")
+        if path and symbol:
+            found.append(path)
+    return found
+
+
 def missing_files(exemptions_path: Path, repo_root: Path) -> list[str]:
     """ledger paths that do not exist, so the entry documents a decision about nothing."""
-    return sorted({path for path, _, _ in ledger_entries(exemptions_path) if not (repo_root / path).exists()})
+    return sorted({path for path in ledger_paths(exemptions_path) if not (repo_root / path).exists()})
 
 
 def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
