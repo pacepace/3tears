@@ -353,9 +353,11 @@ def scoped_accesses(path: Path) -> dict[tuple[str, str, int], int]:
     private on a single line collapse here and are counted twice there, and the
     walkers also emit violations that are not private reads at all. Where both
     counters run -- an exempted file under a ``src`` root -- they must agree or an
-    entry covers a different access than the one it was written for. That is
-    asserted in ``tests/enforcement/test_underscore_exemptions_resolve.py``, not
-    guaranteed by construction.
+    entry covers a different access than the one it was written for. The gate that
+    would catch it is ``tests/enforcement/test_underscore_access.py``, which runs
+    the matcher over the real ledger; ``test_underscore_exemptions_resolve.py``
+    additionally asserts that the one-line collapse shape is absent. Neither is a
+    guarantee by construction.
 
     The line is carried as the VALUE rather than the key: it is what an error
     message needs to point a reader at, and nothing matches on it.

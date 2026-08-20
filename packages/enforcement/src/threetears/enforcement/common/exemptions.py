@@ -283,10 +283,12 @@ def apply_exemptions(
     - **line** -- its ``(relative path, line, symbol)`` triple matches;
     - **``*``** (``line=0``, ``scope=None``) -- the symbol matches anywhere in
       that file;
-    - **scope** (``scope`` set) -- the symbol matches inside that qualname, at
-      that occurrence. Requires ``scope_of``; without one a scope-keyed entry
-      matches nothing, so a domain cannot be changed by this form without
-      opting in.
+    - **scope** (``scope`` set) -- the symbol matches inside that qualname. With
+      ``occurrence`` set it matches ONLY that ordinal; written without one
+      (``qualname``, no ``#N``) it matches EVERY occurrence in the scope, which
+      is the wider of the two and easy to reach for by accident. Requires
+      ``scope_of``; without one a scope-keyed entry matches nothing, so a domain
+      cannot be changed by this form without opting in.
 
     returns a new list — does not mutate ``violations``.
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from _pytest.outcomes import Failed
 
 from threetears.enforcement.underscore_access import (
     UnderscoreAccessConfig,
@@ -424,5 +423,5 @@ class TestTheScopeCacheDoesNotOutliveTheFile:
         # like. Named rather than caught as BaseException: a bare catch passes on an
         # ImportError or a typo in this fixture just as happily, which is the vacuous
         # assertion this suite keeps finding elsewhere.
-        with pytest.raises(Failed, match="underscore"):
+        with pytest.raises(pytest.fail.Exception, match="underscore"):
             run_underscore_enforcement(config, walker="shape_a")
