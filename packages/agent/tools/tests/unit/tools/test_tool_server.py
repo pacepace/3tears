@@ -299,6 +299,55 @@ class TestToolServerServe:
         mock_nc.subscribe.assert_called()
 
     @pytest.mark.asyncio
+    async def test_connected_callbacks_run_before_the_pod_is_reachable(self) -> None:
+        """``coll-task-07c``: the OWNER's wiring hook runs before subscribe and before registration.
+
+        The ordering is the requirement, not the invocation. ``ToolServerBootstrap`` builds the
+        pod's three-tier collection stack in this hook; if it ran after the call subject were bound
+        or after the registration manifest were published, a call could arrive at a pod whose own
+        collections were still unwired -- and the L2 accessors degrade an unopened bucket to a
+        WARNING, so that race would present as a dead cache rather than as an error.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-connected-cb",
+            namespace_collection=None,
+        )
+        server.register(StubTool())
+
+        order: list[str] = []
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock(side_effect=lambda **_: order.append("subscribe"))
+        mock_nc.publish = AsyncMock(side_effect=lambda **_: order.append("publish"))
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        seen: list[Any] = []
+
+        async def _hook(client: Any) -> None:
+            order.append("connected_callback")
+            seen.append(client)
+
+        server.add_connected_callback(_hook)
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        assert seen == [mock_nc], "the hook must receive the connection the pod actually opened"
+        assert order, "serve() did not reach the wiring phase"
+        assert order[0] == "connected_callback", order
+
+    @pytest.mark.asyncio
     async def test_serve_sends_registration_manifest(self) -> None:
         """serve publishes registration manifest on connect."""
         server = ToolServer(

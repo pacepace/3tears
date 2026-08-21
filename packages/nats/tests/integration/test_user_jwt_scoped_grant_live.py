@@ -47,8 +47,17 @@ import nats.js.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
-from threetears.nats.subject_permissions import JsResource, PrincipalPermissions
-from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
+from threetears.nats.subject_permissions import (
+    CROSS_PLATFORM_CACHE_INVALIDATE,
+    JsResource,
+    Principal,
+    PrincipalPermissions,
+    build_permissions,
+    inbox_prefix_for,
+    kv_key_scope_for,
+)
+from threetears.nats.subjects import get_default_namespace, set_default_namespace
+from threetears.nats.user_jwt import generate_account_seed, js_api_grants_for_stream, mint_user_jwt
 
 pytestmark = pytest.mark.integration
 
@@ -178,18 +187,35 @@ def _nats_with_auth(config_text: str, conf_dir: Path) -> Iterator[str]:
 
 
 @contextlib.asynccontextmanager
-async def _connect(uri: str, *, user: str, password: str, errors: list[str] | None = None) -> AsyncIterator:
-    """connect a raw nats client; route async permission-violation errors into ``errors``."""
+async def _connect(
+    uri: str,
+    *,
+    user: str,
+    password: str,
+    errors: list[str] | None = None,
+    inbox_prefix: str | None = None,
+) -> AsyncIterator:
+    """connect a raw nats client; route async permission-violation errors into ``errors``.
+
+    ``inbox_prefix`` must be the prefix the principal's own subscribe allow-list covers. A minted
+    pod credential carries only ``_INBOX_{principal}_{conn}.>``, so a client left on the global
+    ``_INBOX`` cannot subscribe its own reply inbox and every request fails for a reason that has
+    nothing to do with the grant under test.
+    """
 
     async def _err_cb(exc: Exception) -> None:
         if errors is not None:
             errors.append(str(exc))
 
+    if inbox_prefix is not None:
+        prefix = inbox_prefix.encode()
+    else:
+        prefix = b"_INBOX" if user == "admin" else _INBOX.encode()
     nc = await nats.connect(
         uri,
         user=user,
         password=password,
-        inbox_prefix=b"_INBOX" if user == "admin" else _INBOX.encode(),
+        inbox_prefix=prefix,
         error_cb=_err_cb,
         max_reconnect_attempts=0,
     )
@@ -389,3 +415,314 @@ async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope(tm
         async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
             admin_kv = await admin_nc.jetstream().key_value(_SHARED)
             assert (await admin_kv.get(b_key)).value == b"do-not-leak"
+
+
+# ---------------------------------------------------------------------------
+# coll-task-07c TP-07: a tool pod's keys are refused to every OTHER principal
+# ---------------------------------------------------------------------------
+#
+# The shard's whole security claim, run rather than read off the grant strings. Three credentials
+# against ONE shared bucket:
+#
+#   toolpod A -- the credential the auth callout MINTS for ``build_permissions(TOOL_POD, ...)``,
+#                which is what this shard changed;
+#   toolpod B -- a SECOND minted tool pod, a different ``tool_pods.id``, therefore a different key
+#                scope. this is the peer the shard exists to keep out;
+#   tool_server -- the STATIC NATS user, whose shape ``coll-task-05b`` fixed in the hub's conf:
+#                a coarse ``$KV.>`` / ``$JS.>`` publish allow plus a GENERATED deny that closes the
+#                collections bucket and its backing stream. it holds no keys of its own there, so
+#                the deny cannot strand its own data -- and it is the credential every tool pod's
+#                own compose/k8s manifest still provisions.
+#
+# Both the minted peer AND the static user must be refused, because they fail differently: a minted
+# peer is stopped by an ALLOW-list that does not name A's scope, and the static user is stopped by a
+# DENY that NATS evaluates after a ``$KV.>`` allow which would otherwise cover everything.
+
+_TP_NS = "tpprobe"
+_TP_BUCKET = f"{_TP_NS}-collections"
+_TP_STREAM = f"KV_{_TP_BUCKET}"
+_TP_POD_A = "01947100-0000-7000-8000-0000000000aa"
+_TP_POD_B = "01947100-0000-7000-8000-0000000000bb"
+_TP_A_PW = "toolpod-a-pw"  # noqa: S105 - ephemeral testcontainer credential
+_TP_B_PW = "toolpod-b-pw"  # noqa: S105 - ephemeral testcontainer credential
+_TP_STATIC_PW = "tool-server-pw"  # noqa: S105 - ephemeral testcontainer credential
+#: a SECOND bucket the static user is not denied, so "everything was refused" cannot be mistaken for
+#: a broken credential. Named like the bucket a tool pod's ``KVLease`` display claim really uses.
+_TP_OTHER_BUCKET = f"{_TP_NS}-leases"
+
+
+def _tool_pod_allow_lists(pod_id: str) -> tuple[list[str], list[str]]:
+    """the minted (pub, sub) allow-lists for one tool pod, straight from the resolver.
+
+    :param pod_id: the pod's ``tool_pods.id``
+    :ptype pod_id: str
+    :return: the JWT's publish allow-list and subscribe allow-list
+    :rtype: tuple[list[str], list[str]]
+    """
+    return _minted_allow_lists(build_permissions(Principal.TOOL_POD, pod_id=pod_id))
+
+
+def _static_tool_server_grants() -> tuple[list[str], list[str], list[str]]:
+    """the ``tool_server`` static user's shape: coarse allow, generated collections deny.
+
+    Reproduces what ``aibots.hub.security.static_nats_grants`` renders into ``nats.conf`` for a user
+    that holds NO keys in the shared bucket. The deny set is GENERATED from
+    :func:`threetears.nats.user_jwt.js_api_grants_for_stream` rather than hand-typed, for the reason
+    that function's own docstring gives: hand-deriving these shapes has failed twice, once on
+    whole-token wildcards and once by omitting ``$JS.API.STREAM.MSG.*.{stream}``, the six-token
+    terminal form that IS the body-carried read.
+
+    :return: the publish allow, the subscribe allow, and the publish deny
+    :rtype: tuple[list[str], list[str], list[str]]
+    """
+    app = [f"{_TP_NS}.>", "_INBOX.>", CROSS_PLATFORM_CACHE_INVALIDATE]
+    publish = [f"{_TP_NS}.>", "$JS.>", "$KV.>", "_INBOX.>", CROSS_PLATFORM_CACHE_INVALIDATE]
+    deny = [f"$KV.{_TP_BUCKET}.>", *js_api_grants_for_stream(_TP_STREAM)]
+    return publish, app, deny
+
+
+def _tool_pod_probe_config() -> str:
+    """a nats-server config carrying admin + the two minted pods + the static user.
+
+    :return: the nats-server configuration text
+    :rtype: str
+    """
+    a_pub, a_sub = _tool_pod_allow_lists(_TP_POD_A)
+    b_pub, b_sub = _tool_pod_allow_lists(_TP_POD_B)
+    s_pub, s_sub, s_deny = _static_tool_server_grants()
+    authorization = {
+        "users": [
+            {
+                "user": "admin",
+                "password": _ADMIN_PW,
+                "permissions": {"publish": ">", "subscribe": ">", "allow_responses": True},
+            },
+            {
+                "user": "toolpod_a",
+                "password": _TP_A_PW,
+                "permissions": {
+                    "publish": {"allow": a_pub},
+                    "subscribe": {"allow": a_sub},
+                    "allow_responses": True,
+                },
+            },
+            {
+                "user": "toolpod_b",
+                "password": _TP_B_PW,
+                "permissions": {
+                    "publish": {"allow": b_pub},
+                    "subscribe": {"allow": b_sub},
+                    "allow_responses": True,
+                },
+            },
+            {
+                "user": "tool_server",
+                "password": _TP_STATIC_PW,
+                "permissions": {
+                    "publish": {"allow": s_pub, "deny": s_deny},
+                    "subscribe": {"allow": s_sub},
+                    "allow_responses": True,
+                },
+            },
+        ]
+    }
+    return f"jetstream {{ store_dir: /tmp/js-store }}\nport: 4222\nauthorization {json.dumps(authorization)}\n"
+
+
+async def _violations_naming(nc_errors: list[str], since: int, needles: tuple[str, ...]) -> list[str]:
+    """let the async ``-ERR`` frames land, then return the permission violations they carried.
+
+    A refused JetStream request is never answered: the server drops the publish and emits an
+    asynchronous ``-ERR`` the caller is not reading, so the only synchronous evidence is the
+    caller's own deadline -- which is indistinguishable from an unreachable broker or a bucket
+    nobody created. Asserting the violation NAMES the subject is what tells those apart.
+
+    :param nc_errors: the connection's collected async error strings
+    :ptype nc_errors: list[str]
+    :param since: index into ``nc_errors`` marking the start of this probe run
+    :ptype since: int
+    :param needles: lowercase subject fragments each of which must appear in some violation
+    :ptype needles: tuple[str, ...]
+    :return: the permission violations recorded since ``since``
+    :rtype: list[str]
+    :raises AssertionError: if any needle names no violation
+    """
+    await asyncio.sleep(0.4)
+    violations = [e for e in nc_errors[since:] if "permissions violation" in e.lower()]
+    for needle in needles:
+        assert any(needle in e.lower() for e in violations), (needle, violations)
+    return violations
+
+
+async def test_a_tool_pods_keys_are_refused_to_every_other_principal(tmp_path: Path) -> None:
+    """TP-07, live: the tool pod caches, and it caches SAFELY.
+
+    Both halves, and the second is not optional: a grant that refused everything would pass the
+    refusal half on its own and brick every tool pod on the platform. So principal A's own scope
+    must genuinely read and write, and the static user must genuinely reach a bucket it is not
+    denied, before either refusal means anything.
+    """
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    previous_namespace = get_default_namespace()
+    set_default_namespace(_TP_NS)
+    try:
+        a_scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=_TP_POD_A)
+        b_scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=_TP_POD_B)
+        a_key = f"{a_scope}.widgets.e1"
+        b_key = f"{b_scope}.widgets.e1"
+        a_pub, _ = _tool_pod_allow_lists(_TP_POD_A)
+        config = _tool_pod_probe_config()
+    finally:
+        set_default_namespace(previous_namespace)
+
+    # sanity on the credential itself, before the broker ever sees it
+    assert a_scope != b_scope
+    assert f"$KV.{_TP_BUCKET}.{a_scope}.>" in a_pub
+    assert f"$KV.{_TP_BUCKET}.>" not in a_pub
+    assert f"$JS.API.DIRECT.GET.{_TP_STREAM}.$KV.{_TP_BUCKET}.{a_scope}.>" in a_pub
+    assert f"$JS.API.STREAM.CREATE.{_TP_STREAM}" not in a_pub, "a pod must never hold the declare verbs"
+    assert f"$JS.API.STREAM.UPDATE.{_TP_STREAM}" not in a_pub, "UPDATE is a read-all primitive here"
+
+    a_inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=_TP_POD_A)
+    b_inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=_TP_POD_B)
+
+    with _nats_with_auth(config, tmp_path) as uri:
+        # --- admin declares the shared bucket with allow_direct and seeds BOTH pods' keys --------
+        async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
+            admin_js = admin_nc.jetstream()
+            shared = await admin_js.create_key_value(bucket=_TP_BUCKET, direct=True)
+            await shared.put(a_key, b"pod-a-owns-this")
+            await shared.put(b_key, b"pod-b-owns-this")
+            await admin_js.create_key_value(bucket=_TP_OTHER_BUCKET)
+            info = await admin_js.stream_info(_TP_STREAM)
+            # THE PREMISE, asserted first. With allow_direct false, nats-py reads a key by putting
+            # it in the BODY of $JS.API.STREAM.MSG.GET, where no subject permission can see it, and
+            # every refusal below would be vacuous.
+            assert info.config.allow_direct is True
+
+        # === TOOL POD A: its own scope genuinely works ==========================================
+        a_errors: list[str] = []
+        async with _connect(uri, user="toolpod_a", password=_TP_A_PW, errors=a_errors, inbox_prefix=a_inbox) as a_nc:
+            a_js = a_nc.jetstream(timeout=4)
+            await a_js.account_info()
+            a_kv = await a_js.key_value(_TP_BUCKET)  # bind: $JS.API.STREAM.INFO
+            assert (await a_kv.get(a_key)).value == b"pod-a-owns-this"
+            assert await a_kv.put(f"{a_scope}.widgets.e2", b"written-by-a") > 0
+            assert (await a_kv.get(f"{a_scope}.widgets.e2")).value == b"written-by-a"
+            assert not [e for e in a_errors if "permissions violation" in e.lower()], a_errors
+
+        # === TOOL POD B: a MINTED peer, refused on every route to A's key =======================
+        b_errors: list[str] = []
+        async with _connect(uri, user="toolpod_b", password=_TP_B_PW, errors=b_errors, inbox_prefix=b_inbox) as b_nc:
+            b_js = b_nc.jetstream(timeout=4)
+            await b_js.account_info()
+            b_kv = await b_js.key_value(_TP_BUCKET)
+            # its OWN key works -- so a refusal below is the SCOPE, not a broken credential
+            assert (await b_kv.get(b_key)).value == b"pod-b-owns-this"
+
+            before = len(b_errors)
+            # 1. the direct read, on the literal subject nats-py builds for A's key
+            await _refused(b_nc, f"$JS.API.DIRECT.GET.{_TP_STREAM}.$KV.{_TP_BUCKET}.{a_key}")
+            # 2. the body-carried read: the key never appears in the subject at all
+            await _refused(
+                b_nc,
+                f"$JS.API.STREAM.MSG.GET.{_TP_STREAM}",
+                body=json.dumps({"last_by_subj": f"$KV.{_TP_BUCKET}.{a_key}"}).encode(),
+            )
+            # 3. a consumer filtered on the WHOLE bucket, delivered to B's own inbox
+            await _refused(
+                b_nc,
+                f"$JS.API.CONSUMER.CREATE.{_TP_STREAM}",
+                body=json.dumps(
+                    {
+                        "stream_name": _TP_STREAM,
+                        "config": {
+                            "filter_subject": f"$KV.{_TP_BUCKET}.>",
+                            "deliver_subject": f"{b_inbox}.spy",
+                        },
+                    }
+                ).encode(),
+            )
+            # 4-6. the verb sits at token 4, so a ``STREAM.*`` wildcard would have covered all three
+            await _refused(b_nc, f"$JS.API.STREAM.PURGE.{_TP_STREAM}")
+            await _refused(b_nc, f"$JS.API.STREAM.SNAPSHOT.{_TP_STREAM}")
+            await _refused(b_nc, f"$JS.API.STREAM.UPDATE.{_TP_STREAM}")
+            # 7. the data plane: overwriting A's key
+            await _refused(b_nc, f"$KV.{_TP_BUCKET}.{a_key}", body=b"overwritten-by-b")
+
+            peer_violations = await _violations_naming(
+                b_errors,
+                before,
+                (
+                    f"$js.api.direct.get.{_TP_STREAM}".lower(),
+                    f"$js.api.stream.msg.get.{_TP_STREAM}".lower(),
+                    f"$js.api.consumer.create.{_TP_STREAM}".lower(),
+                    f"$js.api.stream.purge.{_TP_STREAM}".lower(),
+                    f"$js.api.stream.snapshot.{_TP_STREAM}".lower(),
+                    f"$js.api.stream.update.{_TP_STREAM}".lower(),
+                    f"$kv.{_TP_BUCKET}.{a_scope}".lower(),
+                ),
+            )
+            assert len(peer_violations) >= 7, peer_violations
+            # a permissions violation does not close the connection -- which is exactly why the
+            # failure is so quiet -- so B must be unharmed by having been refused seven times.
+            assert (await b_kv.get(b_key)).value == b"pod-b-owns-this"
+
+        # === THE STATIC USER: refused by a DENY layered under a coarse $KV.> allow ===============
+        s_errors: list[str] = []
+        async with _connect(
+            uri, user="tool_server", password=_TP_STATIC_PW, errors=s_errors, inbox_prefix="_INBOX"
+        ) as s_nc:
+            s_js = s_nc.jetstream(timeout=4)
+            await s_js.account_info()
+            # NOT VACUOUS: the credential works on a bucket it is not denied. Without this, every
+            # refusal below is equally explained by a connection that can do nothing at all.
+            other_kv = await s_js.key_value(_TP_OTHER_BUCKET)
+            assert await other_kv.put("claim", b"held") > 0
+            assert not [e for e in s_errors if "permissions violation" in e.lower()], s_errors
+
+            before = len(s_errors)
+            # the deny closes the control plane, so it cannot even BIND the collections bucket
+            await _refused(s_nc, f"$JS.API.STREAM.INFO.{_TP_STREAM}")
+            await _refused(s_nc, f"$JS.API.DIRECT.GET.{_TP_STREAM}.$KV.{_TP_BUCKET}.{a_key}")
+            await _refused(
+                s_nc,
+                f"$JS.API.STREAM.MSG.GET.{_TP_STREAM}",
+                body=json.dumps({"last_by_subj": f"$KV.{_TP_BUCKET}.{a_key}"}).encode(),
+            )
+            await _refused(
+                s_nc,
+                f"$JS.API.CONSUMER.CREATE.{_TP_STREAM}",
+                body=json.dumps(
+                    {
+                        "stream_name": _TP_STREAM,
+                        "config": {
+                            "filter_subject": f"$KV.{_TP_BUCKET}.>",
+                            "deliver_subject": "_INBOX.spy",
+                        },
+                    }
+                ).encode(),
+            )
+            # and the data plane, which the coarse ``$KV.>`` allow would otherwise have covered
+            await _refused(s_nc, f"$KV.{_TP_BUCKET}.{a_key}", body=b"overwritten-by-static")
+
+            static_violations = await _violations_naming(
+                s_errors,
+                before,
+                (
+                    f"$js.api.stream.info.{_TP_STREAM}".lower(),
+                    f"$js.api.direct.get.{_TP_STREAM}".lower(),
+                    f"$js.api.stream.msg.get.{_TP_STREAM}".lower(),
+                    f"$js.api.consumer.create.{_TP_STREAM}".lower(),
+                    f"$kv.{_TP_BUCKET}.{a_scope}".lower(),
+                ),
+            )
+            assert len(static_violations) >= 5, static_violations
+
+        # === A's data is exactly as A left it ===================================================
+        async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
+            admin_kv = await admin_nc.jetstream().key_value(_TP_BUCKET)
+            assert (await admin_kv.get(a_key)).value == b"pod-a-owns-this"
+            assert (await admin_kv.get(f"{a_scope}.widgets.e2")).value == b"written-by-a"

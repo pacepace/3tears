@@ -16,7 +16,12 @@ import signal
 from collections.abc import Awaitable, Callable
 
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.bucket import (
+    COLLECTIONS_BUCKET_SUFFIX as _COLLECTIONS_BUCKET_SUFFIX,
+)
+from threetears.core.collections.bucket import (
+    bind_collections_bucket,
+)
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
@@ -33,7 +38,6 @@ from threetears.nats import (
     Subjects,
     kv_key_scope_for,
 )
-from threetears.nats.errors import KvError
 from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
@@ -68,21 +72,12 @@ _logger = get_logger(__name__)
 # window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
 _POP_NONCE_TTL_SECONDS = 120
 
-#: the shared L2 bucket every ``BaseCollection`` in every process opens. taken from the
-#: collection base rather than spelled again here: the name is a wire fact shared by the hub's
-#: canonical declaration, this process's eager bind, and the minted grant, and a second literal
-#: would be a second source of truth for it.
-COLLECTIONS_BUCKET_SUFFIX: str = BaseCollection.L2_BUCKET_SUFFIX
-
-#: how many times the eager collections-bucket BIND is retried before the process gives up.
-#: sized against the cold-cluster race it exists for: the hub declares the bucket in its own
-#: lifespan and nothing sequences this process behind it, so the first bind can precede the
-#: declaration by however long hub startup takes. the schedule below tops out at 30s, so 20
-#: attempts span several minutes -- long enough for a hub doing migrations, short enough that a
-#: genuinely missing grant is reported rather than hung on forever.
-_COLLECTIONS_BIND_ATTEMPTS = 20
-_COLLECTIONS_BIND_BACKOFF_SECONDS = 2.0
-_COLLECTIONS_BIND_MAX_BACKOFF_SECONDS = 30.0
+#: the shared L2 bucket every ``BaseCollection`` in every process opens. re-exported from
+#: :mod:`threetears.core.collections.bucket`, which takes it from the collection base rather than
+#: spelling it again: the name is a wire fact shared by the hub's canonical declaration, this
+#: process's eager bind, and the minted grant, and a second literal would be a second source of
+#: truth for it.
+COLLECTIONS_BUCKET_SUFFIX: str = _COLLECTIONS_BUCKET_SUFFIX
 
 
 def build_heartbeat_collection_registry(
@@ -378,25 +373,11 @@ class RegistryServer:
           life of that process. Opening here, before either registry is configured, is what
           makes the two registries' view of the bucket the same one.
 
-        BINDS rather than declares (``create_if_missing=False``): the hub owns this bucket's
-        canonical configuration and the registry's minted grant carries ``STREAM.INFO`` on it
-        with no ``CREATE``. A refused create is never answered, so the declaring path would cost
-        a JetStream deadline at every startup and then bind anyway -- and would skip the
-        ``allow_direct`` comparison the bind path performs.
-
-        **Two failures, told apart, and neither is handled the way the sibling bootstraps here
-        are.** :func:`retry_with_backoff` NEVER raises, so wrapping this in it would downgrade a
-        ``KvConfigMismatch`` to one log line and carry the process on into exactly the
-        silently-broken state the raise exists to prevent. So:
-
-        - ``KvConfigMismatch`` -- the live bucket carries a configuration this process refuses.
-          Retrying cannot clear it, so it propagates on the FIRST attempt and the process dies.
-        - ``KvError`` -- the bind itself failed, and the dominant cause on a cold cluster is that
-          the declaring identity has not run yet: the hub declares this bucket in its own
-          lifespan, and nothing sequences the registry behind it. That IS transient, and the
-          compose service is ``restart: on-failure:5`` -- a bounded budget a fast crash-loop
-          burns through in seconds, leaving the registry down for good. So it is retried with
-          bounded exponential backoff, and raised once the budget is spent.
+        The BIND-not-declare choice, and the two failure classes it distinguishes, belong to
+        :func:`threetears.core.collections.bucket.bind_collections_bucket` -- promoted there by
+        ``coll-task-07c`` so a tool pod's bootstrap does not become a third hand-written copy of a
+        security-relevant startup step. This method stays as the registry's named entry point:
+        ``serve()`` calls it, and tests drive it without standing up the serve loop.
 
         :param nc: connected canonical NATS wrapper client
         :ptype nc: NatsClient
@@ -406,39 +387,7 @@ class RegistryServer:
             exist (nothing has declared it) or this principal is not granted it
         :raises KvConfigMismatch: the live bucket carries a configuration this process refuses
         """
-        backoff = _COLLECTIONS_BIND_BACKOFF_SECONDS
-        failure: KvError | None = None
-        for attempt in range(1, _COLLECTIONS_BIND_ATTEMPTS + 1):
-            try:
-                await nc.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX, create_if_missing=False)
-                failure = None
-                break
-            except KvError as exc:
-                failure = exc
-                if attempt == _COLLECTIONS_BIND_ATTEMPTS:
-                    break
-                _logger.warning(
-                    "collections KV bucket not bindable yet, retrying: bucket=%s attempt=%d/%d retry_in=%.1fs: %s",
-                    COLLECTIONS_BUCKET_SUFFIX,
-                    attempt,
-                    _COLLECTIONS_BIND_ATTEMPTS,
-                    backoff,
-                    exc,
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _COLLECTIONS_BIND_MAX_BACKOFF_SECONDS)
-        if failure is not None:
-            raise KvError(
-                f"collections KV bucket {COLLECTIONS_BUCKET_SUFFIX!r} could not be bound after "
-                f"{_COLLECTIONS_BIND_ATTEMPTS} attempts. this process BINDS the bucket and never "
-                f"declares it, so either the declaring identity (the hub, in its lifespan) has not "
-                f"run, or this principal's NATS grant does not cover the bucket. last error: "
-                f"{failure}"
-            ) from failure
-        _logger.info(
-            "collections KV bucket bound",
-            extra={"extra_data": {"bucket": COLLECTIONS_BUCKET_SUFFIX, "create_if_missing": False}},
-        )
+        await bind_collections_bucket(nc)
 
     async def apply_rbac_factory(
         self,

@@ -145,11 +145,16 @@ lifecycle — it was written to end three drifted copies of start/stop scaffoldi
 and already wires the health surface, which is where TP-04's listener start/stop
 belongs. `ToolServer` is the MCP request handler and owns no cache concern.
 
-**Dependency:** add `3tears-agent-acl[bus]` to `packages/agent/tools`. No cycle —
-acl does not depend on tools. The extra pulls `3tears-nats[client]`, which tools
-already has, so the only genuinely new package is acl itself. The extra is
-required because `AclInvalidationSubscriber` degrades to plain `object` without
-it.
+**Dependency: `3tears-agent-acl[bus]` was NOT added, and the shard was wrong to
+ask for it.** The reasoning it gives — "`AclInvalidationSubscriber` degrades to
+plain `object` without the extra" — is about the ACL invalidation bus
+(`{ns}.acl.invalidate.*`), which is an RBAC-cache concern belonging to the
+registry, the SDK and the hub. A tool pod's collection stack touches none of it:
+`CollectionRegistry.start_invalidation_listener` lives in `threetears.core` and
+subscribes the cross-platform `threetears.cache.invalidate` subject, so nothing
+in this landing imports `threetears.agent.acl` at all. Declaring it anyway would
+have been a stale dependency, and `tests/enforcement/test_dependency_alignment.py`
+(declared deps must match actual imports) would have failed the build for it.
 
 **This would be the third stack builder** (`build_three_tier_stack`,
 `build_registry_rbac_stack`). `coll-task-07a` consolidates only the ACL-subscriber
@@ -161,7 +166,7 @@ half. State the intended end state in the PR rather than leaving three.
 
 - `packages/nats/src/threetears/nats/subject_permissions.py` — `_tool_pod`'s buckets, scope and invalidation grant.
 - `packages/agent/tools/src/threetears/agent/tools/bootstrap.py` — the collection-stack builder and the listener start/stop.
-- `packages/agent/tools/pyproject.toml` — the `3tears-agent-acl[bus]` dependency.
+- ~~`packages/agent/tools/pyproject.toml` — the `3tears-agent-acl[bus]` dependency.~~ **Not needed; see above.**
 - `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py` — the refusal probe for TP-06.
 
 
@@ -191,12 +196,20 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
 
 ## Success criteria
 
-- [ ] `_tool_pod` grants the scoped collections bucket and the recorded invalidation grant
-- [ ] Two pods with different `tool_pods.id` produce disjoint keys; two replicas of one produce identical ones
-- [ ] The pod constructs no `SQLiteBackend`; `test_no_bespoke_reuse.py` passes with no new exemption
-- [ ] The acl dependency is declared
-- [ ] TP-02's decision is written into the ledger's Part 4
-- [ ] `./scripts/check-all.sh` and `./scripts/test-integration.sh` green
+- [x] `_tool_pod` grants the scoped collections bucket and the recorded invalidation grant —
+      `JsResource.kv(f"{ns}-collections", scope=kv_key_scope_for(TOOL_POD, pod_id=p), writable=True)`,
+      plus `CROSS_PLATFORM_CACHE_INVALIDATE` on BOTH directions
+- [x] Two pods with different `tool_pods.id` produce disjoint keys; two replicas of one produce
+      identical ones — `TestTheToolPodHoldsTheSharedBucket` (grant side) and
+      `TestTheStackIsScopedToTheToolPodId` (key side)
+- [x] The pod constructs no `SQLiteBackend`; the sanctioned factory is
+      `threetears.agent.tools.l1_cache.create_tool_pod_l1_backend`, declared in
+      `test_cache_primitive_usage.py`'s `allowed_sqlite_construction_sites`. **Read the caveat
+      below** — that walker's root discovery does not currently reach `packages/agent/*`
+- [x] ~~The acl dependency is declared~~ — WITHDRAWN on evidence; see "The stack builder"
+- [x] TP-02's decision is written into the ledger's Part 4 — it already was, verbatim
+- [x] `./scripts/check-all.sh` (16030 passed, 3 skipped, 412 deselected; 139 sidecar) and
+      `./scripts/test-integration.sh` (393 passed, 19 skipped) green
 
 ---
 
@@ -212,3 +225,75 @@ Step 8 and `docs/DEPLOYMENT.md` §11b; both defer to the standalone runbook in t
 
 Step 4 is TP-07, and it is what proves the sequence did its job. Without it this shard has shown
 only that a tool pod can cache, not that it can cache safely.
+
+**Steps 1-3 and 5 are NOT run.** They need a live cluster, and the hub cannot boot until the whole
+`-03`-onward block lands together (`coll-task-06a` and `-04a` record the same gap for the same
+reason). Step 4 IS run — see below.
+
+---
+
+## What landed differently from the shard
+
+- **TP-07 is met by `test_a_tool_pods_keys_are_refused_to_every_other_principal`**, in
+  `packages/nats/tests/integration/test_user_jwt_scoped_grant_live.py`, against a real
+  `nats-server` testcontainer. THREE credentials on one shared bucket, because the two refusals
+  fail differently: a MINTED peer tool pod (a second `tool_pods.id`) is stopped by an allow-list
+  that never names A's scope, while the STATIC `tool_server` user is stopped by a generated DENY
+  layered under a coarse `$KV.>` allow that would otherwise cover everything. The `allow_direct`
+  premise is asserted before either — with it false, every refusal would be vacuous — and both
+  admit-halves are asserted too: A reads and writes its own scope, and the static user reaches a
+  bucket it is not denied, so "everything was refused" cannot be mistaken for a broken credential.
+  The static user's deny set is GENERATED from `js_api_grants_for_stream`, never hand-typed.
+
+- **A non-uuid tool-pod id can no longer be granted at all**, which is a behaviour change the shard
+  did not name. `coll-task-05a` landed GRANT-10 at the resolver and recorded that "a tool pod is
+  unaffected until `coll-task-07c` gives it the bucket"; giving it the bucket makes `_tool_pod`
+  derive a scope, and `kv_key_scope_for` refuses anything non-uuid. Two live integration modules
+  were carrying slug pod ids (`pod-alpha`, `pod-A`) and now carry uuids.
+
+- **The eager bind was PROMOTED, not copied.** `coll-task-06a` put a bounded-retry
+  `ensure_kv_bucket` loop in `RegistryServer.open_collections_bucket`; the hub carries a third copy
+  in `hub/common/collections_bucket.py`. Rather than write a fourth, the loop moved to
+  `threetears.core.collections.bucket.bind_collections_bucket` and the registry server now
+  delegates to it. It lives in `core` rather than `nats` because the bucket NAME is
+  `BaseCollection.L2_BUCKET_SUFFIX`, and `nats` may not depend on `core`. **The hub's copy is still
+  its own** — a hub edit this shard may not make.
+
+- **`ToolServer` gained one narrow lifecycle seam, `add_connected_callback`.** The bootstrap owns
+  the stack (as the shard requires) but cannot build it without the connection, and `ToolServer`
+  opens that connection inside `serve()` and deliberately does not expose the client. Injecting a
+  pre-connected client instead would have flipped `_owns_nats_connection` and silently disabled the
+  pod's proactive NATS-JWT re-auth loop. The hook runs after connect and BEFORE the call-subject
+  subscribe and the registration publish, so a pod is never discoverable with its collections
+  unwired; that ordering is pinned by
+  `test_connected_callbacks_run_before_the_pod_is_reachable`.
+
+- **A new enforcement gate, `tests/enforcement/test_eager_collections_bucket_open.py`**
+  (`EAGER_BUCKET_OPEN_ENFORCEMENT_MODE`, default `strict`;
+  `_eager_bucket_open_exemptions.txt`). Nothing statically required KVC-05 of the NEXT process to
+  wire an L2 registry, and the omission is silent in both directions. The rule: a module that binds
+  the registry-default L2 client must also name an eager opener.
+
+- **A real blind spot in the shared enforcement helper, found and NOT fixed here.**
+  `threetears.enforcement.common.find_local_src_roots` walks `packages/*/src` only, so on this repo
+  it silently returns nothing for the ten nested `packages/agent/*` packages — including
+  `agent/tools`, where this shard's code lives. Every walker built on it (`test_kv_grant_capability`,
+  `test_l2_scope_wiring`, `test_cache_primitive_usage`, `test_no_bespoke_reuse`,
+  `test_underscore_access`, …) has been reporting a clean tree over a third of the repository.
+  Widening it was implemented and reverted: it immediately surfaced **10 genuine violations** in
+  five packages (8 `cache.missing_collection` for `identity_versions`, `intentions`,
+  `memory_consolidations`, `agent_skills`, `agent_skill_invocations`, `agent_wake_schedules`,
+  `wake_fires`, `webhook_subscriptions`; 1 `cache.pool_access` on `memory_chunks` in
+  `agent/memory/tools.py`; 4 `underscore_access.E` in `agent/wake`) plus two stale fixtures in
+  `packages/enforcement/tests/common/test_repo_layout.py`. That is a landing with its own review,
+  not a side effect of a grant shard. **This shard's own gate composes the nested roots itself**
+  (`_scan_roots`, with the reasoning in its docstring) so it is not blind to the module it exists
+  for, and `test_the_rule_is_not_vacuous` names `packages/agent/tools/.../bootstrap.py` explicitly
+  so the gate cannot silently stop covering it. The tool-pod L1 factory is declared in
+  `allowed_sqlite_construction_sites` anyway, so closing the blind spot will not turn a correct
+  factory into a violation.
+
+- **TP-06 vs TP-07 numbering.** The shard's requirements table has seven rows: TP-06 is the eager
+  bucket open and TP-07 is the refusal probe. Its "Files to Modify" section calls the probe
+  "the refusal probe for TP-06". Both requirements are met; the table's numbering is the one used
+  here.

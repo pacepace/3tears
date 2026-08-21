@@ -746,6 +746,7 @@ class TestScopedCollectionsGrant:
         "principal",
         [
             Principal.AGENT_POD,
+            Principal.TOOL_POD,
             Principal.REGISTRY,
             Principal.HUB,
             Principal.GATEWAY,
@@ -809,15 +810,14 @@ class TestScopedCollectionsGrant:
         pod that cannot produce one gets no permission set -- fail closed -- rather than a grant
         narrowed to a scope it will never write.
 
-        The agent pod is the only POD principal this reaches today, and the asymmetry is stated
-        rather than hidden: a tool pod holds no collections grant until ``coll-task-07c`` gives it
-        one, so it derives no scope and its id is still unconstrained here. ``kv_key_scope_for``
-        already refuses a non-uuid ``pod_id`` on its own, so that shard inherits the same fence the
-        moment it adds the bucket.
+        BOTH pod principals reach this now. The agent pod was the only one while a tool pod held no
+        collections grant; ``coll-task-07c`` gives it one, so it derives a scope and inherits the
+        same fence -- exactly as the note that used to stand here predicted.
         """
         with pytest.raises(ValueError, match="uuid"):
             build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id=_POD_A)
-        assert _COLLECTIONS not in kv_bucket_names(build_permissions(Principal.TOOL_POD, pod_id="pod-A"))
+        with pytest.raises(ValueError, match="uuid"):
+            build_permissions(Principal.TOOL_POD, pod_id="pod-A")
         with pytest.raises(ValueError, match="uuid"):
             kv_key_scope_for(Principal.TOOL_POD, pod_id="pod-A")
 
@@ -837,6 +837,72 @@ class TestScopedCollectionsGrant:
         two = build_permissions(Principal.AGENT_POD, agent_id=_AGENT_1, pod_id=_POD_2)
         scopes = [[r.scope for r in perm.js_resources if r.name == _COLLECTIONS][0] for perm in (one, two)]
         assert scopes[0] == scopes[1]
+
+
+class TestTheToolPodHoldsTheSharedBucket:
+    """``coll-task-07c``: a tool pod runs an L1+L2 collection, so it needs the bucket and the bus.
+
+    Two grants, and neither is a detail. The bucket is scoped to ``tool_pods.id`` -- the pod's
+    registry primary key, which is already its authenticated ``claims.sub``, configured once per
+    deployment and therefore shared by every replica. A namespace-derived scope was designed and
+    rejected: ``tool_namespace_id`` mints one row PER TOOL, is a pure function of manifest values
+    the pod itself sends, is deliberately collision-inducing across pods, and no such row exists at
+    connect time.
+
+    The invalidation subject is the GLOBAL, deliberately un-namespaced one, and the exposure that
+    buys (a cross-customer metadata firehose of table names + entity ids, and a fleet-wide eviction
+    primitive whose ``origin`` is self-asserted) is RECORDED AS ACCEPTED for this landing rather
+    than closed here -- ``origin`` authentication is a wire-protocol change across three repos and
+    belongs to ``coll-task-08-invalidation-origin-auth``.
+    """
+
+    def _collections(self, pod_id: str) -> object:
+        resources = [
+            r for r in build_permissions(Principal.TOOL_POD, pod_id=pod_id).js_resources if r.name == _COLLECTIONS
+        ]
+        assert len(resources) == 1, f"tool pod declares {len(resources)} collections resources"
+        return resources[0]
+
+    def test_it_declares_the_collections_bucket_scoped_to_its_pod_id(self) -> None:
+        resource = self._collections(_POD_1)
+        assert resource.scope == kv_key_scope_for(Principal.TOOL_POD, pod_id=_POD_1)  # type: ignore[attr-defined]
+        assert resource.capability is JsCapability.KV_SCOPED  # type: ignore[attr-defined]
+
+    def test_the_bucket_is_writable_and_the_read_rides_the_scoped_direct_get(self) -> None:
+        """TP-01: ``$KV.`` is PUBLISH authority only; the read is the scoped ``DIRECT.GET`` tail.
+
+        Nothing in nats-py ever SUBSCRIBES a ``$KV.`` subject, so a subscribe grant there confers
+        no read and hands the holder every write's full value.
+        """
+        assert self._collections(_POD_1).writable is True  # type: ignore[attr-defined]
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert not [s for s in perm.subscribe if s.startswith("$KV")], perm.subscribe
+
+    def test_two_tool_pods_never_share_a_scope(self) -> None:
+        """TP-03, the isolation half."""
+        assert self._collections(_POD_A).scope != self._collections(_POD_B).scope  # type: ignore[attr-defined]
+
+    def test_replicas_of_one_tool_pod_share_one_scope(self) -> None:
+        """TP-03, the sharing half: the scope is the sharing boundary, not the connection.
+
+        ``tool_pods.id`` is configured once per DEPLOYMENT, so two connections presenting it are
+        two replicas of one pod and must land on one scope -- otherwise L2 stops being a cross-pod
+        cache at all. A different ``conn_id`` must not move the scope.
+        """
+        one = self._collections(_POD_1)
+        two = [
+            r
+            for r in build_permissions(Principal.TOOL_POD, pod_id=_POD_1, conn_id="a-second-replica").js_resources
+            if r.name == _COLLECTIONS
+        ][0]
+        assert one.scope == two.scope  # type: ignore[attr-defined]
+
+    def test_it_holds_the_global_invalidation_subject_on_both_directions(self) -> None:
+        """TP-02. Without the publish it cannot announce a write; without the subscribe it never
+        learns of one, and its L1 serves a value another replica has already replaced."""
+        perm = build_permissions(Principal.TOOL_POD, pod_id=_POD_1)
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in perm.publish
+        assert CROSS_PLATFORM_CACHE_INVALIDATE in perm.subscribe
 
 
 class TestDirectlyBoundBuckets:

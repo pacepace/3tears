@@ -38,6 +38,19 @@ _CONFIG = CacheEnforcementConfig(
             # share one process-owned SQLiteBackend built here and wired into the
             # registry as the default L1 tier.
             "packages/channels/src/threetears/channels/presence/l1_cache.py",
+            # coll-task-07c: the tool pod's L1 tier, same per-process factory shape.
+            # It exists precisely SO a tool pod constructs no backend of its own — a
+            # pod may live in a partner-operated fourth repository this allowlist
+            # cannot see at all, so the builder makes the question moot instead of
+            # leaving it to a per-repo exemption nobody there can write.
+            #
+            # NOTE: this walker's root discovery (``find_local_src_roots``) walks
+            # ``packages/*/src`` only, so it does not currently reach the nested
+            # ``packages/agent/*`` tree this file lives in. The entry is declared
+            # anyway — the sanctioned site must already be named for the day the
+            # blind spot is closed, or closing it turns a correct factory into a
+            # violation.
+            "packages/agent/tools/src/threetears/agent/tools/l1_cache.py",
         }
     ),
     collection_table_allowlist={

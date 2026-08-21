@@ -50,7 +50,11 @@ from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 pytestmark = pytest.mark.integration
 
 _NS = "fwdgrant"
-_POD_ID = "pod-alpha"
+# a uuid, and that is a CONTRACT rather than a test convenience: ``coll-task-07c`` gives a tool pod
+# the scoped collections bucket, and the scope is derived from ``tool_pods.id`` by
+# ``kv_key_scope_for``, which refuses anything non-uuid because a boundary derived from a display
+# name is not provably collision-free. A slug pod id can no longer be granted at all.
+_POD_ID = "01947100-0000-7000-8000-0000000000a1"
 _HUB_CONN = "hub-1"
 
 #: the tool this pod's ``allowed_namespaces`` row authorizes it to serve.

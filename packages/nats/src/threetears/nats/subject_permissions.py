@@ -734,6 +734,15 @@ def _tool_pod(
 ) -> PrincipalPermissions:
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
+    # derived from ``tool_pods.id`` -- the pod's registry primary key, which ``_resolve_tool_pod``
+    # pins from the VERIFIED key id as ``claims.sub`` rather than reading off the connect name. it
+    # is configured once per DEPLOYMENT, so every replica of one pod resolves to one scope and L2
+    # stays a cross-pod cache; ``conn_id`` is deliberately not an input, because a per-connection
+    # scope orphans the cache on every reauth. a namespace-derived scope was designed and rejected:
+    # ``tool_namespace_id`` mints one row PER TOOL, is a pure function of manifest values the pod
+    # itself sends, is deliberately collision-inducing across pods by its own docstring, and no such
+    # row exists at connect. this needs NO new plumbing -- it is already in the claims.
+    scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=p)
     ns = _ns()
     # human-in-the-loop session control plane: while a pod holds a display's claim it serves the
     # owner-routed session messages (open/complete a tab, read state, close the session) forwarded
@@ -784,12 +793,26 @@ def _tool_pod(
         # into any other pod's in-flight call.
         str(Subjects.tools_result_pod_wildcard(p)),
         _deadletter(ns),
+        # THE GLOBAL, DELIBERATELY UN-NAMESPACED INVALIDATION SUBJECT, and granting it is a
+        # DECISION rather than a detail -- ``coll-task-07c`` TP-02. A tool pod that holds an L2
+        # collection must announce its own writes or every peer replica serves a value it has
+        # already replaced. What the grant also confers, recorded as ACCEPTED for this landing
+        # rather than left for someone to discover: a cross-customer metadata firehose (every
+        # table name and entity id written by every agent, hub replica, gateway and adapter ride
+        # this one subject), and a fleet-wide L1 eviction primitive, because ``_on_invalidation``
+        # filters only on a SELF-ASSERTED ``origin``. The static NATS users already hold this
+        # subject unprefixed, so a tool pod is not the widest holder and scoping it alone would buy
+        # little. ``origin`` minted from the authenticated principal, and any move to a scoped
+        # subject, are publisher-side wire-protocol changes across three repos and belong to
+        # ``coll-task-08-invalidation-origin-auth``.
+        CROSS_PLATFORM_CACHE_INVALIDATE,
         *pipe_down,  # own authorized tools' streams, own pod id, own half only
     )
     subscribe = (
         f"{inbox}.>",
         str(Subjects.tools_internal(p)),  # own pod's proxied calls only
         str(Subjects.tools_probe(p)),  # own pod's liveness probes only
+        CROSS_PLATFORM_CACHE_INVALIDATE,  # learns of a peer replica's write; see the publish half
         *hitl_sessions,  # own authorized tools' session control plane only
         *pipe_up,  # own authorized tools' streams, own pod id, caller's half only
     )
@@ -817,10 +840,23 @@ def _tool_pod(
             # core publish so a CONSUMER-side reconnect cannot lose an answer that took twenty
             # minutes to compute -- fixing only the publisher's half would relocate the loss.
             JsResource.stream(result_stream_name()),
-            # NOT the collections bucket. A tool pod holds no L2 collection today, and granting it
-            # one is ``coll-task-07c``'s work, not a side effect of narrowing the grant shape. The
-            # scope it WOULD use is already derivable --
-            # ``kv_key_scope_for(Principal.TOOL_POD, pod_id=p)`` -- so that shard is one line here.
+            # THE SCOPED BUCKET (``coll-task-07c`` TP-01). A tool pod builds an L1+L2
+            # ``BaseCollection`` stack through ``ToolServerBootstrap``, and every key it writes is
+            # ``{scope}.{table}.{body}`` -- so this is the one resource on which a per-principal
+            # grant is expressible at all.
+            #
+            # WRITABLE is the ``$KV.`` PUBLISH half only. A KV read is a ``$JS.API`` request, never
+            # a ``$KV.`` subscribe, so the read authority is the scoped
+            # ``$JS.API.DIRECT.GET.KV_{b}.$KV.{b}.{scope}.>`` tail that ``KV_SCOPED`` emits, and
+            # ``$KV.`` appears in no subscribe allow-list anywhere.
+            #
+            # NEVER ``declare``: on this SHARED stream ``STREAM.UPDATE`` is a read-all primitive
+            # (``republish`` / ``sources`` mirror every principal's keys onto a subject the caller
+            # names). The pod BINDS the bucket the hub declared --
+            # ``build_tool_pod_collection_stack`` passes ``create_if_missing=False`` for exactly
+            # that reason, since a refused ``STREAM.CREATE`` is never answered and costs a
+            # JetStream deadline at every startup before falling through to the bind anyway.
+            JsResource.kv(f"{ns}-collections", scope=scope, writable=True),
         ),
     )
 

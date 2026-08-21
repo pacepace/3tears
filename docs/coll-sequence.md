@@ -203,6 +203,30 @@ This landing closes one.
 `-05` must keep both at `>` rather than narrowing them, or every read on them
 dies as a broker timeout.
 
+### The enforcement blind spot `-07c` found and did not close
+
+`threetears.enforcement.common.find_local_src_roots` walks `packages/*/src` only.
+On this repo that silently omits the ten NESTED `packages/agent/*` packages —
+`acl`, `audit`, `identity`, `intention`, `knowledge`, `memory`, `skills`,
+`tools`, `wake`, `workspace` — so **every walker built on it has been reporting a
+clean tree over a third of the repository**: `test_kv_grant_capability`,
+`test_l2_scope_wiring`, `test_cache_primitive_usage`, `test_no_bespoke_reuse`,
+`test_underscore_access` and the rest. A walker that scans nothing reports
+exactly what a walker that finds nothing reports, which is why it survived.
+
+Widening it was implemented and reverted inside `-07c`. It surfaces **10 genuine
+violations** at once — 8 `cache.missing_collection` (`identity_versions`,
+`intentions`, `memory_consolidations`, `agent_skills`,
+`agent_skill_invocations`, `agent_wake_schedules`, `wake_fires`,
+`webhook_subscriptions`), 1 `cache.pool_access` on `memory_chunks` in
+`agent/memory/tools.py`, 4 `underscore_access.E` in `agent/wake` — plus two stale
+fixtures in `packages/enforcement/tests/common/test_repo_layout.py` that create a
+`src` tree with no `pyproject.toml` beside it. Every one is real work with its own
+review; none is a grant change. It needs its own shard.
+
+`-07c`'s own gate composes the nested roots itself so it is not blind to the
+module it exists for, and it names that module explicitly in a non-vacuity test.
+
 ---
 
 ## Before writing code

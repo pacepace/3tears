@@ -1,0 +1,13 @@
+# exemptions for tests/enforcement/test_eager_collections_bucket_open.py (coll-task-07c).
+#
+# format (one entry per violation, each preceded by exactly one rationale line):
+#   # rationale: <specific reason, >= 30 chars, not a blanket phrase>
+#   relative/posix/path.py:LINE:Symbol
+#
+# LINE may be a concrete line number or '*' for a file-wide exemption of that symbol.
+#
+# Deliberately empty. The rule this guards has exactly one silent failure mode -- the bucket
+# resolves lazily and a config mismatch lands in a request path under load instead of at
+# startup -- and "this module wires L2 somewhere else" is not a rationale, because the whole
+# point is that nothing else in the module says so. An entry must name the OTHER module that
+# performs the process's eager open and say why it necessarily runs first.

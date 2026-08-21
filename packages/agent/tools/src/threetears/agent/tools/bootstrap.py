@@ -20,6 +20,14 @@ cannot tell them apart, so ``restart: unless-stopped`` restarted a pod
 that could never start. :class:`ToolPodConfigError` + :data:`EX_CONFIG`
 give the supervisor something to branch on, and give the observability
 pipeline one record instead of a traceback per restart.
+
+``coll-task-07c`` adds the pod's THREE-TIER half to the same lifecycle:
+:func:`build_tool_pod_collection_stack` gives a tool pod a working L1 and
+L2 tier scoped so no other principal can reach its data and it can reach
+no one else's. it lives here rather than on ``ToolServer`` because this
+module owns the canonical start/stop scaffolding and already wires the
+health surface, while ``ToolServer`` is the MCP request handler and owns
+no cache concern.
 """
 
 from __future__ import annotations
@@ -30,6 +38,9 @@ import signal
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
+from threetears.core.collections import bind_collections_bucket
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.nats import Principal, kv_key_scope_for
 from threetears.observe import (
     HealthCheck,
     HealthServer,
@@ -39,10 +50,20 @@ from threetears.observe import (
     spawn_background,
 )
 
-if TYPE_CHECKING:
-    from threetears.agent.tools.server import ToolServer
+from threetears.agent.tools.l1_cache import create_tool_pod_l1_backend
 
-__all__ = ["EX_CONFIG", "ToolPodConfigError", "ToolServerBootstrap"]
+if TYPE_CHECKING:
+    from sqlalchemy import MetaData
+
+    from threetears.agent.tools.server import ToolServer
+    from threetears.nats import NatsClient
+
+__all__ = [
+    "EX_CONFIG",
+    "ToolPodConfigError",
+    "ToolServerBootstrap",
+    "build_tool_pod_collection_stack",
+]
 
 log = get_logger(__name__)
 
@@ -106,6 +127,79 @@ class ToolPodConfigError(ValueError):
         self.variable = variable
 
 
+async def build_tool_pod_collection_stack(
+    *,
+    nats_client: "NatsClient",
+    pod_id: str,
+    l1_metadata: "MetaData",
+) -> CollectionRegistry:
+    """build one tool pod's L1 + L2 collection tiers, scoped to its own ``tool_pods.id``.
+
+    ONE function, so a pod gets its tiers without constructing a
+    :class:`~threetears.core.cache.sqlite.SQLiteBackend` itself. That matters more here than
+    elsewhere: the cache-primitive allowlist that sanctions L1 construction sites is PER REPOSITORY
+    and cannot see a partner-operated tool pod at all, so the question is made moot rather than
+    exempted.
+
+    Four decisions are baked in, and each is the thing that makes the stack safe rather than merely
+    present:
+
+    - **the key scope is ``tool_pods.id``** -- the pod's registry primary key, which is already its
+      authenticated ``claims.sub``. It is configured once per DEPLOYMENT, so every replica resolves
+      to one scope and L2 stays a cross-pod cache, while two different pods can never collide. A
+      namespace-derived scope was designed and rejected: ``tool_namespace_id`` mints one row PER
+      TOOL, is a pure function of manifest values the pod itself sends, is deliberately
+      collision-inducing across pods, and no such row exists at connect time. A non-uuid pod id is
+      REFUSED, because a boundary derived from a display name is not provably collision-free.
+    - **the shared bucket is opened EAGERLY, first.** ``BaseCollection._ensure_kv`` resolves it on
+      the first read, so a bucket carrying a configuration this process refuses would otherwise
+      raise inside a request path under load. See
+      :func:`threetears.core.collections.bucket.bind_collections_bucket`.
+    - **the bucket is BOUND, never declared.** A tool pod's minted grant carries
+      ``$JS.API.STREAM.INFO`` on the collections stream and no ``CREATE``: on a SHARED stream
+      ``STREAM.UPDATE`` is a read-all primitive, so ``declare`` belongs to the hub alone. A refused
+      create is never answered, so declaring would cost a JetStream deadline at every startup and
+      then bind anyway.
+    - **the invalidation listener is started here.** Without it the pod's L1 keeps serving a value a
+      peer replica has already replaced. The caller stops it -- :class:`ToolServerBootstrap` does
+      that in its own teardown.
+
+    :param nats_client: the pod's connected canonical NATS client, used as the L2 tier and as the
+        invalidation listener's transport
+    :ptype nats_client: NatsClient
+    :param pod_id: the pod's ``tool_pods.id``, as a uuid string
+    :ptype pod_id: str
+    :param l1_metadata: the pod's declared Collection tables, mirrored into its L1 database
+    :ptype l1_metadata: MetaData
+    :return: the configured registry, with its invalidation listener running
+    :rtype: CollectionRegistry
+    :raises ValueError: if ``pod_id`` is not a uuid, so no collision-free scope can be derived
+    :raises threetears.nats.errors.KvError: if the shared bucket cannot be bound within the attempt
+        budget -- nothing has declared it, or this principal is not granted it
+    :raises threetears.nats.errors.KvConfigMismatch: if the live bucket carries a configuration this
+        process refuses
+    """
+    # scope FIRST, because it is the one failure that needs no network: a pod id that cannot
+    # produce a collision-free scope is refused before a single JetStream request is issued.
+    scope = kv_key_scope_for(Principal.TOOL_POD, pod_id=pod_id)
+    # then the bucket, BEFORE the registry is configured: a refused or mismatched bucket must take
+    # the process down at wiring, with nothing half-built behind it.
+    await bind_collections_bucket(nats_client)
+    registry = CollectionRegistry()
+    registry.configure(
+        l1_backend=create_tool_pod_l1_backend(l1_metadata),
+        l2_client=nats_client,
+        kv_key_scope=scope,
+        l2_create_if_missing=False,
+    )
+    await registry.start_invalidation_listener(nats_client)
+    log.info(
+        "tool pod collection stack wired",
+        extra={"extra_data": {"pod_id": pod_id, "kv_key_scope": scope, "tables": len(l1_metadata.tables)}},
+    )
+    return registry
+
+
 class ToolServerBootstrap:
     """canonical tool-pod lifecycle: logging, signals, serve loop.
 
@@ -138,6 +232,7 @@ class ToolServerBootstrap:
         *,
         log_level: str = "INFO",
         health_port: int | None = None,
+        collection_tables: "MetaData | None" = None,
     ) -> None:
         """initialize bootstrap with service identity and log level.
 
@@ -145,6 +240,12 @@ class ToolServerBootstrap:
         :ptype service_name: str
         :param log_level: log level name (e.g. ``"INFO"``, ``"DEBUG"``)
         :ptype log_level: str
+        :param collection_tables: the pod's Collection tables. supplying them opts this pod into a
+            three-tier stack (:func:`build_tool_pod_collection_stack`), built once the pod's NATS
+            connection exists and torn down with it. the TABLES are the opt-in rather than a flag:
+            a collection stack with nothing in it would bind the shared bucket for a pod that never
+            reads it. ``None`` -> the pod holds no collections, which is the historical shape
+        :ptype collection_tables: MetaData | None
         :param health_port: port the readiness HealthServer binds to;
             defaults to THREETEARS_TOOL_SERVER_HEALTH_PORT env var,
             falling back to 8000. each container in the platform's
@@ -159,11 +260,67 @@ class ToolServerBootstrap:
         """
         self._service_name = service_name
         self._log_level = log_level
+        self._collection_tables = collection_tables
+        self._collection_registry: CollectionRegistry | None = None
         if health_port is not None:
             self._health_port = health_port
         else:
             env_port = os.environ.get("THREETEARS_TOOL_SERVER_HEALTH_PORT")
             self._health_port = int(env_port) if env_port else 8000
+
+    @property
+    def collection_registry(self) -> CollectionRegistry | None:
+        """the pod's three-tier registry, once its NATS connection has been established.
+
+        ``None`` until then, and ``None`` forever for a pod that declared no
+        ``collection_tables``. Tools read it lazily rather than at construction time, because the
+        connection the stack rides on does not exist until :meth:`ToolServer.serve` opens it --
+        which is still strictly before the pod subscribes its call subject, so no tool call can
+        arrive while this is unset for a pod that opted in.
+
+        :return: the configured registry, or ``None`` when the pod holds no collections
+        :rtype: CollectionRegistry | None
+        """
+        return self._collection_registry
+
+    def install_collection_stack(self, server: "ToolServer") -> None:
+        """arrange for the pod's collection stack to be built the moment NATS is up.
+
+        A no-op for a pod that declared no ``collection_tables``. Registered as a CONNECTED
+        callback rather than built inline, because :meth:`ToolServer.serve` is what opens the
+        connection -- and the callback runs before the pod subscribes its call subject and
+        publishes its registration manifest, so the pod is never discoverable with its own
+        collections unwired.
+
+        The pod id is taken from the ``ToolServer``, which is the same value the pod presents at
+        connect and the auth callout pins as ``claims.sub``. A second piece of bootstrap
+        configuration naming it could drift from the authenticated identity, and a key scope that
+        drifts from the grant is a dead cache that logs nothing.
+
+        :param server: the tool server whose connection the stack rides on
+        :ptype server: ToolServer
+        :return: nothing
+        :rtype: None
+        """
+        tables = self._collection_tables
+        if tables is None:
+            return
+
+        async def _on_connected(nats_client: "NatsClient") -> None:
+            """build the pod's tiers on the freshly-established connection.
+
+            :param nats_client: the pod's connected canonical NATS client
+            :ptype nats_client: NatsClient
+            :return: nothing
+            :rtype: None
+            """
+            self._collection_registry = await build_tool_pod_collection_stack(
+                nats_client=nats_client,
+                pod_id=server.pod_id,
+                l1_metadata=tables,
+            )
+
+        server.add_connected_callback(_on_connected)
 
     def run(self) -> None:
         """entrypoint: configure logging then drive the async serve loop.
@@ -226,6 +383,7 @@ class ToolServerBootstrap:
         """
         server = await self.build_server()
         await self.register_tools(server)
+        self.install_collection_stack(server)
         self.install_signal_handlers(server)
 
         health_server = await self._start_health_server(server)
@@ -242,6 +400,13 @@ class ToolServerBootstrap:
         try:
             await self.run_serve(server)
         finally:
+            registry = self._collection_registry
+            if registry is not None:
+                # ``coll-task-01``'s teardown half. It does not raise on a draining connection
+                # (``NatsClient.unsubscribe`` absorbs the transport failures a shutdown produces),
+                # so it runs FIRST in this block: a listener left bound holds a subscription on a
+                # client the process no longer owns.
+                await registry.stop_invalidation_listener()
             if health_server is not None:
                 try:
                     await health_server.stop()

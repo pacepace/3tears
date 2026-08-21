@@ -16,6 +16,10 @@ from threetears.core.collections.asyncpg_init import (
     register_jsonb_text_codec,
 )
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.bucket import (
+    COLLECTIONS_BUCKET_SUFFIX,
+    bind_collections_bucket,
+)
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.merge import repoint_user_rows
@@ -67,6 +71,7 @@ def __dir__() -> list[str]:
 __all__ = [
     "BOOL_TYPE",
     "BYTES_TYPE",
+    "COLLECTIONS_BUCKET_SUFFIX",
     "BaseCollection",
     "CacheInvalidationMessage",
     "CollectionRegistry",
@@ -85,6 +90,7 @@ __all__ = [
     "VECTOR_TYPE",
     "WriteBuffer",
     "apply_salience_decay",
+    "bind_collections_bucket",
     "deserialize_from_json",
     "encode_jsonb",
     "flush_pending",
