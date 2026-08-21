@@ -1391,6 +1391,33 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             Column("face_api", BOOL_TYPE, server_default="false"),
             Column("face_mcp", BOOL_TYPE, server_default="false"),
             Column("face_platform_tool", BOOL_TYPE, server_default="true"),
+            # the FOURTH reach face, added by the same platform package's
+            # v003 (``ALTER TABLE namespaces ADD COLUMN IF NOT EXISTS
+            # face_rest BOOLEAN NOT NULL DEFAULT FALSE`` plus
+            # ``face_rest_declaration JSONB``). Declared here for the same
+            # reason the three above are: a column the migration adds but
+            # the schema never names is a column the generated INSERT never
+            # writes and the generated SELECT never returns, so the flag
+            # would read FALSE forever no matter what a tool authored.
+            #
+            # REST needs the pair rather than a boolean because its address
+            # is authored rather than derived. The boolean stays for the
+            # cheap ``WHERE face_rest`` read and is derived by the writer
+            # from ``face_rest_declaration IS NOT NULL``; the JSONB carries
+            # the :class:`~threetears.agent.tools.http_operation.RestAffordance`
+            # a serving face needs to match a URL and bind its arguments.
+            Column("face_rest", BOOL_TYPE, server_default="false"),
+            # ``server_default`` on a nullable column looks redundant -- ``DEFAULT
+            # NULL`` is what a nullable column already does -- and it is not. A
+            # column declared WITHOUT one is written on every INSERT whether or
+            # not the caller mentioned it (``build_insert``'s omission rule reads
+            # ``col.server_default is not None and col.name not in data``), so
+            # declaring it plain would put ``face_rest_declaration`` into the
+            # INSERT that every OTHER namespace writer issues -- the knowledge
+            # emitter, the workspace emitter, the datasource path -- none of
+            # which knows the column exists. Every ``face_*`` column above is
+            # declared the same way for the same reason.
+            Column("face_rest_declaration", JSONB_TYPE, nullable=True, server_default="NULL"),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],

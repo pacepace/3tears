@@ -209,7 +209,15 @@ class NamespaceEntity(BaseEntity):
     fields: ``row_scope`` / ``namespace_id`` / ``name`` /
     ``namespace_type`` / ``owner_agent_id`` / ``customer_id`` /
     ``schema_name`` / ``metadata`` / ``date_created`` /
-    ``date_updated``.
+    ``date_updated``, plus the columns the ``agent_tools_platform``
+    migration package ALTERs onto ``namespaces`` for ``tool``-type
+    rows: ``tool_eligible`` / ``skill_eligible`` (v001),
+    ``face_platform_tool`` / ``face_api`` / ``face_mcp`` (v002) and
+    ``face_rest`` / ``face_rest_declaration`` (v003). The authoritative
+    list is :attr:`~threetears.agent.acl.collections.NamespaceCollection.schema`;
+    a column added there and not here is a stale docstring, while a
+    column added to the MIGRATION and not to the schema is a column
+    nothing can read or write.
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     ``namespace_id`` to standardize on ``<entity>_id`` across all
