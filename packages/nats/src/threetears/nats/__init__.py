@@ -97,6 +97,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     from threetears.nats.user_jwt import (
         account_public_key,
         generate_account_seed,
+        js_api_grants_for_stream,
         mint_user_jwt,
     )
 
@@ -132,10 +133,16 @@ from threetears.nats.result_delivery import (
 from threetears.nats.subject_permissions import (
     CROSS_PLATFORM_CACHE_INVALIDATE,
     KV_KEY_SCOPE_GRAMMAR,
+    JsCapability,
+    JsResource,
+    JsResourceKind,
     Principal,
     PrincipalPermissions,
     build_permissions,
+    capability_declares,
+    capability_is_scoped,
     inbox_prefix_for,
+    kv_bucket_names,
     kv_key_scope_for,
 )
 from threetears.nats.subjects import (
@@ -221,7 +228,12 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
     ),
     "kv": ("NatsKvBucket",),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
-    "user_jwt": ("account_public_key", "generate_account_seed", "mint_user_jwt"),
+    "user_jwt": (
+        "account_public_key",
+        "generate_account_seed",
+        "js_api_grants_for_stream",
+        "mint_user_jwt",
+    ),
 }
 
 _LAZY_ATTR_TO_SUBMOD: Final[dict[str, str]] = {
@@ -328,14 +340,21 @@ __all__ = [
     # subject permissions (decentralized-auth allow-lists)
     "CROSS_PLATFORM_CACHE_INVALIDATE",
     "KV_KEY_SCOPE_GRAMMAR",
+    "JsCapability",
+    "JsResource",
+    "JsResourceKind",
     "Principal",
     "PrincipalPermissions",
     "build_permissions",
+    "capability_declares",
+    "capability_is_scoped",
     "inbox_prefix_for",
+    "kv_bucket_names",
     "kv_key_scope_for",
     # NATS v2 user-JWT minting (decentralized auth)
     "account_public_key",
     "generate_account_seed",
+    "js_api_grants_for_stream",
     "mint_user_jwt",
     # NATS auth-callout request/response codecs
     "AuthCalloutRequest",

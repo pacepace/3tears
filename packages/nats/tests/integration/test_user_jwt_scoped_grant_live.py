@@ -1,20 +1,29 @@
 """Integration test: the scoped JetStream grant works AND fails closed against a live broker.
 
 The fail-closed-isolation fix (replacing the bare ``$JS.API.>`` control-plane grant with a per-stream
-allow-list, :func:`threetears.nats.user_jwt._js_api_grants_for_stream`) is only trustworthy if the
+allow-list, :func:`threetears.nats.user_jwt.js_api_grants_for_stream`) is only trustworthy if the
 grant strings behave on a REAL nats-server's subject matcher the way the unit tests assert they do.
 The classic failure of an over-tight JS-API allow-list is a SILENT timeout: the KV op publishes a
 request to a ``$JS.API`` subject the connection lacks, the server drops it, and the op hangs to its
-deadline. So this proves BOTH directions against a live JetStream broker:
+deadline. So this proves BOTH directions against a live JetStream broker.
 
-- the EXACT pub/sub allow-list :func:`mint_user_jwt` produces for a principal that declares one KV
-  bucket is applied as that principal's static ``authorization`` permissions, and under it a full KV
-  round-trip on the GRANTED bucket genuinely succeeds (bind, put, get, create, delete, status,
-  account_info) -- no silent timeout;
-- the same connection is DENIED the cross-tenant control subjects a bare ``$JS.API.>`` once exposed:
-  ``$JS.API.STREAM.INFO.KV_<other>`` and ``$JS.API.STREAM.MSG.GET.KV_<other>`` (direct-read of another
-  principal's backing stream) raise instead of returning data, and the server emits a Permissions
-  Violation naming the foreign subject.
+**Two isolation boundaries, two tests, and the second is the one that matters.**
+
+*Between buckets.* The EXACT pub/sub allow-list :func:`mint_user_jwt` produces for a principal that
+declares one KV bucket is applied as that principal's static ``authorization`` permissions; under it
+a full KV round-trip on the GRANTED bucket genuinely succeeds (bind, put, get, create, delete,
+status, account_info) with no silent timeout, while the control subjects of a PEER bucket
+(``$JS.API.STREAM.INFO.KV_<other>``, ``$JS.API.STREAM.MSG.GET.KV_<other>``) raise instead of
+returning data and the server emits a Permissions Violation naming the foreign subject.
+
+*Between principals INSIDE one bucket.* Pinning the stream name does nothing here, because
+``{ns}-collections`` is one stream held by many principals. The second test puts two key scopes in
+one shared bucket and drives every route to the other principal's key from a live connection: the
+direct read, the body-carried ``STREAM.MSG.GET``, a consumer filtered on the whole bucket and
+delivered to the caller's own inbox, ``PURGE`` / ``SNAPSHOT`` / ``UPDATE``, and a plain ``$KV.``
+overwrite. All seven must be refused, and -- the half that is easy to forget -- the principal's OWN
+scope must still read and write, because a grant that refused everything would pass the refusal half
+and brick the fleet.
 
 We do not stand up the auth-callout responder here: the grant STRINGS are what the fix changes, so we
 apply them directly as config-mode ``authorization`` permissions (the same allow-list the responder
@@ -38,7 +47,7 @@ import nats.js.errors
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
-from threetears.nats.subject_permissions import PrincipalPermissions
+from threetears.nats.subject_permissions import JsResource, PrincipalPermissions
 from threetears.nats.user_jwt import generate_account_seed, mint_user_jwt
 
 pytestmark = pytest.mark.integration
@@ -49,6 +58,14 @@ _INBOX = "_INBOX_scoped_jwt_test"
 _ADMIN_PW = "admin-pw"  # noqa: S105 - ephemeral testcontainer credential
 _SCOPED_PW = "scoped-pw"  # noqa: S105 - ephemeral testcontainer credential
 
+#: The SHARED bucket -- one bucket, many principals, which is the case pinning the stream name
+#: does nothing for. Named like the real one so the subject shapes below read as they do live.
+_SHARED = "collections"
+_SHARED_STREAM = f"KV_{_SHARED}"
+_A_SCOPE = "agent_pod-019470a8b5c37def8123456789abcdef"
+_B_SCOPE = "agent_pod-ffffffffffffffffffffffffffffffff"
+_SHARED_PW = "shared-pw"  # noqa: S105 - ephemeral testcontainer credential
+
 
 def _scoped_perms() -> PrincipalPermissions:
     """a principal declaring exactly one KV bucket (``granted``) and no extra app subjects."""
@@ -57,20 +74,36 @@ def _scoped_perms() -> PrincipalPermissions:
         subscribe=(f"{_INBOX}.>",),
         allow_responses=True,
         inbox_prefix=_INBOX,
-        kv_buckets=(_GRANTED,),
+        js_resources=(JsResource.kv(_GRANTED, scope=None, writable=True),),
     )
 
 
-def _minted_permissions() -> tuple[list[str], list[str]]:
-    """mint a real user JWT for :func:`_scoped_perms` and return its (pub allow, sub allow) lists.
+def _key_scoped_perms() -> PrincipalPermissions:
+    """principal A: one SHARED bucket, narrowed to A's own key scope."""
+    return PrincipalPermissions(
+        publish=(),
+        subscribe=(f"{_INBOX}.>",),
+        allow_responses=True,
+        inbox_prefix=_INBOX,
+        js_resources=(JsResource.kv(_SHARED, scope=_A_SCOPE, writable=True),),
+    )
+
+
+def _minted_allow_lists(permissions: PrincipalPermissions) -> tuple[list[str], list[str]]:
+    """mint a real user JWT for ``permissions`` and return its (pub allow, sub allow) lists.
 
     these are the literal grant strings the auth-callout responder would mint; feeding them straight
     into the server's static ``authorization`` proves the MINTED credential -- not a hand-typed copy.
+
+    :param permissions: the resolved allow-list to mint
+    :ptype permissions: PrincipalPermissions
+    :return: the JWT's publish allow-list and subscribe allow-list
+    :rtype: tuple[list[str], list[str]]
     """
     token = mint_user_jwt(
         account_seed=generate_account_seed(),
         user_public_key="UTEST",  # sub is irrelevant for the static-permissions projection
-        permissions=_scoped_perms(),
+        permissions=permissions,
         name="scoped-jwt-test",
         expires_in_seconds=600,
     )
@@ -80,8 +113,31 @@ def _minted_permissions() -> tuple[list[str], list[str]]:
     return nats_claim["pub"]["allow"], nats_claim["sub"]["allow"]
 
 
-def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
-    """a nats-server config: JetStream on, an admin (full) + the scoped user (minted allow-list)."""
+def _minted_permissions() -> tuple[list[str], list[str]]:
+    """the (pub, sub) allow-lists for the bucket-scoped principal."""
+    return _minted_allow_lists(_scoped_perms())
+
+
+def _server_config(
+    pub_allow: list[str],
+    sub_allow: list[str],
+    *,
+    user: str = "scoped",
+    password: str = _SCOPED_PW,
+) -> str:
+    """a nats-server config: JetStream on, an admin (full) + one scoped user (minted allow-list).
+
+    :param pub_allow: the minted publish allow-list to enforce
+    :ptype pub_allow: list[str]
+    :param sub_allow: the minted subscribe allow-list to enforce
+    :ptype sub_allow: list[str]
+    :param user: the scoped user's name
+    :ptype user: str
+    :param password: the scoped user's password
+    :ptype password: str
+    :return: the nats-server configuration text
+    :rtype: str
+    """
     authorization = {
         "users": [
             {
@@ -90,8 +146,8 @@ def _server_config(pub_allow: list[str], sub_allow: list[str]) -> str:
                 "permissions": {"publish": ">", "subscribe": ">", "allow_responses": True},
             },
             {
-                "user": "scoped",
-                "password": _SCOPED_PW,
+                "user": user,
+                "password": password,
                 "permissions": {
                     "publish": {"allow": pub_allow},
                     "subscribe": {"allow": sub_allow},
@@ -133,7 +189,7 @@ async def _connect(uri: str, *, user: str, password: str, errors: list[str] | No
         uri,
         user=user,
         password=password,
-        inbox_prefix=_INBOX.encode() if user == "scoped" else b"_INBOX",
+        inbox_prefix=b"_INBOX" if user == "admin" else _INBOX.encode(),
         error_cb=_err_cb,
         max_reconnect_attempts=0,
     )
@@ -205,3 +261,131 @@ async def test_scoped_grant_allows_own_bucket_and_denies_cross_bucket(tmp_path: 
 
             # the connection is still usable for its OWN bucket after the denied cross-bucket op
             assert (await kv.get("k2")).value == b"v2"
+
+
+async def _refused(nc, subject: str, *, body: bytes = b"") -> None:
+    """assert the server REFUSES a raw request on ``subject``.
+
+    A refused JetStream request is not answered at all -- the server drops the publish and emits an
+    asynchronous ``-ERR`` on a channel the caller is not reading -- so the only synchronous evidence
+    is the caller's own deadline. That is exactly why these probes have to be RUN rather than
+    reasoned about: a grant that matches nothing and a grant that is absent produce the identical
+    timeout, and so does a bucket nobody created.
+
+    :param nc: the connected nats-py client to probe from
+    :ptype nc: Any
+    :param subject: the subject to request on
+    :ptype subject: str
+    :param body: the request payload (the bypasses carry their target in the BODY)
+    :ptype body: bytes
+    :return: nothing
+    :rtype: None
+    :raises AssertionError: if the request is answered rather than refused
+    """
+    with pytest.raises((nats.errors.TimeoutError, nats.errors.NoRespondersError)):
+        await nc.request(subject, body, timeout=2)
+
+
+async def test_key_scoped_grant_refuses_every_bypass_and_admits_its_own_scope(tmp_path: Path) -> None:
+    """The shard's whole claim, run against a real broker rather than read off the grant strings.
+
+    One SHARED bucket, two key scopes. Principal A holds the minted key-scoped grant. Each of the
+    seven routes to principal B's key must be REFUSED, and A's own scope must work for both read
+    and write -- both halves, because a grant that refused everything would pass the refusal half
+    on its own and brick the fleet.
+    """
+    if not check_docker_available():
+        pytest.skip("Docker not available")
+
+    pub_allow, sub_allow = _minted_allow_lists(_key_scoped_perms())
+    # sanity on the credential itself before the broker ever sees it
+    assert f"$KV.{_SHARED}.{_A_SCOPE}.>" in pub_allow
+    assert f"$KV.{_SHARED}.>" not in pub_allow
+    assert not [s for s in sub_allow if s.startswith("$KV")], sub_allow
+
+    config = _server_config(pub_allow, sub_allow, user="scopedkey", password=_SHARED_PW)
+    a_key = f"{_A_SCOPE}.widgets.e1"
+    b_key = f"{_B_SCOPE}.widgets.e1"
+
+    with _nats_with_auth(config, tmp_path) as uri:
+        # --- admin creates the shared bucket with allow_direct (coll-task-04a) and seeds BOTH ---
+        async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
+            admin_js = admin_nc.jetstream()
+            shared = await admin_js.create_key_value(bucket=_SHARED, direct=True)
+            await shared.put(a_key, b"mine")
+            await shared.put(b_key, b"do-not-leak")
+            info = await admin_js.stream_info(_SHARED_STREAM)
+            # without this the read is $JS.API.STREAM.MSG.GET with the key in the BODY, where no
+            # subject permission can constrain it, and the whole narrowing is inert.
+            assert info.config.allow_direct is True
+
+        errors: list[str] = []
+        async with _connect(uri, user="scopedkey", password=_SHARED_PW, errors=errors) as nc:
+            js = nc.jetstream(timeout=4)
+            await js.account_info()
+            kv = await js.key_value(_SHARED)  # bind: $JS.API.STREAM.INFO.KV_collections
+
+            # === SUCCEEDS: A's own scope, read and write =============================
+            assert (await kv.get(a_key)).value == b"mine"
+            assert await kv.put(f"{_A_SCOPE}.widgets.e2", b"written") > 0
+            assert (await kv.get(f"{_A_SCOPE}.widgets.e2")).value == b"written"
+            assert not [e for e in errors if "permissions violation" in e.lower()], errors
+
+            # === REFUSED: every route to B's key =====================================
+            before = len(errors)
+
+            # 1. the direct read of a peer's key, on the literal subject nats-py builds
+            await _refused(nc, f"$JS.API.DIRECT.GET.{_SHARED_STREAM}.$KV.{_SHARED}.{b_key}")
+            # 2. BYPASS 1 -- the body-carried read; the key never appears in the subject
+            await _refused(
+                nc,
+                f"$JS.API.STREAM.MSG.GET.{_SHARED_STREAM}",
+                body=json.dumps({"last_by_subj": f"$KV.{_SHARED}.{b_key}"}).encode(),
+            )
+            # 3. BYPASS 3 -- a consumer filtered on the WHOLE bucket, delivered to A's own inbox
+            await _refused(
+                nc,
+                f"$JS.API.CONSUMER.CREATE.{_SHARED_STREAM}",
+                body=json.dumps(
+                    {
+                        "stream_name": _SHARED_STREAM,
+                        "config": {
+                            "filter_subject": f"$KV.{_SHARED}.>",
+                            "deliver_subject": f"{_INBOX}.spy",
+                        },
+                    }
+                ).encode(),
+            )
+            # 4-6. BYPASS 4 -- the verb sits at token 4, so ``STREAM.*`` covered all of these
+            await _refused(nc, f"$JS.API.STREAM.PURGE.{_SHARED_STREAM}")
+            await _refused(nc, f"$JS.API.STREAM.SNAPSHOT.{_SHARED_STREAM}")
+            await _refused(nc, f"$JS.API.STREAM.UPDATE.{_SHARED_STREAM}")
+            # 7. the data plane: writing over a peer's key. ``kv.put`` is ``js.publish``, a request
+            #    for the PubAck, so a refused publish surfaces as the same unanswered deadline.
+            await _refused(nc, f"$KV.{_SHARED}.{b_key}", body=b"overwritten")
+
+            await asyncio.sleep(0.4)  # let the async -ERR frames land in the error callback
+            violations = [e for e in errors[before:] if "permissions violation" in e.lower()]
+            assert len(violations) >= 7, violations
+            # the refusals must name the SHARED stream / bucket -- proof it was the grant that
+            # blocked them and not some unrelated failure (nats-py lowercases the frame).
+            for needle in (
+                f"$js.api.direct.get.{_SHARED_STREAM}".lower(),
+                f"$js.api.stream.msg.get.{_SHARED_STREAM}".lower(),
+                f"$js.api.consumer.create.{_SHARED_STREAM}".lower(),
+                f"$js.api.stream.purge.{_SHARED_STREAM}".lower(),
+                f"$js.api.stream.snapshot.{_SHARED_STREAM}".lower(),
+                f"$js.api.stream.update.{_SHARED_STREAM}".lower(),
+                f"$kv.{_SHARED}.{_B_SCOPE}".lower(),
+            ):
+                assert any(needle in e.lower() for e in violations), (needle, violations)
+
+            # === STILL SUCCEEDS after the refusals ====================================
+            # the connection stays up through a permissions violation, which is the whole reason
+            # the failure is so quiet; A must be unharmed by having been refused seven times.
+            assert (await kv.get(a_key)).value == b"mine"
+            # ...and B's value is still there, unread and unmodified.
+
+        async with _connect(uri, user="admin", password=_ADMIN_PW) as admin_nc:
+            admin_kv = await admin_nc.jetstream().key_value(_SHARED)
+            assert (await admin_kv.get(b_key)).value == b"do-not-leak"

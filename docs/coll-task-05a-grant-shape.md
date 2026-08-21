@@ -244,13 +244,34 @@ this shard's work.
 
 ## Success criteria
 
-- [ ] `$KV.` appears in no subscribe allow-list
-- [ ] The collections publish grant is `{scope}.>`; every other bucket unchanged at `>`
-- [ ] The collections stream's JS grants are literal `INFO` + the scoped `DIRECT.GET` tail, plus `CREATE`/`UPDATE` for the declaring identity alone
-- [ ] The backup-restore path still works, by carve-out or by moving off `keys()`
-- [ ] `_diagnostics.kv_grant_remedy` no longer advises the old shape
-- [ ] `test_kv_bucket_grant_naming.py` and the three test modules updated and green
-- [ ] `./scripts/check-all.sh` and `./scripts/test-integration.sh` green
+- [x] `$KV.` appears in no subscribe allow-list — `mint_user_jwt`'s `sub.allow` is now `permissions.subscribe` alone
+- [x] The collections publish grant is `{scope}.>`; every other bucket unchanged at `>` — per-resource opt-in via `JsResource.scope`
+- [x] The collections stream's JS grants are literal `INFO` + the scoped `DIRECT.GET` tail, plus `CREATE`/`UPDATE` for the declaring identity alone (`_hub`, pinned by `tests/enforcement/test_kv_grant_capability.py`)
+- [ ] **The backup-restore path still works — NOT met here, and it cannot be.** The hub reaches `kv.keys()` (a JetStream consumer) and per-key `kv.delete()` on every bucket through its static `>`, which this shard does not touch and `-05b` records as a dated residual. Neither operation is expressible under a scoped capability, so the carve-out has to be a hub-side change: see "What the hub must do", recorded in `_hub`'s own resolver comment so `-05b` cannot miss it
+- [x] `_diagnostics.kv_grant_remedy` no longer advises the old shape — pinned by `test_the_remedy_does_not_instruct_the_reader_to_reopen_the_hole`
+- [x] `test_kv_bucket_grant_naming.py` and the three test modules updated and green
+- [x] `./scripts/check-all.sh` (15897 passed, 3 skipped, 411 deselected; 139 sidecar) and `./scripts/test-integration.sh` (392 passed, 19 skipped) green
+
+### What the hub must do (this shard may not edit it)
+
+`hub/admin/backup_engine.py`'s `_flush_nats_kv` enumerates `js.key_value_store_names()`,
+then `kv.keys()` (→ `watchall()` → a JetStream consumer) and per-key `kv.delete()` on
+every bucket, collections included. Three separate problems, in order of blast radius:
+
+1. **The `try:` opens before `key_value_store_names()` and the `except Exception:
+   log.warning` closes after the whole nested loop**, so ONE refused bucket silently
+   aborts every REMAINING bucket mid-flush. A restore then leaves other principals'
+   scoped copies behind, at WARNING. Per-bucket error handling first, regardless of
+   grants.
+2. **Consumer-create is not grantable under a scoped capability** — it is BYPASS 3,
+   the create-with-`filter_subject` read. Move off `keys()`: the bucket is memory
+   storage with no durable data, so deleting and re-declaring it is both simpler and
+   what a fresh cluster does anyway.
+3. **A per-key `delete` outside the hub's own scope is not grantable either** — it is
+   a `$KV.{bucket}.{other_scope}.…` publish. Same fix as (2).
+
+Until then the path keeps working on the hub's `>`, which is why this is a recorded
+residual rather than a break.
 
 ---
 
@@ -282,6 +303,33 @@ These are `pytest.mark.integration` and `test.sh` runs `-m "not integration"`.
 
 ---
 
+## What landed differently from the shard
+
+- **One record for BOTH kinds, and one field.** `kv_buckets` and `streams` are gone;
+  `PrincipalPermissions.js_resources` is a single tuple of `JsResource`, each carrying
+  name, kind, capability, scope and write intent. The shard offered "or state why
+  streams stay flat" — they did not.
+- **Three capabilities, not five.** `FULL` (the historical seven subjects, unchanged),
+  `KV_SCOPED`, `KV_SCOPED_DECLARE`. Splitting `FULL` further into "KV watch" and
+  "durable consumer" would be better least-privilege but is not supportable on
+  evidence anyone has gathered: every non-scoped bucket runs `allow_direct: false`,
+  where the read is `STREAM.MSG.GET` with the key in the body, so trimming verbs there
+  would deny reads that work today — as a deadline, not an error. `FULL` is therefore
+  the historical set verbatim and the narrowing is confined to the resources that
+  actually write a scope. Recorded in `JsCapability`'s own docstring.
+- **A pod principal whose id is not a UUID can no longer be granted at all.** GRANT-10
+  lands at the RESOLVER: `_agent_pod` derives its scope through `kv_key_scope_for`,
+  which refuses a non-uuid, so `build_permissions(AGENT_POD, agent_id="agent-A", …)`
+  now raises. That is the fail-closed direction and it is the point, but it is a
+  behaviour change with a test-surface cost: every pod id in
+  `test_subject_permissions.py` and `test_kv_bucket_grant_naming.py` is now a UUID.
+  A tool pod is unaffected until `coll-task-07c` gives it the bucket.
+- **A cost `-06x` must absorb.** Pods still default `create_if_missing=True`, so a pod
+  opening the collections bucket now issues a `STREAM.CREATE` it is refused. The
+  refusal is not an error — `open_kv_stream` waits out the JetStream deadline and then
+  falls through to the bind, which succeeds. So it works, once, slowly. KVC-04's
+  `configure(l2_create_if_missing=False)` is what removes the stall, and `-06x` owns it.
+
 ## Enforcement test suggestions
 
 Build on `threetears.enforcement.common`, which already exports `Violation`,
@@ -292,5 +340,12 @@ is the worked example, and its own docstring notes it delegates to the shared
 walker rather than re-rolling one — re-rolling here would break the rule this set
 is trying to enforce.
 
-- [ ] **No pod principal holds the `declare` capability**, and no grant string contains a JS API verb wildcard against a shared stream.
-- [ ] **Every bucket in `kv_buckets` declares scope and write intent explicitly** — a new bucket added without a decision fails the build.
+Landed as `tests/enforcement/test_kv_grant_capability.py` (`KV_GRANT_ENFORCEMENT_MODE`,
+default `strict`; exemptions in `_kv_grant_exemptions.txt`), three AST walkers on
+`threetears.enforcement.common`, each with a planted-violation self-test AND a
+stays-quiet-on-sanctioned-source test:
+
+- [x] **No pod principal holds the `declare` capability** — `find_declare_outside_the_declarer`, both the `declare=True` factory shape and the raw `JsCapability.KV_SCOPED_DECLARE` constructor shape, sanctioned set `{_hub}`. Plus a non-vacuity test that the hub genuinely still holds it, so the rule cannot pass by the declaration having been deleted.
+- [x] **No verb wildcard survives on a scoped stream** — asserted behaviourally in `test_no_verb_wildcard_survives_on_a_scoped_stream` rather than by a string walker, because the property is about the EMITTED grants and a walker over literals would miss the composition.
+- [x] **Every bucket declares scope and write intent explicitly** — `find_implicit_bucket_decisions`, backed by `JsResource.kv`'s keyword-only, default-less parameters.
+- [x] **The shared bucket is never granted unscoped** — `find_unscoped_shared_bucket_grants`, the regression an added principal actually produces.
