@@ -1,7 +1,7 @@
 """registry-side rbac stack for the standalone ``_run_server()`` entrypoint.
 
 mirrors the agent SDK's
-:func:`3tears_agents.runtime.three_tier_stack.build_three_tier_stack`
+:func:`aibots_agents.runtime.three_tier_stack.build_three_tier_stack`
 with the agent-specific bits stripped: there is no agent identity
 on the registry process, no agent main pool, no agent-owned
 Collections. what remains is the rbac surface the
@@ -21,9 +21,15 @@ needs to resolve ``tool.call`` decisions:
   fronting the four rbac metadata Collections.
 - :class:`AclCache` three-layer ttl cache with default 60s TTL.
 - NATS subscriptions on ``{ns}.acl.membership.invalidate`` /
-  ``{ns}.acl.assignment.invalidate`` / ``{ns}.acl.role.invalidate``
+  ``{ns}.acl.assignment.invalidate`` / ``{ns}.acl.role.invalidate``,
+  bound by :func:`threetears.agent.acl.subscribe_acl_invalidation`
   so cross-process rbac mutations purge the cache promptly instead
-  of waiting on TTL.
+  of waiting on TTL. this module used to carry its own copy of that
+  wiring -- three handlers, three hand-rolled
+  ``model_validate_json`` calls -- alongside identical copies in the
+  agent SDK and the hub broker. coll-task-07a deleted all three:
+  the shared function already did exactly this, and the copies had
+  begun to diverge in their log text and their control flow.
 
 construction is synchronous; callers invoke
 :meth:`RegistryRbacStack.subscribe_invalidations` after start so the
@@ -41,29 +47,26 @@ read because of the namespace+action match.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
-from pydantic import ValidationError
 from threetears.agent.acl import (
     AclCache,
-    AssignmentInvalidatePayload,
     CollectionGrantLoader,
     CollectionMembershipLoader,
     GroupCollection,
     GroupMemberCollection,
-    MembershipInvalidatePayload,
     NamespaceCollection,
     RoleAssignmentCollection,
     RoleCollection,
-    RoleInvalidatePayload,
+    subscribe_acl_invalidation,
+    unsubscribe_acl_invalidation,
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.nats import IncomingMessage, NatsClient, Principal, Subjects, kv_key_scope_for
+from threetears.nats import NatsClient, Principal, Subscription, kv_key_scope_for
 from threetears.observe import get_logger
 
 __all__ = [
@@ -79,7 +82,7 @@ log = get_logger(__name__)
 
 #: name of the system namespace the hub broker's read-only carve-out
 #: admits SELECT traffic on. the value is duplicated here (instead of
-#: imported from ``3tears.hub.broker.acl``) so the 3tears registry
+#: imported from ``aibots.hub.broker.acl``) so the 3tears registry
 #: package retains its hub-independent dependency graph -- the hub is
 #: free to evolve the carve-out internally as long as the canonical
 #: name stays the same.
@@ -133,12 +136,10 @@ class RegistryRbacStack:
     acl_cache: AclCache
     nats_client: NatsClient
     subject_namespace: str
-    _membership_subscription: Any = None
-    _assignment_subscription: Any = None
-    _role_subscription: Any = None
+    _subscriptions: list[Subscription] = field(default_factory=list)
 
     async def subscribe_invalidations(self) -> None:
-        """bind the three rbac invalidation subjects to handlers.
+        """bind the three rbac invalidation subjects to the shared cache.
 
         cross-process rbac mutations (admin tools rewriting
         ``role_assignments`` / ``group_members`` / ``roles``)
@@ -147,139 +148,44 @@ class RegistryRbacStack:
         ``{ns}.acl.assignment.invalidate`` /
         ``{ns}.acl.role.invalidate``. without these subscriptions the
         registry's :class:`AclCache` stays warm with stale tuples for
-        up to ``ttl_seconds`` after a mutation. each handler logs
-        unparseable payloads at WARNING + invalidates the cache (the
-        canonical "fail safe" behaviour shared with the agent stack).
+        up to ``ttl_seconds`` after a mutation.
+
+        the wiring itself is
+        :func:`threetears.agent.acl.subscribe_acl_invalidation` -- the
+        canonical publisher's own counterpart, so the subjects and the
+        payload models cannot drift from what the publisher sends. an
+        unparseable payload is deadlettered to
+        ``{ns}.deadletter.{subject}`` by the typed subscribe and the
+        cache is left alone; the local copy this replaced logged a
+        WARNING and dropped the message with no artefact.
 
         :return: nothing
         :rtype: None
         """
-        membership_subject = Subjects.acl_invalidate(kind="membership")
-        assignment_subject = Subjects.acl_invalidate(kind="assignment")
-        role_subject = Subjects.acl_invalidate(kind="role")
-
-        self._membership_subscription = await self.nats_client.subscribe(
-            subject=membership_subject,
-            cb=self._handle_membership_invalidation,
-        )
-        self._assignment_subscription = await self.nats_client.subscribe(
-            subject=assignment_subject,
-            cb=self._handle_assignment_invalidation,
-        )
-        self._role_subscription = await self.nats_client.subscribe(
-            subject=role_subject,
-            cb=self._handle_role_invalidation,
+        self._subscriptions = await subscribe_acl_invalidation(
+            self.nats_client,
+            self.acl_cache,
         )
         log.info(
             "registry rbac stack subscribed to invalidations",
-            extra={
-                "extra_data": {
-                    "membership_subject": membership_subject.path,
-                    "assignment_subject": assignment_subject.path,
-                    "role_subject": role_subject.path,
-                }
-            },
+            extra={"extra_data": {"subjects": [sub.subject.path for sub in self._subscriptions]}},
         )
 
     async def close(self) -> None:
-        """unsubscribe invalidation handlers and reset the L1 backend.
+        """release invalidation subscriptions and reset the L1 backend.
 
         the registry owns the NATS client lifecycle separately; this
         method only releases the rbac stack's own resources.
+        idempotent: the handle list is emptied, so a second call
+        releases nothing.
 
         :return: nothing
         :rtype: None
         """
-        for sub in (
-            self._membership_subscription,
-            self._assignment_subscription,
-            self._role_subscription,
-        ):
-            if sub is not None:
-                try:
-                    await self.nats_client.unsubscribe(sub)
-                except Exception as exc:
-                    log.warning(
-                        "registry rbac stack unsubscribe failed",
-                        extra={"extra_data": {"error": str(exc)}},
-                    )
-        self._membership_subscription = None
-        self._assignment_subscription = None
-        self._role_subscription = None
+        await unsubscribe_acl_invalidation(self.nats_client, self._subscriptions)
+        self._subscriptions = []
         self.l1_backend.reset()
         log.info("registry rbac stack closed")
-
-    async def _handle_membership_invalidation(self, msg: IncomingMessage) -> None:
-        """drop cached memberships for the actor named in the payload.
-
-        per-actor invalidation: the canonical evaluator caches one
-        tuple per ``(actor_type, actor_id)``; the loader's
-        ``invalidate(actor_type, actor_id)`` purges only that key
-        which is much cheaper than a full sweep when many actors
-        share the cache.
-
-        :param msg: incoming wrapper envelope carrying the payload
-        :ptype msg: IncomingMessage
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            payload = MembershipInvalidatePayload.model_validate_json(msg.data)
-        except ValidationError:
-            log.warning(
-                "registry acl cache: membership.invalidate payload unparseable size=%d",
-                len(msg.data),
-            )
-            return
-        # MembershipInvalidatePayload uses ``actor_type``; the cache
-        # method takes ``actor_kind`` for the same dimension. map at
-        # the boundary -- both forms mean "user" or "agent".
-        self.acl_cache.invalidate_membership_for_actor(
-            actor_kind=payload.actor_type,
-            actor_id=payload.actor_id,
-        )
-
-    async def _handle_assignment_invalidation(self, msg: IncomingMessage) -> None:
-        """drop cached grant tuples for the group named in the payload.
-
-        :param msg: incoming wrapper envelope
-        :ptype msg: IncomingMessage
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            payload = AssignmentInvalidatePayload.model_validate_json(msg.data)
-        except ValidationError:
-            log.warning(
-                "registry acl cache: assignment.invalidate payload unparseable size=%d",
-                len(msg.data),
-            )
-            return
-        self.acl_cache.invalidate_group(payload.group_id)
-
-    async def _handle_role_invalidation(self, msg: IncomingMessage) -> None:
-        """drop the entire grant cache when role permissions mutate.
-
-        role permissions are denormalized into the cached grant
-        tuples; a per-role invalidation would require walking every
-        cached grant looking for matches. nuking the cache is
-        coarser but keeps the invariant that no stale role
-        permissions ever survive a role mutation.
-
-        :param msg: incoming wrapper envelope
-        :ptype msg: IncomingMessage
-        :return: nothing
-        :rtype: None
-        """
-        try:
-            RoleInvalidatePayload.model_validate_json(msg.data)
-        except ValidationError:
-            log.warning(
-                "registry acl cache: role.invalidate payload unparseable size=%d",
-                len(msg.data),
-            )
-            return
-        self.acl_cache.invalidate_all()
 
 
 def _resolve_acl_ttl_seconds() -> int:

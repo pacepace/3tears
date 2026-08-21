@@ -40,6 +40,10 @@ from threetears.agent.acl.invalidation import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from threetears.nats import Subscription
+
     from threetears.agent.acl.cache import AclCache
 
 __all__ = [
@@ -49,6 +53,7 @@ __all__ = [
     "publish_membership_invalidation",
     "publish_role_invalidation",
     "subscribe_acl_invalidation",
+    "unsubscribe_acl_invalidation",
 ]
 
 log = get_logger(__name__)
@@ -63,9 +68,19 @@ class AclInvalidationPublisher(Protocol):
 
 @runtime_checkable
 class AclInvalidationSubscriber(Protocol):
-    """The slice of :class:`~threetears.nats.NatsClient` an invalidation consumer needs."""
+    """The slice of :class:`~threetears.nats.NatsClient` an invalidation consumer needs.
+
+    Both halves of the lifecycle, deliberately. Teardown goes through the CLIENT
+    (``client.unsubscribe(sub)``), not through ``Subscription.unsubscribe()``: the two look
+    interchangeable and are not -- only the client form also drops the handle from the client's
+    own subscription list. Naming ``unsubscribe`` here is what keeps a consumer from
+    re-inventing the other idiom, and what lets :func:`subscribe_acl_invalidation` unwind a
+    partial bind the same way :func:`unsubscribe_acl_invalidation` unwinds a complete one.
+    """
 
     async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any) -> Any: ...
+
+    async def unsubscribe(self, sub: Any) -> None: ...
 
 
 async def publish_membership_invalidation(
@@ -129,19 +144,28 @@ async def publish_role_invalidation(nats: AclInvalidationPublisher | None) -> No
     await nats.publish(subject=Subjects.acl_invalidate("role"), message=RoleInvalidatePayload())
 
 
-async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: AclCache) -> list[Any]:
+async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: AclCache) -> list[Subscription]:
     """Bind ``cache`` to the three invalidation subjects. Returns the subscriptions.
 
     Plain subscriptions, NOT queue groups: every pod must evict, so every pod must receive. A
     queue group would deliver each broadcast to exactly one member, leaving every other pod
     serving the stale decision it was told to drop -- the precise failure this bus prevents.
 
+    Typed subscriptions, so a payload that does not validate is deadlettered to
+    ``{ns}.deadletter.{subject}`` and the handler is NEVER reached. That is stricter than the
+    warn-and-continue the consuming apps hand-rolled before they adopted this function: a
+    malformed broadcast now leaves an inspectable artefact instead of one log line. Every
+    principal's grant carries ``{ns}.deadletter.>`` on publish, so the republish is not refused.
+
+    Pair with :func:`unsubscribe_acl_invalidation` at shutdown; do NOT call
+    ``Subscription.unsubscribe()`` on the returned handles, which is not the same operation.
+
     :param nats: the connected client.
     :ptype nats: AclInvalidationSubscriber
     :param cache: the per-pod cache to evict from.
     :ptype cache: AclCache
     :return: the three subscriptions, for the caller to unsubscribe at shutdown.
-    :rtype: list[Any]
+    :rtype: list[Subscription]
     """
 
     async def _on_membership(payload: MembershipInvalidatePayload) -> None:
@@ -164,7 +188,7 @@ async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: Acl
         ("assignment", _on_assignment, AssignmentInvalidatePayload),
         ("role", _on_role, RoleInvalidatePayload),
     )
-    bound: list[Any] = []
+    bound: list[Subscription] = []
     try:
         for kind, handler, payload_type in bindings:
             bound.append(
@@ -177,11 +201,42 @@ async def subscribe_acl_invalidation(nats: AclInvalidationSubscriber, cache: Acl
     except BaseException:
         # Unwind, or a failed startup orphans the subscriptions that DID bind: the caller receives
         # no handles (the exception propagates instead of a list), so nothing can ever unsubscribe
-        # them and they hold the AclCache alive for the process lifetime.
-        for subscription in bound:
-            try:
-                await subscription.unsubscribe()
-            except Exception:  # noqa: BLE001 -- the original failure is the one worth raising
-                log.warning("could not unwind an acl invalidation subscription", exc_info=True)
+        # them and they hold the AclCache alive for the process lifetime. Through the same helper
+        # the caller's shutdown uses, so a partial bind and a clean stop leave the client in the
+        # same state -- this used to call `subscription.unsubscribe()`, which leaves the handle on
+        # the client's own list.
+        await unsubscribe_acl_invalidation(nats, bound)
         raise
     return bound
+
+
+async def unsubscribe_acl_invalidation(
+    nats: AclInvalidationSubscriber,
+    subscriptions: Sequence[Subscription],
+) -> None:
+    """Release handles returned by :func:`subscribe_acl_invalidation`.
+
+    The symmetric half, and nothing more: no state lives on the subscriber, so this takes the
+    handles the caller already holds rather than owning a lifecycle of its own.
+
+    Teardown goes through ``nats.unsubscribe(sub)``, NOT ``sub.unsubscribe()``. The two are not
+    equivalent -- the client form additionally removes the handle from the client's own
+    subscription list, and it is what all three consuming apps already did. A shutdown that used
+    the ``Subscription`` form would leave every released handle behind on the client.
+
+    Best-effort per handle: shutdown is exactly when the broker may already be gone, and one
+    unreachable subject must not strand the other two. The failure is logged with its exception,
+    never swallowed silently.
+
+    :param nats: the connected client the handles were bound on.
+    :ptype nats: AclInvalidationSubscriber
+    :param subscriptions: handles to release; an empty sequence is a no-op.
+    :ptype subscriptions: Sequence[Subscription]
+    :return: nothing
+    :rtype: None
+    """
+    for subscription in subscriptions:
+        try:
+            await nats.unsubscribe(subscription)
+        except Exception:  # noqa: BLE001 -- one dead subject must not strand the remaining handles
+            log.warning("could not release an acl invalidation subscription", exc_info=True)

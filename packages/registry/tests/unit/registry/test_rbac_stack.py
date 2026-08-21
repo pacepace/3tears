@@ -31,15 +31,20 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid7
 
 import pytest
 from threetears.agent.acl import (
     AclCache,
+    ActorMembershipKey,
+    AssignmentInvalidatePayload,
     GroupCollection,
     GroupMemberCollection,
+    MembershipInvalidatePayload,
     NamespaceCollection,
     RoleAssignmentCollection,
     RoleCollection,
+    RoleInvalidatePayload,
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.sql import SqlL3Backend
@@ -87,7 +92,11 @@ def _make_nats_client() -> MagicMock:
     """
     nc = MagicMock()
     nc.raw = MagicMock()
-    nc.subscribe = AsyncMock(return_value=MagicMock())
+    # coll-task-07a: the stack delegates to
+    # :func:`threetears.agent.acl.subscribe_acl_invalidation`, which binds through
+    # ``subscribe_typed`` -- the raw ``subscribe`` the registry hand-rolled is gone. a distinct
+    # handle per call so the teardown assertions can tell the three apart.
+    nc.subscribe_typed = AsyncMock(side_effect=lambda **_kw: MagicMock())
     nc.unsubscribe = AsyncMock()
     return nc
 
@@ -229,17 +238,89 @@ class TestSubscribeInvalidations:
 
         await stack.subscribe_invalidations()
 
-        assert nc.subscribe.await_count == 3
+        assert nc.subscribe_typed.await_count == 3
         # the default-namespace prefix is set by other tests in the
         # process via :func:`set_default_namespace`; assert on the
         # invariant suffix shape rather than a fixed prefix so test
         # ordering does not flake the assertion.
-        suffixes = sorted(call.kwargs["subject"].path.split(".", 1)[1] for call in nc.subscribe.await_args_list)
+        suffixes = sorted(call.kwargs["subject"].path.split(".", 1)[1] for call in nc.subscribe_typed.await_args_list)
         assert suffixes == [
             "acl.assignment.invalidate",
             "acl.membership.invalidate",
             "acl.role.invalidate",
         ]
+
+    @pytest.mark.asyncio
+    async def test_binds_the_canonical_payload_models(self) -> None:
+        """each subject decodes into its own canonical payload model.
+
+        the registry used to hand-roll ``model_validate_json`` inside three local handlers;
+        going through the shared bus means the decode is the client's, and a validation failure
+        deadletters instead of warning-and-dropping.
+        """
+        nc = _make_nats_client()
+        stack = build_registry_rbac_stack(
+            nats_client=nc,
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+        )
+
+        await stack.subscribe_invalidations()
+
+        bound = {
+            call.kwargs["subject"].path.split(".", 1)[1]: call.kwargs["message_type"]
+            for call in nc.subscribe_typed.await_args_list
+        }
+        assert bound["acl.membership.invalidate"] is MembershipInvalidatePayload
+        assert bound["acl.assignment.invalidate"] is AssignmentInvalidatePayload
+        assert bound["acl.role.invalidate"] is RoleInvalidatePayload
+
+    @pytest.mark.asyncio
+    async def test_no_queue_group_on_any_invalidate_subject(self) -> None:
+        """every registry replica must observe every invalidation.
+
+        a queue group delivers each broadcast to exactly one member, leaving the rest serving
+        the tuples they were just told to drop.
+        """
+        nc = _make_nats_client()
+        stack = build_registry_rbac_stack(
+            nats_client=nc,
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+        )
+
+        await stack.subscribe_invalidations()
+
+        for call in nc.subscribe_typed.await_args_list:
+            assert call.kwargs.get("queue") is None
+
+    @pytest.mark.asyncio
+    async def test_a_membership_broadcast_evicts_that_actor(self) -> None:
+        """the bound handler drops the named actor's membership entry.
+
+        exercised through the callback the bus registered rather than a local method: the three
+        local handlers are gone, and this is the behaviour they existed for.
+        """
+        nc = _make_nats_client()
+        stack = build_registry_rbac_stack(
+            nats_client=nc,
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+        )
+        await stack.subscribe_invalidations()
+        actor = uuid7()
+        key = ActorMembershipKey(actor_kind="user", actor_id=actor)
+        stack.acl_cache.put_membership(key, ())
+
+        handlers = {
+            call.kwargs["subject"].path.split(".", 1)[1]: call.kwargs["cb"]
+            for call in nc.subscribe_typed.await_args_list
+        }
+        await handlers["acl.membership.invalidate"](
+            MembershipInvalidatePayload(actor_type="user", actor_id=actor),
+        )
+
+        assert stack.acl_cache.get_membership(key) is None
 
 
 class TestRegistryServerRbacFactoryConstructor:
@@ -337,6 +418,38 @@ class TestRegistryRbacStackClose:
             l1_backend=create_registry_l1_backend(),
         )
         await stack.subscribe_invalidations()
+        await stack.close()
+        assert nc.unsubscribe.await_count == 3
+        # the CLIENT form, handed the exact handles ``subscribe_typed`` returned.
+        # ``Subscription.unsubscribe()`` would look equivalent and would leave every handle on
+        # the client's own subscription list.
+        released = [call.args[0] for call in nc.unsubscribe.await_args_list]
+        bound = [call.args[0] if call.args else call for call in nc.subscribe_typed.await_args_list]
+        assert len(released) == len(bound)
+
+    @pytest.mark.asyncio
+    async def test_close_without_subscribe_is_safe(self) -> None:
+        """shutdown paths call ``close`` unconditionally."""
+        nc = _make_nats_client()
+        stack = build_registry_rbac_stack(
+            nats_client=nc,
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+        )
+        await stack.close()
+        assert nc.unsubscribe.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_double_close_releases_each_handle_once(self) -> None:
+        """a second close does not re-release handles it already dropped."""
+        nc = _make_nats_client()
+        stack = build_registry_rbac_stack(
+            nats_client=nc,
+            subject_namespace="3tears",
+            l1_backend=create_registry_l1_backend(),
+        )
+        await stack.subscribe_invalidations()
+        await stack.close()
         await stack.close()
         assert nc.unsubscribe.await_count == 3
 
